@@ -31,13 +31,7 @@ All services follow these rules. New services MUST conform; relocated services c
 
 **Location.** Services live next to their routes: `app/<resource>/service.ts`. When a resource has multiple responsibilities, split into sibling files. The module that owns the entity's general/CRUD surface is named after the entity (`<entity>-service.ts`); responsibility-specific siblings are named after the responsibility (`<responsibility>-service.ts`).
 
-The `app/documents/` tree is the canonical example of a multi-responsibility split:
-- `document-service.ts` (general CRUD)
-- `generation-service.ts` (PRD/plan generation, regeneration, change requests)
-- `execution-service.ts` (plan-loop launch from local)
-- `merge-service.ts` (LLM-driven document merge)
-- `evaluation-service.ts` (ratings + judge feedback)
-- Private helpers shared across these modules live in co-located files (`document-utils.ts`, `generation-status-helpers.ts`).
+`app/documents/` is the canonical example of a multi-responsibility split; private helpers shared across those modules live in co-located files (`document-utils.ts`, `generation-status-helpers.ts`).
 
 The sibling-file split above is for resources with multiple route-facing service surfaces. When a *single* service surface grows so large that its private internals need decomposition (not new sibling services), those internal modules live in a nested directory named after the composition root: `app/<resource>/service.ts` stays the only export consumed by routes, and its helpers move to `app/<resource>/service/<concern>.ts` (with deeper grouping like `service/artifact-links/` when a concern has multiple lanes). `app/agent-sessions/` is the canonical example (PLN-1305). Internal modules must not import the composition root, and no barrel files.
 
@@ -45,11 +39,36 @@ The sibling-file split above is for resources with multiple route-facing service
 
 **Named export.** Each service file exports a single named object, e.g. `export const artifactService = { ... }` or `export const documentGenerationService = { ... }`. No default exports, no facades that re-export across modules, no barrel `index.ts` files. Callers import the specific service object they need. When a sibling service needs a helper, export it as a named function from the appropriate service file (e.g. `getCommitterInfo` from `document-service.ts`) — sibling-to-sibling imports are fine; cross-module facades that aggregate everything under one umbrella name are not.
 
-**Errors as values.** Service methods do not throw to communicate errors. Fallible writes return `Result<T>` (`@repo/api/src/types/result`). Reads that may return "not found" use a nullable return (`Promise<T | null>`). Routes translate `Status.NotFound` → 404, `Status.BadRequest` → 400, `Status.Forbidden` → 403, etc. via `route-utils` helpers. Internal invariants ("argument must be non-empty", programming errors) may still throw — but anything a route would map to a non-500 HTTP status is a `Result.err`, not a throw.
+**Errors as values.** Service methods do not throw to communicate errors. Fallible writes return `Result<T>` (`@repo/api/src/types/result`). Reads that may return "not found" use a nullable return (`Promise<T | null>`). Routes translate `Status.NotFound` → 404, `Status.BadRequest` → 400, `Status.Forbidden` → 403, etc. via `route-utils` helpers. Do not throw, and avoid `try/catch`, except around a third-party API that can throw; internal invariants ("argument must be non-empty", programming errors) may still throw — but anything a route would map to a non-500 HTTP status is a `Result.err`, not a throw.
 
 **Org scoping.** Every read and write that touches per-tenant data takes `organizationId` as a parameter and includes it in the Prisma `where` clause. No "trust the caller" patterns.
 
-**Transactions.** Just call `withDb(fn)` for reads or `withDb.tx(fn)` for atomic writes — do not thread a `tx?: TransactionClient` parameter through service signatures. Both helpers check `AsyncLocalStorage` first: if the caller is already inside a `withDb.tx`, the inner call participates in that outer transaction automatically. If not, `withDb` opens a connection and `withDb.tx` opens a new transaction. This means a service method can be called standalone or from inside a webhook handler's `withDb.tx` without changing its signature. The `tx?` parameter pattern from earlier services is vestigial and should not be propagated to new code.
+**Transactions.** Just call `withDb(fn)` for reads or `withDb.tx(fn)` for atomic writes — do not thread a `tx?: TransactionClient` parameter through service signatures. Both helpers check `AsyncLocalStorage` first: if the caller is already inside a `withDb.tx`, the inner call participates in that outer transaction automatically. If not, `withDb.tx` opens a new transaction, and `withDb` simply hands you the pooled client — it does **not** hold a connection of its own; each query inside it independently borrows one from the pool (see **Bounded fan-out** below). This means a service method can be called standalone or from inside a webhook handler's `withDb.tx` without changing its signature. The `tx?` parameter pattern from earlier services is vestigial and should not be propagated to new code.
+
+**Bounded fan-out.** Never issue an unbounded number of concurrent DB calls over a variable-length array. Because `withDb` holds no connection, `Promise.all(items.map((i) => db.thing.upsert(i)))` demands **one pooled pg connection per item**. The pool is `max: 20` per instance on the IAM/Vercel path (`packages/database/index.ts`) and pg's default of 10 on the `DATABASE_URL` path, so a single request over a large array starves every other route until it times out. In order of preference:
+
+1. **Collapse it into one query.** `WHERE id IN (...)` for a batch read, `updateMany` or `UPDATE … FROM (VALUES …)` for a batch write, `DISTINCT ON` to pick the latest row per key (`app/judges-analytics/service.ts`, `app/catalog/service.ts`). One query beats N bounded queries. Watch the inverse trap: a `findMany` that pulls every row to reduce in memory can ship far more data than it saves in connections — check the column widths (`@db.Text`?) before batching.
+2. **When per-row logic genuinely differs, use `mapWithDbConcurrency`** (`lib/db-fanout.ts`). Wrap the **whole** element body. The pooled work is often several frames down inside a helper, or sits behind an HTTP call in the same task; a limiter around only the visible query misses it. `app/webhooks/github/handlers/installation-repositories-handler.ts` is the worked example — its `.map` body contains no `db.` call at all.
+3. **Bounds compose by addition, not by maximum.** Two concurrent fan-outs that each build their own limiter peak at 2×. When sibling fan-outs run concurrently within one request, build one limiter with `createDbFanoutLimiter()` and pass it to both (`lib/loops/loop-context-pack.ts`).
+
+**A payload cap is not a resource cap.** `z.array().max(n)` bounds the request, not the pool: any `n` above the pool size bounds nothing. `app/documents/[id]/context-attachments/gdrive/route.ts` caps at 100 and is safe only because of its limiter. A few sites still call `pLimit` directly with their own local constant (`lib/pr-read-repair.ts`, `lib/loops/ingest-repo-execution-results.ts`) — correct, but vestigial: migrate one when you touch it, and do not copy the shape into new code.
+
+**Inside a transaction the calculus inverts.** `withDb.tx` pins one connection and every `tx.*` call (and any nested `withDb`) queues on it, so a fan-out there costs **1** connection regardless of width — pool-safe. But it serializes that work inside Prisma's default **5s** interactive-transaction timeout, risking a P2028 rollback of everything. Bounded fan-out is for pooled work; inside a transaction, prefer a set-based statement and keep the transaction narrow.
+
+Regression tests assert peak in-flight concurrency — see `app/desktop/components/sync/service.test.ts` and `lib/db-fanout.test.ts`. **The test payload must exceed the bound**, or the assertion passes against an unbounded fan-out too.
+
+## Test-Support Placement
+
+Harnesses, mocks, fixtures, and doubles follow ONE rule: **test support lives under `__tests__/`, never beside the source it supports.** Tests themselves may co-locate (most already do); their *support* may not.
+
+1. **Module-scoped support** mirrors its module path under `__tests__/support/`. `app/agent-sessions/service.test-harness.ts` became `__tests__/support/agent-sessions/service.test-harness.ts`; `app/branches/branch-read-service.test-helpers.ts` became `__tests__/support/branches/branch-read-service.test-helpers.ts`. Mirroring keeps the module association legible without putting the file in the source tree.
+2. **App-wide infrastructure** stays flat in `__tests__/utils/`. The bar is consumption by tests of **3+ distinct modules**, or being wired globally into `vitest.config.mts` (as `__tests__/utils/server-only-mock.ts` is, via the `server-only` alias). `db-helpers.ts` (15 modules) and `auth-helpers.ts` (10) clear it outright; a helper serving one module belongs in `support/`, not here.
+
+Consumers import support through the `@/` alias (`@/__tests__/support/agent-sessions/service.test-harness`), not a relative path. The alias is depth-independent, so moving a test between directories never rewrites its support imports — and it keeps `vi.mock` factory bodies, which reference support via `await import(...)`, working unchanged.
+
+**Why `__tests__/` and not co-location.** `__tests__/**` and `*.test.ts` are already excluded from coverage by `scripts/coverage/aggregate-lib.mjs` (`TEST_DIR_PATTERN` and `TEST_FILE_PATTERN`, applied as `isSourceFile`), with no per-file naming discipline to remember and no change to the shared aggregator. Support co-located in `app/**` is *in* the denominator until something excludes it by name, so that rule fails open: a support file named without the expected infix silently counts as shipped code.
+
+Keep the `.test-<kind>.ts` suffix (`.test-harness`, `.test-mocks`, `.test-fixtures`, `.test-helpers`, `.test-db`). It no longer carries the exclusion — the directory does — but it still marks the file as scaffolding at a glance and keeps `git grep` for support files honest.
 
 ## Auth Wrappers
 
@@ -61,20 +80,12 @@ The sibling-file split above is for resources with multiple route-facing service
 
 **Prefer `withAnyAuth`** for all new routes. This supports both programmatic clients (MCP, CLI) and browser clients.
 
-## Error Handling
-- DO NOT throw unless there is a compelling reason to.
-- Avoid try/catch unless using a 3rd party API that can throw.
-- Use the `Result` type/const (`@repo/api/src/types/result`) to report success and failure to callers.
-
 ## Response Helpers
 - Success: `NextResponse.json(success(data))` — import `success` from `@repo/api/src/types/common`
 - Not found: `notFoundResponse("Entity")` — from `@/lib/route-utils`
 - Error: `errorResponse("message", error)` — from `@/lib/route-utils`
 - Request parsing: `parseBody(request, validator)` — from `@/lib/route-utils`
-- Transactions: `withDb.tx(async (tx) => { ... })`
-- Shared API types live in `packages/api/src/types/` — ensures frontend/backend share definitions
-
-Background work in API routes follows the serverless-route rule above: await response-path side effects, pass them to `waitUntil`, or persist them for later processing.
+- Permanently disabled legacy API routes should return HTTP 410, preferably through `goneResponse`, so clients receive a non-retryable deprecation signal. Reserve HTTP 501 for capabilities that the server genuinely has not implemented yet and may later support at the same route contract.
 
 ## API Contracts and Services
 - Only the API side should touch `@repo/database`; product UI code must go through API routes and shared API types.
@@ -125,23 +136,34 @@ Background work in API routes follows the serverless-route rule above: await res
 
 ## Query Shape and Route Gates
 - For route gates that only need to prove an artifact/document exists or belongs to the caller, use a minimal select or existing simple lookup helper. Do not fetch heavy include graphs for GET preconditions unless the route actually consumes those joined records.
+- **Bound every predicate, not just the one you chunked.** PostgreSQL's bind-parameter limit is 65,535; chunking an `INSERT` while `in`/`notIn` still receives the full ID set rolls the transaction back on large tenants. Where the upstream fetch has no cap, use a bounded array/set representation for those predicates too, and cover the path above the limit.
+- **Do not materialize a platform-wide workload to emit a bounded top-N.** A `groupBy` over every org, a full-ID `IN`, then an in-memory copy-sort-slice is unbounded DB and memory work regardless of the emission cap. Page/batch the IDs and keep exact counters plus a bounded top-N, or do the aggregation and top-N in bounded SQL, with a large-cardinality regression.
+- **A page and its total read in two statements are not one snapshot.** A mutation between them returns 50 items with `total: 49`, or `hasMore: false` when another matching row existed — an internally contradictory envelope. Read page and count from one consistent snapshot/query and cover mutation between the reads.
+- **Optional enrichment must not sit on a fatal path.** A timeout in a best-effort analytics scan must not reject a list read that already succeeded. Keep enrichment in its own failure domain: return the rows and omit the field or mark analytics unavailable.
+- When consuming a paginated upstream that returns `hasMore`/`nextCursor`, either expose that metadata in your own contract or follow the pages internally — never collapse it into an array that silently truncates at the server default.
+- API query schemas must only accept filters that are implemented by the route's downstream predicates or service. If a shared client type contains dimensions a route cannot honor yet, reject those query params with validation instead of accepting and dropping them; add a route or service test for the rejected unsupported filter.
+
+## Concurrency and Freshness
+- Prefer atomic upsert / `ON CONFLICT` over findFirst-then-create-or-update. Where a seed or cutover must be idempotent, reacquire the same advisory lock in a fresh transaction before re-checking, and cover the real old-writer/new-writer race — a mocked transaction with a no-op lock proves nothing.
+- **Last-write-wins is not freshness-safe.** When a resolver captures `checkedAt` before probing, a slower older probe can overwrite a newer verdict, including via the P2002 fallback path; process-local single-flight does not protect separate serverless instances. Make the write conditional on `stored.checkedAt <= incoming.checkedAt` and cover the older-writer-after-newer-writer case.
+- Merge rate-limit/quota observations only for the equal current window; ignore older observations rather than letting a late response rewind an already-reset window.
+- In Prisma interactive transactions, never catch a failed write and keep issuing queries in the same transaction. Do best-effort cleanup outside it, or retry after rollback in a fresh transaction.
+
+## Emission and Abuse Control
+- A metric or alert emitted per denied lookup, per row, or per request is an amplification vector when an authenticated caller can drive the path. Bound emission per org/reason at the choke point (or require every caller to apply abuse control first) and keep a bounded suppressed count if volume still matters.
+- Structured error `details` payloads keep field names aligned with cardinality: plural names for arrays, or convert to a scalar before storing under a singular name. Test the emitted shape when it crosses an API/app/package boundary.
 
 ## Relay and Gateway Behavior
 - Do not remove the `/api/gateway/*` proxy guard or reimplement gateway operations in `apps/app` or `apps/api`; gateway operations require local filesystem/process access and belong in `apps/desktop`.
 - When `apps/api` creates cloud relay commands for Desktop, the command path delivered to Electron must start with `/api/gateway/`. Electron's cloud command parser rejects non-gateway paths before operation handlers run, so do not rewrite cloud command paths to legacy namespaces such as `/api/engineer/` unless the Electron parser compatibility path is changed and tested in the same work.
-- When a shared dispatch or delivery helper normalizes results from multiple transports, preserve explicit not-delivered/no-subscriber outcomes in every transport branch. Do not report success just because the local publish call completed; add focused coverage for the fallback transport branch as well as the configured remote transport branch.
 - For compute-target relay command tests, a normal local run without `RELAY_API_URL` exercises only the in-process relay fallback. When behavior depends on the external relay `/dispatch` shape, also run the focused test with `RELAY_API_URL` and `INTERNAL_API_SECRET` set so assertions cover the wire-envelope branch used by Vercel/stage.
 
 ## Learned Patterns
 - **[insight]**: API errors return generic messages to clients, log real errors server-side. Debug 500s in API terminal (:3002), not browser DevTools.
-- **[pattern]**: Artifact routes: `findById(artifactId, user.organizationId)` not `validateOwnerInOrg()` — org-scoped query handles auth.
+- **[pattern]**: Artifact routes: the org-scoped query IS the auth check — `findById(artifactId, user.organizationId)`, not a separate ownership assertion.
 - **[convention]**: No Cache-Control headers in API routes. Frontend: TanStack Query. Server: service layer caching.
 - **[convention]**: Prisma-to-API type conversions: centralized mapping function (e.g., `toArtifact()`) that validates. No scattered `as Type`.
 - **[convention]**: Webhook expected errors: catch specific error code (e.g., Prisma P2025), re-throw everything else.
-- **[pattern]**: Routes must transform service Result types to API contract flat types.
 - **[mistake]**: OAuth connect routes: verify service method signature before copying parameter destructuring.
-- **[pattern]**: Keep long-running or bulk work out of a single interactive transaction; page large reads and use short per-record transactions for independent writes. (context: transactions|bulk-work|pagination)
-- **[mistake]**: GitHub comment projections must preserve comment kind in IDs, filters, events, deletes, and backfills; raw GitHub comment IDs alone collide across issue and review comments. (context: github-comments|projection|compatibility)
-- **[pattern]**: Expected Prisma conflicts and not-found cases belong in service `Result.err` branches, and route status switches must map every service status explicitly. (context: result|prisma|error-handling)
 - **[mistake]**: When adding a WHERE clause or filter on a column, check `schema.prisma` for index coverage — unindexed filters cause sequential scans on growing tables. Add a migration for the index in the same PR if needed. (context: database|index|performance)
 - **[mistake]**: Verify query scope matches the UI scope — org-wide queries backing user-scoped views, or unwindowed queries backing windowed views, produce incorrect results. (context: scope|query|filtering)

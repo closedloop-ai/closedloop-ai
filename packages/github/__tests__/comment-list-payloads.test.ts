@@ -1,48 +1,4 @@
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
-
-const {
-  mockCreateAppAuth,
-  mockGraphql,
-  mockListIssueComments,
-  mockListReviewComments,
-  mockOctokitConstructor,
-} = vi.hoisted(() => ({
-  mockCreateAppAuth: vi.fn(() => async () => ({ token: "installation-token" })),
-  mockGraphql: vi.fn(),
-  mockListIssueComments: vi.fn(),
-  mockListReviewComments: vi.fn(),
-  mockOctokitConstructor: vi.fn(),
-}));
-
-vi.mock("@octokit/auth-app", () => ({
-  createAppAuth: mockCreateAppAuth,
-}));
-
-vi.mock("@octokit/rest", () => ({
-  Octokit: class {
-    pulls = {
-      listReviewComments: mockListReviewComments,
-    };
-
-    issues = {
-      listComments: mockListIssueComments,
-    };
-
-    graphql = mockGraphql;
-
-    constructor(options: unknown) {
-      mockOctokitConstructor(options);
-    }
-  },
-}));
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -52,51 +8,37 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import type { Octokit } from "@octokit/rest";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
-  listPullRequestIssueComments,
-  listPullRequestReviewComments,
+  type GitHubProviderResult,
+  GitHubProviderResultStatus,
+  listPullRequestIssueCommentsWithProviderResult,
+  listPullRequestReviewCommentsWithProviderResult,
+  listPullRequestReviewsWithProviderResult,
 } from "../index";
 
-const INSTALLATION_ID = "123";
 const OWNER = "acme";
 const REPO = "repo";
 const PULL_NUMBER = 12;
-const ENV_KEYS = [
-  "GITHUB_APP_ID",
-  "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_APP_WEBHOOK_SECRET",
-  "GITHUB_APP_CLIENT_ID",
-  "GITHUB_APP_CLIENT_SECRET",
-  "GITHUB_APP_DISPATCH_REPO",
-  "WEBAPP_ENV",
-] as const;
-const originalEnv = new Map<string, string | undefined>();
+
+// The list functions are credential-agnostic (PLN-1525 step 4): callers inject
+// the Octokit, so the tests do too — no App env, no auth mocking.
+const mockGraphql = vi.fn();
+const mockListIssueComments = vi.fn();
+const mockListReviewComments = vi.fn();
+const mockListReviews = vi.fn();
+
+const octokit = {
+  issues: { listComments: mockListIssueComments },
+  pulls: {
+    listReviewComments: mockListReviewComments,
+    listReviews: mockListReviews,
+  },
+  graphql: mockGraphql,
+} as unknown as Octokit;
 
 describe("GitHub comment list payload mapping", () => {
-  beforeAll(() => {
-    for (const key of ENV_KEYS) {
-      originalEnv.set(key, process.env[key]);
-    }
-    process.env.GITHUB_APP_ID = "1";
-    process.env.GITHUB_APP_PRIVATE_KEY = "test-key";
-    process.env.GITHUB_APP_WEBHOOK_SECRET = "test-secret";
-    process.env.GITHUB_APP_CLIENT_ID = "test-client-id";
-    process.env.GITHUB_APP_CLIENT_SECRET = "test-client-secret";
-    process.env.GITHUB_APP_DISPATCH_REPO = "owner/dispatch";
-    process.env.WEBAPP_ENV = "stage";
-  });
-
-  afterAll(() => {
-    for (const key of ENV_KEYS) {
-      const value = originalEnv.get(key);
-      if (value === undefined) {
-        Reflect.deleteProperty(process.env, key);
-      } else {
-        process.env[key] = value;
-      }
-    }
-  });
-
   beforeEach(() => {
     vi.clearAllMocks();
     mockGraphql.mockResolvedValue({
@@ -133,8 +75,8 @@ describe("GitHub comment list payload mapping", () => {
       ],
     });
 
-    const comments = await listPullRequestIssueComments(
-      INSTALLATION_ID,
+    const result = await listPullRequestIssueCommentsWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -147,7 +89,8 @@ describe("GitHub comment list payload mapping", () => {
       per_page: 100,
       page: 1,
     });
-    expect(comments).toEqual([
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    expect(unwrapSuccess(result)).toEqual([
       {
         id: 111,
         node_id: "IC_kwDONode",
@@ -164,6 +107,71 @@ describe("GitHub comment list payload mapping", () => {
     ]);
   });
 
+  it("retains actor type for issue-comment authors", async () => {
+    mockListIssueComments.mockResolvedValueOnce({
+      data: [
+        makeIssueComment({
+          user: {
+            id: 99,
+            login: "octocat",
+            node_id: "U_kwDOExample",
+            avatar_url: "https://avatars.githubusercontent.com/u/99",
+            type: GitHubActorType.User,
+          },
+        }),
+      ],
+    });
+
+    const result = await listPullRequestIssueCommentsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(unwrapSuccess(result)[0]?.user).toMatchObject({
+      login: "octocat",
+      actorType: GitHubActorType.User,
+    });
+  });
+
+  it("normalizes omitted issue-comment author and comment fields", async () => {
+    mockListIssueComments.mockResolvedValueOnce({
+      data: [
+        makeIssueComment({
+          node_id: undefined,
+          user: {
+            login: "octocat",
+            avatar_url: "https://avatars.githubusercontent.com/u/99",
+          },
+          body: undefined,
+          author_association: undefined,
+        }),
+      ],
+    });
+
+    const result = await listPullRequestIssueCommentsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(unwrapSuccess(result)[0]).toMatchObject({
+      node_id: null,
+      user: {
+        id: null,
+        login: "octocat",
+        node_id: null,
+        avatar_url: "https://avatars.githubusercontent.com/u/99",
+      },
+      body: "",
+      author_association: null,
+      is_updated: false,
+    });
+    expect(unwrapSuccess(result)[0]?.user).not.toHaveProperty("actorType");
+  });
+
   it("exposes author ids, review metadata, thread ids, and update markers", async () => {
     mockListReviewComments.mockResolvedValueOnce({
       data: [
@@ -175,6 +183,7 @@ describe("GitHub comment list payload mapping", () => {
             login: "octocat",
             node_id: "U_kwDONode",
             avatar_url: "https://avatars.githubusercontent.com/u/99",
+            type: GitHubActorType.Bot,
           },
           line: null,
           original_line: 30,
@@ -186,8 +195,8 @@ describe("GitHub comment list payload mapping", () => {
       ],
     });
 
-    const comments = await listPullRequestReviewComments(
-      INSTALLATION_ID,
+    const result = await listPullRequestReviewCommentsWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -209,7 +218,8 @@ describe("GitHub comment list payload mapping", () => {
         cursor: null,
       }
     );
-    expect(comments).toEqual([
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    expect(unwrapSuccess(result)).toEqual([
       {
         id: 222,
         node_id: "PRRC_kwDONode",
@@ -226,6 +236,7 @@ describe("GitHub comment list payload mapping", () => {
           login: "octocat",
           node_id: "U_kwDONode",
           avatar_url: "https://avatars.githubusercontent.com/u/99",
+          actorType: GitHubActorType.Bot,
         },
         author_association: "MEMBER",
         created_at: "2026-01-01T00:00:00Z",
@@ -241,6 +252,125 @@ describe("GitHub comment list payload mapping", () => {
         is_updated: true,
       },
     ]);
+  });
+
+  it("retains actor type for review-body authors without changing the request", async () => {
+    mockListReviews.mockResolvedValueOnce({
+      data: [
+        {
+          id: 333,
+          user: {
+            id: 88,
+            login: "acme",
+            node_id: "O_kwDOExample",
+            avatar_url: "https://avatars.githubusercontent.com/u/88",
+            type: GitHubActorType.Organization,
+          },
+          state: "COMMENTED",
+          body: "review body",
+          submitted_at: "2026-01-01T00:00:00Z",
+          html_url:
+            "https://github.com/acme/repo/pull/12#pullrequestreview-333",
+        },
+      ],
+    });
+
+    const result = await listPullRequestReviewsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(mockListReviews).toHaveBeenCalledWith({
+      owner: OWNER,
+      repo: REPO,
+      pull_number: PULL_NUMBER,
+      per_page: 100,
+      page: 1,
+    });
+    expect(unwrapSuccess(result)[0]?.user).toEqual({
+      login: "acme",
+      avatar_url: "https://avatars.githubusercontent.com/u/88",
+      actorType: GitHubActorType.Organization,
+    });
+  });
+
+  it("omits actor type for review-body authors when the provider omits it", async () => {
+    mockListReviews.mockResolvedValueOnce({
+      data: [
+        {
+          id: 333,
+          user: {
+            login: "octocat",
+            avatar_url: "https://avatars.githubusercontent.com/u/99",
+          },
+          state: "COMMENTED",
+          body: null,
+          submitted_at: null,
+          html_url:
+            "https://github.com/acme/repo/pull/12#pullrequestreview-333",
+        },
+      ],
+    });
+
+    const result = await listPullRequestReviewsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(unwrapSuccess(result)[0]?.user).toEqual({
+      login: "octocat",
+      avatar_url: "https://avatars.githubusercontent.com/u/99",
+    });
+  });
+
+  it("normalizes omitted optional inline-review fields", async () => {
+    mockListReviewComments.mockResolvedValueOnce({
+      data: [
+        makeReviewComment({
+          id: 444,
+          node_id: undefined,
+          line: undefined,
+          side: undefined,
+          start_line: undefined,
+          start_side: undefined,
+          original_line: undefined,
+          original_start_line: undefined,
+          author_association: undefined,
+          commit_id: undefined,
+          pull_request_review_id: undefined,
+          in_reply_to_id: undefined,
+        }),
+      ],
+    });
+
+    const result = await listPullRequestReviewCommentsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(unwrapSuccess(result)[0]).toMatchObject({
+      id: 444,
+      node_id: null,
+      line: null,
+      side: null,
+      start_line: null,
+      start_side: null,
+      original_line: null,
+      original_start_line: null,
+      author_association: null,
+      commit_id: null,
+      pull_request_review_id: null,
+      review_thread_node_id: null,
+      review_thread_is_resolved: null,
+      in_reply_to_id: null,
+      is_updated: false,
+    });
   });
 
   it("paginates nested review-thread comments past the first GraphQL page", async () => {
@@ -276,8 +406,8 @@ describe("GitHub comment list payload mapping", () => {
       data: [makeReviewComment({ id: 333 })],
     });
 
-    const comments = await listPullRequestReviewComments(
-      INSTALLATION_ID,
+    const result = await listPullRequestReviewCommentsWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -291,7 +421,8 @@ describe("GitHub comment list payload mapping", () => {
         cursor: "cursor-100",
       }
     );
-    expect(comments?.[0]?.review_thread_node_id).toBe(
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    expect(unwrapSuccess(result)[0]?.review_thread_node_id).toBe(
       "PRRT_kwDOPaginatedThread"
     );
   });
@@ -338,4 +469,11 @@ function makeReviewComment(overrides: Record<string, unknown> = {}) {
     in_reply_to_id: 111,
     ...overrides,
   };
+}
+
+function unwrapSuccess<T>(result: GitHubProviderResult<T>): T {
+  if (result.status !== GitHubProviderResultStatus.Success) {
+    throw new Error(`expected success provider result, got ${result.status}`);
+  }
+  return result.value;
 }

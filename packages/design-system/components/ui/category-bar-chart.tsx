@@ -45,6 +45,7 @@ export function CategoryBarChart({
   showValueLabels = false,
   selectedKey,
   onDatumClick,
+  colorByKey,
 }: {
   data: CategoryDatum[];
   horizontal?: boolean;
@@ -62,6 +63,12 @@ export function CategoryBarChart({
   showValueLabels?: boolean;
   selectedKey?: string | null;
   onDatumClick?: (datum: CategoryDatum) => void;
+  // Fixed datum-key → color map, for a chart whose categories are SEMANTIC
+  // rather than merely categorical (e.g. good / bad / unknown). Without it the
+  // generic index palette paints meaning it does not have — the failure bucket
+  // landing on whatever token its position happens to draw. Keys not present
+  // fall back to the index palette, so a partial map is safe.
+  colorByKey?: Readonly<Record<string, string>>;
 }) {
   // Memoize the color-decorated data so its reference stays stable across
   // selection-only re-renders. Recharts keys the bar enter-animation off the
@@ -75,9 +82,9 @@ export function CategoryBarChart({
     () =>
       data.map((datum, index) => ({
         ...datum,
-        fill: chartColor(index),
+        fill: colorByKey?.[datum.key] ?? chartColor(index),
       })),
-    [data]
+    [data, colorByKey]
   );
 
   if (data.length === 0 || data.every((datum) => datum.value === 0)) {

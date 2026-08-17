@@ -36,9 +36,20 @@ export function packAnalyticsToBlocks(analytics: PackAnalyticsResponse): {
   }));
   return {
     performance: {
-      klocPerDollar: analytics.klocPerDollar,
+      locPerDollar: analytics.locPerDollar,
+      locDelta: analytics.locDelta,
+      successRate: analytics.successRate,
+      successDelta: analytics.successDelta,
+      tokenEfficiencyDelta: analytics.tokenEfficiencyDelta,
+      efficiencyTrend: [...analytics.efficiencyTrend],
       invocations: analytics.invocations,
       sessions: analytics.sessions,
+      mergedPrs: analytics.mergedPrs,
+      // ISS-6462: the desktop half of the same carry. An omitted flag stays
+      // undefined (unknown coverage) rather than folding to "not truncated".
+      mergedPrsTruncated: analytics.mergedPrsTruncated,
+      qualityScore: analytics.qualityScore,
+      qualityDelta: analytics.qualityDelta,
       usageTrend: [],
     },
     teamUsage: {
@@ -71,6 +82,7 @@ function contentsToEntries(
     name: item.name,
     kind: toPackContentKind(item.type),
     description: item.description ?? null,
+    content: typeof item.content === "string" ? item.content : null,
   }));
 }
 

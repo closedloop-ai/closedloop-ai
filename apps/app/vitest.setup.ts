@@ -5,7 +5,7 @@ process.env.SKIP_ENV_VALIDATION = "true";
 // This must run before any imports that depend on env vars
 process.env.NEXT_PUBLIC_APP_URL = "http://localhost:3000";
 process.env.NEXT_PUBLIC_WEB_URL = "http://localhost:3001";
-process.env.NEXT_PUBLIC_DOCS_URL = "http://localhost:3004";
+process.env.NEXT_PUBLIC_DOCS_URL = "http://localhost:3001/docs";
 process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = "pk_test_key";
 process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL = "/sign-in";
 process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL = "/sign-up";
@@ -42,6 +42,29 @@ afterEach(() => {
 // Guarded for `@vitest-environment node` test files where Element is undefined.
 if (typeof Element !== "undefined") {
   Element.prototype.scrollIntoView = () => {};
+}
+
+// jsdom does not implement matchMedia, which `useMediaQuery` reads. Any
+// component behind the responsive-modal hook (the confirmation / delete /
+// rename dialogs) mounts it, so provide a global non-matching stub here rather
+// than per test. Defaulting to no-match keeps the desktop Dialog path (matching
+// the hook's SSR snapshot); a test that needs the mobile Sheet path overrides
+// this in its own setup.
+if (globalThis.window !== undefined && !globalThis.window.matchMedia) {
+  Object.defineProperty(globalThis.window, "matchMedia", {
+    configurable: true,
+    value: (query: string): MediaQueryList => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }),
+    writable: true,
+  });
 }
 
 function createStableLocalStorage(

@@ -94,6 +94,7 @@ export async function seedIntegrationEntities(
           login: "seed-user",
           normalizedLogin: "seed-user",
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -131,6 +132,7 @@ export async function seedIntegrationEntities(
           title: "Seed pull request: add feature branch",
           isCurrent: true,
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -164,6 +166,7 @@ export async function seedIntegrationEntities(
         update: {
           state: ReviewDecision.APPROVED,
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -226,6 +229,7 @@ async function seedSlackEntities(
         update: {
           teamName: "Seed Workspace",
         },
+        select: { id: true },
       }),
     counts,
   });

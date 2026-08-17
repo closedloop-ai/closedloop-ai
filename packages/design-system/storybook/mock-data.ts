@@ -1,15 +1,7 @@
-import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
-import { Priority } from "@closedloop-ai/loops-api/common";
-import type { BackendMismatchBody } from "@closedloop-ai/loops-api/compute-target";
-import {
-  DocumentStatus,
-  FeatureStatus,
-  type PullRequestInfo,
-  PullRequestState,
-} from "@closedloop-ai/loops-api/document";
-import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
-import type { FriendlyErrorInput } from "@closedloop-ai/loops-api/friendly-error";
-import type { GitHubRepository } from "@closedloop-ai/loops-api/github";
+// Generic, project-agnostic Storybook sample data only. The Closedloop domain
+// fixtures that used to live here (loops, documents, issues, pull requests,
+// compute targets) moved to `@repo/app/shared/lib/domain-mock-data` in FEA-4296
+// — importing `@closedloop-ai/loops-api` status configs from this package is now gated.
 import {
   AudioWaveform,
   BookOpen,
@@ -302,91 +294,3 @@ export const mockSidebarData: {
     },
   ],
 };
-
-export const mockBackendMismatch = {
-  error: "backend_mismatch",
-  message: "Artifact was last run on a different compute target.",
-  originalComputeTargetId: "ct-original",
-  originalComputeTargetName: "Local GPU Runner",
-  preferredComputeTargetId: "ct-preferred",
-  documentId: "doc-42",
-} satisfies BackendMismatchBody;
-
-export const mockFriendlyError = {
-  code: LoopErrorCode.RunnerError,
-  message: "Claude CLI exited before the loop completed.",
-  details: {
-    runnerSubcode: "CLAUDE_RATE_LIMIT",
-    repoPath: "/Users/example/repo",
-  },
-  timestamp: "2026-05-28T14:32:00.000Z",
-} satisfies FriendlyErrorInput;
-
-export const mockGitHubRepository = {
-  id: "repo-1",
-  fullName: "closedloop-ai/symphony-alpha",
-  name: "symphony-alpha",
-  owner: "closedloop-ai",
-  private: true,
-  githubRepoId: "123456789",
-  lastPushedAt: "2026-05-27T15:45:00.000Z",
-} satisfies GitHubRepository;
-
-export const mockPullRequest = {
-  id: "pr-1",
-  number: 1323,
-  title: "Catalog app-owned composites in Storybook",
-  htmlUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/1323",
-  state: PullRequestState.Open,
-  isDraft: false,
-  headBranch: "feat/design-system-storybook-catalog",
-  baseBranch: "main",
-  createdAt: new Date("2026-05-28T12:00:00.000Z"),
-  checksStatus: null,
-  reviewDecision: null,
-  externalLinkId: null,
-  repoFullName: "closedloop-ai/symphony-alpha",
-} satisfies PullRequestInfo;
-
-export const mockDocumentStatusOptions = [
-  DocumentStatus.Draft,
-  DocumentStatus.InReview,
-  DocumentStatus.ChangesRequested,
-  DocumentStatus.Approved,
-  DocumentStatus.Executed,
-  DocumentStatus.Obsolete,
-] as const;
-
-export const mockFeatureStatusOptions = [
-  FeatureStatus.Triage,
-  FeatureStatus.Backlog,
-  FeatureStatus.Todo,
-  FeatureStatus.InProgress,
-  FeatureStatus.InReview,
-  FeatureStatus.Blocked,
-  FeatureStatus.Done,
-  FeatureStatus.Canceled,
-] as const;
-
-export const mockFeaturePriorityOptions = [
-  Priority.Low,
-  Priority.Medium,
-  Priority.High,
-  Priority.Urgent,
-] as const;
-
-export const mockLoopStatusOptions = [
-  LoopStatus.Pending,
-  LoopStatus.Running,
-  LoopStatus.Completed,
-  LoopStatus.Failed,
-  LoopStatus.Cancelled,
-] as const;
-
-export const mockLoopCommandOptions = [
-  LoopCommand.Plan,
-  LoopCommand.Execute,
-  LoopCommand.Chat,
-  LoopCommand.Explore,
-  LoopCommand.EvaluateCode,
-] as const;

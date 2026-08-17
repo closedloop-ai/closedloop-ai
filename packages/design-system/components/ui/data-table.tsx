@@ -27,6 +27,11 @@ import {
   SearchIcon,
 } from "lucide-react";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
+import {
+  type CollapseColumnsOptions,
+  type CollapseKeyExtractor,
+  shouldCollapseColumn,
+} from "@closedloop-ai/design-system/lib/collapse-columns";
 
 export type Column<T> = {
   key: keyof T | string;
@@ -34,6 +39,21 @@ export type Column<T> = {
   sortable?: boolean;
   render?: (item: T) => React.ReactNode;
   className?: string;
+};
+
+/**
+ * Opt-in constant/empty column collapse (FEA-3968). When supplied, the table
+ * drops any column whose value is constant or empty across the rows *currently
+ * on the visible page* — the same rendered-rows scope the `GridTable` callers
+ * use, so paging can't be decided by rows the user can't see. The active sort
+ * column is always kept: sorting runs before pagination, so dropping the header
+ * that reverses the sort would strand the user with no way back.
+ */
+export type DataTableCollapse<T> = {
+  /** Per-cell stable-key extractor; keyed by the column's `key` as a string. */
+  getKey: CollapseKeyExtractor<T>;
+  /** Forwarded to the shared helper (e.g. `collapseEmptyColumns: false`). */
+  options?: CollapseColumnsOptions;
 };
 
 export type SortOption = {
@@ -79,6 +99,11 @@ type DataTableProps<T> = {
   pageSizeOptions?: number[];
   onPageSizeChange?: (pageSize: number) => void;
   emptyMessage?: string;
+  /**
+   * FEA-3968: opt in to constant/empty column collapse over the visible page.
+   * Off by default, so an existing table keeps every column.
+   */
+  collapse?: DataTableCollapse<T>;
 };
 
 export function DataTable<T extends { id: string }>({
@@ -96,6 +121,7 @@ export function DataTable<T extends { id: string }>({
   pageSizeOptions,
   onPageSizeChange,
   emptyMessage = "No items found.",
+  collapse,
 }: DataTableProps<T>) {
   const [search, setSearch] = React.useState("");
   const [sort, setSort] = React.useState(sortOptions?.[0]?.value ?? "");
@@ -173,6 +199,27 @@ export function DataTable<T extends { id: string }>({
   // Parse current sort into key and direction
   const [sortKey, sortDir] = sort ? sort.split(":") : [null, null];
 
+  // FEA-3968: opt-in constant/empty column collapse over the VISIBLE page
+  // (`paginatedData`) — the same rendered-rows scope the GridTable callers use,
+  // so a column isn't kept or dropped by rows the user can't see. The active
+  // sort column is always kept so its header (which reverses the sort) can never
+  // vanish. Used for both the header and the body so they stay aligned.
+  const visibleColumns = React.useMemo(() => {
+    if (!collapse) {
+      return columns;
+    }
+    return columns.filter(
+      (column) =>
+        String(column.key) === sortKey ||
+        !shouldCollapseColumn(
+          String(column.key),
+          paginatedData,
+          collapse.getKey,
+          collapse.options
+        )
+    );
+  }, [collapse, columns, paginatedData, sortKey]);
+
   // Hide the sortOptions dropdown when any column has sortable headers,
   // since column-header clicks and the dropdown share the same sort state.
   const hasColumnSort = columns.some((c) => c.sortable);
@@ -212,7 +259,7 @@ export function DataTable<T extends { id: string }>({
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">Sort:</span>
               <Select value={sort} onValueChange={setSort}>
-                <SelectTrigger className="w-[160px]">
+                <SelectTrigger aria-label="Sort" className="w-[160px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -230,7 +277,7 @@ export function DataTable<T extends { id: string }>({
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">Filter:</span>
               <Select value={filter} onValueChange={setFilter}>
-                <SelectTrigger className="w-[120px]">
+                <SelectTrigger aria-label="Filter" className="w-[120px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -252,7 +299,7 @@ export function DataTable<T extends { id: string }>({
         <Table>
           <TableHeader>
             <TableRow>
-              {columns.map((column) => (
+              {visibleColumns.map((column) => (
                 <TableHead key={String(column.key)} className={column.className}>
                   {column.sortable ? (
                     <button
@@ -281,7 +328,7 @@ export function DataTable<T extends { id: string }>({
             {paginatedData.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={columns.length + (renderRowActions ? 1 : 0)}
+                  colSpan={visibleColumns.length + (renderRowActions ? 1 : 0)}
                   className="h-24 text-center text-muted-foreground"
                 >
                   {emptyMessage}
@@ -299,7 +346,7 @@ export function DataTable<T extends { id: string }>({
                       href && "relative"
                     )}
                   >
-                    {columns.map((column, colIndex) => (
+                    {visibleColumns.map((column, colIndex) => (
                       <TableCell
                         key={String(column.key)}
                         className={cn(column.className, href && colIndex > 0 && "relative z-[2]")}
@@ -358,7 +405,7 @@ export function DataTable<T extends { id: string }>({
                 }}
                 value={String(pageSize)}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger aria-label="Rows per page" className="w-[80px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -376,6 +423,7 @@ export function DataTable<T extends { id: string }>({
         {totalPages > 1 && (
           <div className="flex items-center gap-2">
             <Button
+              aria-label="Go to previous page"
               variant="outline"
               size="sm"
               onClick={() => setPage((p) => Math.max(1, p - 1))}
@@ -387,6 +435,7 @@ export function DataTable<T extends { id: string }>({
               Page {page} of {totalPages}
             </span>
             <Button
+              aria-label="Go to next page"
               variant="outline"
               size="sm"
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}

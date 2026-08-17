@@ -2,7 +2,7 @@
  * E2E flow (FEA-2939): the Desktop Insights view requires a manual "Load
  * insights" click before it populates, and no spec exercised that gate.
  *
- * `#/insights` ("Agent Monitoring") mounts a deliberately bounded surface: to
+ * `#/insights` ("Insights") mounts a deliberately bounded surface: to
  * keep large local histories from blocking the renderer, it starts behind a gate
  * card and only mounts the paged session table once the user clicks "Load
  * insights" (see insights-view.tsx / desktop-insights-bounded-view.tsx). The
@@ -88,7 +88,7 @@ test.describe("Insights load-and-verify (FEA-2939)", () => {
           page.getByRole("heading", {
             exact: true,
             level: 1,
-            name: "Agent Monitoring",
+            name: "Insights",
           })
         ).toBeVisible({ timeout: 30_000 });
         const loadButton = page.getByRole("button", { name: "Load insights" });
@@ -97,25 +97,35 @@ test.describe("Insights load-and-verify (FEA-2939)", () => {
         // Manual load — the interaction under test.
         await loadButton.click();
 
-        // The bounded view mounted (lazy chunk resolved past "Loading insights...").
-        await expect(
-          page.getByRole("heading", {
-            level: 2,
-            name: "Recent session activity",
-          })
-        ).toBeVisible({ timeout: 30_000 });
-
         // Populated, not the "No synced sessions found." empty state: the numeric
-        // count footer reflects the seeded corpus. (The footer is the robust
-        // populated-data signal; the table's name cell is `truncate min-w-0` and
-        // collapses to zero width in this bounded Card, so its text can read as
-        // hidden even though the row is present.)
-        await expect(page.getByText(POPULATED_COUNT_FOOTER)).toBeVisible({
+        // count footer reflects the seeded corpus. This is the signal that the
+        // bounded view mounted (lazy chunk resolved past "Loading insights...")
+        // AND populated. (The footer is the robust populated-data signal; the
+        // table's name cell is `truncate min-w-0` and collapses to zero width in
+        // this bounded Card, so its text can read as hidden even though the row
+        // is present.)
+        // `exact`, because ISS-5315 gave the Sessions table inside this Card a
+        // second range readout ("Showing 1-2 of 2 sessions", `role="status"`).
+        // Both state the same true count, so this is a locator that stopped
+        // being unique, not a contradiction — pin the bounded view's own chip,
+        // whose whole text IS the range, rather than matching by substring.
+        await expect(
+          page.getByText(POPULATED_COUNT_FOOTER, { exact: true })
+        ).toBeVisible({
           timeout: 30_000,
         });
         await expect(page.getByText("No synced sessions found.")).toHaveCount(
           0
         );
+
+        // FEA-3989: clicking Load insights replaces the gate PageShell with the
+        // bounded-view PageShell. Reassert the loaded page still shows the single
+        // "Insights" <h1> and that the whole page carries exactly one <h1> — the
+        // gate's heading must not linger alongside the loaded one.
+        await expect(
+          page.getByRole("heading", { exact: true, level: 1, name: "Insights" })
+        ).toBeVisible();
+        await expect(page.getByRole("heading", { level: 1 })).toHaveCount(1);
 
         // Each seeded session populated the table as a row linking to its detail.
         // (The responsive table renders a desktop + mobile copy per row, so assert

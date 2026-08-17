@@ -124,7 +124,7 @@ export async function createInlineReviewComment(input: {
 
   try {
     const providerComment = await createPullRequestReviewCommentWithUserToken(
-      identityResult.value.token,
+      identityResult.value.octokit,
       input.ctx.owner,
       input.ctx.repo,
       input.ctx.pullNumber!,
@@ -232,7 +232,7 @@ export async function replyToReviewComment(input: {
 
   try {
     const providerComment = await createReplyForReviewCommentWithUserToken(
-      identityResult.value.token,
+      identityResult.value.octokit,
       input.ctx.owner,
       input.ctx.repo,
       input.ctx.pullNumber!,
@@ -282,7 +282,7 @@ export async function editReviewComment(input: {
 
   try {
     const providerComment = await updatePullRequestReviewCommentWithUserToken(
-      result.identity.token,
+      result.identity.octokit,
       input.ctx.owner,
       input.ctx.repo,
       Number(result.target.githubCommentId),
@@ -332,7 +332,7 @@ export async function deleteReviewComment(input: {
 
   try {
     await deletePullRequestReviewCommentWithUserToken(
-      result.identity.token,
+      result.identity.octokit,
       input.ctx.owner,
       input.ctx.repo,
       Number(result.target.githubCommentId)
@@ -448,11 +448,11 @@ async function mutateReviewThreadResolution(
     const providerThread =
       action === BranchViewCommentAction.Resolve
         ? await resolvePullRequestReviewThreadWithUserToken(
-            result.identity.token,
+            result.identity.octokit,
             reviewThreadId
           )
         : await unresolvePullRequestReviewThreadWithUserToken(
-            result.identity.token,
+            result.identity.octokit,
             reviewThreadId
           );
 

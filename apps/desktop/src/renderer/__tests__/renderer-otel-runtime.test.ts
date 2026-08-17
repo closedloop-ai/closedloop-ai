@@ -1,6 +1,14 @@
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
-import { trace } from "@opentelemetry/api";
+import {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
+import {
+  context,
+  SpanStatusCode as OTelSpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   RendererRenderCause,
@@ -11,14 +19,19 @@ import {
   DesktopOtelSignal,
   RendererOtelAllowedAttributeKey,
   type RendererOtelBridgePayload,
+  type RendererOtelBridgeRecord,
   RendererOtelExportFailureReason,
   type RendererOtelExportResult,
+  type RendererOtelGenericBridgeRecord,
 } from "../../shared/renderer-otel-bridge-constants";
 import { createRendererOtelRuntime } from "../app-otel-runtime";
 
 type ExportTelemetry = (
   payload: RendererOtelBridgePayload
 ) => Promise<RendererOtelExportResult>;
+
+const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
+const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 afterEach(() => {
   trace.disable();
@@ -43,6 +56,41 @@ describe("renderer OTel runtime", () => {
     const error = new Error("Renderer failed");
     error.stack = "Error: failed at /Users/example/project/app.ts";
 
+    await runtime.start();
+    runtime.reportException({ error });
+    await flushMicrotasks();
+
+    const exceptionRecord = exportTelemetry.mock.calls
+      .flatMap(([payload]) => payload.records)
+      .find((record) => record.name === "exception");
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
+    expect(exceptionRecord).toMatchObject({
+      signal: DesktopOtelSignal.Trace,
+      name: "exception",
+      status: { code: SpanStatusCode.Error },
+      attributes: {
+        [TelemetryAttribute.ExceptionType]: "Error",
+        [TelemetryAttribute.ExceptionMessage]: "Renderer failed",
+        [TelemetryAttribute.ExceptionStacktrace]:
+          "Error: failed at [redacted-path]",
+        [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
+      },
+    });
+    expect(exceptionRecord?.traceId).toMatch(TRACE_ID_PATTERN);
+    expect(exceptionRecord?.spanId).toMatch(SPAN_ID_PATTERN);
+  });
+
+  it("exports pre-start renderer exceptions as scrubbed log records", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({ exportTelemetry });
+
+    const error = new Error("early renderer failed");
+    // Pin the stack: the runner's own frames are machine-dependent, and the
+    // sanitizer now substitutes each location in place rather than blanking the
+    // field, so an unpinned stack makes this an unstable exact assertion.
+    error.stack = "Error: failed at /Users/example/project/app.ts";
+
     runtime.reportException({ error });
     await flushMicrotasks();
 
@@ -54,8 +102,9 @@ describe("renderer OTel runtime", () => {
           name: "exception",
           attributes: {
             [TelemetryAttribute.ExceptionType]: "Error",
-            [TelemetryAttribute.ExceptionMessage]: "Renderer failed",
-            [TelemetryAttribute.ExceptionStacktrace]: "[redacted]",
+            [TelemetryAttribute.ExceptionMessage]: "early renderer failed",
+            [TelemetryAttribute.ExceptionStacktrace]:
+              "Error: failed at [redacted-path]",
             [TelemetryAttribute.AppExceptionOrigin]:
               AppExceptionOrigin.Renderer,
           },
@@ -68,14 +117,19 @@ describe("renderer OTel runtime", () => {
     const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
     const runtime = createRendererOtelRuntime({ exportTelemetry });
 
+    await runtime.start();
     runtime.reportException({
       error: new Error("Boundary failed"),
       componentStack: ["Root", "    at Dashboard (panel.tsx:10:2)"].join("\n"),
     });
     await flushMicrotasks();
 
-    expect(exportTelemetry.mock.calls[0]?.[0].records[0]).toMatchObject({
-      signal: DesktopOtelSignal.Log,
+    const exceptionRecord = exportTelemetry.mock.calls
+      .flatMap(([payload]) => payload.records)
+      .find((record) => record.name === "exception");
+
+    expect(exceptionRecord).toMatchObject({
+      signal: DesktopOtelSignal.Trace,
       name: "exception",
       attributes: {
         [TelemetryAttribute.ExceptionMessage]: "Boundary failed",
@@ -118,6 +172,55 @@ describe("renderer OTel runtime", () => {
       attributes: { [RendererOtelAllowedAttributeKey.Mode]: "unit" },
     });
     expect("resourceAttributes" in (spanPayload?.records[0] ?? {})).toBe(false);
+  });
+
+  it("exports renderer trace identity and parent links through the bridge", async () => {
+    const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
+    const runtime = createRendererOtelRuntime({ exportTelemetry });
+
+    await runtime.start();
+    const tracer = trace.getTracer("renderer-test");
+    const parent = tracer.startSpan("renderer.parent");
+    const child = tracer.startSpan(
+      "renderer.child",
+      undefined,
+      trace.setSpan(context.active(), parent)
+    );
+    child.setStatus({ code: OTelSpanStatusCode.ERROR, message: "failed" });
+    child.end();
+    parent.end();
+    await flushMicrotasks();
+
+    const records = exportTelemetry.mock.calls.flatMap(
+      ([payload]) => payload.records
+    );
+    const parentRecord = records.find((record) =>
+      isTraceRecord(record, "renderer.parent")
+    );
+    const childRecord = records.find((record) =>
+      isTraceRecord(record, "renderer.child")
+    );
+
+    expect(parentRecord).toBeDefined();
+    expect(childRecord).toBeDefined();
+    if (!(parentRecord && childRecord)) {
+      return;
+    }
+
+    expect(parentRecord).toMatchObject({
+      signal: DesktopOtelSignal.Trace,
+      kind: SpanKind.Internal,
+      status: { code: SpanStatusCode.Unset },
+    });
+    expect(parentRecord.traceId).toMatch(TRACE_ID_PATTERN);
+    expect(parentRecord.spanId).toMatch(SPAN_ID_PATTERN);
+    expect("parentSpanId" in parentRecord).toBe(false);
+    expect(childRecord).toMatchObject({
+      traceId: parentRecord.traceId,
+      parentSpanId: parentRecord.spanId,
+      kind: SpanKind.Internal,
+      status: { code: SpanStatusCode.Error, message: "failed" },
+    });
   });
 
   it("treats disabled probe results as terminal for the renderer session", async () => {
@@ -203,7 +306,7 @@ describe("renderer render-commit telemetry", () => {
     baseMs: 14.55,
   } as const;
 
-  it("exports a mount commit as a Log wide event even when sampling would drop it", async () => {
+  it("exports a mount commit as a Trace wide event even when sampling would drop it", async () => {
     const exportTelemetry = vi.fn<ExportTelemetry>(async () => okResult());
     const runtime = createRendererOtelRuntime({
       exportTelemetry,
@@ -217,9 +320,16 @@ describe("renderer render-commit telemetry", () => {
     });
     await flushMicrotasks();
 
-    expect(exportTelemetry).toHaveBeenCalledTimes(1);
-    expect(exportTelemetry.mock.calls[0]?.[0].records[0]).toEqual({
-      signal: DesktopOtelSignal.Log,
+    const renderRecord = exportTelemetry.mock.calls
+      .flatMap(([payload]) => payload.records)
+      .find(
+        (record) =>
+          record.name === "desktop.renderer.render_commit.sessions_list"
+      );
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
+    expect(renderRecord).toMatchObject({
+      signal: DesktopOtelSignal.Trace,
       instrumentationScope: { name: "closedloop-desktop-renderer" },
       name: "desktop.renderer.render_commit.sessions_list",
       attributes: {
@@ -229,6 +339,8 @@ describe("renderer render-commit telemetry", () => {
         [RendererOtelAllowedAttributeKey.Status]: "mount",
       },
     });
+    expect(renderRecord?.traceId).toMatch(TRACE_ID_PATTERN);
+    expect(renderRecord?.spanId).toMatch(SPAN_ID_PATTERN);
   });
 
   it("drops a sampled-out update commit", async () => {
@@ -260,8 +372,15 @@ describe("renderer render-commit telemetry", () => {
     });
     await flushMicrotasks();
 
-    expect(exportTelemetry).toHaveBeenCalledTimes(1);
-    expect(exportTelemetry.mock.calls[0]?.[0].records[0]).toMatchObject({
+    const renderRecord = exportTelemetry.mock.calls
+      .flatMap(([payload]) => payload.records)
+      .find(
+        (record) =>
+          record.name === "desktop.renderer.render_commit.sessions_list"
+      );
+
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
+    expect(renderRecord).toMatchObject({
       name: "desktop.renderer.render_commit.sessions_list",
       attributes: { [RendererOtelAllowedAttributeKey.Mode]: "paginate" },
     });
@@ -290,7 +409,7 @@ describe("renderer render-commit telemetry", () => {
       phase: RendererRenderPhase.NestedUpdate,
     });
     await flushMicrotasks();
-    expect(kept).toHaveBeenCalledTimes(1);
+    expect(kept).toHaveBeenCalledTimes(2);
   });
 
   it("uses the default Math.random sampler when none is injected", async () => {
@@ -305,7 +424,7 @@ describe("renderer render-commit telemetry", () => {
       phase: RendererRenderPhase.Update,
     });
     await flushMicrotasks();
-    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
 
     // At/above the 0.1 rate → dropped.
     randomSpy.mockReturnValue(0.5);
@@ -314,7 +433,7 @@ describe("renderer render-commit telemetry", () => {
       phase: RendererRenderPhase.Update,
     });
     await flushMicrotasks();
-    expect(exportTelemetry).toHaveBeenCalledTimes(1);
+    expect(exportTelemetry).toHaveBeenCalledTimes(2);
   });
 
   it("does not export render commits when the bridge is missing", async () => {
@@ -386,4 +505,11 @@ function okResult(): RendererOtelExportResult {
 
 async function flushMicrotasks(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function isTraceRecord(
+  record: RendererOtelBridgeRecord,
+  name: string
+): record is RendererOtelGenericBridgeRecord {
+  return record.signal === DesktopOtelSignal.Trace && record.name === name;
 }

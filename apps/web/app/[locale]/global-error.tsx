@@ -2,6 +2,7 @@
 
 import { Button } from "@repo/design-system/components/ui/button";
 import { fonts } from "@repo/design-system/lib/fonts";
+import { log } from "@repo/observability/log";
 import type NextError from "next/error";
 import { useEffect } from "react";
 
@@ -12,7 +13,9 @@ type GlobalErrorProperties = {
 
 const GlobalError = ({ error, reset }: GlobalErrorProperties) => {
   useEffect(() => {
-    console.error(error);
+    // Sanctioned client logging: a Next App Router error boundary only renders
+    // when the app has already failed.
+    log.error("global error boundary", { digest: error.digest });
   }, [error]);
 
   return (

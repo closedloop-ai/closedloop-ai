@@ -114,6 +114,7 @@ export async function seedCuratedCatalog(
         enabled: true,
         archived: false,
       },
+      select: { id: true },
     });
 
     console.log(

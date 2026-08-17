@@ -7,6 +7,7 @@ import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
+  HeadBucketCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
   ListPartsCommand,
@@ -250,6 +251,82 @@ export async function getSignedUploadUrl(
   });
 
   return await s3GetSignedUrl(s3Client, command, { expiresIn });
+}
+
+/**
+ * Upload document attachment bytes through the server-owned S3 client.
+ */
+export async function putAttachmentObject(params: {
+  key: string;
+  body: Uint8Array;
+  contentType: string;
+  contentLength: number;
+  bucket?: string;
+}): Promise<void> {
+  const resolvedBucket = params.bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
+    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+  }
+
+  await s3Client.send(
+    new PutObjectCommand({
+      Body: params.body,
+      Bucket: resolvedBucket,
+      ContentLength: params.contentLength,
+      ContentType: params.contentType,
+      Key: params.key,
+    })
+  );
+}
+
+/**
+ * Call HeadObject on a document attachment key to confirm the object exists.
+ * Returns metadata when found, and `null` ONLY on an authoritative 404 — every
+ * other failure (throttle, timeout, credential or permission error, 5xx) throws
+ * so callers can distinguish "proven absent" from "could not determine".
+ *
+ * That distinction is load-bearing for the DB-row reconcile sweep, which
+ * deletes rows: a thrown error must never be read as evidence of absence.
+ */
+export async function headAttachmentObject(
+  key: string,
+  bucket?: string
+): Promise<{ byteSize?: number; etag?: string } | null> {
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
+    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+  }
+
+  try {
+    const response = await s3Client.send(
+      new HeadObjectCommand({ Bucket: resolvedBucket, Key: key })
+    );
+    return { byteSize: response.ContentLength, etag: response.ETag };
+  } catch (error) {
+    if (isS3NotFound(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Probe that the attachments bucket itself exists and is reachable. Resolves on
+ * success and throws on any failure, including a missing bucket.
+ *
+ * Required before any sweep that reads a per-object 404 as proof of absence. A
+ * HEAD reply has no body for the SDK to parse an error code from, so a deleted
+ * or misconfigured bucket can surface on every key as an indistinguishable 404 —
+ * i.e. as a whole table of "orphans". One probe per run turns that into a single
+ * run-level failure instead of unbounded per-row misclassification.
+ */
+export async function headAttachmentsBucket(bucket?: string): Promise<void> {
+  const resolvedBucket = bucket || config.FILE_ATTACHMENTS_BUCKET;
+  if (!resolvedBucket) {
+    throw new Error("FILE_ATTACHMENTS_BUCKET is not configured");
+  }
+
+  await s3Client.send(new HeadBucketCommand({ Bucket: resolvedBucket }));
 }
 
 /**
@@ -710,6 +787,46 @@ export async function getSignedTranscriptDownloadUrl(
   });
 }
 
+/**
+ * Download the FIRST `maxBytes` bytes of a transcript object server-side via a
+ * ranged GET (FEA-3930). Transcript archives can be tens of GB, so the search
+ * indexer must never buffer the whole object — it only needs a bounded prefix
+ * of the JSONL to build a capped searchable body. The `Range` header caps S3
+ * egress and memory to the requested window; a smaller object simply returns
+ * fewer bytes. Returns null for a missing object (deleted/not-yet-uploaded) so
+ * the caller can skip indexing rather than 500.
+ */
+export async function getTranscriptObjectBytesRange(
+  key: string,
+  maxBytes: number,
+  bucket?: string
+): Promise<Buffer | null> {
+  const resolvedBucket = resolveTranscriptsBucket(bucket);
+  // Range is inclusive of both ends and 0-based, so the last byte index is
+  // maxBytes - 1. Floor at a single byte so a zero/negative cap cannot request
+  // an invalid range.
+  const lastByte = Math.max(1, Math.floor(maxBytes)) - 1;
+  try {
+    const response = await s3Client.send(
+      new GetObjectCommand({
+        Bucket: resolvedBucket,
+        Key: key,
+        Range: `bytes=0-${lastByte}`,
+      })
+    );
+    const bytes = await response.Body?.transformToByteArray();
+    if (!bytes) {
+      return null;
+    }
+    return Buffer.from(bytes);
+  } catch (error) {
+    if (isS3NotFound(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Catalog / plugin-distribution asset helpers (FEA-2923 batch 3)
 //
@@ -913,15 +1030,42 @@ export async function getCatalogAssetBytes(
   return Buffer.from(bytes);
 }
 
-/** True when an S3 error is a 404 / NotFound (missing object). */
+/**
+ * S3 error code for a missing bucket. It is reported with
+ * `$metadata.httpStatusCode === 404`, exactly like a missing key, so a
+ * status-only test reads a deleted, renamed, or misconfigured bucket as "every
+ * object in it is absent". For a caller that deletes on absence that turns one
+ * systemic failure into unbounded data loss, so it is discriminated by CODE
+ * before the status is consulted.
+ */
+const S3_NO_SUCH_BUCKET_CODE = "NoSuchBucket";
+
+/**
+ * True when an S3 error is an authoritative 404 for the requested KEY.
+ *
+ * A bucket-level 404 is excluded: it says nothing about the key. Note that an
+ * S3 HEAD reply carries no body for the SDK to parse an error `Code` from, so a
+ * missing bucket can still surface as a bare `NotFound` — the code check here is
+ * a backstop, not the primary defense. Callers that act destructively on
+ * absence must additionally probe the bucket once per run
+ * (`headAttachmentsBucket`) so a systemic failure fails the run outright.
+ */
 function isS3NotFound(error: unknown): boolean {
   if (typeof error !== "object" || error === null) {
     return false;
   }
   const candidate = error as {
     name?: string;
+    // Wire-format key from the S3 error body; not renamed to camelCase.
+    Code?: string;
     $metadata?: { httpStatusCode?: number };
   };
+  if (
+    candidate.name === S3_NO_SUCH_BUCKET_CODE ||
+    candidate.Code === S3_NO_SUCH_BUCKET_CODE
+  ) {
+    return false;
+  }
   return (
     candidate.name === "NotFound" ||
     candidate.name === "NoSuchKey" ||

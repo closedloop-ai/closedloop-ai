@@ -1,0 +1,194 @@
+-- FEA-4303 Sessions Model-facet index — RE-LAND as CONCURRENTLY (ISS-4565).
+--
+-- WHAT THIS INDEX IS FOR — and, importantly, what it is NOT for.
+-- The columns are FEA-4303's, unchanged; this migration only makes the build
+-- concurrent. But FEA-4303's own rationale comment overstated the reach, and
+-- repeating it here would carry the error forward, so state it accurately
+-- (shafty023 caught this on #4080):
+--
+--   SERVED. Any query that filters `model` AND windows/sorts on
+--   `session_started_at`: the explicit `sessionStartedAt` table-header sort
+--   (`session-sort-order.ts` returns `[{sessionStartedAt: dir}, artifactId]`),
+--   and the analytics/export paths, whose `dateField` parameter defaults to
+--   `"sessionStartedAt"` (`query-builder.ts` buildWhere/buildIdleCountWhere).
+--   For those, only the org-blind @@index([sessionStartedAt]) and the
+--   equality-facet @@index([harness, sessionStartedAt]) existed, so a model
+--   filter had to scan and sort the whole window then filter by model. This
+--   composite mirrors the harness-facet shape so the planner drives from the
+--   model predicate with the date range co-located.
+--
+--   NOT SERVED — the Sessions list surface itself. That surface windows and
+--   orders on `lastActivityAt`, not `session_started_at`:
+--   `SESSIONS_SURFACE_DATE_FIELD = "lastActivityAt"` and
+--   `SESSION_DEFAULT_ORDER_BY = [{lastActivityAt: desc nulls last},
+--   {sessionStartedAt: desc}, {artifactId: desc}]`. Its window is also an OR
+--   over a null-fallback (`lastActivityAt` in range, OR `lastActivityAt IS NULL`
+--   AND `sessionStartedAt` in range), which this index cannot drive either. So a
+--   model filter on the DEFAULT Sessions list does not use this index.
+--
+-- Whether FEA-4303 therefore picked the right columns for the facet it was built
+-- for is a real open question, tracked separately — it is not re-litigated here,
+-- because this migration's contract is "same index, built without the lock".
+--
+-- WHY THIS REPLACES 20260730120000_fea4303_session_detail_model_index:
+-- That migration (#4034) built the same index with a plain `CREATE INDEX`, which
+-- holds a write-blocking lock on the table for the ENTIRE duration of the build.
+-- `session_detail` is the hot session-ingest table — desktop sync and API writes
+-- land there continuously — so at production size a plain build stalls ingest for
+-- as long as the build runs. It is the exact failure mode PRD-547 was opened for
+-- after FEA-3638 did the same thing to this same table on 2026-07-21.
+--
+-- It was caught BEFORE production applied it: the plain migration reached `main`
+-- but not the `production` branch, and the deploy PR that advances `production`
+-- (#4057) was still open. So the plain migration was deleted under a sanctioned
+-- one-time exception to the `migration-immutability` CI guard (the FEA-3638
+-- precedent, .github/workflows/pr-test.yml) and re-landed here, building the same
+-- index — same name, same columns, same order — with `CREATE INDEX CONCURRENTLY`,
+-- which takes only SHARE UPDATE EXCLUSIVE: concurrent INSERT/UPDATE/DELETE proceed
+-- while the index builds. Zero write-blocking on prod's hot ingest table.
+--
+-- NON-TRANSACTIONAL BY DESIGN — WHY THIS FILE IS ONE BARE STATEMENT:
+-- `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block (Postgres
+-- SQLSTATE 25001). `prisma migrate deploy` (the prod/stage/CI apply path —
+-- scripts/migrate.ts and pr-test.yml both shell out to it) runs a migration file
+-- by splitting it into statements and sending each as its own simple query, so a
+-- file of only bare top-level statements executes each create outside any
+-- transaction and succeeds. But that split is best-effort: when the parser cannot
+-- confidently split the file it falls back to sending the WHOLE file as one
+-- script, which runs in a single implicit transaction and then fails every
+-- CONCURRENTLY statement with 25001. Constructs that have historically pushed a
+-- migration onto that fallback path are embedded semicolons and dollar-quoting —
+-- a `DO $$ ... $$` block, a multi-statement function body, a
+-- `DROP INDEX CONCURRENTLY`. That bit FEA-3638 three times. The exact parser is
+-- an engine internal and changes between Prisma versions (7.8 here), so do not
+-- rely on any particular version's tolerance: keep this file to the single bare
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS` below, and do NOT add a BEGIN/COMMIT,
+-- a `DO` block, or a `DROP INDEX CONCURRENTLY` here.
+--
+-- IDEMPOTENT (`IF NOT EXISTS`): safe to run against an environment where the
+-- reverted plain migration already created this index (see the per-environment
+-- notes below) — there it is a no-op, not an error.
+--
+-- INVALID-REMNANT RECOVERY IS OPERATOR-DRIVEN (not in-file): a
+-- `CREATE INDEX CONCURRENTLY` that is cancelled or crashes mid-build leaves an
+-- INVALID index of the same name behind (Postgres ignores it for planning until
+-- it is dropped and rebuilt). On a retry, `IF NOT EXISTS` sees that same-named
+-- invalid index and silently SKIPS the rebuild — leaving a permanently-unusable
+-- perf index recorded as applied. The in-file `DO`-block guard that would auto-fix
+-- this cannot ship (it forces the whole-file transaction wrap described above), so
+-- an operator handles it: a mid-build failure surfaces as P3018 and
+-- scripts/migrate.ts resolves it as rolled-back and retries.
+--
+--   TWO THINGS ABOUT THAT RETRY MATTER, AND BOTH ARE EASY TO GET WRONG:
+--
+--   (a) The retry SUCCEEDS by no-oping over the invalid remnant, so Prisma records
+--       this migration as APPLIED. From then on there is NOTHING PENDING, and
+--       re-running `prisma migrate deploy` will not rebuild anything no matter how
+--       many times you run it. The rebuild must be done DIRECTLY against the
+--       database — do not reach for the migrate step to fix this.
+--
+--   (b) The drop must be CONCURRENT. A plain `DROP INDEX` takes ACCESS EXCLUSIVE
+--       on `session_detail`, which on this hot ingest table both waits behind and
+--       then blocks every concurrent reader and writer — reintroducing exactly the
+--       stall this migration exists to avoid. `DROP INDEX CONCURRENTLY` holds only
+--       SHARE UPDATE EXCLUSIVE. Neither statement may run inside a transaction, so
+--       run them in psql autocommit (never from a migration file).
+--
+--   Full recovery, schema-qualified or with search_path set to the target schema:
+--
+--       -- 1. confirm the remnant is actually invalid
+--       SELECT indisvalid FROM pg_index
+--        WHERE indexrelid = '"session_detail_model_started_at_idx"'::regclass;
+--       -- 2. drop it without locking out ingest (bounded so it cannot queue
+--       --    behind a long transaction and hold the queue)
+--       SET lock_timeout = '5s';
+--       DROP INDEX CONCURRENTLY IF EXISTS "session_detail_model_started_at_idx";
+--       -- 3. rebuild it directly — `migrate deploy` is a no-op here, see (a)
+--       CREATE INDEX CONCURRENTLY IF NOT EXISTS "session_detail_model_started_at_idx"
+--         ON "session_detail"("model", "session_started_at");
+--       -- 4. re-verify; repeat from 2 if it is invalid again
+--       SELECT indisvalid FROM pg_index
+--        WHERE indexrelid = '"session_detail_model_started_at_idx"'::regclass;
+--
+--   STEP 1 IS MANDATORY AFTER ANY PRODUCTION APPLY, not a nicety. Nothing else
+--   will tell you. The failed build does not fail the deploy: recovery resolves
+--   the migration rolled back, the retry no-ops over the invalid remnant, Prisma
+--   records the migration APPLIED, and the deploy job goes GREEN. There is no
+--   error, no warning, and no pending migration left — a permanently unusable
+--   index that reads as a healthy one from every angle except `indisvalid`. This
+--   file cannot self-heal that (the `DO`-block guard forces the whole-file
+--   transaction wrap and would make the migration fail unconditionally), so the
+--   check is on the operator. Automating the detection is tracked separately.
+--   (shafty023 + the Codex review of #4080.)
+--
+-- Purely additive: index-only, no data mutation, no result change (an index alters
+-- plan choice only). The name and columns match the schema.prisma declaration
+-- `@@index([model, sessionStartedAt], map: "session_detail_model_started_at_idx")`,
+-- which is unchanged by this re-land, so the Prisma drift check stays green.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations.ts). Ephemeral `preview_*`
+-- schemas replay the whole migration history on every deploy, and CONCURRENTLY
+-- waits instance-wide for all transactions to drain — under preview fan-out on the
+-- shared stage instance that is the ISS-4437 P1002 advisory-lock amplifier. A
+-- perf-only index is pure cost on a preview, so it is pre-stamped and skipped
+-- there. That registration is CI-enforced; see the drift guard in
+-- packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+--   CAVEAT, and it is not a small one: the skip does NOT take effect on THIS
+--   migration's own pre-merge previews. `preview-prestamp.ts` never computes a
+--   checksum (a wrong one would make migrate deploy FAIL rather than skip); it
+--   copies the applied row out of `public._prisma_migrations`. Before this lands
+--   on main, `public` has no such row to copy, the stamp inserts nothing, and the
+--   perf-only path fails OPEN — so preview `migrate deploy` runs the CONCURRENTLY
+--   build anyway. The registration only starts working once stage `public` has
+--   applied it. Every new CONCURRENTLY migration has this pre-merge window; it is
+--   a property of the ISS-4437 mechanism, not of this migration, and is tracked
+--   separately. (shafty023, #4080.)
+--
+-- ─────────────────────────────────────────────────────────────────────────────
+-- PER-ENVIRONMENT OPERATOR NOTES (state as of this re-land, 2026-07-30):
+--
+-- • PROD (public schema): the reverted plain migration 20260730120000 had not
+--   reached production. What is PROVEN: the migration file is absent from
+--   `origin/production`, and prod deploys build from that branch, so the normal
+--   deploy path cannot have applied it. What is NOT proven: the actual
+--   `_prisma_migrations` / catalog state — branch history says nothing about an
+--   out-of-band or manual apply. Read the row before relying on this
+--   (`SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE
+--   migration_name LIKE '20260730120000%'`). The CI guard now enforces the branch
+--   half mechanically: the immutability exception refuses once `production`
+--   carries the deleted migration, so it expires on its own. Assuming a clean
+--   prod, this migration performs the real CONCURRENTLY build there, zero write
+--   lock, no pre-step. (shafty023, #4080.)
+--
+-- • STAGE (public schema): stage auto-deploys every push to main, and the plain
+--   migration was on main for hours, so stage has almost certainly ALREADY APPLIED
+--   it — its `_prisma_migrations` table then holds a row for the now-deleted
+--   20260730120000. `prisma migrate deploy` TOLERATES an applied-but-locally-absent
+--   migration (unlike `migrate dev`), so the next stage deploy still applies THIS
+--   migration, which is a no-op (`IF NOT EXISTS` — the index already exists). The
+--   orphan row is benign; leave it. If it ever needs clearing, note that the
+--   migration SUCCEEDED, so `prisma migrate resolve --rolled-back` does not apply
+--   (Prisma errors P3012) and `--applied` merely re-marks it. Per
+--   packages/database/AGENTS.md, delete the row directly instead:
+--       DELETE FROM "_prisma_migrations"
+--        WHERE migration_name = '20260730120000_fea4303_session_detail_model_index';
+--   That removes only the history row; the index stays, so this migration's
+--   `IF NOT EXISTS` create remains a correct no-op afterward.
+--
+-- • PREVIEW (preview_* schemas on the shared stage instance): pre-stamped, so this
+--   migration never builds there. Any orphan-record drift on an existing preview
+--   schema self-heals — scripts/migrate.ts resets a preview schema on P3005/P3009/
+--   P3018. No manual step.
+--
+-- • LOCAL DEV: if your local Postgres already applied 20260730120000, `prisma
+--   migrate dev` will report a history divergence after you pull this, and will
+--   offer a RESET THAT WIPES YOUR LOCAL DATA. Do not accept it. Run the same
+--   single-row delete shown under STAGE against your local database, then
+--   `pnpm migrate` — this migration's `IF NOT EXISTS` no-ops over the index the
+--   plain migration already built.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "session_detail_model_started_at_idx" ON "session_detail"("model", "session_started_at");

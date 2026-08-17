@@ -98,6 +98,11 @@ describe("DocumentMetadataBar", () => {
       "IN_REVIEW / Ada Lovelace"
     );
     expect(screen.getByText("High")).toBeInTheDocument();
+    // FEA-3963: the priority pill exposes a field-labeled accessible name so a
+    // screen reader announces "Priority: High", not just the value.
+    expect(
+      screen.getByRole("combobox", { name: "Priority: High" })
+    ).toBeInTheDocument();
     expect(screen.getByText("acme/api")).toBeInTheDocument();
     expect(screen.getByTestId("tag-picker")).toHaveTextContent(
       `${TagEntityType.Artifact}:artifact-1:Urgent`
@@ -119,7 +124,7 @@ describe("DocumentMetadataBar", () => {
       />
     );
 
-    expect(screen.getByText("Feature")).toBeInTheDocument();
+    expect(screen.getByText("Issue")).toBeInTheDocument();
     expect(screen.queryByText("acme/api")).not.toBeInTheDocument();
     expect(screen.queryByTestId("tag-picker")).not.toBeInTheDocument();
   });

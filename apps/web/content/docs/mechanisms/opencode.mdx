@@ -1,0 +1,98 @@
+---
+title: OpenCode
+description: How the desktop collector discovers OpenCode sessions and components, why OpenCode is a real per-harness value rather than a Claude alias, and what it does and does not fill.
+---
+
+OpenCode is a first-class harness. The desktop client collects its sessions and its agent components, and everything it produces is attributed `harness=opencode` — a real, distinct value, not something folded into Claude.
+
+It is also the odd one out mechanically. Every other supported harness writes transcript files that the collector reads; OpenCode keeps its canonical session history in a single SQLite database. That one difference drives most of what follows.
+
+## Two homes, not one
+
+OpenCode splits its state across two directories, and the collector resolves them separately because they are genuinely different things.
+
+**The data home** holds `opencode.db` — the canonical session, message, and part store — plus its WAL and SHM siblings. The adjacent `storage/` directory is auxiliary cache and snapshot state and is *not* authoritative for session history, so the collector does not read it.
+
+| | Data home |
+|---|---|
+| Override | `OPENCODE_DATA_DIR` (leading `~` expanded) |
+| Default, macOS and Linux | `~/.local/share/opencode` |
+| Default, Windows | `%APPDATA%/opencode` |
+
+**The config home** is where agent and command definition files live. It is a different directory from the data home on macOS and Linux, and its override precedence deliberately mirrors OpenCode's own resolution:
+
+1. `OPENCODE_CONFIG_DIR` — the directory override, used verbatim. This is the correct knob for relocating components.
+2. `OPENCODE_CONFIG` — relocates an individual config *file*, not the component directory. Its parent is treated as the config home **only** when the value actually resolves to a regular file. A value that is itself a directory, or a bare filename whose parent would resolve to the current working directory, is ignored, so a stray setting cannot repoint the component scan at an unrelated tree.
+3. The default: `$XDG_CONFIG_HOME/opencode`, falling back to `~/.config/opencode` when `XDG_CONFIG_HOME` is unset — or `%APPDATA%/opencode` on Windows.
+
+## Batch collection, and the fingerprint that makes it cheap
+
+OpenCode is the only **batch** harness. Where a file-based harness parses one transcript at a time, the OpenCode collector loads the whole database in a single pass.
+
+Doing that on every catchup tick would be wasteful, so the collector self-fingerprints. It stamps `opencode.db` and its WAL and SHM siblings by name, modification time, and size, and skips the load entirely when the fingerprint is unchanged. The fingerprint is persisted to disk as well as held in memory, so a freshly started process also skips the cold-start load when the database has not been touched since the last run.
+
+The read itself is schema-probed rather than assumed. The collector inspects the `session` table's columns before building its query, and selects the diff-summary columns only when that install actually has them, so an older OpenCode schema is read successfully instead of erroring on a missing column. It then reads the session rows newest-first and, per session, its `message` and `part` rows in creation order.
+
+Because it is one batch, a single bad row would otherwise be able to poison the whole import — so each session is parsed in isolation. A malformed session (a corrupt token count, for example) drops only itself; every other session in the database still lands.
+
+A session is dropped when it has zero messages or no usable timestamp, the same rule the other harnesses apply.
+
+## The live channel is a watcher
+
+OpenCode has no hook path. Hooks are Claude-only, so OpenCode's live channel is always the file watcher — pointed at `opencode.db` and its WAL and SHM files, which is where live updates land while the app is running.
+
+That is not a gap specific to OpenCode: every non-Claude harness is watcher-only by design, because a harness captured by two live channels at once would double-count every tool call.
+
+## What it fills, and what it does not
+
+OpenCode reads structured columns rather than parsing prose out of a transcript, which makes some fields cheap for it that are expensive elsewhere — and leaves others simply absent from the source.
+
+| Field | OpenCode |
+|---|---|
+| `slug` | **Filled**, from a DB column. Claude fills it too; Codex, Cursor, and Copilot do not. |
+| `permissionMode` | **Filled**, from a DB column. Claude fills it too; Codex, Cursor, and Copilot do not. |
+| `diffStats` | **Filled**, from the session row's diff-summary columns, when that install's schema has them. Claude and Codex fill it from transcript evidence; Cursor and Copilot do not fill it at all. |
+| Token counts | Filled from the session and message rows. |
+| `plans` | Not filled. Codex is the only harness that fills it. |
+| `teams`, `compactions`, `slashCommands`, `usageExtras` | Not filled. Claude is the only harness that fills these. |
+| Sub-agents | Not folded the way Claude's sidechains and Codex's descendant rollouts are. |
+
+Assistant reasoning content is folded into the message output rather than kept as a separate channel.
+
+**Token accounting collapses to a single bucket.** Like Cursor and Copilot, OpenCode reports one `tokensByModel` key rather than a real per-model breakdown. That key is the session's recorded model identifier when the row carries one, falling back to the session's agent name, and only to the synthetic `opencode-default` key when neither exists (or when the counts are reconstructed from the per-message series). Only Claude naturally carries multiple model keys. Pricing still comes from the same authoritative pricing library used for every harness.
+
+## Agent components
+
+Separately from sessions, the collector discovers OpenCode **sub-agents** and **commands** as agent components, reading its config home one level deep.
+
+OpenCode's directory naming differs from Claude's, so the scan accommodates both of its spellings. The plural `agents/` and `commands/` are the current defaults; the singular `agent/` and `command/` are kept as backwards-compatible aliases. Both are scanned, with plural taking precedence, so a definition under either is discovered and an install carrying both does not produce a duplicate.
+
+The OpenCode roots are kept deliberately separate from the Claude roots rather than being treated as another `.claude`-shaped directory, because the layout and the config home genuinely differ. A project's own `.opencode` directory is scanned alongside the user-global config home, and neither path re-appends an `opencode` segment.
+
+One behavior is worth calling out because it is easy to misread as a bug: when the *same* sub-agent or command identity exists under both a Claude root and an OpenCode root, it folds into a single component row attributed to **both** harnesses, rather than being upserted twice.
+
+## `opencode` is a real harness value
+
+The display contract is `claude`, `codex`, `opencode`, and `both` — and `opencode` is a genuine member of it, not a string passed through out-of-contract and not coerced to Claude.
+
+That matters concretely. The label and facet maps over the harness value are exhaustive `Record` types, so OpenCode has its own entry, its own display label ("OpenCode"), and its own option in the individual-harness filters. Adding it to the contract is what makes those maps fail to compile if it were ever dropped, rather than silently rendering an OpenCode component as a Claude one.
+
+`both` is the synthetic "used across harnesses" collapse, not one of the **individual-harness** options the Agents UI facet menu offers. It is labeled **Multiple harnesses** rather than "Claude + Codex", precisely because any multi-harness combination collapses into it — including Claude plus OpenCode — and naming two specific harnesses would assert one the component never touched. Programmatic callers *can* target the bucket directly: the `list-agent-components` MCP tool accepts `both` in its `harness` enum, and the components API honors `?harness=both` by exact-matching the displayed synthetic value. The UI simply keeps it out of the individual-harness facet list.
+
+The same three-value vocabulary (`claude`, `codex`, `opencode`) is the canonical harness identity used by the [scheduled-task and routine](./scheduled-tasks) layer, so a harness name means the same thing whether it came from a collected session or from a scheduled run.
+
+Note that the *parser-source* set is wider than the display contract: the collectors also parse Cursor and Copilot sessions. The display contract covers the harnesses the component inventory attributes to, which is a narrower question than which transcripts the collector can read.
+
+## Related reading
+
+<Cards>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    The generic engine that drives all five harness collectors.
+  </Card>
+  <Card title="Agent components" href="./agent-components">
+    The inventory these OpenCode agents and commands land in.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    Where OpenCode sessions roll up alongside every other harness.
+  </Card>
+</Cards>

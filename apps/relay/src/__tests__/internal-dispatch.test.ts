@@ -1,8 +1,9 @@
 import { request } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { InstanceInfo, TargetMetadata } from "../target-registry.js";
+import type { InstanceInfo } from "../target-registry.js";
+import { reserveTestPort } from "./helpers/reserve-test-port.js";
 
-const TEST_PORT = 30_000 + Math.floor(Math.random() * 10_000);
+const TEST_PORT = await reserveTestPort(25_000, 1500);
 const TEST_SECRET = "test-internal-secret";
 const TEST_API_URL = "http://127.0.0.1:19877";
 const ORIGINAL_ENV = { ...process.env };
@@ -11,11 +12,6 @@ let baseUrl: string;
 let stopRelay: (() => Promise<void>) | null = null;
 let isAddressInCidr: (address: string, cidr: string) => boolean;
 let isAllowedPeerInstance: (info: InstanceInfo) => boolean;
-let isCurrentRegistryOwner: (
-  registered: TargetMetadata | null,
-  worker: { ownerToken?: string },
-  instanceId: string
-) => boolean;
 let peerDispatchTimeoutMs: number;
 let apiDispatchCallerTimeoutMs: number;
 let parseDispatchPayload: (
@@ -49,7 +45,6 @@ beforeAll(async () => {
   stopRelay = relayModule.stopRelayServer;
   isAddressInCidr = relayModule.isAddressInCidr;
   isAllowedPeerInstance = relayModule.isAllowedPeerInstance;
-  isCurrentRegistryOwner = relayModule.isCurrentRegistryOwner;
   peerDispatchTimeoutMs = relayModule.PEER_DISPATCH_TIMEOUT_MS;
   apiDispatchCallerTimeoutMs = relayModule.API_DISPATCH_CALLER_TIMEOUT_MS;
   parseDispatchPayload = relayModule.parseDispatchPayload;
@@ -284,54 +279,50 @@ describe("isAllowedPeerInstance (cross-instance egress allowlist)", () => {
   });
 });
 
-describe("isCurrentRegistryOwner (ownership source of truth)", () => {
-  const base: Omit<TargetMetadata, "instanceId" | "ownerToken"> = {
-    socketId: "sock-1",
-    organizationId: "org-1",
-    userId: "user-1",
-    connectedAt: 0,
-  };
-
-  it("trusts the live local socket when the registry has no entry", () => {
-    expect(
-      isCurrentRegistryOwner(null, { ownerToken: "tok-1" }, "inst-a")
-    ).toBe(true);
-  });
-
-  it("confirms ownership when instance and owner token match", () => {
-    expect(
-      isCurrentRegistryOwner(
-        { ...base, instanceId: "inst-a", ownerToken: "tok-1" },
-        { ownerToken: "tok-1" },
-        "inst-a"
-      )
-    ).toBe(true);
-  });
-
-  it("rejects a stale local socket when the target re-registered on another instance", () => {
-    expect(
-      isCurrentRegistryOwner(
-        { ...base, instanceId: "inst-b", ownerToken: "tok-2" },
-        { ownerToken: "tok-1" },
-        "inst-a"
-      )
-    ).toBe(false);
-  });
-
-  it("rejects a stale owner token on the same instance", () => {
-    expect(
-      isCurrentRegistryOwner(
-        { ...base, instanceId: "inst-a", ownerToken: "tok-2" },
-        { ownerToken: "tok-1" },
-        "inst-a"
-      )
-    ).toBe(false);
-  });
-});
-
 describe("peer dispatch timeout contract", () => {
   it("aborts the peer dispatch before the API caller's budget", () => {
     expect(apiDispatchCallerTimeoutMs).toBe(5000);
     expect(peerDispatchTimeoutMs).toBeLessThan(apiDispatchCallerTimeoutMs);
+  });
+});
+
+describe("readBody — body-size limit (L562)", () => {
+  it("closes the connection when the request body exceeds the 1 MB limit", async () => {
+    // Control: an otherwise-identical UNDER-limit request to the same route
+    // must be served normally. Without this, the over-limit assertion below
+    // would also pass for a deleted route (404) or an unrelated 500 — it would
+    // prove nothing about the size limit.
+    const underLimit = await requestJson("/internal/dispatch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": TEST_SECRET,
+      },
+      body: JSON.stringify({
+        targetId: "target-not-connected",
+        operation: { commandId: "cmd-under-limit" },
+      }),
+    });
+    expect(underLimit.status).toBe(200);
+
+    // Over the limit, readBody calls req.destroy() (L562 arm0), tearing down
+    // the socket before any response can be written — so the client observes a
+    // transport error, which the catch below normalizes to status 0.
+    const overLimitBody = JSON.stringify({
+      targetId: "t1",
+      operation: {},
+      pad: "x".repeat(1_100_000),
+    });
+
+    const result = await requestJson("/internal/dispatch", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-secret": TEST_SECRET,
+      },
+      body: overLimitBody,
+    }).catch(() => ({ status: 0, body: "" }));
+
+    expect(result.status).toBe(0);
   });
 });

@@ -3,21 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "lodash.merge": "^4.6.2",
-    "react": "19.2.5",
+    "react": "19.2.8",
     "schema-dts": "^1.1.5"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/lodash.merge": "^4.6.9",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "next": "catalog:",
-    "typescript": "^5.9.3"
+    "typescript": "^7.0.2"
   }
 }

@@ -1,7 +1,7 @@
 /**
  * @file admin-key-store.test.ts
  * @description Unit tests for the main-owned vendor Admin API key persistence
- * (FEA-1435/1436), src/main/admin-key-store.ts.
+ * (FEA-1435/1436), src/main/cost/admin-key-store.ts.
  *
  * Reviewed invariants: (1) a set key round-trips through getKey() and reports
  * hasKey via the existence-only getStatus(); (2) the plaintext key is NEVER
@@ -22,7 +22,7 @@ import {
   createAnthropicAdminKeyStore,
   createOpenAiAdminKeyStore,
   type SafeStorageLike,
-} from "../src/main/admin-key-store.js";
+} from "../src/main/cost/admin-key-store.js";
 
 const tempDirs: string[] = [];
 

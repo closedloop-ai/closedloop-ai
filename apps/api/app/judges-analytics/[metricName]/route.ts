@@ -1,4 +1,7 @@
-import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
+import {
+  EVALUATION_REPORT_TYPE_INPUT_OPTIONS,
+  normalizeEvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import type { JudgeDetailResponse } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
@@ -13,7 +16,11 @@ import {
 import { judgesAnalyticsService } from "../service";
 
 const judgeDetailQueryValidator = z.object({
-  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+  // FEA-3956: accept the canonical `ISSUE` report-type alias and normalize it to
+  // the persisted `FEATURE` discriminator (see judges-analytics/validators.ts).
+  reportType: z
+    .enum(EVALUATION_REPORT_TYPE_INPUT_OPTIONS)
+    .transform(normalizeEvaluationReportType),
 });
 
 export const GET = withAnyAuth<

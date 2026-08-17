@@ -22,6 +22,8 @@ const mockStorage = {
 };
 
 describe("routing-store", () => {
+  const storageKey = "engineer-routing-selection:v1";
+
   beforeEach(() => {
     // Simulate a browser environment
     vi.stubGlobal("window", {});
@@ -39,6 +41,58 @@ describe("routing-store", () => {
     expect(selection.mode).toBe(EngineerRoutingMode.CloudRelay);
     expect(selection.computeTargetId).toBeNull();
     expect(selection.source).toBe("auto");
+  });
+
+  it("hydrates a complete manual selection from storage", () => {
+    storageMap.set(
+      storageKey,
+      JSON.stringify({
+        mode: EngineerRoutingMode.LocalElectron,
+        computeTargetId: "ct-stored",
+        source: "manual",
+        updatedAt: 42,
+      })
+    );
+
+    expect(getRoutingSelection()).toEqual({
+      mode: EngineerRoutingMode.LocalElectron,
+      computeTargetId: "ct-stored",
+      source: "manual",
+      updatedAt: 42,
+    });
+  });
+
+  it("normalizes optional persisted fields", () => {
+    storageMap.set(
+      storageKey,
+      JSON.stringify({
+        mode: EngineerRoutingMode.CloudRelay,
+        computeTargetId: 7,
+        source: "future",
+      })
+    );
+
+    const selection = getRoutingSelection();
+    expect(selection).toMatchObject({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: null,
+      source: "auto",
+    });
+    expect(selection.updatedAt).toBeGreaterThan(0);
+  });
+
+  it("ignores persisted selections with an invalid routing mode", () => {
+    storageMap.set(
+      storageKey,
+      JSON.stringify({ mode: "future", computeTargetId: "ct-stored" })
+    );
+
+    expect(getRoutingSelection()).toEqual({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: null,
+      source: "auto",
+      updatedAt: 0,
+    });
   });
 
   it("allows manual selection override", () => {

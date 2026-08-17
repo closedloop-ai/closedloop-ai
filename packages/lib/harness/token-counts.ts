@@ -128,3 +128,39 @@ export function readStorageTokenCountAlias(
   }
   return 0;
 }
+
+/** Outcome of a lenient token-count read: the safe value plus whether the raw
+ * input had to be clamped because it was invalid/out-of-range. */
+export type LenientTokenCountResult = {
+  value: number;
+  /** True when the raw value was invalid and clamped to `0`. */
+  clamped: boolean;
+};
+
+/**
+ * Lenient counterpart to {@link readStorageTokenCount} for READ/DISPLAY paths.
+ *
+ * The strict readers ({@link readStorageTokenCount} /
+ * {@link parseOptionalStorageTokenCount}) throw {@link InvalidTokenCountError}
+ * on a negative, fractional, or JS-unsafe value — correct on WRITE/ingest paths,
+ * where a bad counter must not be persisted. But on a read/display path a single
+ * out-of-range value (e.g. a version-skewed peer that widened a counter past
+ * `Number.MAX_SAFE_INTEGER`) must NOT take down the whole aggregate. This variant
+ * clamps any value the strict reader would reject to `0` and reports that it did
+ * so, letting the caller log the anomaly and keep projecting the rest of the
+ * batch. Valid values pass through unchanged, so a fully-valid payload is
+ * identical to the strict read.
+ */
+export function clampStorageTokenCount(
+  value: unknown,
+  fieldName: string
+): LenientTokenCountResult {
+  try {
+    return { value: readStorageTokenCount(value, fieldName), clamped: false };
+  } catch (error) {
+    if (error instanceof InvalidTokenCountError) {
+      return { value: 0, clamped: true };
+    }
+    throw error;
+  }
+}

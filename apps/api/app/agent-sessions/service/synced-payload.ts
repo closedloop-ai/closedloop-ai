@@ -4,13 +4,14 @@ import type {
   SyncedAgentSessionEvent,
   SyncedAgentSessionTokenUsage,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_DETAIL_EVENT_MAX_ROWS } from "@repo/api/src/types/agent-session-detail-limits";
 import { z } from "zod";
 import {
   syncedAgentSessionAgentSchema,
   syncedAgentSessionEventSchema,
 } from "@/lib/desktop-agent-sessions-schema";
 import { parseJsonObject } from "@/lib/json-schema";
-import { decimalToNumber, tokenCountToNumber } from "./coercion";
+import { toNumber } from "@/lib/prisma-number";
 import type { AgentSessionDetailRecord, SessionTotals } from "./records";
 
 export function getLoopApiKeySource(value: unknown): string | null {
@@ -18,32 +19,6 @@ export function getLoopApiKeySource(value: unknown): string | null {
   return typeof metadata?.apiKeySource === "string"
     ? metadata.apiKeySource
     : null;
-}
-
-// Desktop billing modes covered by a flat subscription/seat rather than
-// per-token API spend. Mirrors SUBSCRIPTION_MODES in the desktop's canonical
-// billing-mode engine (apps/desktop/src/shared/billing-mode.ts); kept as an
-// explicit allow-list so any unrecognized/legacy value falls through to the API
-// bucket rather than being misreported as subscription. Used to attribute
-// DESKTOP_SYNC session cost, which has no source Loop to classify by.
-//
-// FEA-3104: exported so the parity test
-// (../subscription-billing-mode-parity.test.ts) can assert this set stays
-// exactly equal to the desktop canonical SUBSCRIPTION_MODES. The binding
-// lives in that test only — this app never imports the desktop module at
-// runtime, so nothing here touches the API or desktop-main boot graph.
-export const SUBSCRIPTION_BILLING_MODES: ReadonlySet<string> = new Set([
-  "subscription_unknown",
-  "pro",
-  "max_5x",
-  "max_20x",
-  "codex_subscription",
-  "cursor_pro",
-  "copilot_seat",
-]);
-
-export function isSubscriptionBillingMode(value: unknown): boolean {
-  return typeof value === "string" && SUBSCRIPTION_BILLING_MODES.has(value);
 }
 
 export function toSyncedAgents(value: unknown): SyncedAgentSessionAgent[] {
@@ -61,11 +36,16 @@ export function toTokenUsageBreakdown(
 ): SyncedAgentSessionTokenUsage[] {
   return rows.map((row) => ({
     model: row.model,
-    inputTokens: tokenCountToNumber(row.inputTokens),
-    outputTokens: tokenCountToNumber(row.outputTokens),
-    cacheReadTokens: tokenCountToNumber(row.cacheReadTokens),
-    cacheWriteTokens: tokenCountToNumber(row.cacheWriteTokens),
-    estimatedCostUsd: decimalToNumber(row.estimatedCost),
+    inputTokens: toNumber(row.inputTokens),
+    outputTokens: toNumber(row.outputTokens),
+    cacheReadTokens: toNumber(row.cacheReadTokens),
+    cacheWriteTokens: toNumber(row.cacheWriteTokens),
+    // FEA-3419: typed TTL subdivision; null = never reported (absent).
+    cacheWrite5mTokens:
+      row.cacheWrite5mTokens == null ? null : toNumber(row.cacheWrite5mTokens),
+    cacheWrite1hTokens:
+      row.cacheWrite1hTokens == null ? null : toNumber(row.cacheWrite1hTokens),
+    estimatedCostUsd: toNumber(row.estimatedCost),
   }));
 }
 
@@ -88,6 +68,14 @@ export function normalizeTokenUsage(
     existing.outputTokens += row.outputTokens;
     existing.cacheReadTokens += row.cacheReadTokens;
     existing.cacheWriteTokens += row.cacheWriteTokens;
+    // FEA-3419: the split is present iff either side reported one (absent rows
+    // contribute 0 — their cache writes stay in the unclassified residual).
+    if (row.cacheWrite1hTokens != null || existing.cacheWrite1hTokens != null) {
+      existing.cacheWrite5mTokens =
+        (existing.cacheWrite5mTokens ?? 0) + (row.cacheWrite5mTokens ?? 0);
+      existing.cacheWrite1hTokens =
+        (existing.cacheWrite1hTokens ?? 0) + (row.cacheWrite1hTokens ?? 0);
+    }
     existing.estimatedCostUsd =
       (existing.estimatedCostUsd ?? 0) + (row.estimatedCostUsd ?? 0);
   }
@@ -136,4 +124,47 @@ export function sumTokenUsage(
       estimatedCost: 0,
     }
   );
+}
+
+/**
+ * ISS-5075: project the detail's raw event rows, honoring the read cap.
+ *
+ * The select reads one row PAST {@link SESSION_DETAIL_EVENT_MAX_ROWS} so a read
+ * that HIT the ceiling is detectable. This bounds the served set back to the cap
+ * — a stable chronological PREFIX, since that select orders deterministically —
+ * and reports whether it did. Reading the SSOT constant here (rather than taking
+ * it as an argument) is what keeps the `take` and this bound from drifting apart.
+ *
+ * `truncation` is returned SPREAD-SHAPED (`{}` when the stream is complete) for
+ * two reasons: the caller splats it, so `eventsTruncated` stays genuinely OMITTED
+ * rather than serialized as a present falsy value (absence is the contract's only
+ * encoding of "complete"), and the branch stays out of `findSessionDetail`, which
+ * sits in a grandfathered module already at the cognitive-complexity ceiling.
+ */
+export function toBoundedDetailEvents(
+  rows: AgentSessionDetailRecord["events"]
+): {
+  events: SyncedAgentSessionEvent[];
+  truncation: { eventsTruncated?: true };
+} {
+  // `slice` on an under-cap array is just a copy, so the bounded path needs no
+  // branch — the rows are re-mapped into a new array either way. The per-callback
+  // annotation keeps excess-property checking on the served event shape, so a
+  // later edit can't quietly add a desktop-local-only field to the cloud lane.
+  const events = rows.slice(0, SESSION_DETAIL_EVENT_MAX_ROWS).map(
+    (row): SyncedAgentSessionEvent => ({
+      externalEventId: row.externalEventId,
+      agentExternalId: row.agentExternalId,
+      eventType: row.eventType,
+      toolName: row.toolName,
+      createdAt: row.eventCreatedAt.toISOString(),
+    })
+  );
+  return {
+    events,
+    truncation:
+      rows.length > SESSION_DETAIL_EVENT_MAX_ROWS
+        ? { eventsTruncated: true }
+        : {},
+  };
 }

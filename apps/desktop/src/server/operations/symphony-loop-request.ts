@@ -12,6 +12,14 @@ const BRANCH_NAME_MAX_LENGTH = 256;
 // keeps the value within safe HTTP header limits when forwarded as
 // `X-Session-Token` and prevents unbounded header injection.
 const CLOUD_SESSION_TOKEN_MAX_LENGTH = 4096;
+// `${orgId}/loops/${loopId}/${runId}` (apps/api `loop-state.ts`). Whitespace is
+// excluded everywhere; the loop segment is captured so the key can be checked
+// against THIS request's loopId. The org prefix and run suffix stay permissive
+// (`[^\s]+`) so a dispatcher that deepens either still parses.
+const S3_STATE_KEY_REGEX = /^\S+\/loops\/([^\s/]+)\/\S+$/;
+// S3 object keys cap at 1024 bytes; Desktop appends `/support/<file>` to this
+// prefix, so leave headroom rather than allowing an unbounded string.
+const S3_STATE_KEY_MAX_LENGTH = 900;
 
 const supportingArtifactSchema = z
   .object({
@@ -166,18 +174,79 @@ export function parseSymphonyLoopRequestBody(
     branchMaterialization: _rawBranchMaterialization,
     cloudSessionToken: _rawCloudSessionToken,
     harness: rawHarness,
+    s3StateKey: rawS3StateKey,
     ...loopBody
   } = rawBody;
+  const s3StateKey = parseS3StateKey(rawS3StateKey, rawBody.loopId);
   const harness =
     rawHarness === undefined ? undefined : LoopHarnessSchema.parse(rawHarness);
 
   return {
     ...(loopBody as unknown as LoopRequestBody),
     ...(harness === undefined ? {} : { harness }),
+    ...(s3StateKey ? { s3StateKey } : {}),
     supportingArtifacts,
     codeEvaluationContext,
     ...(branchMaterialization ? { branchMaterialization } : {}),
   };
+}
+
+const s3StateKeySchema = z
+  .string()
+  .min(1)
+  .max(S3_STATE_KEY_MAX_LENGTH)
+  .regex(
+    S3_STATE_KEY_REGEX,
+    "Must be '<orgId>/loops/<loopId>/<runId>' with no whitespace"
+  );
+
+/**
+ * ISS-5154: the cloud dispatcher's S3 run-state prefix, validated at the parse
+ * boundary so downstream code can read `body.s3StateKey` as the `string |
+ * undefined` the contract declares instead of re-deriving a `typeof` guard.
+ *
+ * The key is minted as `${orgId}/loops/${loopId}/${runId}` (apps/api
+ * `loop-state.ts`) and Desktop appends `/support/<file>` to it when uploading a
+ * crash support bundle. `z.string().min(1)` did not validate any of that:
+ * whitespace and — worse — ANOTHER loop's prefix both passed, and a failed parse
+ * collapsed a present-but-wrong value into omission, at which point
+ * `handleLoopRequest` falls back to `existing.s3StateKey` and files this run's
+ * bundle under the prior run's key.
+ *
+ * So the two cases are now kept apart:
+ * - ABSENT (`undefined`/`null`): version skew — an older dispatcher omits the
+ *   field. Degrade to absent and let the gateway keep the job's existing key.
+ * - PRESENT but invalid: surfaced as a request-boundary validation error (a 400
+ *   back to the dispatcher, like every other malformed field here) rather than
+ *   silently reinterpreted as "keep the previous run's key".
+ *
+ * The shape check deliberately constrains only what carries the hazard — no
+ * whitespace, and a `/loops/<thisLoopId>/` segment — so a dispatcher that grows
+ * a deeper org prefix or run suffix still parses.
+ */
+function parseS3StateKey(value: unknown, loopId: unknown): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  const parsed = s3StateKeySchema.safeParse(value);
+  if (!parsed.success) {
+    throw new SymphonyLoopRequestValidationError(
+      `s3StateKey is malformed: ${formatZodIssues(parsed.error)}`
+    );
+  }
+  const requestLoopId = z.string().min(1).safeParse(loopId);
+  if (!requestLoopId.success) {
+    throw new SymphonyLoopRequestValidationError(
+      "s3StateKey is malformed: cannot be attributed to a loop because loopId is missing"
+    );
+  }
+  const keyLoopId = S3_STATE_KEY_REGEX.exec(parsed.data)?.[1];
+  if (keyLoopId !== requestLoopId.data) {
+    throw new SymphonyLoopRequestValidationError(
+      `s3StateKey is malformed: key belongs to loop '${keyLoopId}', not '${requestLoopId.data}'`
+    );
+  }
+  return parsed.data;
 }
 
 function parseSupportingArtifacts(

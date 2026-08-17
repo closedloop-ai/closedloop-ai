@@ -1,0 +1,344 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": null,
+      "cost_source": null,
+      "cost_usd_estimated": null,
+      "cwd": "<HOME>/IdeaProjects/symphony-alpha",
+      "data_revision": 78,
+      "ended_at": "2026-06-26T14:34:00.383Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "claude",
+      "id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "last_activity_at": "2026-06-26T14:11:57.859Z",
+      "metadata": {
+        "sha256": "41a8b6ee100180cb04a9cbb244df7db9c0d95c56db2a9424a5742653294f0340",
+        "chars": 1697
+      },
+      "model": null,
+      "name": "symphony-alpha - edac412f",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-06-26T14:11:57.859Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-06-26T15:34:00.383Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-06-26T14:34:00.383Z",
+      "id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "started_at": "2026-06-26T14:11:57.859Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    }
+  ],
+  "events": [],
+  "token_usage": [],
+  "token_events": [],
+  "session_analytics": [
+    {
+      "agent_turns": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0,
+      "event_count": 0,
+      "harness": "claude",
+      "human_turns": 2,
+      "input_tokens": 0,
+      "is_human": 1,
+      "output_tokens": 0,
+      "runtime_ms": 1322523,
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "started_at": "2026-06-26T14:11:57.859Z",
+      "started_day": "2026-06-26",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [
+    {
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "ts": "2026-06-26T14:11:57.859Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    },
+    {
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "ts": "2026-06-26T14:34:00.382Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    }
+  ],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1782483117860,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "7893c9e09abcb39d",
+      "observed_at": "2026-06-26T15:34:00.383Z",
+      "phase": "other",
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "start_ms": 1782483117859,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    },
+    {
+      "confidence": 0,
+      "end_ms": 1782484440384,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "f4c02c41c4fb6901",
+      "observed_at": "2026-06-26T15:34:00.383Z",
+      "phase": "other",
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "start_ms": 1782484440382,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    },
+    {
+      "confidence": 1,
+      "end_ms": 1782484440382,
+      "evidence_layers": [],
+      "id": "67c02a144036a182",
+      "observed_at": "2026-06-26T15:34:00.383Z",
+      "phase": "idle",
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "start_ms": 1782483117860,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [
+    {
+      "artifact_id": "11594a5a2bed6609",
+      "created_at": "2026-06-26T15:34:00.383Z",
+      "evidence": "{\"gitBranch\":\"main\"}",
+      "extractor_version": 25,
+      "id": "f4478e3b007b4bc6",
+      "is_primary": false,
+      "method": "start_branch",
+      "observed_at": "2026-06-26T14:11:57.859Z",
+      "relation": "workspace",
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "status": "candidate"
+    }
+  ],
+  "artifacts": [
+    {
+      "base_ref": null,
+      "branch_name": "main",
+      "committed_at": null,
+      "created_at": "2026-06-26T15:34:00.383Z",
+      "files_changed": null,
+      "first_pushed_at": null,
+      "git_dir": null,
+      "harness": null,
+      "head_sha": null,
+      "id": "11594a5a2bed6609",
+      "identity_key": "branch::main",
+      "kind": "branch",
+      "last_seen_at": "2026-06-26T15:34:00.383Z",
+      "lines_added": null,
+      "lines_removed": null,
+      "merge_commit_sha": null,
+      "observed_at": null,
+      "pr_number": null,
+      "pr_state": null,
+      "push_source": null,
+      "repo_full_name": null,
+      "sha": null,
+      "slug": null,
+      "title": null,
+      "url": null
+    }
+  ],
+  "pull_requests": [],
+  "agent_component_invocations": [
+    {
+      "agent_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f-main",
+      "anchor_kind": "userTurn",
+      "anchor_value": "5230a2cb-0e5e-4fa2-9f4c-4f437b58a60e",
+      "attribution_status": "unresolved",
+      "cache_read_tokens": null,
+      "cache_write_tokens": null,
+      "child_session_id": null,
+      "component_key": "/plugin",
+      "component_kind": "command",
+      "created_at": "2026-06-26T15:34:00.383Z",
+      "definition_content": null,
+      "definition_hash": null,
+      "estimated_cost": null,
+      "evidence_class": "none",
+      "evidence_pointer": null,
+      "external_invocation_id": "5230a2cb-0e5e-4fa2-9f4c-4f437b58a60e",
+      "external_source_id": "5230a2cb-0e5e-4fa2-9f4c-4f437b58a60e",
+      "footprint_tokens": null,
+      "git_branch": null,
+      "id": "7a4af3d398a048161033d91665921a66",
+      "input_tokens": null,
+      "invoked_at": "2026-06-26T14:11:57.859Z",
+      "local_component_id": "a98d64f0fa2490b11944a8ef81af8ee1",
+      "local_component_version_id": null,
+      "model": null,
+      "normalized_name": "/plugin",
+      "normalizer_contract_version": null,
+      "output_tokens": null,
+      "parent_agent_id": null,
+      "provider_tool_use_id": null,
+      "raw_name": "/plugin",
+      "relationship": "direct",
+      "repository_full_name": null,
+      "sequence": 0,
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "succeeded": null,
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    },
+    {
+      "agent_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f-main",
+      "anchor_kind": "userTurn",
+      "anchor_value": "f1f28ec0-cfe4-4537-9275-3308c11fcc69",
+      "attribution_status": "unresolved",
+      "cache_read_tokens": null,
+      "cache_write_tokens": null,
+      "child_session_id": null,
+      "component_key": "/plugin",
+      "component_kind": "command",
+      "created_at": "2026-06-26T15:34:00.383Z",
+      "definition_content": null,
+      "definition_hash": null,
+      "estimated_cost": null,
+      "evidence_class": "none",
+      "evidence_pointer": null,
+      "external_invocation_id": "f1f28ec0-cfe4-4537-9275-3308c11fcc69",
+      "external_source_id": "f1f28ec0-cfe4-4537-9275-3308c11fcc69",
+      "footprint_tokens": null,
+      "git_branch": null,
+      "id": "73e6c9112d69e321a4918427ebba686e",
+      "input_tokens": null,
+      "invoked_at": "2026-06-26T14:34:00.382Z",
+      "local_component_id": "a98d64f0fa2490b11944a8ef81af8ee1",
+      "local_component_version_id": null,
+      "model": null,
+      "normalized_name": "/plugin",
+      "normalizer_contract_version": null,
+      "output_tokens": null,
+      "parent_agent_id": null,
+      "provider_tool_use_id": null,
+      "raw_name": "/plugin",
+      "relationship": "direct",
+      "repository_full_name": null,
+      "sequence": 1,
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "succeeded": null,
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    }
+  ],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-06-26T15:34:00.383Z",
+      "data_revision": 78,
+      "external_generation_id": "0e2b9046fec7328c3f9244f273a0190887f222f383e79b60180d1f1f11764634",
+      "external_session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "82cb86e30b6efbc0262fbe6ba6e53bc0b47058dcf9f7dde724a566fcdb989db7",
+      "part_index": 0,
+      "payload": {
+        "sha256": "23f102580555450b51d86575b44bb051fab8dd06017149b0782b5f121f050764",
+        "chars": 1192
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-06-26T15:34:00.383Z",
+      "status": "pending",
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "0e2b9046fec7328c3f9244f273a0190887f222f383e79b60180d1f1f11764634",
+      "external_session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    },
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-06-26T15:34:00.383Z"
+    }
+  ],
+  "agent_component_session_usage": [
+    {
+      "agent_component_id": "a98d64f0fa2490b11944a8ef81af8ee1",
+      "component_key": "/plugin",
+      "component_kind": "command",
+      "component_version_hash": null,
+      "error_count": 0,
+      "first_invoked_at": "2026-06-26T14:11:57.859Z",
+      "git_branch": "",
+      "harness": "claude",
+      "invocations": 2,
+      "last_invoked_at": "2026-06-26T14:34:00.382Z",
+      "session_id": "edac412f-bfac-4c6b-8c83-a9d2f2c0256f",
+      "started_day": "2026-06-26"
+    }
+  ],
+  "agent_components": [
+    {
+      "component_key": "/plugin",
+      "component_kind": "command",
+      "content": null,
+      "content_hash": null,
+      "description": null,
+      "external_id": "/plugin",
+      "first_seen_at": "2026-06-26T15:34:00.383Z",
+      "harness": null,
+      "id": "a98d64f0fa2490b11944a8ef81af8ee1",
+      "install_path": null,
+      "last_seen_at": "2026-06-26T15:34:00.383Z",
+      "metadata": null,
+      "name": null,
+      "pack_id": null,
+      "project_path": null,
+      "resolved_state": "unresolved",
+      "scope": null,
+      "source": null,
+      "source_url": null,
+      "uninstalled_at": null,
+      "version": null
+    }
+  ],
+  "agent_component_versions": []
+}

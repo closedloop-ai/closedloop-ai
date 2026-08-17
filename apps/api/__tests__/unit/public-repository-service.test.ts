@@ -1,15 +1,31 @@
+import { GitHubAccessDenialReason } from "@repo/api/src/types/github";
+import { RepositoryDefaultAvailability } from "@repo/api/src/types/repository-default-identity";
 import { Status } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockWithDbCall } from "../utils/db-helpers";
+
+const { mockGetGitHubClient } = vi.hoisted(() => ({
+  mockGetGitHubClient: vi.fn(),
+}));
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
 }));
 
-import { publicRepositoryService } from "@/app/integrations/github/public-repositories/service";
+vi.mock("@/lib/github/github-client-resolver", () => ({
+  getGitHubClient: mockGetGitHubClient,
+}));
+
+import {
+  AddPublicRepositoryErrorCode,
+  publicRepositoryService,
+} from "@/app/integrations/github/public-repositories/service";
+import { GitHubAccessIntent } from "@/lib/github/github-access";
 
 const ORG_ID = "org-1";
+const USER_ID = "user-1";
 const REPO_ID = "repo-1";
+const REPOSITORY_REST_OBSERVATION_KEY_PATTERN = /^repository_rest:/;
 
 function mockGitHubApiResponse(
   status: number,
@@ -72,28 +88,41 @@ const GITHUB_REPO_RESPONSE = {
   owner: { login: "acme" },
   html_url: "https://github.com/acme/my-repo",
   private: false,
+  default_branch: "trunk",
 };
 
 describe("publicRepositoryService.addPublicRepository", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: no usable user credential — the resolver denies and the service
+    // falls back to the unauthenticated read (behavior-preserving path).
+    mockGetGitHubClient.mockResolvedValue({
+      ok: false,
+      error: { reason: GitHubAccessDenialReason.NotConnected },
+    });
   });
 
   it("returns Result.err(Status.BadRequest) for an unparseable URL", async () => {
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
+      USER_ID,
       "not-a-valid-github-url"
     );
 
     expect(result).toEqual({ ok: false, error: Status.BadRequest });
   });
 
-  it("does not call the GitHub API when the URL cannot be parsed", async () => {
+  it("does not call GitHub or the resolver when the URL cannot be parsed", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-    await publicRepositoryService.addPublicRepository(ORG_ID, "just-a-name");
+    await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "just-a-name"
+    );
 
     expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockGetGitHubClient).not.toHaveBeenCalled();
   });
 
   it("returns Result.err(Status.NotFound) when GitHub returns 404", async () => {
@@ -103,6 +132,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
 
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
+      USER_ID,
       "https://github.com/acme/nonexistent-repo"
     );
 
@@ -116,6 +146,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
 
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
+      USER_ID,
       "https://github.com/acme/my-repo"
     );
 
@@ -148,6 +179,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
 
     const result = await publicRepositoryService.addPublicRepository(
       ORG_ID,
+      USER_ID,
       "https://github.com/acme/my-repo"
     );
 
@@ -160,6 +192,20 @@ describe("publicRepositoryService.addPublicRepository", () => {
         name: "my-repo",
         owner: "acme",
         htmlUrl: "https://github.com/acme/my-repo",
+        defaultBranchName: "trunk",
+        defaultBranchAvailability: RepositoryDefaultAvailability.Available,
+        defaultBranchCompleteness: "complete",
+        defaultBranchReason: null,
+        defaultBranchSource: "repository_rest",
+        defaultBranchMechanism: "rest",
+        defaultBranchTrigger: "user_action",
+        defaultBranchCredentialType: "unauthenticated",
+        defaultBranchCredentialOwnerId: null,
+        defaultBranchObservationKey: expect.stringMatching(
+          REPOSITORY_REST_OBSERVATION_KEY_PATTERN
+        ),
+        defaultBranchObservedAt: expect.any(Date),
+        defaultBranchEventAt: null,
       },
     });
   });
@@ -178,6 +224,7 @@ describe("publicRepositoryService.addPublicRepository", () => {
 
     await publicRepositoryService.addPublicRepository(
       ORG_ID,
+      USER_ID,
       "github.com/acme/my-repo"
     );
 
@@ -186,10 +233,134 @@ describe("publicRepositoryService.addPublicRepository", () => {
       {
         headers: {
           Accept: "application/vnd.github+json",
-          "X-GitHub-Api-Version": "2022-11-28",
+          "X-GitHub-Api-Version": "2026-03-10",
         },
       }
     );
+  });
+
+  it("reads through the requesting user's resolver client when one resolves", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const mockReposGet = vi.fn().mockResolvedValue({
+      data: {
+        id: 12_345,
+        full_name: "acme/my-repo",
+        name: "my-repo",
+        owner: { login: "acme" },
+        html_url: "https://github.com/acme/my-repo",
+        private: false,
+        default_branch: "trunk",
+      },
+    });
+    mockGetGitHubClient.mockResolvedValue({
+      ok: true,
+      value: { octokit: { rest: { repos: { get: mockReposGet } } } },
+    });
+
+    const createdRepo = { id: REPO_ID };
+    const mockDb = {
+      publicRepository: {
+        create: vi.fn().mockResolvedValue(createdRepo),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/my-repo"
+    );
+
+    expect(result).toEqual({ ok: true, value: createdRepo });
+    expect(mockGetGitHubClient).toHaveBeenCalledWith({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      target: { owner: "acme", repo: "my-repo" },
+      intent: GitHubAccessIntent.ReadAsUser,
+    });
+    expect(mockReposGet).toHaveBeenCalledWith({
+      owner: "acme",
+      repo: "my-repo",
+      headers: { "X-GitHub-Api-Version": "2026-03-10" },
+    });
+    // The authenticated path never touches the unauthenticated 60/hr budget.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a private repo on the unauthenticated lane with the not-public code", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockGitHubApiResponse(200, { ...GITHUB_REPO_RESPONSE, private: true })
+    );
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/my-repo"
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: AddPublicRepositoryErrorCode.RepositoryNotPublic,
+    });
+  });
+
+  it("refuses a private repo visible to the user's credential", async () => {
+    const mockReposGet = vi.fn().mockResolvedValue({
+      data: {
+        id: 999,
+        full_name: "acme/secret-repo",
+        name: "secret-repo",
+        owner: { login: "acme" },
+        html_url: "https://github.com/acme/secret-repo",
+        private: true,
+      },
+    });
+    mockGetGitHubClient.mockResolvedValue({
+      ok: true,
+      value: { octokit: { rest: { repos: { get: mockReposGet } } } },
+    });
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/secret-repo"
+    );
+
+    // Distinct from the unparseable-URL failure above: the URL was fine, the
+    // repository was not.
+    expect(result).toEqual({
+      ok: false,
+      error: AddPublicRepositoryErrorCode.RepositoryNotPublic,
+    });
+  });
+
+  it("maps a user-lane 404 to NotFound without falling back", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    mockGetGitHubClient.mockResolvedValue({
+      ok: true,
+      value: {
+        octokit: {
+          rest: {
+            repos: {
+              get: vi
+                .fn()
+                .mockRejectedValue(
+                  Object.assign(new Error("Not Found"), { status: 404 })
+                ),
+            },
+          },
+        },
+      },
+    });
+
+    const result = await publicRepositoryService.addPublicRepository(
+      ORG_ID,
+      USER_ID,
+      "https://github.com/acme/gone-repo"
+    );
+
+    expect(result).toEqual({ ok: false, error: Status.NotFound });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 

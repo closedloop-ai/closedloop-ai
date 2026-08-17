@@ -120,7 +120,10 @@ test("without markReadStart, a write during compute correctly marks the entry st
 
 test("single-flights concurrent identical requests", async () => {
   let calls = 0;
-  let resolveCompute: (() => void) | null = null;
+  // Seeded with a no-op rather than `null` so the type stays callable: the
+  // real resolver is installed inside the promise executor below, which
+  // control-flow analysis cannot see from this scope.
+  let resolveCompute: () => void = () => undefined;
   const cache = new InsightsResultCache();
   const compute = () =>
     new Promise<{ n: number }>((resolve) => {
@@ -134,7 +137,7 @@ test("single-flights concurrent identical requests", async () => {
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(calls, 1, "only one computation starts for identical keys");
 
-  resolveCompute?.();
+  resolveCompute();
   const [r1, r2] = await Promise.all([p1, p2]);
   assert.deepEqual(r1, { n: 1 });
   assert.deepEqual(r2, { n: 1 });

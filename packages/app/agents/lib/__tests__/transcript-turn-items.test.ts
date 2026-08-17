@@ -1,3 +1,7 @@
+import {
+  type AgentComponentInvocationAnchor,
+  AgentComponentInvocationAnchorKind,
+} from "@repo/api/src/types/agent-component-invocation";
 import type { TurnItem } from "@repo/api/src/types/agent-session";
 import {
   createNormalizedSession,
@@ -6,6 +10,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   buildTurnItemsFromNormalizedSession,
+  resolveTranscriptInvocationAnchorRow,
   type TranscriptActorContext,
 } from "../transcript-turn-items";
 
@@ -41,6 +46,134 @@ describe("buildTurnItemsFromNormalizedSession", () => {
     expect(prompts[0].text).toBe("Do it");
     expect(prompts[0].actor.human).toBe("Ada");
     expect(prompts[0].actor.color).toBe("#abcdef");
+  });
+
+  it("preserves and resolves user-turn, provider-tool, and external-agent identities", () => {
+    const items = build({
+      messages: [
+        {
+          role: "human",
+          timestamp: "2026-07-09T10:00:00.000Z",
+          text: "/deploy",
+        },
+      ],
+      slashCommands: [
+        {
+          name: "/deploy",
+          normalizedName: "/deploy",
+          timestamp: "2026-07-09T10:00:00.000Z",
+        },
+      ],
+      toolUses: [
+        {
+          name: "Bash",
+          timestamp: "2026-07-09T10:00:01.000Z",
+          id: "toolu_1",
+          providerToolUseId: "toolu_1",
+        },
+      ],
+      subagents: [
+        {
+          id: "agent-local-1",
+          nativeSubagentId: "agent-native-1",
+          name: "reviewer",
+          status: "completed",
+          startedAt: "2026-07-09T10:00:02.000Z",
+        },
+      ],
+    });
+
+    expect(
+      resolveTranscriptInvocationAnchorRow(items, {
+        kind: AgentComponentInvocationAnchorKind.UserTurn,
+        userTurnId: "command:0:2026-07-09T10:00:00.000Z:/deploy",
+      })
+    ).toBe(ofType(items, "prompt")[0]._row);
+    expect(
+      resolveTranscriptInvocationAnchorRow(items, {
+        kind: AgentComponentInvocationAnchorKind.Event,
+        eventId: "cloud-event-id",
+        providerToolUseId: "toolu_1",
+      })
+    ).toBe(ofType(items, "tools")[0]._row);
+    expect(
+      resolveTranscriptInvocationAnchorRow(items, {
+        kind: AgentComponentInvocationAnchorKind.Agent,
+        agentId: "cloud-agent-id",
+        externalAgentId: "agent-native-1",
+      })
+    ).toBe(ofType(items, "subagent")[0]._row);
+  });
+
+  it("resolves an ID-less raw-cloud tool by its trace-compatible timestamp ordinal", () => {
+    const timestamp = "2026-07-09T10:00:01.000Z";
+    const items = build({
+      toolUses: [{ name: "Read", timestamp }],
+    });
+
+    expect(
+      resolveTranscriptInvocationAnchorRow(items, {
+        kind: AgentComponentInvocationAnchorKind.Timestamp,
+        timestamp,
+        ordinal: 0,
+      })
+    ).toBe(ofType(items, "tools")[0]._row);
+  });
+
+  it("resolves an ID-less raw-cloud skill after a same-timestamp human turn", () => {
+    const timestamp = "2026-07-09T10:00:01.000Z";
+    const items = build({
+      messages: [{ role: "human", timestamp, text: "/review" }],
+      toolUses: [{ name: "Skill", skillName: "review", timestamp }],
+    });
+
+    expect(
+      resolveTranscriptInvocationAnchorRow(items, {
+        kind: AgentComponentInvocationAnchorKind.Timestamp,
+        timestamp,
+        ordinal: 1,
+      })
+    ).toBe(ofType(items, "tools")[0]._row);
+  });
+
+  it("resolves the same timestamp identity on a local fallback turn", () => {
+    const timestamp = "2026-07-09T10:00:01.000Z";
+    const localItems: TurnItem[] = [
+      {
+        type: "tools",
+        _row: 4,
+        t: timestamp,
+        tMs: Date.parse(timestamp),
+        endMs: Date.parse(timestamp),
+        cum: 0,
+        actor: {
+          name: "claude",
+          sessionId: "s1",
+          human: null,
+          color: "var(--primary)",
+        },
+        summary: "Ran 1 tool",
+        items: [
+          {
+            label: "Read",
+            detail: "",
+            err: false,
+            transcriptIdentity: { timestamp, timestampOrdinal: 0 },
+          },
+        ],
+        hasFail: false,
+        failN: 0,
+        cats: { read: 1 },
+      },
+    ];
+
+    expect(
+      resolveTranscriptInvocationAnchorRow(localItems, {
+        kind: AgentComponentInvocationAnchorKind.Timestamp,
+        timestamp,
+        ordinal: 0,
+      })
+    ).toBe(4);
   });
 
   it("maps an assistant message to a say turn carrying model + thinking flag", () => {
@@ -108,6 +241,34 @@ describe("buildTurnItemsFromNormalizedSession", () => {
     expect(tools[0].items[1].detail).toContain("/tmp/a.ts");
   });
 
+  it("preserves optional tool detail fields and diff data", () => {
+    const [tool] = ofType(
+      build({
+        toolUses: [
+          {
+            name: "Edit",
+            timestamp: "2026-07-09T10:00:06.000Z",
+            input: { file_path: "src/index.ts" },
+            output: { status: "ok" },
+            mcpServer: "github",
+            mcpMethod: "create_pull_request",
+            skillName: "review",
+            diffDelta: { add: 12, del: 3 },
+          },
+        ],
+      }),
+      "tools"
+    )[0].items;
+
+    expect(tool).toMatchObject({
+      detailState: "available",
+      output: '{\n  "status": "ok"\n}',
+    });
+    expect(tool.detail).toContain("src/index.ts");
+    expect(tool.detail).toContain("review · github · create_pull_request");
+    expect(tool.detail).toContain("+12/-3");
+  });
+
   it("projects a subagent turn and links its tool without double-counting", () => {
     // parse-claude pushes a subagent tool into BOTH `session.toolUses` (tagged
     // with subagentId) and `subagents[].toolUses`. The adapter must source events
@@ -149,6 +310,136 @@ describe("buildTurnItemsFromNormalizedSession", () => {
       turn.items.map((tool) => tool.label)
     );
     expect(toolLabels.filter((label) => label === "Grep")).toHaveLength(1);
+  });
+
+  it("attributes a sub-agent's cost on the transcript-backed trace from its tokenSeries (FEA-4178)", () => {
+    // codex review: the transcript path fed no `tokenEvents`, so the collapsed
+    // sub-agent box never showed a cost on web. The adapter must now derive
+    // priced cost points from the parser's own per-record token counts and
+    // attribute them by the sub-agent's identity.
+    const items = build({
+      subagents: [
+        {
+          id: "sub-1",
+          nativeSubagentId: "agent-native-1",
+          name: "explorer",
+          type: "Explore",
+          status: "completed",
+          startedAt: "2026-07-09T10:00:00.000Z",
+          endedAt: "2026-07-09T10:00:05.000Z",
+          // claude-opus-4-5 input rate is $5/Mtok → 1000 input = $0.005.
+          tokenSeries: [
+            {
+              timestamp: "2026-07-09T10:00:02.000Z",
+              model: "claude-opus-4-5",
+              input: 1000,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+            },
+          ],
+        },
+      ],
+    });
+
+    const subagents = ofType(items, "subagent");
+    expect(subagents).toHaveLength(1);
+    // Ownership-metered ($0.005), rendered precisely — not null and not "$0.00".
+    expect(subagents[0].cost).toBe("$0.005");
+  });
+
+  it("leaves a sub-agent cost null on the transcript trace when it has no tokenSeries (FEA-4178)", () => {
+    const items = build({
+      subagents: [
+        {
+          id: "sub-1",
+          name: "explorer",
+          type: "Explore",
+          status: "completed",
+          startedAt: "2026-07-09T10:00:00.000Z",
+          endedAt: "2026-07-09T10:00:05.000Z",
+        },
+      ],
+    });
+
+    const subagents = ofType(items, "subagent");
+    expect(subagents).toHaveLength(1);
+    // No priced spend attributed → absent (null), never a lying "$0.00".
+    expect(subagents[0].cost).toBeNull();
+  });
+
+  it("drops invalid-timestamp and unpriced sub-agent token records", () => {
+    const subagents = ofType(
+      build({
+        subagents: [
+          {
+            id: "invalid-time",
+            name: "invalid-time",
+            startedAt: "2026-07-09T10:00:00.000Z",
+            tokenSeries: [
+              {
+                timestamp: "not-a-time",
+                model: "claude-opus-4-5",
+                input: 1000,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+            ],
+          },
+          {
+            id: "unpriced",
+            name: "unpriced",
+            startedAt: "2026-07-09T10:00:01.000Z",
+            tokenSeries: [
+              {
+                timestamp: "2026-07-09T10:00:02.000Z",
+                model: "unknown-model",
+                input: 1000,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+              },
+            ],
+          },
+        ],
+      }),
+      "subagent"
+    );
+
+    expect(subagents.map(({ cost, status }) => ({ cost, status }))).toEqual([
+      { cost: null, status: "unknown" },
+      { cost: null, status: "unknown" },
+    ]);
+  });
+
+  it("returns null for absent, session-level, and mismatched anchors", () => {
+    const items = build({
+      toolUses: [
+        {
+          id: "toolu_1",
+          name: "Read",
+          timestamp: "2026-07-09T10:00:01.000Z",
+        },
+      ],
+    });
+    const unmatched: AgentComponentInvocationAnchor[] = [
+      { kind: AgentComponentInvocationAnchorKind.Session },
+      { kind: AgentComponentInvocationAnchorKind.Event, eventId: "missing" },
+      {
+        kind: AgentComponentInvocationAnchorKind.Timestamp,
+        timestamp: "2026-07-09T10:00:01.000Z",
+        ordinal: 9,
+      },
+    ];
+
+    expect(resolveTranscriptInvocationAnchorRow(items, undefined)).toBeNull();
+    expect(resolveTranscriptInvocationAnchorRow(items, null)).toBeNull();
+    expect(
+      unmatched.map((anchor) =>
+        resolveTranscriptInvocationAnchorRow(items, anchor)
+      )
+    ).toEqual([null, null, null]);
   });
 
   it("orders turns by timestamp across message and tool kinds", () => {

@@ -11,13 +11,22 @@
  * This seeds the exact FEA-2159 corpus (one MERGED, single-PR, LOC-un-enriched
  * branch) into the app's SQLite store while the app is DOWN, boots the real
  * Dashboard, and asserts the stats-row card values the local insights backend
- * computes from it:
+ * computes from it.
+ *
+ * The seeded session is SUBSTANTIVE by default: without an activity signal
+ * FEA-3284's `quality=substantive` list read classifies it as an idle phantom
+ * row, the Dashboard never leaves its empty state, and every assertion below
+ * fails. The signal is a synthetic `PreToolUse` tool event (FEA-1421) — no
+ * `token_usage` is seeded, which is why COST stays $0.00 below.
+ *
+ * Card values:
  *   - SESSIONS      = "1"      (COUNT of the one seeded session in range)
  *   - COST          = a "$…" currency (no token_usage seeded → $0.00, but the
  *                     assertion tolerates formatting; it proves the card renders
  *                     a value, not the "—" placeholder)
- *   - MEDIAN PR SIZE = "0"     (no enriched pull_request artifact → median 0)
- *   - KLOC          = "0"      (no captured PR LOC → 0.0 → "0")
+ *   - MEDIAN PR SIZE = "—"     (no enriched pull_request artifact → median null)
+ *   - KLOC          = "—"     (ISS-5412: the seeded PR carries no line counts at
+ *                     all, so the sum has nothing to read — unknown, not zero)
  *
  * SESSIONS = "1" is the load-bearing assertion: it is non-empty and non-zero, so
  * it fails closed against both the empty-state ("No agent sessions yet") and a
@@ -42,7 +51,11 @@ import {
   dashboardOnboardedStorageKey,
   dashboardTourSeenStorageKey,
 } from "../../src/renderer/components/dashboard/dashboard-storage-keys";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  dismissDesktopOnboardingOverlay,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import {
   seedMergedUnenrichedSinglePrBranch,
   waitForBranchesSchema,
@@ -127,6 +140,13 @@ test.describe("Dashboard KPI values (FEA-2939)", () => {
         // Data present, so the dashboard is NOT in its empty state.
         await expect(page.getByText("No agent sessions yet")).toHaveCount(0);
 
+        // The unified GitHub-first account graduated to always-on (FEA-3999), so
+        // a signed-out device (every E2E profile) now gets the first-launch
+        // onboarding overlay layered over the mounted Dashboard. Clear it before
+        // driving Dashboard controls — this spec's subject is the KPI tiles, not
+        // the onboarding gate.
+        await dismissDesktopOnboardingOverlay(page);
+
         // Widen to "All time" so the past-dated seed is in range regardless of
         // the run clock. `:visible` scopes to the mounted Dashboard.
         await page.locator('[aria-label="All time"]:visible').click();
@@ -137,11 +157,19 @@ test.describe("Dashboard KPI values (FEA-2939)", () => {
         });
         // MEDIAN PR SIZE = — (FEA-2923): no enriched pull_request artifact is
         // seeded, so the delivery median has nothing to average and renders the
-        // honest empty state, not a misleading 0. (KLOC below is a SUM, so it
-        // stays 0.)
+        // honest empty state, not a misleading 0.
         await expect(kpiValue(page, "Median PR size")).toHaveText("—");
-        // KLOC = 0 (no captured PR LOC).
-        await expect(kpiValue(page, "KLOC captured")).toHaveText("0");
+        // KLOC = — (ISS-5412). This assertion previously pinned "0" on the
+        // reasoning that a SUM over an empty set is a real 0. It is not: the
+        // seed is a MERGED PR whose `lines_added`/`lines_removed` are NULL, so
+        // the window contains a PR that certainly changed lines and zero PRs
+        // the projection could size. Summing that to "0.0 thousands of lines
+        // changed in captured PRs" reports an unmeasured value as a measured
+        // zero. `capturedPrLocTotals` now returns null when no captured PR is
+        // sized, and `formatKpiValue` renders null as "—" — matching the cloud
+        // twin, which has always dashed this state. A genuine zero (a sized PR
+        // with 0 lines) still renders "0", so the two claims stay distinct.
+        await expect(kpiValue(page, "KLOC captured")).toHaveText("—");
         // COST renders a currency value (not the "—" placeholder).
         await expect(kpiValue(page, "Cost")).toHaveText(CURRENCY_VALUE);
 

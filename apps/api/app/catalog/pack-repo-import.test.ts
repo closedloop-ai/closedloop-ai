@@ -257,6 +257,54 @@ describe("fetchRepoComponents", () => {
     expect((error as Error).message).toContain("subPath");
   });
 
+  it("leaves no blob fetch running once a fetch fails", async () => {
+    // A failing fetch must not let the other concurrent fetches outlive the
+    // import: in a serverless route, work that continues past the response is
+    // fire-and-forget (apps/api/AGENTS.md). The rejection must surface only
+    // after every dispatched fetch has settled, and queued candidates that
+    // never started must be skipped rather than fetched.
+    const { tree, blobs } = agentTree(20);
+    const fetchError = new Error("blob boom");
+    let inFlight = 0;
+
+    const getBlob = vi.fn(async ({ file_sha }: { file_sha: string }) => {
+      inFlight++;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (file_sha === "sha-0") {
+          throw fetchError;
+        }
+        return {
+          data: { content: base64(blobs[file_sha] ?? ""), encoding: "base64" },
+        };
+      } finally {
+        inFlight--;
+      }
+    });
+    getInstallationOctokitMock.mockResolvedValue({
+      repos: { get: vi.fn() },
+      git: {
+        getTree: vi.fn(() =>
+          Promise.resolve({ data: { tree, truncated: false } })
+        ),
+        getBlob,
+      },
+    });
+
+    const error = await fetchRepoComponents({
+      installationId: "inst-1",
+      owner: "acme",
+      repo: "shared",
+      ref: "main",
+    }).catch((e: unknown) => e);
+
+    expect(error).toBe(fetchError);
+    expect(inFlight).toBe(0);
+    // The candidates still queued behind the concurrency cap when sha-0 failed
+    // are skipped, so far fewer than all 20 blobs are ever requested.
+    expect(getBlob.mock.calls.length).toBeLessThan(20);
+  });
+
   it("imports normally when candidates are exactly at the cap", async () => {
     // Exactly MAX_COMPONENT_FILES (300) candidates: at the cap is not over it,
     // so every candidate blob is fetched and no truncation error is thrown.

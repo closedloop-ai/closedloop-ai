@@ -36,6 +36,18 @@ export type RelayCommandOptions = {
    * must not use the internal service-to-service fallback.
    */
   localContent?: boolean;
+  /**
+   * Caller-owned cancellation. When it aborts, the command's result stream is
+   * torn down instead of running out its own `RESULT_STREAM_TIMEOUT_MS`.
+   *
+   * The pre-loop health check needs this: the browser abandons a relay check at
+   * its own 20s budget and immediately retries, but the route never handed the
+   * request's signal down, so the first command kept a result stream open for
+   * the full 120s while the retry opened a second one against the same target
+   * (ISS-5169). It only tears down *our* read of the stream — the desktop still
+   * finishes the command it already accepted.
+   */
+  signal?: AbortSignal;
 };
 
 type ApiFailurePayload = {
@@ -433,6 +445,12 @@ export class RelayClient {
         RESULT_STREAM_TIMEOUT_MS
       );
     };
+    const callerSignal = options.signal;
+    const abortForCaller = () => abortController.abort();
+    if (callerSignal?.aborted) {
+      abortController.abort();
+    }
+    callerSignal?.addEventListener("abort", abortForCaller, { once: true });
 
     try {
       const response = await this.openCommandEventsStream(
@@ -494,6 +512,7 @@ export class RelayClient {
       }
     } finally {
       clearTimeout(timeout);
+      callerSignal?.removeEventListener("abort", abortForCaller);
       abortController.abort();
     }
 

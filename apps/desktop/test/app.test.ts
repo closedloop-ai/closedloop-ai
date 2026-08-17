@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, mock, test } from "node:test";
-import { Observability } from "../src/main/observability.js";
-import { createQueueStatsDebounce } from "../src/main/queue-stats-debounce.js";
+import { afterEach, describe, test } from "node:test";
+import { vi } from "vitest";
+import { Observability } from "../src/main/telemetry/observability.js";
+import { createQueueStatsDebounce } from "../src/main/util/queue-stats-debounce.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 // Wiring sanity: the onQueueStatsChange handler delegates telemetry to the
 // shared debounce helper while keeping sendPresence synchronous. Detailed
@@ -28,15 +30,15 @@ function buildHandler(sendPresence: (stats: Stats) => void): {
 }
 
 afterEach(() => {
-  mock.restoreAll();
-  mock.timers.reset();
+  vi.restoreAllMocks();
+  nodeTestTimers.reset();
   Observability.reset();
 });
 
 describe("onQueueStatsChange wiring", () => {
   test("sendPresence fires synchronously once per invocation (un-throttled)", () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    const sendPresence = mock.fn((_stats: Stats) => {});
+    nodeTestTimers.enable(["setTimeout"]);
+    const sendPresence = vi.fn((_stats: Stats) => {});
     const { handler, cancel } = buildHandler(sendPresence);
 
     for (let i = 0; i < 10; i++) {
@@ -52,21 +54,19 @@ describe("onQueueStatsChange wiring", () => {
   });
 
   test("telemetry goes through the shared debounce (1 fire per burst)", () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    const queueStatsChanged = mock.method(
-      Observability,
-      "queueStatsChanged",
-      () => {}
-    );
+    nodeTestTimers.enable(["setTimeout"]);
+    const queueStatsChanged = vi
+      .spyOn(Observability, "queueStatsChanged")
+      .mockImplementation(() => {});
     const { handler, cancel } = buildHandler(() => {});
 
     for (let i = 0; i < 5; i++) {
       handler({ activeCommands: i, queueDepth: i });
     }
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
 
     assert.strictEqual(queueStatsChanged.mock.calls.length, 1);
-    const args = queueStatsChanged.mock.calls[0].arguments as [number, number];
+    const args = queueStatsChanged.mock.calls[0] as [number, number];
     assert.deepStrictEqual(args, [4, 4], "trailing-edge value");
     cancel();
   });

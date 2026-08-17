@@ -35,3 +35,20 @@ test("denies sensitive paths even when parent directory is broadly allowed", () 
   const sensitiveTarget = path.join(os.homedir(), ".ssh", "config");
   assert.equal(isPathAllowed(sensitiveTarget, [os.homedir()]), false);
 });
+
+// FEA-3641: TCC-protected user folders are hard-denied like credential dirs, so
+// even a (mis)configured broad allowlist can never let the gateway read them.
+for (const folder of [
+  "Music",
+  "Pictures",
+  "Photos",
+  "Movies",
+  "Documents",
+  "Downloads",
+  "Desktop",
+]) {
+  test(`denies ~/${folder} even when home is broadly allowed`, () => {
+    const target = path.join(os.homedir(), folder, "file.txt");
+    assert.equal(isPathAllowed(target, [os.homedir()]), false);
+  });
+}

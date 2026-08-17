@@ -245,6 +245,16 @@ const otlpDescriptor: protobuf.INamespace = {
                           type: "opentelemetry.proto.common.v1.KeyValue",
                           id: 9,
                         },
+                        status: {
+                          type: "opentelemetry.proto.trace.v1.Status",
+                          id: 15,
+                        },
+                      },
+                    },
+                    Status: {
+                      fields: {
+                        message: { type: "string", id: 2 },
+                        code: { type: "int32", id: 3 },
                       },
                     },
                     ScopeSpans: {

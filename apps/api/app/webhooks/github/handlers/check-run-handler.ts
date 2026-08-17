@@ -18,7 +18,13 @@ import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { scheduleCheckRunRetry } from "@/lib/branch-status-check-retry";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
+import { readWithInstallationClient } from "@/lib/github/installation-client";
 import { githubAppGraphqlFetchProvenance } from "@/lib/github-fetch-provenance";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
 
 /**
@@ -33,13 +39,15 @@ import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
  * GitHub App settings (T-7.1) filter delivery to completed events.
  * The action guard below provides defense-in-depth.
  */
-export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
+export async function handleCheckRun(
+  event: CheckRunEvent,
+  observationContext?: GitHubWebhookObservationContext
+): Promise<Response> {
   // (1) Action guard - exit immediately for non-completed events
   if (event.action !== "completed") {
-    log.info("[handleCheckRun] Skipping non-completed action", {
+    logCheckRunTerminalEvent(event, {
       action: event.action,
-      checkRunName: event.check_run.name,
-      repositoryFullName: event.repository.full_name,
+      outcome: "ignored_action",
     });
     return NextResponse.json({
       message: `Ignoring check_run action: ${event.action}`,
@@ -62,15 +70,6 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
 
   const headSha = event.check_run.head_sha;
   const headBranch = event.check_run.check_suite?.head_branch ?? null;
-
-  log.info("[handleCheckRun] Processing check_run completed event", {
-    check_run_name: event.check_run.name,
-    conclusion: event.check_run.conclusion,
-    headSha,
-    head_branch: headBranch,
-    repositoryId: event.repository.id,
-    installationId,
-  });
 
   // (3) Non-transactional read - avoid holding locks during external GraphQL call
   // Look up by githubRepoId — a GitHub repo may appear once per installation,
@@ -134,24 +133,34 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     // Prefer GitHub's head_branch over same-SHA matches so two branches that
     // currently point at the same commit cannot update the wrong artifact.
     const foundByBranchName = headBranch
-      ? await db.branchDetail.findFirst({
+      ? await db.branchDetail.findMany({
           where: {
             repositoryId: foundRepo.id,
             branchName: headBranch,
           },
           select: branchDetailSelect,
+          orderBy: [{ createdAt: "asc" }, { artifactId: "asc" }],
+          take: 2,
         })
-      : null;
+      : [];
+    const foundByHeadSha =
+      foundByBranchName.length > 0
+        ? []
+        : await db.branchDetail.findMany({
+            where: {
+              repositoryId: foundRepo.id,
+              headSha,
+            },
+            select: branchDetailSelect,
+            orderBy: [{ createdAt: "asc" }, { artifactId: "asc" }],
+            take: 2,
+          });
+    const foundBranchDetailCandidates =
+      foundByBranchName.length > 0 ? foundByBranchName : foundByHeadSha;
     const foundBranchDetail =
-      foundByBranchName ??
-      (await db.branchDetail.findFirst({
-        where: {
-          repositoryId: foundRepo.id,
-          headSha,
-        },
-        select: branchDetailSelect,
-        orderBy: [{ createdAt: "asc" }, { artifactId: "asc" }],
-      }));
+      foundBranchDetailCandidates.length === 1
+        ? foundBranchDetailCandidates[0]
+        : null;
 
     const linkedDoc =
       foundBranchDetail?.artifact.targetLinks[0]?.source ?? null;
@@ -177,16 +186,18 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
   });
 
   if (!repo) {
-    log.info("[handleCheckRun] Repository not registered in Symphony", {
+    logCheckRunTerminalEvent(event, {
       githubRepoId: event.repository.id,
-      repositoryFullName: event.repository.full_name,
+      installationId,
+      outcome: "repo_not_registered",
     });
     return NextResponse.json({ message: "Repository not tracked", ok: true });
   }
 
   if (!branch) {
-    log.info("[handleCheckRun] No branch artifact found for headSha", {
-      headSha,
+    logCheckRunTerminalEvent(event, {
+      installationId,
+      outcome: "no_branch_artifact",
       repositoryId: repo.id,
     });
     return NextResponse.json({
@@ -195,12 +206,19 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     });
   }
 
-  // (4) External call - query GitHub GraphQL statusCheckRollup outside any transaction
-  const rollupResult = await queryStatusCheckRollupWithProviderResult(
+  // (4) External call - query GitHub GraphQL statusCheckRollup outside any
+  // transaction. A failed client acquisition is classified as the same
+  // provider result the read produces, so a rate-limited mint still schedules
+  // a retry instead of bubbling to the route's generic 500.
+  const rollupResult = await readWithInstallationClient(
     String(installationId),
-    repo.owner,
-    repo.name,
-    headSha
+    (octokit) =>
+      queryStatusCheckRollupWithProviderResult(
+        octokit,
+        repo.owner,
+        repo.name,
+        headSha
+      )
   );
   const rollup =
     rollupResult.status === GitHubProviderResultStatus.Success
@@ -249,25 +267,27 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
         retryAfterSeconds
       );
     }
+    await persistGitHubBranchActivity({
+      eventName: GitHubBranchActivityEventName.CheckRun,
+      deliveryId: observationContext?.deliveryId,
+      payload: event,
+      attribution: {
+        organizationId: branch.organizationId,
+        branchArtifactId: branch.id,
+      },
+    });
     return result;
   });
 
   if (persistResult.status === "skipped") {
-    log.info("[handleCheckRun] Branch is stale or deleted, skipping update", {
+    logCheckRunTerminalEvent(event, {
       branchArtifactId: branch.id,
-      headSha,
+      installationId,
+      outcome: "stale_branch",
       reason: persistResult.reason,
+      repositoryId: branch.repositoryId,
     });
     return NextResponse.json({ message: "Stale branch skipped", ok: true });
-  }
-
-  if (rollup.ok && persistResult.checksStatusChanged) {
-    log.info("[handleCheckRun] Updated checksStatus and check details", {
-      branchArtifactId: branch.id,
-      headSha,
-      previousStatus: persistResult.previousChecksStatus,
-      newStatus: persistResult.nextChecksStatus,
-    });
   }
 
   const organizationId = repo.installation?.organizationId;
@@ -292,14 +312,19 @@ export async function handleCheckRun(event: CheckRunEvent): Promise<Response> {
     });
   }
 
-  log.info(
-    "[handleCheckRun] Successfully processed check_run completed event",
-    {
-      checkRunName: event.check_run.name,
-      repositoryFullName: event.repository.full_name,
-      headSha,
-    }
-  );
+  logCheckRunTerminalEvent(event, {
+    branchArtifactId: branch.id,
+    checksStatusChanged: persistResult.checksStatusChanged,
+    installationId,
+    newStatus: persistResult.nextChecksStatus,
+    outcome: persistResult.checksStatusChanged
+      ? "processed_checks_changed"
+      : "processed",
+    previousStatus: persistResult.previousChecksStatus,
+    providerStatus: rollupResult.status,
+    repositoryId: branch.repositoryId,
+    retryAfterSeconds,
+  });
 
   return NextResponse.json({
     message: "Event processed successfully",
@@ -314,4 +339,23 @@ function buildCheckRunRetryIdempotencyKey(event: CheckRunEvent): string {
     event.check_run.head_sha,
     event.check_run.completed_at ?? event.action,
   ].join(":");
+}
+
+function logCheckRunTerminalEvent(
+  event: CheckRunEvent,
+  metadata: Record<string, unknown>
+): void {
+  log.info("[handleCheckRun] Completed check_run webhook handling", {
+    action: event.action,
+    check_run_name: event.check_run.name,
+    checkRunId: event.check_run.id,
+    conclusion: event.check_run.conclusion,
+    eventType: "check_run",
+    head_branch: event.check_run.check_suite?.head_branch ?? null,
+    headSha: event.check_run.head_sha,
+    provider: "github",
+    repositoryFullName: event.repository.full_name,
+    repositoryGithubId: event.repository.id,
+    ...metadata,
+  });
 }

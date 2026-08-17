@@ -244,36 +244,21 @@ export function extractPlansFromPlansDir(plansDir: string): PlanCapture[] {
 // DB: find existing plan row
 // ---------------------------------------------------------------------------
 
-interface PlanRow extends Record<string, unknown> {
+interface ExistingPlanRow extends Record<string, unknown> {
   id: string;
-  plan_key: string | null;
-  title: string | null;
-  status: string;
-  source: string | null;
-  capture_method: string | null;
-  harness: string | null;
-  created_from_session_id: string | null;
-  file_path: string | null;
-  source_log_path: string | null;
-  needs_confirmation: boolean;
-  confidence: number;
-  created_at: string | null;
-  updated_at: string | null;
-  latest_content?: string | null;
-  version_count?: number | null;
 }
 
 async function findExistingPlan(
   client: RawSqlClient,
   capture: PlanCapture,
   planKey: string
-): Promise<PlanRow | null> {
+): Promise<ExistingPlanRow | null> {
   const harness = capture.harness || null;
   const sessionId = capture.created_from_session_id || null;
 
   if (capture.file_path) {
-    const rows = await client.$queryRawUnsafe<PlanRow[]>(
-      `SELECT * FROM plans
+    const rows = await client.$queryRawUnsafe<ExistingPlanRow[]>(
+      `SELECT id FROM plans
        WHERE harness IS NOT DISTINCT FROM $1 AND plan_key = $2
          AND (file_path = $3 OR file_path IS NULL)
        ORDER BY CASE WHEN file_path = $4 THEN 0 ELSE 1 END,
@@ -288,8 +273,8 @@ async function findExistingPlan(
     return rows[0] ?? null;
   }
 
-  const rows = await client.$queryRawUnsafe<PlanRow[]>(
-    `SELECT * FROM plans
+  const rows = await client.$queryRawUnsafe<ExistingPlanRow[]>(
+    `SELECT id FROM plans
      WHERE harness IS NOT DISTINCT FROM $1
        AND created_from_session_id IS NOT DISTINCT FROM $2
        AND plan_key = $3
@@ -314,122 +299,126 @@ type UpsertPlanResult = {
   created: boolean;
 };
 
-export function upsertPlan(
-  prisma: DesktopPrisma,
+// Core upsert of one capture against an already-open write client `c`. Kept
+// separate from `upsertPlan`/`upsertPlans` so BOTH the single-capture entry
+// point and the batch backfill can run this logic inside a `prisma.write`
+// callback — the batch shares one write-queue entry per bounded chunk of
+// captures instead of paying a queue round-trip per file (FEA-4154).
+async function upsertPlanWithin(
+  c: RawSqlClient,
   capture: PlanCapture
 ): Promise<UpsertPlanResult> {
   const planKey = planKeyFor(capture);
   const sessionId = capture.created_from_session_id || null;
   const ts = capture.captured_at || nowIso();
 
-  // One serialized write unit: the dedup read plus every insert/update run on
-  // the same client inside the write queue, so nothing interleaves between the
-  // "is this a duplicate?" check and the writes that depend on it.
-  return prisma.write(async (c) => {
-    const existingPlan = await findExistingPlan(c, capture, planKey);
+  const existingPlan = await findExistingPlan(c, capture, planKey);
 
-    let planId: string;
-    let created = false;
+  let planId: string;
+  let created = false;
 
-    if (existingPlan) {
-      planId = existingPlan.id;
-      const latestRows = await c.$queryRawUnsafe<
-        { content_sha256: string; version_number: number }[]
-      >(
-        `SELECT content_sha256, version_number
+  if (existingPlan) {
+    planId = existingPlan.id;
+    const latestRows = await c.$queryRawUnsafe<
+      { content_sha256: string; version_number: number }[]
+    >(
+      `SELECT content_sha256, version_number
          FROM plan_versions WHERE plan_id = $1
          ORDER BY version_number DESC LIMIT 1`,
-        planId
-      );
-      const latest = latestRows[0] ?? null;
+      planId
+    );
+    const latest = latestRows[0] ?? null;
 
-      if (latest && latest.content_sha256 === capture.content_sha256) {
-        // Identical content — no-op for versioning, backfill links if missing.
-        if (capture.file_path || capture.source_log_path) {
-          await c.$executeRawUnsafe(
-            `UPDATE plans
+    if (latest && latest.content_sha256 === capture.content_sha256) {
+      // Identical content — no-op for versioning, backfill links if missing.
+      if (capture.file_path || capture.source_log_path) {
+        await c.$executeRawUnsafe(
+          `UPDATE plans
                SET created_from_session_id = COALESCE(created_from_session_id, $1),
                    file_path = COALESCE(file_path, $2),
                    source_log_path = COALESCE(source_log_path, $3)
              WHERE id = $4`,
-            sessionId,
-            capture.file_path || null,
-            capture.source_log_path || null,
-            planId
-          );
-        } else if (sessionId) {
-          await c.$executeRawUnsafe(
-            `UPDATE plans
+          sessionId,
+          capture.file_path || null,
+          capture.source_log_path || null,
+          planId
+        );
+      } else if (sessionId) {
+        await c.$executeRawUnsafe(
+          `UPDATE plans
                SET created_from_session_id = COALESCE(created_from_session_id, $1)
              WHERE id = $2`,
-            sessionId,
-            planId
-          );
-        }
-        return {
-          planId,
-          versionId: null,
-          version: Number(latest.version_number),
-          deduped: true,
-          created: false,
-        };
+          sessionId,
+          planId
+        );
       }
-    } else {
-      planId = uuid();
-      await c.$executeRawUnsafe(
-        `INSERT INTO plans
+      return {
+        planId,
+        versionId: null,
+        version: Number(latest.version_number),
+        deduped: true,
+        created: false,
+      };
+    }
+  } else {
+    planId = uuid();
+    await c.$executeRawUnsafe(
+      // PLN-1562 (WS4): `sync_state` used to be written here as the constant
+      // 'local_only' and read by nothing — a vestigial column implying a plan
+      // sync lane that never existed. Dropped from the table in migration 0048.
+      `INSERT INTO plans
           (id, title, status, source,
            capture_method, harness, created_from_session_id, created_from_event_id,
            plan_key, file_path, source_log_path, needs_confirmation, confidence,
-           sync_state, metadata, created_at, updated_at)
+           metadata, created_at, updated_at)
          VALUES ($1, $2, 'active', 'captured', $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 'local_only', NULL, $12, $13)`,
-        planId,
-        capture.title || null,
-        capture.capture_method || null,
-        capture.harness || null,
-        sessionId,
-        capture.source_event_ref || null,
-        planKey,
-        capture.file_path || null,
-        capture.source_log_path || null,
-        capture.needs_confirmation,
-        capture.confidence,
-        ts,
-        ts
-      );
-      created = true;
-    }
-
-    // Determine next version number
-    const nextRows = await c.$queryRawUnsafe<{ n: number }[]>(
-      `SELECT COALESCE(MAX(version_number), 0) AS n
-       FROM plan_versions WHERE plan_id = $1`,
-      planId
+                 NULL, $12, $13)`,
+      planId,
+      capture.title || null,
+      capture.capture_method || null,
+      capture.harness || null,
+      sessionId,
+      capture.source_event_ref || null,
+      planKey,
+      capture.file_path || null,
+      capture.source_log_path || null,
+      capture.needs_confirmation,
+      capture.confidence,
+      ts,
+      ts
     );
-    const versionNumber = Number(nextRows[0]?.n ?? 0) + 1;
-    const versionId = uuid();
+    created = true;
+  }
 
-    await c.$executeRawUnsafe(
-      `INSERT INTO plan_versions
+  // Determine next version number
+  const nextRows = await c.$queryRawUnsafe<{ n: number }[]>(
+    `SELECT COALESCE(MAX(version_number), 0) AS n
+       FROM plan_versions WHERE plan_id = $1`,
+    planId
+  );
+  const versionNumber = Number(nextRows[0]?.n ?? 0) + 1;
+  const versionId = uuid();
+
+  await c.$executeRawUnsafe(
+    `INSERT INTO plan_versions
         (id, plan_id, version_number, content_markdown, content_json,
          content_sha256, author_type, author_user_id, source_session_id,
          source_event_ref, capture_method, created_at)
        VALUES ($1, $2, $3, $4, NULL, $5, 'agent', NULL, $6, $7, $8, $9)`,
-      versionId,
-      planId,
-      versionNumber,
-      capture.content_markdown,
-      capture.content_sha256,
-      sessionId,
-      capture.source_event_ref || null,
-      capture.capture_method || null,
-      ts
-    );
+    versionId,
+    planId,
+    versionNumber,
+    capture.content_markdown,
+    capture.content_sha256,
+    sessionId,
+    capture.source_event_ref || null,
+    capture.capture_method || null,
+    ts
+  );
 
-    // Refresh the plan's latest-capture signals.
-    await c.$executeRawUnsafe(
-      `UPDATE plans
+  // Refresh the plan's latest-capture signals.
+  await c.$executeRawUnsafe(
+    `UPDATE plans
          SET title = COALESCE($1, title),
              capture_method = COALESCE($2, capture_method),
              harness = COALESCE($3, harness),
@@ -440,26 +429,75 @@ export function upsertPlan(
              confidence = $8,
              updated_at = $9
        WHERE id = $10`,
-      capture.title || null,
-      capture.capture_method || null,
-      capture.harness || null,
-      sessionId,
-      capture.file_path || null,
-      capture.source_log_path || null,
-      capture.needs_confirmation,
-      capture.confidence,
-      ts,
-      planId
-    );
+    capture.title || null,
+    capture.capture_method || null,
+    capture.harness || null,
+    sessionId,
+    capture.file_path || null,
+    capture.source_log_path || null,
+    capture.needs_confirmation,
+    capture.confidence,
+    ts,
+    planId
+  );
 
-    return {
-      planId,
-      versionId,
-      version: versionNumber,
-      deduped: false,
-      created,
-    };
-  });
+  return {
+    planId,
+    versionId,
+    version: versionNumber,
+    deduped: false,
+    created,
+  };
+}
+
+export function upsertPlan(
+  prisma: DesktopPrisma,
+  capture: PlanCapture
+): Promise<UpsertPlanResult> {
+  // One serialized write unit: the dedup read plus every insert/update run on
+  // the same client inside the write queue, so nothing interleaves between the
+  // "is this a duplicate?" check and the writes that depend on it.
+  return prisma.write((c) => upsertPlanWithin(c, capture));
+}
+
+// How many captures share a single `prisma.write` (one write-queue entry). A
+// backfill sweep must NOT hold the SOLE SQLite writer for the whole batch:
+// `plans.backfill` runs after the renderer and hook listener are live, so live
+// ingestion and user mutations (which also serialize through `prisma.write`)
+// would stall behind an unbounded critical section over a large plans directory.
+// Chunking bounds that section — the writer queue is released between chunks so
+// other writers interleave — while still collapsing ~CHUNK per-file round-trips
+// into one entry, keeping the bulk of the FEA-4154 savings.
+const UPSERT_PLANS_CHUNK_SIZE = 25;
+
+// Persist a batch of captures (e.g. the `plans.backfill` sweep over a plans
+// directory) in bounded chunks: each chunk of up to `UPSERT_PLANS_CHUNK_SIZE`
+// captures shares ONE `prisma.write` (one write-queue entry) rather than one per
+// capture, eliminating most of the per-file write-queue round-trips the old loop
+// paid (FEA-4154) — without holding the sole writer for the entire sweep.
+// `prisma.write` serializes via the write queue (queue.run), not a DB
+// `$transaction`: statements autocommit and `synchronous=NORMAL` doesn't fsync
+// the WAL per commit. Captures are applied in order with the same
+// dedup/versioning semantics as `upsertPlan` (each chunk commits before the next
+// reads, so cross-chunk dedup still resolves). Returns one result per input
+// capture; an empty batch does no write.
+export async function upsertPlans(
+  prisma: DesktopPrisma,
+  captures: PlanCapture[]
+): Promise<UpsertPlanResult[]> {
+  const results: UpsertPlanResult[] = [];
+  for (let i = 0; i < captures.length; i += UPSERT_PLANS_CHUNK_SIZE) {
+    const chunk = captures.slice(i, i + UPSERT_PLANS_CHUNK_SIZE);
+    const chunkResults = await prisma.write(async (c) => {
+      const out: UpsertPlanResult[] = [];
+      for (const capture of chunk) {
+        out.push(await upsertPlanWithin(c, capture));
+      }
+      return out;
+    });
+    results.push(...chunkResults);
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------

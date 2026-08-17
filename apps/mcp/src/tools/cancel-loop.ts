@@ -3,8 +3,8 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildLoopUrl,
   encodePathSegment,
+  type McpUrlBuilder,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -14,7 +14,8 @@ import {
  */
 export function registerCancelLoop(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "cancel-loop",
@@ -33,7 +34,7 @@ export function registerCancelLoop(
           {}
         );
         const record = asRecord(result);
-        const webUrl = buildLoopUrl(loopId);
+        const webUrl = urls.buildLoopUrl(loopId);
         return {
           content: [
             {

@@ -40,6 +40,7 @@ const EXPECTED_COMPATIBILITY_ATTRIBUTES = [
   TelemetryAttribute.SyncOutcome,
   TelemetryAttribute.SyncPayloadBytes,
   TelemetryAttribute.SyncLatencyMs,
+  TelemetryAttribute.SyncReason,
   TelemetryAttribute.GenAiCostUsage,
   TelemetryAttribute.GenAiPermissionDecision,
   TelemetryAttribute.GenAiPermissionSource,
@@ -48,6 +49,13 @@ const EXPECTED_COMPATIBILITY_ATTRIBUTES = [
   TelemetryAttribute.IpcPayloadBytes,
   TelemetryAttribute.IpcResultCount,
   TelemetryAttribute.IpcSessionCount,
+  // ISS-5103: desktop local-store import-health counters. ClosedLoop
+  // store-health concepts with no pinned OTel semantic-convention equivalent.
+  TelemetryAttribute.ImportEvent,
+  TelemetryAttribute.ImportGroupLabel,
+  TelemetryAttribute.ImportGroupFailedCount,
+  TelemetryAttribute.ImportSessionsIncomplete,
+  TelemetryAttribute.ImportSessionsPendingRevision,
 ] as const;
 const NON_EMPTY_TEXT_PATTERN = /\S/;
 

@@ -2,30 +2,12 @@
  * Shared utilities for chat components
  */
 
-import { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
 import { readNdjsonLines } from "@repo/app/chat/lib/stream-utils";
 import { formatTimeOrFallback } from "@repo/app/shared/lib/date-utils";
+import { formatToolResultContent } from "@closedloop-ai/loops-api/stream-types";
 import { getWorktreePath as getWorktreePathBase } from "@/lib/git/worktree";
 
 export const getWorktreePath = getWorktreePathBase;
-
-const ANSI_ESCAPE_PREFIX = `${String.fromCharCode(0x1b)}[`;
-
-/**
- * Check if text looks like terminal/CLI output.
- * Detects box-drawing characters, ANSI codes, and common CLI patterns.
- */
-export function isTerminalOutput(text: string): boolean {
-  // Box-drawing characters commonly used in CLI output
-  const terminalPatterns =
-    /[━│┃┄┅┆┇┈┉┊┋╌╍╎╏═║╒╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡╢╣╤╥╦╧╨╩╪╫╬─├┤┬┴┼]/;
-  // ANSI escape codes (may be partially stripped)
-  const hasAnsiEscape = text.includes(ANSI_ESCAPE_PREFIX);
-  // Common CLI tool output patterns (biome, eslint, etc.)
-  const cliPatterns = /(?:✖|✓|⚠|ℹ|›)\s|^\s*>\s*\d+\s*│/m;
-
-  return terminalPatterns.test(text) || hasAnsiEscape || cliPatterns.test(text);
-}
 
 /**
  * Format an untrusted persisted chat timestamp for display in chat messages.

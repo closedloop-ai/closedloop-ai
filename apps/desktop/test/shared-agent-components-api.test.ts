@@ -15,87 +15,31 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AgentSessionSyncSource } from "../src/main/agent-session-sync-service.js";
-import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import {
+  AgentComponentInvocationAnchorKind,
+  AgentComponentInvocationAttributionStatus,
+  AgentComponentInvocationEvidenceClass,
+  AgentComponentInvocationKind,
+  AgentComponentInvocationRelationship,
+} from "@repo/api/src/types/agent-component-invocation";
+import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
+import { rawKeyInClause } from "../src/main/dashboard/hash-scope-predicates.js";
+import {
+  coerceAgentComponentFilters,
   getAgentComponentDetailLocal,
   listAgentComponentsLocal,
-} from "../src/main/shared-agent-components-api.js";
+  matchingUsageRawKeys,
+} from "../src/main/dashboard/shared-agent-components-api.js";
+import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
+// Seed helpers shared with `agent-components-honest-source.test.ts`.
+import {
+  type InvocationSeed,
+  insertComponent,
+  insertInvocations,
+  insertUsage,
+} from "./agent-components-test-fixtures.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
-
-// ---------------------------------------------------------------------------
-// Seed helpers
-// ---------------------------------------------------------------------------
-
-async function insertComponent(
-  prisma: DesktopPrisma,
-  row: {
-    id: string;
-    kind: string;
-    externalId: string;
-    key: string | null;
-    name?: string | null;
-    harness?: string | null;
-    packId?: string | null;
-    scope?: string | null;
-    projectPath?: string | null;
-    installPath?: string | null;
-    description?: string | null;
-    uninstalledAt?: string | null;
-  }
-): Promise<void> {
-  await prisma.write((client) =>
-    client.$executeRawUnsafe(
-      `INSERT INTO agent_components
-         (id, component_kind, external_id, component_key, name, harness,
-          source, description, install_path, pack_id, scope, project_path,
-          first_seen_at, last_seen_at, uninstalled_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11,
-               '2026-01-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z', $12)`,
-      row.id,
-      row.kind,
-      row.externalId,
-      row.key,
-      row.name ?? row.key,
-      row.harness ?? "claude",
-      row.description ?? null,
-      row.installPath ?? null,
-      row.packId ?? null,
-      row.scope ?? null,
-      row.projectPath ?? null,
-      row.uninstalledAt ?? null
-    )
-  );
-}
-
-async function insertUsage(
-  prisma: DesktopPrisma,
-  row: {
-    sessionId: string;
-    kind: string;
-    key: string;
-    invocations: number;
-    lastInvokedAt?: string;
-    firstInvokedAt?: string;
-    harness?: string | null;
-  }
-): Promise<void> {
-  await prisma.write((client) =>
-    client.$executeRawUnsafe(
-      `INSERT INTO agent_component_session_usage
-         (session_id, component_kind, component_key, invocations, error_count,
-          harness, first_invoked_at, last_invoked_at, started_day)
-       VALUES ($1, $2, $3, $4, 0, $5, $6, $7, '2026-06-01')`,
-      row.sessionId,
-      row.kind,
-      row.key,
-      row.invocations,
-      row.harness ?? null,
-      row.firstInvokedAt ?? row.lastInvokedAt ?? "2026-06-01T00:00:00.000Z",
-      row.lastInvokedAt ?? "2026-06-01T00:00:00.000Z"
-    )
-  );
-}
+import { fakeLocCostSource } from "./shared-agent-components-loc-cost-source.js";
 
 // ---------------------------------------------------------------------------
 // listAgentComponentsLocal
@@ -134,6 +78,271 @@ test("listAgentComponentsLocal returns real rows with usage totals", async () =>
     assert.equal(item.kind, "skill");
     assert.equal(item.invocations, 5);
     assert.equal(item.sessions, 2);
+  } finally {
+    await close();
+  }
+});
+
+const HASH_A = `${"a".repeat(64)}`;
+const HASH_B = `${"b".repeat(64)}`;
+
+test("listAgentComponentsLocal collapses same-named components with distinct content hashes into ONE canonical family row (FEA-4267)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Same kind + key (so same name-only slug), different content_hash. The
+    // per-version merge still fingerprints each hash internally, but FEA-4267
+    // collapses that family into ONE canonical list row (mirroring the cloud
+    // list): the offline catalog no longer shows a duplicate row per version.
+    await insertComponent(prisma, {
+      id: "c-a",
+      kind: "skill",
+      externalId: "ext-a",
+      key: "code-review",
+      contentHash: HASH_A,
+    });
+    await insertComponent(prisma, {
+      id: "c-b",
+      kind: "skill",
+      externalId: "ext-b",
+      key: "code-review",
+      contentHash: HASH_B,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    assert.equal(result.total, 1);
+    assert.equal(result.items.length, 1);
+    const [item] = result.items;
+    // FEA-4335: the canonical family row's detail key is the CONTENT-HASH
+    // routable key (`${kind}::${contentHash}`) of its chosen representative
+    // version — the freshest of the two content hashes (HASH_A/HASH_B share equal
+    // seen/invoked dates here, so the `id` tiebreak picks the row whose built id
+    // sorts first: `skill::${HASH_A}` < `skill::${HASH_B}`). Two same-named,
+    // different-bytes components therefore no longer collide onto one name-level
+    // detail URI. The family still collapses to ONE list row and reports its
+    // version count instead of a single-version badge.
+    assert.equal(item.id, `skill::${HASH_A}`);
+    assert.equal(item.slug, `skill::${HASH_A}`);
+    assert.equal(item.versionCount, 2);
+    assert.equal(item.versionId, undefined);
+    assert.equal(item.fingerprint, undefined);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal attributes versioned usage to the MATCHING version bucket BEFORE collapse, so the family total is not doubled (FEA-3982 wongk / FEA-4267)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // A name owns two fingerprinted inventory rows (HASH_A, HASH_B). Usage that
+    // carried HASH_A must land ONLY on the HASH_A version bucket — not be applied
+    // to both — and only THEN collapse into the one canonical family row. If the
+    // 4 invocations had leaked onto both versions, the collapsed SUM would be 8.
+    await insertComponent(prisma, {
+      id: "c-a",
+      kind: "skill",
+      externalId: "ext-a",
+      key: "code-review",
+      contentHash: HASH_A,
+    });
+    await insertComponent(prisma, {
+      id: "c-b",
+      kind: "skill",
+      externalId: "ext-b",
+      key: "code-review",
+      contentHash: HASH_B,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-a",
+      kind: "skill",
+      key: "code-review",
+      invocations: 4,
+      versionHash: HASH_A,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    assert.equal(result.total, 1);
+    const [item] = result.items;
+    assert.equal(item.versionCount, 2);
+    // Exactly the HASH_A usage (4 / 1 session) survives collapse — not doubled.
+    assert.equal(item.invocations, 4);
+    assert.equal(item.sessions, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal surfaces usage whose carried hash predates the current inventory hash (FEA-3982 wongk — hash-at-invocation != current)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // The SINGLE inventory row is now on HASH_B (the component was updated), but a
+    // historical session carried HASH_A. That A usage must still surface — on its
+    // own A version bucket — rather than vanish or be mis-attributed to B.
+    await insertComponent(prisma, {
+      id: "c-b",
+      kind: "skill",
+      externalId: "ext-b",
+      key: "code-review",
+      contentHash: HASH_B,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-old",
+      kind: "skill",
+      key: "code-review",
+      invocations: 7,
+      versionHash: HASH_A,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-new",
+      kind: "skill",
+      key: "code-review",
+      invocations: 2,
+      versionHash: HASH_B,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    // Two version buckets are built internally (the seeded B inventory row + the
+    // synthesized A bucket for the historical usage), then FEA-4267 collapses
+    // them into one canonical family row. The A usage must NOT vanish: its 7
+    // invocations survive into the collapsed SUM (7 + 2 = 9), sessions UNION
+    // {s-old, s-new} = 2.
+    assert.equal(result.total, 1);
+    const [item] = result.items;
+    assert.equal(item.versionCount, 2);
+    assert.equal(item.invocations, 9);
+    assert.equal(item.sessions, 2);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal keeps hash-less usage OFF the versioned sibling before collapse, so the family total is not doubled (FEA-3982 skew-safe / FEA-4267)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // One versioned inventory row (HASH_A) and one hash-less legacy inventory row
+    // for the same name. Hash-less usage stays on the name-level bucket; it must
+    // not leak onto the HASH_A version. FEA-4267 then collapses the family into
+    // ONE canonical row — the 5 hash-less invocations survive exactly once (not
+    // doubled onto the versioned sibling), sessions = 1.
+    await insertComponent(prisma, {
+      id: "c-a",
+      kind: "skill",
+      externalId: "ext-a",
+      key: "code-review",
+      contentHash: HASH_A,
+    });
+    await insertComponent(prisma, {
+      id: "c-legacy",
+      kind: "skill",
+      externalId: "ext-legacy",
+      key: "code-review",
+      contentHash: null,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-legacy",
+      kind: "skill",
+      key: "code-review",
+      invocations: 5,
+      versionHash: null,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    assert.equal(result.total, 1);
+    const [item] = result.items;
+    assert.equal(item.versionCount, 2);
+    assert.equal(item.invocations, 5);
+    assert.equal(item.sessions, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal keeps a hash-less legacy row as a single unversioned row (FEA-3982 skew-safe)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Two devices observe the SAME hash-less legacy row — it must still render
+    // exactly once under the name-only identity, with no version badge.
+    await insertComponent(prisma, {
+      id: "c-legacy-1",
+      kind: "skill",
+      externalId: "ext-1",
+      key: "legacy-skill",
+      contentHash: null,
+    });
+    await insertComponent(prisma, {
+      id: "c-legacy-2",
+      kind: "skill",
+      externalId: "ext-2",
+      key: "legacy-skill",
+      contentHash: null,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    assert.equal(result.total, 1);
+    const item = result.items[0];
+    assert.equal(item.id, "skill::legacy-skill");
+    // Absent (never null) so the wire shape stays skew-safe "unversioned".
+    assert.equal(item.versionId, undefined);
+    assert.equal(item.fingerprint, undefined);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal populates lastInvokedAt from max usage recency, distinct from lastSeenAt (FEA-3310)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Inventory `last_seen_at` is the sync-refreshed observation time
+    // ('2026-06-01' from insertComponent) — NOT a usage signal.
+    await insertComponent(prisma, {
+      id: "c-skill",
+      kind: "skill",
+      externalId: "ext-skill",
+      key: "deep-research",
+    });
+    // Two invocations at distinct times; the later one governs lastInvokedAt.
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "deep-research",
+      invocations: 3,
+      lastInvokedAt: "2026-06-04T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s2",
+      kind: "skill",
+      key: "deep-research",
+      invocations: 2,
+      lastInvokedAt: "2026-06-09T00:00:00.000Z",
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    const item = result.items[0];
+    // Real usage-recency: the MAX across usage rows, its OWN field — the
+    // "recently active" indicator keys off this (FEA-3179), not lastSeenAt.
+    assert.equal(item.lastInvokedAt, "2026-06-09T00:00:00.000Z");
+    // ...and it is genuinely distinct from the inventory-observation lastSeenAt.
+    assert.equal(item.lastSeenAt, "2026-06-01T00:00:00.000Z");
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal omits lastInvokedAt for a component with no usage rows (FEA-3310)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // A configured-only skill that was observed as inventory but never invoked.
+    await insertComponent(prisma, {
+      id: "c-skill",
+      kind: "skill",
+      externalId: "ext-skill",
+      key: "never-run",
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {});
+    const item = result.items[0];
+    // No usage rows ⇒ the field is absent (undefined), matching the cloud
+    // contract — "recently active" is simply false, never a bogus timestamp.
+    assert.equal(item.lastInvokedAt, undefined);
   } finally {
     await close();
   }
@@ -326,18 +535,21 @@ test("listAgentComponentsLocal rolls up plugin usage from child components", asy
       kind: "skill",
       key: "gstack-nav",
       invocations: 4,
+      lastInvokedAt: "2026-06-05T00:00:00.000Z",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
       kind: "command",
       key: "gstack-shot",
       invocations: 1,
+      lastInvokedAt: "2026-06-07T00:00:00.000Z",
     });
     await insertUsage(prisma, {
       sessionId: "s2",
       kind: "command",
       key: "gstack-shot",
       invocations: 2,
+      lastInvokedAt: "2026-06-06T00:00:00.000Z",
     });
 
     const result = await listAgentComponentsLocal(prisma, {
@@ -349,6 +561,287 @@ test("listAgentComponentsLocal rolls up plugin usage from child components", asy
     // Rollup: invocations 4+1+2 = 7 across distinct sessions {s1, s2} = 2.
     assert.equal(plugin.invocations, 7);
     assert.equal(plugin.sessions, 2);
+    // Usage-recency rolls up too: the MAX child last_invoked_at (FEA-3310).
+    assert.equal(plugin.lastInvokedAt, "2026-06-07T00:00:00.000Z");
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal does not double-count a plugin's pack total across its version buckets (FEA-3982 wongk)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // The SAME plugin observed at two content versions (plugin.json updated A->B)
+    // splits into two version buckets. The child pack rollup is version-agnostic,
+    // so the full pack total must land on ONE bucket, not be duplicated on both.
+    await insertComponent(prisma, {
+      id: "c-plugin-a",
+      kind: "plugin",
+      externalId: "claude|/x|gstack",
+      key: "gstack",
+      name: "GStack",
+      packId: "gstack",
+      contentHash: HASH_A,
+    });
+    await insertComponent(prisma, {
+      id: "c-plugin-b",
+      kind: "plugin",
+      externalId: "claude|/y|gstack",
+      key: "gstack",
+      name: "GStack",
+      packId: "gstack",
+      contentHash: HASH_B,
+    });
+    await insertComponent(prisma, {
+      id: "c-child",
+      kind: "skill",
+      externalId: "gstack-skill",
+      key: "gstack-nav",
+      packId: "gstack",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "gstack-nav",
+      invocations: 6,
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {
+      kinds: ["plugin"],
+    });
+    // Two plugin version buckets carry the pack total on exactly ONE (not both);
+    // FEA-4267 then collapses them into a single canonical family row. The pack
+    // total (6/1) must survive the collapse exactly once — never doubled to 12.
+    assert.equal(result.total, 1);
+    const [plugin] = result.items;
+    assert.equal(plugin.versionCount, 2);
+    assert.equal(plugin.invocations, 6);
+    assert.equal(plugin.sessions, 1);
+  } finally {
+    await close();
+  }
+});
+
+// FEA-3239: the plugin child-usage join must normalize `component_key` the same
+// way every sibling usage lane does (`lower(trim(COALESCE(...,'')))`). A raw,
+// case/whitespace-sensitive join silently drops a child whose usage-row key
+// differs only in case/whitespace from its pack-manifest inventory key,
+// undercounting the plugin's invocations/sessions below the cloud reader (which
+// rolls up via the true FK). This asserts the rollup counts those variant rows.
+test("listAgentComponentsLocal rolls up plugin child usage across case/whitespace-variant keys", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // A plugin whose own pack_id == its component_key == "gstack".
+    await insertComponent(prisma, {
+      id: "c-plugin",
+      kind: "plugin",
+      externalId: "claude|/x|gstack",
+      key: "gstack",
+      name: "GStack",
+      packId: "gstack",
+    });
+    // Child skill inventory key is stored canonically as "gstack-nav".
+    await insertComponent(prisma, {
+      id: "c-child-skill",
+      kind: "skill",
+      externalId: "gstack-skill",
+      key: "gstack-nav",
+      packId: "gstack",
+    });
+    // Child command inventory key stored as "gstack-shot".
+    await insertComponent(prisma, {
+      id: "c-child-cmd",
+      kind: "command",
+      externalId: "gstack-cmd",
+      key: "gstack-shot",
+      packId: "gstack",
+    });
+    // Usage rows log the SAME children but with case/whitespace-variant keys
+    // (`GStack-Nav`, ` gstack-shot `). The raw join would miss all of these,
+    // reading the plugin as 0 usage; the normalized join counts them.
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "GStack-Nav",
+      invocations: 4,
+      lastInvokedAt: "2026-06-05T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "command",
+      key: " gstack-shot ",
+      invocations: 1,
+      lastInvokedAt: "2026-06-07T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s2",
+      kind: "command",
+      key: "GSTACK-SHOT",
+      invocations: 2,
+      lastInvokedAt: "2026-06-06T00:00:00.000Z",
+    });
+
+    // A LOC/cost source exercises the LOC/$ lane (`pluginUsageSessionIdsSql`),
+    // whose child-usage join is normalized by the same fix. Without
+    // normalization it resolves no child sessions and locPerDollar is null.
+    const source = fakeLocCostSource({
+      s1: { loc: { added: 2000, removed: 0 }, cost: 0.5 },
+      s2: { loc: { added: 0, removed: 0 }, cost: 0.5 },
+    });
+    const result = await listAgentComponentsLocal(
+      prisma,
+      { kinds: ["plugin"] },
+      null,
+      source
+    );
+    assert.equal(result.total, 1);
+    const plugin = result.items[0];
+    assert.equal(plugin.kind, "plugin");
+    // Rollup spans every case/whitespace variant: 4+1+2 = 7 invocations across
+    // distinct sessions {s1, s2} = 2 — identical to the canonical-key rollup.
+    // These prove the child-usage key normalization resolved the sessions (a raw
+    // join would resolve none → invocations 0 / sessions 0).
+    assert.equal(plugin.invocations, 7);
+    assert.equal(plugin.sessions, 2);
+    assert.equal(plugin.lastInvokedAt, "2026-06-07T00:00:00.000Z");
+    // FEA-4052: LOC/$ is HIDDEN for a plugin (non-verifiable kind — its number
+    // is a version-agnostic child rollup, not one component's efficiency), so it
+    // is null even though the child sessions carry real LOC/cost. The
+    // normalization is proven by invocations/sessions above, not by LOC/$.
+    assert.equal(plugin.locPerDollar, null);
+  } finally {
+    await close();
+  }
+});
+
+// FEA-3239: the DETAIL per-session breakdown (`PLUGIN_USAGE_SESSIONS_SQL`) uses
+// the same child-usage join and must normalize the key too, or a plugin's
+// usageSessions read empty/undercounted for case/whitespace-variant child keys
+// even though the list rollup surfaced real usage.
+test("getAgentComponentDetailLocal rolls up plugin usageSessions across case/whitespace-variant keys", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-plugin",
+      kind: "plugin",
+      externalId: "claude|/x|gstack",
+      key: "gstack",
+      name: "GStack",
+      packId: "gstack",
+    });
+    await insertComponent(prisma, {
+      id: "c-child-skill",
+      kind: "skill",
+      externalId: "gstack-skill",
+      key: "gstack-nav",
+      packId: "gstack",
+    });
+    await insertComponent(prisma, {
+      id: "c-child-cmd",
+      kind: "command",
+      externalId: "gstack-cmd",
+      key: "gstack-shot",
+      packId: "gstack",
+    });
+    // Same variant-key usage as the list test: s1 = skill 4 + command 1 = 5;
+    // s2 = command 2. Keys differ from inventory only in case/whitespace.
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "GStack-Nav",
+      invocations: 4,
+      lastInvokedAt: "2026-06-02T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "command",
+      key: " gstack-shot ",
+      invocations: 1,
+      lastInvokedAt: "2026-06-02T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s2",
+      kind: "command",
+      key: "GSTACK-SHOT",
+      invocations: 2,
+      lastInvokedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    const detail = await getAgentComponentDetailLocal(prisma, "plugin::gstack");
+    assert.ok(detail, "plugin detail should resolve");
+    assert.equal(detail.kind, "plugin");
+    assert.equal(detail.invocations, 7);
+    assert.equal(detail.sessions, 2);
+    // Per-session breakdown counts every variant row, s1 first (most recent).
+    assert.equal(detail.usageSessions.length, 2);
+    assert.equal(detail.usageSessions[0].sessionId, "s1");
+    assert.equal(detail.usageSessions[0].invocationCount, 5);
+    assert.equal(detail.usageSessions[1].sessionId, "s2");
+    assert.equal(detail.usageSessions[1].invocationCount, 2);
+  } finally {
+    await close();
+  }
+});
+
+// FEA-3239: the normalized join keeps the `ac.component_key IS NOT NULL` guard so
+// the `COALESCE(NULL,'')` fold does NOT over-match a null-key inventory child to
+// an empty/whitespace usage key — a join the raw `NULL = key` predicate never
+// made. A legitimate child's usage is still counted; the empty-key usage is not.
+test("listAgentComponentsLocal does not fold empty-key usage into a null-key plugin child", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-plugin",
+      kind: "plugin",
+      externalId: "claude|/x|gstack",
+      key: "gstack",
+      name: "GStack",
+      packId: "gstack",
+    });
+    // A legitimate child with a real key — its usage must count.
+    await insertComponent(prisma, {
+      id: "c-child-skill",
+      kind: "skill",
+      externalId: "gstack-skill",
+      key: "gstack-nav",
+      packId: "gstack",
+    });
+    // A null-key child of the same pack. Under the raw join it joined nothing
+    // (NULL = key is never true); the fold must not resurrect it via `''`.
+    await insertComponent(prisma, {
+      id: "c-child-null",
+      kind: "command",
+      externalId: "gstack-nullkey",
+      key: null,
+      name: "gstack-orphan",
+      packId: "gstack",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "gstack-nav",
+      invocations: 3,
+      lastInvokedAt: "2026-06-05T00:00:00.000Z",
+    });
+    // An empty-key usage row (malformed capture). It must NOT be attributed to
+    // the null-key child via the `COALESCE(...,'')` fold.
+    await insertUsage(prisma, {
+      sessionId: "s2",
+      kind: "command",
+      key: "",
+      invocations: 5,
+      lastInvokedAt: "2026-06-06T00:00:00.000Z",
+    });
+
+    const result = await listAgentComponentsLocal(prisma, {
+      kinds: ["plugin"],
+    });
+    assert.equal(result.total, 1);
+    const plugin = result.items[0];
+    // Only the legitimate child's usage counts: 3 invocations in {s1} = 1
+    // session. The empty-key usage (5) is not folded into the null-key child.
+    assert.equal(plugin.invocations, 3);
+    assert.equal(plugin.sessions, 1);
   } finally {
     await close();
   }
@@ -454,6 +947,44 @@ test("listAgentComponentsLocal paginates with limit/offset", async () => {
 // getAgentComponentDetailLocal
 // ---------------------------------------------------------------------------
 
+test("getAgentComponentDetailLocal attributes usageSessions to the version hash (FEA-2923)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-ver",
+      kind: "skill",
+      externalId: "ext-ver",
+      key: "deep-research",
+    });
+    await insertUsage(prisma, {
+      sessionId: "sv1",
+      kind: "skill",
+      key: "deep-research",
+      invocations: 4,
+      versionHash: "hash-v2",
+    });
+    await insertUsage(prisma, {
+      sessionId: "sv2",
+      kind: "skill",
+      key: "deep-research",
+      invocations: 1,
+      // No version hash recorded → attribution is null (honest).
+    });
+
+    const detail = await getAgentComponentDetailLocal(
+      prisma,
+      "skill::deep-research"
+    );
+    assert.ok(detail);
+    const withHash = detail.usageSessions.find((u) => u.sessionId === "sv1");
+    const withoutHash = detail.usageSessions.find((u) => u.sessionId === "sv2");
+    assert.equal(withHash?.versionHash, "hash-v2");
+    assert.equal(withoutHash?.versionHash, null);
+  } finally {
+    await close();
+  }
+});
+
 test("getAgentComponentDetailLocal resolves a full detail by slug", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
@@ -488,8 +1019,14 @@ test("getAgentComponentDetailLocal resolves a full detail by slug", async () => 
     assert.equal(detail.id, "skill::deep-research");
     assert.equal(detail.invocations, 5);
     assert.equal(detail.sessions, 2);
+    // Detail carries the same distinct usage-recency field as the list (FEA-3310):
+    // the MAX usage last_invoked_at, not the inventory-observation lastSeenAt.
+    assert.equal(detail.lastInvokedAt, "2026-06-02T00:00:00.000Z");
     assert.equal(detail.properties.format, "md");
     assert.equal(detail.prompt, "Deep research skill");
+    // A legacy aggregate-only detail omits the optional page so consumers keep
+    // using the existing usage/session/branch projections.
+    assert.equal("invocationRows" in detail, false);
     // usageSessions: one entry per session, ordered by most-recent first.
     assert.equal(detail.usageSessions.length, 2);
     assert.equal(detail.usageSessions[0].sessionId, "s1");
@@ -500,6 +1037,272 @@ test("getAgentComponentDetailLocal resolves a full detail by slug", async () => 
       detail.provenance[0].installPath,
       "/home/u/.claude/skills/deep-research.md"
     );
+  } finally {
+    await close();
+  }
+});
+
+test("getAgentComponentDetailLocal returns a bounded deterministic exact invocation page", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-read-page",
+      kind: AgentComponentInvocationKind.Skill,
+      externalId: "skill:read-page",
+      key: "deep-research",
+    });
+    await insertComponent(prisma, {
+      id: "c-other",
+      kind: AgentComponentInvocationKind.Skill,
+      externalId: "skill:other",
+      key: "other",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-read-page",
+      kind: AgentComponentInvocationKind.Skill,
+      key: "deep-research",
+      invocations: 502,
+    });
+    await prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO agent_component_versions
+           (id, component_kind, component_key, source, content_hash, content,
+            format, first_seen_at, last_seen_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+        "v-exact",
+        AgentComponentInvocationKind.Skill,
+        "deep-research",
+        "/repo/.claude/skills/deep-research.md",
+        "hash-exact",
+        "Exact definition",
+        "md",
+        "2026-07-22T08:00:00.000Z"
+      )
+    );
+
+    const invocationRows: InvocationSeed[] = [
+      {
+        id: "inv-event",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        // A linked row remains part of this component even if its historical
+        // raw key differs from today's normalized inventory key.
+        componentKey: "legacy-deep-research",
+        rawName: "Deep Research",
+        normalizedName: "deep-research",
+        relationship: AgentComponentInvocationRelationship.ChildSession,
+        childSessionId: "child-session",
+        invokedAt: "2026-07-22T12:00:00.000Z",
+        sequence: 0,
+        anchorKind: AgentComponentInvocationAnchorKind.Event,
+        anchorValue: "event-stable-id",
+        providerToolUseId: "tool-use-1",
+        status: AgentComponentInvocationAttributionStatus.Matched,
+        evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+        evidencePointer: {
+          externalAgentId: "external-agent-1",
+          parentExternalInvocationId: "parent-invocation-1",
+          sourcePath: "/repo/.claude/skills/deep-research.md",
+          sourceModifiedAt: "2026-07-22T11:59:00.000Z",
+          capturedAt: "2026-07-22T12:00:01.000Z",
+        },
+        definitionHash: "hash-exact",
+        normalizerContractVersion: 1,
+        localComponentId: "c-read-page",
+        localComponentVersionId: "v-exact",
+        gitBranch: "feat/read-page",
+        repositoryFullName: "closedloop-ai/symphony-alpha",
+      },
+      {
+        id: "inv-agent",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: " Deep-Research ",
+        invokedAt: "2026-07-22T11:00:00.000Z",
+        sequence: 1,
+        anchorKind: AgentComponentInvocationAnchorKind.Agent,
+        anchorValue: "local-agent-1",
+        evidencePointer: {
+          externalAgentId: "external-agent-2",
+          transcriptFileId: "agent-transcript-2",
+        },
+        status: AgentComponentInvocationAttributionStatus.Unmatched,
+      },
+      {
+        id: "inv-user-turn",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "deep-research",
+        invokedAt: "2026-07-22T10:00:00.000Z",
+        sequence: 2,
+        anchorKind: AgentComponentInvocationAnchorKind.UserTurn,
+        anchorValue: "user-turn-1",
+      },
+      {
+        id: "inv-timestamp",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "deep-research",
+        invokedAt: "2026-07-22T09:00:00.000Z",
+        sequence: 3,
+        anchorKind: AgentComponentInvocationAnchorKind.Timestamp,
+        anchorValue: JSON.stringify({
+          timestamp: "2026-07-22T09:00:00.000Z",
+          ordinal: 4,
+        }),
+      },
+      {
+        id: "inv-session",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "deep-research",
+        invokedAt: "2026-07-22T08:00:00.000Z",
+        sequence: 4,
+        anchorKind: AgentComponentInvocationAnchorKind.Session,
+        anchorValue: "s-read-page",
+        status: AgentComponentInvocationAttributionStatus.Ambiguous,
+      },
+      ...Array.from({ length: 497 }, (_, index) => ({
+        id: `inv-bulk-${String(index).padStart(3, "0")}`,
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "deep-research",
+        invokedAt: "2026-07-22T07:00:00.000Z",
+        sequence: index + 5,
+        anchorKind: AgentComponentInvocationAnchorKind.Session,
+        anchorValue: "s-read-page",
+      })),
+      // Same key but explicitly linked to another inventory identity: the link
+      // wins, so it must not leak into this detail's fallback lane.
+      {
+        id: "inv-linked-other",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "deep-research",
+        invokedAt: "2026-07-23T00:00:00.000Z",
+        sequence: 1000,
+        anchorKind: AgentComponentInvocationAnchorKind.Session,
+        anchorValue: "s-read-page",
+        localComponentId: "c-other",
+      },
+      {
+        id: "inv-unlinked-other-key",
+        sessionId: "s-read-page",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: "other",
+        invokedAt: "2026-07-23T00:00:00.000Z",
+        sequence: 1001,
+        anchorKind: AgentComponentInvocationAnchorKind.Session,
+        anchorValue: "s-read-page",
+      },
+    ];
+    await insertInvocations(prisma, invocationRows);
+
+    const detail = await getAgentComponentDetailLocal(
+      prisma,
+      "skill::deep-research"
+    );
+    assert.ok(detail?.invocationRows);
+    const page = detail.invocationRows;
+    assert.equal(page.total, 502);
+    assert.equal(page.items.length, 500);
+    assert.equal(page.hasMore, true);
+    assert.equal(page.unmatchedCount, 1);
+    assert.equal(page.ambiguousCount, 1);
+    assert.deepEqual(
+      page.items.slice(0, 5).map((row) => row.id),
+      [
+        "inv-event",
+        "inv-agent",
+        "inv-user-turn",
+        "inv-timestamp",
+        "inv-session",
+      ]
+    );
+    assert.ok(!page.items.some((row) => row.id === "inv-linked-other"));
+    assert.ok(!page.items.some((row) => row.id === "inv-unlinked-other-key"));
+
+    assert.deepEqual(page.items[0], {
+      id: "inv-event",
+      externalInvocationId: "inv-event",
+      sessionId: "s-read-page",
+      externalSessionId: "s-read-page",
+      sourceSessionId: "s-read-page",
+      childSessionId: "child-session",
+      parentExternalInvocationId: "parent-invocation-1",
+      externalAgentId: "external-agent-1",
+      kind: AgentComponentInvocationKind.Skill,
+      componentKey: "legacy-deep-research",
+      rawName: "Deep Research",
+      normalizedName: "deep-research",
+      relationship: AgentComponentInvocationRelationship.ChildSession,
+      invokedAt: "2026-07-22T12:00:00.000Z",
+      sequence: 0,
+      anchor: {
+        kind: AgentComponentInvocationAnchorKind.Event,
+        eventId: "event-stable-id",
+        providerToolUseId: "tool-use-1",
+      },
+      providerInvocationId: "tool-use-1",
+      status: AgentComponentInvocationAttributionStatus.Matched,
+      evidenceClass: AgentComponentInvocationEvidenceClass.TranscriptSnapshot,
+      definitionHash: "hash-exact",
+      normalizerContractVersion: 1,
+      definitionVersionId: "v-exact",
+      sourcePath: "/repo/.claude/skills/deep-research.md",
+      sourceModifiedAt: "2026-07-22T11:59:00.000Z",
+      capturedAt: "2026-07-22T12:00:01.000Z",
+      repositoryFullName: "closedloop-ai/symphony-alpha",
+      branchName: "feat/read-page",
+    });
+    assert.deepEqual(page.items[1].anchor, {
+      kind: AgentComponentInvocationAnchorKind.Agent,
+      agentId: "local-agent-1",
+      externalAgentId: "external-agent-2",
+      transcriptFileId: "agent-transcript-2",
+    });
+    assert.deepEqual(page.items[2].anchor, {
+      kind: AgentComponentInvocationAnchorKind.UserTurn,
+      userTurnId: "user-turn-1",
+    });
+    assert.deepEqual(page.items[3].anchor, {
+      kind: AgentComponentInvocationAnchorKind.Timestamp,
+      timestamp: "2026-07-22T09:00:00.000Z",
+      ordinal: 4,
+    });
+    assert.deepEqual(page.items[4].anchor, {
+      kind: AgentComponentInvocationAnchorKind.Session,
+    });
+  } finally {
+    await close();
+  }
+});
+
+test("getAgentComponentDetailLocal adds invocation rows to unresolved usage detail", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertUsage(prisma, {
+      sessionId: "s-unresolved-invocation",
+      kind: AgentComponentInvocationKind.Skill,
+      key: "ghost",
+      invocations: 1,
+    });
+    await insertInvocations(prisma, [
+      {
+        id: "inv-unresolved",
+        sessionId: "s-unresolved-invocation",
+        componentKind: AgentComponentInvocationKind.Skill,
+        componentKey: " GHOST ",
+        anchorKind: AgentComponentInvocationAnchorKind.Session,
+        anchorValue: "s-unresolved-invocation",
+        status: AgentComponentInvocationAttributionStatus.Unresolved,
+      },
+    ]);
+
+    const detail = await getAgentComponentDetailLocal(prisma, "skill::ghost");
+    assert.ok(detail?.invocationRows);
+    assert.equal(detail.invocationRows.total, 1);
+    assert.equal(detail.invocationRows.items[0].id, "inv-unresolved");
   } finally {
     await close();
   }
@@ -635,8 +1438,13 @@ test("listAgentComponentsLocal surfaces the local compute-target id", async () =
     // device shows up as an observing target (parity with the cloud list).
     const withTarget = await listAgentComponentsLocal(prisma, {}, "ct-local-1");
     assert.deepEqual(withTarget.items[0].computeTargetIds, ["ct-local-1"]);
-    // owner stays intentionally null (no org-wide user directory locally).
-    assert.equal(withTarget.items[0].owner, null);
+    // FEA-4098 (Slice 3): the single git-attributed `owner` was replaced by the
+    // `collaborators` authors people-set. Desktop-local reads have no org-wide
+    // DefinitionVersion lineage to attribute authors from, so `collaborators` is
+    // intentionally empty and the deprecated `owner` alias is omitted entirely
+    // (never serialized as null) so absence stays skew-safe on the wire.
+    assert.deepEqual(withTarget.items[0].collaborators, []);
+    assert.equal(withTarget.items[0].owner, undefined);
     // Absent a compute-target id it degrades to an empty array (not undefined).
     const noTarget = await listAgentComponentsLocal(prisma, {});
     assert.deepEqual(noTarget.items[0].computeTargetIds, []);
@@ -928,6 +1736,9 @@ test("listAgentComponentsLocal surfaces usage with no inventory row (unresolved 
     // Timestamps carry through from the usage rows.
     assert.equal(item.firstSeenAt, "2026-06-01T00:00:00.000Z");
     assert.equal(item.lastSeenAt, "2026-06-03T00:00:00.000Z");
+    // An unresolved identity has no inventory observation, so lastInvokedAt
+    // equals its usage-derived lastSeenAt — the max last_invoked_at (FEA-3310).
+    assert.equal(item.lastInvokedAt, "2026-06-03T00:00:00.000Z");
   } finally {
     await close();
   }
@@ -1291,94 +2102,27 @@ test("getAgentComponentDetailLocal resolves a non-ASCII unresolved-source identi
 });
 
 // ---------------------------------------------------------------------------
-// KLOC/$ column (FEA-3090)
+// LOC/$ column (FEA-3090)
 // ---------------------------------------------------------------------------
 
-type FakeSessionLoc = { added: number; removed: number };
-
-/**
- * A minimal fake `AgentSessionSyncSource` whose `loadSyncedSessions` returns
- * synthetic sessions carrying the `gitDiffStats` (authored LOC) and per-model
- * estimated cost the KLOC/$ reader consumes (plus the fields `mapListItem`
- * touches, so the detail `sessionsTab` projection is exercised too). Ids with no
- * entry resolve to nothing (dropped), mirroring the real loader.
- */
-function fakeLocCostSource(
-  sessions: Record<string, { loc?: FakeSessionLoc; cost?: number }>
-): AgentSessionSyncSource {
-  return {
-    loadSyncedSessions(ids: readonly string[]) {
-      return ids.flatMap((id) => {
-        const spec = sessions[id];
-        if (!spec) {
-          return [];
-        }
-        return [
-          {
-            externalSessionId: id,
-            name: id,
-            status: "completed",
-            harness: "claude",
-            cwd: null,
-            model: "claude",
-            startedAt: "2026-06-01T00:00:00.000Z",
-            updatedAt: "2026-06-01T00:00:00.000Z",
-            endedAt: null,
-            awaitingInputSince: null,
-            lastActivityAt: "2026-06-01T00:00:00.000Z",
-            attribution: null,
-            prs: [],
-            events: [],
-            agents: [],
-            markers: [],
-            tokenUsageByModel:
-              spec.cost === undefined
-                ? []
-                : [
-                    {
-                      model: "claude",
-                      inputTokens: 0,
-                      outputTokens: 0,
-                      cacheReadTokens: 0,
-                      cacheWriteTokens: 0,
-                      estimatedCostUsd: spec.cost,
-                    },
-                  ],
-            ...(spec.loc
-              ? {
-                  gitDiffStats: {
-                    linesAdded: spec.loc.added,
-                    linesRemoved: spec.loc.removed,
-                    filesChanged: 0,
-                    source: "git",
-                  },
-                }
-              : {}),
-          },
-        ];
-      });
-    },
-  } as unknown as AgentSessionSyncSource;
-}
-
-test("listAgentComponentsLocal computes KLOC/$ = summed lines/1000 / summed cost across the component's deduped sessions", async () => {
+test("listAgentComponentsLocal computes LOC/$ = summed lines / summed cost across the component's deduped sessions", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
-      id: "c-skill",
-      kind: "skill",
-      externalId: "ext-skill",
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
       key: "deep-research",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 3,
     });
     await insertUsage(prisma, {
       sessionId: "s2",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 2,
     });
@@ -1388,31 +2132,92 @@ test("listAgentComponentsLocal computes KLOC/$ = summed lines/1000 / summed cost
       s2: { loc: { added: 200, removed: 300 }, cost: 0.5 },
     });
     const result = await listAgentComponentsLocal(prisma, {}, null, source);
-    const skill = result.items.find((i) => i.id === "skill::deep-research");
-    assert.ok(skill, "skill row should be present");
-    // (1000 + 500) lines / 1000 = 1.5 KLOC ÷ (0.5 + 0.5) = 1.5 KLOC/$.
+    const subagent = result.items.find(
+      (i) => i.id === "subagent::deep-research"
+    );
+    assert.ok(subagent, "subagent row should be present");
+    // ISS-4667: (1000 + 500) LINES ÷ (0.5 + 0.5) = 1500 LOC/$ (no /1000).
     assert.ok(
-      skill.klocPerDollar !== null &&
-        Math.abs(skill.klocPerDollar - 1.5) < 1e-9,
-      `expected 1.5, got ${skill.klocPerDollar}`
+      subagent.locPerDollar !== null &&
+        Math.abs(subagent.locPerDollar - 1500) < 1e-9,
+      `expected 1500, got ${subagent.locPerDollar}`
     );
   } finally {
     await close();
   }
 });
 
-test("listAgentComponentsLocal reports KLOC/$ = null when summed cost is 0 (no divide-by-zero)", async () => {
+test("listAgentComponentsLocal dedups branch-fallback LOC per branch across sessions (FEA-3633)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
-      id: "c-skill",
-      kind: "skill",
-      externalId: "ext-skill",
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
+      key: "deep-research",
+    });
+    // Three authoring sessions share ONE branch; each carries the branch's
+    // whole 1000-line fallback total (loc_source = "branch_fallback").
+    for (const sessionId of ["s1", "s2", "s3"]) {
+      await insertUsage(prisma, {
+        sessionId,
+        kind: "subagent",
+        key: "deep-research",
+        invocations: 1,
+      });
+    }
+    const source = fakeLocCostSource({
+      s1: {
+        loc: { added: 600, removed: 400 },
+        cost: 0.5,
+        locSource: "branch_fallback",
+        repositoryFullName: "org/repo",
+        branch: "feat/shared",
+      },
+      s2: {
+        loc: { added: 600, removed: 400 },
+        cost: 0.5,
+        locSource: "branch_fallback",
+        repositoryFullName: "org/repo",
+        branch: "feat/shared",
+      },
+      s3: {
+        loc: { added: 600, removed: 400 },
+        cost: 0.5,
+        locSource: "branch_fallback",
+        repositoryFullName: "org/repo",
+        branch: "feat/shared",
+      },
+    });
+    const result = await listAgentComponentsLocal(prisma, {}, null, source);
+    const subagent = result.items.find(
+      (i) => i.id === "subagent::deep-research"
+    );
+    assert.ok(subagent, "subagent row should be present");
+    // ISS-4667: branch total 1000 LINES counted ONCE ÷ (0.5×3) = 666.67 LOC/$.
+    // Without the dedup it would be 3×1000 lines ÷ $1.5 = 2000 (the bug).
+    assert.ok(
+      subagent.locPerDollar !== null &&
+        Math.abs(subagent.locPerDollar - 1000 / 1.5) < 1e-9,
+      `expected ${1000 / 1.5}, got ${subagent.locPerDollar}`
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal reports LOC/$ = null when summed cost is 0 (no divide-by-zero)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
       key: "deep-research",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 1,
     });
@@ -1420,65 +2225,71 @@ test("listAgentComponentsLocal reports KLOC/$ = null when summed cost is 0 (no d
       s1: { loc: { added: 100, removed: 0 }, cost: 0 },
     });
     const result = await listAgentComponentsLocal(prisma, {}, null, source);
-    const skill = result.items.find((i) => i.id === "skill::deep-research");
-    assert.ok(skill);
-    assert.equal(skill.klocPerDollar, null);
+    const subagent = result.items.find(
+      (i) => i.id === "subagent::deep-research"
+    );
+    assert.ok(subagent);
+    assert.equal(subagent.locPerDollar, null);
   } finally {
     await close();
   }
 });
 
-test("listAgentComponentsLocal reports KLOC/$ = null when the sessions produced no measurable lines", async () => {
+test("listAgentComponentsLocal reports LOC/$ = null when the sessions produced no measurable lines", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
-      id: "c-skill",
-      kind: "skill",
-      externalId: "ext-skill",
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
       key: "deep-research",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 1,
     });
     // Cost present, but no gitDiffStats/LOC → totalLoc 0 → null (not 0).
     const source = fakeLocCostSource({ s1: { cost: 0.5 } });
     const result = await listAgentComponentsLocal(prisma, {}, null, source);
-    const skill = result.items.find((i) => i.id === "skill::deep-research");
-    assert.ok(skill);
-    assert.equal(skill.klocPerDollar, null);
+    const subagent = result.items.find(
+      (i) => i.id === "subagent::deep-research"
+    );
+    assert.ok(subagent);
+    assert.equal(subagent.locPerDollar, null);
   } finally {
     await close();
   }
 });
 
-test("listAgentComponentsLocal leaves KLOC/$ null when no sessions source is wired", async () => {
+test("listAgentComponentsLocal leaves LOC/$ null when no sessions source is wired", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
-      id: "c-skill",
-      kind: "skill",
-      externalId: "ext-skill",
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
       key: "deep-research",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 1,
     });
     const result = await listAgentComponentsLocal(prisma, {});
-    const skill = result.items.find((i) => i.id === "skill::deep-research");
-    assert.ok(skill);
-    assert.equal(skill.klocPerDollar, null);
+    const subagent = result.items.find(
+      (i) => i.id === "subagent::deep-research"
+    );
+    assert.ok(subagent);
+    assert.equal(subagent.locPerDollar, null);
   } finally {
     await close();
   }
 });
 
-test("listAgentComponentsLocal computes a plugin's KLOC/$ from its child-usage sessions", async () => {
+test("listAgentComponentsLocal hides a plugin's LOC/$ (non-verifiable kind, FEA-4052)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
@@ -1509,36 +2320,73 @@ test("listAgentComponentsLocal computes a plugin's KLOC/$ from its child-usage s
     const result = await listAgentComponentsLocal(prisma, {}, null, source);
     const plugin = result.items.find((i) => i.id === "plugin::gstack");
     assert.ok(plugin, "plugin row should be present");
-    // 2000 lines / 1000 = 2 KLOC ÷ 0.5 = 4.0 KLOC/$ (rolled up from the child).
-    assert.ok(
-      plugin.klocPerDollar !== null &&
-        Math.abs(plugin.klocPerDollar - 4.0) < 1e-9,
-      `expected 4.0, got ${plugin.klocPerDollar}`
-    );
+    // FEA-4052: a plugin is NOT a verifiable LOC/$ kind — its number would be a
+    // version-agnostic child rollup, not one component's efficiency — so it is
+    // HIDDEN (null) even though its child session carries real LOC/cost (which,
+    // for a verifiable kind, would compute 2000/1000 ÷ 0.5 = 4.0). The child
+    // rollup still runs, proven by the plugin's non-zero invocations.
+    assert.equal(plugin.invocations, 4);
+    assert.equal(plugin.locPerDollar, null);
   } finally {
     await close();
   }
 });
 
-test("getAgentComponentDetailLocal computes KLOC/$ from the invoking sessions", async () => {
+test("listAgentComponentsLocal hides a command's LOC/$ (non-verifiable kind, wongk PR #3720)", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
     await insertComponent(prisma, {
-      id: "c-skill",
-      kind: "skill",
-      externalId: "ext-skill",
+      id: "c-command",
+      kind: "command",
+      externalId: "ext-command",
+      key: "ship-it",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "command",
+      key: "ship-it",
+      invocations: 2,
+    });
+
+    const source = fakeLocCostSource({
+      // 2000 lines ÷ $0.5 = 4000 LOC/$ — what a verifiable kind would show.
+      s1: { loc: { added: 1500, removed: 500 }, cost: 0.5 },
+    });
+    const result = await listAgentComponentsLocal(prisma, {}, null, source);
+    const command = result.items.find((i) => i.id === "command::ship-it");
+    assert.ok(command, "command row should be present");
+    // FEA-4052 (wongk, PR #3720): a command is NOT a verifiable LOC/$ kind. A
+    // session gives every co-invoked component (a command AND a skill can both
+    // fire in one session) the session's FULL LOC/cost, so a per-command number
+    // would be session-level, not component-level. It stays HIDDEN (null) even
+    // though its session carries real LOC/cost. The usage still folds, proven by
+    // the command's non-zero invocations.
+    assert.equal(command.invocations, 2);
+    assert.equal(command.locPerDollar, null);
+  } finally {
+    await close();
+  }
+});
+
+test("getAgentComponentDetailLocal computes LOC/$ from the invoking sessions", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-subagent",
+      kind: "subagent",
+      externalId: "ext-subagent",
       key: "deep-research",
     });
     await insertUsage(prisma, {
       sessionId: "s1",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 3,
       lastInvokedAt: "2026-06-02T00:00:00.000Z",
     });
     await insertUsage(prisma, {
       sessionId: "s2",
-      kind: "skill",
+      kind: "subagent",
       key: "deep-research",
       invocations: 2,
       lastInvokedAt: "2026-06-01T00:00:00.000Z",
@@ -1550,18 +2398,547 @@ test("getAgentComponentDetailLocal computes KLOC/$ from the invoking sessions", 
     });
     const detail = await getAgentComponentDetailLocal(
       prisma,
-      "skill::deep-research",
+      "subagent::deep-research",
       null,
       source
     );
     assert.ok(detail, "detail should resolve");
+    // ISS-4667: 1500 LINES ÷ $1.00 = 1500 LOC/$.
     assert.ok(
-      detail.klocPerDollar !== null &&
-        Math.abs(detail.klocPerDollar - 1.5) < 1e-9,
-      `expected 1.5, got ${detail.klocPerDollar}`
+      detail.locPerDollar !== null &&
+        Math.abs(detail.locPerDollar - 1500) < 1e-9,
+      `expected 1500, got ${detail.locPerDollar}`
     );
     // The single load also hydrated the sessionsTab from the same sessions.
     assert.equal(detail.sessionsTab.length, 2);
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3196: USAGE time-window (startDate/endDate) — the Agents workspace's
+// All/30/60/90-day control. Before this, `coerceAgentComponentFilters` dropped
+// both bounds and no lane applied a `last_invoked_at` predicate, so every
+// window returned the identical all-time inventory (the control was inert).
+// These tests fail if either half regresses: the coercion, or any lane's bound.
+// ---------------------------------------------------------------------------
+
+test("coerceAgentComponentFilters parses startDate/endDate to canonical ISO", () => {
+  const filters = coerceAgentComponentFilters({
+    startDate: "2026-06-10T00:00:00.000Z",
+    endDate: "2026-06-20",
+  });
+  assert.equal(filters.startDate, "2026-06-10T00:00:00.000Z");
+  // A bare date is accepted (the date control can emit it) and canonicalized to
+  // midnight UTC — the same instant the cloud's `new Date(value)` yields.
+  assert.equal(filters.endDate, "2026-06-20T00:00:00.000Z");
+});
+
+test("coerceAgentComponentFilters drops unparseable/non-string window bounds", () => {
+  // An untrusted IPC payload must not be able to fail the read — a bad bound
+  // degrades to the all-time view rather than throwing.
+  const filters = coerceAgentComponentFilters({
+    startDate: "not-a-date",
+    endDate: 1234,
+  });
+  assert.equal(filters.startDate, undefined);
+  assert.equal(filters.endDate, undefined);
+});
+
+test("listAgentComponentsLocal windows usage by last_invoked_at >= startDate", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-windowed",
+      kind: "skill",
+      externalId: "skill:windowed",
+      key: "windowed",
+    });
+    // Two invocations before the window, three inside it.
+    await insertUsage(prisma, {
+      sessionId: "s-old",
+      kind: "skill",
+      key: "windowed",
+      invocations: 2,
+      lastInvokedAt: "2026-06-01T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-new",
+      kind: "skill",
+      key: "windowed",
+      invocations: 3,
+      lastInvokedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    const allTime = await listAgentComponentsLocal(prisma, {});
+    const allTimeRow = allTime.items.find((i) => i.id === "skill::windowed");
+    assert.equal(allTimeRow?.invocations, 5);
+    assert.equal(allTimeRow?.sessions, 2);
+
+    // The window must actually change the answer — this is the exact assertion
+    // the pre-fix code failed (windowed === all-time).
+    const windowed = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-10T00:00:00.000Z",
+    });
+    const windowedRow = windowed.items.find((i) => i.id === "skill::windowed");
+    assert.equal(windowedRow?.invocations, 3);
+    assert.equal(windowedRow?.sessions, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal bounds usage above by endDate", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-bounded",
+      kind: "skill",
+      externalId: "skill:bounded",
+      key: "bounded",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-in",
+      kind: "skill",
+      key: "bounded",
+      invocations: 4,
+      lastInvokedAt: "2026-06-05T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-after",
+      kind: "skill",
+      key: "bounded",
+      invocations: 9,
+      lastInvokedAt: "2026-06-25T00:00:00.000Z",
+    });
+
+    // The preceding-window query the shared AgentsGroupedList issues for the
+    // period-over-period delta sends BOTH bounds; without an endDate predicate
+    // it would read all-time and the delta would be meaningless.
+    const list = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-01T00:00:00.000Z",
+      endDate: "2026-06-10T00:00:00.000Z",
+    });
+    const row = list.items.find((i) => i.id === "skill::bounded");
+    assert.equal(row?.invocations, 4);
+    assert.equal(row?.sessions, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal drops usage-tracked components with zero in-window usage", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-idle",
+      kind: "skill",
+      externalId: "skill:idle",
+      key: "idle",
+    });
+    await insertComponent(prisma, {
+      id: "c-active",
+      kind: "skill",
+      externalId: "skill:active",
+      key: "active",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-idle",
+      kind: "skill",
+      key: "idle",
+      invocations: 5,
+      lastInvokedAt: "2026-06-01T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-active",
+      kind: "skill",
+      key: "active",
+      invocations: 5,
+      lastInvokedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    // All-time keeps both (unchanged behavior).
+    const allTime = await listAgentComponentsLocal(prisma, {});
+    assert.ok(allTime.items.some((i) => i.id === "skill::idle"));
+
+    const windowed = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-10T00:00:00.000Z",
+    });
+    assert.ok(
+      !windowed.items.some((i) => i.id === "skill::idle"),
+      "a skill with no in-window usage is not part of the window"
+    );
+    assert.ok(windowed.items.some((i) => i.id === "skill::active"));
+    // `total` drives the summary cards + pagination, so the drop must be
+    // reflected there too, not just in the returned page.
+    assert.equal(windowed.total, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal keeps hook/config kinds under a window", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // hook/config are observed as inventory but never invoked, so they always
+    // aggregate to zero usage. Dropping them on a zero window would erase the
+    // entire kind under EVERY window rather than hiding an inactive component.
+    await insertComponent(prisma, {
+      id: "c-hook",
+      kind: "hook",
+      externalId: "hook:pre-commit",
+      key: "pre-commit",
+    });
+    await insertComponent(prisma, {
+      id: "c-config",
+      kind: "config",
+      externalId: "config:settings",
+      key: "settings",
+    });
+
+    const windowed = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-10T00:00:00.000Z",
+    });
+    assert.ok(windowed.items.some((i) => i.id === "hook::pre-commit"));
+    assert.ok(windowed.items.some((i) => i.id === "config::settings"));
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal windows the plugin child-usage rollup", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-plugin",
+      kind: "plugin",
+      externalId: "plugin:pack-a",
+      key: "pack-a",
+      packId: "pack-a",
+    });
+    await insertComponent(prisma, {
+      id: "c-child",
+      kind: "skill",
+      externalId: "skill:child",
+      key: "child",
+      packId: "pack-a",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-old",
+      kind: "skill",
+      key: "child",
+      invocations: 6,
+      lastInvokedAt: "2026-06-01T00:00:00.000Z",
+    });
+    await insertUsage(prisma, {
+      sessionId: "s-new",
+      kind: "skill",
+      key: "child",
+      invocations: 4,
+      lastInvokedAt: "2026-06-20T00:00:00.000Z",
+    });
+
+    const allTime = await listAgentComponentsLocal(prisma, {});
+    assert.equal(
+      allTime.items.find((i) => i.id === "plugin::pack-a")?.invocations,
+      10
+    );
+
+    // A plugin's totals are a rollup over its children's usage, so that lane
+    // needs the same bound — otherwise the plugin row reports all-time
+    // invocations next to windowed skill rows in the same response.
+    const windowed = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-10T00:00:00.000Z",
+    });
+    assert.equal(
+      windowed.items.find((i) => i.id === "plugin::pack-a")?.invocations,
+      4
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal windows unresolved-source usage", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Usage with no live inventory row (FEA-3121 orphan lane).
+    await insertUsage(prisma, {
+      sessionId: "s-orphan-old",
+      kind: "skill",
+      key: "ghost",
+      invocations: 3,
+      lastInvokedAt: "2026-06-01T00:00:00.000Z",
+    });
+
+    const allTime = await listAgentComponentsLocal(prisma, {});
+    assert.ok(allTime.items.some((i) => i.id === "skill::ghost"));
+
+    // Its only usage is outside the window, so the identity has no in-window
+    // existence at all.
+    const windowed = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-06-10T00:00:00.000Z",
+    });
+    assert.ok(!windowed.items.some((i) => i.id === "skill::ghost"));
+  } finally {
+    await close();
+  }
+});
+
+test("listAgentComponentsLocal excludes usage with no comparable last_invoked_at from any window", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponent(prisma, {
+      id: "c-untimed",
+      kind: "skill",
+      externalId: "skill:untimed",
+      key: "untimed",
+    });
+    // `last_invoked_at` is nullable (it is written as MAX(events.created_at)),
+    // so a usage row can carry no invocation instant at all.
+    await prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO agent_component_session_usage
+           (session_id, component_kind, component_key, invocations, error_count,
+            harness, component_version_hash, first_invoked_at, last_invoked_at, started_day)
+         VALUES ('s-untimed', 'skill', 'untimed', 7, 0, NULL, NULL, NULL, NULL, '2026-06-01')`
+      )
+    );
+
+    // All-time still counts it — no window, no timestamp requirement.
+    const allTime = await listAgentComponentsLocal(prisma, {});
+    assert.equal(
+      allTime.items.find((i) => i.id === "skill::untimed")?.invocations,
+      7
+    );
+
+    // A row with no comparable instant belongs to NO window — including an
+    // upper-bounded one. Guards against an epoch sentinel, which would be
+    // `<= endDate` and so would wrongly survive here (the cloud's Prisma
+    // `lastInvokedAt: { lte }` drops NULL).
+    const upperBounded = await listAgentComponentsLocal(prisma, {
+      endDate: "2026-06-30T00:00:00.000Z",
+    });
+    assert.ok(!upperBounded.items.some((i) => i.id === "skill::untimed"));
+
+    const lowerBounded = await listAgentComponentsLocal(prisma, {
+      startDate: "2026-01-01T00:00:00.000Z",
+    });
+    assert.ok(!lowerBounded.items.some((i) => i.id === "skill::untimed"));
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// matchingUsageRawKeys / rawKeyInClause (FEA-3205, exported for FEA-3264)
+// ---------------------------------------------------------------------------
+//
+// These back the Optimization-analytics IPC handlers, which are handed the
+// already-normalized slug key (`encodeComponentSlug` lowercases + trims) but
+// must match the RAW stored `component_key`. A case-sensitive `component_key = ?`
+// silently missed every mixed-case variant — which is every built-in Claude tool
+// (`Bash`, `Read`, `Edit`, `Task`) — so the panel read 0 while the detail page
+// above it showed real invocations (FEA-3264).
+
+test("matchingUsageRawKeys resolves mixed-case and padded raw keys for a normalized slug key (FEA-3264)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // The three raw spellings that all fold to the `bash` identity...
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "tool",
+      key: "Bash",
+      invocations: 1,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s2",
+      kind: "tool",
+      key: "  bash  ",
+      invocations: 1,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s3",
+      kind: "tool",
+      key: "bash",
+      invocations: 1,
+    });
+    // ...plus one that must NOT match, and a same-key row under another kind.
+    await insertUsage(prisma, {
+      sessionId: "s4",
+      kind: "tool",
+      key: "Read",
+      invocations: 1,
+    });
+    await insertUsage(prisma, {
+      sessionId: "s5",
+      kind: "skill",
+      key: "Bash",
+      invocations: 1,
+    });
+
+    const matched = await matchingUsageRawKeys(prisma, "tool", "bash");
+    assert.deepEqual(matched.slice().sort(), ["  bash  ", "Bash", "bash"]);
+
+    // A key with no folding variant resolves to nothing, not to every row.
+    assert.deepEqual(await matchingUsageRawKeys(prisma, "tool", "nope"), []);
+  } finally {
+    await close();
+  }
+});
+
+test("matchingUsageRawKeys folds a non-ASCII key that SQL lower() would miss (FEA-3205)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // SQLite's lower() is ASCII-only, so `lower('CAFÉ')` leaves `É` intact and a
+    // SQL-side predicate never matches the JS-normalized `café`. This is why the
+    // key MATCH must stay in application code.
+    await insertUsage(prisma, {
+      sessionId: "s1",
+      kind: "skill",
+      key: "CAFÉ",
+      invocations: 1,
+    });
+
+    assert.deepEqual(await matchingUsageRawKeys(prisma, "skill", "café"), [
+      "CAFÉ",
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("rawKeyInClause binds trimmed keys and matches nothing when empty (FEA-3264)", () => {
+  const single = rawKeyInClause(["Bash"]);
+  assert.equal(single.clause, "trim(COALESCE(component_key, '')) IN (?)");
+  assert.deepEqual(single.params, ["Bash"]);
+
+  // Params are trimmed to match the trimmed column, and the caller-supplied
+  // column literal qualifies the alias used by the joined analytics queries.
+  const qualified = rawKeyInClause(["  bash  ", "Bash"], "acsu.component_key");
+  assert.equal(
+    qualified.clause,
+    "trim(COALESCE(acsu.component_key, '')) IN (?, ?)"
+  );
+  assert.deepEqual(qualified.params, ["bash", "Bash"]);
+
+  // An empty IN-list is invalid SQL, so an unmatched identity must degrade to a
+  // false predicate — never to an unfiltered scan of every component's usage.
+  const empty = rawKeyInClause([]);
+  assert.equal(empty.clause, "1 = 0");
+  assert.deepEqual(empty.params, []);
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3704: resolution state read from agent_components.resolved_state, folded
+// across devices — no longer hardcoded to `unresolved`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert an inventory row that sets `resolved_state` explicitly (the shared
+ * `insertComponent` helper leaves it at the schema default). Used to prove the
+ * detail read now surfaces the real, per-device resolution and folds it with the
+ * cloud precedence (resolved > inaccessible > unresolved > missing).
+ */
+async function insertComponentWithResolvedState(
+  prisma: DesktopPrisma,
+  row: {
+    id: string;
+    kind: string;
+    externalId: string;
+    key: string;
+    resolvedState: string;
+    installPath?: string | null;
+  }
+): Promise<void> {
+  await prisma.write((client) =>
+    client.$executeRawUnsafe(
+      `INSERT INTO agent_components
+         (id, component_kind, external_id, component_key, name, harness,
+          source, install_path, resolved_state,
+          first_seen_at, last_seen_at, uninstalled_at)
+       VALUES ($1, $2, $3, $4, $4, 'claude', NULL, $5, $6,
+               '2026-01-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z', NULL)`,
+      row.id,
+      row.kind,
+      row.externalId,
+      row.key,
+      row.installPath ?? "/home/u/.claude/skills/x.md",
+      row.resolvedState
+    )
+  );
+}
+
+test("getAgentComponentDetailLocal surfaces the real resolved_state (not hardcoded unresolved) — FEA-3704", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertComponentWithResolvedState(prisma, {
+      id: "c-resolved",
+      kind: "skill",
+      externalId: "ext-resolved",
+      key: "resolved-skill",
+      resolvedState: "resolved",
+    });
+    const detail = await getAgentComponentDetailLocal(
+      prisma,
+      "skill::resolved-skill"
+    );
+    assert.ok(detail);
+    assert.equal(detail.resolvedState, "resolved");
+  } finally {
+    await close();
+  }
+});
+
+test("getAgentComponentDetailLocal folds resolved_state across devices with cloud precedence (resolved wins) — FEA-3704", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Same identity across two devices: one resolved, one missing. `resolved`
+    // must win, and `missing` must NOT collapse the identity to "gone".
+    await insertComponentWithResolvedState(prisma, {
+      id: "c-dev-a",
+      kind: "skill",
+      externalId: "ext-a",
+      key: "multi-device",
+      resolvedState: "resolved",
+    });
+    await insertComponentWithResolvedState(prisma, {
+      id: "c-dev-b",
+      kind: "skill",
+      externalId: "ext-b",
+      key: "multi-device",
+      resolvedState: "missing",
+    });
+    const detail = await getAgentComponentDetailLocal(
+      prisma,
+      "skill::multi-device"
+    );
+    assert.ok(detail);
+    assert.equal(detail.resolvedState, "resolved");
+  } finally {
+    await close();
+  }
+});
+
+test("getAgentComponentDetailLocal defaults a row with no explicit resolved_state (legacy) to unresolved — FEA-3704", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // The shared insertComponent helper omits the resolved_state column, so the
+    // NOT NULL DEFAULT 'unresolved' applies — the legacy/label-minted row case.
+    await insertComponent(prisma, {
+      id: "c-legacy",
+      kind: "skill",
+      externalId: "ext-legacy",
+      key: "legacy-skill",
+      installPath: "/home/u/.claude/skills/legacy.md",
+    });
+    const detail = await getAgentComponentDetailLocal(
+      prisma,
+      "skill::legacy-skill"
+    );
+    assert.ok(detail);
+    assert.equal(detail.resolvedState, "unresolved");
   } finally {
     await close();
   }

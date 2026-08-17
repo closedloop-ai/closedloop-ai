@@ -1,9 +1,9 @@
 import { z } from "zod";
 import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+import { safeStorageTokenCountSchema } from "../cost/token-counts.js";
 import { deterministicEventId } from "../database/deterministic-event-id.js";
 import type { PrismaClient } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { safeStorageTokenCountSchema } from "../token-counts.js";
 
 export const ClaudeCodeOtelSignalType = {
   CostUsage: "cost_usage",
@@ -64,7 +64,12 @@ export type ClaudeCodeOtelPersistenceOptions = {
 };
 
 export type PersistClaudeCodeOtelSignalsInput = {
-  prisma: DesktopPrisma;
+  /**
+   * Only the queue-serialized write seam is used — the batch never reads. Kept
+   * narrow so callers (and doubles) do not have to materialize the whole
+   * {@link DesktopPrisma} surface to persist a batch.
+   */
+  prisma: Pick<DesktopPrisma, "write">;
   events: unknown[];
 };
 

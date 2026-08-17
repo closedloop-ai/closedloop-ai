@@ -23,9 +23,9 @@ import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
-import { LoopBranchMaterializationRole } from "@repo/api/src/types/loop-body";
 import { Result, Status } from "@repo/api/src/types/result";
 import { GitHubInstallationStatus, LoopStatus } from "@repo/database";
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   branchService,
   SourceArtifactTargetRepoAuthorizationProvenance,
@@ -216,15 +216,20 @@ describe("createLoopBranchArtifact", () => {
     expect(branchService.upsertBranchArtifact).not.toHaveBeenCalled();
   });
 
-  it("rejects default branch materialization before touching branchService", async () => {
+  it("passes legacy default assertions through to the authoritative service gate", async () => {
     const result = await createLoopBranchArtifact({
       loopId: LOOP_ID,
       organizationId: ORG_ID,
-      body: body({ branchName: "main", defaultBranch: "main" }),
+      body: body({ defaultBranch: "symphony/fea-1116" }),
     });
 
-    expect(result).toEqual(Result.err(Status.BadRequest));
-    expect(branchService.upsertBranchArtifact).not.toHaveBeenCalled();
+    expect(result).toEqual(Result.ok({ id: "branch-artifact-1" }));
+    expect(branchService.upsertBranchArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchName: "symphony/fea-1116",
+        defaultBranch: "symphony/fea-1116",
+      })
+    );
   });
 
   it("rejects malformed stored additional repos before mutation", async () => {

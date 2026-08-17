@@ -4,6 +4,38 @@ import { addDays } from "date-fns";
 import { action } from "storybook/actions";
 
 /**
+ * Fixed reference day every story below derives from, so the rendered grid is
+ * identical on every run (ISS-5286).
+ *
+ * Constructed from local date components rather than parsed from `"2025-06-11"`
+ * — an ISO date string parses as UTC midnight, which renders as June 10 for any
+ * viewer west of Greenwich and would reintroduce nondeterminism by timezone
+ * instead of by clock.
+ *
+ * Mid-month on purpose: the largest offset any story adds is +8 days, so every
+ * derived date stays inside June and stays visible in the rendered grid. A base
+ * near month-end would push `Multiple`'s third selection into the next month.
+ *
+ * `defaultMonth` is REQUIRED, not redundant with `selected`, and omitting it is a
+ * silent trap: react-day-picker picks the displayed month with
+ * `month || defaultMonth || today` and never consults `selected`
+ * (`helpers/getInitialMonth.js`), and this design-system wrapper spreads props
+ * through without defaulting it. Pin only `selected` and the grid keeps rendering
+ * the real current month while the pinned dates sit in June 2025 — so `Default`,
+ * `Multiple`, `Range`, and `Disabled` render with nothing selected or disabled at
+ * all, which is the entire thing those stories exist to show.
+ *
+ * `today` is pinned for a different and weaker reason: it is NOT needed for
+ * determinism (the real clock will never fall inside June 2025, so the today
+ * modifier is simply absent from every render either way). It is pinned so that
+ * modifier renders as a real, fixed state — `data-today="true"` on the reference
+ * day — instead of being permanently missing from a component whose whole job is
+ * showing dates, and so determinism stops depending on the reference date
+ * staying in the past.
+ */
+const REFERENCE_DATE = new Date(2025, 5, 11);
+
+/**
  * A date field component that allows users to enter and edit date.
  */
 const meta = {
@@ -13,7 +45,9 @@ const meta = {
   argTypes: {},
   args: {
     mode: "single",
-    selected: new Date(),
+    selected: REFERENCE_DATE,
+    defaultMonth: REFERENCE_DATE,
+    today: REFERENCE_DATE,
     onSelect: action("onDayClick"),
     className: "rounded-md border w-fit",
   },
@@ -37,7 +71,11 @@ export const Default: Story = {};
 export const Multiple: Story = {
   args: {
     min: 1,
-    selected: [new Date(), addDays(new Date(), 2), addDays(new Date(), 8)],
+    selected: [
+      REFERENCE_DATE,
+      addDays(REFERENCE_DATE, 2),
+      addDays(REFERENCE_DATE, 8),
+    ],
     mode: "multiple",
   },
 };
@@ -48,8 +86,8 @@ export const Multiple: Story = {
 export const Range: Story = {
   args: {
     selected: {
-      from: new Date(),
-      to: addDays(new Date(), 7),
+      from: REFERENCE_DATE,
+      to: addDays(REFERENCE_DATE, 7),
     },
     mode: "range",
   },
@@ -61,10 +99,10 @@ export const Range: Story = {
 export const Disabled: Story = {
   args: {
     disabled: [
-      addDays(new Date(), 1),
-      addDays(new Date(), 2),
-      addDays(new Date(), 3),
-      addDays(new Date(), 5),
+      addDays(REFERENCE_DATE, 1),
+      addDays(REFERENCE_DATE, 2),
+      addDays(REFERENCE_DATE, 3),
+      addDays(REFERENCE_DATE, 5),
     ],
   },
 };

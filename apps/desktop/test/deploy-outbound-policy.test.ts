@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, test } from "node:test";
-import { Observability } from "../src/main/observability.js";
+import { Observability } from "../src/main/telemetry/observability.js";
 import type {
   OperationHandler,
   OperationRequestContext,

@@ -1,6 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { ComputeTargetSyncTable } from "./compute-target-sync-table";
 
+/**
+ * ISS-4828: "Last Sync" is the last batch the cloud ACCEPTED and "Last New Data"
+ * is when session rows actually LANDED, so the table always carries both — the
+ * first row below is the shape that motivated the split: syncing fine, nothing
+ * new to send for three days.
+ *
+ * ISS-5280 (review) made `lastDataLabel` required. It was optional while a flag
+ * could withhold it, which meant the column could render for some rows and not
+ * others; there is now one column set, so `Default` is the only shape.
+ */
 const meta = {
   title: "App Core/Compute/Compute Target Sync Table",
   component: ComputeTargetSyncTable,
@@ -13,6 +23,7 @@ const meta = {
         ownerLabel: "Mike Angstadt",
         online: true,
         lastSyncLabel: "3m ago",
+        lastDataLabel: "3 days ago",
         lastSeenLabel: "just now",
       },
       {
@@ -21,6 +32,7 @@ const meta = {
         ownerLabel: "Design Systems",
         online: false,
         lastSyncLabel: "Never",
+        lastDataLabel: "Never",
         lastSeenLabel: "2h ago",
       },
     ],

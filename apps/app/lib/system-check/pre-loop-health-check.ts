@@ -1,6 +1,7 @@
 "use client";
 
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
+import { isFailingRequiredCheck } from "@closedloop-ai/loops-api/compute-target";
 import type {
   CheckResult,
   HealthCheckResponse,
@@ -32,6 +33,7 @@ export const PreLoopAnalyticsEvent = {
   SystemCheckCancelled: "pre_loop_system_check_cancelled",
   SystemCheckUnavailable: "pre_loop_system_check_unavailable",
   ComputeSelectionBlocked: "pre_loop_compute_selection_blocked",
+  SystemCheckCloudFallback: "pre_loop_system_check_cloud_fallback",
 } as const;
 export type PreLoopAnalyticsEvent =
   (typeof PreLoopAnalyticsEvent)[keyof typeof PreLoopAnalyticsEvent];
@@ -54,6 +56,8 @@ export type PreLoopHealthCheckOutcome =
   | { status: "duplicate_ignored"; attemptId: null }
   | { status: "skipped_no_local_target"; attemptId: string }
   | { status: "blocked_unavailable"; attemptId: string }
+  /** The local target was unreachable, so the command ran on Cloud instead. */
+  | { status: "fell_back_to_cloud"; attemptId: string }
   | { status: "cancelled"; attemptId: string };
 
 export type PreLoopExecutionContext = {
@@ -126,7 +130,7 @@ export function getFailingRequiredChecks(
 ): CheckResult[] {
   return (
     getRenderableHealthChecks(response, expectedMcpUrl)?.filter(
-      (check) => check.required && !check.passed
+      isFailingRequiredCheck
     ) ?? []
   );
 }
@@ -207,4 +211,27 @@ export function buildPreLoopAnalyticsProperties({
     recheckAttempts,
     reason,
   };
+}
+
+/**
+ * Resolves the compute target a pre-loop-gated launch should actually use.
+ *
+ * The gate's three answers are distinct and every caller must keep them apart:
+ *  - `undefined` — the gate expressed no opinion; the caller's own selection stands.
+ *  - `null` — the gate ran the command on Cloud because the local target could
+ *    not be reached (ISS-5171). This is a decision, not an absence.
+ *  - a string — run against that target.
+ *
+ * `context.computeTargetId ?? fallback` and `context.computeTargetId ? … : {}`
+ * both silently turn that `null` back into the target we just found
+ * unreachable, so the gate reports `fell_back_to_cloud` while the command
+ * launches locally anyway. Route every callback through this instead.
+ */
+export function resolvePreLoopComputeTargetId(
+  context: PreLoopExecutionContext,
+  fallback: string | null = null
+): string | null {
+  return context.computeTargetId === undefined
+    ? fallback
+    : context.computeTargetId;
 }

@@ -5,7 +5,16 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "outDir": "dist",
-    "noEmit": false
+    "noEmit": false,
+    "rootDir": "../..",
+    // relay consumes @repo/api source directly (deep `@repo/api/src/...` imports,
+    // run at runtime via tsx), and that package uses explicit `.ts` sibling
+    // imports so it also emits valid Node ESM for desktop (see packages/api).
+    // Accept those `.ts` specifiers here and rewrite them to `.js` on emit,
+    // mirroring packages/api's tsconfig, so relay's typecheck/build agree with
+    // the source convention instead of failing TS5097 (FEA-4293/4294, wongk).
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src"],
   "exclude": ["src/__tests__"]

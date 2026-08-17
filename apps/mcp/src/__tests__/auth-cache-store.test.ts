@@ -63,6 +63,7 @@ const mockRedisClient = {
   set: vi.fn(),
   del: vi.fn(),
   pexpire: vi.fn(),
+  quit: vi.fn(),
   connect: vi.fn().mockResolvedValue(undefined),
   on: vi.fn(),
 };
@@ -241,6 +242,16 @@ describe("RedisAuthCacheStore", () => {
       await expect(store.touch("session-1", 600_000)).resolves.toBeUndefined();
     });
   });
+
+  describe("close", () => {
+    it("quits the Redis client", async () => {
+      mockRedisClient.quit.mockResolvedValueOnce("OK");
+
+      await store.close();
+
+      expect(mockRedisClient.quit).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe.sequential("MCP_SESSION_STORE env var", () => {
@@ -333,5 +344,57 @@ describe.sequential("handleCachedAuthRequest", () => {
 
     expect(handled).toBe(false);
     expect(mockRedisClient.get).toHaveBeenCalledWith("auth:missing-session");
+  });
+
+  // ISS-4905 (wongk review): the cache survives a deploy, so a split rollout can
+  // restore an entry an older instance wrote while an empty stored scope set
+  // still meant full access — and `touch` would extend that entry on every
+  // request. The restore path must re-resolve the grant and evict on refusal.
+  it("evicts a cached entry whose stored scopes no longer resolve", async () => {
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_SESSION_STORE = "redis";
+    process.env.REDIS_URL = "redis://localhost:6379";
+
+    const mod = await import("../index.js");
+    const store = mod.__testables.authCacheStore;
+    expect(store).not.toBeNull();
+
+    // Encode with the PRODUCTION cipher so the restore path actually decrypts,
+    // reaching the re-resolution instead of short-circuiting on a cache miss.
+    await store?.set(
+      "poisoned-session",
+      {
+        plaintextKey: "sk_live_poisoned",
+        // What a pre-ISS-4905 instance wrote: an empty stored scope set that it
+        // read as a full-access grant.
+        context: {
+          userId: "user_1",
+          organizationId: "org_1",
+          scopes: [],
+        },
+        grantedScopes: ["read", "write", "delete"],
+        createdAt: Date.now(),
+      },
+      60_000
+    );
+    const serialized = mockRedisClient.set.mock.calls.at(-1)?.[1] as string;
+    expect(serialized).toBeTypeOf("string");
+    mockRedisClient.get.mockResolvedValue(serialized);
+
+    const handled = await mod.__testables.handleCachedAuthRequest(
+      stubReq,
+      stubRes,
+      "poisoned-session"
+    );
+
+    // Not handled — the caller falls through to full API-key verification,
+    // which fails closed on the same empty scope set.
+    expect(handled).toBe(false);
+    expect(mockRedisClient.del).toHaveBeenCalledWith("auth:poisoned-session");
+    // The stale entry must not have had its TTL extended on the way out.
+    expect(mockRedisClient.pexpire).not.toHaveBeenCalledWith(
+      "auth:poisoned-session",
+      expect.anything()
+    );
   });
 });

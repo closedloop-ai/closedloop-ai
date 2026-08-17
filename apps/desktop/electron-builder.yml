@@ -1,6 +1,26 @@
 appId: ai.closedloop.desktop
 productName: Closedloop
 
+# ISS-6109: the OS-level custom URI scheme the web app's "Launch Desktop App"
+# control fires. electron-builder reads this block for exactly two of the
+# platforms we care about — macOS `CFBundleURLTypes` in Info.plist and the Linux
+# .desktop `MimeType` (plus the Windows AppX target, which we do not build).
+# NSIS/Squirrel ignore it, so WINDOWS registration comes solely from the runtime
+# `app.setAsDefaultProtocolClient` call in src/main/lifecycle/deep-link.ts.
+# On macOS that runtime call can only succeed for a bundle whose Info.plist
+# already declares the scheme, so for the target we actually ship (mac dmg+zip)
+# this block is load-bearing and not a duplicate of the runtime call.
+# The scheme name is the shared DESKTOP_DEEP_LINK_SCHEME wire constant
+# (packages/api/src/types/desktop-deep-link.ts) — YAML cannot import it, so a
+# change there must be mirrored here.
+# Only the bare, payload-free `closedloop://` is ever accepted; the handler
+# denies every URL carrying a host, path, query, fragment, or credentials.
+protocols:
+  - name: Closedloop
+    schemes:
+      - closedloop
+    role: Viewer
+
 files:
   - app/**/*
   - package.json
@@ -22,6 +42,14 @@ extraResources:
     to: hooks
     filter:
       - "*.js"
+  # First-party statusline capture script (FEA-3492), shipped unpacked outside
+  # the asar so it resolves as a real file. statusline-capture-install.ts copies
+  # it into userData at opt-in time; the installed statusLine command runs it via
+  # the Electron binary as Node (ELECTRON_RUN_AS_NODE) against that userData copy.
+  - from: resources/statusline
+    to: statusline
+    filter:
+      - "*.js"
   - from: resources/command-packs
     to: command-packs
     filter:
@@ -33,6 +61,17 @@ extraResources:
     to: coaching-packs
     filter:
       - "**/*"
+  # Bundled audit-bot character prompts (PRD-556 / FEA-3847; full cast FEA-4013).
+  # The on-demand crewd review pass reads `<character>.md` (e.g. docs-darwin.md,
+  # kaitic/desktop-denny.md) from here as the analysis prompt; resolved from
+  # `resourcesPath` in a packaged build. `**/*.md` (not `*.md`) so the author
+  # subfolders — the full discovered cast the picker offers — ship too; a
+  # single-level glob would ship only the 4 top-level prompts and the runner
+  # would then fail "character prompt not found" for every nightly character.
+  - from: resources/audit-characters
+    to: audit-characters
+    filter:
+      - "**/*.md"
 
 mac:
   icon: resources/icon.icns

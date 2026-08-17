@@ -3,29 +3,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
 import {
   ArtifactRefMethod,
   ArtifactRefRelation,
 } from "@repo/api/src/types/session-artifact-link";
-import {
-  BASELINE_MIGRATIONS,
-  LEGACY_SCHEMA_REASSERT_SEQUENCE,
-} from "../src/main/database/baseline-schema.js";
+import { InsightsPeriod, InsightsSection } from "@closedloop-ai/loops-api/insights";
 import { computeLocalInsights } from "../src/main/database/local-insights.js";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
-import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
-import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
-import {
-  createDesktopPrisma,
-  type WriteSerializer,
-} from "../src/main/database/prisma-client.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 // FEA-3132: the heatmap/autonomy reads now GROUP BY the materialized
 // session_turn_bucket; these tests seed sessions directly, so they must populate
 // the buckets the same way production ingest does (rebuildSessionTurnBuckets in
 // the rollup tx) before computing.
-import { rebuildSessionTurnBuckets } from "../src/main/database/write-core.js";
+import { rebuildSessionTurnBuckets } from "../src/main/database/turn-buckets.js";
+import { allocateRoundedUsdValues } from "../src/main/database/usd-allocation.js";
 import { PrState } from "../src/main/enrichment/types.js";
+import { openInsightsDb } from "./local-insights-test-helpers.js";
 
 /**
  * Contract test for the Insights backend (`local-insights.ts`) on the single
@@ -42,10 +34,6 @@ import { PrState } from "../src/main/enrichment/types.js";
  * - aggregate INTEGER columns the Prisma raw path can surface as `bigint` come
  *   back as JS numbers through the `num()` / `token()` coercion boundary.
  */
-
-// computeLocalInsights only reads, so the write queue is never exercised — a
-// pass-through satisfies the factory without importing sqlite.ts (electron).
-const passthroughQueue: WriteSerializer = { run: (fn) => fn() };
 
 // FEA-2430: the insights SQL buckets display days/hours in the process-local
 // timezone (strftime 'localtime'), and eachDay() generates local axis keys —
@@ -69,17 +57,54 @@ test("FEA-2430 TZ canary: process is pinned to America/Chicago", () => {
   assert.equal(new Date("2026-01-15T10:00:00.000Z").getTimezoneOffset(), 360);
 });
 
-test("FEA-1791: local insights run on the single Prisma client against real libSQL", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-contract-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
+test("FEA-3241: displayed USD allocation conserves signed cents deterministically", () => {
+  assert.deepEqual(allocateRoundedUsdValues({}), {});
+  assert.deepEqual(allocateRoundedUsdValues({ alpha: 0, zeta: 0 }), {
+    alpha: 0,
+    zeta: 0,
   });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+
+  const positiveTie = allocateRoundedUsdValues({ zeta: 0.006, alpha: 0.006 });
+  const reversedPositiveTie = allocateRoundedUsdValues({
+    alpha: 0.006,
+    zeta: 0.006,
+  });
+  assert.deepEqual(positiveTie, { zeta: 0, alpha: 0.01 });
+  assert.deepEqual(reversedPositiveTie, { alpha: 0.01, zeta: 0 });
+
+  const negativeTie = allocateRoundedUsdValues({
+    zeta: -0.006,
+    alpha: -0.006,
+  });
+  assert.deepEqual(negativeTie, { zeta: 0, alpha: -0.01 });
+
+  const mixed = allocateRoundedUsdValues({
+    negativeAlpha: -0.006,
+    negativeZeta: -0.006,
+    positiveAlpha: 0.004,
+    positiveZeta: 0.004,
+  });
+  assert.deepEqual(mixed, {
+    negativeAlpha: 0,
+    negativeZeta: 0,
+    positiveAlpha: 0,
+    positiveZeta: 0,
+  });
+
+  const halfCent = allocateRoundedUsdValues({ negativeHalf: -0.005 });
+  assert.equal(halfCent.negativeHalf, 0);
+  assert.equal(Object.is(halfCent.negativeHalf, -0), false);
+
+  // Simulates the direct KPI SUM differing from the grouped bucket SUM by
+  // more than the ordinary fractional-remainder envelope.
+  assert.deepEqual(
+    allocateRoundedUsdValues({ zeta: 0.004, alpha: 0.004 }, 0.03),
+    { zeta: 0.01, alpha: 0.02 }
+  );
+});
+
+test("FEA-1791: local insights run on the single Prisma client against real libSQL", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-contract-");
   try {
     // Three in-window sessions: status completed×2, running×1.
     for (const [id, status] of [
@@ -129,7 +154,7 @@ test("FEA-1791: local insights run on the single Prisma client against real libS
       "90",
       NOW
     );
-    const agentsByStatus = agents.charts.agentsByStatus;
+    const agentsByStatus = present(agents.charts.agentsByStatus);
     assert.deepEqual(
       agentsByStatus.map((b) => [b.key, b.value]),
       // completed (2) before running (1) — the SQL's ORDER BY n DESC.
@@ -140,7 +165,7 @@ test("FEA-1791: local insights run on the single Prisma client against real libS
     );
     assert.equal(typeof agentsByStatus[0]?.value, "number");
     assert.deepEqual(
-      agents.charts.agentsByType.map((b) => [b.key, b.value]),
+      present(agents.charts.agentsByType).map((b) => [b.key, b.value]),
       // type general (2) before the NULL group mapped to 'unknown' (1).
       [
         ["general", 2],
@@ -173,7 +198,7 @@ test("FEA-1791: local insights run on the single Prisma client against real libS
       NOW
     );
     assert.deepEqual(
-      utilization.charts.sessionsByStatus.map((b) => [b.key, b.value]),
+      present(utilization.charts.sessionsByStatus).map((b) => [b.key, b.value]),
       [
         ["completed", 2],
         ["running", 1],
@@ -205,17 +230,244 @@ test("FEA-1791: local insights run on the single Prisma client against real libS
   }
 });
 
+test("FEA-3487: Agents token KPIs fold pre-compaction baseline_* like the cost KPI", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-compact-");
+  try {
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["compact", "completed", IN_WINDOW, "2026-06-20T11:00:00.000Z"]
+    );
+    // A Claude-Code context-compacted session: the CURRENT columns hold the
+    // post-compaction subset, and `baseline_*` carries the pre-compaction
+    // totals that were rolled off. `cost_usd_estimated` is already priced on
+    // the EFFECTIVE total (current + baseline). Without the FEA-3487 fold the
+    // token KPIs would report only the current subset while cost reflects all
+    // incurred tokens — the two would disagree in one dashboard.
+    await db.query(
+      `INSERT INTO token_usage
+         (session_id, model, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens,
+          baseline_input, baseline_output,
+          baseline_cache_read, baseline_cache_write,
+          cost_usd_estimated)
+       VALUES ($1, $2, 100, 40, 10, 5, 1000, 400, 200, 100, 7.7)`,
+      ["compact", "claude-sonnet-4-5"]
+    );
+
+    const agents = await computeLocalInsights(
+      prisma,
+      InsightsSection.Agents,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    // tokens = (input + baseline_input) + (output + baseline_output)
+    //        = (100 + 1000) + (40 + 400) = 1540.
+    assert.equal(agents.kpis.find((k) => k.key === "tokens")?.value, 1540);
+    // input = 100 + 1000, output = 40 + 400.
+    assert.equal(
+      agents.kpis.find((k) => k.key === "input-tokens")?.value,
+      1100
+    );
+    assert.equal(
+      agents.kpis.find((k) => k.key === "output-tokens")?.value,
+      440
+    );
+    // cache saved = (cache_read + baseline_cache_read)
+    //             + (cache_write + baseline_cache_write)
+    //             = (10 + 200) + (5 + 100) = 315.
+    assert.equal(agents.kpis.find((k) => k.key === "cache-tokens")?.value, 315);
+    // The token distribution chart reads the same folded columns.
+    assert.deepEqual(
+      present(agents.charts.tokenDistribution).map((b) => [b.key, b.value]),
+      [
+        ["input", 1100],
+        ["output", 440],
+        ["cache-read", 210],
+        ["cache-write", 105],
+      ]
+    );
+    // FEA-3497: the per-model `#` (token volume) over-time series folds the same
+    // `baseline_*` columns, so the token chart agrees with the Tokens/Cache KPIs
+    // and priced spend on a compacted session (summing only current columns would
+    // under-report). Effective = (100+1000)+(40+400)+(10+200)+(5+100) = 1855.
+    const tokenDay = present(agents.charts.modelTokensOverTime).points.find(
+      (point) => point.values["claude-sonnet-4-5"] !== undefined
+    );
+    assert.equal(tokenDay?.values["claude-sonnet-4-5"], 1855);
+
+    // The sibling cost KPI is priced on the effective total, so both surfaces
+    // of the same dashboard now agree on the same compacted session.
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    assert.equal(delivery.kpis.find((k) => k.key === "cost")?.value, 7.7);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3241: model spend parts conserve to the once-rounded Delivery total", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-spend-");
+  try {
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["spend", "completed", IN_WINDOW, "2026-06-20T11:00:00.000Z"]
+    );
+    for (const [model, cost] of [
+      ["model-a", 0.006],
+      ["model-b", 0.005],
+      ["model-c", 0.004],
+    ] as const) {
+      await db.query(
+        `INSERT INTO token_usage
+           (session_id, model, input_tokens, output_tokens, cost_usd_estimated)
+         VALUES ($1, $2, 1, 1, $3)`,
+        ["spend", model, cost]
+      );
+    }
+
+    const agents = await computeLocalInsights(
+      prisma,
+      InsightsSection.Agents,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    assert.deepEqual(
+      agents.charts.modelBreakdown.map((bucket) => [bucket.key, bucket.value]),
+      [
+        ["model-a", 0.01],
+        ["model-b", 0.01],
+        ["model-c", 0],
+      ]
+    );
+
+    const cost = delivery.kpis.find((kpi) => kpi.key === "cost")?.value;
+    assert.equal(typeof cost, "number");
+    const targetCents = Math.round(Number(cost) * 100);
+    const breakdownCents = agents.charts.modelBreakdown.reduce(
+      (sum, bucket) => sum + Math.round(bucket.value * 100),
+      0
+    );
+    assert.equal(breakdownCents, targetCents);
+
+    const spendDay = agents.charts.modelUsageOverTime.points.find(
+      (point) => point.date === "2026-06-20"
+    );
+    assert.ok(spendDay);
+    assert.deepEqual(spendDay.values, {
+      "model-a": 0.01,
+      "model-b": 0.01,
+      "model-c": 0,
+    });
+    const dailyCents = Object.values(spendDay.values).reduce(
+      (sum, value) => sum + Math.round(value * 100),
+      0
+    );
+    assert.equal(dailyCents, targetCents);
+
+    // A signed, net-negative day remains present and allocates the negative
+    // residual deterministically instead of being dropped by positive-only
+    // day-presence logic.
+    const signedDay = "2026-06-19T10:00:00.000Z";
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["signed-spend", "completed", signedDay, "2026-06-19T11:00:00.000Z"]
+    );
+    for (const model of ["signed-alpha", "signed-zeta"]) {
+      await db.query(
+        `INSERT INTO token_usage
+           (session_id, model, input_tokens, output_tokens, cost_usd_estimated)
+         VALUES ($1, $2, 1, 1, -0.006)`,
+        ["signed-spend", model]
+      );
+    }
+    const signedAgents = await computeLocalInsights(
+      prisma,
+      InsightsSection.Agents,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    const negativeSpendDay = signedAgents.charts.modelUsageOverTime.points.find(
+      (point) => point.date === "2026-06-19"
+    );
+    assert.ok(negativeSpendDay);
+    assert.equal(negativeSpendDay.values["signed-alpha"], -0.01);
+    assert.equal(negativeSpendDay.values["signed-zeta"], 0);
+    assert.equal(
+      Object.values(negativeSpendDay.values).reduce<number>(
+        (sum, value) => sum + Math.round(present(value) * 100),
+        0
+      ),
+      -1
+    );
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3497: modelTokensOverTime sums input+output+cache per (day, model) and shares the spend series keys", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-tokens-");
+  try {
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["tok", "completed", IN_WINDOW, "2026-06-20T11:00:00.000Z"]
+    );
+    // opus outspends sonnet, so it leads the shared top-N ordering. Token totals
+    // sum ALL four columns: input + output + cache read + cache write.
+    // opus  → 10 + 20 + 30 + 40 = 100 ; sonnet → 1 + 2 + 3 + 4 = 10.
+    await db.query(
+      `INSERT INTO token_usage
+         (session_id, model, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ($1, 'opus', 10, 20, 30, 40, 1.5),
+              ($1, 'sonnet', 1, 2, 3, 4, 0.5)`,
+      ["tok"]
+    );
+
+    const agents = await computeLocalInsights(
+      prisma,
+      InsightsSection.Agents,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    // Same top-N keys/order as the spend series, so the $/# toggle only swaps
+    // y-values.
+    const spendKeys = agents.charts.modelUsageOverTime.series.map((s) => s.key);
+    const tokenKeys = agents.charts.modelTokensOverTime?.series.map(
+      (s) => s.key
+    );
+    assert.deepEqual(tokenKeys, spendKeys);
+    assert.deepEqual(spendKeys, ["opus", "sonnet"]);
+
+    const tokenDay = agents.charts.modelTokensOverTime?.points.find(
+      (point) => point.date === "2026-06-20"
+    );
+    assert.ok(tokenDay);
+    assert.equal(tokenDay.values.opus, 100);
+    assert.equal(tokenDay.values.sonnet, 10);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("FEA-2868: Delivery Median PR size excludes un-enriched PRs (KLOC still sums them as 0)", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-prsize-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-prsize-");
   try {
     // Two ENRICHED PRs (300 and 100 LOC) and one UN-ENRICHED PR (NULL line
     // counts — size not yet fetched). FEA-2868: the un-enriched PR has UNKNOWN
@@ -266,18 +518,9 @@ test("FEA-2868: Delivery Median PR size excludes un-enriched PRs (KLOC still sum
 });
 
 test("FEA-2923: Delivery Median PR size is `—` (non-finite), not 0, when no window PR is enriched", async () => {
-  const dir = await mkdtemp(
-    path.join(os.tmpdir(), "local-insights-prsize-empty-")
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-prsize-empty-"
   );
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
   try {
     // A single UN-enriched PR (NULL line counts) in-window: nothing to median.
     // Previously this medianed to `?? 0`, surfacing a misleading 0; now the KPI
@@ -309,18 +552,9 @@ test("FEA-2923: Delivery Median PR size is `—` (non-finite), not 0, when no wi
 });
 
 test("FEA-2868 (thread 3): `enriched` uses AND — a PR with only ONE line count set is un-enriched", async () => {
-  const dir = await mkdtemp(
-    path.join(os.tmpdir(), "local-insights-prsize-and-")
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-prsize-and-"
   );
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
   try {
     // Enrichment is AND semantics (matching isLocEnrichedRow): a row is enriched
     // ONLY when BOTH lines_added AND lines_removed are non-NULL. A "half-enriched"
@@ -375,18 +609,9 @@ test("FEA-2868 (thread 3): `enriched` uses AND — a PR with only ONE line count
 });
 
 test("FEA-2868 (thread 1): empty prior enriched population → PR-size delta suppressed (no bogus +100%)", async () => {
-  const dir = await mkdtemp(
-    path.join(os.tmpdir(), "local-insights-prsize-delta-")
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-prsize-delta-"
   );
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
   try {
     // Sentinel record older than priorStartIso so hasFullPriorPeriod is TRUE —
     // the delta gate that thread 1 warns about. Without the null-prior guard the
@@ -446,18 +671,9 @@ test("FEA-2868 (thread 1): empty prior enriched population → PR-size delta sup
 });
 
 test("FEA-2868 (thread 1): non-empty prior enriched population → PR-size delta computed", async () => {
-  const dir = await mkdtemp(
-    path.join(os.tmpdir(), "local-insights-prsize-delta2-")
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-prsize-delta2-"
   );
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
   try {
     const SENTINEL_DATE = "2025-12-01T00:00:00.000Z";
     await db.query(
@@ -500,17 +716,56 @@ test("FEA-2868 (thread 1): non-empty prior enriched population → PR-size delta
   }
 });
 
-test("activity heatmap buckets parsed turns by their own role — session flag and events corpus are ignored", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-turns-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
+test("FEA-3959 (wongk): the KLOC delta is computed in raw LINES, so a small-but-real prior (0.9 KLOC) is not suppressed by the near-zero floor", async () => {
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-kloc-delta-"
   );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  try {
+    // Sentinel older than the prior window start so hasFullPriorPeriod is TRUE.
+    await db.query(
+      `INSERT INTO session_analytics (session_id, started_at, is_human, est_cost)
+       VALUES ($1, $2, 0, 0)`,
+      ["sentinel", "2025-12-01T00:00:00.000Z"]
+    );
+    // Current window: 1800 lines → 1.8 KLOC.
+    await db.query(
+      `INSERT INTO artifacts
+         (id, identity_key, kind, repo_full_name, pr_number,
+          lines_added, lines_removed, files_changed, created_at, last_seen_at)
+       VALUES ($1, $2, 'pull_request', 'org/repo', 1, 1800, 0, 9, $3, $3)`,
+      ["cur-kloc", "pr:kloc/repo:1", IN_WINDOW]
+    );
+    // Prior window: 900 lines → 0.9 KLOC. In KLOC units 0.9 < NEAR_ZERO_DELTA_BASE
+    // (0.99) would suppress the delta; in LINES 900 clears the floor, so the real
+    // +100% (1800 vs 900) is reported.
+    const PRIOR_WINDOW = "2026-01-15T10:00:00.000Z";
+    await db.query(
+      `INSERT INTO artifacts
+         (id, identity_key, kind, repo_full_name, pr_number,
+          lines_added, lines_removed, files_changed, created_at, last_seen_at)
+       VALUES ($1, $2, 'pull_request', 'org/repo', 2, 900, 0, 5, $3, $3)`,
+      ["prior-kloc", "pr:kloc/repo:2", PRIOR_WINDOW]
+    );
+
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+    const kloc = delivery.kpis.find((k) => k.key === "kloc");
+    assert.equal(kloc?.value, 1.8);
+    // (1800 - 900) / 900 = +100% — not suppressed to null by the KLOC-unit floor.
+    assert.equal(kloc?.deltaPct, 100);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("activity heatmap buckets parsed turns by their own role — session flag and events corpus are ignored", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-turns-");
   try {
     // FEA-2641 Fix 4 (PM ruling): a HUMAN-steered session (is_human = 1) whose
     // transcript records 1 genuine human prompt and 2 assistant turns. The
@@ -532,6 +787,14 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
             { role: "human", timestamp: IN_WINDOW, text: "Build it." },
             { role: "assistant", timestamp: IN_WINDOW, text: "On it." },
             { role: "assistant", timestamp: IN_WINDOW, text: "Done." },
+          ],
+          // FEA-3597: agent buckets now come from the PARENT-attributed token
+          // series, not from assistant `messages` rows. Two billable
+          // round-trips, matching the two assistant turns above — so this
+          // fixture still asserts 1 Human / 2 Agent rather than being weakened.
+          tokenSeries: [
+            { timestamp: IN_WINDOW, model: "m", input: 1, output: 1 },
+            { timestamp: IN_WINDOW, model: "m", input: 1, output: 1 },
           ],
         }),
       ]
@@ -574,6 +837,19 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
               text: "Reviewed.",
             },
           ],
+          // FEA-3597: the headless classifier still SUPPRESSES the human row,
+          // but it no longer PROMOTES it to an agent row — agent units come
+          // from the token series. Two entries keep this day at 2 Agent / 0
+          // Human, so it still scores 100% agentic for the original reason.
+          tokenSeries: [
+            { timestamp: CRON_DAY, model: "m", input: 1, output: 1 },
+            {
+              timestamp: "2026-06-19T12:05:00.000Z",
+              model: "m",
+              input: 1,
+              output: 1,
+            },
+          ],
         }),
       ]
     );
@@ -600,6 +876,17 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
               text: "Reviewed.",
             },
           ],
+          // FEA-3597: same as the sdk-cli seed above — suppression retained,
+          // promotion gone, agent units sourced from the token series.
+          tokenSeries: [
+            { timestamp: CODEX_DAY, model: "m", input: 1, output: 1 },
+            {
+              timestamp: "2026-06-18T12:04:00.000Z",
+              model: "m",
+              input: 1,
+              output: 1,
+            },
+          ],
         }),
       ]
     );
@@ -616,7 +903,7 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
       "90",
       NOW
     );
-    const cells = utilization.charts.activityHeatmap.cells;
+    const { cells } = present(utilization.charts.activityHeatmap);
     const humanTotal = cells.reduce((sum, cell) => sum + cell.human, 0);
     const agentTotal = cells.reduce((sum, cell) => sum + cell.agent, 0);
     // Interactive session: 1 human + 2 assistant turns — not the 5 Human the
@@ -650,21 +937,23 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
       "90",
       NOW
     );
-    const autonomyPoint = agentsSection.charts.autonomyTrend.points.find(
+    const autonomyTrend = present(agentsSection.charts.autonomyTrend);
+    const autonomyPoint = autonomyTrend.points.find(
       (point) => point.date === "2026-06-20"
     );
     assert.ok(autonomyPoint, "expected an autonomy point for the seeded day");
+    const autonomyValue = autonomyPoint.values.autonomy;
     assert.ok(
-      Math.abs(autonomyPoint.values.autonomy - 200 / 3) < 1e-6,
-      `expected ~66.7% agent-driven autonomy, got ${autonomyPoint.values.autonomy}`
+      typeof autonomyValue === "number" &&
+        Math.abs(autonomyValue - 200 / 3) < 1e-6,
+      `expected ~66.7% agent-driven autonomy, got ${autonomyValue}`
     );
     // Headless sessions' days are fully agentic: their human-role kickoffs
     // count toward the agent share, not the human share.
     for (const day of ["2026-06-19", "2026-06-18"]) {
       assert.equal(
-        agentsSection.charts.autonomyTrend.points.find(
-          (point) => point.date === day
-        )?.values.autonomy,
+        autonomyTrend.points.find((point) => point.date === day)?.values
+          .autonomy,
         100,
         `expected 100% agentic autonomy on ${day}`
       );
@@ -677,16 +966,7 @@ test("activity heatmap buckets parsed turns by their own role — session flag a
 });
 
 test("FEA-2346: Delivery Cost KPI reads token_usage, not session_analytics.est_cost (stale rollup + missing row)", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-cost-src-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-cost-src-");
   try {
     // Session A: stale rollup — est_cost deliberately disagrees with
     // SUM(token_usage.cost_usd_estimated). If the KPI reads est_cost it will
@@ -779,17 +1059,79 @@ test("FEA-2346: Delivery Cost KPI reads token_usage, not session_analytics.est_c
   }
 });
 
+test("FEA-2413: Delivery cost and Utilization sessions scale together across every time band", async () => {
+  // The reported symptom was a cost card that stayed flat while the session
+  // count dropped across the 7/30/90/all toggle — i.e. cost not scoped to the
+  // selected window. FEA-2346 moved the cost KPI onto the windowed token_usage
+  // join; this pins the acceptance: over a corpus whose spend is spread across
+  // the bands, BOTH the Delivery `cost` KPI and the Utilization `sessions` KPI
+  // must grow monotonically 7 ⊂ 30 ⊂ 90 ⊂ all — and stay consistent with each
+  // other (both windowed on sessions.started_at).
+  const { dir, db, prisma } = await openInsightsDb("local-insights-fea2413-");
+  try {
+    // NOW = 2026-06-22. Each session's started_at is chosen to land inside a
+    // specific band and its spend is distinct so a leaked (unwindowed) sum is
+    // detectable. (in 7d, in 30d, in 90d, only-in-all).
+    const seed = async (
+      id: string,
+      startedAt: string,
+      cost: number
+    ): Promise<void> => {
+      await db.query(
+        "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, 'completed', $2, $2)",
+        [id, startedAt]
+      );
+      await db.query(
+        `INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cost_usd_estimated)
+         VALUES ($1, 'claude-opus-4-5', 100, 50, $2)`,
+        [id, cost]
+      );
+    };
+    await seed("d3", "2026-06-19T10:00:00.000Z", 10); // 7 / 30 / 90 / all
+    await seed("d20", "2026-06-02T10:00:00.000Z", 5); // 30 / 90 / all
+    await seed("d60", "2026-04-23T10:00:00.000Z", 3); // 90 / all
+    await seed("d200", "2025-12-04T10:00:00.000Z", 1); // all only
+
+    const costFor = async (period: InsightsPeriod): Promise<number> => {
+      const delivery = await computeLocalInsights(
+        prisma,
+        InsightsSection.Delivery,
+        period,
+        NOW
+      );
+      return delivery.kpis.find((k) => k.key === "cost")?.value as number;
+    };
+    const sessionsFor = async (period: InsightsPeriod): Promise<number> => {
+      const util = await computeLocalInsights(
+        prisma,
+        InsightsSection.Utilization,
+        period,
+        NOW
+      );
+      return util.kpis.find((k) => k.key === "sessions")?.value as number;
+    };
+
+    // Cost scales with the window (each band adds exactly the in-band spend).
+    assert.equal(await costFor(InsightsPeriod.Week), 10);
+    assert.equal(await costFor(InsightsPeriod.Month), 15);
+    assert.equal(await costFor(InsightsPeriod.Quarter), 18);
+    assert.equal(await costFor(InsightsPeriod.All), 19);
+
+    // Session count scales the same way — cost and count stay internally
+    // consistent (this is the "cost flat while count drops" bug's guard).
+    assert.equal(await sessionsFor(InsightsPeriod.Week), 1);
+    assert.equal(await sessionsFor(InsightsPeriod.Month), 2);
+    assert.equal(await sessionsFor(InsightsPeriod.Quarter), 3);
+    assert.equal(await sessionsFor(InsightsPeriod.All), 4);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all storage owners", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-tz-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-tz-");
   try {
     // One seed per STORAGE OWNER at the same cross-midnight instant (June 21
     // 03:00 UTC = June 20 22:00 CDT), so every day-bucketed chart family is
@@ -809,6 +1151,15 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
         "2026-06-21T04:00:00.000Z",
         JSON.stringify({
           messages: [{ role: "assistant", timestamp: CROSS_MIDNIGHT }],
+          // FEA-3597: the agent bucket this guard asserts now comes from the
+          // PARENT-attributed token series, not the assistant `messages` row.
+          // Re-seeded at the SAME cross-midnight instant so the FEA-2430
+          // contract still bites — this is the only assertion pinning that the
+          // read path buckets on the LOCAL day/hour rather than UTC, and
+          // dropping it would silently un-pin timezone correctness.
+          tokenSeries: [
+            { timestamp: CROSS_MIDNIGHT, model: "m", input: 1, output: 1 },
+          ],
         }),
       ]
     );
@@ -847,21 +1198,20 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
     );
     // Owner 2b (metadata $.messages timestamp): heatmap cell lands on the
     // LOCAL day at the LOCAL hour (22:00 CDT), not UTC day June 21 hour 03.
-    const cell = utilization.charts.activityHeatmap.cells.find(
+    const heatmap = present(utilization.charts.activityHeatmap);
+    const cell = heatmap.cells.find(
       (c) => c.day === "2026-06-20" && c.hour === 22
     );
     assert.ok(cell, "expected heatmap cell at 2026-06-20 hour 22 (local)");
     assert.equal(cell.agent, 1);
     assert.equal(
-      utilization.charts.activityHeatmap.cells.some(
-        (c) => c.day === "2026-06-21" && c.hour === 3
-      ),
+      heatmap.cells.some((c) => c.day === "2026-06-21" && c.hour === 3),
       false,
       "no cell may appear at the UTC day/hour"
     );
     // Axis lockstep: the SQL's local day key must exist in eachDay()'s axis,
     // and the axis must end on the LOCAL day of NOW (June 21 CDT, not June 22).
-    const days = utilization.charts.activityHeatmap.days;
+    const { days } = heatmap;
     assert.ok(days.includes("2026-06-20"), "axis must contain the local day");
     assert.equal(days.at(-1), "2026-06-21");
     // Owner 1 (sessions.started_at): sessions-per-day trend.
@@ -876,7 +1226,7 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
       0
     );
     // Owner 2 again via the events-per-day trend.
-    const eventPoint = utilization.charts.eventVolume.points.find(
+    const eventPoint = present(utilization.charts.eventVolume).points.find(
       (p) => p.date === "2026-06-20"
     );
     assert.equal(eventPoint?.values.events, 1);
@@ -889,8 +1239,9 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
     );
     // Owner 1: tool runs + model spend bucket by s.started_at → local June 20.
     assert.equal(
-      agents.charts.toolRunsOverTime.points.find((p) => p.date === "2026-06-20")
-        ?.values["tool-runs"],
+      present(agents.charts.toolRunsOverTime).points.find(
+        (p) => p.date === "2026-06-20"
+      )?.values["tool-runs"],
       1
     );
     assert.equal(
@@ -901,8 +1252,9 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
     );
     // Owner 2b: lone assistant turn → 100% agent-driven on the local day.
     assert.equal(
-      agents.charts.autonomyTrend.points.find((p) => p.date === "2026-06-20")
-        ?.values.autonomy,
+      present(agents.charts.autonomyTrend).points.find(
+        (p) => p.date === "2026-06-20"
+      )?.values.autonomy,
       100
     );
 
@@ -919,8 +1271,9 @@ test("FEA-2430: cross-midnight activity buckets to the LOCAL day/hour across all
       1
     );
     assert.equal(
-      delivery.charts.klocTrend.points.find((p) => p.date === "2026-06-20")
-        ?.values.kloc,
+      present(delivery.charts.klocTrend).points.find(
+        (p) => p.date === "2026-06-20"
+      )?.values.kloc,
       0.5
     );
     assert.equal(
@@ -941,16 +1294,7 @@ test("FEA-3091: events-per-day counts events by their own time, even when the pa
   // fetchEventVolume (filters `e.event_created_at BETWEEN trendStart AND end`)
   // and the bucket field localDay(e.created_at). The old query scoped by
   // s.started_at, so this session was fully excluded, depressing the left edge.
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-evwin-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-evwin-");
   try {
     // period "90" → trendStart = NOW - 90d = 2026-03-24. Session started well
     // before that (Jan 1), event lands IN_WINDOW (June 20).
@@ -973,8 +1317,9 @@ test("FEA-3091: events-per-day counts events by their own time, even when the pa
     // Bucketed on the event's local day (June 20 CDT), and counted despite the
     // session's Jan 1 start being outside the trend window.
     assert.equal(
-      utilization.charts.eventVolume.points.find((p) => p.date === "2026-06-20")
-        ?.values.events,
+      present(utilization.charts.eventVolume).points.find(
+        (p) => p.date === "2026-06-20"
+      )?.values.events,
       1
     );
     // The session itself (started Jan 1) contributes no sessions-per-day point
@@ -1034,16 +1379,7 @@ test("FEA-2430: DST transitions bucket by true local wall-clock (fall-back colla
 });
 
 test("FEA-2486: KPI merge-rate counts lowercase pr_state='merged' rows (pre-fix 'MERGED' matched zero)", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-kpi-case-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-kpi-case-");
   try {
     // Session required by the session_artifact_link FK constraint (below).
     await db.query(
@@ -1122,17 +1458,52 @@ test("FEA-2486: KPI merge-rate counts lowercase pr_state='merged' rows (pre-fix 
   }
 });
 
-test("FEA-2995: mergedCount denominator excludes reference-only merged PRs (created-link gated, matches cloud)", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-fea2995-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
+test("FEA-3217: merge-rate is null (renders '—'), NOT 0, when captured PRs exist but none are decided (all open)", async () => {
+  const { dir, db, prisma } = await openInsightsDb(
+    "local-insights-merge-rate-open-"
   );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  try {
+    // 3 captured PRs, ALL still Open — no terminal outcome yet, so the DECIDED
+    // (merged + closed) denominator is 0. Pre-FEA-3217 desktop returned a
+    // literal 0 → the shared kpi() card rendered "0%", falsely implying total
+    // merge failure. Cloud already returned null → "—" via the delivery-KPI
+    // SSOT (FEA-3151); this asserts desktop now honors the same
+    // null-on-empty-cohort contract (mirroring `medianPrSize`).
+    for (const [id, prNum] of [
+      ["mr-open-1", 1],
+      ["mr-open-2", 2],
+      ["mr-open-3", 3],
+    ] as [string, number][]) {
+      await db.query(
+        `INSERT INTO artifacts
+           (id, identity_key, kind, repo_full_name, pr_number,
+            pr_state, created_at, last_seen_at)
+         VALUES ($1, $2, 'pull_request', 'org/repo', $3, $4, $5, $5)`,
+        [id, `pr:mr-open:${prNum}`, prNum, PrState.Open, IN_WINDOW]
+      );
+    }
+
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      "90",
+      NOW
+    );
+    // Captured PRs still counted (3), but merge-rate has no decided cohort.
+    assert.equal(delivery.kpis.find((k) => k.key === "merged")?.value, 3);
+    assert.equal(
+      delivery.kpis.find((k) => k.key === "merge-rate")?.value,
+      null
+    );
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2995: mergedCount denominator excludes reference-only merged PRs (created-link gated, matches cloud)", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-fea2995-");
   try {
     // Session required by the session_artifact_link FK constraint.
     await db.query(
@@ -1196,17 +1567,79 @@ test("FEA-2995: mergedCount denominator excludes reference-only merged PRs (crea
   }
 });
 
+test("FEA-2947: mergedKloc denominator = authored-merged lines only (captured `kloc` includes all; matches cloud merged-lines KLOC)", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-fea2947-");
+  try {
+    // Session required by the session_artifact_link FK constraint.
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["fea2947-session", "completed", IN_WINDOW, IN_WINDOW]
+    );
+    // Three captured PRs, each LOC-enriched, with distinct populations:
+    //  - pr-merged-authored: MERGED + created in-session → 200 gross lines.
+    //  - pr-merged-refonly:  MERGED but reference-only (no created link) → 500.
+    //  - pr-open-authored:   OPEN + created in-session (not yet merged) → 300.
+    for (const [id, prNum, state, added, removed] of [
+      ["pr-merged-authored", 1, PrState.Merged, 150, 50],
+      ["pr-merged-refonly", 2, PrState.Merged, 400, 100],
+      ["pr-open-authored", 3, PrState.Open, 200, 100],
+    ] as [string, number, string, number, number][]) {
+      await db.query(
+        `INSERT INTO artifacts
+           (id, identity_key, kind, repo_full_name, pr_number,
+            pr_state, lines_added, lines_removed, files_changed,
+            created_at, last_seen_at)
+         VALUES ($1, $2, 'pull_request', 'org/repo', $3, $4, $5, $6, 5, $7, $7)`,
+        [id, `pr:fea2947:${prNum}`, prNum, state, added, removed, IN_WINDOW]
+      );
+    }
+    // Created links for the two authored PRs (the reference-only one has none).
+    for (const [linkId, artifactId] of [
+      ["sal-fea2947-merged", "pr-merged-authored"],
+      ["sal-fea2947-open", "pr-open-authored"],
+    ] as [string, string][]) {
+      await db.query(
+        `INSERT INTO session_artifact_links
+           (id, session_id, artifact_id, relation, method, evidence,
+            extractor_version, observed_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)`,
+        [
+          linkId,
+          "fea2947-session",
+          artifactId,
+          ArtifactRefRelation.Created,
+          ArtifactRefMethod.PrCreateOutput,
+          "{}",
+          1,
+          IN_WINDOW,
+        ]
+      );
+    }
+
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      "90",
+      NOW
+    );
+    // Visible captured `kloc` sums gross lines over ALL captured PRs regardless of
+    // state or authorship: 200 + 500 + 300 = 1000 LOC → 1.0 KLOC.
+    assert.equal(delivery.kpis.find((k) => k.key === "kloc")?.value, 1);
+    // FEA-2947: the AI-Impact card's tokens-per-KLOC denominator (`mergedKloc`)
+    // counts ONLY the authored-merged PR's lines (200 → 0.2 KLOC) — excluding the
+    // reference-only merged PR (created-link gated, matching cloud's merged-lines
+    // KLOC / prByRepo population) AND the still-open authored PR. Pre-fix the card
+    // divided by captured `kloc` (1.0) on desktop but merged-lines KLOC on cloud.
+    assert.equal(delivery.kpis.find((k) => k.key === "mergedKloc")?.value, 0.2);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("FEA-2486: prTrend agent/manual split — PR with created link counts as agent, without as manual", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-pr-split-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-pr-split-");
   try {
     // Session required by the session_artifact_link FK constraint.
     await db.query(
@@ -1274,9 +1707,9 @@ test("FEA-2486: prTrend agent/manual split — PR with created link counts as ag
     let sumManual = 0;
     let sumMerged = 0;
     for (const p of prTrend.points) {
-      sumAgent += p.values.agent;
-      sumManual += p.values.manual;
-      sumMerged += p.values.merged;
+      sumAgent += present(p.values.agent);
+      sumManual += present(p.values.manual);
+      sumMerged += present(p.values.merged);
     }
     assert.equal(sumAgent + sumManual, sumMerged);
   } finally {
@@ -1287,18 +1720,7 @@ test("FEA-2486: prTrend agent/manual split — PR with created link counts as ag
 });
 
 test("FEA-2486: prTrend DISTINCT collapses two created links from different sessions into agent=1", async () => {
-  const dir = await mkdtemp(
-    path.join(os.tmpdir(), "local-insights-pr-fanout-")
-  );
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-pr-fanout-");
   try {
     // Two distinct sessions — the unique constraint (session_id, artifact_id,
     // relation) permits one 'created' link row per session, so two sessions can
@@ -1364,16 +1786,7 @@ test("FEA-2486: prTrend DISTINCT collapses two created links from different sess
 });
 
 test("FEA-2951: Utilization Review backlog KPI counts only open PRs; reviewQueue keeps all captured", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "local-insights-backlog-"));
-  const { db, config } = await openMigrationDatabase(
-    path.join(dir, "agent-dashboard.sqlite")
-  );
-  await runDesktopMigrations(db, {
-    migrations: MIGRATIONS,
-    baselineStatements: LEGACY_SCHEMA_REASSERT_SEQUENCE,
-    baselineMigrations: BASELINE_MIGRATIONS,
-  });
-  const prisma = await createDesktopPrisma(config, passthroughQueue);
+  const { dir, db, prisma } = await openInsightsDb("local-insights-backlog-");
   try {
     // 6 captured PRs: 1 open, 1 NULL (un-enriched → treated as open),
     // 2 merged, 1 closed, and 1 with an UNKNOWN/future lifecycle value
@@ -1412,10 +1825,114 @@ test("FEA-2951: Utilization Review backlog KPI counts only open PRs; reviewQueue
     // Review backlog KPI: only open + un-enriched (NULL) PRs → 2. The unknown
     // 'draft' state is excluded (not treated as open).
     assert.equal(utilization.kpis.find((k) => k.key === "backlog")?.value, 2);
-    // reviewQueue "Captured locally" still counts every captured PR → 6.
+    // FEA-3455: reviewQueue no longer fabricates a "Captured locally" placeholder
+    // (the local store has no review-decision signal) — it is emitted empty and
+    // its tile is marked Unavailable under the desktop's personal scope.
+    assert.deepEqual(utilization.charts.reviewQueue, []);
     assert.equal(
-      utilization.charts.reviewQueue.find((b) => b.key === "captured")?.value,
-      6
+      utilization.tileAvailability?.["chart:reviewQueue"],
+      "unavailable"
+    );
+    assert.equal(utilization.tileAvailability?.["kpi:backlog"], "unavailable");
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-5828: local Delivery withholds default-sensitive branch coverage without account authority", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-fea3455-");
+  try {
+    // Session required by the session_artifact_link FK constraint.
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["fea3455-session", "completed", IN_WINDOW, IN_WINDOW]
+    );
+    // 3 captured PRs: 2 merged (authored in-session), 1 open. prByState mirrors
+    // cloud's single MERGED bucket sized by the authored-merged count (2), NOT a
+    // fabricated "Captured locally" bucket of 3.
+    for (const [id, prNum, prState] of [
+      ["fea3455-m1", 1, PrState.Merged],
+      ["fea3455-m2", 2, PrState.Merged],
+      ["fea3455-open", 3, PrState.Open],
+    ] as [string, number, string][]) {
+      await db.query(
+        `INSERT INTO artifacts
+           (id, identity_key, kind, repo_full_name, pr_number,
+            pr_state, created_at, last_seen_at)
+         VALUES ($1, $2, 'pull_request', 'org/repo', $3, $4, $5, $5)`,
+        [id, `pr:fea3455:${prNum}`, prNum, prState, IN_WINDOW]
+      );
+    }
+    for (const [linkId, artifactId] of [
+      ["sal-fea3455-m1", "fea3455-m1"],
+      ["sal-fea3455-m2", "fea3455-m2"],
+    ] as [string, string][]) {
+      await db.query(
+        `INSERT INTO session_artifact_links
+           (id, session_id, artifact_id, relation, method, evidence,
+            extractor_version, observed_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [
+          linkId,
+          "fea3455-session",
+          artifactId,
+          ArtifactRefRelation.Created,
+          ArtifactRefMethod.PrCreateOutput,
+          "{}",
+          1,
+          IN_WINDOW,
+          IN_WINDOW,
+        ]
+      );
+    }
+    // 3 branch artifacts: feature-a (has a PR row), feature-b (no PR row), and
+    // the default branch main (excluded — you don't open a PR from main). So the
+    // real branchesWithoutPr split is has-pr=1, no-pr=1, replacing the fabricated
+    // {has-pr: captured, no-pr: 0} that always painted 100% "has a PR".
+    for (const [id, branchName] of [
+      ["br-a", "feature-a"],
+      ["br-b", "feature-b"],
+      ["br-main", "main"],
+    ] as [string, string][]) {
+      await db.query(
+        `INSERT INTO artifacts
+           (id, identity_key, kind, repo_full_name, branch_name,
+            created_at, last_seen_at)
+         VALUES ($1, $2, 'branch', 'org/repo', $3, $4, $4)`,
+        [id, `branch:fea3455:${branchName}`, branchName, IN_WINDOW]
+      );
+    }
+    // pull_requests lifecycle row makes feature-a "has a PR" via the canonical
+    // (repo_full_name, branch_name) mapping.
+    await db.query(
+      `INSERT INTO pull_requests
+         (id, pr_url, pr_number, repo_full_name, branch_name)
+       VALUES ($1, $2, $3, 'org/repo', 'feature-a')`,
+      ["pr-lifecycle-a", "https://github.com/org/repo/pull/1", 1]
+    );
+
+    const delivery = await computeLocalInsights(
+      prisma,
+      InsightsSection.Delivery,
+      "90",
+      NOW
+    );
+    // prByState = single MERGED bucket sized by the authored-merged count.
+    assert.deepEqual(delivery.charts.prByState, [
+      { key: "MERGED", label: "Merged", value: 2 },
+    ]);
+    assert.deepEqual(delivery.charts.branchesWithoutPr, []);
+    // checkStatus omitted (no local CI signal) and its tile Unavailable.
+    assert.equal(delivery.charts.checkStatus, undefined);
+    assert.equal(
+      delivery.tileAvailability?.["chart:checkStatus"],
+      "unavailable"
+    );
+    assert.equal(
+      delivery.tileAvailability?.["chart:branchesWithoutPr"],
+      "unavailable"
     );
   } finally {
     await prisma.disconnect();
@@ -1423,3 +1940,67 @@ test("FEA-2951: Utilization Review backlog KPI counts only open PRs; reviewQueue
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("FEA-3537: agent-pipeline graph rolls up nodes by type and edges by parent→child hand-off", async () => {
+  const { dir, db, prisma } = await openInsightsDb("local-insights-contract-");
+  try {
+    await db.query(
+      "INSERT INTO sessions (id, status, started_at, ended_at) VALUES ($1, $2, $3, $4)",
+      ["sp", "completed", IN_WINDOW, "2026-06-20T11:00:00.000Z"]
+    );
+    // One orchestrator spawns two reviewers (one completed, one errored). Node
+    // type resolves via COALESCE(subagent_type, type, 'unknown'); the edge via
+    // the parent_agent_id self-join.
+    for (const [id, status, type, subagentType, parentId] of [
+      ["m1", "completed", "orchestrator", null, null],
+      ["c1", "completed", "subagent", "reviewer", "m1"],
+      ["c2", "error", "subagent", "reviewer", "m1"],
+    ] as const) {
+      await db.query(
+        "INSERT INTO agents (id, session_id, status, type, subagent_type, parent_agent_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        [id, "sp", status, type, subagentType, parentId]
+      );
+    }
+
+    const agents = await computeLocalInsights(
+      prisma,
+      InsightsSection.Agents,
+      "90",
+      NOW
+    );
+    const pipeline = agents.charts.agentPipeline;
+    assert.ok(pipeline, "agentPipeline should be present");
+    const reviewer = pipeline.nodes.find((n) => n.subagentType === "reviewer");
+    assert.equal(reviewer?.total, 2);
+    assert.equal(reviewer?.completed, 1);
+    assert.equal(reviewer?.errors, 1);
+    assert.equal(reviewer?.sessions, 1);
+    // 1 completed of 2 finished ⇒ 50%.
+    assert.equal(reviewer?.successRate, 50);
+    const orchestrator = pipeline.nodes.find(
+      (n) => n.subagentType === "orchestrator"
+    );
+    assert.equal(orchestrator?.total, 1);
+    assert.equal(orchestrator?.successRate, 100);
+    // Both children hand off from the orchestrator ⇒ one weighted edge.
+    assert.deepEqual(pipeline.edges, [
+      { source: "orchestrator", target: "reviewer", weight: 2 },
+    ]);
+  } finally {
+    await prisma.disconnect();
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * Narrow an additive chart (or per-series bucket value) the local backend ALWAYS
+ * emits. The shared `@closedloop-ai/loops-api` contract types these optional/nullable
+ * only so older peers may omit them; absent HERE is a contract regression.
+ */
+function present<T>(value: T | null | undefined): T {
+  if (value == null) {
+    throw new Error("local insights must emit this value");
+  }
+  return value;
+}

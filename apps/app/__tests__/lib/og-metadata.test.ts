@@ -1,9 +1,23 @@
+import type { Metadata } from "next";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveOgMetadata } from "@/lib/og-metadata";
+import {
+  resolveOgMetadata,
+  resolveOgMetadataFromRedirectUrl,
+} from "@/lib/og-metadata";
 
-// Mock env module
+// Mutable env mock so individual tests can exercise the server-side
+// SERVER_API_URL branch of resolveApiOrigin.
+const envState = vi.hoisted(() => ({
+  NEXT_PUBLIC_API_URL: "http://localhost:3002" as string | undefined,
+  SERVER_API_URL: undefined as string | undefined,
+}));
+
 vi.mock("@/env", () => ({
-  env: { NEXT_PUBLIC_API_URL: "http://localhost:3002" },
+  env: envState,
+}));
+
+vi.mock("next/headers", () => ({
+  headers: () => Promise.resolve(new Headers({ host: "app.closedloop.ai" })),
 }));
 
 describe("resolveOgMetadata", () => {
@@ -81,7 +95,24 @@ describe("resolveOgMetadata", () => {
         expect.any(Object)
       );
       expect(metadata.title).toBe("Fix login bug | Closedloop.ai");
-      expect(metadata.description).toBe("Feature — In Progress");
+      expect(metadata.description).toBe("Issue, In Progress");
+    });
+
+    // FEA-4137: Issues live at /issues/; the OG handler resolves the same
+    // metadata for the canonical path as for the retired /features/ alias.
+    it("fetches metadata for issues/<slug>", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+        Response.json({ title: "Fix login bug", status: "IN_PROGRESS" })
+      );
+
+      const metadata = await resolveOgMetadata("acme/issues/ISS-42");
+
+      expect(fetch).toHaveBeenCalledWith(
+        "http://localhost:3002/documents/by-slug/ISS-42/meta?org=acme",
+        expect.any(Object)
+      );
+      expect(metadata.title).toBe("Fix login bug | Closedloop.ai");
+      expect(metadata.description).toBe("Issue, In Progress");
     });
   });
 
@@ -225,5 +256,119 @@ describe("resolveOgMetadata", () => {
         })
       );
     });
+  });
+});
+
+describe("server-side API origin resolution", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(new Response(null, { status: 404 }))
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    envState.NEXT_PUBLIC_API_URL = "http://localhost:3002";
+    envState.SERVER_API_URL = undefined;
+  });
+
+  it("prefers SERVER_API_URL in a server runtime (Docker)", async () => {
+    // generateMetadata runs server-side; inside the app container
+    // NEXT_PUBLIC_API_URL points at the container's own localhost, so the
+    // BFF call must honor SERVER_API_URL (e.g. http://api:3002) instead.
+    vi.stubGlobal("window", undefined);
+    envState.SERVER_API_URL = "http://api:3002";
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({ title: "My PRD", type: "PRD" })
+    );
+
+    const metadata = await resolveOgMetadata("prds/my-prd");
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://api:3002/documents/by-slug/my-prd/meta",
+      expect.any(Object)
+    );
+    expect(metadata.title).toBe("My PRD | Closedloop.ai");
+  });
+});
+
+describe("resolveOgMetadataFromRedirectUrl", () => {
+  const fallback: Metadata = { title: "Auth page" };
+
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(new Response(null, { status: 404 }))
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("resolves document metadata for a same-host absolute redirect_url", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({ title: "My Feature", status: "IN_PROGRESS" })
+    );
+
+    const metadata = await resolveOgMetadataFromRedirectUrl(
+      "https://app.closedloop.ai/acme/features/FEA-1",
+      fallback
+    );
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/documents/by-slug/FEA-1/meta?org=acme",
+      expect.any(Object)
+    );
+    expect(metadata.title).toBe("My Feature | Closedloop.ai");
+  });
+
+  it("returns the fallback for a foreign-host absolute redirect_url", async () => {
+    const metadata = await resolveOgMetadataFromRedirectUrl(
+      "https://evil.example.com/acme/features/FEA-1",
+      fallback
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(metadata).toBe(fallback);
+  });
+
+  it("resolves document metadata for a relative redirect_url", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      Response.json({ title: "My PRD", type: "PRD" })
+    );
+
+    const metadata = await resolveOgMetadataFromRedirectUrl(
+      "/acme/prds/PRD-9?version=2",
+      fallback
+    );
+
+    expect(fetch).toHaveBeenCalledWith(
+      "http://localhost:3002/documents/by-slug/PRD-9/meta?org=acme",
+      expect.any(Object)
+    );
+    expect(metadata.title).toBe("My PRD | Closedloop.ai");
+  });
+
+  it("returns the fallback when redirect_url is missing", async () => {
+    const metadata = await resolveOgMetadataFromRedirectUrl(
+      undefined,
+      fallback
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(metadata).toBe(fallback);
+  });
+
+  it("returns the fallback for a repeated redirect_url (string[]) without throwing", async () => {
+    // Next.js hands repeated query keys through as string[]:
+    // /sign-up?redirect_url=/a&redirect_url=/b
+    const metadata = await resolveOgMetadataFromRedirectUrl(
+      ["/acme/features/FEA-1", "/acme/features/FEA-2"],
+      fallback
+    );
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(metadata).toBe(fallback);
   });
 });

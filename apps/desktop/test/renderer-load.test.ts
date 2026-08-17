@@ -31,6 +31,8 @@ type Harness = {
   warnings: string[];
   errors: string[];
   registerCalls: number;
+  /** Interleaved `register` / `load:<url>` markers for ordering assertions. */
+  events: string[];
 };
 
 function makeHarness(
@@ -41,6 +43,7 @@ function makeHarness(
   const allowed: string[] = [];
   const warnings: string[] = [];
   const errors: string[] = [];
+  const events: string[] = [];
   let registerCalls = 0;
 
   const deps: RendererLoadDeps = {
@@ -48,6 +51,7 @@ function makeHarness(
     bundledRendererUrl: BUNDLED_URL,
     loadUrl: (url) => {
       loaded.push(url);
+      events.push(`load:${url}`);
       return loadUrl(url);
     },
     allowRendererUrl: (url) => {
@@ -55,6 +59,7 @@ function makeHarness(
     },
     registerAppProtocol: () => {
       registerCalls += 1;
+      events.push("register");
     },
     log: {
       warn: (_tag, message) => warnings.push(message),
@@ -68,6 +73,7 @@ function makeHarness(
     allowed,
     warnings,
     errors,
+    events,
     get registerCalls() {
       return registerCalls;
     },
@@ -120,11 +126,25 @@ test("loads the dev renderer directly when it is available", async () => {
 
   assert.equal(outcome, "dev");
   assert.deepEqual(h.loaded, [DEV_URL]);
-  // No fallback → bundled protocol/allowlist not touched.
-  assert.equal(h.registerCalls, 0);
+  // The `app://` handler is registered even when the dev renderer wins — the
+  // dev renderer still fetches prepared transcripts over
+  // `app://renderer/transcripts/...`. Skipping registration on this path left
+  // every dev transcript read failing with ERR_UNKNOWN_URL_SCHEME.
+  assert.equal(h.registerCalls, 1);
   assert.deepEqual(h.allowed, [DEV_URL]);
   assert.equal(h.warnings.length, 0);
   assert.equal(h.errors.length, 0);
+});
+
+test("registers the app:// protocol before the first load attempt", async () => {
+  // Ordering matters: the handler must exist before any renderer document can
+  // run (a dev renderer starts fetching `app://` transcript URLs immediately),
+  // and before the bundled `app://` document itself is requested.
+  const h = makeHarness(() => Promise.resolve(), DEV_URL);
+
+  await loadRendererContent(h.deps);
+
+  assert.deepEqual(h.events, ["register", `load:${DEV_URL}`]);
 });
 
 test("loads the bundled renderer directly when no dev URL is configured", async () => {

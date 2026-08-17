@@ -75,15 +75,17 @@ function formatDay(day: string): string {
  * Hour-of-day (rows, 24h) × day (columns) turn-density heatmap for the
  * overview dashboard, with a Both/Agent/Human toggle. Turns are attributed
  * individually by role (FEA-2641 Fix 4 PM ruling): "Human" = genuine typed
- * prompts at the hour they were typed (transcript-first; injections and
- * non-steering commands like /exit excluded); "Agent" = assistant turns,
+ * prompts at the hour they were typed (transcript-first; injections excluded;
+ * typed slash commands including /exit count per FEA-3124); "Agent" = assistant turns,
  * including a human-steered session's autonomous/subagent stretches at the
  * hours they actually ran — never inherited from a session-level flag.
  * Kickoff prompts of headless-SDK sessions (cron-scheduled reviews, fleet
  * agents, scripted `claude -p` runs) are programmatic, not typed, and count
  * as Agent.
  * Data comes from the Utilization insights (`charts.activityHeatmap`); renders a
- * graceful empty state without it.
+ * graceful empty state when that slice is absent OR when it carries a populated
+ * day axis but no turn-bucket cells (an un-backfilled / fully-out-of-window
+ * corpus), so the card never paints a deceptively blank lattice.
  */
 export function EventActivityHeatmap({
   heatmap,
@@ -109,6 +111,18 @@ export function EventActivityHeatmap({
   }, [heatmap, mode]);
 
   const days = heatmap?.days ?? [];
+  // A heatmap is only worth drawing when there is at least one turn bucket to
+  // paint. The `days` axis is a fixed trend-window calendar span derived
+  // INDEPENDENTLY of the turn buckets (`eachDay(trendStart, end)`), so it is
+  // non-empty whenever a window is selected — even for a corpus whose windowed
+  // `session_turn_bucket` scan produced zero cells (an un-backfilled or
+  // fully-out-of-window corpus). Gating the grid on `days.length` alone rendered
+  // a full 24×N lattice of empty level-0 cells in that case: the reported
+  // "Event Activity is blank while every other KPI card shows data" bug (the
+  // sibling cards read sessions/events/tokens directly, not the bucket table, so
+  // they stay populated). Fall through to the empty state whenever there are no
+  // cells to plot, regardless of the axis length.
+  const hasCells = byKey.size > 0;
   const palette = (resolvedTheme === "dark" ? DARK_PALETTE : LIGHT_PALETTE)[
     mode
   ];
@@ -147,16 +161,20 @@ export function EventActivityHeatmap({
         title="Event Activity"
       />
 
-      {days.length === 0 ? (
-        <div className="grid min-h-[240px] place-items-center text-[var(--muted-foreground)] text-sm">
-          No activity in range yet
-        </div>
-      ) : (
+      {hasCells ? (
         // The grid scales to fill the card width (day columns flex), so the
         // whole 90×24 heatmap fits with no scrolling.
         <div>
           <div
-            className="text-[10px] text-[var(--muted-foreground)]"
+            // `overflow-hidden` clips the day-axis labels at the card edge:
+            // each ~weekly label is wider than its ~10px `minmax(0,1fr)` column
+            // and is intentionally allowed to spill into the empty columns after
+            // it (see the label class below), but a label landing in the final
+            // column must not spill past the card and push the document wide on
+            // narrow viewports (FEA-2511). Clip here instead of truncating the
+            // label, which shrank every `MM-DD` tick to an unreadable "0."
+            // (FEA-3261).
+            className="overflow-hidden text-[10px] text-[var(--muted-foreground)]"
             style={{
               display: "grid",
               gridTemplateColumns: `auto repeat(${days.length}, minmax(0, 1fr))`,
@@ -192,13 +210,22 @@ export function EventActivityHeatmap({
             <div />
             {days.map((day, index) => (
               <div
-                className="min-w-0 truncate pt-1 leading-none"
+                // Keep the label on one line and let it overflow its narrow
+                // grid column into the empty columns that follow — the grid
+                // clips at the card edge (see wrapper above). `truncate` here
+                // clipped each label to its ~10px column, rendering "0."
+                // (FEA-3261, a FEA-2511 regression).
+                className="overflow-visible whitespace-nowrap pt-1 leading-none"
                 key={`label:${day}`}
               >
                 {index % 7 === 0 ? formatDay(day) : ""}
               </div>
             ))}
           </div>
+        </div>
+      ) : (
+        <div className="grid min-h-[240px] place-items-center text-[var(--muted-foreground)] text-sm">
+          No activity in range yet
         </div>
       )}
 

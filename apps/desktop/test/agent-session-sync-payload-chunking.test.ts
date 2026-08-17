@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { SESSION_PAYLOAD_BYTE_CAP } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
 import type {
   SyncedAgentSession,
   SyncedAgentSessionTokenEvent,
-} from "../src/main/agent-session-sync-contract.js";
+} from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   chunkOversizedSession,
   estimateSessionPayloadBytes,
+  maxSessionPayloadBytesForBatch,
   prepareAgentSessionPayload,
-} from "../src/main/agent-session-sync-payload.js";
+  sanitizeSessionForSync,
+} from "../src/main/agent-sync/agent-session-sync-payload.js";
 
 function buildSession(
   overrides: Partial<SyncedAgentSession> = {}
@@ -121,10 +124,15 @@ describe("chunkOversizedSession (FEA-2730)", () => {
     // FEA-2730). Token events are keep-all/idempotent cloud-side, so the
     // producer degrades: sync the session core and drop the unpaginatable token
     // events, which resync on a later pass.
+    // The degraded metadata chunk carries a real `chunk: { index, total }`
+    // marker (FEA-3788), so its base size includes those bytes. Measure the base
+    // from a marker-bearing empty chunk — a cap sized off the marker-less base
+    // would (correctly) dead-letter because the emitted chunk no longer fits.
     const base = estimateSessionPayloadBytes({
       ...buildSession(),
       events: [],
       tokenEvents: [],
+      chunk: { index: 0, total: 1 },
     });
     // Cap admits the base session but not base + a single token event.
     const maxBytes = base + 10;
@@ -159,6 +167,126 @@ describe("chunkOversizedSession (FEA-2730)", () => {
       tokenEventIds,
       buildTokenEvents(30).map((e) => e.externalEventId)
     );
+  });
+});
+
+describe("FEA-3788: chunk metadata makes a partial apply repairable", () => {
+  test("stamps every chunk with a 0-based index and the total count", () => {
+    const session = buildSession({ events: buildEvents(30) });
+    const maxBytes = estimateSessionPayloadBytes(buildSession()) + 400;
+
+    const chunks = chunkOversizedSession(session, maxBytes);
+
+    assert.ok(chunks.length > 1, "expected multiple chunks");
+    const total = chunks.length;
+    chunks.forEach((chunk, index) => {
+      assert.deepEqual(
+        chunk.chunk,
+        { index, total },
+        `chunk ${index} must carry {index, total}`
+      );
+    });
+    // The last chunk is the only one the cloud commits the revision on; assert it
+    // is unambiguously identifiable as index === total - 1.
+    const last = chunks.at(-1);
+    assert.equal(last?.chunk?.index, total - 1);
+  });
+
+  test("co-paginated event+tokenEvent chunks share one contiguous index sequence", () => {
+    const session = buildSession({
+      events: buildEvents(24),
+      tokenEvents: buildTokenEvents(24),
+    });
+    const maxBytes = estimateSessionPayloadBytes(buildSession()) + 500;
+
+    const chunks = chunkOversizedSession(session, maxBytes);
+
+    assert.ok(chunks.length > 1, "expected multiple chunks");
+    const total = chunks.length;
+    // Indices must be a dense 0..total-1 run (no gaps between the event-chunk run
+    // and the tokenEvent-chunk run) so the cloud's first/last-chunk gates hold.
+    assert.deepEqual(
+      chunks.map((chunk) => chunk.chunk?.index),
+      Array.from({ length: total }, (_, i) => i)
+    );
+    for (const chunk of chunks) {
+      assert.equal(chunk.chunk?.total, total);
+    }
+  });
+
+  test("prepareAgentSessionPayload preserves the chunk markers on first + remaining chunks", () => {
+    const session = buildSession({ events: buildEvents(30) });
+    const maxBytes = estimateSessionPayloadBytes(buildSession()) + 400;
+
+    const prepared = prepareAgentSessionPayload(session, maxBytes);
+
+    assert.equal(prepared.kind, "chunked");
+    if (prepared.kind !== "chunked") {
+      return;
+    }
+    const chunks = [prepared.firstChunk, ...prepared.remainingChunks];
+    assert.equal(prepared.firstChunk.chunk?.index, 0);
+    assert.equal(prepared.firstChunk.chunk?.total, prepared.chunkCount);
+    chunks.forEach((chunk, index) => {
+      assert.equal(chunk.chunk?.index, index);
+      assert.equal(chunk.chunk?.total, prepared.chunkCount);
+    });
+  });
+
+  test("every stamped chunk stays within the byte cap after the marker is written", () => {
+    // Regression (codex P2): the `chunk: { index, total }` marker is reserved
+    // during sizing, so stamping it must never push a chunk that was packed right
+    // up to `maxBytes` past the cap — which would let
+    // agent-session-sync-service dead-letter an otherwise-syncable session.
+    const session = buildSession({ events: buildEvents(60) });
+    // A tight cap forces many chunks packed close to the limit. The base must
+    // include the worst-case marker reserve the packer accounts for, plus a small
+    // per-chunk event budget, so multiple chunks are produced without dead-lettering.
+    const maxBytes =
+      estimateSessionPayloadBytes({
+        ...buildSession(),
+        chunk: { index: 99, total: 100 },
+      }) + 120;
+
+    const chunks = chunkOversizedSession(session, maxBytes);
+
+    assert.ok(chunks.length > 1, "expected multiple chunks");
+    for (const chunk of chunks) {
+      // Measure the FULLY STAMPED chunk (chunkOversizedSession returns stamped
+      // chunks), including its real `chunk` marker bytes.
+      assert.ok(
+        chunk.chunk != null,
+        "every chunk is stamped with a real marker"
+      );
+      assert.ok(
+        estimateSessionPayloadBytes(chunk) <= maxBytes,
+        `stamped chunk ${chunk.chunk?.index} must stay within the cap`
+      );
+    }
+    // No event is lost across the stamped chunks.
+    const seen = chunks.flatMap((chunk) =>
+      chunk.events.map((event) => event.externalEventId)
+    );
+    assert.deepEqual(
+      seen,
+      buildEvents(60).map((event) => event.externalEventId)
+    );
+  });
+
+  test("an unchunked (whole-session) payload carries no chunk marker", () => {
+    // A session that fits under the cap is implicitly chunk 0 of 1; the cloud
+    // treats an absent marker as first AND last chunk. Assert we do not stamp it.
+    const session = buildSession({ events: buildEvents(2) });
+    const prepared = prepareAgentSessionPayload(
+      session,
+      SESSION_PAYLOAD_BYTE_CAP
+    );
+
+    assert.equal(prepared.kind, "session");
+    if (prepared.kind !== "session") {
+      return;
+    }
+    assert.equal(prepared.session.chunk, undefined);
   });
 });
 
@@ -277,5 +405,57 @@ describe("components[] in session payloads (T-10.9 / FEA-2923)", () => {
       undefined,
       "components key absent when not provided"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3672: raising the per-message metadata text cap (160 → 2500) must not let
+// a long conversation bloat metadata past the payload byte cap and dead-letter
+// the session.
+// ---------------------------------------------------------------------------
+
+describe("FEA-3672: long-conversation metadata stays under the payload cap", () => {
+  test("100 near-cap human turns do not dead-letter the session", () => {
+    const messages = Array.from({ length: 100 }, () => ({
+      role: "user",
+      timestamp: "2026-06-10T10:00:00.000Z",
+      text: "w".repeat(2500),
+    }));
+    const session = buildSession({
+      metadata: { messages } as SyncedAgentSession["metadata"],
+    });
+    const maxBytes = maxSessionPayloadBytesForBatch(SESSION_PAYLOAD_BYTE_CAP);
+
+    const prepared = prepareAgentSessionPayload(session, maxBytes);
+    assert.notEqual(
+      prepared.kind,
+      "dead-letter",
+      "aggregate text budget keeps metadata under the payload cap"
+    );
+
+    // The sanitized metadata's summed preview text is bounded well under the cap:
+    // the 60k aggregate budget plus the per-message 160-char floor for turns past
+    // the budget (worst case ~76k, far below the payload cap).
+    const sanitized = sanitizeSessionForSync(session);
+    const meta = sanitized.metadata as { messages: { text?: string }[] };
+    const totalTextChars = meta.messages.reduce(
+      (sum, m) => sum + (typeof m.text === "string" ? m.text.length : 0),
+      0
+    );
+    assert.ok(
+      totalTextChars <= 60_000 + 100 * 160,
+      `summed preview text ${totalTextChars} must stay within the aggregate budget + floor`
+    );
+    // Early turns still carry their full 2500-char preview.
+    assert.equal(meta.messages[0].text, "w".repeat(2500));
+    // Regression guard (codex review): no turn drops its preview entirely once
+    // the aggregate budget is spent — every later turn keeps at least the old
+    // 160-char preview so timeline detail never renders `undefined`.
+    for (const message of meta.messages) {
+      assert.ok(
+        typeof message.text === "string" && message.text.length >= 160,
+        "every turn keeps at least the 160-char preview floor"
+      );
+    }
   });
 });

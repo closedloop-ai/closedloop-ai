@@ -19,8 +19,14 @@ import {
   GitHubFetchMechanism,
   GitHubFetchTrigger,
   GitHubProviderBudgetState,
+  GitHubReadModelSource,
   GitHubSyncResultReason,
 } from "./types/github-read-model";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultReason,
+  RepositoryDefaultSource,
+} from "./types/repository-default-identity";
 
 describe("github read model", () => {
   it("selects rateLimit budget metadata in the bundled query", () => {
@@ -35,6 +41,186 @@ describe("github read model", () => {
       "states: [OPEN, CLOSED, MERGED]"
     );
     expect(GITHUB_BUNDLED_PULL_REQUESTS_QUERY).toContain("databaseId");
+    expect(GITHUB_BUNDLED_PULL_REQUESTS_QUERY).toContain("headRepository");
+    expect(GITHUB_BUNDLED_PULL_REQUESTS_QUERY).toContain("nameWithOwner");
+    expect(GITHUB_BUNDLED_PULL_REQUESTS_QUERY).toContain("defaultBranchRef");
+  });
+
+  it("maps a fork head repository and its custom default independently", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_fork",
+                number: 46,
+                url: "https://github.com/base/repo/pull/46",
+                baseRefName: "main",
+                headRefName: "feature",
+                headRepository: {
+                  databaseId: 987,
+                  nameWithOwner: "Contributor/Fork",
+                  defaultBranchRef: { name: "develop" },
+                },
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      observationContext()
+    );
+
+    expect(result.pullRequests[0]?.headRepository).toEqual(
+      expect.objectContaining({
+        repository: {
+          provider: "github",
+          providerRepositoryId: "987",
+          fullName: "contributor/fork",
+        },
+        evidence: {
+          availability: RepositoryDefaultAvailability.Available,
+          completeness: "complete",
+          defaultBranch: "develop",
+        },
+        provenance: expect.objectContaining({
+          source: RepositoryDefaultSource.PullRequestGraphql,
+          observationKey: "graphql-attempt:1",
+        }),
+      })
+    );
+    expect(
+      result.pullRequests[0]?.headRepository?.repository.fullName
+    ).not.toBe("base/repo");
+  });
+
+  it("keeps nullable head repositories typed without substituting the base", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_deleted_fork",
+                number: 47,
+                url: "https://github.com/base/repo/pull/47",
+                baseRefName: "main",
+                headRefName: "feature",
+                headRepository: null,
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      observationContext()
+    );
+
+    expect(result.pullRequests[0]).not.toHaveProperty("headRepository");
+    expect(result.pullRequests[0]?.headRepositoryUnavailable).toEqual(
+      expect.objectContaining({
+        reason: RepositoryDefaultReason.NotReported,
+        provenance: expect.objectContaining({
+          observationKey: "graphql-attempt:1",
+          source: RepositoryDefaultSource.PullRequestGraphql,
+        }),
+      })
+    );
+  });
+
+  it("maps a missing head default to unavailable without inferring main", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_no_default",
+                number: 48,
+                url: "https://github.com/base/repo/pull/48",
+                headRepository: {
+                  databaseId: 654,
+                  nameWithOwner: "contributor/fork",
+                  defaultBranchRef: null,
+                },
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      observationContext()
+    );
+
+    expect(result.pullRequests[0]?.headRepository?.evidence).toEqual({
+      availability: RepositoryDefaultAvailability.Unavailable,
+      completeness: "unavailable",
+      reason: RepositoryDefaultReason.NotReported,
+    });
+    expect(result.pullRequests[0]?.headRepository?.evidence).not.toHaveProperty(
+      "defaultBranch"
+    );
+  });
+
+  it("classifies malformed head identity with its acquisition provenance", () => {
+    const result = mapBundledPullRequestsResponse(
+      {
+        repository: {
+          pullRequests: {
+            nodes: [
+              {
+                id: "PR_malformed_head",
+                number: 50,
+                url: "https://github.com/base/repo/pull/50",
+                headRepository: {
+                  databaseId: null,
+                  nameWithOwner: "contributor/fork",
+                  defaultBranchRef: { name: "trunk" },
+                },
+              },
+            ],
+          },
+        },
+      },
+      GitHubReadModelSource.Provider,
+      observationContext()
+    );
+
+    expect(result.pullRequests[0]?.headRepositoryUnavailable).toEqual(
+      expect.objectContaining({
+        reason: RepositoryDefaultReason.Malformed,
+        provenance: expect.objectContaining({
+          observationKey: "graphql-attempt:1",
+        }),
+      })
+    );
+  });
+
+  it("omits the additive head snapshot for legacy callers without context", () => {
+    const result = mapBundledPullRequestsResponse({
+      repository: {
+        pullRequests: {
+          nodes: [
+            {
+              id: "PR_legacy_context",
+              number: 49,
+              url: "https://github.com/base/repo/pull/49",
+              headRepository: {
+                databaseId: 111,
+                nameWithOwner: "contributor/fork",
+                defaultBranchRef: { name: "trunk" },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result.pullRequests[0]).not.toHaveProperty("headRepository");
+    expect(result.pullRequests[0]).not.toHaveProperty(
+      "headRepositoryUnavailable"
+    );
   });
 
   it("selects cursor pageInfo and builds bounded page variables", () => {
@@ -345,3 +531,13 @@ describe("github read model", () => {
     );
   });
 });
+
+function observationContext() {
+  return {
+    mechanism: GitHubFetchMechanism.Graphql,
+    trigger: GitHubFetchTrigger.Backfill,
+    credentialType: GitHubFetchCredentialType.GitHubApp,
+    observationKey: "graphql-attempt:1",
+    observedAt: "2026-08-10T20:00:00.000Z",
+  };
+}

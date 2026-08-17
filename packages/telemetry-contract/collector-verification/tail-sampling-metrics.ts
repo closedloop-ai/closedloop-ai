@@ -1,5 +1,8 @@
 import type { Scenario, ScenarioManifestEntry } from "./synthetic-otlp";
-import { SCENARIO_ATTRIBUTE_KEY } from "./synthetic-otlp";
+import {
+  SCENARIO_ATTRIBUTE_KEY,
+  Scenario as ScenarioValue,
+} from "./synthetic-otlp";
 
 /**
  * Pure parsing + leg evaluation for the tail-sampling mechanical verification
@@ -90,13 +93,15 @@ export function parseDecisionMetrics(prometheusText: string): DecisionMetrics {
 export function parseExportedScenarioCounts(
   fileContent: string
 ): ReadonlyMap<Scenario, number> {
-  const counts = new Map<Scenario, number>();
+  const traceSpansByScenario = new Map<Scenario, Map<string, Set<string>>>();
 
-  const bump = (scenario: string): void => {
-    counts.set(
-      scenario as Scenario,
-      (counts.get(scenario as Scenario) ?? 0) + 1
-    );
+  const add = (scenario: string, traceId: string, spanName: string): void => {
+    const key = scenario as Scenario;
+    const traceSpans = traceSpansByScenario.get(key) ?? new Map();
+    const spanNames = traceSpans.get(traceId) ?? new Set<string>();
+    spanNames.add(spanName);
+    traceSpans.set(traceId, spanNames);
+    traceSpansByScenario.set(key, traceSpans);
   };
 
   for (const rawLine of fileContent.split("\n")) {
@@ -112,13 +117,48 @@ export function parseExportedScenarioCounts(
     }
     for (const span of iterateSpans(parsed)) {
       const scenario = scenarioOf(span);
-      if (scenario !== undefined) {
-        bump(scenario);
+      const traceId = span.traceId;
+      const spanName = span.name;
+      if (
+        scenario !== undefined &&
+        typeof traceId === "string" &&
+        typeof spanName === "string"
+      ) {
+        add(scenario, traceId, spanName);
       }
     }
   }
 
+  const counts = new Map<Scenario, number>();
+  for (const [scenario, traceSpans] of traceSpansByScenario) {
+    counts.set(scenario, countCompleteRetainedTraces(scenario, traceSpans));
+  }
   return counts;
+}
+
+function countCompleteRetainedTraces(
+  scenario: Scenario,
+  traceSpans: ReadonlyMap<string, ReadonlySet<string>>
+): number {
+  let count = 0;
+  for (const spanNames of traceSpans.values()) {
+    if (isCompleteRetainedTrace(scenario, spanNames)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function isCompleteRetainedTrace(
+  scenario: Scenario,
+  spanNames: ReadonlySet<string>
+): boolean {
+  return (
+    scenario !== ScenarioValue.Slow ||
+    (spanNames.size === 2 &&
+      spanNames.has("ipc.list") &&
+      spanNames.has("cl-desktop"))
+  );
 }
 
 function* iterateSpans(payload: unknown): Generator<Record<string, unknown>> {

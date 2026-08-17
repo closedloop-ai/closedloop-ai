@@ -12,7 +12,8 @@ import fs from "node:fs";
 import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mock, test } from "node:test";
+import { test } from "node:test";
+import { vi } from "vitest";
 import { parseChatSessionFile } from "../src/main/collectors/copilot/copilot-parser.js";
 import { extractTranscriptTokens } from "../src/main/database/transcript.js";
 
@@ -81,16 +82,18 @@ test("parseChatSessionFile skips a chat file over MAX_CHAT_FILE_BYTES (64MB)", a
   await writeFile(big, validChat);
 
   const realStatSync = fs.statSync;
-  mock.method(fs, "statSync", (statPath: fs.PathLike): fs.Stats => {
-    const st = realStatSync(statPath);
-    if (statPath === big) {
-      Object.defineProperty(st, "size", { value: 80 * 1024 * 1024 }); // over the 64 MiB cap
+  vi.spyOn(fs, "statSync").mockImplementation(
+    (statPath: fs.PathLike): fs.Stats => {
+      const st = realStatSync(statPath);
+      if (statPath === big) {
+        Object.defineProperty(st, "size", { value: 80 * 1024 * 1024 }); // over the 64 MiB cap
+      }
+      return st;
     }
-    return st;
-  });
+  );
 
   assert.equal(parseChatSessionFile(big, null), null);
-  mock.restoreAll();
+  vi.restoreAllMocks();
 
   // Baseline: the SAME on-disk content parses to a non-null session once the
   // mocked oversize is gone — confirming the null above is the guard firing,

@@ -19,10 +19,13 @@ vi.mock("@repo/database", () => ({
     IMPLEMENTATION_PLAN: "IMPLEMENTATION_PLAN",
     TEMPLATE: "TEMPLATE",
     FEATURE: "FEATURE",
+    DOC: "DOC",
+    // FEA-3956: the generated enum now carries the canonical ISSUE value.
+    ISSUE: "ISSUE",
   },
 }));
 
-import { withDb } from "@repo/database";
+import { ArtifactType, withDb } from "@repo/database";
 import { searchService } from "./service";
 
 const mockWithDb = withDb as unknown as Mock;
@@ -129,6 +132,41 @@ describe("searchService.search", () => {
         }),
       ])
     );
+  });
+
+  it("maps an 'issue' type-label query to the persisted FEATURE subtype filter (FEA-3956)", async () => {
+    const mockFindMany = vi.fn().mockResolvedValue([]);
+    installDb({
+      artifact: { findMany: mockFindMany },
+      project: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    // "Issue" is the post-rename display name; rows persist as FEATURE, so the
+    // broad-pass subtype filter must target FEATURE (not the canonical ISSUE)
+    // for the query to match stored rows.
+    await searchService.search(TEST_ORG_ID, "issue");
+
+    const broadOr = mockFindMany.mock.calls[1][0].where.OR;
+    const subtypeClause = broadOr.find(
+      (c: Record<string, unknown>) => "subtype" in c
+    ) as { subtype: { in: string[] } };
+    expect(subtypeClause.subtype.in).toContain(DocumentType.Feature);
+    expect(subtypeClause.subtype.in).not.toContain("ISSUE");
+  });
+
+  it("surfaces a skew-stored ISSUE row with the canonical FEATURE type (FEA-3956)", async () => {
+    // A skewed newer client could persist the canonical ISSUE value; on read it
+    // must normalize to the canonical DocumentType FEATURE, never leak ISSUE.
+    const issueRow = makeArtifactRow({ id: "iss-1", subtype: "ISSUE" });
+    installDb({
+      artifact: { findMany: vi.fn().mockResolvedValue([issueRow]) },
+      project: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    const result = await searchService.search(TEST_ORG_ID, "Test");
+
+    expect(result.documents).toHaveLength(1);
+    expect(result.documents[0].type).toBe(DocumentType.Feature);
   });
 
   it("omits the subtype clause from the broad pass when no type label matches", async () => {
@@ -253,5 +291,80 @@ describe("searchService.search", () => {
     const result = await searchService.search(TEST_ORG_ID, "test");
 
     expect(result.documents).toHaveLength(0);
+  });
+});
+
+describe("searchService.searchByTag", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns empty results when the tag is not found", async () => {
+    const artifactFindMany = vi.fn().mockResolvedValue([]);
+    installDb({
+      tag: { findFirst: vi.fn().mockResolvedValue(null) },
+      artifact: { findMany: artifactFindMany },
+    });
+
+    const result = await searchService.searchByTag(TEST_ORG_ID, "tag-1");
+
+    expect(result).toEqual({
+      query: "",
+      tagId: "tag-1",
+      documents: [],
+      projects: [],
+    });
+    expect(artifactFindMany).not.toHaveBeenCalled();
+  });
+
+  it("collapses the tag join into a single artifact query via the relation filter", async () => {
+    const artifactFindMany = vi.fn().mockResolvedValue([makeArtifactRow()]);
+    const tagArtifactFindMany = vi.fn().mockResolvedValue([]);
+    installDb({
+      tag: { findFirst: vi.fn().mockResolvedValue({ name: "Roadmap" }) },
+      artifact: { findMany: artifactFindMany },
+      tagArtifact: { findMany: tagArtifactFindMany },
+    });
+
+    const result = await searchService.searchByTag(TEST_ORG_ID, "tag-1");
+
+    // No intermediate materialization of every tagArtifact row + unbounded IN.
+    expect(tagArtifactFindMany).not.toHaveBeenCalled();
+
+    const call = artifactFindMany.mock.calls[0][0];
+    expect(call.where).toEqual(
+      expect.objectContaining({
+        organizationId: TEST_ORG_ID,
+        type: ArtifactType.DOCUMENT,
+        tagArtifacts: { some: { tagId: "tag-1" } },
+      })
+    );
+    // DB does the recency ordering and cap in the same shot.
+    expect(call.orderBy).toEqual({ updatedAt: "desc" });
+    expect(call.take).toBe(25);
+
+    expect(result.tagName).toBe("Roadmap");
+    expect(result.documents).toHaveLength(1);
+  });
+
+  it("returns the tag name with no documents when the tag has no artifacts", async () => {
+    installDb({
+      tag: { findFirst: vi.fn().mockResolvedValue({ name: "Empty" }) },
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    const result = await searchService.searchByTag(TEST_ORG_ID, "tag-1");
+
+    expect(result).toEqual({
+      query: "",
+      tagId: "tag-1",
+      tagName: "Empty",
+      documents: [],
+      projects: [],
+    });
   });
 });

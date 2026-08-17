@@ -124,6 +124,7 @@ function detailRouteContext(slug: string) {
 function buildComponentItem(overrides: Record<string, unknown> = {}) {
   return {
     id: "ac-uuid-1",
+    slug: (overrides.slug as string | undefined) ?? "skill::my-skill",
     name: "My Skill",
     kind: "skill",
     sourceType: "repo",
@@ -131,7 +132,7 @@ function buildComponentItem(overrides: Record<string, unknown> = {}) {
     harness: "claude",
     invocations: 5,
     sessions: 2,
-    klocPerDollar: null,
+    locPerDollar: null,
     trend: [],
     owner: "Ada Lovelace",
     collaborators: [],
@@ -258,6 +259,53 @@ describe("GET /agent-components", () => {
     );
     // Zod coerce will coerce non-number to NaN and fail validation → 400
     expect(response.status).toBe(400);
+  });
+
+  // ISS-4942 (wongk): a version-skewed deploy can leave an old MCP image
+  // sending the pre-FEA-4098 `?owner=` filter at an already-advanced API. The
+  // query schema is not `.strict()`, so before the alias that param was
+  // stripped and the route answered with the UNFILTERED org inventory.
+  describe("deprecated owner filter alias", () => {
+    beforeEach(() => {
+      mocks.mockListForOrg.mockResolvedValue({
+        items: [],
+        total: 0,
+        hasMore: false,
+      });
+    });
+
+    it("normalizes an old-client owner filter onto collaborator", async () => {
+      await listRoute(
+        makeListRequest("?owner=Ada%20Lovelace"),
+        listRouteContext()
+      );
+
+      const [, query] = mocks.mockListForOrg.mock.calls[0];
+      expect(query.collaborator).toBe("Ada Lovelace");
+      // The stale spelling must not reach the service alongside it.
+      expect(query).not.toHaveProperty("owner");
+    });
+
+    it("prefers collaborator over owner when a client sends both", async () => {
+      await listRoute(
+        makeListRequest("?collaborator=Grace%20Hopper&owner=Ada%20Lovelace"),
+        listRouteContext()
+      );
+
+      const [, query] = mocks.mockListForOrg.mock.calls[0];
+      expect(query.collaborator).toBe("Grace Hopper");
+    });
+
+    it("treats a blank owner as unset instead of rejecting the old client", async () => {
+      const response = await listRoute(
+        makeListRequest("?owner="),
+        listRouteContext()
+      );
+
+      expect(response.status).toBe(200);
+      const [, query] = mocks.mockListForOrg.mock.calls[0];
+      expect(query.collaborator).toBeUndefined();
+    });
   });
 });
 

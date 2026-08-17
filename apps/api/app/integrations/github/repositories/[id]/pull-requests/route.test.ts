@@ -1,10 +1,25 @@
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model";
+import type { RepositoryDefaultAuthority } from "@repo/api/src/types/repository-default-identity";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity";
+import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GitHubReadCostRoute } from "@/lib/github/github-read-cost-log";
 
 const authMock = vi.fn();
 const findOrCreateUserMock = vi.fn();
 const getDesktopManagedPopRequestFailureMock = vi.fn();
 const getPullRequestsMock = vi.fn();
+const isGithubProjectionReadsEnabledMock = vi.fn();
+const servePullRequestsFromProjectionMock = vi.fn();
 const organizationFindByIdMock = vi.fn();
 const resolveOrgHeaderMock = vi.fn();
 const touchLastUsedAtMock = vi.fn();
@@ -56,6 +71,15 @@ vi.mock("../../../service", () => ({
   },
 }));
 
+vi.mock("../../../projection-read", () => ({
+  serveRepositoryPullRequestsFromProjection:
+    servePullRequestsFromProjectionMock,
+}));
+
+vi.mock("@/lib/github-projection-reads-feature", () => ({
+  isGithubProjectionReadsEnabled: isGithubProjectionReadsEnabledMock,
+}));
+
 const { GET } = await import("./route");
 
 const ROUTE_CONTEXT = { params: Promise.resolve({ id: "repo-1" }) };
@@ -95,6 +119,13 @@ describe("GET /integrations/github/repositories/[id]/pull-requests", () => {
     });
     getDesktopManagedPopRequestFailureMock.mockResolvedValue(null);
     getPullRequestsMock.mockResolvedValue({ pullRequests: [] });
+    // Default fail-closed: the projection-reads rollout stays off unless a test
+    // opts in, so the live path is the default under test.
+    isGithubProjectionReadsEnabledMock.mockResolvedValue(false);
+    servePullRequestsFromProjectionMock.mockResolvedValue({
+      pullRequests: [],
+      trackedPrUrls: [],
+    });
     organizationFindByIdMock.mockResolvedValue({ clerkId: "clerk-org-1" });
     resolveOrgHeaderMock.mockResolvedValue({
       kind: "session",
@@ -133,16 +164,88 @@ describe("GET /integrations/github/repositories/[id]/pull-requests", () => {
       "repo-1",
       "org-1",
       "project-1",
-      { limit: 30 }
+      { limit: 30 },
+      GitHubReadCostRoute.RepositoryPullRequests
     );
   });
 
   it("allows Clerk principals to read repository pull requests", async () => {
     await GET(request({ token: "clerk-session" }), ROUTE_CONTEXT);
 
-    expect(getPullRequestsMock).toHaveBeenCalledWith("repo-1", "org-1", null, {
-      limit: 30,
+    expect(getPullRequestsMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      null,
+      { limit: 30 },
+      GitHubReadCostRoute.RepositoryPullRequests
+    );
+  });
+
+  it("serves from the projection when the projection-reads flag is on, bypassing live GraphQL", async () => {
+    isGithubProjectionReadsEnabledMock.mockResolvedValue(true);
+
+    await GET(
+      request({ projectId: "project-1", token: "sk_live_desktop" }),
+      ROUTE_CONTEXT
+    );
+
+    expect(servePullRequestsFromProjectionMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      "project-1",
+      30
+    );
+    expect(getPullRequestsMock).not.toHaveBeenCalled();
+  });
+
+  it("serves live GraphQL when the projection-reads flag is off", async () => {
+    isGithubProjectionReadsEnabledMock.mockResolvedValue(false);
+
+    await GET(request({ token: "sk_live_desktop" }), ROUTE_CONTEXT);
+
+    expect(getPullRequestsMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      null,
+      { limit: 30 },
+      GitHubReadCostRoute.RepositoryPullRequests
+    );
+    expect(servePullRequestsFromProjectionMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves additive live fork-head authority in the response", async () => {
+    const headRepository = {
+      repository: {
+        provider: VcsProviderKind.GitHub,
+        providerRepositoryId: "5826",
+        fullName: "fork-owner/widgets",
+      },
+      evidence: {
+        availability: RepositoryDefaultAvailability.Available,
+        completeness: RepositoryDefaultCompleteness.Complete,
+        defaultBranch: "trunk",
+      },
+      provenance: {
+        source: RepositoryDefaultSource.PullRequestGraphql,
+        mechanism: GitHubFetchMechanism.Graphql,
+        trigger: GitHubFetchTrigger.SurfaceOpen,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "graphql-page-1",
+        observedAt: "2026-02-11T09:01:00.000Z",
+      },
+    } satisfies RepositoryDefaultAuthority;
+    getPullRequestsMock.mockResolvedValue({
+      pullRequests: [{ headRepository }],
     });
+
+    const response = await GET(
+      request({ token: "sk_live_desktop" }),
+      ROUTE_CONTEXT
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data.pullRequests[0].headRepository).toEqual(headRepository);
   });
 
   it("rejects unauthenticated reads before the service boundary", async () => {
@@ -185,7 +288,8 @@ describe("GET /integrations/github/repositories/[id]/pull-requests", () => {
       "repo-1",
       "wrong-org",
       null,
-      { limit: 30 }
+      { limit: 30 },
+      GitHubReadCostRoute.RepositoryPullRequests
     );
   });
 
@@ -195,9 +299,13 @@ describe("GET /integrations/github/repositories/[id]/pull-requests", () => {
       ROUTE_CONTEXT
     );
 
-    expect(getPullRequestsMock).toHaveBeenCalledWith("repo-1", "org-1", null, {
-      limit: 100,
-    });
+    expect(getPullRequestsMock).toHaveBeenCalledWith(
+      "repo-1",
+      "org-1",
+      null,
+      { limit: 100 },
+      GitHubReadCostRoute.RepositoryPullRequests
+    );
   });
 
   it("rejects zero, negative, and non-numeric limits", async () => {

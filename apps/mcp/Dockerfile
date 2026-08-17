@@ -27,11 +27,25 @@ COPY tsconfig.json ./
 COPY apps/mcp/package.json apps/mcp/tsconfig.json apps/mcp/
 COPY packages/api/ packages/api/
 COPY packages/loops-api/ packages/loops-api/
+# @repo/observability — mcp routes logging and bounded shutdown flushing through
+# @repo/observability/log and @repo/observability/shutdown. Consumed from source
+# (no exports map → root .ts files, resolved by tsx at runtime), so copy the
+# full package like relay does.
+COPY packages/observability/ packages/observability/
+# telemetry-contract is a transitive workspace dep declared by @repo/observability;
+# pnpm needs its manifest on disk to resolve the workspace symlink. mcp's log.ts
+# import graph never resolves it at runtime, so no dist/src is copied.
+COPY packages/telemetry-contract/package.json packages/telemetry-contract/
 # shared-platform is a transitive workspace dep of @repo/api (which re-exports
 # its EngineerRoutingMode SSOT); pnpm needs its manifest on disk to resolve the
 # workspace symlink even though mcp does not import it directly. No dist/src is
 # needed until something in mcp's import graph actually resolves the module.
 COPY packages/shared-platform/package.json packages/shared-platform/
+# crewd is a transitive workspace dep of @repo/api (its harness-conversion
+# contract imports @repo/crewd/model); pnpm needs its manifest on disk to resolve
+# the workspace symlink even though mcp does not import it directly. No dist/src
+# is needed until something in mcp's import graph actually resolves the module.
+COPY packages/crewd/package.json packages/crewd/
 COPY packages/database/ packages/database/
 COPY packages/redis/ packages/redis/
 COPY packages/typescript-config/ packages/typescript-config/
@@ -72,8 +86,17 @@ COPY packages/loops-api/package.json packages/loops-api/
 # shared-platform manifest needed for the prod workspace-symlink resolution of
 # @repo/api (see builder stage); mcp does not import it, so no dist is copied.
 COPY packages/shared-platform/package.json packages/shared-platform/
+# crewd manifest for the prod workspace-symlink resolution of @repo/api (see
+# builder stage); mcp does not import it, so no dist/src is copied.
+COPY packages/crewd/package.json packages/crewd/
 COPY packages/database/package.json packages/database/
 COPY packages/redis/package.json packages/redis/
+# @repo/observability manifest for the prod workspace-symlink resolution; its
+# source is copied below (mcp resolves @repo/observability/* from source via tsx).
+COPY packages/observability/package.json packages/observability/
+# telemetry-contract manifest — transitive workspace dep of @repo/observability;
+# needed for prod symlink resolution. Never resolved at runtime, so no dist/src.
+COPY packages/telemetry-contract/package.json packages/telemetry-contract/
 
 # Copy typescript-config (tsconfig bases) — needed by tsx for .ts resolution
 COPY --from=builder /app/packages/typescript-config/ packages/typescript-config/
@@ -90,9 +113,18 @@ COPY --from=builder /app/packages/api/src/ packages/api/src/
 COPY --from=builder /app/packages/loops-api/src/ packages/loops-api/src/
 COPY --from=builder /app/packages/database/ packages/database/
 COPY --from=builder /app/packages/redis/src/ packages/redis/src/
+# @repo/observability is consumed from source (no exports map → root .ts files),
+# so copy the full package for tsx to resolve @repo/observability/* at runtime.
+COPY --from=builder /app/packages/observability/ packages/observability/
 
 ENV NODE_ENV=production
 ENV MCP_PORT=3010
+# Emit structured single-line JSON to stdout so @repo/observability/log runs its
+# meta through redactLogValue on the console path too (util.inspect on a plain
+# console line would print meta unredacted), and so a stdout drain parses fields
+# into first-class facets. The agentless Datadog intake (DD_API_KEY) already
+# redacts; this covers the CloudWatch/console path for the OAuth-table reader.
+ENV DD_LOGS_JSON=1
 # Disable pnpm's pre-run deps-status check. Deps are fully baked into this image
 # at build time (stage 2 `pnpm install --frozen-lockfile --filter mcp... --prod`),
 # so the check is pointless at runtime — and harmful: the `pnpm exec` CMD below

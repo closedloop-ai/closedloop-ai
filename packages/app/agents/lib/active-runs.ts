@@ -1,4 +1,10 @@
-import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
+import {
+  ACTIVE_RUNS_FEATURE_FLAG_KEY as ACTIVE_RUNS_FEATURE_FLAG_KEY_CANONICAL,
+  type AgentSessionListItem,
+} from "@repo/api/src/types/agent-session";
+// Single owner of the untitled-session fallback label, so the Active-runs row
+// name and the awaiting-input notification title cannot drift (FEA-3969).
+import { UNTITLED_SESSION_LABEL } from "@repo/collaboration/shared/notification-labels";
 
 /**
  * "Active runs" — the live, in-flight view of the Sessions surface (emergent
@@ -11,8 +17,14 @@ import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
  * tested and reused by both the web shell and the desktop renderer. Inputs are
  * the existing synced `AgentSessionListItem` rows (refreshed by the session sync
  * stream / live-query bridge); no new API surface is introduced.
+ *
+ * The rollout flag key is canonical in `@repo/api`
+ * ({@link ACTIVE_RUNS_FEATURE_FLAG_KEY_CANONICAL}) so the server-side
+ * awaiting-input notifications gate on the exact same constant. Re-export it
+ * here rather than redeclaring the literal so the two cannot silently drift.
  */
-export const ACTIVE_RUNS_FEATURE_FLAG_KEY = "emergent";
+export const ACTIVE_RUNS_FEATURE_FLAG_KEY =
+  ACTIVE_RUNS_FEATURE_FLAG_KEY_CANONICAL;
 
 /**
  * Stall window (openai/symphony SPEC §5.3.6 `stall_timeout`): a running session
@@ -115,7 +127,7 @@ export function deriveActiveRun(
 
   return {
     id: item.id,
-    name: item.name?.trim() ? item.name : "Untitled session",
+    name: item.name?.trim() ? item.name : UNTITLED_SESSION_LABEL,
     harness: item.harness,
     phaseKind,
     phaseLabel,

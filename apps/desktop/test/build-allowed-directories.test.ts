@@ -46,3 +46,52 @@ test("risky allowed directories include broad user and system roots", () => {
     false
   );
 });
+
+// FEA-3641: the onboarding-ipc (CompleteOnboarding) and settings-ipc
+// (UpdateSettings) handlers gate sandbox selection on this predicate. Pin the
+// exact values those selection points must reject so a sandbox can never
+// silently resolve to ~ / /Users/<name> (which lets the browser/search stat
+// TCC-protected folders).
+test("risky guard rejects ~ and /Users/<name> at every selection point", () => {
+  assert.equal(isRiskyAllowedDirectory("~"), true);
+  assert.equal(isRiskyAllowedDirectory("/Users/andrew"), true);
+  assert.equal(isRiskyAllowedDirectory("/Users"), true);
+  assert.equal(isRiskyAllowedDirectory("/home/andrew"), true);
+  // A trailing slash must not defeat the guard.
+  assert.equal(isRiskyAllowedDirectory("/Users/andrew/"), true);
+  // A concrete workspace under home is accepted.
+  assert.equal(isRiskyAllowedDirectory("/Users/andrew/Source"), false);
+});
+
+test("risky guard rejects TCC-protected roots and descendants", () => {
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "Documents")),
+    true
+  );
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "Documents", "workspace")),
+    true
+  );
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "Source")),
+    false
+  );
+});
+
+// The macOS filesystem is case-insensitive, so a differently-cased protected
+// path (`~/documents`) points at the same folder as `~/Documents` and must not
+// slip past the risky-dir guard. Case-sensitive `===` would have let it through.
+test("risky guard rejects differently-cased TCC-protected roots", () => {
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "documents")),
+    true
+  );
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "DOWNLOADS")),
+    true
+  );
+  assert.equal(
+    isRiskyAllowedDirectory(path.join(os.homedir(), "documents", "workspace")),
+    true
+  );
+});

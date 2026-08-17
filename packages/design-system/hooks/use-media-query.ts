@@ -9,6 +9,9 @@ import { useCallback, useSyncExternalStore } from "react";
 export function useMediaQuery(query: string): boolean {
   const subscribe = useCallback(
     (callback: () => void) => {
+      if (typeof globalThis.matchMedia !== "function") {
+        return () => undefined;
+      }
       const media = globalThis.matchMedia(query);
       media.addEventListener("change", callback);
       return () => media.removeEventListener("change", callback);
@@ -16,7 +19,10 @@ export function useMediaQuery(query: string): boolean {
     [query]
   );
 
-  const getSnapshot = () => globalThis.matchMedia(query).matches;
+  const getSnapshot = () =>
+    typeof globalThis.matchMedia === "function"
+      ? globalThis.matchMedia(query).matches
+      : false;
   const getServerSnapshot = () => false;
 
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);

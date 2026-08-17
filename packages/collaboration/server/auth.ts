@@ -4,6 +4,7 @@ import "server-only";
 // pulls the declaration in for server-side consumers (apps/api).
 import "../shared/config";
 import { Liveblocks as LiveblocksNode } from "@liveblocks/node";
+import { ROOM_NAMESPACES } from "../shared/room-utils";
 import { keys } from "./keys";
 
 type AuthenticateOptions = {
@@ -31,7 +32,15 @@ export async function authenticate({
     organizationId,
   });
 
-  session.allow(`${organizationId}:artifact:*`, session.FULL_ACCESS);
+  // One wildcard per accepted room namespace, all scoped to the CALLER's own
+  // organization. Driven off `ROOM_NAMESPACES` so this can never fall behind
+  // what `parseDocumentRoomId` accepts: granting only `:artifact:*` while the
+  // parser still accepted the pre-rename `:document:` namespace meant a legacy
+  // room authorized with a 200 and a token that had no permission for it
+  // (PR #4285 reviewer wongk).
+  for (const namespace of ROOM_NAMESPACES) {
+    session.allow(`${organizationId}:${namespace}:*`, session.FULL_ACCESS);
+  }
 
   // `session.authorize()` returns the Liveblocks auth payload as a JSON string
   // (`{"token":"..."}`), not a bare JWT. The route forwards this body verbatim

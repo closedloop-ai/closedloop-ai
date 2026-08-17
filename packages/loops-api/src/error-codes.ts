@@ -37,7 +37,22 @@ export const LoopErrorCode = {
   RepoNotFound: "REPO_NOT_FOUND",
 
   // Backend semantic errors
+  // The loop never started: dispatch to its compute target threw before the
+  // runner was reachable. Distinct from CANCELLED, which means a human
+  // deliberately stopped the run (ISS-5711).
+  LaunchFailed: "LAUNCH_FAILED",
   NoWorkProduced: "NO_WORK_PRODUCED",
+  // The run exited 0 but never wrote the artifact it exists to produce (a PLAN
+  // with no plan.json, a DECOMPOSE with no features.json). Distinct from
+  // NO_WORK_PRODUCED, which means the run burned no tokens at all: here the run
+  // did real work and stopped before writing (ISS-5872).
+  //
+  // SKEW: `LoopEventErrorSchema.code` is `z.string()`, and both the cloud
+  // orchestrator's per-code log switch and `resolveFriendlyError` fall through
+  // to their generic failure branches on an unrecognized code, so a cloud build
+  // predating this member still records the loop as FAILED with the message
+  // intact rather than rejecting the event.
+  MissingRequiredArtifacts: "MISSING_REQUIRED_ARTIFACTS",
   ContextLimitExceeded: "CONTEXT_LIMIT_EXCEEDED",
   PlanStateUnavailable: "PLAN_STATE_UNAVAILABLE",
   StaleDispatch: "STALE_DISPATCH",

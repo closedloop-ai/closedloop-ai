@@ -1,3 +1,7 @@
+import {
+  type NavReferrerSurface,
+  withNavReferrer,
+} from "@repo/app/shared/lib/nav-referrer";
 import type { RouteParams } from "@repo/navigation/navigation-adapter";
 
 /**
@@ -17,12 +21,25 @@ export const NavId = {
   Sessions: "sessions",
   Branches: "branches",
   Agents: "agents",
+  // FEA-4087: the top-level, capability-driven Packs page. Reclaims the "/packs"
+  // path from the retired Packs-Lab → Agents alias (removed below); the desktop
+  // view renders the shared PacksPage in a team/solo capability context.
+  Packs: "packs",
   Insights: "insights",
+  Audit: "audit",
   Plans: "plans",
+  // PRD-566 / FEA-4348 (formerly FEA-3814): the Routines surface (renamed
+  // "Scheduled Tasks"), gated on the `routines` flag (hidden from the nav +
+  // null-guarded in the view when off). The legacy `/scheduled-tasks` href is
+  // aliased below so stale hashes/bookmarks still resolve.
+  Routines: "routines",
   Approvals: "approvals",
   Requests: "requests",
   Diagnostics: "diagnostics",
   Settings: "settings",
+  // FEA-3844 / PRD-555 M2: in-app Help view (two-pane docs reader). Gated on the
+  // `docsHelp` Labs flag — hidden from the sidebar and rendered null when off.
+  Help: "help",
 } as const;
 export type NavId = (typeof NavId)[keyof typeof NavId];
 
@@ -60,12 +77,54 @@ export function sessionDetailHref(sessionId: string): string {
   return `/sessions/${encodeURIComponent(sessionId)}`;
 }
 
-export function branchDetailHref(branchId: string): string {
-  return `/branches/${encodeURIComponent(branchId)}`;
+export function branchDetailHref(
+  branchId: string,
+  from?: NavReferrerSurface
+): string {
+  const href = `/branches/${encodeURIComponent(branchId)}`;
+  return from ? withNavReferrer(href, from) : href;
 }
 
 export function agentDetailHref(slug: string): string {
   return `/agents/${encodeURIComponent(slug)}`;
+}
+
+/** Query-param names the Help view reads to open a specific page/section. */
+export const HELP_PAGE_PARAM = "page";
+export const HELP_HEADING_PARAM = "heading";
+
+/**
+ * Href that opens the Help view (M2) at a specific docs page, optionally scrolled
+ * to a heading anchor. Used by the command-palette Docs group (FEA-3845 / PRD-555
+ * M3): Enter navigates here and the Help view reads `page`/`heading` to select
+ * that page through M2's existing `selectPage` seam (no reader duplication).
+ */
+export function helpPageHref(path: string, headingSlug?: string): string {
+  const params = new URLSearchParams({ [HELP_PAGE_PARAM]: path });
+  if (headingSlug) {
+    params.set(HELP_HEADING_PARAM, headingSlug);
+  }
+  return `${hrefForNavId(NavId.Help)}?${params.toString()}`;
+}
+
+/** Query-param name the Settings panel reads to open a specific tab. */
+export const SETTINGS_TAB_PARAM = "tab";
+
+/**
+ * Href that opens Settings on a specific tab (ISS-5310, stage cid 3726701529).
+ *
+ * The `desktop:navigate-settings-tab` CustomEvent is the MAIN process's deep
+ * link and cannot serve an in-renderer one: `Link` navigates after a click
+ * handler would have fired, so an event dispatched at the call site races
+ * `SettingsPanel`'s own mount and is dropped by a listener that does not exist
+ * yet. A query param is state the panel READS once it is mounted, which is why
+ * the Help view's `page`/`heading` deep link is built the same way — no race to
+ * lose. The tab id is left as `string` so `navigation/` does not depend on the
+ * settings component tree; `SettingsPanel` validates it against the visible tabs.
+ */
+export function settingsTabHref(tab: string): string {
+  const params = new URLSearchParams({ [SETTINGS_TAB_PARAM]: tab });
+  return `${hrefForNavId(NavId.Settings)}?${params.toString()}`;
 }
 
 function isNavId(value: string | null): value is NavId {
@@ -77,14 +136,19 @@ export function normalizeNavId(value: string | null): NavId {
   if (value === "analytics") {
     return NavId.Insights;
   }
-  // Legacy Packs Lab nav ids → Agents workspace (FEA-2923 / T-16.4).
-  if (
-    value === "packs" ||
-    value === "skills" ||
-    value === "tools" ||
-    value === "subagents"
-  ) {
+  // Legacy Packs-Lab nav ids → Agents workspace (FEA-2923 / T-16.4). "packs"
+  // is NOT in this list anymore: FEA-4087 reclaims it for the real top-level
+  // Packs page (NavId.Packs), so "packs" now normalizes to itself via isNavId.
+  if (value === "skills" || value === "tools" || value === "subagents") {
     return NavId.Agents;
+  }
+  // PRD-566 / FEA-4348: the Routines surface shipped as "scheduled-tasks" first
+  // (FEA-3814). The `/scheduled-tasks` PATH alias is handled in ROUTE_TABLE, but
+  // a bare `desktop:navigate-tab` payload or a legacy `#tab=scheduled-tasks`
+  // hash resolves through here — without this alias it falls through to
+  // DEFAULT_NAV_ID (Sessions) instead of landing on Routines (wongk, #3896).
+  if (value === "scheduled-tasks") {
+    return NavId.Routines;
   }
   return isNavId(value) ? value : DEFAULT_NAV_ID;
 }
@@ -173,13 +237,11 @@ const ROUTE_DEFINITIONS: RouteDefinition[] = [
     pattern: "/analytics",
     toMatch: () => ({ kind: "nav", navId: NavId.Insights, params: {} }),
   },
-  // Legacy Packs Lab aliases (FEA-2923 / T-16.4): the deprecated Packs, Skills,
-  // Tools, and SubAgents routes redirect to the unified Agents workspace so
-  // stale hashes and bookmarks degrade gracefully.
-  {
-    pattern: "/packs",
-    toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
-  },
+  // Legacy Packs-Lab aliases (FEA-2923 / T-16.4): the deprecated Skills, Tools,
+  // and SubAgents routes redirect to the unified Agents workspace so stale
+  // hashes and bookmarks degrade gracefully. "/packs" is NOT aliased here
+  // anymore — FEA-4087 reclaims it for the real Packs page, so it resolves to
+  // NavId.Packs through the NAV_IDS spread below.
   {
     pattern: "/skills",
     toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
@@ -191,6 +253,13 @@ const ROUTE_DEFINITIONS: RouteDefinition[] = [
   {
     pattern: "/subagents",
     toMatch: () => ({ kind: "nav", navId: NavId.Agents, params: {} }),
+  },
+  // PRD-566 / FEA-4348: the Routines surface shipped as "scheduled-tasks" first
+  // (FEA-3814). Old hashes and any main-process navigation message may still say
+  // scheduled-tasks; alias it to the renamed Routines destination.
+  {
+    pattern: "/scheduled-tasks",
+    toMatch: () => ({ kind: "nav", navId: NavId.Routines, params: {} }),
   },
   ...NAV_IDS.map<RouteDefinition>((navId) => ({
     pattern: hrefForNavId(navId),

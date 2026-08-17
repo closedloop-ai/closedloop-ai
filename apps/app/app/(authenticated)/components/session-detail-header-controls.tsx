@@ -10,13 +10,11 @@ import {
 import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
 import {
   CheckIcon,
-  ChevronDownIcon,
   CopyIcon,
   LinkIcon,
   MoreHorizontalIcon,
   PanelRightIcon,
-  RefreshCwIcon,
-  StarIcon,
+  RefreshCcwIcon,
 } from "lucide-react";
 import { useCallback } from "react";
 
@@ -24,32 +22,12 @@ type SessionIdProps = {
   sessionId: string;
 };
 
-type SessionDetailActionsProps = SessionIdProps & {
+type SessionDetailActionsProps = {
   commentsRailOpen: boolean;
   isRefreshing: boolean;
   onRefresh: () => void;
   onToggleCommentsRail: () => void;
 };
-
-/**
- * Non-mutating session favorite affordance. Session favorites do not have a
- * persisted API yet, so this mirrors the detail-header visual without
- * pretending to store user preference.
- */
-export function SessionDetailFavoriteButton() {
-  return (
-    <Button
-      aria-disabled="true"
-      aria-label="Favorite session"
-      onClick={(event) => event.preventDefault()}
-      size="icon-sm"
-      title="Session favorites are not available yet"
-      variant="ghost"
-    >
-      <StarIcon className="h-4 w-4" />
-    </Button>
-  );
-}
 
 /** Overflow utilities that sit next to the session breadcrumb. */
 export function SessionDetailOverflowMenu({
@@ -99,48 +77,31 @@ export function SessionDetailOverflowMenu({
 
 /** Primary session detail actions pinned to the right side of the header. */
 export function SessionDetailActions({
-  sessionId,
   commentsRailOpen,
   isRefreshing,
   onRefresh,
   onToggleCommentsRail,
 }: Readonly<SessionDetailActionsProps>) {
-  const [copiedId, copySessionId] = useCopyToClipboard();
-  const copyIdIcon = copiedId ? CheckIcon : CopyIcon;
   const commentsLabel = commentsRailOpen
     ? "Hide comments rail"
     : "Show comments rail";
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button size="sm">
-            Actions
-            <ChevronDownIcon className="h-4 w-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            disabled={isRefreshing}
-            onSelect={() => {
-              onRefresh();
-            }}
-          >
-            <RefreshCwIcon className="h-4 w-4" />
-            Refresh details
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!sessionId}
-            onSelect={() => {
-              copySessionId(sessionId).catch(() => undefined);
-            }}
-          >
-            <CopyStatusIcon Icon={copyIdIcon} />
-            {copiedId ? "Copied session ID" : "Copy session ID"}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      {/* Match the branch-detail header: Refresh is a labeled outline button in
+          the right slot, same RefreshCcw icon — not buried in a primary
+          dropdown whose only payload was refresh + copy-ID (copy-ID now lives
+          only in the left kebab, next to the ID context). */}
+      <Button
+        disabled={isRefreshing}
+        onClick={onRefresh}
+        size="sm"
+        type="button"
+        variant="outline"
+      >
+        <RefreshCcwIcon className="size-3.5" />
+        Refresh
+      </Button>
       <Button
         aria-label={commentsLabel}
         aria-pressed={commentsRailOpen}

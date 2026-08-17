@@ -6,8 +6,18 @@ import type {
   GenerationStatus,
   PullRequestInfo,
 } from "@repo/api/src/types/document";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { FavoriteButton } from "@repo/app/documents/components/favorite-button";
-import { isCommandDisabled } from "@repo/app/documents/lib/generation-status-utils";
+import {
+  RunActionMenuItem,
+  RunInFlightMenuNote,
+} from "@repo/app/documents/components/run-action-availability";
+import {
+  isCommandDisabled,
+  isRunInFlightForCommand,
+} from "@repo/app/documents/lib/generation-status-utils";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -34,6 +44,7 @@ import {
   RotateCcwIcon,
   TrashIcon,
 } from "lucide-react";
+import { useId } from "react";
 import {
   type BreadcrumbEntry,
   Header,
@@ -93,8 +104,49 @@ export function PlanEditorHeader({
   isPending = false,
 }: PlanEditorHeaderProps) {
   const orgSlug = useOrgSlug();
+  const reasonId = useId();
   const branchPrFlag = useFeatureFlag("branch-pr");
   const branchPrEnabled = branchPrFlag?.enabled === true;
+  // ISS-5508: closed by default. OFF, every run item below keeps the native
+  // `disabled` it has always rendered and no explanation exists.
+  const explainUnavailable = useFeatureFlagEnabledOptional(
+    ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY
+  );
+  // `RunLoopCommand`, not a bare string, at every call below (PR #4714 review,
+  // wongk). These names have to agree with what the item's `onActivate` actually
+  // dispatches to `POST /documents/:id/run-loop`; a duplicated literal agrees by
+  // coincidence and keeps agreeing right up until the wire vocabulary changes,
+  // at which point the explanation silently attaches to a command nothing sends
+  // and the item just greys out unexplained again — this ticket's own bug. The
+  // parameter is typed to the enum rather than the wider
+  // `GenerationStatus["command"]` so a hand-typed near-miss ("evaluate_pr") is a
+  // compile error here and not a branch that is merely never true.
+  const runInFlight = (targetCommand: RunLoopCommand) =>
+    explainUnavailable &&
+    isRunInFlightForCommand({ generationStatus, targetCommand });
+  // A run may only be named as the cause when it is the ONLY blocker — a run
+  // finishing does not approve a draft plan or settle a pending local mutation,
+  // so claiming it would promise an availability that never arrives.
+  const executeRunInFlight =
+    runInFlight(RunLoopCommand.Execute) && isApproved && !isExecuting;
+  const requestChangesRunInFlight =
+    runInFlight(RunLoopCommand.RequestChanges) && !isPending;
+  const regenerateRunInFlight = runInFlight(RunLoopCommand.Plan) && !isPending;
+  const evaluatePlanRunInFlight =
+    runInFlight(RunLoopCommand.EvaluatePlan) && !isPending;
+  // Also gated on the item RENDERING at all: "Evaluate PR" only exists when an
+  // evaluatable PR is present, and without this the menu could show a note
+  // explaining an item that is not on screen.
+  const evaluateCodeRunInFlight =
+    onEvaluateCode !== undefined &&
+    runInFlight(RunLoopCommand.EvaluateCode) &&
+    !isPending;
+  const anyRunInFlight =
+    executeRunInFlight ||
+    requestChangesRunInFlight ||
+    regenerateRunInFlight ||
+    evaluatePlanRunInFlight ||
+    evaluateCodeRunInFlight;
 
   const breadcrumbs: BreadcrumbEntry[] = plan.project?.teams?.[0]?.id
     ? [
@@ -199,78 +251,94 @@ export function PlanEditorHeader({
               Approve
             </DropdownMenuItem>
           ) : null}
-          <DropdownMenuItem
+          <RunActionMenuItem
             disabled={
               !isApproved ||
               isCommandDisabled({
                 generationStatus,
                 isLoading: generationStatusLoading,
-                targetCommand: "execute",
+                targetCommand: RunLoopCommand.Execute,
                 localMutationPending: isExecuting,
               })
             }
-            onClick={() => onExecute()}
+            onActivate={() => onExecute()}
+            reasonId={reasonId}
+            runInFlight={executeRunInFlight}
           >
             <PlayIcon className="h-4 w-4" />
             Execute
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </RunActionMenuItem>
+          <RunActionMenuItem
             disabled={
               isPending ||
               isCommandDisabled({
                 generationStatus,
                 isLoading: generationStatusLoading,
-                targetCommand: "request_changes",
+                targetCommand: RunLoopCommand.RequestChanges,
               })
             }
-            onClick={() => onRequestChanges()}
+            onActivate={() => onRequestChanges()}
+            reasonId={reasonId}
+            runInFlight={requestChangesRunInFlight}
           >
             <MessageSquareIcon className="h-4 w-4" />
             Request Changes
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </RunActionMenuItem>
+          <RunActionMenuItem
             disabled={
               isPending ||
               isCommandDisabled({
                 generationStatus,
                 isLoading: generationStatusLoading,
-                targetCommand: "plan",
+                targetCommand: RunLoopCommand.Plan,
               })
             }
-            onClick={() => onRegenerate()}
+            onActivate={() => onRegenerate()}
+            reasonId={reasonId}
+            runInFlight={regenerateRunInFlight}
           >
             <RefreshCwIcon className="h-4 w-4" />
             Regenerate Plan
-          </DropdownMenuItem>
-          <DropdownMenuItem
+          </RunActionMenuItem>
+          <RunActionMenuItem
             disabled={
               isPending ||
               isCommandDisabled({
                 generationStatus,
                 isLoading: generationStatusLoading,
-                targetCommand: "evaluate_plan",
+                targetCommand: RunLoopCommand.EvaluatePlan,
               })
             }
-            onClick={() => onEvaluatePlan()}
+            onActivate={() => onEvaluatePlan()}
+            reasonId={reasonId}
+            runInFlight={evaluatePlanRunInFlight}
           >
             <GaugeIcon className="h-4 w-4" />
             Evaluate Plan
-          </DropdownMenuItem>
+          </RunActionMenuItem>
           {onEvaluateCode ? (
-            <DropdownMenuItem
+            <RunActionMenuItem
               disabled={
                 isPending ||
                 isCommandDisabled({
                   generationStatus,
                   isLoading: generationStatusLoading,
-                  targetCommand: "evaluate_code",
+                  targetCommand: RunLoopCommand.EvaluateCode,
                 })
               }
-              onClick={() => onEvaluateCode()}
+              onActivate={() => onEvaluateCode()}
+              reasonId={reasonId}
+              runInFlight={evaluateCodeRunInFlight}
             >
               <GaugeIcon className="h-4 w-4" />
               Evaluate PR
-            </DropdownMenuItem>
+            </RunActionMenuItem>
+          ) : null}
+          {anyRunInFlight ? (
+            <>
+              <DropdownMenuSeparator />
+              <RunInFlightMenuNote id={reasonId} />
+            </>
           ) : null}
         </DropdownMenuContent>
       </DropdownMenu>

@@ -1,3 +1,4 @@
+import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { type RelayResultEvent, relayEventBus } from "@/lib/relay-event-bus";
 import { parseSequenceCursor } from "@/lib/route-utils";
@@ -33,10 +34,11 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string; operationId: string }> }
 ): Promise<Response> {
-  const authContext = await resolveAnyAuthContext(request);
-  if (!authContext) {
-    return new Response("Unauthorized", { status: 401 });
+  const authResult = await resolveAnyAuthContext(request);
+  if (!authResult.ok) {
+    return authContextFailureResponse(authResult.failure);
   }
+  const authContext = authResult.context;
 
   const { id: targetId, operationId } = await params;
 

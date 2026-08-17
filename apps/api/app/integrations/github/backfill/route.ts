@@ -11,6 +11,16 @@ import { githubBackfillService } from "@/app/integrations/github/backfill-servic
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 
+/**
+ * Apply mode runs the whole backfill (repos → branches → PRs → projections)
+ * synchronously before responding, so it runs well past the platform default.
+ * The client pairs it with `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes); declaring
+ * the same ceiling here is what makes that deadline meaningful — without it the
+ * platform terminates the function first and the client surfaces a 504 long
+ * before its own deadline fires (PR #4321 review).
+ */
+export const maxDuration = 300;
+
 const GitHubBackfillRetryErrorCode = {
   Deferred: "GITHUB_BACKFILL_RETRY_DEFERRED",
 } as const;

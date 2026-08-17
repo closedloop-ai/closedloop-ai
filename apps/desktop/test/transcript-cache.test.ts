@@ -1,11 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdtempSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { TokenSourceIdentityAvailability } from "@repo/api/src/types/token-cost-provenance";
+import { claudeTranscriptEntryUuidScheme } from "@repo/lib/harness/usage-dedup";
 import { createTranscriptCache } from "../src/main/database/transcript.js";
 
 const VALID_USAGE_LINE = {
+  uuid: "00000000-0000-4000-8000-000000000001",
   message: {
     model: "claude-3-5-sonnet-20241022",
     usage: {
@@ -39,12 +48,23 @@ test("createTranscriptCache extracts tokens from a valid JSONL file", () => {
   const result = cache(fp);
   assert.notEqual(result, null);
   assert.equal(result!.tokensByModel.size, 1);
-  const [model, counts] = result!.tokensByModel.entries().next().value;
+  // `IteratorResult#value` is `undefined` on a spent iterator, so prove the
+  // first entry exists rather than destructuring a possibly-absent tuple.
+  const firstEntry = result!.tokensByModel.entries().next().value;
+  if (!firstEntry) {
+    throw new Error("expected tokensByModel to hold one model entry");
+  }
+  const [model, counts] = firstEntry;
   assert.equal(model, "claude-3-5-sonnet-20241022");
   assert.equal(counts.input, 100);
   assert.equal(counts.output, 50);
   assert.equal(counts.cacheRead, 20);
   assert.equal(counts.cacheWrite, 5);
+  assert.deepEqual(result!.records[0]?.sourceIdentity, {
+    availability: TokenSourceIdentityAvailability.Available,
+    scheme: claudeTranscriptEntryUuidScheme,
+    sourceRecordIds: [VALID_USAGE_LINE.uuid],
+  });
 });
 
 test("createTranscriptCache returns same-shape result on repeated call with unchanged stats", () => {
@@ -58,6 +78,31 @@ test("createTranscriptCache returns same-shape result on repeated call with unch
   const second = cache(fp);
   assert.notEqual(second, null);
   assert.deepEqual(second, first);
+});
+
+test("createTranscriptCache preserves and extends UUID evidence on incremental reads", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "tc-"));
+  const fp = path.join(dir, "session.jsonl");
+  writeFileSync(fp, `${JSON.stringify(VALID_USAGE_LINE)}\n`, "utf8");
+  const originalStat = statSync(fp);
+  const cache = createTranscriptCache();
+  const first = cache(fp);
+  assert.notEqual(first, null);
+
+  const appended = {
+    ...VALID_USAGE_LINE,
+    uuid: "00000000-0000-4000-8000-000000000002",
+    timestamp: "2025-01-15T10:00:01Z",
+  };
+  appendFileSync(fp, `${JSON.stringify(appended)}\n`, "utf8");
+  utimesSync(fp, originalStat.atime, originalStat.mtime);
+
+  const second = cache(fp);
+  assert.deepEqual(second?.records[0]?.sourceIdentity, {
+    availability: TokenSourceIdentityAvailability.Available,
+    scheme: claudeTranscriptEntryUuidScheme,
+    sourceRecordIds: [VALID_USAGE_LINE.uuid, appended.uuid],
+  });
 });
 
 test("createTranscriptCache re-reads when mtime changes", async () => {
@@ -87,7 +132,11 @@ test("createTranscriptCache re-reads when mtime changes", async () => {
   writeFileSync(fp, `${JSON.stringify(updated)}\n`, "utf8");
   const result2 = cache(fp);
   assert.notEqual(result2, null);
-  const [, counts] = result2!.tokensByModel.entries().next().value;
+  const refreshedEntry = result2!.tokensByModel.entries().next().value;
+  if (!refreshedEntry) {
+    throw new Error("expected tokensByModel to hold one model entry");
+  }
+  const [, counts] = refreshedEntry;
   assert.equal(counts.input, 200);
   assert.equal(counts.output, 100);
 });

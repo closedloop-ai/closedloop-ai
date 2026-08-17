@@ -28,7 +28,7 @@ import {
   isTerminalJobStatus,
   JobStore,
   type LocalJob,
-} from "../src/main/job-store.js";
+} from "../src/main/jobs/job-store.js";
 import { enrichJobSnapshot } from "../src/server/operations/symphony-job-snapshot.js";
 import {
   clearPendingLoopExit,

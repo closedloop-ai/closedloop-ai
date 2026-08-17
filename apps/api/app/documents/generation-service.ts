@@ -1,6 +1,7 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import { DocumentType } from "@repo/api/src/types/document";
 import { ArtifactType, withDb } from "@repo/database";
+import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import { artifactLinksService } from "../artifact-links/service";
 import {
   type DocumentWithRegenerationContext,
@@ -48,17 +49,19 @@ async function findSourcePrdContext(
   let frontier = [artifactId];
   let fallback: SourceContext | null = null;
 
-  // Cost model: 2 serial DB round-trips per depth level (PRODUCES link lookup
-  // + parent artifact fetch). Bounded by SOURCE_LINEAGE_MAX_DEPTH; realistic
-  // graphs terminate at depth 1–2 (Plan → Feature → PRD).
+  // Cost model: 2 DB round-trips per depth level (PRODUCES link lookup + parent
+  // artifact fetch), the first fanned out across the frontier. Depth is bounded
+  // by SOURCE_LINEAGE_MAX_DEPTH and `visited` prevents revisiting, but neither
+  // bounds the frontier's *width* — an artifact with many PRODUCES parents fans
+  // out one pooled query each, and the frontier compounds across levels. So the
+  // per-level fan-out is bounded (FEA-3299). Realistic graphs terminate at depth
+  // 1–2 with width 1–2 (Plan → Feature → PRD).
   for (let depth = 0; depth < SOURCE_LINEAGE_MAX_DEPTH; depth++) {
-    const parentLinks = await Promise.all(
-      frontier.map((id) =>
-        artifactLinksService.findSourceLinks(
-          organizationId,
-          id,
-          LinkType.Produces
-        )
+    const parentLinks = await mapWithDbConcurrency(frontier, (id) =>
+      artifactLinksService.findSourceLinks(
+        organizationId,
+        id,
+        LinkType.Produces
       )
     );
     const parentIds = parentLinks

@@ -8,13 +8,15 @@ type OnboardingLayoutProps = {
 };
 
 const OnboardingLayout = async ({ children }: OnboardingLayoutProps) => {
-  const [{ redirectToSignIn }, user] = await Promise.all([
+  const [{ redirectToSignUp }, user] = await Promise.all([
     auth(),
     currentUser(),
   ]);
 
   if (!user) {
-    return redirectToSignIn();
+    // FEA-632: keep the unauthenticated default consistent with the main
+    // (authenticated) layout — send new visitors to sign-up, not sign-in.
+    return redirectToSignUp();
   }
 
   return (

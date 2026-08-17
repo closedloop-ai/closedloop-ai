@@ -1,0 +1,197 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": null,
+      "cost_source": null,
+      "cost_usd_estimated": null,
+      "cwd": "<HOME>/conductor/workspaces/symphony-alpha/asmara",
+      "data_revision": 78,
+      "ended_at": "2026-06-25T19:39:08.562Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "codex",
+      "id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "last_activity_at": "2026-06-25T19:38:52.619Z",
+      "metadata": {
+        "sha256": "9ea8f84deb75182bd6314eeb4c29a1ee85aa72be55711b614e20b0e449b08b34",
+        "chars": 6063
+      },
+      "model": "gpt-5.5",
+      "name": "asmara",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-06-25T19:38:52.309Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-06-25T20:39:08.562Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-06-25T19:39:08.562Z",
+      "id": "019f004a-d59f-7753-8485-5ac2a037e425-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "started_at": "2026-06-25T19:38:52.309Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-06-25T20:39:08.562Z"
+    }
+  ],
+  "events": [
+    {
+      "agent_id": "019f004a-d59f-7753-8485-5ac2a037e425-main",
+      "created_at": "2026-06-25T19:38:52.619Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "fbecc6c1-e3b1-47d1-8822-1f6d847e09a3",
+      "session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "summary": null,
+      "tool_name": null
+    }
+  ],
+  "token_usage": [],
+  "token_events": [],
+  "session_analytics": [
+    {
+      "agent_turns": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0,
+      "event_count": 1,
+      "harness": "codex",
+      "human_turns": 1,
+      "input_tokens": 0,
+      "is_human": 0,
+      "output_tokens": 0,
+      "runtime_ms": 16253,
+      "session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "started_at": "2026-06-25T19:38:52.309Z",
+      "started_day": "2026-06-25",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-06-25T20:39:08.562Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1782416348563,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "b63465e508157d26",
+      "observed_at": "2026-06-25T20:39:08.562Z",
+      "phase": "other",
+      "session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "start_ms": 1782416332309,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [
+    {
+      "artifact_id": "771120d04c981ee7",
+      "created_at": "2026-06-25T20:39:08.562Z",
+      "evidence": "{\"gitBranch\":\"asmara\"}",
+      "extractor_version": 25,
+      "id": "08f14c5f29bd5ca6",
+      "is_primary": false,
+      "method": "start_branch",
+      "observed_at": "2026-06-25T19:38:52.309Z",
+      "relation": "workspace",
+      "session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "status": "candidate"
+    }
+  ],
+  "artifacts": [
+    {
+      "base_ref": null,
+      "branch_name": "asmara",
+      "committed_at": null,
+      "created_at": "2026-06-25T20:39:08.562Z",
+      "files_changed": null,
+      "first_pushed_at": null,
+      "git_dir": null,
+      "harness": null,
+      "head_sha": null,
+      "id": "771120d04c981ee7",
+      "identity_key": "branch::asmara",
+      "kind": "branch",
+      "last_seen_at": "2026-06-25T20:39:08.562Z",
+      "lines_added": null,
+      "lines_removed": null,
+      "merge_commit_sha": null,
+      "observed_at": null,
+      "pr_number": null,
+      "pr_state": null,
+      "push_source": null,
+      "repo_full_name": null,
+      "sha": null,
+      "slug": null,
+      "title": null,
+      "url": null
+    }
+  ],
+  "pull_requests": [],
+  "agent_component_invocations": [],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-06-25T20:39:08.562Z",
+      "data_revision": 78,
+      "external_generation_id": "d64ab8d0158fcc38e4df8455975af40f2c74c008ccc2fd40cd4e31b505d3a49f",
+      "external_session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "77d5197dcdd73819e9457de17d16566583155cd8eb6c09048f1545e98d1fa832",
+      "part_index": 0,
+      "payload": {
+        "sha256": "fe9c0b7779a1f3b995349aa664b505046421c42d719ae741af54acb8739742f2",
+        "chars": 369
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-06-25T20:39:08.562Z",
+      "status": "pending",
+      "updated_at": "2026-06-25T20:39:08.562Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-06-25T20:39:08.562Z"
+    },
+    {
+      "external_generation_id": "d64ab8d0158fcc38e4df8455975af40f2c74c008ccc2fd40cd4e31b505d3a49f",
+      "external_session_id": "019f004a-d59f-7753-8485-5ac2a037e425",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-06-25T20:39:08.562Z"
+    }
+  ],
+  "agent_component_session_usage": [],
+  "agent_components": [],
+  "agent_component_versions": []
+}

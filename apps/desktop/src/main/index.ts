@@ -1,5 +1,5 @@
 import { app, dialog } from "electron";
-import { CRASH_DIALOG_TITLE } from "./error-handlers.js";
+import { CRASH_DIALOG_TITLE } from "./lifecycle/error-handlers.js";
 
 // Register crash-dialog handlers BEFORE the application module graph loads.
 // Static ESM imports in startup.ts (DesktopApplication and its transitive

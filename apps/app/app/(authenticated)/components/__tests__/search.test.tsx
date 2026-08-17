@@ -25,6 +25,27 @@ vi.mock("@/hooks/use-org-slug", () => ({
   useOrgSlug: () => "acme",
 }));
 
+// The sidebar mounts the shared prefix-mode typeahead, which calls the unified
+// FTS hook. Stub it so these tests stay focused on the sidebar's submit/clear
+// navigation behavior and do not require a live API adapter.
+vi.mock("@repo/app/search/hooks/use-search", () => ({
+  useUnifiedSearch: () => ({ data: undefined, isLoading: false }),
+}));
+
+// The typeahead's inline-filter intellisense fetches org members/projects; stub
+// the controller closed so these navigation-focused tests need no auth/API
+// adapter. Its own behavior is covered in use-search-intellisense.test.tsx.
+vi.mock("@repo/app/search/hooks/use-search-intellisense", () => ({
+  useSearchIntellisense: () => ({
+    isOpen: false,
+    mode: "free-text",
+    rows: [],
+    isLoading: false,
+    isError: false,
+    commitRow: () => null,
+  }),
+}));
+
 describe("Search", () => {
   beforeEach(() => {
     pathname = "/acme/my-tasks";
@@ -39,7 +60,7 @@ describe("Search", () => {
 
     render(<Search />);
 
-    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue(
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveValue(
       "alpha"
     );
     expect(
@@ -56,7 +77,7 @@ describe("Search", () => {
 
     await user.click(screen.getByRole("button", { name: "Clear search" }));
 
-    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveValue("");
     expect(routerReplaceMock).toHaveBeenCalledWith("/acme/my-tasks", {
       scroll: false,
     });
@@ -70,7 +91,7 @@ describe("Search", () => {
 
     render(<Search />);
 
-    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveValue("");
 
     await user.click(screen.getByRole("button", { name: "Clear search" }));
 
@@ -86,7 +107,7 @@ describe("Search", () => {
 
     render(<Search />);
 
-    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Search" })).toHaveValue("");
     expect(
       screen.queryByRole("button", { name: "Clear search" })
     ).not.toBeInTheDocument();
@@ -97,7 +118,7 @@ describe("Search", () => {
 
     render(<Search />);
 
-    const input = screen.getByRole("textbox", { name: "Search" });
+    const input = screen.getByRole("combobox", { name: "Search" });
     await user.type(input, "draft search");
     await user.click(screen.getByRole("button", { name: "Clear search" }));
 
@@ -111,7 +132,7 @@ describe("Search", () => {
 
     render(<Search />);
 
-    const input = screen.getByRole("textbox", { name: "Search" });
+    const input = screen.getByRole("combobox", { name: "Search" });
     await user.type(input, "   ");
     fireEvent.submit(input.closest("form") as HTMLFormElement);
 
@@ -125,9 +146,26 @@ describe("Search", () => {
 
     render(<Search />);
 
-    const input = screen.getByRole("textbox", { name: "Search" });
+    const input = screen.getByRole("combobox", { name: "Search" });
     await user.type(input, "alpha beta");
     fireEvent.submit(input.closest("form") as HTMLFormElement);
+
+    expect(routerPushMock).toHaveBeenCalledWith("/acme/search?q=alpha+beta");
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+  });
+
+  test("pressing Enter with a query submits and navigates to search results", async () => {
+    // Guards the typeahead's keydown handler: with a query typed and no
+    // suggestion highlighted, Enter must fall through to the native form submit
+    // (it must not preventDefault and swallow the submit). The typeahead wraps
+    // the input in role="combobox"; regressing this would break Enter→/search.
+    const user = userEvent.setup();
+
+    render(<Search />);
+
+    const input = screen.getByRole("combobox", { name: "Search" });
+    await user.type(input, "alpha beta");
+    await user.keyboard("{Enter}");
 
     expect(routerPushMock).toHaveBeenCalledWith("/acme/search?q=alpha+beta");
     expect(routerReplaceMock).not.toHaveBeenCalled();
@@ -136,7 +174,7 @@ describe("Search", () => {
   test("renders native search form target for pre-hydration submissions", () => {
     render(<Search />);
 
-    const input = screen.getByRole("textbox", { name: "Search" });
+    const input = screen.getByRole("combobox", { name: "Search" });
     const form = input.closest("form");
 
     expect(form).not.toBeNull();

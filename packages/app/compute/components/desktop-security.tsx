@@ -1,11 +1,12 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { Button } from "@repo/design-system/components/ui/button";
+import { cn } from "@repo/design-system/lib/utils";
 import {
   type ComputeTarget,
   DesktopSecurityStatus,
 } from "@closedloop-ai/loops-api/compute-target";
-import { Badge } from "@repo/design-system/components/ui/badge";
-import { Button } from "@repo/design-system/components/ui/button";
 import { Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 
 export type TargetSecurity = NonNullable<ComputeTarget["security"]>;
@@ -17,6 +18,13 @@ type DesktopSecurityBadgeProps = {
 type DesktopUpdateDownloadButtonProps = {
   downloadUrl: string | null;
   isLoading: boolean;
+  /** Delta from the default button rhythm, for compact hosts like a popover. */
+  className?: string;
+  /**
+   * Icon-size delta. Sizing only the shell leaves a 16px glyph in a 28px button,
+   * so a compact host must be able to shrink the icon with it.
+   */
+  iconClassName?: string;
 };
 
 export function getTargetSecurity(
@@ -79,14 +87,16 @@ export function DesktopSecurityBadge({
 }
 
 export function DesktopUpdateDownloadButton({
+  className,
   downloadUrl,
+  iconClassName = "h-4 w-4",
   isLoading,
 }: Readonly<DesktopUpdateDownloadButtonProps>) {
   if (downloadUrl) {
     return (
-      <Button asChild size="sm" variant="outline">
+      <Button asChild className={className} size="sm" variant="outline">
         <a href={downloadUrl} rel="noreferrer" target="_blank">
-          <Download className="h-4 w-4" />
+          <Download className={iconClassName} />
           Download update
         </a>
       </Button>
@@ -94,11 +104,11 @@ export function DesktopUpdateDownloadButton({
   }
 
   return (
-    <Button disabled size="sm" variant="outline">
+    <Button className={className} disabled size="sm" variant="outline">
       {isLoading ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Loader2 className={cn(iconClassName, "animate-spin")} />
       ) : (
-        <Download className="h-4 w-4" />
+        <Download className={iconClassName} />
       )}
       {isLoading ? "Loading update" : "Download unavailable"}
     </Button>

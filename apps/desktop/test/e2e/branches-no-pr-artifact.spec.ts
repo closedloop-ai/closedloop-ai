@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import {
   seedNoPullRequestBranch,
   waitForBranchesSchema,
@@ -45,11 +46,19 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
     const userDataDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-branches-no-pr-udd-")
     );
+    const authorityServer = await startFakeGitHubAuthorityServer([
+      SEED.repoFullName,
+    ]);
+    const env = {
+      CLAUDE_HOME: claudeHome,
+      CODEX_HOME: codexHome,
+      ...authorityServer.env,
+    };
 
     try {
       // Launch 1: create + migrate the SQLite schema, then close before seed.
       const firstLaunch = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+        env,
         keepUserDataDir: true,
         userDataDir,
       });
@@ -63,7 +72,7 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
 
       // Launch 2: the real Branches IPC source reads the seeded local corpus.
       const { page, pageErrors, cleanup } = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+        env,
         keepUserDataDir: true,
         userDataDir,
       });
@@ -106,6 +115,7 @@ test.describe("Branches no-PR local artifact (FEA-2528)", () => {
         await cleanup();
       }
     } finally {
+      await authorityServer.close();
       fs.rmSync(userDataDir, { recursive: true, force: true });
       fs.rmSync(claudeHome, { recursive: true, force: true });
       fs.rmSync(codexHome, { recursive: true, force: true });

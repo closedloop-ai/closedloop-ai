@@ -11,9 +11,14 @@
  * First occurrence of a given normalized slug wins.
  */
 
-import { DocumentType, TYPE_ROUTE_PREFIX } from "@repo/api/src/types/document";
+import { ARTIFACT_SLUG_PREFIXES } from "@repo/api/src/types/artifact-slug-prefixes";
 import {
-  ARTIFACT_SLUG_PREFIXES,
+  DocumentType,
+  LEGACY_TYPE_ROUTE_PREFIXES,
+  TYPE_ROUTE_PREFIX,
+} from "@repo/api/src/types/document";
+import {
+  SLUG_PREFIX_ALIASES,
   type SlugPrefix,
 } from "@repo/api/src/types/slug-prefix";
 
@@ -38,9 +43,20 @@ export type ArtifactReference = {
 };
 
 type PrefixConfig = {
+  // Canonical slug prefix for the doc type (e.g. ISS for Issues). Emitted on the
+  // ArtifactReference only when the reference matched via the canonical prefix;
+  // an alias-prefix match echoes the matched prefix verbatim (see extractFromText).
   prefix: SlugPrefix;
   docType: DocumentType;
   routePath: string;
+  // FEA-4137: every route path this doc type can appear under in a URL — the
+  // canonical `routePath` plus retired paths (e.g. `features` for Issues). The
+  // URL pattern accepts any of these.
+  routePaths: readonly string[];
+  // FEA-4137: every slug prefix that addresses this doc type — the canonical
+  // prefix plus its compat aliases (FEA ↔ ISS). Both the bare-slug and URL
+  // patterns accept any of these so `FEA-17` and `ISS-17` both parse.
+  matchPrefixes: readonly SlugPrefix[];
   slugPattern: RegExp;
 };
 
@@ -59,6 +75,16 @@ const PARSABLE_DOC_TYPES: ReadonlySet<DocumentType> = new Set([
   DocumentType.Feature,
 ]);
 
+// Build a `(A|B|C)` alternation from a set of literal strings, longest first so
+// the regex engine prefers the most specific match (irrelevant for the fixed
+// prefixes/paths here, but a safe habit).
+function alternation(values: readonly string[]): string {
+  const escaped = [...new Set(values)]
+    .sort((a, b) => b.length - a.length)
+    .map(escapeForRegex);
+  return escaped.join("|");
+}
+
 function buildPrefixConfigs(): PrefixConfig[] {
   const configs: PrefixConfig[] = [];
   for (const [docType, prefix] of Object.entries(ARTIFACT_SLUG_PREFIXES) as [
@@ -72,12 +98,25 @@ function buildPrefixConfigs(): PrefixConfig[] {
     if (!routePath) {
       continue;
     }
+    // FEA-4137: accept the canonical prefix plus its compat aliases (FEA ↔ ISS),
+    // and the canonical route path plus retired ones (/features/ for Issues), so
+    // both new and legacy slugs/links still parse.
+    const matchPrefixes: SlugPrefix[] = [
+      prefix,
+      ...(SLUG_PREFIX_ALIASES[prefix] ?? []),
+    ];
+    const routePaths: string[] = [
+      routePath,
+      ...(LEGACY_TYPE_ROUTE_PREFIXES[docType] ?? []),
+    ];
     configs.push({
       prefix,
       docType,
       routePath,
+      routePaths,
+      matchPrefixes,
       slugPattern: new RegExp(
-        String.raw`\b${escapeForRegex(prefix)}-(\d+)\b`,
+        String.raw`\b(${alternation(matchPrefixes)})-(\d+)\b`,
         "gi"
       ),
     });
@@ -89,13 +128,19 @@ const PREFIX_CONFIGS: PrefixConfig[] = buildPrefixConfigs();
 
 function buildUrlPattern(baseUrl: string, config: PrefixConfig): RegExp {
   const escapedBase = escapeForRegex(baseUrl);
-  const escapedRoute = escapeForRegex(config.routePath);
   return new RegExp(
-    String.raw`${escapedBase}/(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/)?${escapedRoute}/${escapeForRegex(
-      config.prefix
-    )}-(\d+)\b`,
+    String.raw`${escapedBase}/(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?/)?(?:${alternation(
+      config.routePaths
+    )})/(${alternation(config.matchPrefixes)})-(\d+)\b`,
     "gi"
   );
+}
+
+// Normalize a matched prefix (any letter case) to the typed SlugPrefix member.
+// Every alternation branch derives from a SlugPrefix literal, so the uppercase
+// form is always a valid member.
+function toSlugPrefix(rawPrefix: string): SlugPrefix {
+  return rawPrefix.toUpperCase() as SlugPrefix;
 }
 
 function pushRef(
@@ -132,9 +177,13 @@ function extractFromText(
     for (const config of PREFIX_CONFIGS) {
       const urlPattern = buildUrlPattern(appBaseUrl, config);
       for (const match of text.matchAll(urlPattern)) {
+        // FEA-4137: echo the MATCHED prefix verbatim (normalized to its typed
+        // member) so a legacy `FEA-17` link surfaces as `FEA-17` and a new
+        // `ISS-17` as `ISS-17` — the DB resolver bridges both to one identity.
+        const matchedPrefix = toSlugPrefix(match[1]);
         pushRef(results, seen, {
-          slug: `${config.prefix}-${match[1]}`,
-          prefix: config.prefix,
+          slug: `${matchedPrefix}-${match[2]}`,
+          prefix: matchedPrefix,
           docType: config.docType,
           matchType: MatchType.Url,
           source,
@@ -145,9 +194,10 @@ function extractFromText(
 
   for (const config of PREFIX_CONFIGS) {
     for (const match of text.matchAll(config.slugPattern)) {
+      const matchedPrefix = toSlugPrefix(match[1]);
       pushRef(results, seen, {
-        slug: `${config.prefix}-${match[1]}`,
-        prefix: config.prefix,
+        slug: `${matchedPrefix}-${match[2]}`,
+        prefix: matchedPrefix,
         docType: config.docType,
         matchType: MatchType.Slug,
         source,

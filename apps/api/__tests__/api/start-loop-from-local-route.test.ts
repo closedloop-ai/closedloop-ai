@@ -40,6 +40,7 @@ import { documentExecutionService } from "@/app/documents/execution-service";
 import { LoopAlreadyActiveError } from "@/app/loops/loop-errors";
 import { POST } from "@/app/plans/start-loop-from-local/route";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
+import { MISSING_ANTHROPIC_API_KEY_MESSAGE } from "@/lib/loops/loop-dispatch-utils";
 import {
   createMockRequest,
   createMockRouteContext,
@@ -119,6 +120,28 @@ describe("POST /plans/start-loop-from-local", () => {
     expect(json.error).toBe(
       "Loop dispatch failed. The desktop app may be disconnected."
     );
+  });
+
+  it("answers a missing Anthropic key with actionable 400 copy, not the desktop-disconnected message", async () => {
+    vi.mocked(launchPlanLoop).mockResolvedValue({
+      ok: false,
+      error: "missing_anthropic_api_key",
+    });
+
+    const response = await POST(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/plans/start-loop-from-local",
+        body: requestBody,
+      }),
+      createMockRouteContext({})
+    );
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(json.error).toBe(MISSING_ANTHROPIC_API_KEY_MESSAGE);
+    expect(json.error).not.toContain("desktop app may be disconnected");
   });
 
   it("returns a structured 409 when launch creation hits an active-loop conflict", async () => {

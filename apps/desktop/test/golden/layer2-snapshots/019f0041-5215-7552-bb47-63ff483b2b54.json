@@ -1,0 +1,210 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": null,
+      "cost_source": null,
+      "cost_usd_estimated": null,
+      "cwd": "<HOME>/conductor/workspaces/Starter project/almaty",
+      "data_revision": 78,
+      "ended_at": "2026-06-25T19:30:02.305Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "codex",
+      "id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "last_activity_at": "2026-06-25T19:28:54.837Z",
+      "metadata": {
+        "sha256": "cbced12376a427856b48c2e4bfcb845ffc0bd3195439c53195dc85368f67a398",
+        "chars": 6253
+      },
+      "model": "gpt-5.5",
+      "name": "almaty",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-06-25T19:28:54.833Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-06-25T20:30:02.305Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-06-25T19:30:02.305Z",
+      "id": "019f0041-5215-7552-bb47-63ff483b2b54-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "started_at": "2026-06-25T19:28:54.833Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-06-25T20:30:02.305Z"
+    }
+  ],
+  "events": [
+    {
+      "agent_id": "019f0041-5215-7552-bb47-63ff483b2b54-main",
+      "created_at": "2026-06-25T19:28:54.837Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "d4c0b750-c468-42b0-aea3-7f720f306996",
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "summary": null,
+      "tool_name": null
+    }
+  ],
+  "token_usage": [],
+  "token_events": [],
+  "session_analytics": [
+    {
+      "agent_turns": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0,
+      "event_count": 1,
+      "harness": "codex",
+      "human_turns": 2,
+      "input_tokens": 0,
+      "is_human": 1,
+      "output_tokens": 0,
+      "runtime_ms": 67472,
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "started_at": "2026-06-25T19:28:54.833Z",
+      "started_day": "2026-06-25",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-06-25T20:30:02.305Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [
+    {
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "ts": "2026-06-25T19:28:54.839Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    },
+    {
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "ts": "2026-06-25T19:29:55.370Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    }
+  ],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1782415802306,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "85822e77d2aef2a3",
+      "observed_at": "2026-06-25T20:30:02.305Z",
+      "phase": "other",
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "start_ms": 1782415734833,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [
+    {
+      "artifact_id": "4d9f09a8571d1b79",
+      "created_at": "2026-06-25T20:30:02.305Z",
+      "evidence": "{\"gitBranch\":\"1-start-here-277e31ea\"}",
+      "extractor_version": 25,
+      "id": "af515fc82aea18e1",
+      "is_primary": false,
+      "method": "start_branch",
+      "observed_at": "2026-06-25T19:28:54.833Z",
+      "relation": "workspace",
+      "session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "status": "candidate"
+    }
+  ],
+  "artifacts": [
+    {
+      "base_ref": null,
+      "branch_name": "1-start-here-277e31ea",
+      "committed_at": null,
+      "created_at": "2026-06-25T20:30:02.305Z",
+      "files_changed": null,
+      "first_pushed_at": null,
+      "git_dir": null,
+      "harness": null,
+      "head_sha": null,
+      "id": "4d9f09a8571d1b79",
+      "identity_key": "branch::1-start-here-277e31ea",
+      "kind": "branch",
+      "last_seen_at": "2026-06-25T20:30:02.305Z",
+      "lines_added": null,
+      "lines_removed": null,
+      "merge_commit_sha": null,
+      "observed_at": null,
+      "pr_number": null,
+      "pr_state": null,
+      "push_source": null,
+      "repo_full_name": null,
+      "sha": null,
+      "slug": null,
+      "title": null,
+      "url": null
+    }
+  ],
+  "pull_requests": [],
+  "agent_component_invocations": [],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-06-25T20:30:02.305Z",
+      "data_revision": 78,
+      "external_generation_id": "83295cb40bce13edde777e4df60c08756ce0990b241edc5ea9faf1ff5f596170",
+      "external_session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "5315b8cbac69af93940ef7a4027e15db31e6a073396214dcde85e438b4056bb3",
+      "part_index": 0,
+      "payload": {
+        "sha256": "9eefa35012348e74aa866a7c6d3698be6d3436f2ed348ac44f77e0c8fdae72a4",
+        "chars": 369
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-06-25T20:30:02.305Z",
+      "status": "pending",
+      "updated_at": "2026-06-25T20:30:02.305Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "83295cb40bce13edde777e4df60c08756ce0990b241edc5ea9faf1ff5f596170",
+      "external_session_id": "019f0041-5215-7552-bb47-63ff483b2b54",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-06-25T20:30:02.305Z"
+    },
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-06-25T20:30:02.305Z"
+    }
+  ],
+  "agent_component_session_usage": [],
+  "agent_components": [],
+  "agent_component_versions": []
+}

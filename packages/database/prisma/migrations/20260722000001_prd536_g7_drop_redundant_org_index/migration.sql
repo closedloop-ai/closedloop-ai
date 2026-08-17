@@ -1,0 +1,48 @@
+-- PRD-536 G7: drop the now-redundant standalone organization_id index on
+-- session_transcript.
+--
+-- WHY REDUNDANT: 20260722000000_prd536_g7_session_transcript_identity_index adds
+-- the composite @@index([organizationId, computeTargetId, externalSessionId,
+-- fileKey]) ("session_transcript_organization_id_compute_target_id_extern_idx").
+-- Because that composite LEADS with organization_id, any org-only-prefixed query
+-- (WHERE organization_id = …) is served by the composite's leading column — the
+-- planner uses the same B-tree it uses for the full identity read. The standalone
+-- single-column index "session_transcript_organization_id_idx" therefore serves
+-- no access path the composite doesn't already cover, and only costs extra
+-- write-amplification and storage on this hot, high-write table (every desktop
+-- transcript sync/complete upserts rows). Drop it.
+--
+-- SEPARATE MIGRATION FROM THE COMPOSITE ADD (FEA-3638 precedent): this drop is
+-- deliberately NOT merged into 20260722000000. That file is a single bare
+-- `CREATE INDEX CONCURRENTLY` statement; adding a DROP alongside it would either
+-- mix `DROP INDEX CONCURRENTLY` with `CREATE INDEX CONCURRENTLY` (both of which
+-- Prisma's naive statement splitter treats as needing a whole-file transaction
+-- wrap, which then fails every CONCURRENTLY statement with SQLSTATE 25001
+-- "cannot run inside a transaction block" — exactly the FEA-3638 failure), or
+-- force the composite create to give up CONCURRENTLY. Keeping the drop in its own
+-- file avoids the mix entirely.
+--
+-- PLAIN `DROP INDEX` (NOT CONCURRENTLY) — WHY: even a lone `DROP INDEX
+-- CONCURRENTLY` in its own file is unsafe in this repo. Per the FEA-3638
+-- precedent (20260721160000_fea3638_insights_perf_indexes_concurrent) and the
+-- sibling composite-add migration above, Prisma's `migrate deploy` statement
+-- splitter treats `DROP INDEX CONCURRENTLY` as a statement that defeats the
+-- splitter and falls back to wrapping the WHOLE file in a transaction — and
+-- `DROP INDEX CONCURRENTLY`, like its CREATE counterpart, cannot run inside a
+-- transaction block (SQLSTATE 25001), so that wrap would fail the apply. A plain
+-- `DROP INDEX` has no such restriction: it runs fine under the transaction wrap,
+-- and it is a fast catalog-only operation (no data scan or rewrite — unlike a
+-- CREATE, which must build the whole B-tree). It takes a brief ACCESS EXCLUSIVE
+-- lock on session_transcript, but only for the microseconds it takes to unlink
+-- the catalog entry, which is acceptable on the hot table (the write-blocking
+-- concern that drove the CONCURRENTLY create does not apply to a near-instant
+-- drop). `IF EXISTS` keeps it idempotent and safe against an environment where
+-- the index was already removed (e.g. a re-applied preview schema).
+--
+-- Purely subtractive: index-only, no data mutation, no result change (dropping a
+-- redundant index only removes a duplicate plan option). The removed index
+-- matches the schema.prisma change (the deleted `@@index([organizationId])` on
+-- SessionTranscript), so the Prisma drift check stays green.
+
+-- DropIndex
+DROP INDEX IF EXISTS "session_transcript_organization_id_idx";

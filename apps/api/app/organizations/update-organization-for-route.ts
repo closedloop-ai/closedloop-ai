@@ -34,6 +34,19 @@ export async function updateOrganizationForRoute({
   clerkUserId: string;
   id: string;
 }) {
+  // The transcript-content search gate (FEA-3930) and the org session-sync
+  // policy (FEA-4169) are privacy-sensitive: only an org admin may flip them.
+  // Enforce here before any persistence branch so neither toggle can be set
+  // through the non-slug local-update path a member can otherwise reach.
+  const privacyGateDenial = await enforcePrivacyGateAdmin({
+    body,
+    clerkUserId,
+    id,
+  });
+  if (privacyGateDenial) {
+    return privacyGateDenial;
+  }
+
   if (body.slug === undefined) {
     return updateOrganizationLocally(id, body, clerkUserId);
   }
@@ -228,4 +241,37 @@ function isSlugConflictError(error: unknown): boolean {
     getPrismaErrorCode(error) === "P2002" &&
     slugConflictTargetSchema.safeParse(getPrismaP2002Target(error)).success
   );
+}
+
+/**
+ * When the update body carries any privacy-sensitive org toggle — the
+ * transcript-content search gate (FEA-3930) or the session-sync policy
+ * (FEA-4169) — require org admin before any persistence path runs. Returns a
+ * denial response (404 unknown org, 403 non-admin) to short-circuit, or null
+ * when no privacy field is present or the caller is authorized.
+ */
+async function enforcePrivacyGateAdmin({
+  body,
+  clerkUserId,
+  id,
+}: {
+  body: UpdateOrganizationBody;
+  clerkUserId: string;
+  id: string;
+}) {
+  const touchesPrivacyField =
+    body.searchIncludeTranscripts !== undefined ||
+    body.sessionSyncPolicyEnabled !== undefined;
+  if (!touchesPrivacyField) {
+    return null;
+  }
+  const organization = await organizationsService.findById(id);
+  if (!organization) {
+    return notFoundResponse("Organization");
+  }
+  const admin = await isOrgAdmin(organization.clerkId, clerkUserId);
+  if (!admin) {
+    return forbiddenResponse();
+  }
+  return null;
 }

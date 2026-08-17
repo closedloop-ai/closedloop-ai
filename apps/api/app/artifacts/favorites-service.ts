@@ -1,4 +1,8 @@
-import type { Artifact } from "@repo/api/src/types/artifact";
+import type {
+  Artifact,
+  ArtifactSubtypeInput,
+} from "@repo/api/src/types/artifact";
+import { normalizeArtifactSubtype } from "@repo/api/src/types/artifact";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { TransactionClient } from "@repo/database";
 import { withDb } from "@repo/database";
@@ -28,7 +32,13 @@ function toArtifact(row: {
     organizationId: row.organizationId,
     projectId: row.projectId,
     type: row.type as Artifact["type"],
-    subtype: row.subtype as Artifact["subtype"],
+    // FEA-3956: normalize the persisted subtype to its canonical value. Rows
+    // never store the canonical `ISSUE` (map-in-code, PRD-560 dec. 2), but the
+    // widened Prisma enum permits it; mapping keeps a skewed direct-write value
+    // resolving to `FEATURE` instead of leaking `ISSUE` into the wire contract.
+    subtype: row.subtype
+      ? normalizeArtifactSubtype(row.subtype as ArtifactSubtypeInput)
+      : null,
     name: row.name,
     slug: row.slug,
     status: row.status,

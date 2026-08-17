@@ -6,10 +6,21 @@
    it. Scan it explicitly so classes used only there (e.g. the document title's
    text-3xl) are always generated. */
 @source "../../app/**/*.{ts,tsx}";
+/* The Electron renderer is deliberately NOT sourced here. Storybook needs it
+   (its desktop stories otherwise render with no type scale, spacing or layout),
+   but this stylesheet is imported by apps/app, apps/web, apps/prototypes and
+   packages/rich-text as well — none of which render the renderer, and one of
+   which (apps/app) builds from a `turbo prune app --docker` closure where
+   apps/desktop does not exist at all. The scan lives in the Storybook-only
+   sibling, ./storybook.css, which imports this file and adds it. */
 
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));
+/* Coarse-pointer / no-hover (touch) devices. Lets a utility opt into a
+   touch-only treatment (e.g. `touch:min-h-tap-min`) without inflating the
+   mouse/desktop density. Additive — no existing utility targets it yet. */
+@custom-variant touch (@media (hover: none) and (pointer: coarse));
 
 .cl-mobile-only {
   display: block;
@@ -43,6 +54,14 @@
   --popover-foreground: oklch(0.232 0 0);
   --primary: oklch(0.528 0.214 267);
   --primary-foreground: oklch(1 0 0);
+  /* ISS-4793: the link-TEXT color. `--primary` is tuned as a FILL (button
+     backgrounds, accents) and is too dark to carry small text on a dark
+     surface -- at 12px on the muted session-detail pill it measures 1.9:1 in
+     dark, well under the 4.5:1 WCAG 1.4.3 floor. This token is the same hue
+     held at a lightness that stays legible as text in BOTH themes, so a
+     surface that needs "this text is a link" has something to reach for that
+     is not the fill color. */
+  --link: oklch(0.47 0.214 267);
   --secondary: oklch(0.925 0.058 146.3);
   --secondary-foreground: oklch(0.381 0.113 149);
   --muted: oklch(0.7 0 0 / 0.12);
@@ -97,6 +116,16 @@
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
   --highlight: rgb(0 89 255 / 0.15);
+  /* Brand marketing gradient — the warm-to-blue wash behind the auth
+     showcase panel. A fixed brand asset (identical across themes), tokenized
+     so surfaces reference `--brand-gradient` instead of inlining palette hex. */
+  --brand-gradient: linear-gradient(
+    to bottom,
+    #fff9eb,
+    #ffe4ab 31%,
+    #d9a2d2 68%,
+    #4685ff
+  );
   --surface-0: oklch(0.982 0.002 267);
   --surface-1: oklch(0.975 0.002 267);
   --surface-2: oklch(0.962 0.004 267);
@@ -113,6 +142,54 @@
     0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
 
   --font-weight-bold: 600;
+
+  /* ── Mobile-responsive foundation (FEA-3858 / FEA-3811 Phase 1 Slice 1) ──
+     Additive spatial/elevation/icon tokens. Nothing consumes these yet; later
+     slices migrate touch targets, the bottom-nav, and overlays onto them. */
+
+  /* Minimum touch-target sizes. `--tap-min` (44px) is the WCAG 2.5.5 / iOS HIG
+     floor; `--tap-comfortable` (48px) is the Material comfortable target.
+     `--tap-min` is republished as `--spacing-tap-min` below so it is
+     consumable as a spacing utility (e.g. `min-h-tap-min`). */
+  --tap-min: 44px;
+  --tap-comfortable: 48px;
+
+  /* Rendered height of the mobile bottom nav's row (excluding the safe-area
+     inset it adds below `md`). Its icon-over-label cell is `py-1.5` (12px) +
+     icon 20px + `gap-1` (4px) + a text-xs 16px line box = 52px, plus the cell's
+     `m-1` top/bottom margins (8px) → 60px (3.75rem). The bar floors itself at
+     this height and the shell reserves the same token as content padding, so
+     the reservation and the bar cannot drift and fixed-bar overlap never clips
+     the last row (a bare `--tap-min` guess under-reserved by ~16px).
+     Republished as `--spacing-bottom-nav-height` below for the
+     `*-bottom-nav-height` spacing utilities. */
+  --bottom-nav-height: 3.75rem;
+
+  /* Density scale — vertical rhythm step a row/control adds per density tier.
+     Compact (mouse, dense tables) → comfortable (touch). */
+  --density-compact: 0.25rem;
+  --density-cozy: 0.5rem;
+  --density-comfortable: 0.75rem;
+
+  /* Elevation / z-index scale. Named tiers so overlays stack predictably
+     instead of every surface flattening onto z-50. `var()`-only: Tailwind v4
+     has no z-index theme namespace, so unlike the spacing/icon tokens these
+     do not generate `z-*` utilities — consume as `z-[var(--z-modal)]`. The
+     overlay migration off z-50 lands in a later slice (with the bottom-nav). */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-bottom-nav: 20;
+  --z-overlay: 40;
+  --z-modal: 50;
+  --z-popover: 60;
+  --z-toast: 70;
+
+  /* Icon-size tiers for consistent glyph sizing across surfaces. Republished
+     as `--spacing-icon-*` below so `size-icon-*` works as a utility (the
+     values line up with the size-4/5/6 components already use). */
+  --icon-sm: 1rem;
+  --icon-md: 1.25rem;
+  --icon-lg: 1.5rem;
 }
 
 .dark {
@@ -124,6 +201,10 @@
   --popover-foreground: oklch(0.943 0 0);
   --primary: oklch(0.542 0.214 266);
   --primary-foreground: oklch(0.976 0.014 263);
+  /* ISS-4793: see the `:root` note. Dark needs a MUCH lighter link text than
+     its fill `--primary` (0.542), which is near-invisible as text here; this
+     lands at 5.6:1 on the muted pill instead of 1.9:1. */
+  --link: oklch(0.82 0.12 266);
   --secondary: oklch(0.346 0.063 150);
   --secondary-foreground: oklch(0.808 0.176 141);
   --muted: oklch(1 0.003 270 / 0.04);
@@ -172,6 +253,8 @@
   --thinking: var(--primary);
   --closedloop-violet: oklch(0.61 0.256 285.5);
   --highlight: rgb(0 89 255 / 0.25);
+  /* --brand-gradient is a fixed brand asset declared once in :root; it inherits
+     into .dark unchanged, so it is intentionally not re-declared here. */
   --surface-0: oklch(0.24 0.005 270);
   --surface-1: oklch(0.285 0.012 270);
   --surface-2: oklch(0.31 0.013 270);
@@ -233,6 +316,11 @@
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
+  /* ISS-4793: publish `--link` as a utility so link-colored text is reachable
+     from a class (`text-link`), not just from raw CSS. Without this twin the
+     next component that needs a link color reaches for `text-primary` — which
+     is exactly the 1.9:1-in-dark case this token exists to avoid. */
+  --color-link: var(--link);
   --color-popover-foreground: var(--popover-foreground);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
@@ -252,12 +340,116 @@
   --color-surface-4: var(--surface-4);
   --color-surface-5: var(--surface-5);
   --shadow-inset: var(--shadow-inset);
+
+  /* ── Mobile-responsive foundation (FEA-3858) — @theme publishing ──
+     Publish the raw :root tokens above into Tailwind's theme namespaces so
+     they generate utilities. Additive: no existing utility or breakpoint is
+     redefined, so Tailwind's default sm/md/lg/xl scale is unchanged and the
+     new `xs` prefix simply prepends to it. */
+
+  /* Extra-small breakpoint below `sm` (640px). Yields an `xs:` variant;
+     scale becomes xs 480 · sm 640 · md 768 · lg 1024 · xl 1280. */
+  --breakpoint-xs: 480px;
+
+  /* Spacing tokens → `*-tap-min` / `*-tap-comfortable` (e.g. `min-h-tap-min`,
+     `min-w-tap-comfortable`) and density steps `*-density-*`. */
+  --spacing-tap-min: var(--tap-min);
+  --spacing-tap-comfortable: var(--tap-comfortable);
+  --spacing-bottom-nav-height: var(--bottom-nav-height);
+  --spacing-density-compact: var(--density-compact);
+  --spacing-density-cozy: var(--density-cozy);
+  --spacing-density-comfortable: var(--density-comfortable);
+
+  /* Icon-size tiers → spacing namespace so `size-icon-*` (and `w-`/`h-`)
+     resolve (e.g. `size-icon-md`), matching the size-4/5/6 components use. */
+  --spacing-icon-sm: var(--icon-sm);
+  --spacing-icon-md: var(--icon-md);
+  --spacing-icon-lg: var(--icon-lg);
+
+  /* The z-index tiers below stay `var()`-only: Tailwind v4 has no `--z-index-*`
+     theme namespace (the `z-*` utility only takes numbers/arbitrary values), so
+     they cannot be republished into named `z-*` utilities the way spacing can.
+     Consume them as `z-[var(--z-modal)]` or via a component style. */
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+  /* ISS-5613: Tailwind's radius scale stops at `--radius-4xl` — `rounded-full`
+     is a STATIC utility, not a theme key — so `var(--radius-full)` resolved to
+     nothing and every pill/dot styled in plain CSS computed to a 0px square.
+     The value is byte-identical to what `rounded-full` compiles to, so the
+     token and the utility cannot drift into two different "full" radii. */
+  --radius-full: calc(infinity * 1px);
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
+  /* ISS-5115: the sheen that passes over an indeterminate `Progress`. It is a
+     transparent-ended gradient, not a fill, so no frame of it puts a readable
+     edge in the track. At 1/3 of the track it travels 400% of its own width to
+     enter from the left and fully clear the right edge. Only ever applied
+     behind `motion-safe:` — the `progress-hatch` underneath is the
+     reduced-motion (and paused) rendering. */
+  --animate-progress-indeterminate: progress-indeterminate 1.6s linear infinite;
+  /* ISS-5279: the status vocabulary's dot pulse — the mark `StatusDot` carries.
+     The dot previously inlined `animate-[pulse_1.6s_ease-in-out_infinite]` as an
+     arbitrary value, so a second surface wanting the same beat had to retype the
+     literal and was free to drift from it. This is that literal, named: same
+     50% opacity dip, same 1.6s ease-in-out, so nothing already on screen moves.
+     Always applied with a reduced-motion guard; see `StatusDot`. */
+  --animate-status-pulse: status-pulse 1.6s ease-in-out infinite;
+  @keyframes status-pulse {
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* ISS-5279: the PILL-level mark, for a Sessions row whose transcript is still
+     uploading. A ring that swells out of the pill's edge and fades — never the
+     pill's own opacity.
+
+     Fading the pill was the first attempt and it was wrong (Parker, PR review):
+     `opacity` dips everything inside, including the 11px semibold status word,
+     taking the light-theme success label from 2.89:1 to 1.66:1 twice a second.
+     The lifecycle word is precisely what ISS-5279 fought to keep on the pill, so
+     it must not be the thing that dims. A box-shadow ring is outside the content
+     box, animates on the compositor, and costs no layout, so the label holds at
+     full contrast while the pill still visibly beats.
+
+     `color-mix(in oklab, currentColor …)` so the ring is the pill's OWN tone —
+     no second hue, and it inherits every `Tone` for free (same technique as the
+     scrollbar treatment below). It swells from nothing to a 2px ring at
+     mid-cycle and back, so the pill breathes without any part of it going dim.
+     `motion-reduce:` callers render that peak ring statically instead; see
+     `STATUS_PULSE_RING_REDUCED_MOTION_CLASS`.
+
+     2px at 25%, not 4px at 45% (PR review). This is a LIST treatment, and the
+     first weight put the loudest thing in the row outside the pill, announcing
+     a transcript upload: filter Sessions to Active and a column of halos
+     breathes out of phase, since each row starts its animation when it mounts
+     and polled-in rows mount later. 25% of currentColor also sits at the pill's
+     own `border-<tone>/25`, so the mark reads as the pill's edge stirring rather
+     than as a second object around it — still findable at 1x, no longer the
+     first thing the eye lands on. */
+  --animate-status-pulse-ring: status-pulse-ring 1.6s ease-in-out infinite;
+  @keyframes status-pulse-ring {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 transparent;
+    }
+    50% {
+      box-shadow: 0 0 0 2px color-mix(in oklab, currentColor 25%, transparent);
+    }
+  }
+
+  @keyframes progress-indeterminate {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(300%);
+    }
+  }
+
   @keyframes accordion-down {
     from {
       height: 0;
@@ -374,11 +566,47 @@
   }
   &::-webkit-scrollbar-thumb {
     background-color: color-mix(in oklab, currentColor 22%, transparent);
-    border-radius: 9999px;
+    border-radius: var(--radius-full);
     border: 2px solid transparent;
     background-clip: padding-box;
   }
   &::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(in oklab, currentColor 38%, transparent);
   }
+}
+
+/* ISS-5115: the static rendering of an indeterminate `Progress`. A diagonal
+   hatch is the only treatment that reads as "amount unknown": it has no single
+   edge anywhere in the track, so no frame of it can be mistaken for a
+   percentage, and unlike a uniform full-width wash it cannot be read as 100%
+   nor, like a bare track, as 0%. It is the ENTIRE indeterminate rendering
+   whenever the sheen is suppressed — under `prefers-reduced-motion`, and while
+   `paused` — and sits underneath the sheen the rest of the time. Painted from
+   `currentColor` so the tone the caller picked carries through. */
+@utility progress-hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, currentColor 40%, transparent) 0,
+    color-mix(in oklab, currentColor 40%, transparent) 0.1875rem,
+    transparent 0.1875rem,
+    transparent 0.4375rem
+  );
+}
+
+/* FEA-3861: safe-area inset padding hooks. Consumed by the mobile bottom-nav
+   and any fixed shell chrome so content clears the notch and home indicator on
+   iOS PWA/WebView. On viewports without insets `env()` resolves to 0, so these
+   are inert there, no layout shift on desktop. `viewport-fit=cover` (root
+   layout `viewport` export) is required for the insets to resolve non-zero. */
+@utility pt-safe {
+  padding-top: env(safe-area-inset-top);
+}
+@utility pb-safe {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+@utility pl-safe {
+  padding-left: env(safe-area-inset-left);
+}
+@utility pr-safe {
+  padding-right: env(safe-area-inset-right);
 }

@@ -8,8 +8,15 @@ import {
   Result,
 } from "@repo/api/src/types/result";
 import { type TransactionClient, withDb } from "@repo/database";
+import {
+  getUserTokenOctokit,
+  type Octokit,
+} from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
-import { decryptIntegrationToken } from "@/lib/integration-encryption";
+import {
+  GitHubConnectionCredentialDenial,
+  resolveGitHubUserConnectionCredential,
+} from "@/lib/github/github-connection-credential";
 
 type GitHubWriteIdentityClient = Pick<
   TransactionClient,
@@ -29,7 +36,13 @@ export type GitHubWriteIdentity = {
   githubUserConnectionId: string;
   githubUserId: string;
   login: string;
-  token: string;
+  /**
+   * One timeout-bounded client for the whole request (PLN-1525). Resolved here
+   * rather than handing callers a raw token, so a multi-write action builds a
+   * single client instead of one per GitHub call, and the write path inherits
+   * `boundedFetch` the same way every read lane already does.
+   */
+  octokit: Octokit;
   scopes: string[];
 };
 
@@ -81,6 +94,19 @@ export async function getGitHubWriteIdentityStatus(
  * Resolves and decrypts the caller's GitHub user token for user-authored
  * comment writes. Missing identities, revoked identities, expired tokens, and
  * decrypt failures all fail closed with stable branch-view result codes.
+ *
+ * PLN-1525: thin adapter over the shared connection-credential read
+ * (`@/lib/github/github-connection-credential`) — this module owns only the
+ * mapping to branch-view result codes, and the one bounded client the write
+ * path threads into every GitHub call. `lastUsedAt` is sampled by the shared
+ * read instead of written per call.
+ *
+ * Deliberately NOT routed through `getGitHubClient(WriteAsUser)`: the resolver
+ * folds expired, revoked, and undecryptable credentials into a single
+ * `revoked` reason ("one remedy: reconnect"), while this surface still tells
+ * those apart to pick its prompt (`BranchViewCommentWriteIdentityStatus`).
+ * Adopting the resolver here means first deciding whether that remediation
+ * detail is worth keeping — a product call, not a mechanical migration.
  */
 export async function requireGitHubWriteIdentity(
   input: RequireGitHubWriteIdentityInput
@@ -99,85 +125,45 @@ async function requireGitHubWriteIdentityWithClient(
   db: GitHubWriteIdentityClient,
   input: RequireGitHubWriteIdentityInput
 ): Promise<GitHubWriteIdentityResult> {
-  const connection = await db.gitHubUserConnection.findUnique({
-    where: {
-      organizationId_userId: {
-        organizationId: input.organizationId,
-        userId: input.userId,
-      },
-    },
-    select: {
-      id: true,
-      organizationId: true,
-      userId: true,
-      githubUserId: true,
-      login: true,
-      accessTokenEncrypted: true,
-      revokedAt: true,
-      tokenExpiresAt: true,
-      scopes: true,
-    },
+  const read = await resolveGitHubUserConnectionCredential(db, {
+    organizationId: input.organizationId,
+    userId: input.userId,
+    now: input.now,
   });
-
-  if (!connection) {
-    return Result.err(identityRequiredError());
+  if (!read.ok) {
+    return Result.err(mapCredentialDenial(read.denial, input));
   }
+  return Result.ok({
+    userId: read.credential.userId,
+    organizationId: read.credential.organizationId,
+    githubUserConnectionId: read.credential.connectionId,
+    githubUserId: read.credential.githubUserId,
+    login: read.credential.login,
+    octokit: getUserTokenOctokit(read.credential.token),
+    scopes: read.credential.scopes,
+  });
+}
 
-  if (connection.revokedAt !== null) {
-    return Result.err(
-      identityExpiredError(BranchViewCommentWriteIdentityStatus.Revoked)
-    );
+function mapCredentialDenial(
+  denial: GitHubConnectionCredentialDenial,
+  input: RequireGitHubWriteIdentityInput
+): GitHubWriteIdentityError {
+  if (denial === GitHubConnectionCredentialDenial.NotConnected) {
+    return identityRequiredError();
   }
-
-  if (
-    connection.tokenExpiresAt &&
-    connection.tokenExpiresAt.getTime() <= input.now.getTime()
-  ) {
-    return Result.err(
-      identityExpiredError(BranchViewCommentWriteIdentityStatus.Expired)
-    );
+  if (denial === GitHubConnectionCredentialDenial.Expired) {
+    return identityExpiredError(BranchViewCommentWriteIdentityStatus.Expired);
   }
-
-  let token: string;
-  try {
-    token = await decryptIntegrationToken(connection.accessTokenEncrypted);
-  } catch {
+  if (denial === GitHubConnectionCredentialDenial.DecryptionFailed) {
     log.warn(
       "[comments/github-identity] Failed to decrypt GitHub user token",
       buildGitHubWriteIdentityDecryptFailureLogContext(input)
     );
-    return Result.err(
-      identityExpiredError(
-        BranchViewCommentWriteIdentityStatus.DecryptionFailed
-      )
+    return identityExpiredError(
+      BranchViewCommentWriteIdentityStatus.DecryptionFailed
     );
   }
-
-  const lastUsedUpdate = await db.gitHubUserConnection.updateMany({
-    where: {
-      id: connection.id,
-      organizationId: input.organizationId,
-      userId: input.userId,
-      revokedAt: null,
-    },
-    data: { lastUsedAt: input.now },
-  });
-
-  if (lastUsedUpdate.count !== 1) {
-    return Result.err(
-      identityExpiredError(BranchViewCommentWriteIdentityStatus.Revoked)
-    );
-  }
-
-  return Result.ok({
-    userId: connection.userId,
-    organizationId: connection.organizationId,
-    githubUserConnectionId: connection.id,
-    githubUserId: connection.githubUserId,
-    login: connection.login,
-    token,
-    scopes: connection.scopes,
-  });
+  return identityExpiredError(BranchViewCommentWriteIdentityStatus.Revoked);
 }
 
 async function getGitHubWriteIdentityStatusWithClient(

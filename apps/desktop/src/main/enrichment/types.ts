@@ -1,66 +1,32 @@
-export const EnrichmentState = {
-  Provisional: "provisional",
-  Final: "final",
-  NotApplicable: "not_applicable",
-} as const;
-export type EnrichmentState =
-  (typeof EnrichmentState)[keyof typeof EnrichmentState];
-
-export const EnrichmentSource = {
-  GitShow: "git_show",
-  GitDiff: "git_diff",
-  GhPrView: "gh_pr_view",
-  GhPrList: "gh_pr_list",
-  GhApi: "gh_api",
-  TranscriptParse: "transcript_parse",
-} as const;
-export type EnrichmentSource =
-  (typeof EnrichmentSource)[keyof typeof EnrichmentSource];
-
-export type LocStats = {
-  linesAdded: number;
-  linesRemoved: number;
-  filesChanged: number;
-};
-
-export type EnrichmentResult = {
-  stats: LocStats | null;
-  state: EnrichmentState;
-  source: EnrichmentSource;
-};
-
+/**
+ * What survives of the desktop enrichment contract.
+ *
+ * PLN-1535 M5 (D6) deleted the local enrichment sweep, its `gh` passes, and the
+ * origin PR/branch lifecycle fetchers, and with them every type that only ever
+ * described that machinery: the enrichment state/source/result vocabulary, the
+ * LOC-stat shapes, the sweep pacing and lease constants, and the origin-fetch
+ * result unions. Nothing outside the deleted modules referenced any of them.
+ *
+ * `PrState` stays because it is not enrichment vocabulary at all — it is the
+ * lowercase `pull_requests.pr_state` / `artifacts.pr_state` column value, and
+ * the local Insights reads compare against it (`local-insights.ts`). Keeping it
+ * here rather than re-declaring it at the reader is what stopped an uppercase
+ * `'MERGED'` comparison from silently matching zero rows once before.
+ *
+ * **`artifacts.pr_state` now has no writer.** The deleted `gh` passes were its
+ * only ones, and they had already stopped running well before deletion — the
+ * sweep's sole production trigger was a no-op stub — so nothing observable
+ * changed here. But every reader of the column should read it as permanently
+ * NULL rather than as "not refreshed yet": the desktop-local merge rate,
+ * merged-PR counts, and merged LOC (`local-insights.ts`) are dark, and the
+ * open-PR fallbacks in `pr-link-maintenance.ts` / `branch-pr-attribution.ts`
+ * are now permanent rather than temporary. Whether Local mode should serve
+ * those metrics from the cloud projection instead is an open product question,
+ * not something the deletion decided.
+ */
 export const PrState = {
   Open: "open",
   Merged: "merged",
   Closed: "closed",
 } as const;
 export type PrState = (typeof PrState)[keyof typeof PrState];
-
-export type PrMetadata = {
-  prState: PrState;
-  additions: number;
-  deletions: number;
-  changedFiles: number;
-  mergeCommitSha: string | null;
-  baseRefName: string | null;
-  headRefName: string | null;
-  /** GitHub PR createdAt (PRD-486) — the PR-opened lifecycle timestamp. */
-  openedAt: string | null;
-  /**
-   * GitHub PR mergedAt — the AUTHORITATIVE merge instant. Null unless GitHub
-   * actually reported it (i.e. the PR is merged). Never synthesized: a branch's
-   * "last active" reads this, so a fabricated time would back-date the branch to
-   * whenever enrichment ran rather than the real merge.
-   */
-  mergedAt: string | null;
-  /** GitHub PR closedAt — set for merged AND closed PRs; null otherwise. */
-  closedAt: string | null;
-};
-
-export const MAX_ENRICHMENT_ATTEMPTS = 5;
-
-export const LEASE_STALE_MS = 5 * 60 * 1000;
-
-export const GH_RATE_LIMIT_INTERVAL_MS = 6000;
-
-export const ENRICHMENT_SWEEP_DEBOUNCE_MS = 5 * 60 * 1000;

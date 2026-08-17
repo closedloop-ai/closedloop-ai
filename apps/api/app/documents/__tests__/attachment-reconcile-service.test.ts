@@ -40,6 +40,7 @@ vi.mock("../attachments-service", () => ({
 
 import { deleteObjects, listObjects } from "@repo/aws";
 import { keys as awsKeys } from "@repo/aws/keys";
+import { log } from "@repo/observability/log";
 import { attachmentReconcileService } from "../attachment-reconcile-service";
 
 const NOW = new Date("2026-06-27T12:00:00.000Z");
@@ -80,6 +81,31 @@ describe("attachmentReconcileService.runReconcileSweep", () => {
     );
     expect(result).toMatchObject({
       scanned: 2,
+      orphansDeleted: 1,
+      exitCode: 0,
+    });
+  });
+
+  it("deletes orphaned inline image objects after the grace window", async () => {
+    vi.mocked(listObjects).mockResolvedValueOnce({
+      objects: [
+        {
+          key: "attachments/org-inline/doc-inline/inline-image-id",
+          lastModified: OLD,
+        },
+      ],
+      nextContinuationToken: undefined,
+    });
+    findMany.mockResolvedValueOnce([]);
+
+    const result = await attachmentReconcileService.runReconcileSweep(NOW);
+
+    expect(deleteObjects).toHaveBeenCalledWith(
+      ["attachments/org-inline/doc-inline/inline-image-id"],
+      "test-bucket"
+    );
+    expect(result).toMatchObject({
+      scanned: 1,
       orphansDeleted: 1,
       exitCode: 0,
     });
@@ -182,6 +208,27 @@ describe("attachmentReconcileService.runReconcileSweep", () => {
       exitCode: 1,
     });
     expect(result.summary).toContain("s3 down");
+  });
+
+  it("redacts attachment storage keys from delete failure logs and summaries", async () => {
+    const orphanKey = "attachments/org/doc/orphan-with-secret-path";
+    vi.mocked(listObjects).mockResolvedValueOnce({
+      objects: [{ key: orphanKey, lastModified: OLD }],
+      nextContinuationToken: undefined,
+    });
+    findMany.mockResolvedValueOnce([]);
+    vi.mocked(deleteObjects).mockRejectedValueOnce(
+      new Error(`Failed to delete ${orphanKey}: AccessDenied`)
+    );
+
+    const result = await attachmentReconcileService.runReconcileSweep(NOW);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.summary).not.toContain(orphanKey);
+    expect(result.summary).toContain("[attachment-storage-key]");
+    const serializedLogs = JSON.stringify(vi.mocked(log.error).mock.calls);
+    expect(serializedLogs).not.toContain(orphanKey);
+    expect(serializedLogs).toContain("[attachment-storage-key]");
   });
 
   it("short-circuits to a no-op when no bucket is configured", async () => {

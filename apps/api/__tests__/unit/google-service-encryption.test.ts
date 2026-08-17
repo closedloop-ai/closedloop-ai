@@ -576,3 +576,94 @@ describe("Google service encryption paths", () => {
     });
   });
 });
+
+/**
+ * ISS-6319. Both Google integration writes pin `select: { id: true }` so
+ * Postgres RETURNINGs one primary-key cell instead of every column — the row
+ * carries four `@db.Text` token columns whose values are discarded by both
+ * call sites.
+ *
+ * The source gate cannot see the shape of a write issued inside a `withDb`
+ * callback, and the encryption suite above reads only `data`/`create`/`update`.
+ * Without these two assertions either site can drop its `select` and silently
+ * go back to `RETURNING *` with every existing test still green.
+ */
+describe("Google service discarded-write narrowing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("RETURNINGs only the id from the OAuth-callback upsert", async () => {
+    mockExchangeCodeForTokens.mockResolvedValue({
+      accessToken: "raw-access-token",
+      refreshToken: "raw-refresh-token",
+      expiresIn: 3600,
+    });
+    mockGetUserInfo.mockResolvedValue({
+      email: "user@example.com",
+      sub: "google-uid-1",
+    });
+    mockEncryptTokenPair.mockResolvedValueOnce({
+      encryptedAccessToken: "encrypted-access-token",
+      encryptedRefreshToken: "encrypted-refresh-token",
+    });
+
+    const mockDb = {
+      googleIntegration: {
+        upsert: vi.fn().mockResolvedValue({ id: "integ-1" }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await googleService.completeOAuthCallback(
+      "auth-code",
+      "code-verifier",
+      "https://app.example.com/callback",
+      ORG_ID
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(mockDb.googleIntegration.upsert.mock.calls[0][0].select).toEqual({
+      id: true,
+    });
+  });
+
+  it("RETURNINGs only the id from the token-refresh update", async () => {
+    mockResolveIntegrationToken.mockResolvedValueOnce(
+      "decrypted-refresh-token"
+    );
+    mockRefreshAccessToken.mockResolvedValue({
+      accessToken: "new-access-token",
+      refreshToken: "new-refresh-token",
+      expiresIn: 3600,
+    });
+    mockEncryptTokenPair.mockResolvedValueOnce({
+      encryptedAccessToken: "new-encrypted-access-token",
+      encryptedRefreshToken: "new-encrypted-refresh-token",
+    });
+
+    const mockDb = {
+      googleIntegration: {
+        update: vi.fn().mockResolvedValue({ id: "integ-1" }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await ensureValidAccessToken(
+      makeIntegration({
+        accessTokenEncrypted: "old-encrypted-access-token",
+        refreshTokenEncrypted: "old-encrypted-refresh-token",
+        tokenExpiresAt: new Date(Date.now() - 3_600_000),
+      }),
+      ORG_ID
+    );
+
+    expect(result).toEqual({
+      success: true,
+      accessToken: "new-access-token",
+    });
+    expect(mockDb.googleIntegration.update.mock.calls[0][0].select).toEqual({
+      id: true,
+    });
+  });
+});

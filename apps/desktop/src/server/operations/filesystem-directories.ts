@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { isGitRepository } from "../../shared/git-utils.js";
+import { isTccProtectedBasename } from "../../shared/sandbox-policy.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { json } from "./response-utils.js";
@@ -40,6 +42,13 @@ export function registerFilesystemDirectoriesRoutes(
 
       const entries = await fs.readdir(expandedPath, { withFileTypes: true });
       const directories: DirectoryEntry[] = [];
+      // FEA-3641: when browsing the home directory, skip TCC-protected user
+      // folders (Music, Pictures, Documents, …) entirely. Listing them as
+      // descendable entries would let the browser stat/probe inside them on a
+      // subsequent request, triggering a macOS permission prompt. They are
+      // never valid sandbox roots, so hiding them here (in addition to the
+      // `.git` probe skip in isGitRepository) keeps them out of reach.
+      const parentIsHome = path.resolve(expandedPath) === os.homedir();
 
       for (const entry of entries) {
         if (entry.name.startsWith(".")) {
@@ -47,6 +56,10 @@ export function registerFilesystemDirectoriesRoutes(
         }
 
         if (!entry.isDirectory()) {
+          continue;
+        }
+
+        if (parentIsHome && isTccProtectedBasename(entry.name)) {
           continue;
         }
 

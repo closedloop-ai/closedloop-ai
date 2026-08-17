@@ -20,8 +20,9 @@ const mocks = vi.hoisted(() => {
     USER_CREATED: "USER_CREATED",
     DESKTOP_MANAGED: "DESKTOP_MANAGED",
   } as const;
+  const logError = vi.fn();
 
-  return { withDb, ApiKeySource };
+  return { withDb, ApiKeySource, logError };
 });
 
 vi.mock("@repo/database", () => ({
@@ -29,6 +30,16 @@ vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
 }));
 
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: mocks.logError,
+  },
+}));
+
+import { API_KEY_SCOPES_UNRESOLVABLE_EVENT } from "@repo/api/src/utils/api-key-scope-resolution";
 import { withDb } from "@repo/database";
 import { apiKeysService } from "../service";
 
@@ -612,7 +623,7 @@ describe("apiKeysService.verifyKey", () => {
     const record = makeApiKeyRecord({
       userId: "user-verified",
       organizationId: "org-verified",
-      scopes: [],
+      scopes: ["read", "write"],
     });
 
     mockWithDb
@@ -634,8 +645,50 @@ describe("apiKeysService.verifyKey", () => {
     expect(result).toEqual({
       userId: "user-verified",
       organizationId: "org-verified",
-      scopes: [],
+      scopes: ["read", "write"],
     });
+  });
+
+  // ISS-4905: a stored scope set that cannot be resolved is missing data, not a
+  // grant. The credential is refused at the verification boundary — never
+  // widened to full access, and never quietly downgraded without a signal.
+  it.each<[string, string[] | null, string]>([
+    ["an empty scope array (the DB column default)", [], "empty"],
+    ["a null scopes column", null, "absent"],
+    [
+      "scopes this server does not recognize",
+      ["superuser", "org:admin"],
+      "all_unrecognized",
+    ],
+  ])("refuses a key with %s", async (_label, scopes, expectedReason) => {
+    const plaintext = "sk_live_unresolvablescopes";
+    const record = makeApiKeyRecord({
+      scopes: scopes as string[],
+    });
+
+    const update = vi.fn().mockResolvedValue({});
+    // Only the lookup is expected: resolution fails before the lastUsedAt
+    // write, so a second withDb call would itself be the regression.
+    mockWithDb.mockImplementationOnce((callback: (db: unknown) => unknown) => {
+      const mockDb = {
+        apiKey: { findFirst: vi.fn().mockResolvedValue(record), update },
+      };
+      return callback(mockDb);
+    });
+
+    const result = await apiKeysService.verifyKey(plaintext);
+
+    expect(result).toBeNull();
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    expect(mocks.logError).toHaveBeenCalledWith(
+      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+      expect.objectContaining({
+        surface: "api_key_verification",
+        reason: expectedReason,
+        apiKeyId: record.id,
+      })
+    );
   });
 
   it("accepts DESKTOP_MANAGED keys without extra PoP checks in Phase A", async () => {

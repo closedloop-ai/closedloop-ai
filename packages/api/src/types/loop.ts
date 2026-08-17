@@ -180,6 +180,23 @@ export type { AdditionalRepoRef, AdditionalRepoRefWithToken };
 export const MAX_ADDITIONAL_REPOS = 5;
 
 /**
+ * Max context refs a single loop may declare.
+ *
+ * An input/data-shape bound, NOT a resource cap: it stops an unbounded array
+ * being persisted on a loop, but it is emphatically not what keeps the
+ * context-pack read from exhausting the pg pool — any cap above the pool size
+ * bounds nothing (the 2026-07-15 outage had a 200-item payload cap and a
+ * 20-connection pool). The pool guarantee is the bounded fan-out in
+ * `apps/api/lib/loops/loop-context-pack.ts`. See FEA-3299 / PRD-528.
+ *
+ * Sized generously against observed usage: the run-loop UI path attaches at most
+ * one source ref per loop, leaving ~20x headroom for API clients. Oversized
+ * input is rejected at the validator rather than truncated — silently dropping
+ * refs would change what the agent sees.
+ */
+export const MAX_CONTEXT_REFS = 20;
+
+/**
  * PostHog flag gating the dark-launched `request_prd_changes` ("Amend PRD")
  * run-loop command. Shared so the PRD editor (which hides the menu item) and
  * the run-loop API route (which must fail closed before dispatch) agree on a
@@ -242,7 +259,11 @@ export type LoopListFilters = {
 };
 
 // Loop summary types: aggregated loop state per document, recursive across
-// PRODUCES descendants. Powers the LoopCell variants in document tables.
+// PRODUCES descendants. These once powered the LoopCell variants in the
+// document tables; that column was removed, so today they type the
+// `POST /loops/summaries` response only — the route and service in
+// `apps/api/app/loops/summaries/` are the sole consumers, and no frontend
+// surface fetches them. Kept as a server-side contract, not dead code.
 export type LoopSummaryEntry = {
   loopId: string;
   command: LoopCommand;

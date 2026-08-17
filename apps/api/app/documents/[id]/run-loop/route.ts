@@ -9,7 +9,6 @@ import type {
   CreateLoopResponse,
   LoopAlreadyActiveBody,
 } from "@repo/api/src/types/loop";
-import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import {
   computeTargetsService,
@@ -21,20 +20,25 @@ import { loopsService } from "@/app/loops/service";
 import { computePreferenceService } from "@/app/settings/compute-preference/compute-preference-service";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveDocumentId } from "@/lib/identifier-utils";
+import { buildMissingAnthropicApiKeyResponse } from "@/lib/loops/cloud-anthropic-key-preflight";
 import { buildMissingExplicitPreferenceResponse } from "@/lib/loops/explicit-compute-selection";
 import {
   type HarnessSelectionIdentity,
   isHarnessSelectionEnabled,
 } from "@/lib/loops/harness-selection-feature";
 import { getCommandHandler } from "@/lib/loops/loop-commands";
-import { launchLoop } from "@/lib/loops/loop-orchestrator";
+import {
+  dispatchAndClassify,
+  dispatchFailureResponse,
+  dispatchTargetKindFor,
+} from "@/lib/loops/loop-dispatch-utils";
 import { enforcePrdRequestChangesGate } from "@/lib/loops/prd-request-changes-feature";
 import { buildLoopPrompt } from "@/lib/loops/prompts";
 import {
   badRequestResponse,
   notFoundResponse,
   parseBody,
-  scheduleLogFlushAfter,
+  scheduleLogFlush,
 } from "@/lib/route-utils";
 import {
   COMMAND_MAP,
@@ -45,6 +49,25 @@ import {
 } from "./run-loop-helpers";
 import { resolveEffectiveSignedRunLoopIntent } from "./signing";
 import { runLoopSchema } from "./validators";
+
+/**
+ * ISS-5708: this route now awaits the relay/ECS dispatch before answering, so
+ * it can genuinely outlive a default serverless ceiling when a compute target
+ * is slow to take the command. `postRunLoop` calls it on the client's default
+ * 60s deadline (`DEFAULT_API_TIMEOUT_MS`), and declaring the same ceiling here
+ * is what makes that deadline meaningful — without it the platform can
+ * terminate the function first and surface an opaque 504 instead of this
+ * route's own classified dispatch failure. Keep the two in step.
+ *
+ * This value is also one half of the reap invariant: while this request runs,
+ * its Loop row is legitimately PENDING, and `reapStalePendingLoops` must not
+ * declare it orphaned. `STALE_PENDING_THRESHOLD_MS` is derived from
+ * `LAUNCH_REQUEST_BUDGET_SECONDS` for exactly that reason. Written as a literal
+ * because Next.js route-segment config must be statically analysable, so a
+ * test asserts `maxDuration === LAUNCH_REQUEST_BUDGET_SECONDS` rather than the
+ * type system enforcing it — change one, change the other.
+ */
+export const maxDuration = 60;
 
 type RunLoopResponse =
   | CreateLoopResponse
@@ -113,6 +136,20 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         return ctRouteResult.errorResponse;
       }
       const { computeTargetId: resolvedComputeTargetId } = ctRouteResult;
+
+      // Cloud only, and deliberately ahead of `loopsService.create`. The
+      // dispatch below is awaited now (ISS-5708), so a missing key would be
+      // reported either way — but only this pre-flight avoids creating a Loop
+      // row that exists solely to be cancelled a moment later.
+      const missingKeyResponse = await buildMissingAnthropicApiKeyResponse({
+        resolvedComputeTargetId,
+        userId: user.id,
+        organizationId: user.organizationId,
+      });
+      if (missingKeyResponse) {
+        return missingKeyResponse;
+      }
+
       const signedIntentResult = await resolveEffectiveSignedRunLoopIntent({
         computeTargetId: resolvedComputeTargetId,
         requesterUserId: user.id,
@@ -214,9 +251,17 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
         }
       );
 
-      const launchPromise = launchLoop(
+      // ISS-5708: await the dispatch instead of fire-and-forget. The browser
+      // reads a `{ loopId, status }` body as `launched` and navigates, so
+      // answering before the relay has taken the command turned every
+      // post-acceptance failure into a silent no-op ending on a blank
+      // artifact. `launchPlanLoop` already awaits for the same reason; desktop
+      // context-pack building plus relay dispatch is typically <5 seconds.
+      const dispatchResult = await dispatchAndClassify(
         loopResponse.loopId,
         user.organizationId,
+        "run-loop",
+        { computeTargetId: resolvedComputeTargetId, documentId },
         effectiveSignedUserIntent
           ? {
               desktopUserIntentSignature: {
@@ -229,17 +274,25 @@ export const POST = withAnyAuth<RunLoopResponse, "/documents/[id]/run-loop">(
               },
             }
           : undefined
-      ).catch((error) => {
-        log.error("[run-loop] Failed to launch loop", {
-          loopId: loopResponse.loopId,
-          documentId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      );
+      if (!dispatchResult.ok) {
+        // `launchLoop` drives the row to a terminal status on its way out
+        // (FAILED with a LAUNCH_FAILED error since ISS-5711, plus a re-read to
+        // confirm it landed), so the failure is durable server-side and this
+        // only stops the browser being told the opposite. Not an unconditional
+        // guarantee: if that write also fails, `launchLoop` logs
+        // `loop.launch_failure_not_durable` and the row is left for
+        // `reapStalePendingLoops`. The response is the same 502 either way —
+        // there is nothing better to tell a browser whose launch failed — but
+        // that log, not this branch, is what an operator should page on.
+        scheduleLogFlush();
+        return dispatchFailureResponse(
+          dispatchResult.error,
+          dispatchTargetKindFor(resolvedComputeTargetId)
+        );
+      }
 
-      // Flush after launchLoop() settles so its own log entries are captured.
-      scheduleLogFlushAfter(launchPromise);
-
+      scheduleLogFlush();
       return NextResponse.json(success(loopResponse));
     } catch (error) {
       return handleLoopServiceError(error, "Failed to run loop");

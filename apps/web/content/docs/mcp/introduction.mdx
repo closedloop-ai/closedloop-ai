@@ -1,0 +1,240 @@
+---
+title: MCP Server Overview
+description: 'Connect AI agents to Closedloop using the Model Context Protocol'
+---
+
+## What is the Closedloop MCP Server?
+
+The Closedloop MCP server exposes the Closedloop platform to AI agents through the [Model Context Protocol](https://modelcontextprotocol.io). Any MCP-compatible agent — Claude Code, Claude Desktop, Cursor, or your own toolchain — can connect to the server and interact with projects, documents, loops, and more using natural language.
+
+The server is hosted at `https://mcp.closedloop.ai/mcp` and authenticates via OAuth using your Closedloop API key.
+
+## Connecting an AI Agent
+
+The steps below apply to Claude Code CLI. Other MCP clients follow the same pattern: provide the server URL and complete the OAuth flow.
+
+1. Run `/mcp` in the Claude Code CLI.
+2. Add a new server:
+   - **Name**: `closedloop`
+   - **URL**: `https://mcp.closedloop.ai/mcp`
+3. Choose **Authenticate** (or **Re-authenticate** if reconnecting).
+4. Complete the browser OAuth flow and enter your Closedloop API key (`sk_live_...`).
+5. Confirm the `/mcp` panel shows `Status: connected` and `Auth: authenticated`.
+6. Test with a prompt such as: `list my projects`.
+
+## Entity Hierarchy
+
+All work in Closedloop is organized as projects containing documents:
+
+```
+Project (PRO-*)
+  └── Document (PRD-* | PLN-* | FEA-*)
+```
+
+| Entity | Slug Pattern | Description |
+|--------|-------------|-------------|
+| Project | `PRO-*` | Top-level container — typically a week or theme (e.g. `PRO-25`) |
+| PRD | `PRD-*` | Product Requirements Document |
+| Implementation Plan | `PLN-*` | Technical implementation plan |
+| Feature | `FEA-*` | A discrete deliverable or feature spec |
+| Loop | UUID only | An automation run tracking work execution |
+
+Tools that accept an entity reference accept both the UUID and the human-readable slug. Pass the slug verbatim — the API resolves it server-side.
+
+## Available Tools
+
+The MCP server provides tools organized into the following categories. It also registers a `ping` connectivity check used when verifying a new connection.
+
+### Document Management
+
+| Tool | Description |
+|------|-------------|
+| `list-documents` | List PRDs, implementation plans, and features with optional filters |
+| `get-document` | Fetch a single document by UUID or slug (e.g. `FEA-42`) |
+| `create-document` | Create a new PRD, implementation plan, or feature |
+| `update-document` | Update title, status, project, or assignee |
+| `create-document-version` | Append a new content version, optionally creating inline image attachments in the same call |
+| `list-document-versions` | List saved content versions for a document |
+| `list-templates` | List internal document blueprints (referenced by UUID) |
+| `upload-attachment` | Request a presigned upload URL for a document attachment |
+| `create-inline-image-attachment` | Create an inline image attachment from bounded base64 image bytes |
+| `list-attachments` | List file attachments on a document |
+| `download-attachment` | Get a presigned download URL for a file attachment |
+| `delete-attachment` | Delete an attachment you created from a document |
+
+### Artifact Links
+
+| Tool | Description |
+|------|-------------|
+| `list-artifact-links` | List typed relationships for an artifact, with optional tree traversal |
+| `create-artifact-link` | Create a typed relationship between two artifacts |
+| `delete-artifact-link` | Remove one typed relationship by its link id (delete scope required) |
+| `create_branch_artifact` | Create or update a branch artifact for a project repository (write scope required) |
+
+### Loops
+
+| Tool | Description |
+|------|-------------|
+| `list-loops` | List automation runs with optional filters by document, status, project, or command |
+| `get-loop` | Fetch a single loop by UUID |
+| `create-loop` | Create a manual loop to track locally-driven work |
+| `add-loop-event` | Post a progress update to a running manual loop |
+| `complete-loop` | Mark a manual loop as COMPLETED with PR URL, branch, and summary |
+| `cancel-loop` | Cancel a running manual loop (work abandoned, no failure) |
+| `fail-loop` | Mark a manual loop as FAILED with an error message |
+
+### Projects
+
+| Tool | Description |
+|------|-------------|
+| `list-projects` | List projects available to the authenticated user |
+| `get-project` | Fetch a single project by UUID or slug |
+| `create-project` | Create a new project |
+| `update-project` | Update a project's metadata or status |
+| `move-artifact` | Reorder a root artifact within a project's stack rank (write scope required) |
+
+### Search
+
+| Tool | Description |
+|------|-------------|
+| `search` | Free-text search across projects and documents — matches documents by title, slug, type, and tag, and projects by name, slug, and description |
+
+### Comment Threads
+
+| Tool | Description |
+|------|-------------|
+| `create-document-thread` | Create an anchored or artifact-level comment thread on a document |
+| `get-document-comments` | Retrieve comment threads and their replies for a document |
+
+### User and Status
+
+| Tool | Description |
+|------|-------------|
+| `get-me` | Get the authenticated user's profile |
+| `list-users` | List organization users available for assignment or lookup |
+| `get-github-status` | Check the GitHub integration connection status |
+| `get-google-status` | Check the Google integration connection status |
+| `get-linear-status` | Check the Linear integration connection status |
+
+### Audit Ledger
+
+| Tool | Description |
+|------|-------------|
+| `verify-audit-ledger` | Recompute your organization's tamper-evident audit chain and return its head |
+
+`verify-audit-ledger` takes no input — the organization is resolved from the API key you authenticated with, so a caller can only ever verify its own ledger. It returns JSON:
+
+```json
+{
+  "ok": true,
+  "head": {
+    "seq": "42",
+    "hash": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  }
+}
+```
+
+`head` is the highest entry in the chain: `seq` is a decimal string (the sequence number is a 64-bit integer that does not survive JSON) and `hash` is its 64-character hex chain hash. An organization with no entries yet returns the empty sentinel — `seq` `"0"` and a `hash` of 64 zeros.
+
+When verification fails the tool returns `ok: false` alongside `brokenAtSeq` — the `seq` of the first row that fails a check, which is not necessarily a row whose own hash fails to recompute — and a machine-readable `reason`, one of:
+
+| `reason` | The row's failing check |
+|------|-------------|
+| `sequence_gap` | Its `seq` is not the next one expected — the chain is not gap-free and strictly increasing from 1 |
+| `broken_link` | Its `prevHash` does not equal the previous row's `hash` |
+| `hash_mismatch` | Its stored `hash` does not match a recompute of its fields |
+
+The three run in that order per row, so a `sequence_gap` or `broken_link` is reported against a row whose own contents may recompute perfectly — the break is in the chain, not in that row. `head` is still included, read separately so you can see how far the chain has advanced past the break.
+
+### Agent Sessions
+
+<Callout>
+  The underlying API requires agent-session monitoring access for your account; otherwise calls return `403`.
+</Callout>
+
+| Tool | Description |
+|------|-------------|
+| `list-agent-sessions` | List agent sessions — one AI agent run each — with harness, model, repository, token usage, cost, and status |
+| `get-agent-session-transcript` | Get short-lived signed URLs to an agent session's archived transcript files (the raw JSONL trajectory) |
+| `get-agent-session-usage` | Aggregated agent-session usage: total sessions, token counts, estimated cost, and breakdowns by user, model, harness, and repository |
+| `get-agent-session-analytics` | Agent-session analytics: breakdowns by tool, agent type, repository, and project |
+
+### Agent Components
+
+| Tool | Description |
+|------|-------------|
+| `list-agent-components` | List the org's registry of harness components (subagents, skills, commands, MCP servers, hooks, plugins, and more) with usage metrics, ownership, and provenance |
+| `get-agent-component` | Fetch one agent component by slug — definition metadata, content-hash version history, per-device provenance, and the sessions that invoked it |
+
+## Status Lifecycles
+
+Documents and Features have **separate** status vocabularies — use the one that matches the artifact type. The server rejects a status that doesn't belong to the target artifact's vocabulary.
+
+**Documents** (PRD, Plan) — an authoring / approval lifecycle:
+
+```
+DRAFT → IN_REVIEW → APPROVED
+```
+
+`APPROVED` is sign-off (terminal). Use `CHANGES_REQUESTED` when a review asks for rework (return to `IN_REVIEW` after), `EXECUTED` for Implementation Plans that have been executed, and `OBSOLETE` for deprecated documents.
+
+**Features** (FEA) — a delivery lifecycle:
+
+```
+TRIAGE → BACKLOG → TODO → IN_PROGRESS → IN_REVIEW → DONE
+```
+
+Update status as work progresses. For Features, agents should set `IN_PROGRESS` when starting work, `IN_REVIEW` when a PR is created, and `DONE` when merged; use `BLOCKED` when stuck and `CANCELED` for won't-do.
+
+## Next Steps
+
+<Cards>
+  <Card
+    title="Document Workflows"
+    href="./documents"
+  >
+    Learn how to create and manage documents via MCP
+  </Card>
+  <Card
+    title="Artifact Links"
+    href="./artifact-links"
+  >
+    Connect PRDs, plans, and features in a lineage graph
+  </Card>
+  <Card
+    title="Loop Management"
+    href="./loops"
+  >
+    Track AI-driven work with manual loops
+  </Card>
+  <Card
+    title="Comment Threads"
+    href="./threads"
+  >
+    Post and read inline comments on documents
+  </Card>
+  <Card
+    title="Project Management"
+    href="./projects"
+  >
+    Create, update, and reorder projects and their artifacts
+  </Card>
+  <Card
+    title="Search"
+    href="./search"
+  >
+    Find projects and documents with a free-text query
+  </Card>
+  <Card
+    title="Users and Identity"
+    href="./users"
+  >
+    Resolve the caller and list users for assignment
+  </Card>
+  <Card
+    title="Integration Status"
+    href="./status"
+  >
+    Check GitHub, Google, and Linear connectivity
+  </Card>
+</Cards>

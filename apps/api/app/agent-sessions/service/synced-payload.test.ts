@@ -1,18 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionsService } from "../service";
 import {
   buildAgentSessionDbMock,
   buildAnalyticsScalarRecord,
   installDb,
-} from "../service.test-harness";
+} from "@/__tests__/support/agent-sessions/service.test-harness";
+import { agentSessionsService } from "../service";
 
 vi.mock("@repo/database", async () => {
-  const { databaseModuleMock } = await import("../service.test-mocks");
+  const { databaseModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return databaseModuleMock();
 });
 
 vi.mock("@repo/observability/telemetry/metrics", async () => {
-  const { telemetryModuleMock } = await import("../service.test-mocks");
+  const { telemetryModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return telemetryModuleMock();
 });
 

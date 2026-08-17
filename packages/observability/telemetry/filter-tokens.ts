@@ -24,6 +24,14 @@ export const FilterToken = {
   LoopRunnerReapTransition: "loop.runner.reap.transition",
   LoopRunnerReapReversed: "loop.runner.reap.reversed",
   LoopRunnerZombieDetector: "loop.runner.zombie_detector",
+  // session.ingestion.* metrics — cloud session-ingestion health (ISS-4543).
+  // Detects an ingestion stall (a fail-closed org policy, a broken ingest
+  // boundary, a dead desktop fleet) in minutes instead of the ~2 days
+  // ISS-4537 took to notice by manual inspection.
+  SessionIngestionPolicyDenied: "session.ingestion.policy_denied",
+  SessionIngestionStaleness: "session.ingestion.staleness",
+  SessionIngestionStalledOrgs: "session.ingestion.stalled_orgs",
+  SessionIngestionActiveOrgs: "session.ingestion.active_orgs",
 } as const;
 
 export type FilterToken = (typeof FilterToken)[keyof typeof FilterToken];

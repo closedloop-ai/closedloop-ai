@@ -20,7 +20,9 @@ import {
   buildBrowserKeyApprovalRequestCommandInput,
   buildBrowserKeyRevocationCommandInput,
 } from "@/lib/browser-key-revocation-command";
+import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
+import { displayUserName } from "@/lib/user-display-name";
 
 export type PublicKeyRegistrationError =
   | "malformed_public_key"
@@ -82,23 +84,13 @@ function toPublicKeySummary(record: UserPublicKeyRecord): UserPublicKeySummary {
   };
 }
 
-function formatOwnerName(
-  user: Pick<
-    OrganizationPublicKeyRecord["user"],
-    "email" | "firstName" | "lastName"
-  >
-): string {
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
-  return name || user.email;
-}
-
 function toOrganizationPublicKeySummary(
   record: OrganizationPublicKeyRecord,
   targetContext?: BrowserKeyTargetContext
 ): OrganizationPublicKeySummary {
   const summary: OrganizationPublicKeySummary = {
     ...toPublicKeySummary(record),
-    ownerName: formatOwnerName(record.user),
+    ownerName: displayUserName(record.user),
     ownerEmail: record.user.email,
   };
   if (targetContext) {
@@ -234,14 +226,16 @@ async function notifyBrowserKeyTargets(input: {
   key: UserPublicKeyRecord;
 }): Promise<void> {
   const targets = await listAccessibleBrowserKeyNotificationTargets(input);
-  await Promise.all(
-    targets.map((target) =>
-      notifyTargetOfBrowserKeyCommand({
-        kind: input.kind,
-        target,
-        key: input.key,
-      })
-    )
+  // Bounded: one pooled command write per target. `targets` is the caller's own
+  // online machines — in practice a handful, but nothing enforces that (the
+  // query has no `take` and the schema caps no per-user target count), so the
+  // bound is structural rather than relying on the assumption (FEA-3299).
+  await mapWithDbConcurrency(targets, (target) =>
+    notifyTargetOfBrowserKeyCommand({
+      kind: input.kind,
+      target,
+      key: input.key,
+    })
   );
 }
 

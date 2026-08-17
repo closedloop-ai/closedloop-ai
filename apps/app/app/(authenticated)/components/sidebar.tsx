@@ -3,13 +3,20 @@
 import { useFeatureFlag } from "@repo/analytics/client";
 import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
 import { INSIGHTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/insights";
+import { ROUTINES_FEATURE_FLAG_KEY } from "@repo/api/src/types/routines";
+import { AgentsNavBadge } from "@repo/app/agents/components/agents-nav-badge";
 import { useScrollFade } from "@repo/app/shared/hooks/use-scroll-fade";
 import {
-  AGENTS_FEATURE_FLAG_KEY,
   ArtifactFlag,
   JUDGES_FEATURE_FLAG_KEY,
-  SESSIONS_FEATURE_FLAG_KEY,
+  LABS_NAV_SECTION_FEATURE_FLAG_KEY,
 } from "@repo/app/shared/lib/feature-flags";
+import {
+  AGENTS_NAV_PATH,
+  PRIMARY_NAV_DESTINATIONS,
+  type PrimaryNavDestination,
+  PrimaryNavGroup,
+} from "@repo/app/shared/lib/primary-nav-destinations";
 import { isAdminRole } from "@repo/app/shared/lib/role-utils";
 import { useOrganization } from "@repo/auth/client";
 import {
@@ -27,19 +34,7 @@ import { cn } from "@repo/design-system/lib/utils";
 import { usePath } from "@repo/navigation/use-path";
 import { useQueryClient } from "@tanstack/react-query";
 import type { LucideIcon } from "lucide-react";
-import {
-  BarChart3,
-  BotIcon,
-  CopyCheckIcon,
-  FileIcon,
-  GitBranchIcon,
-  HistoryIcon,
-  InboxIcon,
-  LayoutDashboardIcon,
-  PackageIcon,
-  RotateCcwIcon,
-  SquareCheckIcon,
-} from "lucide-react";
+import { BarChart3, Coins, PackageIcon, TimerOff } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ComputeTargetPopover } from "@/components/compute-target-popover";
 import { useOrgSlug } from "@/hooks/use-org-slug";
@@ -61,80 +56,49 @@ type NavItem = {
   featureFlag?: string;
   /** When true, the item is only rendered for org admins/owners. */
   adminOnly?: boolean;
+  /**
+   * Org-relative destination path (no `/${orgSlug}` prefix), when the item maps
+   * to a canonical primary destination. Stable identity used to attach the
+   * Agents activity badge, so renaming the visible title never detaches it.
+   */
+  path?: string;
 };
 
-// Per-item feature flags for the Artifacts nav section. Every item is gated
-// individually; the Artifacts header is hidden when none are enabled.
-// Documents/Issues/Branches share their flags with the page routes (see
-// @repo/app/shared/lib/feature-flags); Sessions/Agents reuse flags that gate
-// them elsewhere.
+// Per-item feature flags for the Artifacts nav section. Flag-gated items are
+// gated individually; the Artifacts header is hidden when every gated item is
+// off AND no always-on item survives. Issues shares its flag with the page
+// route (see @repo/app/shared/lib/feature-flags). Agents (FEA-3994) and, as of
+// FEA-4155, Branches/Sessions are always-on and carry no flag.
 const ArtifactNavFlag = {
-  Documents: ArtifactFlag.Documents,
   Issues: ArtifactFlag.Issues,
-  Branches: ArtifactFlag.Branches,
-  Sessions: SESSIONS_FEATURE_FLAG_KEY,
-  Agents: AGENTS_FEATURE_FLAG_KEY,
 } as const;
 
-function buildNavData(orgSlug: string) {
-  const topLevel: NavItem[] = [
-    {
-      title: "Dashboard",
-      url: `/${orgSlug}/dashboard`,
-      icon: LayoutDashboardIcon,
-      disabled: false,
-    },
-    {
-      title: "Inbox",
-      url: `/${orgSlug}/inbox`,
-      icon: InboxIcon,
-      disabled: false,
-    },
-    {
-      title: "My Issues",
-      url: `/${orgSlug}/my-tasks`,
-      icon: CopyCheckIcon,
-      disabled: false,
-    },
-  ];
+function primaryDestinationToNavItem(
+  orgSlug: string,
+  destination: PrimaryNavDestination
+): NavItem {
+  return {
+    title: destination.title,
+    url: `/${orgSlug}${destination.path}`,
+    path: destination.path,
+    icon: destination.icon,
+    disabled: false,
+    featureFlag: destination.featureFlag,
+  };
+}
 
-  const artifacts: NavItem[] = [
-    {
-      title: "Documents",
-      url: `/${orgSlug}/documents`,
-      icon: FileIcon,
-      disabled: false,
-      featureFlag: ArtifactNavFlag.Documents,
-    },
-    {
-      title: "Issues",
-      url: `/${orgSlug}/issues`,
-      icon: SquareCheckIcon,
-      disabled: false,
-      featureFlag: ArtifactNavFlag.Issues,
-    },
-    {
-      title: "Sessions",
-      url: `/${orgSlug}/sessions`,
-      icon: HistoryIcon,
-      disabled: false,
-      featureFlag: ArtifactNavFlag.Sessions,
-    },
-    {
-      title: "Branches",
-      url: `/${orgSlug}/branches`,
-      icon: GitBranchIcon,
-      disabled: false,
-      featureFlag: ArtifactNavFlag.Branches,
-    },
-    {
-      title: "Agents",
-      url: `/${orgSlug}/agents`,
-      icon: BotIcon,
-      disabled: false,
-      featureFlag: ArtifactNavFlag.Agents,
-    },
-  ];
+function buildNavData(orgSlug: string) {
+  // Derive the top-level and Artifacts nav rows from the shared canonical
+  // destination list (the same source of truth the mobile bottom nav renders),
+  // so a destination added there reaches both navs in the same order with the
+  // same flag gating — no hand-maintained parallel copy to keep in sync.
+  const topLevel: NavItem[] = PRIMARY_NAV_DESTINATIONS.filter(
+    (destination) => destination.group === PrimaryNavGroup.TopLevel
+  ).map((destination) => primaryDestinationToNavItem(orgSlug, destination));
+
+  const artifacts: NavItem[] = PRIMARY_NAV_DESTINATIONS.filter(
+    (destination) => destination.group === PrimaryNavGroup.Artifact
+  ).map((destination) => primaryDestinationToNavItem(orgSlug, destination));
 
   const labs: NavItem[] = [
     {
@@ -145,17 +109,19 @@ function buildNavData(orgSlug: string) {
       featureFlag: INSIGHTS_FEATURE_FLAG_KEY,
     },
     {
-      title: "Loops",
-      url: `/${orgSlug}/loops`,
-      icon: RotateCcwIcon,
+      title: "Lost work",
+      url: `/${orgSlug}/insights/lost-work`,
+      // Distinct from the Insights bar chart beside it: three identical icons
+      // stacked means the icon stops doing any work. Lost work is about time
+      // burnt, TokenOps is about money.
+      icon: TimerOff,
       disabled: false,
     },
     {
-      title: "Agent Monitoring",
-      url: `/${orgSlug}/loops/monitoring`,
-      icon: BarChart3,
+      title: "TokenOps waste",
+      url: `/${orgSlug}/insights/tokenops-waste`,
+      icon: Coins,
       disabled: false,
-      featureFlag: SESSIONS_FEATURE_FLAG_KEY,
     },
     {
       title: "Judges",
@@ -166,10 +132,9 @@ function buildNavData(orgSlug: string) {
     },
     {
       title: "Packs",
-      url: `/${orgSlug}/admin/catalog`,
+      url: `/${orgSlug}/packs`,
       icon: PackageIcon,
       disabled: false,
-      featureFlag: AGENTS_FEATURE_FLAG_KEY,
     },
   ];
 
@@ -267,31 +232,7 @@ export function GlobalSidebar({
 
             <SidebarTeams />
 
-            <SidebarCollapsibleSection
-              persistenceKey={LABS_NAV_SECTION_STORAGE_KEY}
-              title="Labs"
-            >
-              <SidebarMenu className="gap-0">
-                {labsItems.map((item) =>
-                  maybeFeatureFlagged(
-                    item,
-                    <SidebarNavLinkItem
-                      className="text-sm"
-                      disabled={item.disabled}
-                      href={item.disabled ? undefined : item.url}
-                      icon={<item.icon />}
-                      isActive={
-                        !item.disabled &&
-                        isNavItemActive(pathname ?? "", item.url)
-                      }
-                      key={item.title}
-                      title={item.title}
-                      tooltip={item.title}
-                    />
-                  )
-                )}
-              </SidebarMenu>
-            </SidebarCollapsibleSection>
+            <LabsNavSection items={labsItems} pathname={pathname ?? ""} />
           </SidebarContent>
           <div
             aria-hidden
@@ -362,28 +303,25 @@ function ArtifactsNavSection({
 
   // Resolve every flag used by the artifact items up front so the hook call
   // order stays stable across renders (rules-of-hooks). The header below is
-  // only rendered when at least one item survives flag filtering.
-  const documentsEnabled =
-    useFeatureFlag(ArtifactNavFlag.Documents)?.enabled === true;
+  // only rendered when at least one item survives flag filtering. FEA-4155:
+  // Branches/Sessions are always-on now (their destinations carry no
+  // featureFlag), so only Issues remains flag-gated here.
   const issuesEnabled =
     useFeatureFlag(ArtifactNavFlag.Issues)?.enabled === true;
-  const branchesEnabled =
-    useFeatureFlag(ArtifactNavFlag.Branches)?.enabled === true;
-  const sessionsEnabled =
-    useFeatureFlag(ArtifactNavFlag.Sessions)?.enabled === true;
-  const agentsEnabled =
-    useFeatureFlag(ArtifactNavFlag.Agents)?.enabled === true;
+  // Routines is gated behind the PostHog `routines` flag until GA. Resolve it
+  // here (before the mounted guard, rules-of-hooks) so `visibleItems` keeps the
+  // Routines row when the flag is ON — omitting it would drop the row from the
+  // section entirely, hiding Routines even for a flag-ON user (one-way gate).
+  const routinesEnabled =
+    useFeatureFlag(ROUTINES_FEATURE_FLAG_KEY)?.enabled === true;
 
   if (!mounted) {
     return null;
   }
 
   const enabledByFlag: Record<string, boolean> = {
-    [ArtifactNavFlag.Documents]: documentsEnabled,
     [ArtifactNavFlag.Issues]: issuesEnabled,
-    [ArtifactNavFlag.Branches]: branchesEnabled,
-    [ArtifactNavFlag.Sessions]: sessionsEnabled,
-    [ArtifactNavFlag.Agents]: agentsEnabled,
+    [ROUTINES_FEATURE_FLAG_KEY]: routinesEnabled,
   };
 
   const visibleItems = items.filter((item) => {
@@ -400,21 +338,92 @@ function ArtifactsNavSection({
   return (
     <SidebarCollapsibleSection title="Artifacts">
       <SidebarMenu className="gap-0">
-        {visibleItems.map((item) => (
-          <SidebarNavLinkItem
-            className="text-sm"
-            disabled={item.disabled}
-            href={item.disabled ? undefined : item.url}
-            icon={<item.icon />}
-            isActive={!item.disabled && isNavItemActive(pathname, item.url)}
-            key={item.title}
-            title={item.title}
-            tooltip={item.title}
-          />
-        ))}
+        {visibleItems.map((item) => {
+          const isActive =
+            !item.disabled && isNavItemActive(pathname, item.url);
+          return (
+            <SidebarNavLinkItem
+              className="text-sm"
+              disabled={item.disabled}
+              href={item.disabled ? undefined : item.url}
+              icon={<item.icon />}
+              isActive={isActive}
+              key={item.title}
+              title={item.title}
+              tooltip={item.title}
+              trailing={
+                item.path === AGENTS_NAV_PATH ? (
+                  <AgentsNavBadge isActive={isActive} />
+                ) : undefined
+              }
+            />
+          );
+        })}
       </SidebarMenu>
     </SidebarCollapsibleSection>
   );
 }
 
 const LABS_NAV_SECTION_STORAGE_KEY = "closedloop.app.sidebar.labs.open";
+
+/**
+ * ISS-5037 (ISS-4779 closed-by-default): the Labs nav section behind ONE
+ * container flag, default off.
+ *
+ * Flag off returns `null` — no header, no items, no empty collapsed shell —
+ * rather than rendering an empty `SidebarCollapsibleSection`, which would still
+ * occupy the sidebar and invite a click. The `mounted` guard mirrors
+ * `ArtifactsNavSection`: it avoids a hydration mismatch while PostHog resolves,
+ * and because the pre-resolution render is `null` the section stays CLOSED
+ * during that window instead of flashing on.
+ *
+ * The container flag sits ABOVE the per-item gates, it does not replace them:
+ * each item still passes through `maybeFeatureFlagged` (its own `featureFlag`)
+ * and the caller's `adminOnly` filter is applied before the items reach here.
+ * Toggling the container writes nothing to those per-item values, so flipping
+ * it back on restores exactly what was showing before.
+ */
+function LabsNavSection({
+  items,
+  pathname,
+}: {
+  items: NavItem[];
+  pathname: string;
+}) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  const labsEnabled =
+    useFeatureFlag(LABS_NAV_SECTION_FEATURE_FLAG_KEY)?.enabled === true;
+
+  if (!(mounted && labsEnabled)) {
+    return null;
+  }
+
+  return (
+    <SidebarCollapsibleSection
+      persistenceKey={LABS_NAV_SECTION_STORAGE_KEY}
+      title="Labs"
+    >
+      <SidebarMenu className="gap-0">
+        {items.map((item) =>
+          maybeFeatureFlagged(
+            item,
+            <SidebarNavLinkItem
+              className="text-sm"
+              disabled={item.disabled}
+              href={item.disabled ? undefined : item.url}
+              icon={<item.icon />}
+              isActive={!item.disabled && isNavItemActive(pathname, item.url)}
+              key={item.title}
+              title={item.title}
+              tooltip={item.title}
+            />
+          )
+        )}
+      </SidebarMenu>
+    </SidebarCollapsibleSection>
+  );
+}

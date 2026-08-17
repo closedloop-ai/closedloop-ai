@@ -42,12 +42,18 @@ async function handleWorkerMessage(message: unknown): Promise<void> {
   }
   const request = parsedRequest.data;
   try {
-    const sessions = await parseHistoricalSource(
+    const parsed = await parseHistoricalSource(
       request.collectorKey,
       request.source
     );
     process.parentPort.postMessage(
-      createHistoricalParseWorkerParsedResponse(request.requestId, sessions)
+      // ISS-5266: the side-report rides the SAME response as the sessions it was
+      // derived from, so it cannot arrive without them or be lost while they land.
+      createHistoricalParseWorkerParsedResponse(
+        request.requestId,
+        parsed.sessions,
+        parsed.withheldOpencodeSubagents
+      )
     );
   } catch (error) {
     process.parentPort.postMessage(

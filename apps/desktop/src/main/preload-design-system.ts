@@ -11,9 +11,12 @@ import type {
   BranchAnalytics,
   BranchListResponse,
   BranchPageDetail,
-  BranchUsageSummary,
-  MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
+import type {
+  ConvertInstallOutcome,
+  ConvertInstallRequest,
+} from "@repo/api/src/types/convert-install";
 import type { OptInDistributionDto } from "@repo/api/src/types/distribution";
 import { ipcRenderer } from "electron";
 import type { GitHubResyncNudgeRendererEvent } from "../renderer/types/desktop-api.js";
@@ -24,6 +27,7 @@ import type {
   CatalogEntry,
   CatalogMutationResult,
   DashboardCoreFeatures,
+  DashboardListWindow,
   DashboardPackSummary,
   DashboardPlanSummary,
   DashboardPullRequestSummary,
@@ -53,7 +57,13 @@ import type {
   TokenAnalytics,
   WorkflowQueryData,
 } from "../shared/agent-db-contract.js";
+import {
+  type DbGuardedChannel,
+  type NotDbGuarded,
+  rejectIfDbHostShuttingDown,
+} from "../shared/db-host-shutdown-contract.js";
 import type { DiagnosticsData } from "../shared/diagnostics-contract.js";
+import { DistributionsIpcChannel } from "../shared/distributions-channel.js";
 import { PACK_ANALYTICS_IPC_CHANNEL } from "../shared/pack-analytics-channel.js";
 import { SHARED_AGENT_COMPONENTS_IPC_CHANNELS } from "../shared/shared-agent-components-contract.js";
 import {
@@ -62,24 +72,31 @@ import {
   type SharedAgentSessionDetail,
   type SharedAgentSessionListResponse,
   type SharedAgentSessionsListRequest,
+  type SharedAgentSessionsPageDataResponse,
   type SharedAgentSessionsQuery,
   type SharedAgentSessionUsageSummary,
 } from "../shared/shared-agent-sessions-contract.js";
 import {
   SHARED_BRANCHES_IPC_CHANNELS,
+  type SharedBranchAnalyticsCohortRequest,
+  type SharedBranchAnalyticsCohortResponse,
   type SharedBranchesDetailRequest,
   type SharedBranchesListRequest,
+  type SharedBranchesPageDataResponse,
   type SharedBranchesQuery,
+  type SharedBranchTraceResponse,
 } from "../shared/shared-branches-contract.js";
 import {
   SHARED_TRACE_COMMENTS_IPC_CHANNELS,
   type SharedTraceComment,
+  type SharedTraceCommentCollectionQuery,
   type SharedTraceCommentDeleteResult,
   type SharedTraceCommentDraft,
   type SharedTraceCommentReplyDraft,
   type SharedTraceCommentTarget,
   type SharedTraceCommentUpdate,
 } from "../shared/shared-trace-comments-contract.js";
+import { CATALOG_CONVERT_INSTALL_CHANNEL } from "./dashboard/agent-dashboard-ipc-contract.js";
 import type { CoachingInstallOutcome } from "./packs/required-plugin-installer.js";
 import { exposeDesktopApi } from "./preload-common.js";
 
@@ -151,6 +168,12 @@ const designSystemDashboardApi = {
         SHARED_AGENT_SESSIONS_IPC_CHANNELS.analytics,
         request
       ),
+    // FEA-4157: combined list + usage read (mirrors `branchesApi.pageData`).
+    pageData: (request?: SharedAgentSessionsListRequest) =>
+      invokeLiveDb<SharedAgentSessionsPageDataResponse>(
+        SHARED_AGENT_SESSIONS_IPC_CHANNELS.pageData,
+        request
+      ),
   },
   branchesApi: {
     list: (request?: SharedBranchesListRequest) =>
@@ -164,7 +187,10 @@ const designSystemDashboardApi = {
         request
       ),
     trace: (id: string) =>
-      invokeLiveDb<MergedTraceItem[]>(SHARED_BRANCHES_IPC_CHANNELS.trace, id),
+      invokeLiveDb<SharedBranchTraceResponse>(
+        SHARED_BRANCHES_IPC_CHANNELS.trace,
+        id
+      ),
     usage: (request?: SharedBranchesQuery) =>
       invokeLiveDb<BranchUsageSummary>(
         SHARED_BRANCHES_IPC_CHANNELS.usage,
@@ -175,49 +201,75 @@ const designSystemDashboardApi = {
         SHARED_BRANCHES_IPC_CHANNELS.analytics,
         request
       ),
+    cohortAnalytics: (request: SharedBranchAnalyticsCohortRequest) =>
+      invokeLiveDb<SharedBranchAnalyticsCohortResponse | null>(
+        SHARED_BRANCHES_IPC_CHANNELS.cohortAnalytics,
+        request
+      ),
+    pageData: (request?: SharedBranchesListRequest) =>
+      invokeLiveDb<SharedBranchesPageDataResponse>(
+        SHARED_BRANCHES_IPC_CHANNELS.pageData,
+        request
+      ),
   },
   traceCommentsApi: {
-    list: (target: SharedTraceCommentTarget) =>
+    supportsBranchTraceCommentSurfaces: true,
+    list: (
+      target: SharedTraceCommentTarget,
+      query?: SharedTraceCommentCollectionQuery
+    ) =>
       invokeLiveDb<SharedTraceComment[]>(
         SHARED_TRACE_COMMENTS_IPC_CHANNELS.list,
-        target
+        target,
+        query
       ),
     create: (
       target: SharedTraceCommentTarget,
-      draft: SharedTraceCommentDraft
+      draft: SharedTraceCommentDraft,
+      query?: SharedTraceCommentCollectionQuery
     ) =>
       invokeLiveDb<SharedTraceComment>(
         SHARED_TRACE_COMMENTS_IPC_CHANNELS.create,
         target,
-        draft
+        draft,
+        query
       ),
     reply: (
       target: SharedTraceCommentTarget,
       commentId: string,
-      draft: SharedTraceCommentReplyDraft
+      draft: SharedTraceCommentReplyDraft,
+      query?: SharedTraceCommentCollectionQuery
     ) =>
       invokeLiveDb<SharedTraceComment>(
         SHARED_TRACE_COMMENTS_IPC_CHANNELS.reply,
         target,
         commentId,
-        draft
+        draft,
+        query
       ),
     update: (
       target: SharedTraceCommentTarget,
       commentId: string,
-      update: SharedTraceCommentUpdate
+      update: SharedTraceCommentUpdate,
+      query?: SharedTraceCommentCollectionQuery
     ) =>
       invokeLiveDb<SharedTraceComment>(
         SHARED_TRACE_COMMENTS_IPC_CHANNELS.update,
         target,
         commentId,
-        update
+        update,
+        query
       ),
-    delete: (target: SharedTraceCommentTarget, commentId: string) =>
+    delete: (
+      target: SharedTraceCommentTarget,
+      commentId: string,
+      query?: SharedTraceCommentCollectionQuery
+    ) =>
       invokeLiveDb<SharedTraceCommentDeleteResult>(
         SHARED_TRACE_COMMENTS_IPC_CHANNELS.delete,
         target,
-        commentId
+        commentId,
+        query
       ),
   },
   db: {
@@ -259,7 +311,10 @@ const designSystemDashboardApi = {
         "desktop:db:get-agent-hierarchy",
         sessionId
       ),
-    getAnalytics: () => invokeLiveDb<AnalyticsData>("desktop:db:get-analytics"),
+    // FEA-3722: forward the selected lookback (days, or `null` = all-time) so
+    // the Coding Wrap honors the top date-range selector.
+    getAnalytics: (lookbackDays?: number | null) =>
+      invokeLiveDb<AnalyticsData>("desktop:db:get-analytics", lookbackDays),
     getWorkflowData: () =>
       invokeLiveDb<WorkflowQueryData>("desktop:db:get-workflow-data"),
     getCoreFeatures: () =>
@@ -272,11 +327,12 @@ const designSystemDashboardApi = {
       invokeLiveDb<DashboardToolSummary[]>("desktop:db:get-tools"),
     getSubAgents: () =>
       invokeLiveDb<DashboardSubAgentSummary[]>("desktop:db:get-subagents"),
-    getPlans: () =>
-      invokeLiveDb<DashboardPlanSummary[]>("desktop:db:get-plans"),
-    getPullRequests: () =>
+    getPlans: (opts?: DashboardListWindow) =>
+      invokeLiveDb<DashboardPlanSummary[]>("desktop:db:get-plans", opts),
+    getPullRequests: (opts?: DashboardListWindow) =>
       invokeLiveDb<DashboardPullRequestSummary[]>(
-        "desktop:db:get-pull-requests"
+        "desktop:db:get-pull-requests",
+        opts
       ),
 
     // Diagnostics (FEA-1959)
@@ -287,7 +343,7 @@ const designSystemDashboardApi = {
     getCatalog: () => invokeLiveDb<CatalogEntry[]>("desktop:db:get-catalog"),
     // Cloud call (not the local db-host): org-wide pack analytics via main.
     getPackAnalytics: (packId: string) =>
-      ipcRenderer.invoke(
+      invokeUnguardedChannel(
         PACK_ANALYTICS_IPC_CHANNEL,
         packId
       ) as Promise<PackAnalyticsResponse | null>,
@@ -309,16 +365,41 @@ const designSystemDashboardApi = {
         harness,
         cwd
       ),
+    // FEA-4079: convert a component to the target harness's format and install
+    // it as one gateway operation. Resolves to a ConvertInstallOutcome carrying
+    // the honest boundary state (converting / partial / unsupported / error).
+    catalogConvertInstall: (request: ConvertInstallRequest) =>
+      invokeLiveDb<ConvertInstallOutcome>(
+        CATALOG_CONVERT_INSTALL_CHANNEL,
+        request
+      ),
     // Opt-in coaching distribution install (FEA-2923 / §I). Unlike the catalog
     // channels this routes to a main-process handler (not the live DB runtime),
     // so it uses `ipcRenderer.invoke` directly. The handler resolves the
     // presigned asset by distribution id from the authoritative cloud response
     // and rejects on failure so the banner can surface an inline error.
     coachingInstall: (distributionId: string) =>
-      ipcRenderer.invoke(
-        "desktop:coaching:install",
+      invokeUnguardedChannel(
+        DistributionsIpcChannel.CoachingInstall,
         distributionId
       ) as Promise<CoachingInstallOutcome>,
+    // FEA-4050: durably record a decline of an opt-in distribution so the
+    // reconcile does not re-surface it after an app restart. Routes to the
+    // main-process handler (not the live DB runtime); resolves once persisted
+    // (or immediately when not connected — the renderer already hid the row).
+    declineDistribution: (distributionId: string) =>
+      invokeUnguardedChannel(
+        DistributionsIpcChannel.Decline,
+        distributionId
+      ) as Promise<void>,
+    // ISS-5123: confirm with the cloud that an offer is still assigned before
+    // installing it. The banner holds rows pushed by an earlier reconcile, and an
+    // admin can withdraw the pack in between; rejects when the offer is gone.
+    ensureDistributionAssigned: (distributionId: string) =>
+      invokeUnguardedChannel(
+        DistributionsIpcChannel.EnsureAssigned,
+        distributionId
+      ) as Promise<void>,
     catalogUninstall: (packId: string, harness: string, cwd?: string) =>
       invokeLiveDb<CatalogMutationResult>(
         "desktop:db:catalog-uninstall",
@@ -378,27 +459,40 @@ const designSystemDashboardApi = {
     openPr: (id: string) => invokeLiveDb<void>("desktop:db:open-pr", id),
 
     // Optimization analytics (FEA-2923 / AC-022)
+    // ISS-4403: `fingerprint` (optional, trailing) content-scopes each read to a
+    // single component content version; omitted → name-level (pre-ISS-4403).
     getComponentModelTrend: (
       componentKind: string,
       componentKey: string,
       model?: string,
-      days?: number
+      days?: number,
+      fingerprint?: string
     ) =>
       invokeLiveDb<ComponentModelTrendResponse>(
         "desktop:db:get-component-model-trend",
         componentKind,
         componentKey,
         model,
-        days
+        days,
+        fingerprint
       ),
-    getSubagentFrequency: (subagentKey: string, days?: number) =>
+    getSubagentFrequency: (
+      subagentKey: string,
+      days?: number,
+      fingerprint?: string
+    ) =>
       invokeLiveDb<SubagentFrequencyResponse>(
         "desktop:db:get-subagent-frequency",
         subagentKey,
-        days
+        days,
+        fingerprint
       ),
-    isSkillLoaded: (skillKey: string) =>
-      invokeLiveDb<SkillLoadedResponse>("desktop:db:is-skill-loaded", skillKey),
+    isSkillLoaded: (skillKey: string, fingerprint?: string) =>
+      invokeLiveDb<SkillLoadedResponse>(
+        "desktop:db:is-skill-loaded",
+        skillKey,
+        fingerprint
+      ),
 
     // Agent components local read (FEA-2923 / T-16.3)
     listAgentComponents: (filters: AgentComponentQueryFilters) =>
@@ -473,19 +567,54 @@ function notifyGitHubResyncNudgeSubscribers(
   }
 }
 
+/**
+ * ISS-5262 — the shutdown sentinel a `desktop:db:*` handler resolves with when
+ * the db-host went away mid-read stops HERE. The renderer keeps the exact
+ * contract it had before: a read that raced the teardown rejects, as it always
+ * did. What changed is only that the rejection is now minted in the renderer
+ * process instead of in `ipcMain.handle`, so the main-process log no longer
+ * prints a handler error after `shutdown sequence end: clean`.
+ *
+ * Rejecting is also the only honest option: the read never ran, so there is no
+ * value to hand a caller. Resolving the sentinel through would let a summary
+ * card render a fabricated `0`, and resolving `null` would read as "no data"
+ * rather than "unknown". The rejection message carries a transient db-host
+ * signature so the renderer classifies it exactly as it classified the old
+ * `db-host exited (code: 0)` — see `DB_HOST_SHUTTING_DOWN_MESSAGE`.
+ */
 function invokeLiveDb<TResult>(
-  channel: string,
+  channel: DbGuardedChannel,
   ...args: unknown[]
 ): Promise<TResult> {
   liveDbInFlightCount += 1;
-  return (ipcRenderer.invoke(channel, ...args) as Promise<TResult>).finally(
-    () => {
+  // The ONE sanctioned widening of a guarded channel back to `string` in this
+  // module — this helper IS the guarded path, and the `.then` below is what
+  // `invokeUnguardedChannel`'s `NotDbGuarded` constraint exists to force.
+  const rawChannel: string = channel;
+  return (ipcRenderer.invoke(rawChannel, ...args) as Promise<TResult>)
+    .then(rejectIfDbHostShuttingDown)
+    .finally(() => {
       liveDbInFlightCount = Math.max(0, liveDbInFlightCount - 1);
       if (liveDbReady && liveDbInFlightCount === 0) {
         scheduleRendererLiveDbIdleNotification();
       }
-    }
-  );
+    });
+}
+
+/**
+ * ISS-5262 — invoke a channel that is NOT registered through `withDb`.
+ *
+ * `NotDbGuarded` collapses the parameter to `never` for any `withDb`-backed
+ * namespace, so a bridge that reaches for a db channel here (and therefore
+ * skips {@link rejectIfDbHostShuttingDown}) fails to COMPILE instead of shipping
+ * the payload-free shutdown sentinel to a caller expecting data. Guarded
+ * channels go through {@link invokeLiveDb}.
+ */
+function invokeUnguardedChannel<TChannel extends string>(
+  channel: TChannel & NotDbGuarded<TChannel>,
+  ...args: unknown[]
+): Promise<unknown> {
+  return ipcRenderer.invoke(channel, ...args);
 }
 
 function scheduleRendererLiveDbIdleNotification(): void {

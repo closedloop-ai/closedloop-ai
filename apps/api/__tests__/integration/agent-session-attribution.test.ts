@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   SessionArtifactLinkKind,
   SessionPrRelationType,
@@ -407,7 +406,11 @@ async function createComputeTarget(organizationId: string, userId: string) {
   const target = await withDb((db) =>
     db.computeTarget.create({
       data: {
-        machineName: `machine-${organizationId.slice(0, 8)}`,
+        // Unique per target: the same contributor recurs across roles, and
+        // computeTarget has a unique (userId, machineName) — a name derived
+        // from the (shared) org would collide on a repeated contributor's
+        // second session.
+        machineName: `machine-${randomUUID().slice(0, 8)}`,
         organizationId,
         platform: "darwin",
         userId,
@@ -500,7 +503,7 @@ async function createSession(input: {
         name: "Shared session",
         organizationId: input.organizationId,
         projectId: input.projectId,
-        status: SESSION_STATUS.COMPLETED,
+        status: "completed",
         type: ArtifactType.SESSION,
       },
       select: { id: true },

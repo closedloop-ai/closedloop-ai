@@ -78,7 +78,11 @@ export type NormalizedPr = {
  * does not de-duplicate. This is a row-prep concern, kept out of the pure math.
  *
  * NOTE (billing mode, FEA-2957): `costUsd` must carry only HEADLINE-eligible real
- * spend — metered per-token API cost plus unknown-ledger (legacy/opencode) rows.
+ * spend — metered per-token API cost plus unknown-ledger rows, i.e. legacy rows
+ * and any row whose billing method could not be determined. (Stated by LEDGER
+ * rather than by mode on purpose: ISS-5445 changed how `opencode` sessions are
+ * classified — by model rather than by harness — without changing this clause,
+ * which is exactly the drift-resistance the wording is for.)
  * Subscription-covered "would-have-cost" (Pro/Max/seat sessions) must be EXCLUDED
  * FROM `costUsd` by the adapter — exactly as the desktop headline does
  * (`headlineCost = metered + unknown`, never subscription; see

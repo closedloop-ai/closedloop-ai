@@ -5,11 +5,12 @@ import {
   TRACE_COMMENT_METADATA_KIND,
 } from "@repo/api/src/types/comment";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { createArtifactThread as createLiveblocksThread } from "@repo/collaboration/server/room-management";
+import type { BasicUser } from "@repo/api/src/types/user";
 import type {
   CommentData,
   ThreadData,
 } from "@repo/collaboration/server/webhook";
+import { getLiveblocksApiClient } from "@repo/collaboration/server/webhook";
 import {
   generateDocumentRoomId,
   parseDocumentRoomId,
@@ -19,6 +20,11 @@ import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { parseJsonObject } from "@/lib/json-schema";
 import { extractPlainText } from "./plain-text";
+import { createDocumentThreadMutations } from "./service/document-thread-mutations";
+import {
+  deriveThreadAuthorship,
+  type ThreadAuthorship,
+} from "./thread-participants";
 
 export const GitHubReviewThreadResolutionAttributionKind = {
   ConnectedUser: "connected_user",
@@ -60,7 +66,12 @@ const githubReviewThreadResolutionAttributionSchema: z.ZodType<GitHubReviewThrea
 type GitHubReviewThreadResolutionInput = {
   resolvedAt: Date;
   resolvedById?: string | null;
-  attribution: GitHubReviewThreadResolutionAttribution;
+  /**
+   * GitHub review-thread resolution attribution. Present for GitHub webhook
+   * callers; omitted by native (document/Liveblocks) resolves, which only carry
+   * a `resolvedById`. The resolve path reads it optionally.
+   */
+  attribution?: GitHubReviewThreadResolutionAttribution;
 };
 
 type CommentThreadResolutionMutationKind =
@@ -78,6 +89,41 @@ type CommentThreadResolutionMutationResult = {
     metadata: JsonObject | null;
   };
 } | null;
+
+/**
+ * Document-thread reply/resolve/unresolve mutation surface (FEA-3950). Built as
+ * an internal module (`service/document-thread-mutations.ts`) that receives its
+ * projection/lookup dependencies here rather than importing the `commentsService`
+ * composition root, per the API service conventions. The dep closures reference
+ * `commentsService.*` lazily — they run only at request time, after this module
+ * has finished initializing.
+ */
+const documentThreadMutations = createDocumentThreadMutations({
+  findArtifactForRoom,
+  upsertThreadFromLiveblocks: (organizationId, thread) =>
+    commentsService.upsertThreadFromLiveblocks(organizationId, thread),
+  upsertCommentFromLiveblocks: (organizationId, threadExternalId, comment) =>
+    commentsService.upsertCommentFromLiveblocks(
+      organizationId,
+      threadExternalId,
+      comment
+    ),
+  syncThreadFromProvider: (organizationId, artifactId, threadExternalId) =>
+    commentsService.syncDocumentThreadFromProvider(
+      organizationId,
+      artifactId,
+      threadExternalId
+    ),
+  resolveThread: (organizationId, threadExternalId, resolvedAt, options) =>
+    commentsService.resolveThread(
+      organizationId,
+      threadExternalId,
+      resolvedAt,
+      options
+    ),
+  unresolveThread: (organizationId, threadExternalId) =>
+    commentsService.unresolveThread(organizationId, threadExternalId),
+});
 
 export const commentsService = {
   /**
@@ -297,7 +343,6 @@ export const commentsService = {
       }
 
       const metadata = commentThreadMetadataObject(existing.metadata);
-      const existingAttribution = getResolutionAttribution(metadata);
       const nextMetadata = options?.attribution
         ? {
             ...metadata,
@@ -306,12 +351,15 @@ export const commentsService = {
           }
         : metadata;
       const isResolved = existing.status === ThreadStatus.Resolved;
-      const shouldRepairMetadata =
-        isResolved &&
-        options?.attribution !== undefined &&
-        isRepairableResolutionAttribution(existingAttribution);
+      const { shouldRepairMetadata, shouldRepairResolvedById } =
+        computeResolveRepair({
+          isResolved,
+          existingResolvedById: existing.resolvedById,
+          existingAttribution: getResolutionAttribution(metadata),
+          options,
+        });
 
-      if (isResolved && !shouldRepairMetadata) {
+      if (isResolved && !(shouldRepairMetadata || shouldRepairResolvedById)) {
         return {
           kind: "noop",
           thread: {
@@ -343,7 +391,10 @@ export const commentsService = {
         },
       });
       return {
-        kind: shouldRepairMetadata ? "metadata_repair" : "transition",
+        kind:
+          shouldRepairMetadata || shouldRepairResolvedById
+            ? "metadata_repair"
+            : "transition",
         thread: toResolutionThreadResult(thread),
       };
     });
@@ -438,18 +489,127 @@ export const commentsService = {
   },
 
   /**
-   * Find all threads for a given artifact entity, optionally filtered by status.
+   * Resolve the full authorship of a comment thread by its Liveblocks external
+   * id, org-scoped, in one query: `authorId` is the thread creator (`createdById`
+   * when the create webhook populated it, else the oldest comment's author, which
+   * is always projected) or `null` when the thread is unknown in this org or its
+   * author cannot be determined; `participantIds` is the author plus every comment
+   * author on the thread, empty when unattributable. Used by the Liveblocks
+   * `threadMarkedAsResolved`/`threadMarkedAsUnresolved` webhooks to enforce the
+   * participant-resolve / author-only-reopen guards against the actor Liveblocks
+   * reports (`updatedBy`) — mirroring the REST guards so the direct-SDK path and
+   * the REST path agree. Both fields come from a single row read so the webhook
+   * reject path does not re-query the same thread (FEA-3950, FEA-4092).
+   */
+  getThreadAuthorship(
+    organizationId: string,
+    threadExternalId: string
+  ): Promise<ThreadAuthorship> {
+    return withDb(async (db) => {
+      const thread = await db.commentThread.findUnique({
+        where: {
+          organizationId_externalId: {
+            organizationId,
+            externalId: threadExternalId,
+          },
+        },
+        select: {
+          createdById: true,
+          comments: {
+            orderBy: { createdAt: "asc" },
+            select: { authorId: true },
+          },
+        },
+      });
+      if (!thread) {
+        return { authorId: null, participantIds: new Set<string>() };
+      }
+      return deriveThreadAuthorship(thread);
+    });
+  },
+
+  /**
+   * Best-effort read-after-write fallback (FEA-3950): pull a Liveblocks thread
+   * and its comments from the provider and project them into the local DB when
+   * the create webhook has not landed yet. The Composer publishes straight to
+   * Liveblocks and renders from `useThreads` immediately, so a reply/resolve
+   * fired right after creation can beat the `threadCreated` webhook — without
+   * this, the mutation lookup would 404 a thread that genuinely exists.
+   *
+   * Scoped to the caller's org + artifact: resolves the artifact's slug to build
+   * the room id, so a thread id cannot be synced against the wrong document.
+   * Returns `true` when a thread was fetched and projected, `false` when the
+   * artifact/slug is unknown, Liveblocks is not configured, or the provider has
+   * no such thread. Never throws for the not-found/misconfigured cases so the
+   * caller can fall through to its own not-found handling.
+   */
+  async syncDocumentThreadFromProvider(
+    organizationId: string,
+    artifactId: string,
+    threadExternalId: string
+  ): Promise<boolean> {
+    const artifact = await withDb((db) =>
+      db.artifact.findUnique({
+        where: { id: artifactId, organizationId },
+        select: { slug: true },
+      })
+    );
+    if (!artifact?.slug) {
+      return false;
+    }
+
+    const client = getLiveblocksApiClient();
+    if (!client) {
+      return false;
+    }
+
+    const roomId = generateDocumentRoomId(organizationId, artifact.slug);
+    let thread: ThreadData;
+    try {
+      thread = await client.getThread({ roomId, threadId: threadExternalId });
+    } catch (error) {
+      // Unknown thread / room at the provider is an expected miss, not a 500.
+      log.info(
+        "[commentThreadsService] Provider thread fetch failed during read-after-write fallback",
+        {
+          organizationId,
+          artifactId,
+          threadExternalId,
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      return false;
+    }
+
+    await withDb.tx(async () => {
+      await commentsService.upsertThreadFromLiveblocks(organizationId, thread);
+      for (const comment of thread.comments) {
+        await commentsService.upsertCommentFromLiveblocks(
+          organizationId,
+          thread.id,
+          comment
+        );
+      }
+    });
+
+    return true;
+  },
+
+  /**
+   * Find all threads for a given artifact entity, optionally filtered by source
+   * or status.
    */
   findThreadsByDocument(
     organizationId: string,
     entityId: string,
-    options?: { status?: ThreadStatus }
+    options?: { source?: ThreadSource; status?: ThreadStatus }
   ): Promise<CommentThreadWithComments[]> {
     return withDb(async (db) => {
       const rows = await db.commentThread.findMany({
         where: {
           organizationId,
           artifactId: entityId,
+          source: options?.source,
           status: options?.status,
         },
         select: {
@@ -507,130 +667,44 @@ export const commentsService = {
         },
         orderBy: { createdAt: "desc" },
       });
+      // Resolve every comment author AND every thread's resolver so the read
+      // projection can hydrate `resolvedBy` (the resolved-by caption the rail
+      // renders) rather than always emitting null.
+      const authorIds = [
+        ...new Set([
+          ...rows.flatMap((row) =>
+            row.comments.map((comment) => comment.authorId)
+          ),
+          ...rows.flatMap((row) =>
+            row.resolvedById ? [row.resolvedById] : []
+          ),
+        ]),
+      ];
+      const authors =
+        authorIds.length > 0
+          ? await db.user.findMany({
+              where: {
+                organizationId,
+                id: { in: authorIds },
+              },
+              select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                avatarUrl: true,
+              },
+            })
+          : [];
+      const authorsById = new Map(authors.map((author) => [author.id, author]));
       return rows
         .filter((row) => !isTraceCommentThreadMetadata(row.metadata))
-        .map(toCommentThreadWithComments);
+        .map((row) => toCommentThreadWithComments(row, authorsById));
     });
   },
 
-  createDocumentThread,
-  createUnanchoredDocumentThread,
+  ...documentThreadMutations,
 };
-
-/**
- * Minimal ProseMirror-style doc for a plain-text native comment body. Native
- * comment rows set `plainText` directly rather than relying on
- * `extractPlainText`, which only understands the Liveblocks CommentBody
- * format.
- */
-export function textBody(text: string): Prisma.InputJsonObject {
-  const paragraph = {
-    type: "paragraph",
-    content: text ? [{ type: "text", text }] : [],
-  } satisfies Prisma.InputJsonObject;
-
-  return {
-    type: "doc",
-    content: [paragraph],
-  } satisfies Prisma.InputJsonObject;
-}
-
-/**
- * Create an unanchored artifact-level note: a NATIVE thread plus root comment
- * written directly to the DB, with no Liveblocks room, externalId, or anchor
- * metadata. The single nested create keeps thread+comment atomic.
- */
-function createUnanchoredDocumentThread(
-  organizationId: string,
-  artifactId: string,
-  userId: string,
-  bodyText: string
-): Promise<{ threadId: string; commentId: string }> {
-  return withDb(async (db) => {
-    const artifact = await db.artifact.findFirst({
-      where: { id: artifactId, organizationId },
-      select: { id: true },
-    });
-    if (!artifact) {
-      throw new Error("Artifact not found in this organization");
-    }
-    const thread = await db.commentThread.create({
-      data: {
-        organizationId,
-        artifactId,
-        source: ThreadSource.Native,
-        status: ThreadStatus.Open,
-        createdById: userId,
-        comments: {
-          create: {
-            authorId: userId,
-            body: textBody(bodyText),
-            plainText: bodyText,
-          },
-        },
-      },
-      select: { id: true, comments: { select: { id: true } } },
-    });
-    const commentId = thread.comments[0]?.id;
-    if (!commentId) {
-      throw new Error("Thread created but returned no comment");
-    }
-    return { threadId: thread.id, commentId };
-  });
-}
-
-/**
- * Create a Liveblocks thread on an artifact and persist to DB (best-effort).
- * Encapsulates room ID computation, Liveblocks SDK call, and DB sync.
- * Throws on Liveblocks errors; DB failures are logged but do not throw.
- */
-async function createDocumentThread(
-  organizationId: string,
-  documentSlug: string,
-  userId: string,
-  bodyText: string,
-  anchorText: string
-): Promise<{ threadId: string; commentId: string }> {
-  const roomId = generateDocumentRoomId(organizationId, documentSlug);
-
-  // Look up the artifact's current latestVersion so we can stamp it into
-  // Liveblocks ThreadMetadata.version at creation time. The subsequent DB
-  // upsert (`upsertThreadFromLiveblocks`) re-resolves this and writes
-  // `createdAtVersion` to keep both sources of truth in sync.
-  const artifact = await findArtifactForRoom(organizationId, roomId);
-
-  const threadData = await createLiveblocksThread({
-    roomId,
-    userId,
-    bodyText,
-    anchorText,
-    version: artifact?.latestVersion ?? undefined,
-  });
-
-  const firstComment = threadData.comments[0];
-  if (!firstComment) {
-    throw new Error("Thread created but returned no comment");
-  }
-
-  try {
-    await commentsService.upsertThreadFromLiveblocks(
-      organizationId,
-      threadData
-    );
-    await commentsService.upsertCommentFromLiveblocks(
-      organizationId,
-      threadData.id,
-      firstComment
-    );
-  } catch (dbError) {
-    log.warn("Best-effort DB sync failed after thread creation", {
-      error: dbError instanceof Error ? dbError.message : String(dbError),
-      threadId: threadData.id,
-    });
-  }
-
-  return { threadId: threadData.id, commentId: firstComment.id };
-}
 
 function commentThreadMetadataObject(metadata: unknown): JsonObject {
   return metadata === Prisma.JsonNull ? {} : (parseJsonObject(metadata) ?? {});
@@ -686,6 +760,41 @@ function isRepairableResolutionAttribution(
   );
 }
 
+/**
+ * Decide whether an already-resolved thread's row should be rewritten to repair
+ * stale attribution:
+ * - `shouldRepairMetadata` — a GitHub caller supplies attribution and the row's
+ *   existing attribution is repairable (missing/legacy).
+ * - `shouldRepairResolvedById` — a caller supplies a resolver, the row's
+ *   `resolvedById` is still null, and no authoritative attribution owns the row
+ *   (so a webhook-first native resolve can backfill the resolver, but an
+ *   ExternalUnconnected GitHub resolve — legitimately null-resolver — is not
+ *   overwritten). FEA-3950.
+ * Both are false when the thread is not yet resolved (that path is a normal
+ * transition, handled by the caller).
+ */
+function computeResolveRepair(input: {
+  isResolved: boolean;
+  existingResolvedById: string | null;
+  existingAttribution: GitHubReviewThreadResolutionAttribution | null;
+  options?: Omit<GitHubReviewThreadResolutionInput, "resolvedAt">;
+}): { shouldRepairMetadata: boolean; shouldRepairResolvedById: boolean } {
+  if (!input.isResolved) {
+    return { shouldRepairMetadata: false, shouldRepairResolvedById: false };
+  }
+  const attributionRepairable = isRepairableResolutionAttribution(
+    input.existingAttribution
+  );
+  return {
+    shouldRepairMetadata:
+      input.options?.attribution !== undefined && attributionRepairable,
+    shouldRepairResolvedById:
+      input.existingResolvedById === null &&
+      (input.options?.resolvedById ?? null) !== null &&
+      attributionRepairable,
+  };
+}
+
 function clearResolutionAttribution(metadata: JsonObject): JsonObject {
   const nextMetadata = { ...metadata };
   Reflect.deleteProperty(
@@ -713,8 +822,9 @@ function toResolutionThreadResult(thread: {
 
 /**
  * Map a Prisma CommentThread row (with comments included) to the API type.
- * `resolvedBy` and `createdBy` are not fetched — set to null.
- * Prisma's `Json` fields are cast to our stricter `JsonObject` type.
+ * `resolvedBy` is hydrated from `usersById` (the shared comment-author +
+ * resolver lookup) when `resolvedById` is set; `createdBy` is not fetched — set
+ * to null. Prisma's `Json` fields are cast to our stricter `JsonObject` type.
  */
 function toCommentThreadWithComments(
   row: Prisma.CommentThreadGetPayload<{
@@ -769,7 +879,8 @@ function toCommentThreadWithComments(
         };
       };
     };
-  }>
+  }>,
+  authorsById: ReadonlyMap<string, BasicUser>
 ): CommentThreadWithComments {
   return {
     id: row.id,
@@ -786,7 +897,9 @@ function toCommentThreadWithComments(
     createdById: row.createdById,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    resolvedBy: null,
+    resolvedBy: row.resolvedById
+      ? (authorsById.get(row.resolvedById) ?? null)
+      : null,
     createdBy: null,
     comments: row.comments.map((c) => ({
       id: c.id,
@@ -799,6 +912,7 @@ function toCommentThreadWithComments(
       deletedAt: c.deletedAt,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
+      author: authorsById.get(c.authorId) ?? null,
       reactions: c.reactions,
       attachments: c.attachments,
     })),

@@ -6,13 +6,13 @@ vi.mock("../tools/tool-utils.js", () => ({
       ? (value as Record<string, unknown>)
       : {},
   readString: (value: unknown) => (typeof value === "string" ? value : null),
-  buildLoopUrl: (loopId: string) => `https://app.example/loops/${loopId}`,
   describeIdOrSlug: () => "id or slug",
   withErrorHandling: (fn: () => Promise<unknown>) => fn(),
 }));
 
 import { type ZodRawShape, z } from "zod";
 import { registerCreateLoop } from "../tools/create-loop.js";
+import { stubLoopUrls } from "./fixtures/tool-harness.js";
 
 const registerTool = vi.fn();
 const apiClient = {
@@ -32,7 +32,11 @@ function registeredHandler() {
 describe("create-loop MCP tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    registerCreateLoop({ registerTool } as never, apiClient as never);
+    registerCreateLoop(
+      { registerTool } as never,
+      apiClient as never,
+      stubLoopUrls as never
+    );
   });
 
   it("registers inputSchema as a ZodRawShape (field map), not a built ZodObject", () => {
@@ -131,5 +135,44 @@ describe("create-loop MCP tool", () => {
 
     const body = apiClient.post.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(body.repo).toBeUndefined();
+  });
+
+  it("includes prompt in the POST body when prompt is provided", async () => {
+    // Covers the true arm of if (prompt !== undefined).
+    apiClient.post.mockResolvedValue({ id: "loop-1" });
+
+    await registeredHandler()?.({
+      documentId: "FEA-42",
+      prompt: "Implement FEA-42 per the plan",
+    });
+
+    const body = apiClient.post.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(body.prompt).toBe("Implement FEA-42 per the plan");
+  });
+
+  it("builds webUrl from loopId when the API response has no id field", async () => {
+    // Covers the right arm of readString(record.id) ?? readString(record.loopId).
+    apiClient.post.mockResolvedValue({ loopId: "loop-fallback" });
+
+    const result = await registeredHandler()?.({ documentId: "FEA-42" });
+    const payload = JSON.parse(
+      (result as { content: { text: string }[] } | undefined)?.content[0]
+        ?.text ?? "{}"
+    );
+
+    expect(payload.webUrl).toContain("loop-fallback");
+  });
+
+  it("sets webUrl to null when the response has neither id nor loopId", async () => {
+    // Covers the false arm of resolvedId ? urls.buildLoopUrl(resolvedId) : null.
+    apiClient.post.mockResolvedValue({});
+
+    const result = await registeredHandler()?.({ documentId: "FEA-42" });
+    const payload = JSON.parse(
+      (result as { content: { text: string }[] } | undefined)?.content[0]
+        ?.text ?? "{}"
+    );
+
+    expect(payload.webUrl).toBeNull();
   });
 });

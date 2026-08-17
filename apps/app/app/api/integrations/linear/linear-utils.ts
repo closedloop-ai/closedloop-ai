@@ -35,18 +35,13 @@ export function getLinearCallbackUrl(): string {
  * Get the error redirect URL for OAuth failures.
  * Uses error codes instead of free-form strings to prevent open redirect attacks.
  */
-export function getErrorRedirectUrl(
-  errorCode: LinearErrorCode,
-  returnTo?: string
-): string {
-  const base = returnTo ?? "/settings";
-  return `${env.NEXT_PUBLIC_APP_URL}${base}?linear=error&code=${errorCode}`;
+export function getErrorRedirectUrl(errorCode: LinearErrorCode): string {
+  return `${env.NEXT_PUBLIC_APP_URL}/settings?linear=error&code=${errorCode}`;
 }
 
 /**
  * Get the success redirect URL after OAuth completion.
  */
-export function getSuccessRedirectUrl(returnTo?: string): string {
-  const base = returnTo ?? "/settings";
-  return `${env.NEXT_PUBLIC_APP_URL}${base}?linear=connected`;
+export function getSuccessRedirectUrl(): string {
+  return `${env.NEXT_PUBLIC_APP_URL}/settings?linear=connected`;
 }

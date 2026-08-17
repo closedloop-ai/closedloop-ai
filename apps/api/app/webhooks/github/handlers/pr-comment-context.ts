@@ -6,6 +6,7 @@ import type { GitHubCommentOwnerSuccess } from "../comment-owner-resolver";
 export type CommentWebhookPrContext = {
   id: string;
   branchArtifactId: string;
+  isCurrentPullRequest: boolean;
   documentId: string | null;
   document: { slug: string } | null;
 };
@@ -69,21 +70,21 @@ export async function loadPrContextForCommentWebhook(
     },
   });
 
-  if (
-    prDetail?.branchArtifact.branch?.currentPullRequestDetailId &&
-    prDetail.branchArtifact.branch.currentPullRequestDetailId !==
-      input.ownerResolution.pullRequestDetailId
-  ) {
-    log.warn(`${input.logPrefix} Refusing stale pull request comment context`, {
+  const currentPullRequestDetailId =
+    prDetail?.branchArtifact.branch?.currentPullRequestDetailId ?? null;
+  const isCurrentPullRequest =
+    currentPullRequestDetailId === null ||
+    currentPullRequestDetailId === input.ownerResolution.pullRequestDetailId;
+
+  if (!isCurrentPullRequest) {
+    log.warn(`${input.logPrefix} Loaded non-current pull request context`, {
       repositoryId: input.ownerResolution.repositoryRecordId,
       branchArtifactId: input.ownerResolution.branchArtifactId,
       pullRequestDetailId: input.ownerResolution.pullRequestDetailId,
-      currentPullRequestDetailId:
-        prDetail?.branchArtifact.branch?.currentPullRequestDetailId ?? null,
+      currentPullRequestDetailId,
       prNumber: input.prNumber,
       action: input.action,
     });
-    return null;
   }
 
   const ownerArtifact = prDetail
@@ -94,6 +95,7 @@ export async function loadPrContextForCommentWebhook(
     ? {
         id: prDetail.id,
         branchArtifactId: input.ownerResolution.branchArtifactId,
+        isCurrentPullRequest,
         documentId: linkedDoc?.id ?? null,
         document: linkedDoc ? { slug: linkedDoc.slug ?? "" } : null,
       }

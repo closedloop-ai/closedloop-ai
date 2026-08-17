@@ -7,12 +7,12 @@ import {
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { agentComponentsService } from "../../service";
+import { packAnalyticsService } from "../../pack-analytics-service";
 
 /**
  * GET /agent-components/pack/{packId}
  *
- * Org-wide analytics rollup for a pack (usage, sessions, KLOC/$, adoption),
+ * Org-wide analytics rollup for a pack (usage, sessions, LOC/$, adoption),
  * keyed by the shared `packId`. Visible to all org members (no admin gate);
  * powers the desktop-team overlay. 404 when the org has no data for the pack.
  */
@@ -23,7 +23,7 @@ export const GET = withAnyAuth<
   async ({ user }, _request, params) => {
     try {
       const { packId } = await params;
-      const analytics = await agentComponentsService.getPackAnalytics(
+      const analytics = await packAnalyticsService.getPackAnalytics(
         user.organizationId,
         decodeURIComponent(packId)
       );

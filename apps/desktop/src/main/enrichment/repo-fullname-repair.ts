@@ -1,5 +1,5 @@
+import { buildRepoResolver } from "../database/artifact-link-persistence.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { buildRepoResolver } from "../database/write-core.js";
 
 /**
  * FEA-2866: repair `artifacts.repo_full_name` rows that hold a BARE directory
@@ -31,6 +31,14 @@ import { buildRepoResolver } from "../database/write-core.js";
  * `identity_key` (a dedup key derived at insert time) — consistent with how the
  * write path already changes identity for new imports; a future re-import
  * recomputes the canonical key.
+ *
+ * FEA-3371: a second pass backfills artifacts whose `repo_full_name` is NULL but
+ * whose `git_dir` maps to a `repos` row that DOES carry a canonical `owner/repo`.
+ * These are the "partial identity" rows the origin slow-roll leaves as "Unknown":
+ * a repo whose remote resolved (so `repos.repo_full_name` is known) but whose
+ * artifacts were captured before the remote was known, so their own
+ * `repo_full_name` stayed NULL. Filling it lets the repo breakdown and the origin
+ * branch/PR passes (which key off `repo_full_name`) reach these artifacts.
  */
 export async function repairPollutedRepoFullNames(
   prisma: DesktopPrisma,
@@ -67,6 +75,38 @@ export async function repairPollutedRepoFullNames(
   if (repaired > 0) {
     log(
       `boot: repaired ${repaired} artifact row(s) with a bare repo_full_name (FEA-2866)`
+    );
+  }
+
+  // FEA-3371: backfill NULL repo_full_name from the artifact's own git_dir when a
+  // repos row for that git_dir carries a canonical owner/repo. Idempotent: the
+  // `repo_full_name IS NULL` guard means already-filled rows are never revisited,
+  // and it only ever writes a validated `owner/repo` from `repos` (LIKE '%/%').
+  // A correlated subquery keeps this one statement (no per-row fan-out).
+  const identityBackfilled = await prisma.write((client) =>
+    client.$executeRawUnsafe(
+      `UPDATE artifacts SET repo_full_name = (
+         SELECT r.repo_full_name FROM repos r
+         WHERE r.git_dir = artifacts.git_dir
+           AND r.repo_full_name IS NOT NULL
+           AND r.repo_full_name LIKE '%/%'
+       )
+       WHERE repo_full_name IS NULL
+         AND git_dir IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM repos r
+           WHERE r.git_dir = artifacts.git_dir
+             AND r.repo_full_name IS NOT NULL
+             AND r.repo_full_name LIKE '%/%'
+         )`
+    )
+  );
+  const identityCount = Number(identityBackfilled ?? 0);
+  repaired += identityCount;
+
+  if (identityCount > 0) {
+    log(
+      `boot: backfilled ${identityCount} artifact row(s) with a canonical repo_full_name from git_dir (FEA-3371)`
     );
   }
   return repaired;

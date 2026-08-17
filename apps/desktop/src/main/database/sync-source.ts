@@ -1,74 +1,106 @@
-import { createHash } from "node:crypto";
-import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
-import { SESSION_TRACE_SOURCE_LIMITS } from "@repo/api/src/session-trace/derivation";
+import { FRUSTRATION_SCORE_VERSION } from "@repo/api/src/frustration-score-contract";
+import type { AgentComponentInvocationSyncPart } from "@repo/api/src/types/agent-component-invocation";
 import type {
+  SyncedActivitySegmentRow,
   SyncedComponent,
   SyncedComponentUsage,
   TokenEventCostPoint,
 } from "@repo/api/src/types/agent-session";
-import { GitHubPRState } from "@repo/api/src/types/github-status";
+import { MAX_SYNCED_COMPONENT_USAGE } from "@repo/api/src/types/agent-session";
+import { normalizeActivitySegmentEvidenceLayers } from "@repo/api/src/types/agent-session-activity-evidence";
 import type {
   LocalArtifactSessionUsage,
-  SessionPrRelationType,
   SyncedArtifactRef,
-  SyncedPullRequestArtifactRef,
   SyncedSessionPrRef,
 } from "@repo/api/src/types/session-artifact-link";
 import {
   ArtifactRefRelation,
   ArtifactRefTargetKind,
   COMMIT_SHA_PATTERN,
-  MAX_SYNCED_ARTIFACT_REFS,
+  deriveBranchParticipationFromEvidence,
+  MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
   MAX_SYNCED_COMMIT_MESSAGE_LENGTH,
-  MAX_SYNCED_SESSION_PR_REFS,
-  PR_INT_MAX,
+  MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
+  PROSE_MENTION_REF_METHODS,
+  // FEA-3585: used as a runtime value by toSessionPrRelationType (const-object
+  // enum), not just a type — so it moves out of the type-only import block.
+  SessionPrRelationType,
 } from "@repo/api/src/types/session-artifact-link";
+import { SESSION_TRACE_SOURCE_LIMITS } from "@repo/lib/session-trace/derivation";
 import { isMeteredApi } from "../../shared/billing-mode.js";
+import {
+  computeFrustrationRaw,
+  deriveFrustrationInput,
+} from "../../shared/frustration-score.js";
+import { OutboxStatus } from "../../shared/sync-lane-contract.js";
+import type { AgentComponentInvocationSyncOutboxEntry } from "../agent-sync/agent-component-invocation-sync-service.js";
+import type {
+  resolveSessionAttribution,
+  SessionAttributionResolverCache,
+} from "../agent-sync/agent-session-attribution.js";
+import type {
+  AgentSessionAnalyticsAgentTypeGroup,
+  AgentSessionAnalyticsAggregate,
+  AgentSessionAnalyticsToolGroup,
+  AgentSessionCountFilters,
+  AgentSessionUsageAggregate,
+  AgentSessionUsageAggregateFilters,
+  RepositoryScopedSessionIdsOptions,
+  SessionCursorRow,
+  SessionListCursorPage,
+  SessionListCursorPageRequest,
+} from "../agent-sync/agent-session-read-model.js";
 import type {
   SyncedAgentSession,
   SyncedAgentSessionAnalytics,
   SyncedAgentSessionTokenEvent,
   SyncedAgentSessionTokenUsage,
-} from "../agent-session-sync-contract.js";
+} from "../agent-sync/agent-session-sync-contract.js";
+import type {
+  AgentSessionOutboxEntry,
+  AgentSessionSyncSource,
+  OutboxRetryState,
+  PersistedSyncState,
+  SessionEventCounts,
+  SyncedSessionLoadOptions,
+} from "../agent-sync/agent-session-sync-source.js";
 import {
-  estimateSessionPayloadBytes,
-  sanitizeSessionForSync,
-} from "../agent-session-sync-payload.js";
+  resolveBillingModeForRow,
+  resolveTokenUsageCostUsd,
+} from "../agent-sync/agent-session-token-cost-resolution.js";
 import {
-  type AgentSessionAnalyticsAgentTypeGroup,
-  type AgentSessionAnalyticsAggregate,
-  type AgentSessionAnalyticsRepositoryGroup,
-  type AgentSessionAnalyticsToolGroup,
-  type AgentSessionSyncSource,
-  type AgentSessionUsageAggregate,
-  type AgentSessionUsageAggregateFilters,
-  type PersistedSyncState,
   parseJsonObjectText,
   parseJsonValueText,
-  parsePersistedObservedIds,
-  resolveBillingModeForRow,
-  type resolveSessionAttribution,
-  resolveSessionAttributionAsync,
-  resolveTokenUsageCostUsd,
-  type SessionAttributionResolverCache,
-  type SessionCursorRow,
-  type SessionListCursorPage,
-  type SessionListCursorPageRequest,
-  SessionListCursorSortKey,
-} from "../agent-session-sync-service.js";
-import { resolveBillingMode } from "../billing-mode-detector.js";
-import { DATA_REVISION } from "../collectors/engine/data-revision.js";
-import type { MeteredUsageRow } from "../reconciliation-worker.js";
+} from "../agent-sync/agent-sync-json-text.js";
+import { createAttributionYieldCadence } from "../agent-sync/attribution-path-memo.js";
+import {
+  resolveSessionLastActivityAt,
+  SESSION_STARTED_AT_TS_EXPR,
+} from "../agent-sync/session-date-window.js";
+import { resolveBillingMode } from "../cost/billing-mode-detector.js";
+import type { MeteredUsageRow } from "../cost/reconciliation-worker.js";
+import { addStorageTokenCounts } from "../cost/token-counts.js";
 import {
   buildArtifactSessionMarkers,
   mergeSessionMarkers,
-} from "../session-artifact-markers.js";
-import { addStorageTokenCounts } from "../token-counts.js";
-import { HIGH_CONFIDENCE_BRANCH_METHOD_VALUES } from "./db-constants.js";
+} from "../session/session-artifact-markers.js";
+import { boundNonCommitArtifactRefs } from "./artifact-ref-budget.js";
 import {
-  escapeSqliteLikePattern,
+  branchLifecycleEventsForBranchLink,
+  branchLifecycleEventsForPrLink,
+} from "./branch-lifecycle-events.js";
+import {
+  listAgentComponentCursorRows,
+  loadSyncedComponentRows,
+} from "./component-sync-source.js";
+import { SESSION_STARTED_AT_BOUNDS_EXPR } from "./db-constants.js";
+import {
+  boundedNonNegativeInt,
+  localTimeZone,
   nullableNumber,
   tokenCountValue,
+  toolInvocationPredicate,
+  validIso,
 } from "./db-helpers.js";
 import type {
   SqliteAgentRow,
@@ -82,46 +114,58 @@ import type {
   SqliteTokenEventRow,
   SqliteTokenUsageRow,
 } from "./db-row-types.js";
+import { loadReadyInvocationSyncOutboxParts } from "./invocation-sync-outbox-parts.js";
+import { prepareInvocationSyncTarget } from "./invocation-sync-promotion.js";
+import { COMMIT_SHA_CORRELATION_METHOD } from "./pr-link-maintenance.js";
 import type {
   DesktopPrisma,
   DesktopPrismaReadClient,
 } from "./prisma-client.js";
+import {
+  resolveAnalyticsRepositoryGroups,
+  resolveRepositoryFullNameStoredFirst,
+} from "./repository-facet.js";
+import { createSessionDetailLinkReaders } from "./session-detail-link-reads.js";
+import { listSqliteRepositoryScopedSessionIds } from "./session-repository-scoped-reads.js";
+import {
+  applyRepoFullNameFillBacks,
+  resolveUsageRepoSessionCounts,
+} from "./session-usage-aggregate.js";
+import {
+  persistResolvedRepoFullNames,
+  type RepoFullNameWriteBack,
+  resolveSyncAttributions,
+} from "./sync-attribution-resolution.js";
+import { createSyncBurndownReaders } from "./sync-burndown-store.js";
+import {
+  sqliteAdvanceSyncState,
+  sqliteLoadSyncState,
+} from "./sync-cursor-state.js";
+import {
+  sqliteClearOutboxEntries,
+  sqliteEnqueueOutboxEntries,
+  sqliteLoadPendingOutboxIds,
+  sqliteLoadPendingOutboxRetryState,
+  sqliteMarkOutboxDeadLettered,
+  sqliteRecordOutboxRetry,
+  sqliteReEnqueueRecoveredDeadLetter,
+} from "./sync-outbox-store.js";
+import {
+  downgradeMonitoredSessionActivity,
+  monitoredActivityOnlyRefsFromMetadata,
+  monitoredSessionActivityFromEvidence,
+  withoutMonitoredActivityOnlyMetadata,
+} from "./synced-monitored-session-activity.js";
+import {
+  boundedWireString,
+  buildPullRequestArtifactRefFacts,
+} from "./synced-pull-request-ref.js";
+import { selectTokenEventRows } from "./token-event-columns.js";
+import { mapSyncedTokenEvent } from "./token-event-sync.js";
 
 // ---------------------------------------------------------------------------
 // T-8.6: Agent component inventory cursor row + usage row types
 // ---------------------------------------------------------------------------
-
-/**
- * Cursor row for the agent_components inventory sync lane (T-8.6).
- * Ordered by (last_seen_at, id) so new/updated rows are always discovered.
- * Tombstoned rows (uninstalled_at IS NOT NULL) are included so the cloud
- * receives uninstall signals.
- */
-type SqliteAgentComponentCursorRow = {
-  id: string;
-  last_seen_at: string | null;
-};
-
-/** Full inventory row for `POST /desktop/components/sync`. */
-type SqliteAgentComponentRow = {
-  id: string;
-  component_kind: string;
-  external_id: string;
-  component_key: string | null;
-  name: string | null;
-  version: string | null;
-  harness: string | null;
-  description: string | null;
-  source_url: string | null;
-  install_path: string | null;
-  pack_id: string | null;
-  scope: string | null;
-  project_path: string | null;
-  metadata: string | null;
-  first_seen_at: string | null;
-  last_seen_at: string | null;
-  uninstalled_at: string | null;
-};
 
 /** Per-session usage row from `agent_component_session_usage`. */
 type SqliteComponentUsageRow = {
@@ -135,10 +179,18 @@ type SqliteComponentUsageRow = {
   harness: string | null;
   invocations: number;
   error_count: number;
+  component_version_hash: string | null;
   first_invoked_at: string | null;
   last_invoked_at: string | null;
 };
 
+import { yieldDbHostLoop } from "./db-host/yield-db-host-loop.js";
+import {
+  buildListCursorFilterClause,
+  buildUsageFilterClause,
+  countSqliteSessionsForFilters,
+  listCursorPageSortExpression,
+} from "./session-aggregate-filters.js";
 import { countSqliteSessions } from "./session-count.js";
 import {
   groupRowsBySessionId,
@@ -149,26 +201,45 @@ import {
   buildSessionTraceSyncFields,
   buildTraceTimelineRows,
   resolveArtifactLinkBranch,
-  type SessionTraceSyncInput,
+  resolveTraceEndMs,
 } from "./session-trace.js";
-import { yieldDbHostLoop } from "./yield-db-host-loop.js";
-
-/**
- * FEA-1459 Fix 6: Resolve the machine's IANA timezone for day-bucketing queries.
- * Falls back to "UTC" if Intl is unavailable.
- */
-function localTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  } catch {
-    return "UTC";
-  }
-}
+import {
+  ACTIVITY_SEGMENT_SYNC_MAX_ROWS,
+  resolveEventRowFetchLimit,
+  type SyncedSegmentQueryRow,
+  selectBoundedActivitySegments,
+  selectEventRows,
+  selectSessionEventCounts,
+} from "./sync-source-bounded-reads.js";
+import { persistLocalFrustration } from "./sync-source-frustration-writeback.js";
+import {
+  findSqliteExistingSessionIds,
+  findSqliteLocallyOversizedSessions,
+  selectSessionRows,
+  sqliteFlagToNullableBoolean,
+} from "./sync-source-session-rows.js";
+import {
+  chunkIds,
+  planSyncedSessionHydration,
+  SYNCED_SESSION_HYDRATE_CHUNK_SIZE,
+} from "./synced-session-hydration-plan.js";
+import { mapTraceTokenEvents } from "./trace-token-event-mapper.js";
 
 export function createSqliteSessionSyncSource(
-  prisma: DesktopPrisma
+  prisma: DesktopPrisma,
+  // FEA-3568: the desktop diagnostic sink (openSqliteAgentDatabase's `options.log`)
+  // so the sync assembly can surface an over-cap activity-segment truncation.
+  log: (message: string) => void = () => {
+    // no-op default so existing/test call sites need no change
+  }
 ): AgentSessionSyncSource {
   return {
+    // ISS-5387: the aggregate, read-only burn-down reads. Kept in their own
+    // module so this grandfathered file carries the wiring only.
+    ...createSyncBurndownReaders(prisma),
+    // ISS-5567 / ISS-5617: the session-scoped LINK reads the session detail
+    // needs — its branch artifact, and its unbounded document links.
+    ...createSessionDetailLinkReaders(prisma),
     async listAllSessionCursorRows(): Promise<SessionCursorRow[]> {
       return prisma.read((reader) =>
         reader.$queryRawUnsafe<SessionCursorRow[]>(`
@@ -176,6 +247,22 @@ export function createSqliteSessionSyncSource(
         FROM sessions
         ORDER BY updated_at DESC, id DESC
       `)
+      );
+    },
+    // ISS-4535 (@wongk) / ISS-4558: the pre-hydration Repository-facet id read,
+    // extracted to `session-repository-scoped-reads.ts` (this file is
+    // shrink-only grandfathered) — same delegation shape as
+    // `listSessionCursorPage` below.
+    async listRepositoryScopedSessionIds(
+      repositories: readonly string[],
+      cache: SessionAttributionResolverCache,
+      options?: RepositoryScopedSessionIdsOptions
+    ): Promise<string[]> {
+      return await listSqliteRepositoryScopedSessionIds(
+        prisma,
+        repositories,
+        cache,
+        options
       );
     },
     async listSessionCursorPage(
@@ -209,27 +296,100 @@ export function createSqliteSessionSyncSource(
     // refs changed is re-selected here. A dedicated per-kind ref cursor is
     // therefore redundant under the current whole-session sync model; it would
     // only be needed if links were ever written outside importSession.
+    //
+    // PRD-536 E1: the incremental scan advances past everything strictly newer
+    // than the watermark timestamp, PLUS re-reads the tied-top-timestamp cluster
+    // while EXCLUDING the exact set of ids already observed at that timestamp —
+    // rather than the previous `updated_at >= $1` watermark (which re-read the
+    // WHOLE top cluster every tick, then filtered it back out in JS) OR a naive
+    // `(updated_at, id) > ($1, $2)` id-boundary (which silently SKIPPED a
+    // genuinely-new sibling row landing at the SAME top `updated_at` with an id
+    // sorting BELOW the highest already-seen id — data loss: `id > $2` excludes
+    // it forever, and `updated_at` is NOT guaranteed strictly greater for a new
+    // row, e.g. a historical import stamps `updated_at = endedAt ?? startedAt`,
+    // or two writes land in the same millisecond).
+    //
+    // The predicate is `updated_at > $1 OR (updated_at = $1 AND id NOT IN
+    // (<observed ids>))`. The exclusion set is the durable
+    // `observedIdsAtTopUpdatedAt` — the exact ids already accepted at the top
+    // timestamp — so a NEW lower-id sibling at that timestamp IS selected
+    // (correctness) while already-seen ids are excluded (so the seen top cluster
+    // is not needlessly re-emitted — the keyset perf win is preserved: only the
+    // small tied-top cluster is re-read, never the whole corpus). An EMPTY
+    // observed set re-selects the whole tied-top group (nothing to exclude),
+    // which the outbox + server idempotently dedupe.
+    //
+    // This is safe because `sessions.updated_at` is stamped to a
+    // monotonically-advancing `now` on every content change (write-core
+    // `UPDATE sessions SET updated_at = now`), so a genuinely-changed row lands
+    // at `updated_at > cursorTs` and is caught by the first disjunct; the
+    // second disjunct additionally rescues a NEW row that legitimately shares the
+    // top timestamp. `id` is stored raw (uuid) and is unique.
     async listUpdatedSessionCursorRows(
-      sinceUpdatedAt: string
+      sinceUpdatedAt: string,
+      observedTopIds: readonly string[]
     ): Promise<SessionCursorRow[]> {
+      // SQLite has no array-parameter / `= ANY(...)` form, so the exclusion set
+      // is expanded to positional placeholders (`$2, $3, …`) and threaded as
+      // individual params (the `__IDS__`-expansion convention this file uses
+      // elsewhere). An EMPTY set omits the `NOT IN` term entirely — SQLite
+      // rejects `NOT IN ()` — so the whole tied-top group is re-selected and the
+      // caller's `previousTopIds` JS filter dedupes it.
+      const exclusionClause =
+        observedTopIds.length > 0
+          ? `AND id NOT IN (${observedTopIds
+              .map((_, index) => `$${index + 2}`)
+              .join(", ")})`
+          : "";
       return prisma.read((reader) =>
         reader.$queryRawUnsafe<SessionCursorRow[]>(
           `
           SELECT id, updated_at
           FROM sessions
-          WHERE updated_at >= $1
+          WHERE updated_at > $1
+             OR (updated_at = $1 ${exclusionClause})
           ORDER BY updated_at DESC, id DESC
         `,
-          sinceUpdatedAt
+          sinceUpdatedAt,
+          ...observedTopIds
         )
       );
     },
     async loadSyncedSessions(
       ids: string[],
       cache: SessionAttributionResolverCache,
-      options?: { omitEventData?: boolean; includeComponentUsage?: boolean }
+      options?: SyncedSessionLoadOptions
     ): Promise<SyncedAgentSession[]> {
-      return loadSqliteSyncedSessions(prisma, ids, cache, options);
+      const sessions = await loadSqliteSyncedSessions(
+        prisma,
+        ids,
+        cache,
+        options,
+        log
+      );
+      // FEA-4022: cache the sync-time frustration signal back into the local
+      // `sessions` column so the desktop's own surfaces can read it without
+      // recomputing, and a resync does not have to re-derive it. Best-effort:
+      // the authoritative value already rides in the returned payload, so a
+      // write-back failure must not fail the sync.
+      await persistLocalFrustration(prisma, sessions).catch(() => {
+        // Non-fatal — the payload still carries the computed value.
+      });
+      return sessions;
+    },
+    /**
+     * ISS-6031: the existence probe the sync lane uses before it may conclude a
+     * queued session is gone. Deliberately the narrowest read in this module —
+     * `SELECT id FROM sessions` and nothing else — so it can still answer when
+     * the full hydration above cannot.
+     */
+    findExistingSessionIds(ids: string[]): Promise<string[]> {
+      return findSqliteExistingSessionIds(prisma, ids);
+    },
+    loadSessionEventCounts(
+      ids: string[]
+    ): Promise<Map<string, SessionEventCounts>> {
+      return prisma.read((reader) => selectSessionEventCounts(reader, ids));
     },
     async findLocallyOversizedSessions(
       ids: string[],
@@ -256,7 +416,24 @@ export function createSqliteSessionSyncSource(
     aggregateUsage(
       filters: AgentSessionUsageAggregateFilters
     ): Promise<AgentSessionUsageAggregate> {
-      return aggregateSqliteUsage(prisma, filters);
+      // FEA-4299: the Repository facet options fold resolves each distinct cwd
+      // to its `repositoryFullName`; a fresh per-request attribution cache keeps
+      // those lookups consistent within this read (as `aggregateAnalytics` does).
+      return aggregateSqliteUsage(prisma, filters, {
+        attributionByCwd: new Map(),
+        launchMetadataRootByCwd: new Map(),
+        repoFullNameByPath: new Map(),
+      });
+    },
+    /**
+     * FEA-4142: metadata-only `COUNT(*)` for the count-only badge read. One
+     * grouped SQL read over the `sessions` table replaces hydrating the corpus
+     * into JS just to size the list. The `(status, ended_at)` partial index
+     * (migration 0038) covers the badge's status filter and the indexed
+     * `ended_at` values the instant-aware completion bound scans.
+     */
+    countSessions(filters: AgentSessionCountFilters): Promise<number> {
+      return countSqliteSessionsForFilters(prisma, filters);
     },
     /**
      * FEA-2038: O(grouped) analytics aggregation. Three grouped reads in one
@@ -278,61 +455,164 @@ export function createSqliteSessionSyncSource(
         return emptyAgentSessionAnalyticsAggregate();
       }
     },
-    /**
-     * FEA-1962: load the durable cursor for `sourceKey` via the typed
-     * `SyncState` delegate. The `Json` ids column comes back pre-parsed; a
-     * malformed value degrades to `[]` (full
-     * re-discovery) rather than throwing. Absent row → `null` (full backfill).
-     * A cursor stamped under a DIFFERENT `DATA_REVISION` is also treated as
-     * absent: the local rows have since been re-derived, so the cloud must
-     * receive the rebuilt rows — one full re-backfill, then the new revision is
-     * stamped. This preserves the pre-FEA-1962 behavior where a revision bump
-     * pushed re-derived rows to the cloud (but once, not on every restart).
-     */
-    async loadSyncState(sourceKey: string): Promise<PersistedSyncState | null> {
-      const row = await prisma.client.syncState.findUnique({
-        where: { sourceKey },
-      });
-      if (!row || row.dataRevision !== DATA_REVISION) {
-        return null;
-      }
-      return {
-        observedTopUpdatedAt: row.observedTopUpdatedAt ?? null,
-        observedIdsAtTopUpdatedAt: parsePersistedObservedIds(
-          row.observedIdsAtTopUpdatedAt
-        ),
-      };
+    // FEA-3781: durable delivery state lives beside this module, one file per
+    // table — ./sync-cursor-state.ts (the keyset cursor) and
+    // ./sync-outbox-store.ts (the per-session outbox). This module builds sync
+    // PAYLOADS; what has already been delivered is a separate concern.
+    // Delegated one-for-one so the source's shape is unchanged.
+    loadSyncState(sourceKey: string): Promise<PersistedSyncState | null> {
+      return sqliteLoadSyncState(prisma, sourceKey);
     },
-    /**
-     * FEA-1962: upsert the durable cursor via the typed `SyncState` delegate,
-     * stamping the current DATA_REVISION. Routed through `prisma.write` so the
-     * write serializes on the same single-connection queue as every other
-     * SQLite write; the `Json` ids column takes the JS array directly — the
-     * delegate serializes it.
-     */
-    async advanceSyncState(
+    advanceSyncState(
       sourceKey: string,
       state: PersistedSyncState
     ): Promise<void> {
-      const updatedAt = new Date().toISOString();
+      return sqliteAdvanceSyncState(prisma, sourceKey, state);
+    },
+    enqueueOutboxEntries(
+      sourceKey: string,
+      entries: AgentSessionOutboxEntry[]
+    ): Promise<void> {
+      return sqliteEnqueueOutboxEntries(prisma, sourceKey, entries);
+    },
+    clearOutboxEntries(sourceKey: string, ids: string[]): Promise<void> {
+      return sqliteClearOutboxEntries(prisma, sourceKey, ids);
+    },
+    recordOutboxRetry(
+      sourceKey: string,
+      id: string,
+      attemptCount: number,
+      nextAttemptAt: string,
+      reason: string
+    ): Promise<void> {
+      return sqliteRecordOutboxRetry(
+        prisma,
+        sourceKey,
+        id,
+        attemptCount,
+        nextAttemptAt,
+        reason
+      );
+    },
+    markOutboxDeadLettered(
+      sourceKey: string,
+      id: string,
+      reason: string,
+      attemptCount = 0
+    ): Promise<void> {
+      return sqliteMarkOutboxDeadLettered(
+        prisma,
+        sourceKey,
+        id,
+        reason,
+        attemptCount
+      );
+    },
+    reEnqueueRecoveredDeadLetter(sourceKey: string, id: string): Promise<void> {
+      return sqliteReEnqueueRecoveredDeadLetter(prisma, sourceKey, id);
+    },
+    loadPendingOutboxIds(sourceKey: string): Promise<string[]> {
+      return sqliteLoadPendingOutboxIds(prisma, sourceKey);
+    },
+    loadPendingOutboxRetryState(
+      sourceKey: string
+    ): Promise<OutboxRetryState[]> {
+      return sqliteLoadPendingOutboxRetryState(prisma, sourceKey);
+    },
+    prepareInvocationSyncTarget(
+      sourceKey: string,
+      templateSourceKey: string,
+      sessionLimit: number
+    ): Promise<void> {
+      // ISS-5789: the promotion step itself lives in
+      // `invocation-sync-promotion.ts` — its own responsibility, and the one
+      // PRD-635 diagnosed. This stays a one-for-one delegation.
+      return prepareInvocationSyncTarget(
+        prisma,
+        sourceKey,
+        templateSourceKey,
+        sessionLimit
+      );
+    },
+    loadReadyInvocationSyncParts(
+      sourceKey: string,
+      now: string,
+      limit: number
+    ): Promise<AgentComponentInvocationSyncOutboxEntry[]> {
+      // FEA-3781 split: the invocation outbox's ready-parts read (and the
+      // quarantine of an unparseable persisted payload) is owned by its own
+      // table module; this stays a one-for-one delegation.
+      return loadReadyInvocationSyncOutboxParts(prisma, sourceKey, now, limit);
+    },
+    async recordInvocationSyncRetry(
+      sourceKey: string,
+      part: AgentComponentInvocationSyncPart,
+      attemptCount: number,
+      nextAttemptAt: string,
+      error: string
+    ): Promise<void> {
       await prisma.write((client) =>
-        client.syncState.upsert({
-          where: { sourceKey },
-          create: {
+        client.agentComponentInvocationSyncOutbox.updateMany({
+          where: {
             sourceKey,
-            observedTopUpdatedAt: state.observedTopUpdatedAt,
-            observedIdsAtTopUpdatedAt: state.observedIdsAtTopUpdatedAt,
-            dataRevision: DATA_REVISION,
-            updatedAt,
+            externalSessionId: part.externalSessionId,
+            externalGenerationId: part.externalGenerationId,
+            partIndex: part.partIndex,
+            partHash: part.partHash,
+            status: OutboxStatus.Pending,
           },
-          update: {
-            observedTopUpdatedAt: state.observedTopUpdatedAt,
-            observedIdsAtTopUpdatedAt: state.observedIdsAtTopUpdatedAt,
-            dataRevision: DATA_REVISION,
-            updatedAt,
+          data: {
+            attemptCount,
+            nextAttemptAt,
+            lastError: error,
+            updatedAt: new Date().toISOString(),
           },
         })
       );
+    },
+    async clearAcknowledgedInvocationSyncPart(
+      sourceKey,
+      ack
+    ): Promise<boolean> {
+      const result = await prisma.write((client) =>
+        client.agentComponentInvocationSyncOutbox.deleteMany({
+          where: {
+            sourceKey,
+            externalGenerationId: ack.externalGenerationId,
+            partIndex: ack.partIndex,
+            partHash: ack.partHash,
+            status: OutboxStatus.Pending,
+          },
+        })
+      );
+      return result.count === 1;
+    },
+    async deadLetterInvocationSyncPart(
+      sourceKey,
+      part,
+      attemptCount,
+      error
+    ): Promise<boolean> {
+      const result = await prisma.write((client) =>
+        client.agentComponentInvocationSyncOutbox.updateMany({
+          where: {
+            sourceKey,
+            externalSessionId: part.externalSessionId,
+            externalGenerationId: part.externalGenerationId,
+            partIndex: part.partIndex,
+            partHash: part.partHash,
+            status: OutboxStatus.Pending,
+          },
+          data: {
+            status: OutboxStatus.DeadLettered,
+            attemptCount,
+            nextAttemptAt: null,
+            lastError: error,
+            updatedAt: new Date().toISOString(),
+          },
+        })
+      );
+      return result.count === 1;
     },
     async loadSessionTokenEvents(
       sessionId: string
@@ -358,109 +638,16 @@ export function createSqliteSessionSyncSource(
     // Gap B (#2570 follow-up): expose the component inventory readers on the
     // sync source so the sync service's component lane can batch-read updated
     // `agent_components` and pack them for `POST /desktop/components/sync`.
-    async listComponentCursorRows(since: string) {
-      return listAgentComponentCursorRows(prisma, since);
+    async listComponentCursorRows(
+      sinceTs: string,
+      sinceId: string,
+      limit: number
+    ) {
+      return listAgentComponentCursorRows(prisma, sinceTs, sinceId, limit);
     },
     async loadComponentRows(ids: string[]): Promise<SyncedComponent[]> {
-      const rows = await loadAgentComponents(prisma, ids);
-      return rows.map(mapAgentComponentToSynced);
+      return loadSyncedComponentRows(prisma, ids);
     },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// T-8.6: Agent component inventory cursor queries
-// ---------------------------------------------------------------------------
-
-/**
- * T-8.6: Cursor rows for the component inventory sync lane, ordered by
- * (last_seen_at, id). Includes tombstoned rows (uninstalled_at IS NOT NULL)
- * so the cloud receives uninstall signals. `since` is an ISO timestamp; pass
- * the epoch string to get all rows (full backfill).
- */
-async function listAgentComponentCursorRows(
-  prisma: DesktopPrisma,
-  since: string
-): Promise<SqliteAgentComponentCursorRow[]> {
-  return prisma.read((reader) =>
-    reader.$queryRawUnsafe<SqliteAgentComponentCursorRow[]>(
-      `
-      SELECT id, last_seen_at
-      FROM agent_components
-      WHERE last_seen_at >= $1 OR last_seen_at IS NULL
-      ORDER BY last_seen_at ASC, id ASC
-      `,
-      since
-    )
-  );
-}
-
-/**
- * T-8.6: Load full component rows by id for packing into the sync payload.
- * Includes tombstoned rows so uninstall signals are synced.
- */
-async function loadAgentComponents(
-  prisma: DesktopPrisma,
-  ids: string[]
-): Promise<SqliteAgentComponentRow[]> {
-  if (ids.length === 0) {
-    return [];
-  }
-  return prisma.read((reader) =>
-    selectRowsByIds<SqliteAgentComponentRow>(
-      reader,
-      `
-      SELECT
-        id,
-        component_kind,
-        external_id,
-        component_key,
-        name,
-        version,
-        harness,
-        description,
-        source_url,
-        install_path,
-        pack_id,
-        scope,
-        project_path,
-        metadata,
-        first_seen_at,
-        last_seen_at,
-        uninstalled_at
-      FROM agent_components
-      WHERE id IN (__IDS__)
-      ORDER BY last_seen_at ASC, id ASC
-      `,
-      ids
-    )
-  );
-}
-
-/**
- * T-8.6: Map a raw `agent_components` row to the `SyncedComponent` wire shape
- * for `POST /desktop/components/sync`.
- */
-function mapAgentComponentToSynced(
-  row: SqliteAgentComponentRow
-): SyncedComponent {
-  return {
-    externalId: row.external_id,
-    componentKind: row.component_kind,
-    harness: row.harness ?? null,
-    name: row.name ?? null,
-    componentKey: row.component_key ?? null,
-    version: row.version ?? null,
-    description: row.description ?? null,
-    sourceUrl: row.source_url ?? null,
-    installPath: row.install_path ?? null,
-    packId: row.pack_id ?? null,
-    scope: row.scope ?? null,
-    projectPath: row.project_path ?? null,
-    metadata: row.metadata ? (parseJsonObjectText(row.metadata) ?? null) : null,
-    firstSeenAt: row.first_seen_at ?? null,
-    lastSeenAt: row.last_seen_at ?? null,
-    uninstalledAt: row.uninstalled_at ?? null,
   };
 }
 
@@ -488,6 +675,7 @@ export async function selectComponentUsageRows(
       harness,
       invocations,
       error_count,
+      component_version_hash,
       first_invoked_at,
       last_invoked_at
     FROM agent_component_session_usage
@@ -530,12 +718,8 @@ async function listSqliteSessionCursorPage(
   // (epoch-floor default, see migration 0005), so the read can ORDER BY the bare
   // column directly — letting `idx_sessions_last_activity` satisfy the sort
   // instead of forcing a temp-b-tree filesort, which a COALESCE wrapper would.
-  // The `Started` sort uses the inline started-at floor (sessions-only, no
-  // events join either way).
-  const sortExpression =
-    request.sortBy === SessionListCursorSortKey.Started
-      ? "sort_started_at"
-      : "sort_last_activity_at";
+  // `Started` uses the started-at floor, `Updated` (stage 1b) the bare column.
+  const sortExpression = listCursorPageSortExpression(request.sortBy);
   // Two independent reads, each its own prisma.read so they round-robin onto
   // separate reader connections and run in parallel (the count is an approximate
   // total — no cross-read snapshot requirement between them). Both carry the
@@ -575,110 +759,6 @@ async function listSqliteSessionCursorPage(
   };
 }
 
-/**
- * SQL-side mirror of the cheap Sessions-list filters. This keeps the default
- * 7-day view and sidebar search on the cursor-page path, so only visible rows
- * are hydrated after SQLite has found the matching IDs.
- *
- * FEA-2180: the date window filters on `last_activity_at` — the field the list
- * is ordered by — NOT `started_at`. Filtering by start time while sorting by
- * activity dropped recently-active sessions that started before the window,
- * so the dashboard's "Recent Sessions" and the Sessions page diverged. The
- * denormalized `last_activity_at` already folds in the started-at floor (see
- * `recomputeSessionLastActivityAt`), so it needs no separate null fallback.
- */
-function buildListCursorFilterClause(request: SessionListCursorPageRequest): {
-  clause: string;
-  params: unknown[];
-} {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  const placeholder = () => `$${params.length + 1}`;
-  const lastActivityTs = SESSION_LAST_ACTIVITY_AT_TS_EXPR;
-
-  if (request.startDate) {
-    conditions.push(`${lastActivityTs} >= ${placeholder()}`);
-    params.push(request.startDate.toISOString());
-  }
-  if (request.endDate) {
-    conditions.push(`${lastActivityTs} <= ${placeholder()}`);
-    params.push(request.endDate.toISOString());
-  }
-  if (request.search) {
-    const searchPlaceholder = placeholder();
-    params.push(`%${escapeSqliteLikePattern(request.search.toLowerCase())}%`);
-    const branchMethodPlaceholders = HIGH_CONFIDENCE_BRANCH_METHOD_VALUES.map(
-      (method) => {
-        const methodPlaceholder = placeholder();
-        params.push(method);
-        return methodPlaceholder;
-      }
-    );
-
-    conditions.push(`
-      (
-        LOWER(COALESCE(s.name, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR LOWER(s.id) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR LOWER(COALESCE(s.harness, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR LOWER(COALESCE(s.cwd, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR LOWER(COALESCE(
-          CASE
-            WHEN s.metadata IS NOT NULL AND json_valid(s.metadata)
-              THEN json_extract(s.metadata, '$.gitBranch')
-            ELSE NULL
-          END,
-          ''
-        )) LIKE ${searchPlaceholder} ESCAPE '\\'
-        OR EXISTS (
-          SELECT 1
-          FROM session_artifact_links sal
-          JOIN artifacts a ON a.id = sal.artifact_id
-          WHERE sal.session_id = s.id
-            AND (
-              LOWER(COALESCE(a.repo_full_name, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-              OR (
-                a.kind = 'branch'
-                AND sal.method IN (${branchMethodPlaceholders.join(", ")})
-                AND LOWER(COALESCE(a.branch_name, '')) LIKE ${searchPlaceholder} ESCAPE '\\'
-              )
-            )
-        )
-      )
-    `);
-  }
-
-  return {
-    clause: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
-    params,
-  };
-}
-
-/**
- * Build the shared `WHERE` clause for the usage aggregation, mirroring
- * `matchesQuery`/`matchesStatusFilter`/`canonicalSharedStatus` exactly so the
- * SQL-filtered corpus matches the JS hydrate path:
- * - `harness` — equality on the raw column.
- * - `startDate`/`endDate` — inclusive range on `started_at` (cast to timestamptz
- *   to match `parseSessionDate`'s `new Date(...)` ordering; `>=` / `<=` mirror
- *   the strict `<` / `>` exclusions in `matchesQuery`).
- * - `status` — canonicalize (`error→failed`, `running→active`, else lowercase),
- *   then `waiting` = awaiting-input, `active` = canonical active and not
- *   awaiting, anything else = canonical equality. "Awaiting" is a non-terminal
- *   canonical status with a non-null `awaiting_input_since` (mirrors the
- *   `Boolean(session.awaitingInputSince)` + `TERMINAL_SHARED_STATUSES` check).
- * The clause references `sessions s`, so it is reused verbatim by both queries.
- */
-// Mirror `parseSessionDate`'s `new Date(value)` → epoch-on-NaN fallback: NULL,
-// empty, and otherwise-unparseable `started_at` all coerce to 1970-01-01 here,
-// exactly as the hydrate path treats them. A raw `::timestamptz` cast would
-// instead drop NULL rows from an `endDate` bound (parity drift — the hydrate
-// path keeps them at epoch, which is `<= endDate`) and, worse, THROW on an
-// empty or malformed legacy value, failing the whole usage query. The app only
-// ever persists `toISOString()`, so the date-prefix guard admits every real
-// value and routes the rest to epoch. Used by the `WHERE` filter clause only.
-const SESSION_STARTED_AT_TS_EXPR =
-  "(CASE WHEN s.started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN s.started_at ELSE '1970-01-01T00:00:00.000Z' END)";
-const SESSION_LAST_ACTIVITY_AT_TS_EXPR = "s.last_activity_at";
 // FEA-2036: started-at floor expression for the cursor pagination sort. SQLite
 // dialect — the GLOB date-prefix guard mirrors SESSION_STARTED_AT_TS_EXPR. The
 // per-event MAX(created_at) that used to be computed here now lives denormalized
@@ -686,105 +766,10 @@ const SESSION_LAST_ACTIVITY_AT_TS_EXPR = "s.last_activity_at";
 // remains the `Started` sort key and the COALESCE fallback for un-ingested rows.
 const SESSION_STARTED_AT_SORT_EXPRESSION = SESSION_STARTED_AT_TS_EXPR;
 
-// Bounds variant: same date-prefix guard, but NULL (not epoch) for
-// NULL/empty/malformed `started_at`. MIN/MAX ignore NULL, so a legacy row with
-// no real start cannot drag earliestSessionAt back to 1970 — matching the API's
-// Prisma `_min`/`_max` (a non-nullable column, so no such rows) and the
-// hydrate fold's `parseBoundsStartMs` skip. Bounds must NOT use the epoch
-// fallback above, or desktop would show "Jan 1, 1970 – …" where web does not.
-const SESSION_STARTED_AT_BOUNDS_EXPR =
-  "(CASE WHEN s.started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*' THEN s.started_at ELSE NULL END)";
-
-function buildUsageFilterClause(filters: AgentSessionUsageAggregateFilters): {
-  clause: string;
-  params: unknown[];
-} {
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  const placeholder = () => `$${params.length + 1}`;
-
-  const startedAtTs = SESSION_STARTED_AT_TS_EXPR;
-
-  if (filters.harness) {
-    conditions.push(`s.harness = ${placeholder()}`);
-    params.push(filters.harness);
-  }
-  if (filters.userIds && filters.userIds.length > 0) {
-    const userPlaceholders: string[] = [];
-    for (const userId of filters.userIds) {
-      userPlaceholders.push(placeholder());
-      params.push(userId);
-    }
-    conditions.push(`s.user_id IN (${userPlaceholders.join(", ")})`);
-  } else if (filters.userId) {
-    conditions.push(`s.user_id = ${placeholder()}`);
-    params.push(filters.userId);
-  }
-  if (filters.startDate) {
-    conditions.push(`${startedAtTs} >= ${placeholder()}`);
-    params.push(filters.startDate.toISOString());
-  }
-  if (filters.endDate) {
-    conditions.push(`${startedAtTs} <= ${placeholder()}`);
-    params.push(filters.endDate.toISOString());
-  }
-  const statuses =
-    filters.statuses && filters.statuses.length > 0 ? filters.statuses : [];
-  if (statuses.length === 0 && filters.status) {
-    statuses.push(filters.status);
-  }
-  if (statuses.length > 0) {
-    const statusPredicates = statuses.map((status) =>
-      buildUsageStatusPredicate(status, placeholder, params)
-    );
-    conditions.push(`(${statusPredicates.join(" OR ")})`);
-  }
-
-  return {
-    clause: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
-    params,
-  };
-}
-
-function buildUsageStatusPredicate(
-  status: string,
-  placeholder: () => string,
-  params: unknown[]
-): string {
-  const canonical =
-    "CASE WHEN lower(s.status) = 'error' THEN 'failed' WHEN lower(s.status) = 'running' THEN 'active' ELSE lower(s.status) END";
-  const awaiting = `(${canonical} NOT IN ('abandoned', 'completed', 'failed') AND s.awaiting_input_since IS NOT NULL)`;
-  const normalized = canonicalUsageStatus(status);
-  if (normalized === "waiting") {
-    // The `s.ended_at IS NULL` guard mirrors the cloud facet/projection
-    // (FEA-3149): an ended row must not surface as Waiting even if its status is
-    // not yet canonicalized to a terminal value. Kept out of the shared
-    // `awaiting` expression so the `active` branch's `NOT ${awaiting}` exclusion
-    // is unchanged (cloud's active facet does not reference ended_at).
-    return `(${awaiting} AND s.ended_at IS NULL)`;
-  }
-  if (normalized === "active") {
-    return `(${canonical} = 'active' AND NOT ${awaiting})`;
-  }
-  const nextPlaceholder = placeholder();
-  params.push(normalized);
-  return `${canonical} = ${nextPlaceholder}`;
-}
-
-function canonicalUsageStatus(status: string): string {
-  const normalized = status.toLowerCase();
-  if (normalized === "error") {
-    return "failed";
-  }
-  if (normalized === "running") {
-    return "active";
-  }
-  return normalized;
-}
-
 async function aggregateSqliteUsage(
   prisma: DesktopPrisma,
-  filters: AgentSessionUsageAggregateFilters
+  filters: AgentSessionUsageAggregateFilters,
+  cache: SessionAttributionResolverCache
 ): Promise<AgentSessionUsageAggregate> {
   const { clause, params } = buildUsageFilterClause(filters);
 
@@ -795,7 +780,14 @@ async function aggregateSqliteUsage(
   // transiently miscounting totalSessions until the next refresh. The reader's
   // `deferred` (query_only) transaction pins one committed snapshot for all
   // reads, concurrent with the writer.
-  const { tokenRows, harnessRows, boundsRow } = await prisma.read((reader) =>
+  const {
+    tokenRows,
+    harnessRows,
+    primaryModelRows,
+    userRows,
+    repoRows,
+    boundsRow,
+  } = await prisma.read((reader) =>
     reader.$transaction(async (tx) => {
       const tokenResult = await tx.$queryRawUnsafe<
         {
@@ -812,6 +804,7 @@ async function aggregateSqliteUsage(
           unpriced_output_tokens: string | null;
           unpriced_cache_read_tokens: string | null;
           unpriced_cache_write_tokens: string | null;
+          unpriced_cache_write_1h_tokens: string | null;
         }[]
       >(
         `
@@ -819,16 +812,33 @@ async function aggregateSqliteUsage(
           s.billing_mode AS billing_mode,
           s.harness AS harness,
           t.model AS model,
-          SUM(COALESCE(t.input_tokens, 0)) AS input_tokens,
-          SUM(COALESCE(t.output_tokens, 0)) AS output_tokens,
-          SUM(COALESCE(t.cache_read_tokens, 0)) AS cache_read_tokens,
-          SUM(COALESCE(t.cache_write_tokens, 0)) AS cache_write_tokens,
+          -- FEA-3317: report the EFFECTIVE total (current + pre-compaction
+          -- baseline_*) for every row, mirroring the sync projection's
+          -- unconditional fold (loadSyncedSessions → tokenUsageByModel) so the
+          -- reported token counts stay at SQL-vs-hydrate parity for compacted
+          -- rows. Without this, foldUsageAggregate would show a baseline-priced
+          -- cost against an undercounted token count. baseline_* is NOT NULL
+          -- DEFAULT 0, so this reduces to the current-only value when never
+          -- compacted.
+          SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0)) AS input_tokens,
+          SUM(COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0)) AS output_tokens,
+          SUM(COALESCE(t.cache_read_tokens, 0) + COALESCE(t.baseline_cache_read, 0)) AS cache_read_tokens,
+          SUM(COALESCE(t.cache_write_tokens, 0) + COALESCE(t.baseline_cache_write, 0)) AS cache_write_tokens,
           COUNT(DISTINCT t.session_id) AS session_count,
           SUM(t.cost_usd_estimated) AS estimated_cost_usd,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_read_tokens, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_tokens, 0) ELSE 0 END) AS unpriced_cache_write_tokens
+          -- FEA-3317: an unpriced compacted row is repriced on the fly below via
+          -- resolveTokenUsageCostUsd over these sums, so they must carry the
+          -- EFFECTIVE total (current + pre-compaction baseline_*), mirroring the
+          -- boot reprice in token-cost-maintenance.ts (repriceUnpricedTokenUsageChunk) and the
+          -- FEA-2922 sync projection. Without the fold, a post-compaction pricing
+          -- miss reprices only the post-compaction subset and undercounts cost.
+          -- baseline_* is NOT NULL DEFAULT 0, so COALESCE is defensive and reduces
+          -- to the current-only value for never-compacted rows.
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0) ELSE 0 END) AS unpriced_input_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0) ELSE 0 END) AS unpriced_output_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_read_tokens, 0) + COALESCE(t.baseline_cache_read, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_tokens, 0) + COALESCE(t.baseline_cache_write, 0) ELSE 0 END) AS unpriced_cache_write_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_1h_tokens, 0) ELSE 0 END) AS unpriced_cache_write_1h_tokens
         FROM token_usage t
         JOIN sessions s ON s.id = t.session_id
         ${clause}
@@ -850,6 +860,74 @@ async function aggregateSqliteUsage(
         ${clause}
         GROUP BY s.harness
         ORDER BY s.harness
+      `,
+        ...params
+      );
+
+      // FEA-4303: per-PRIMARY-model session counts. Grouped on the single
+      // displayed model `s.model` (the exact value the Sessions table paints in
+      // its Model column and the same field the local Model filter predicate
+      // matches), NOT the per-token-usage `t.model` in `tokenGroups` (which
+      // spans secondary/subagent models). Counted from `sessions` (not
+      // `token_usage`) so token-less sessions still count — mirroring the
+      // harness/owner counts above. Sources the Model filter facet options so
+      // options, predicate, and column share one primary-model vocabulary.
+      const primaryModelResult = await tx.$queryRawUnsafe<
+        {
+          model: string | null;
+          session_count: number | null;
+        }[]
+      >(
+        `
+        SELECT s.model AS model, COUNT(*) AS session_count
+        FROM sessions s
+        ${clause}
+        GROUP BY s.model
+        ORDER BY s.model
+      `,
+        ...params
+      );
+
+      // ISS-4613: per-owner counts over the SAME all-quality corpus as
+      // `totalSessions` and every sibling facet — owner-facet-session-population.test.ts.
+      const userResult = await tx.$queryRawUnsafe<
+        {
+          user_id: string | null;
+          session_count: number | null;
+        }[]
+      >(
+        `
+        SELECT s.user_id AS user_id, COUNT(*) AS session_count
+        FROM sessions s
+        ${clause}
+        GROUP BY s.user_id
+        ORDER BY s.user_id
+      `,
+        ...params
+      );
+
+      // FEA-4299: per-(cwd, stored repo) session counts sourcing the Repository
+      // facet options. The durable `repo_full_name` column (the FEA-3555
+      // write-back cache) is selected so the fold below can fall back to it as
+      // the LIST/render path does: the fold resolves the LIVE cwd first and
+      // uses the stored repo ONLY when the live worktree lookup fails (e.g. a
+      // deleted worktree). Without the stored fallback the facet would drop a
+      // repo the row still renders (live returns null) and re-introduce the
+      // exact un-filterable divergence. Counted from `sessions` so token-less
+      // sessions still contribute their repo option.
+      const repoResult = await tx.$queryRawUnsafe<
+        {
+          cwd: string | null;
+          repo_full_name: string | null;
+          session_count: number | null;
+        }[]
+      >(
+        `
+        SELECT s.cwd AS cwd, s.repo_full_name AS repo_full_name, COUNT(*) AS session_count
+        FROM sessions s
+        ${clause}
+        GROUP BY s.cwd, s.repo_full_name
+        ORDER BY s.cwd, s.repo_full_name
       `,
         ...params
       );
@@ -879,6 +957,9 @@ async function aggregateSqliteUsage(
       return {
         tokenRows: tokenResult,
         harnessRows: harnessResult,
+        primaryModelRows: primaryModelResult,
+        userRows: userResult,
+        repoRows: repoResult,
         boundsRow: boundsResult[0] ?? null,
       };
     })
@@ -920,6 +1001,10 @@ async function aggregateSqliteUsage(
           row.unpriced_cache_write_tokens,
           "insights.unpriced_cache_write"
         ),
+        cache_write_1h_tokens: tokenCountValue(
+          row.unpriced_cache_write_1h_tokens,
+          "insights.unpriced_cache_write_1h"
+        ),
         cost_usd_estimated: null,
       }) ?? 0),
   }));
@@ -928,6 +1013,26 @@ async function aggregateSqliteUsage(
     harness: row.harness,
     sessionCount: Number(row.session_count ?? 0),
   }));
+
+  const primaryModelSessionCounts = primaryModelRows.map((row) => ({
+    model: row.model,
+    sessionCount: Number(row.session_count ?? 0),
+  }));
+
+  const userSessionCounts = userRows.map((row) => ({
+    userId: row.user_id,
+    sessionCount: Number(row.session_count ?? 0),
+  }));
+
+  // ISS-5271: stored-first Repository-facet fold (see session-usage-aggregate).
+  // The grouped reads above already materialized their rows, so the fill-back
+  // write runs strictly outside the reader transaction, through the write queue.
+  // Supersedes the ISS-5272 yield cadence this loop briefly carried: stored-first
+  // makes the fold map-lookups plus at most a handful of one-time live
+  // resolutions, so there is no per-row execFile await left to yield around.
+  const { repoSessionCounts, fillBackIntents } =
+    await resolveUsageRepoSessionCounts(repoRows, cache);
+  await applyRepoFullNameFillBacks(prisma, fillBackIntents);
 
   const totalSessions = harnessSessionCounts.reduce(
     (sum, entry) => sum + entry.sessionCount,
@@ -940,6 +1045,9 @@ async function aggregateSqliteUsage(
     latestSessionAt: boundsRow?.latest_session_at ?? null,
     tokenGroups,
     harnessSessionCounts,
+    primaryModelSessionCounts,
+    userSessionCounts,
+    repoSessionCounts,
   };
 }
 
@@ -976,8 +1084,8 @@ function analyticsIsoMsExpr(col: string): string {
  * selects (reused verbatim so the corpus matches the hydrate filter), then
  * resolves each distinct `cwd` to its attribution via the shared `cache` and
  * merges per-cwd repository rows into their resolved `repositoryFullName` —
- * mirroring `buildToolBreakdowns` / `buildAgentTypeBreakdowns` /
- * `buildRepositoryBreakdowns` exactly. No session/event/agent/token rows are
+ * mirroring `buildAnalytics`'s per-tool / per-agent-type / per-repository fold
+ * exactly. No session/event/agent/token rows are
  * hydrated into JS, eliminating the db-host OOM (exit code 5).
  */
 async function aggregateSqliteAnalytics(
@@ -1003,7 +1111,6 @@ async function aggregateSqliteAnalytics(
   const { toolRows, agentRows, repoRows, repoCostRows } = await prisma.read(
     (reader) =>
       reader.$transaction(async (tx) => {
-        // byTool — events joined to filtered sessions, WHERE tool_name IS NOT NULL.
         const toolResult = await tx.$queryRawUnsafe<
           {
             tool_name: string;
@@ -1013,6 +1120,16 @@ async function aggregateSqliteAnalytics(
           }[]
         >(
           `
+        -- byTool — events joined to filtered sessions, over the tool-bearing rows.
+        --
+        -- ISS-5493: the tool predicate now excludes the empty string as well as
+        -- NULL, via the shared toolInvocationPredicate helper. The canonical
+        -- buildAnalytics fold this query mirrors skips an event on the falsy
+        -- !event.toolName test, so a hook payload carrying an empty tool_name
+        -- (live-hook.ts stores it verbatim) produced a meaningless empty-named
+        -- group here and none there — a SQL-vs-hydrate divergence the FEA-2038
+        -- parity contract below is meant to forbid. Still a partial-index
+        -- match: idx_events_tool_session is partial on tool_name IS NOT NULL.
         SELECT
           e.tool_name AS tool_name,
           COUNT(*) AS invocation_count,
@@ -1021,7 +1138,7 @@ async function aggregateSqliteAnalytics(
         FROM events e
         JOIN sessions s ON s.id = e.session_id
         ${clause}
-        ${clause ? "AND" : "WHERE"} e.tool_name IS NOT NULL
+        ${clause ? "AND" : "WHERE"} ${toolInvocationPredicate("e.tool_name")}
         GROUP BY e.tool_name
       `,
           ...params
@@ -1065,12 +1182,18 @@ async function aggregateSqliteAnalytics(
 
         // byRepository — per-cwd rollup. Token sums are summed PER SESSION first
         // (a CTE) to avoid the token_usage join fanning out the per-session error
-        // count, mirroring how `aggregateSqliteUsage` sums tokens; the error count
-        // is likewise a per-session sub-aggregate. Grouped by the RAW cwd; JS
-        // resolves+merges to repositoryFullName below.
+        // count; the error count is likewise a per-session sub-aggregate. Grouped
+        // by the RAW cwd; JS resolves+merges to repositoryFullName below.
+        //
+        // FEA-3318: the token sums fold the pre-compaction `baseline_*` into the
+        // effective total (current + baseline), matching the hydrate loader
+        // (FEA-2922) that backs `buildAnalytics`'s repository fold — so a compacted
+        // session's displayed tokens (and the cost the rollup below reprices from
+        // them) reflect all incurred tokens, not just the post-compaction subset.
         const repoResult = await tx.$queryRawUnsafe<
           {
             cwd: string | null;
+            repo_full_name: string | null;
             session_count: number | string | null;
             input_tokens: string | null;
             output_tokens: string | null;
@@ -1079,19 +1202,34 @@ async function aggregateSqliteAnalytics(
         >(
           `
         WITH filtered AS (
-          SELECT s.id AS id, s.cwd AS cwd
+          SELECT s.id AS id, s.cwd AS cwd, s.repo_full_name AS repo_full_name
           FROM sessions s
           ${clause}
         ),
         per_session_tokens AS (
+          -- FEA-3317: fold pre-compaction baseline_* into the reported per-repo
+          -- token totals so they match the hydrate buildAnalytics repository fold
+          -- path (sumTokenUsage over effective tokenUsageByModel) for compacted
+          -- rows. baseline_* is NOT NULL DEFAULT 0 → current-only when never
+          -- compacted.
           SELECT t.session_id AS session_id,
-            SUM(COALESCE(t.input_tokens, 0)) AS input_tokens,
-            SUM(COALESCE(t.output_tokens, 0)) AS output_tokens
+            SUM(COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0)) AS input_tokens,
+            SUM(COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0)) AS output_tokens
           FROM token_usage t
           JOIN filtered f ON f.id = t.session_id
           GROUP BY t.session_id
         ),
         per_session_errors AS (
+          -- ISS-5493 considered sourcing this from the materialized
+          -- session_analytics.error_events (same error/fail predicate, one
+          -- fewer events pass). It must NOT: that rollup is only written at
+          -- import, boot-backfill, and the targeted heals, and the backfill
+          -- anti-joins sessions MISSING a row rather than refreshing stale
+          -- ones. A hook-ingested session (Claude runs in "hooks" collection
+          -- mode, where FEA-1839 deliberately starts no live watcher) therefore
+          -- has no rollup row at all until the next boot, so a rollup-sourced
+          -- error count reads 0 for the whole app run while the hydrate path
+          -- reports the real number — the same screen contradicting itself.
           SELECT e.session_id AS session_id,
             SUM(CASE WHEN ${eventErrorPredicate} THEN 1 ELSE 0 END) AS error_count
           FROM events e
@@ -1100,6 +1238,7 @@ async function aggregateSqliteAnalytics(
         )
         SELECT
           f.cwd AS cwd,
+          f.repo_full_name AS repo_full_name,
           COUNT(*) AS session_count,
           SUM(COALESCE(pt.input_tokens, 0)) AS input_tokens,
           SUM(COALESCE(pt.output_tokens, 0)) AS output_tokens,
@@ -1107,7 +1246,7 @@ async function aggregateSqliteAnalytics(
         FROM filtered f
         LEFT JOIN per_session_tokens pt ON pt.session_id = f.id
         LEFT JOIN per_session_errors pe ON pe.session_id = f.id
-        GROUP BY f.cwd
+        GROUP BY f.cwd, f.repo_full_name
       `,
           ...params
         );
@@ -1115,39 +1254,57 @@ async function aggregateSqliteAnalytics(
         await yieldDbHostLoop();
 
         // Per-(cwd, model) cost rollup. Mirrors `aggregateSqliteUsage`'s cost
-        // handling EXACTLY: stored `cost_usd_estimated` sums for priced rows, and
+        // fold structure: stored `cost_usd_estimated` sums for priced rows, and
         // the unpriced token sums per model so the JS fold can apply
         // `resolveTokenUsageCostUsd` once per (cwd, model) group — equal to pricing
         // each row then summing (linear in tokens) — matching the hydrate loader's
         // per-row `resolveTokenUsageCostUsd(...) ?? 0` accumulated by `sumTokenUsage`.
+        //
+        // FEA-3318: the unpriced token sums fold the pre-compaction `baseline_*`
+        // into the effective total (current + baseline), the same reprice the
+        // boot reprice (`repriceUnpricedTokenUsageChunk` in token-cost-maintenance.ts, FEA-2879) and the hydrate
+        // loader (FEA-2922, `input_tokens + baseline_input`, …) apply. Without it a
+        // compacted + unpriced session is repriced from its post-compaction subset
+        // only, undercounting per-repository cost. This mirrors the priced/unpriced
+        // fold shape of `aggregateSqliteUsage`, which (as of FEA-3317) also folds
+        // `baseline_*` into both its reported and unpriced-token sums, so the
+        // usage/insights reader no longer carries the compacted undercount either.
         const repoCostResult = await tx.$queryRawUnsafe<
           {
             cwd: string | null;
+            repo_full_name: string | null;
             model: string | null;
             estimated_cost_usd: number | null;
             unpriced_input_tokens: string | null;
             unpriced_output_tokens: string | null;
             unpriced_cache_read_tokens: string | null;
             unpriced_cache_write_tokens: string | null;
+            unpriced_cache_write_1h_tokens: string | null;
           }[]
         >(
           `
         WITH filtered AS (
-          SELECT s.id AS id, s.cwd AS cwd
+          SELECT s.id AS id, s.cwd AS cwd, s.repo_full_name AS repo_full_name
           FROM sessions s
           ${clause}
         )
         SELECT
           f.cwd AS cwd,
+          f.repo_full_name AS repo_full_name,
           t.model AS model,
           SUM(t.cost_usd_estimated) AS estimated_cost_usd,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_read_tokens, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
-          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_tokens, 0) ELSE 0 END) AS unpriced_cache_write_tokens
+          -- FEA-3317: fold pre-compaction baseline_* into the unpriced-token sums
+          -- so the per-(cwd, model) on-the-fly reprice below prices the EFFECTIVE
+          -- total, keeping this cost rollup mirrored EXACTLY with
+          -- aggregateSqliteUsage (both undercounted compacted pricing misses).
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.input_tokens, 0) + COALESCE(t.baseline_input, 0) ELSE 0 END) AS unpriced_input_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.output_tokens, 0) + COALESCE(t.baseline_output, 0) ELSE 0 END) AS unpriced_output_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_read_tokens, 0) + COALESCE(t.baseline_cache_read, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_tokens, 0) + COALESCE(t.baseline_cache_write, 0) ELSE 0 END) AS unpriced_cache_write_tokens,
+          SUM(CASE WHEN t.cost_usd_estimated IS NULL THEN COALESCE(t.cache_write_1h_tokens, 0) ELSE 0 END) AS unpriced_cache_write_1h_tokens
         FROM token_usage t
         JOIN filtered f ON f.id = t.session_id
-        GROUP BY f.cwd, t.model
+        GROUP BY f.cwd, f.repo_full_name, t.model
       `,
           ...params
         );
@@ -1188,159 +1345,6 @@ async function aggregateSqliteAnalytics(
   return { byTool, byAgentType, byRepository };
 }
 
-/**
- * FEA-2038: resolve a cwd to its repository identity using the SAME resolver the
- * hydrate/sync path uses (`resolveSessionAttributionAsync` over the shared
- * `cache`), applying the `attribution?.repositoryFullName ??
- * attribution?.worktreePath ?? cwd ?? "unknown"` chain from
- * `buildRepositoryBreakdowns`. Cached per cwd by the resolver cache.
- */
-async function resolveCwdRepositoryFullName(
-  cwd: string | null,
-  cache: SessionAttributionResolverCache
-): Promise<string> {
-  const attribution = await resolveSessionAttributionAsync(cwd, cache);
-  return (
-    attribution?.repositoryFullName ??
-    attribution?.worktreePath ??
-    cwd ??
-    "unknown"
-  );
-}
-
-/**
- * FEA-2038: resolve each per-cwd repository row to its `repositoryFullName`,
- * then merge cwds that resolve to one identity — summing the same fields the JS
- * `buildRepositoryBreakdowns` fold accumulates. Cost is folded from the
- * per-(cwd, model) cost rollup exactly as `aggregateSqliteUsage` does (stored
- * priced cost + `resolveTokenUsageCostUsd` over the unpriced token sums per
- * model), so a row with a null `cost_usd_estimated` is priced via model pricing
- * identically to the hydrate loader's per-row `resolveTokenUsageCostUsd`.
- */
-async function resolveAnalyticsRepositoryGroups(
-  repoRows: {
-    cwd: string | null;
-    session_count: number | string | null;
-    input_tokens: string | null;
-    output_tokens: string | null;
-    error_count: number | string | null;
-  }[],
-  repoCostRows: {
-    cwd: string | null;
-    model: string | null;
-    estimated_cost_usd: number | null;
-    unpriced_input_tokens: string | null;
-    unpriced_output_tokens: string | null;
-    unpriced_cache_read_tokens: string | null;
-    unpriced_cache_write_tokens: string | null;
-  }[],
-  cache: SessionAttributionResolverCache
-): Promise<AgentSessionAnalyticsRepositoryGroup[]> {
-  const groups = new Map<string, AgentSessionAnalyticsRepositoryGroup>();
-  const ensureGroup = (
-    repositoryFullName: string
-  ): AgentSessionAnalyticsRepositoryGroup => {
-    const existing = groups.get(repositoryFullName);
-    if (existing) {
-      return existing;
-    }
-    const created: AgentSessionAnalyticsRepositoryGroup = {
-      repositoryFullName,
-      sessionCount: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      estimatedCost: 0,
-      errorCount: 0,
-    };
-    groups.set(repositoryFullName, created);
-    return created;
-  };
-
-  for (const row of repoRows) {
-    const repositoryFullName = await resolveCwdRepositoryFullName(
-      row.cwd,
-      cache
-    );
-    const group = ensureGroup(repositoryFullName);
-    group.sessionCount += Number(row.session_count ?? 0);
-    group.inputTokens += tokenCountValue(
-      row.input_tokens,
-      "analytics.repo.input"
-    );
-    group.outputTokens += tokenCountValue(
-      row.output_tokens,
-      "analytics.repo.output"
-    );
-    group.errorCount += Number(row.error_count ?? 0);
-  }
-
-  for (const row of repoCostRows) {
-    const repositoryFullName = await resolveCwdRepositoryFullName(
-      row.cwd,
-      cache
-    );
-    const group = ensureGroup(repositoryFullName);
-    group.estimatedCost +=
-      (nullableNumber(row.estimated_cost_usd) ?? 0) +
-      (resolveTokenUsageCostUsd({
-        session_id: "",
-        model: row.model ?? "",
-        input_tokens: tokenCountValue(
-          row.unpriced_input_tokens,
-          "analytics.repo.unpriced_input"
-        ),
-        output_tokens: tokenCountValue(
-          row.unpriced_output_tokens,
-          "analytics.repo.unpriced_output"
-        ),
-        cache_read_tokens: tokenCountValue(
-          row.unpriced_cache_read_tokens,
-          "analytics.repo.unpriced_cache_read"
-        ),
-        cache_write_tokens: tokenCountValue(
-          row.unpriced_cache_write_tokens,
-          "analytics.repo.unpriced_cache_write"
-        ),
-        cost_usd_estimated: null,
-      }) ?? 0);
-  }
-  return [...groups.values()];
-}
-
-/** The two row sets both the full and usage loads need. */
-function selectSessionRows(
-  reader: DesktopPrismaReadClient,
-  ids: string[]
-): Promise<SqliteSessionRow[]> {
-  return selectRowsByIds<SqliteSessionRow>(
-    reader,
-    `
-      SELECT
-        id,
-        name,
-        status,
-        cwd,
-        model,
-        started_at,
-        updated_at,
-        ended_at,
-        awaiting_input_since,
-        metadata,
-        harness,
-        billing_mode,
-        user_id,
-        organization_id,
-        cost_usd_estimated,
-        cost_currency,
-        cost_source,
-        data_revision
-      FROM sessions
-      WHERE id IN (__IDS__)
-    `,
-    ids
-  );
-}
-
 function selectTokenUsageRows(
   reader: DesktopPrismaReadClient,
   ids: string[]
@@ -1355,6 +1359,8 @@ function selectTokenUsageRows(
         output_tokens,
         cache_read_tokens,
         cache_write_tokens,
+        cache_write_5m_tokens,
+        cache_write_1h_tokens,
         baseline_input,
         baseline_output,
         baseline_cache_read,
@@ -1370,79 +1376,15 @@ function selectTokenUsageRows(
 }
 
 /**
- * Prove locally that a session cannot fit in the existing sync payload cap using
- * only the base session row. This is intentionally a lower-bound check: when the
- * minimal no-events/no-relations object is already oversized, the full hydrate
- * path would also dead-letter after loading far more data. Borderline sessions
- * are omitted so they still take the exact full hydrate path.
- *
- * The measurement must mirror what the real sync path ships, so the row is
- * sanitized before it is sized: `prepareAgentSessionPayload` compacts metadata
- * (trimming `messages`, dropping `tokenSeries`) and the chunker's own
- * can't-fit test is likewise `estimateSessionPayloadBytes(sanitized base)`.
- * Sizing the *raw* row instead over-states the payload by everything compaction
- * would have removed, which dead-letters sessions that sync fine — for a
- * metadata-heavy session, raw metadata is the dominant term and compacted
- * metadata is a small fraction of it.
- */
-async function findSqliteLocallyOversizedSessions(
-  prisma: DesktopPrisma,
-  ids: string[],
-  maxBytes: number
-): Promise<{ id: string; payloadBytes: number }[]> {
-  if (ids.length === 0) {
-    return [];
-  }
-
-  const sessionRows = await prisma.read((reader) =>
-    selectSessionRows(reader, ids)
-  );
-  const sessionsById = new Map(sessionRows.map((row) => [row.id, row]));
-  return ids.flatMap((id) => {
-    const row = sessionsById.get(id);
-    if (!row) {
-      return [];
-    }
-    const payloadBytes = estimateSessionPayloadBytes(
-      sanitizeSessionForSync(buildMinimalSyncSession(row))
-    );
-    return payloadBytes > maxBytes ? [{ id, payloadBytes }] : [];
-  });
-}
-
-// Max session ids hydrated per database round. The full load fetches EVERY
-// event row (with its full `data` JSON) for the requested sessions at once, so
-// an unbounded id list (e.g. the analytics / search-usage path passing the
-// entire corpus) materializes the whole event table in memory inside a single
-// libSQL `execute()` + its POJO copy — multi-GB on a large real dataset, which
-// OOMs the db-host utilityProcess. Chunking caps peak memory at one batch's
-// worth of rows regardless of corpus size; assembled sessions are per-id
-// (`assembleSyncedSessions`'s `ids.flatMap`) so concatenating chunk results is
-// identical to a single load, and each chunk's raw rows are freed between
-// rounds. Sized to stay well under SQLite's bound-parameter ceiling (the git
-// LOC query repeats the IN list 3x → ~3x ids placeholders per statement).
-const SYNCED_SESSION_HYDRATE_CHUNK_SIZE = 200;
-
-function chunkIds(ids: string[], size: number): string[][] {
-  if (ids.length <= size) {
-    return [ids];
-  }
-  const chunks: string[][] = [];
-  for (let i = 0; i < ids.length; i += size) {
-    chunks.push(ids.slice(i, i + size));
-  }
-  return chunks;
-}
-
-/**
  * Full load: session metadata plus every hydrated relation (agents, events,
  * token_events, artifact_links) and resolved attribution. Used by detail/list
  * reads. Shares the per-session assembly with the usage load via
  * `assembleSyncedSessions`, so the two can never project a session differently.
  *
- * Hydrates in bounded id chunks so peak memory stays flat as the corpus grows
- * (see `SYNCED_SESSION_HYDRATE_CHUNK_SIZE`). The attribution `cache` is shared
- * across chunks so cross-chunk cwd resolution is still de-duplicated.
+ * ISS-6105: hydrates in chunks whose boundaries are planned against each
+ * session's estimated heap (`planSyncedSessionHydration`), so peak tracks a
+ * working-set budget rather than the caller's id count. The attribution `cache`
+ * is shared across chunks so cross-chunk cwd resolution is still de-duplicated.
  *
  * FEA-2038 OOM fix: `options.omitEventData` drops the per-event `data` JSON blob
  * (it is still SELECTed for `tool_name`/`event_type`, but the multi-KB parsed
@@ -1454,12 +1396,18 @@ function chunkIds(ids: string[], size: number): string[][] {
  * that DO read `event.data` (the single-session detail path, the per-branch
  * trace, and the cloud-sync payload builder) leave this off and keep full data;
  * those are bounded to one session / one branch / one sync batch, not the corpus.
+ *
+ * ISS-5407: `options.eventRowCap` additionally bounds that read's ROW COUNT per
+ * session — only the session-detail reader sets it (see the option's own doc).
  */
 async function loadSqliteSyncedSessions(
   prisma: DesktopPrisma,
   ids: string[],
   cache: SessionAttributionResolverCache,
-  options?: { omitEventData?: boolean; includeComponentUsage?: boolean }
+  options?: SyncedSessionLoadOptions,
+  log: (message: string) => void = () => {
+    // no-op default: callers that don't wire a sink stay silent
+  }
 ): Promise<SyncedAgentSession[]> {
   if (ids.length === 0) {
     return [];
@@ -1468,20 +1416,30 @@ async function loadSqliteSyncedSessions(
   // so a chunk's ~10 relation reads share one connection; separate chunks
   // round-robin across the pool, letting a concurrent sync/dashboard read run on
   // the other reader.
-  if (ids.length <= SYNCED_SESSION_HYDRATE_CHUNK_SIZE) {
-    return prisma.read((reader) =>
-      loadSqliteSyncedSessionsChunk(reader, ids, cache, options)
+  //
+  // ISS-6105: a lone id has no boundary to choose, so it skips the sizing read
+  // outright — the session-detail lane must not pay a round trip to be told the
+  // only chunk it could possibly form.
+  if (ids.length === 1) {
+    const chunk = await prisma.read((reader) =>
+      loadSqliteSyncedSessionsChunk(reader, ids, cache, options, log)
     );
+    // FEA-3555: flush the durable repo-name write-backs AFTER the read closes,
+    // so the `prisma.write` never nests inside the `prisma.read` above.
+    await persistResolvedRepoFullNames(prisma, chunk.repoFullNameWriteBacks);
+    return chunk.sessions;
   }
   const out: SyncedAgentSession[] = [];
-  const chunks = chunkIds(ids, SYNCED_SESSION_HYDRATE_CHUNK_SIZE);
+  const chunks = await planSyncedSessionHydration(prisma, ids, options, log);
   for (let i = 0; i < chunks.length; i++) {
     const loaded = await prisma.read((reader) =>
-      loadSqliteSyncedSessionsChunk(reader, chunks[i], cache, options)
+      loadSqliteSyncedSessionsChunk(reader, chunks[i], cache, options, log)
     );
-    for (const session of loaded) {
+    for (const session of loaded.sessions) {
       out.push(session);
     }
+    // FEA-3555: persist this chunk's repo-name write-backs outside the read.
+    await persistResolvedRepoFullNames(prisma, loaded.repoFullNameWriteBacks);
     // FEA-2264: yield a macrotask between chunks so a full-corpus hydration (the
     // list/analytics filtered fallback and the cloud-sync payload build) cannot
     // hold the db-host loop for multiple seconds in one go. SQLite is
@@ -1497,16 +1455,25 @@ async function loadSqliteSyncedSessions(
   return out;
 }
 
+/** A hydrated chunk plus the FEA-3555 durable repo-name write-backs it produced. */
+type SyncedSessionsChunk = {
+  sessions: SyncedAgentSession[];
+  repoFullNameWriteBacks: RepoFullNameWriteBack[];
+};
+
 async function loadSqliteSyncedSessionsChunk(
   reader: DesktopPrismaReadClient,
   ids: string[],
   cache: SessionAttributionResolverCache,
-  options?: { omitEventData?: boolean; includeComponentUsage?: boolean }
-): Promise<SyncedAgentSession[]> {
-  if (ids.length === 0) {
-    return [];
+  options?: SyncedSessionLoadOptions,
+  log: (message: string) => void = () => {
+    // no-op default: callers that don't wire a sink (tests) stay silent
   }
-  const sessionRows = await selectSessionRows(reader, ids);
+): Promise<SyncedSessionsChunk> {
+  if (ids.length === 0) {
+    return { sessions: [], repoFullNameWriteBacks: [] };
+  }
+  const sessionRows = await selectSessionRows(reader, ids, options);
   const tokenRows = await selectTokenUsageRows(reader, ids);
   const agentRows = await selectRowsByIds<SqliteAgentRow>(
     reader,
@@ -1544,47 +1511,31 @@ async function loadSqliteSyncedSessionsChunk(
   // omitted column is aliased back to `data` (as SQL NULL) so the row shape is
   // unchanged; the omit branch in `assembleSyncedSessions` never reads it. Detail/
   // trace/sync callers keep `omitEventData` off and still get the full blob.
+  //
+  // ISS-5407: the blob was only HALF the exposure — the detail caller keeps the
+  // full `data` AND, until now, read every row with no `LIMIT`. `eventRowCap`
+  // bounds that caller's row count per session (see `selectEventRows`).
   const eventDataColumn = options?.omitEventData ? "NULL AS data" : "data";
-  const eventRows = await selectRowsByIds<SqliteEventRow>(
+  const eventRows = await selectEventRows(
     reader,
-    `
-      SELECT
-        id,
-        session_id,
-        agent_id,
-        event_type,
-        tool_name,
-        summary,
-        ${eventDataColumn},
-        created_at
-      FROM events
-      WHERE session_id IN (__IDS__)
-      ORDER BY session_id ASC, created_at ASC, id ASC
-    `,
-    ids
+    ids,
+    eventDataColumn,
+    options?.eventRowCap
   );
-  const tokenEventRows = await selectRowsByIds<SqliteTokenEventRow>(
-    reader,
-    `
-      SELECT
-        session_id,
-        model,
-        created_at,
-        input_tokens,
-        output_tokens,
-        cache_read_tokens,
-        cache_write_tokens,
-        cost_usd_estimated,
-        input_cost_usd_estimated,
-        output_cost_usd_estimated,
-        cache_read_cost_usd_estimated,
-        cache_creation_cost_usd_estimated
-      FROM token_events
-      WHERE session_id IN (__IDS__)
-      ORDER BY session_id ASC, created_at ASC, model ASC
-    `,
-    ids
-  );
+  const tokenEventRows = await selectTokenEventRows(reader, ids, options);
+  // FEA-3568: the per-session activity-segment tiling for cloud upsync. Read via
+  // the typed read delegate (not raw SQL) so the BIGINT bounds and the JSONB
+  // `evidence_layers` column are parsed for us. ISS-4541: the FULL tiling is read
+  // and shipped (chunked across sync parts when oversized — no transport-cap
+  // truncation), so the DB `take` is now a memory-safety ceiling
+  // (ACTIVITY_SEGMENT_SYNC_MAX_ROWS, far above any realistic tiling), NOT a data
+  // cap: a single unbounded `IN (...)` load of tens of thousands of rows would
+  // run synchronously on the shared db-host thread every sync cycle — starving
+  // every other reader and locking up the app. NB: the bound must be per session;
+  // one `take` on a multi-id `IN (...)` query caps the TOTAL across the batch
+  // (rows ordered by sessionId), which would silently drop later sessions'
+  // segments entirely.
+  const segmentRows = await selectBoundedActivitySegments(reader, ids);
   // FEA-2730 (G10): the desktop per-session analytics rollup. `session_id` is
   // the table's primary key, so this yields at most one row per session.
   const sessionAnalyticsRows = await selectRowsByIds<SqliteSessionAnalyticsRow>(
@@ -1618,11 +1569,13 @@ async function loadSqliteSyncedSessionsChunk(
     reader,
     `
       SELECT
+        sal.id AS link_id,
         sal.session_id,
         a.kind AS target_kind,
         a.slug,
         sal.is_primary,
         sal.method,
+        sal.evidence AS link_evidence,
         a.repo_full_name,
         a.pr_number,
         a.url,
@@ -1637,7 +1590,19 @@ async function loadSqliteSyncedSessionsChunk(
         sal.observed_at AS link_observed_at,
         a.committed_at AS artifact_committed_at,
         a.observed_at AS artifact_observed_at,
-        a.last_seen_at AS artifact_last_seen_at
+        a.last_seen_at AS artifact_last_seen_at,
+        -- FEA-3329: AUTHORITATIVE PR-opened instant from pull_requests.opened_at
+        -- (GitHub metadata via enrichment). A correlated MIN() picks the earliest
+        -- known opened time for this (repo, number) so the join stays 1:1 with the
+        -- link row (pull_requests holds one row per (harness, session, pr_url), so
+        -- the same PR can appear across sessions). NULL until the PR is enriched;
+        -- the marker builder then falls back to the observed timestamps.
+        (
+          SELECT MIN(pr.opened_at)
+          FROM pull_requests pr
+          WHERE pr.repo_full_name = a.repo_full_name
+            AND pr.pr_number = a.pr_number
+        ) AS pr_opened_at
       FROM session_artifact_links sal
       JOIN artifacts a ON a.id = sal.artifact_id
       WHERE sal.session_id IN (__IDS__)
@@ -1669,7 +1634,8 @@ async function loadSqliteSyncedSessionsChunk(
         WHERE sal.session_id IN (__IDS__)
           AND a.kind = 'pull_request'
           AND a.pr_number IS NOT NULL
-          AND sal.relation IN ('created', 'workspace')
+          AND (sal.relation IN ('created', 'workspace')
+               OR sal.method = 'harness_pr_link')
       ) ranked
       WHERE rn = 1
       ORDER BY session_id, pr_number, repo_full_name
@@ -1725,9 +1691,9 @@ async function loadSqliteSyncedSessionsChunk(
           AND relation = 'created'
           AND artifact_id IN (SELECT id FROM artifacts WHERE kind = 'commit')
       )
-      SELECT session_id, total_added, total_removed, total_files
+      SELECT session_id, total_added, total_removed, total_files, loc_basis
       FROM (
-        SELECT session_id, total_added, total_removed, total_files,
+        SELECT session_id, total_added, total_removed, total_files, loc_basis,
           ROW_NUMBER() OVER (
             PARTITION BY session_id ORDER BY priority
           ) AS rn
@@ -1737,13 +1703,14 @@ async function loadSqliteSyncedSessionsChunk(
             COALESCE(SUM(a.lines_added), 0) AS total_added,
             COALESCE(SUM(a.lines_removed), 0) AS total_removed,
             COALESCE(SUM(a.files_changed), 0) AS total_files,
+            -- FEA-3633: authored-commit sums are genuinely per-session.
+            'commit' AS loc_basis,
             1 AS priority
           FROM session_artifact_links sal
           JOIN artifacts a ON sal.artifact_id = a.id
           WHERE sal.session_id IN (__IDS__)
             AND sal.relation = 'created'
             AND a.kind = 'commit'
-            AND a.enrichment_state IN ('provisional', 'final')
             AND a.lines_added IS NOT NULL
           GROUP BY sal.session_id
           HAVING SUM(a.lines_added) > 0 OR SUM(a.lines_removed) > 0
@@ -1753,6 +1720,10 @@ async function loadSqliteSyncedSessionsChunk(
             COALESCE(a.lines_added, 0),
             COALESCE(a.lines_removed, 0),
             COALESCE(a.files_changed, 0),
+            -- FEA-3633: the branch/PR-total fallback is the SAME total shared by
+            -- every authoring session on the branch — tag it so the cloud can
+            -- dedup it per branch instead of summing it once per session.
+            'branch_fallback' AS loc_basis,
             CASE a.kind WHEN 'branch' THEN 2 ELSE 3 END AS priority
           FROM session_artifact_links sal
           JOIN artifacts a ON sal.artifact_id = a.id
@@ -1808,13 +1779,23 @@ async function loadSqliteSyncedSessionsChunk(
   const componentUsageBySessionId = includeComponentUsage
     ? await selectComponentUsageRows(reader, ids)
     : new Map<string, SqliteComponentUsageRow[]>();
-  const attributionByCwd = await resolveSyncAttributions(sessionRows, cache);
-  return assembleSyncedSessions(ids, {
+  // FEA-3555: attribution is now resolved per SESSION (not per cwd) so the
+  // durable stored `repo_full_name` fallback / write-back is applied per row.
+  // Any live-resolved names that differ from the stored ones are returned as
+  // `writeBacks` and persisted by the caller OUTSIDE this read (a `prisma.write`
+  // cannot nest inside the `prisma.read` this runs under).
+  const { bySessionId, writeBacks } = await resolveSyncAttributions(
+    sessionRows,
+    cache,
+    groupRowsBySessionId(artifactLinkRows)
+  );
+  const sessions = assembleSyncedSessions(ids, {
     sessionRows,
     agentRows,
     eventRows,
     tokenRows,
     tokenEventRows,
+    segmentRows,
     sessionAnalyticsRows,
     artifactLinkRows,
     pullRequestRows,
@@ -1823,9 +1804,17 @@ async function loadSqliteSyncedSessionsChunk(
     branchLocRows,
     componentUsageBySessionId,
     omitEventData: options?.omitEventData ?? false,
-    resolveAttribution: (cwd) =>
-      cwd ? (attributionByCwd.get(cwd) ?? undefined) : undefined,
+    includeMonitoredSessionActivity:
+      options?.includeMonitoredSessionActivity ?? false,
+    // ISS-5407 (stage review): the row limit this read actually applied, so the
+    // assembly can tell PER SESSION whether its `eventRows` are the whole stream
+    // or a chronological PREFIX. Only a session that hit the limit falls back to
+    // the stored `last_activity_at`; see the `eventRowFetchLimit` doc.
+    eventRowFetchLimit: resolveEventRowFetchLimit(options?.eventRowCap),
+    resolveAttribution: (sessionId) => bySessionId.get(sessionId) ?? undefined,
+    log,
   });
+  return { sessions, repoFullNameWriteBacks: writeBacks };
 }
 
 /**
@@ -1858,69 +1847,67 @@ async function loadSqliteUsageSessions(
     sessionRows: await selectSessionRows(reader, ids),
     tokenRows: await selectTokenUsageRows(reader, ids),
   }));
+  // ISS-5271: resolve each session's repository identity STORED-FIRST — the
+  // SAME ruled precedence the LIST/render path and the SQL `aggregateUsage` /
+  // `aggregateAnalytics` folds use, so this explicit-id path can never advertise
+  // a repo the facet's own fold would not. The stored `repo_full_name` is a
+  // trusted persisted projection (authored by the live-first SYNC lane, which
+  // remains the freshness producer); live resolution runs only for a row with
+  // no stored name whose cwd still exists. A fresh per-request cache dedupes
+  // the residual lookups across the (typically small) explicit id set. A row
+  // that resolves to no repo either way yields no attribution (renders
+  // "Unknown", not a facet option).
+  const cache: SessionAttributionResolverCache = {
+    attributionByCwd: new Map(),
+    launchMetadataRootByCwd: new Map(),
+    repoFullNameByPath: new Map(),
+  };
+  const repoFullNameById = new Map<string, string | null>();
+  // ISS-5272 (M3/C5): keep this fold cooperative now that the shared memo can
+  // resolve every row without an `execFile` await to hand back the loop.
+  const yieldTick = createAttributionYieldCadence();
+  for (const row of sessionRows) {
+    await yieldTick();
+    repoFullNameById.set(
+      row.id,
+      await resolveRepositoryFullNameStoredFirst(
+        row.cwd,
+        row.repo_full_name,
+        cache
+      )
+    );
+  }
   return assembleSyncedSessions(ids, {
     sessionRows,
     agentRows: [],
     eventRows: [],
+    // ISS-5443: this load fetches no event rows, so the event-derived
+    // last-activity is unavailable here — read the stored column, which is the
+    // same value the SQL date window bounds on.
+    preferStoredLastActivityAt: true,
     tokenRows,
     tokenEventRows: [],
+    segmentRows: [],
     sessionAnalyticsRows: [],
     artifactLinkRows: [],
     pullRequestRows: [],
     pullRequestLifecycleRows: [],
     gitLocRows: [],
     branchLocRows: [],
-    resolveAttribution: () => undefined,
+    resolveAttribution: (sessionId) => {
+      const repositoryFullName = repoFullNameById.get(sessionId) ?? null;
+      if (repositoryFullName === null) {
+        return undefined;
+      }
+      return {
+        repositoryFullName,
+        worktreePath: null,
+        sourceArtifactId: null,
+        sourceLoopId: null,
+        baseBranch: null,
+      };
+    },
   });
-}
-
-async function resolveSyncAttributions(
-  sessionRows: SqliteSessionRow[],
-  cache: SessionAttributionResolverCache
-): Promise<Map<string, ResolvedSyncAttribution | null>> {
-  const uniqueCwds = [
-    ...new Set(
-      sessionRows.flatMap((row) => (row.cwd === null ? [] : [row.cwd]))
-    ),
-  ];
-  const entries = await Promise.all(
-    uniqueCwds.map(
-      async (cwd): Promise<[string, ResolvedSyncAttribution | null]> => [
-        cwd,
-        (await resolveSessionAttributionAsync(cwd, cache)) ?? null,
-      ]
-    )
-  );
-  return new Map(entries);
-}
-
-type ResolvedSyncAttribution = NonNullable<
-  ReturnType<typeof resolveSessionAttribution>
->;
-
-function buildMinimalSyncSession(row: SqliteSessionRow): SyncedAgentSession {
-  const metadata = parseJsonObjectText(row.metadata);
-  return {
-    externalSessionId: row.id,
-    name: row.name,
-    status: row.status,
-    harness: row.harness,
-    billingMode: resolveBillingModeForRow(row),
-    cwd: row.cwd,
-    model: row.model,
-    startedAt: row.started_at,
-    updatedAt: row.updated_at,
-    endedAt: row.ended_at,
-    awaitingInputSince: row.awaiting_input_since,
-    metadata,
-    ...(row.user_id ? { userId: row.user_id } : {}),
-    ...(row.organization_id ? { organizationId: row.organization_id } : {}),
-    deviceTimeZone: localTimeZone(),
-    dataRevision: row.data_revision,
-    agents: [],
-    events: [],
-    tokenUsageByModel: [],
-  };
 }
 
 const ARTIFACT_REF_RELATION_VALUES = new Set<string>(
@@ -1951,114 +1938,69 @@ function resolveLinkObservedAt(
   );
 }
 
-// --- FEA-2732: PR fact projection for the `pull_request` artifactRef ---
-
-/** Normalize a stored PR state to the canonical GitHubPRState, else undefined. */
-function normalizePullRequestState(
-  value: string | null
-): GitHubPRState | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const upper = value.trim().toUpperCase();
-  return upper === GitHubPRState.Open ||
-    upper === GitHubPRState.Merged ||
-    upper === GitHubPRState.Closed
-    ? (upper as GitHubPRState)
-    : undefined;
-}
-
-/**
- * A non-negative integer within the wire schema's `PR_INT_MAX` (Postgres int4)
- * bound, else undefined. The cloud declares `.int().nonnegative().max(PR_INT_MAX)`
- * on these LOC fields, so an overflowed SQLite value (64-bit) that passed a
- * bare `>= 0` check would clear the desktop guard yet fail the cloud's single
- * batch parse — rejecting every session in the batch and stalling sync.
- */
-function nonNegativeInt(value: number | null): number | undefined {
-  return value != null &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= PR_INT_MAX
-    ? value
-    : undefined;
-}
-
-/** A non-empty string within `max` chars, else undefined (guards Zod .max()). */
-function boundedString(value: string | null, max: number): string | undefined {
-  return value != null && value.length > 0 && value.length <= max
-    ? value
-    : undefined;
-}
-
-/** A parseable ISO timestamp string, else undefined (guards the wire schema). */
-function validTimestamp(value: string | null): string | undefined {
-  return value != null && value.length > 0 && Number.isFinite(Date.parse(value))
-    ? value
-    : undefined;
-}
-
-type PullRequestArtifactRefFacts = Partial<
-  Pick<
-    SyncedPullRequestArtifactRef,
-    | "title"
-    | "state"
-    | "isDraft"
-    | "additions"
-    | "deletions"
-    | "changedFiles"
-    | "mergedAt"
-    | "closedAt"
-  >
->;
-
-/**
- * FEA-2732: assemble the optional PR-fact fields of a `pull_request` artifactRef
- * from the joined `artifacts` row (state / LOC / base / head / merge sha) plus
- * the `pull_requests` + observation lifecycle row (merged / closed / draft).
- * Every field is defensively bounded to the wire schema so one oversized or
- * malformed value cannot reject the whole (up to 200-session) sync batch
- * (FEA-2711). Absent facts are simply omitted — the cloud fills gaps only.
- */
-function buildPullRequestArtifactRefFacts(
+function buildBranchLifecycleEventsForBranchLink(
   link: SqliteArtifactLinkRow,
-  lifecycle: SqlitePullRequestLifecycleRow | undefined
-): PullRequestArtifactRefFacts {
-  const facts: PullRequestArtifactRefFacts = {};
-  const title = boundedString(link.title, 1024);
-  if (title !== undefined) {
-    facts.title = title;
+  relation: ArtifactRefRelation,
+  observedAt: string | undefined
+) {
+  return branchLifecycleEventsForBranchLink({
+    linkId: link.link_id,
+    observedAt,
+    relation,
+  });
+}
+
+/**
+ * The observed-at a PR link's lifecycle event (PrRaised) should be stamped with.
+ * A `commit_sha_correlation` link (FEA-4379) was minted by the post-boot
+ * maintenance pass, so its `observed_at` is Desktop wall-clock time, NOT a real
+ * PR-raised instant — stamping it would drop an out-of-band PR onto the timeline
+ * at whatever moment the pass happened to run. For that link the canonical
+ * GitHub open time (`pull_requests.opened_at`, surfaced as `pr_opened_at`) is the
+ * only trustworthy raise instant; when it is unknown (PR not yet enriched) we
+ * emit NO instant rather than a fabricated one. Genuine transcript-derived PR
+ * links (`gh_pr_create` etc.) keep their real tool-use `observed_at`.
+ */
+function prLifecycleObservedAt(
+  link: SqliteArtifactLinkRow,
+  observedAt: string | undefined
+): string | undefined {
+  if (link.method === COMMIT_SHA_CORRELATION_METHOD) {
+    return link.pr_opened_at ?? undefined;
   }
-  const state = normalizePullRequestState(link.pr_state);
-  if (state !== undefined) {
-    facts.state = state;
+  return observedAt;
+}
+
+function buildBranchLifecycleEventsForPrLink(
+  link: SqliteArtifactLinkRow,
+  relation: ArtifactRefRelation,
+  observedAt: string | undefined
+) {
+  return branchLifecycleEventsForPrLink({
+    linkId: link.link_id,
+    method: link.method,
+    observedAt: prLifecycleObservedAt(link, observedAt),
+    relation,
+  });
+}
+
+/**
+ * Map a stored PR-link `relation` to the wire `SessionPrRelationType` carried on
+ * `prRefs` (FEA-3585). `created`→CREATED (authored), `reviewed`→REVIEWED (the
+ * session ran a `gh pr` review command on this PR), everything else→REFERENCED
+ * (a passive mention). Keeping REFERENCED as the default preserves the prior
+ * behaviour for every non-review relation.
+ */
+function toSessionPrRelationType(
+  relation: string | null
+): SessionPrRelationType {
+  if (relation === ArtifactRefRelation.Created) {
+    return SessionPrRelationType.Created;
   }
-  // Raw SQLite booleans arrive as 0/1 integers, so coerce rather than checking
-  // `typeof === "boolean"` (which would never match, silently dropping drafts).
-  if (lifecycle?.is_draft != null) {
-    facts.isDraft = lifecycle.is_draft === true || lifecycle.is_draft === 1;
+  if (relation === ArtifactRefRelation.Reviewed) {
+    return SessionPrRelationType.Reviewed;
   }
-  const additions = nonNegativeInt(link.lines_added);
-  if (additions !== undefined) {
-    facts.additions = additions;
-  }
-  const deletions = nonNegativeInt(link.lines_removed);
-  if (deletions !== undefined) {
-    facts.deletions = deletions;
-  }
-  const changedFiles = nonNegativeInt(link.files_changed);
-  if (changedFiles !== undefined) {
-    facts.changedFiles = changedFiles;
-  }
-  const mergedAt = validTimestamp(lifecycle?.merged_at ?? null);
-  if (mergedAt !== undefined) {
-    facts.mergedAt = mergedAt;
-  }
-  const closedAt = validTimestamp(lifecycle?.closed_at ?? null);
-  if (closedAt !== undefined) {
-    facts.closedAt = closedAt;
-  }
-  return facts;
+  return SessionPrRelationType.Referenced;
 }
 
 /**
@@ -2069,13 +2011,7 @@ function buildPullRequestArtifactRefFacts(
  * here rather than stall sync for every session in the batch (FEA-2731).
  */
 function toSyncedCommitTimestamp(value: string | null): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 && Number.isFinite(Date.parse(trimmed))
-    ? trimmed
-    : undefined;
+  return validIso(value?.trim()) ?? undefined;
 }
 
 /**
@@ -2096,11 +2032,13 @@ function toSyncedCommitSha(value: string | null): string | undefined {
 }
 
 /**
- * T-8.6: Maximum `SyncedComponentUsage` entries per session payload. Mirrors
- * `MAX_SYNCED_COMPONENT_USAGE` (500) from the API schema to prevent
- * oversized batches. Links are oldest-first so this keeps the earliest N.
+ * T-8.6: Maximum `SyncedComponentUsage` entries per session payload. References
+ * the shared `MAX_SYNCED_COMPONENT_USAGE` cap (FEA-3322) so the desktop slice and
+ * the cloud wire schema can never diverge — if they did, a session whose usage
+ * exceeds the cloud cap would fail validation and never sync at all. Links are
+ * oldest-first so this keeps the earliest N.
  */
-const MAX_SESSION_COMPONENT_USAGE = 500;
+const MAX_SESSION_COMPONENT_USAGE = MAX_SYNCED_COMPONENT_USAGE;
 
 /**
  * Pure per-session fold shared by both loads: it never touches the database, so
@@ -2116,6 +2054,7 @@ function assembleSyncedSessions(
     eventRows: SqliteEventRow[];
     tokenRows: SqliteTokenUsageRow[];
     tokenEventRows: SqliteTokenEventRow[];
+    segmentRows: SyncedSegmentQueryRow[];
     sessionAnalyticsRows: SqliteSessionAnalyticsRow[];
     artifactLinkRows: SqliteArtifactLinkRow[];
     pullRequestRows: SqlitePullRequestRow[];
@@ -2130,9 +2069,56 @@ function assembleSyncedSessions(
     // that do (detail/branch-trace/sync payload) leave it false. Defaults to
     // false so the usage path — which passes no event rows — is unaffected.
     omitEventData?: boolean;
+    /** Capability-gated projection; local detail/list readers omit this carrier. */
+    includeMonitoredSessionActivity?: boolean;
+    /**
+     * ISS-5407: the per-session row limit the event read applied (`eventRowCap + 1`
+     * — see `resolveEventRowFetchLimit`), or absent when the read was unbounded.
+     *
+     * A session whose loaded rows REACH that limit is one whose stream is larger
+     * than what was served, so its `lastActivityAt` derivation below would answer
+     * "the last event we bothered to read" rather than when the run last did
+     * anything. That is not merely imprecise: `resolveSessionTimelineWindow`
+     * extends a truncated detail's axis to `endedAt ?? lastActivityAt` precisely so
+     * a partial run cannot render as a complete one, and a prefix-derived
+     * `lastActivityAt` collapses that extension onto the last PLOTTED row —
+     * silently no-opping the guard for a still-running session (no `endedAt`).
+     * Those sessions fall back to the stored `sessions.last_activity_at` column,
+     * which ingest maintains as exactly this formula over the WHOLE stream.
+     *
+     * Deliberately per SESSION, not per read. A bounded read whose session came in
+     * UNDER the limit loaded the whole stream, so its derivation is already the
+     * right answer — and ISS-4833's desktop semantics (the detail's rendered
+     * `lastActivityAt` is event-derived, NOT the column, which on this surface is
+     * the retention/window anchor) must not move for it. That is the distinction
+     * `session-timeline-axis-window.spec.ts` seeds a divergent column to hold.
+     */
+    eventRowFetchLimit?: number;
+    // FEA-3555: keyed by session id (not cwd) so the per-row durable
+    // `repo_full_name` fallback / write-back can be applied.
     resolveAttribution: (
-      cwd: string | null
+      sessionId: string
     ) => ReturnType<typeof resolveSessionAttribution>;
+    // FEA-3568: optional diagnostic sink (the desktop `options.log`) used to make
+    // an over-cap activity-segment truncation visible instead of a silent cloud
+    // undercount. Absent on paths that never carry segments (the usage load).
+    log?: (message: string) => void;
+    /**
+     * ISS-5443: read `lastActivityAt` from the stored `sessions.last_activity_at`
+     * column instead of deriving it from `eventRows`.
+     *
+     * Set ONLY by the lightweight usage load, which fetches no event rows at all
+     * — so its derivation silently collapsed every session to `started_at`, and
+     * the usage half then windowed on a different timestamp than the Sessions
+     * list beside it. Deliberately NOT set on the full hydration path: there the
+     * events ARE loaded and the derivation picks the same INSTANT as the column
+     * whenever the events canonicalize (ISS-5497 made that true; where they do
+     * not, it is no more divergent than before), and that path feeds both the
+     * cloud sync payload and the Session Timeline axis,
+     * whose desktop-specific event-derived semantics ISS-4833 owns and this
+     * change must not move.
+     */
+    preferStoredLastActivityAt?: boolean;
   }
 ): SyncedAgentSession[] {
   const artifactLinksBySessionId = groupRowsBySessionId(rows.artifactLinkRows);
@@ -2154,6 +2140,18 @@ function assembleSyncedSessions(
   const eventsBySessionId = groupRowsBySessionId(rows.eventRows);
   const tokenUsageBySessionId = groupRowsBySessionId(rows.tokenRows);
   const tokenEventsBySessionId = groupRowsBySessionId(rows.tokenEventRows);
+  // FEA-3568: group segment rows by session id manually — the Prisma read
+  // delegate returns camelCase `sessionId`, not the snake_case `session_id` that
+  // `groupRowsBySessionId` keys on.
+  const segmentsBySessionId = new Map<string, SyncedSegmentQueryRow[]>();
+  for (const segment of rows.segmentRows) {
+    const existing = segmentsBySessionId.get(segment.sessionId);
+    if (existing) {
+      existing.push(segment);
+    } else {
+      segmentsBySessionId.set(segment.sessionId, [segment]);
+    }
+  }
   const sessionAnalyticsBySessionId = new Map(
     rows.sessionAnalyticsRows.map((row) => [row.session_id, row])
   );
@@ -2167,8 +2165,9 @@ function assembleSyncedSessions(
     if (!row) {
       return [];
     }
-    const attribution = rows.resolveAttribution(row.cwd);
-    const metadata = parseJsonObjectText(row.metadata);
+    const attribution = rows.resolveAttribution(row.id);
+    const storedMetadata = parseJsonObjectText(row.metadata);
+    const metadata = withoutMonitoredActivityOnlyMetadata(storedMetadata);
 
     const linkRows = artifactLinksBySessionId.get(id) ?? [];
     const artifactRefs: SyncedArtifactRef[] = [];
@@ -2210,15 +2209,33 @@ function assembleSyncedSessions(
         // capability-gate this emission or move branch refs to a version-safe
         // optional field.
         const observedAt = resolveLinkObservedAt(link);
+        const relation =
+          toArtifactRefRelation(link.relation) ?? ArtifactRefRelation.Workspace;
+        const branchLifecycleEvents = buildBranchLifecycleEventsForBranchLink(
+          link,
+          relation,
+          observedAt
+        );
+        const branchParticipation = deriveBranchParticipationFromEvidence({
+          relation,
+          method: link.method,
+          branchLifecycleEvents,
+        });
+        const monitoredSessionActivity = rows.includeMonitoredSessionActivity
+          ? monitoredSessionActivityFromEvidence(link.link_evidence ?? null)
+          : undefined;
         artifactRefs.push({
           kind: ArtifactRefTargetKind.Branch,
           repositoryFullName: link.repo_full_name,
           branchName: link.branch_name,
           method: link.method,
-          relation:
-            toArtifactRefRelation(link.relation) ??
-            ArtifactRefRelation.Workspace,
+          relation,
+          ...(branchParticipation ? { branchParticipation } : {}),
           ...(observedAt ? { observedAt } : {}),
+          ...(branchLifecycleEvents.length > 0
+            ? { branchLifecycleEvents }
+            : {}),
+          ...(monitoredSessionActivity ? { monitoredSessionActivity } : {}),
         });
       } else if (
         link.target_kind === "pull_request" &&
@@ -2226,37 +2243,52 @@ function assembleSyncedSessions(
         link.pr_number != null
       ) {
         const observedAt = resolveLinkObservedAt(link);
+        const relation =
+          toArtifactRefRelation(link.relation) ??
+          ArtifactRefRelation.Referenced;
+        const branchLifecycleEvents = buildBranchLifecycleEventsForPrLink(
+          link,
+          relation,
+          observedAt
+        );
         const lifecycle = prLifecycleByKey.get(
           `${link.repo_full_name}#${link.pr_number}`
         );
+        const monitoredSessionActivity = rows.includeMonitoredSessionActivity
+          ? monitoredSessionActivityFromEvidence(link.link_evidence ?? null)
+          : undefined;
         // FEA-2732: emit the PR as a fact-carrying `pull_request` artifactRef the
         // cloud syncs into PullRequestDetail. Same deploy-ordering note as branch
         // refs above: the enriched fields are optional, so a cloud that predates
         // FEA-2732 strips them (the ref kind has shipped since FEA-2729).
-        const headBranch = boundedString(link.branch_name, 300);
+        const headBranch = boundedWireString(link.branch_name, 300);
         artifactRefs.push({
           kind: ArtifactRefTargetKind.PullRequest,
           repositoryFullName: link.repo_full_name,
           prNumber: link.pr_number,
           method: link.method,
-          relation:
-            toArtifactRefRelation(link.relation) ??
-            ArtifactRefRelation.Referenced,
+          relation,
           ...(observedAt ? { observedAt } : {}),
+          ...(branchLifecycleEvents.length > 0
+            ? { branchLifecycleEvents }
+            : {}),
+          ...(monitoredSessionActivity ? { monitoredSessionActivity } : {}),
           ...(headBranch ? { branchName: headBranch } : {}),
           ...buildPullRequestArtifactRefFacts(link, lifecycle),
         });
-        // Retain the session↔PR association carrier (prRefs) for continuity of
-        // the derived "Authored/Referenced PR" purpose and old-cloud
-        // compatibility; the PR facts now ride the artifactRef above.
-        if (link.url) {
+        // The session↔PR association carrier (prRefs): derived PR purpose plus
+        // old-cloud compat; facts ride the artifactRef above. FEA-3585: no URL
+        // guard (a bare-number `reviewed` link has none). ISS-5764: prose
+        // MENTIONS are NOT carried — every non-CREATED entry ADJUDICATES its PR number and would delete a real authored PR (see PROSE_MENTION_REF_METHODS).
+        if (!PROSE_MENTION_REF_METHODS.has(link.method)) {
           prRefs.push({
             repositoryFullName: link.repo_full_name,
             prNumber: link.pr_number,
-            prUrl: link.url,
-            relationType: (link.relation === "created"
-              ? "CREATED"
-              : "REFERENCED") satisfies SessionPrRelationType,
+            ...(link.url ? { prUrl: link.url } : {}),
+            relationType: toSessionPrRelationType(link.relation),
+            ...(branchLifecycleEvents.length > 0
+              ? { branchLifecycleEvents }
+              : {}),
           });
         }
       } else if (link.target_kind === "commit") {
@@ -2274,14 +2306,14 @@ function assembleSyncedSessions(
           const committedAt = toSyncedCommitTimestamp(
             link.artifact_committed_at
           );
-          // Route LOC through nonNegativeInt() (int4/PR_INT_MAX bound) so a
+          // Route LOC through the int4 bound so a
           // 64-bit SQLite value above int4 is dropped here rather than
           // overflowing the cloud `commit_detail` INTEGER write and aborting
           // the whole batch — matching the PR-ref path
           // (buildPullRequestArtifactRefFacts, FEA-3206).
-          const linesAdded = nonNegativeInt(link.lines_added);
-          const linesRemoved = nonNegativeInt(link.lines_removed);
-          const filesChanged = nonNegativeInt(link.files_changed);
+          const linesAdded = boundedNonNegativeInt(link.lines_added);
+          const linesRemoved = boundedNonNegativeInt(link.lines_removed);
+          const filesChanged = boundedNonNegativeInt(link.files_changed);
           artifactRefs.push({
             kind: ArtifactRefTargetKind.Commit,
             repositoryFullName: link.repo_full_name,
@@ -2307,31 +2339,58 @@ function assembleSyncedSessions(
         }
       }
     }
-    // FEA-2711: bound both ref arrays to the shared per-session caps the cloud
-    // enforces. Links are ordered oldest-first, so this keeps the earliest N.
-    // Without this, a session over a cap fails cloud validation and — because
-    // the whole batch is validated with one parse — rejects up to 200 sessions,
-    // silently stalling sync (the sibling `markers` array is already sliced).
+    if (rows.includeMonitoredSessionActivity) {
+      artifactRefs.push(
+        ...monitoredActivityOnlyRefsFromMetadata(storedMetadata)
+      );
+    }
+    // FEA-2711 / ISS-4448+4449: bound the artifactRefs array to the desktop
+    // PRODUCER cap (`MAX_SYNCED_ARTIFACT_REFS_PRODUCER`, 100), NOT the raised
+    // cloud validator cap (`MAX_SYNCED_ARTIFACT_REFS`, 500). A new desktop must
+    // never emit a total array an old `.max(100)` cloud rejects — that would
+    // fail cloud validation and, because the whole batch is validated with one
+    // parse, reject up to 200 sessions and silently stall sync. The validator
+    // raise is receive-side + deploy-order-safe; this producer slice stays 100.
     //
-    // FEA-2731: commit refs share this cap but are LOWEST priority — branch/PR/
-    // closedloop refs are load-bearing (branch refs drive FR12 org visibility),
-    // so keep all of them first and let commits fill only the remaining budget.
-    // Otherwise a commit-heavy session could push a branch ref past the cap and
-    // silently drop it.
-    const nonCommitRefs = artifactRefs.filter(
-      (ref) => ref.kind !== ArtifactRefTargetKind.Commit
-    );
+    // FEA-2731: commit refs are LOWEST priority — branch/PR/closedloop refs are
+    // load-bearing (branch refs drive FR12 org visibility), so keep those first
+    // and let commits fill only the remaining budget.
+    //
+    // ISS-4448+4449: WITHIN the non-commit budget, `closedloop_artifact`
+    // (document) refs get a guaranteed floor so a PR-heavy session can't starve
+    // its document links to zero. ISS-5764: the commit count is passed so prose
+    // mentions cannot spend slots these commits need. See the budget helper.
     const commitRefs = artifactRefs.filter(
       (ref) => ref.kind === ArtifactRefTargetKind.Commit
     );
+    const nonCommitRefs = artifactRefs.filter(
+      (ref) => ref.kind !== ArtifactRefTargetKind.Commit
+    );
+    const boundedNonCommitRefs = boundNonCommitArtifactRefs(
+      nonCommitRefs,
+      commitRefs.length
+    );
+    const activityCoverageTruncated =
+      boundedNonCommitRefs.length < nonCommitRefs.length;
     const boundedArtifactRefs = [
-      ...nonCommitRefs.slice(0, MAX_SYNCED_ARTIFACT_REFS),
+      ...boundedNonCommitRefs,
       ...commitRefs.slice(
         0,
-        Math.max(0, MAX_SYNCED_ARTIFACT_REFS - nonCommitRefs.length)
+        Math.max(
+          0,
+          MAX_SYNCED_ARTIFACT_REFS_PRODUCER - boundedNonCommitRefs.length
+        )
       ),
-    ];
-    const boundedPrRefs = prRefs.slice(0, MAX_SYNCED_SESSION_PR_REFS);
+    ].map((ref) =>
+      activityCoverageTruncated ? downgradeMonitoredSessionActivity(ref) : ref
+    );
+    // ISS-4445: slice to the desktop PRODUCER cap (still 100), NOT the raised
+    // cloud validator cap (500). A new desktop must never emit >100 PR refs or an
+    // old (`.max(100)`) cloud rejects the whole batch during a staged rollout —
+    // the validator raise is receive-side + deploy-order-safe. A later PLN-1536
+    // PR lifts this producer bound once the raised-cap cloud is universally
+    // deployed (and adds the chunked PR-ref sync those higher counts need).
+    const boundedPrRefs = prRefs.slice(0, MAX_SYNCED_SESSION_PR_REFS_PRODUCER);
 
     const tokenUsageByModel: SyncedAgentSessionTokenUsage[] = (
       tokenUsageBySessionId.get(id) ?? []
@@ -2360,12 +2419,31 @@ function assembleSyncedSessions(
         tokenRow.baseline_cache_write,
         "sync.cache_write"
       );
+      // FEA-3419: additive TTL subdivision. Current-only (compaction baselines
+      // carry no per-request data → unclassified by design); null = absent.
+      const cacheWrite5mTokens =
+        tokenRow.cache_write_5m_tokens === null ||
+        tokenRow.cache_write_5m_tokens === undefined
+          ? null
+          : tokenCountValue(
+              tokenRow.cache_write_5m_tokens,
+              "sync.cache_write_5m"
+            );
+      const cacheWrite1hTokens =
+        tokenRow.cache_write_1h_tokens === null ||
+        tokenRow.cache_write_1h_tokens === undefined
+          ? null
+          : tokenCountValue(
+              tokenRow.cache_write_1h_tokens,
+              "sync.cache_write_1h"
+            );
       const estimatedCostUsd = resolveTokenUsageCostUsd({
         ...tokenRow,
         input_tokens: inputTokens,
         output_tokens: outputTokens,
         cache_read_tokens: cacheReadTokens,
         cache_write_tokens: cacheWriteTokens,
+        cache_write_1h_tokens: cacheWrite1hTokens,
       });
       return {
         model: tokenRow.model,
@@ -2373,22 +2451,25 @@ function assembleSyncedSessions(
         outputTokens,
         cacheReadTokens,
         cacheWriteTokens,
+        ...(cacheWrite5mTokens === null && cacheWrite1hTokens === null
+          ? {}
+          : { cacheWrite5mTokens, cacheWrite1hTokens }),
         ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
       };
     });
-    // FEA-2730 (G1): raw per-event token rows for cloud sync. The desktop
-    // `token_events` table has no primary key, so synthesize a stable
-    // `externalEventId` as a content hash of the row (the fragmentId /
-    // SessionActivitySegment.id precedent). Two identical-content rows collapse
-    // to one, which is the correct idempotent behavior on re-sync.
-    const tokenEvents: SyncedAgentSessionTokenEvent[] = (
-      tokenEventsBySessionId.get(id) ?? []
-    ).map((eventRow) => mapSyncedTokenEvent(id, eventRow));
+    // ISS-4881: raw per-event token rows prefer their persisted transport
+    // identity; untouched legacy rows retain the old content-hash fallback.
+    const sessionTokenEventRows = tokenEventsBySessionId.get(id) ?? [];
+    const tokenEvents: SyncedAgentSessionTokenEvent[] =
+      sessionTokenEventRows.map((eventRow) =>
+        mapSyncedTokenEvent(id, eventRow)
+      );
     const sessionAnalytics = mapSyncedSessionAnalytics(
       sessionAnalyticsBySessionId.get(id)
     );
     const sessionEventRows = eventsBySessionId.get(id) ?? [];
     const timelineRows = buildTraceTimelineRows(metadata, sessionEventRows);
+    const traceTokenEvents = mapTraceTokenEvents(id, sessionTokenEventRows);
     const traceFields = buildSessionTraceSyncFields({
       startedAt: row.started_at,
       updatedAt: row.updated_at,
@@ -2398,17 +2479,48 @@ function assembleSyncedSessions(
       artifactLinkBranch: resolveArtifactLinkBranch(linkRows),
       events: sessionEventRows,
       timelineRows,
-      tokenEvents: (tokenEventsBySessionId.get(id) ?? []).map(
-        normalizeTraceTokenEvent
-      ),
+      tokenEvents: traceTokenEvents,
       localPullRequests: pullRequestsBySessionId.get(id) ?? [],
     });
     const { markers: traceMarkers, ...traceFieldsWithoutMarkers } = traceFields;
 
+    // FEA-4022 (PLN-1481): fold this session's language heuristic, nearby-error
+    // spikes, and already-derived trace-signal counts into the raw, UNBOUNDED
+    // frustration signal, reusing the merged FEA-3928 scorer (never
+    // reimplemented). Computed here at sync-source assembly from the same event
+    // rows + trace fields the payload carries; the value flows to the cloud
+    // (persisted only when the org opted in) and Insights. Turn text comes from
+    // the event `summary` (present on every path — the sync builder omits only
+    // the heavy `data` blob, and `summary` is the primary turn-text source).
+    const frustrationRaw = computeFrustrationRaw(
+      deriveFrustrationInput(
+        sessionEventRows.map((eventRow) => ({
+          eventType: eventRow.event_type,
+          summary: eventRow.summary,
+          data: eventRow.data,
+        })),
+        {
+          steeringEpisodes: traceFields.steeringEpisodes,
+          correctionCount: traceFields.correctionSources?.length,
+          phaseLoopbacks: traceFields.phaseLoopbacks?.length,
+          throttles: traceFields.throttles?.length,
+        }
+      )
+    );
+
+    // FEA-3427: anchor artifact (commit/PR) marker coordinates to the same
+    // corrected wall-clock end (last real activity) the trace buckets/span use,
+    // not the days-long re-sync-bumped updated_at window.
     const artifactMarkers = buildArtifactSessionMarkers({
       startedAt: row.started_at,
       updatedAt: row.updated_at,
       endedAt: row.ended_at,
+      endMs: resolveTraceEndMs({
+        updatedAt: row.updated_at,
+        endedAt: row.ended_at,
+        timelineRows,
+        tokenEvents: traceTokenEvents,
+      }),
       links: linkRows,
       timelineRows: timelineRows.map((timelineRow) => ({
         createdAt: timelineRow.createdAt,
@@ -2419,12 +2531,26 @@ function assembleSyncedSessions(
       artifactMarkers
     ).slice(0, SESSION_TRACE_SOURCE_LIMITS.markers);
     // PLN-1034: genuine activity = the latest agent event, floored at the
-    // session start. Derived from the same local events the desktop syncs, so
-    // the desktop list and the cloud-derived value agree. Deliberately NOT
-    // row.updated_at (bumped by OTEL ingest / enrichment / sync writes).
-    // Track the running max as a cached epoch so each row's created_at is
-    // parsed exactly once (N+1 parses total), instead of re-parsing the
-    // accumulator on every iteration (~2N parses).
+    // session start. Deliberately NOT row.updated_at (bumped by OTEL ingest /
+    // enrichment / sync writes).
+    //
+    // ISS-5443: read the DENORMALIZED `sessions.last_activity_at` column when
+    // this SELECT projected it. That column is maintained inside the same ingest
+    // transaction that writes the events (`recomputeSessionLastActivityAt`) as
+    // the fold below's instant — in canonical UTC since ISS-5497, not verbatim
+    // event text — and it is the value the Sessions list SORTS by and every
+    // Sessions date window bounds on — so reading it is what makes the hydrated
+    // fold agree with the SQL paths instead of re-deriving a second opinion.
+    // Re-deriving was not merely redundant: `loadSqliteUsageSessions` (the
+    // lightweight usage fallback) loads NO event rows, so the derivation there
+    // collapsed every session to its `started_at` and the usage half windowed on
+    // a different timestamp than the list beside it.
+    //
+    // The event-derived max stays as the fallback for a load that did not
+    // project the column, and for a row whose column is unusable (a pre-0005
+    // install whose backfill has not run). Track the running max as a cached
+    // epoch so each row's created_at is parsed exactly once (N+1 parses total),
+    // instead of re-parsing the accumulator on every iteration (~2N parses).
     let lastActivityAt: string | null = row.started_at ?? null;
     let lastActivityEpoch =
       lastActivityAt === null ? null : new Date(lastActivityAt).getTime();
@@ -2437,6 +2563,53 @@ function assembleSyncedSessions(
         lastActivityAt = eventRow.created_at;
         lastActivityEpoch = eventEpoch;
       }
+    }
+    // ISS-5407: this session's rows REACHED the read's per-session limit, so what
+    // the loop above just derived is the max over a PREFIX. See the
+    // `eventRowFetchLimit` doc for why only these sessions switch bases.
+    const eventReadTruncated =
+      rows.eventRowFetchLimit !== undefined &&
+      sessionEventRows.length >= rows.eventRowFetchLimit;
+    if (rows.preferStoredLastActivityAt || eventReadTruncated) {
+      lastActivityAt = resolveSessionLastActivityAt(
+        row.last_activity_at,
+        lastActivityAt
+      );
+    }
+
+    // ISS-4541: the per-session activity tiling for cloud upsync, mapped to the
+    // wire shape IN FULL — no transport-cap truncation. An oversized tiling is
+    // CHUNKED across multiple sync parts (chunkOversizedSession paginates
+    // `activitySegmentRows` as its own stream when the server advertised
+    // `agentSessionSyncActivityChunking`) or, against an older cloud that can't
+    // merge multi-part tilings, dead-letters the WHOLE session for a
+    // larger-payload retry — never a silent partial. The transport byte cap is a
+    // per-request limit the chunker honors, not a data-model limit that drops
+    // rows here.
+    const sessionSegments = segmentsBySessionId.get(id) ?? [];
+    const mappedSegmentRows = sessionSegments.map(mapSyncedActivitySegment);
+    // ISS-4578 (wongk P1): the per-session load is bounded at the db-host
+    // memory-safety ceiling + 1. When the true tiling EXCEEDS that ceiling the
+    // loaded set is a PREFIX, not the whole tiling. Uploading that prefix would
+    // let the cloud store a partial tiling with no truncation signal and then ack
+    // + clear the outbox — silent tail loss (the exact failure this ticket
+    // fixes). Since omitting `activitySegmentRows` entirely is a cloud NO-OP
+    // (never clears the previously stored tiling — see persistSessionActivitySegments),
+    // DROP the tiling from this payload rather than ship a lossy prefix: the rest
+    // of the session syncs now and the tiling stays whatever the cloud already
+    // has, deferred until it is re-derived to a materializable size. This ceiling
+    // is a memory backstop set far above any realistic tiling (p99 ~1051
+    // segments), so this path is extraordinarily pathological; it is logged so the
+    // omission is visible, never a silent undercount.
+    const activityTilingOverflowed =
+      mappedSegmentRows.length > ACTIVITY_SEGMENT_SYNC_MAX_ROWS;
+    const activitySegmentRows = activityTilingOverflowed
+      ? []
+      : mappedSegmentRows;
+    if (activityTilingOverflowed) {
+      rows.log?.(
+        `sync-source: session ${id} activity tiling exceeds the db-host load ceiling (${ACTIVITY_SEGMENT_SYNC_MAX_ROWS} rows); OMITTING the tiling from this payload (a prefix would be a silent partial) — it defers until re-derived to a materializable size`
+      );
     }
 
     return [
@@ -2453,11 +2626,17 @@ function assembleSyncedSessions(
         lastActivityAt,
         endedAt: row.ended_at,
         awaitingInputSince: row.awaiting_input_since,
+        endsWithError: sqliteFlagToNullableBoolean(row.ends_with_error),
         metadata,
         ...(row.user_id ? { userId: row.user_id } : {}),
         ...(row.organization_id ? { organizationId: row.organization_id } : {}),
         deviceTimeZone: localTimeZone(),
         dataRevision: row.data_revision,
+        // FEA-4022: the raw frustration signal + scorer version. Always emitted
+        // by this build; the cloud persists them only when the org opted into
+        // `calculateSessionFrustration`, else drops them at ingest.
+        frustrationRaw,
+        frustrationScoreVersion: FRUSTRATION_SCORE_VERSION,
         ...(attribution ? { attribution } : {}),
         ...traceFieldsWithoutMarkers,
         ...(markers.length > 0 ? { markers } : {}),
@@ -2500,6 +2679,14 @@ function assembleSyncedSessions(
         // session with no rows sends nothing (an omitted array/rollup never
         // clears previously synced cloud rows).
         ...(tokenEvents.length > 0 ? { tokenEvents } : {}),
+        // FEA-3568: additive activity-segment tiling for cloud upsync. Omitted
+        // when empty so a session with no segments never clears cloud rows (the
+        // cloud no-ops on absence, replace-on-open + append-idempotent on
+        // presence). ISS-4541: the FULL tiling ships here; an oversized tiling is
+        // chunked across sync parts (or dead-lettered), never truncated — so the
+        // partial-tiling `activitySegmentRowsTruncated` signal is no longer
+        // emitted (the transport cap can no longer produce a partial cloud tiling).
+        ...(activitySegmentRows.length > 0 ? { activitySegmentRows } : {}),
         ...(sessionAnalytics ? { sessionAnalytics } : {}),
         // T-8.6: additive per-session component usage. Bounded to
         // MAX_SESSION_COMPONENT_USAGE to prevent oversized payloads (mirrors
@@ -2594,67 +2781,27 @@ function buildBoundedComponentUsage(
     // no-branch sentinel back to null so the cloud reads it as "no per-event
     // branch" and applies the session-level fallback.
     gitBranch: row.git_branch === "" ? null : row.git_branch,
+    // FEA-2923: hash-at-invocation attribution (null when uncollected).
+    componentVersionHash: row.component_version_hash ?? null,
   }));
   return { components };
 }
 
-/**
- * FEA-2730 (G1): map one desktop `token_events` row to a synced token event,
- * synthesizing a stable content-hash `externalEventId` (the source table has no
- * primary key). The hash spans the session id and every synced column so a
- * re-sync of an unchanged row produces the same id (idempotent no-op), while
- * genuinely distinct rows differ.
- */
-function mapSyncedTokenEvent(
-  sessionId: string,
-  eventRow: SqliteTokenEventRow
-): SyncedAgentSessionTokenEvent {
-  const inputTokens = tokenCountValue(
-    eventRow.input_tokens,
-    "tokenEvent.input"
-  );
-  const outputTokens = tokenCountValue(
-    eventRow.output_tokens,
-    "tokenEvent.output"
-  );
-  const cacheReadTokens = tokenCountValue(
-    eventRow.cache_read_tokens,
-    "tokenEvent.cacheRead"
-  );
-  const cacheWriteTokens = tokenCountValue(
-    eventRow.cache_write_tokens,
-    "tokenEvent.cacheWrite"
-  );
-  const estimatedCostUsd = eventRow.cost_usd_estimated ?? undefined;
-  // Hash only the row's IMMUTABLE identity. `cost_usd_estimated` is deliberately
-  // excluded: it is re-written in place on the desktop when a pricing update
-  // lands mid-session (updateTokenEventCost), and folding a mutable field into
-  // the id would mint a fresh externalEventId for the re-priced row — the cloud
-  // (which dedupes on (agentSessionId, externalEventId) with skipDuplicates)
-  // would then insert a duplicate and double-count. Identity is the raw usage
-  // fact: session + model + timestamp + token counts.
-  const externalEventId = createHash("sha256")
-    .update(
-      stableStringify({
-        sessionId,
-        model: eventRow.model,
-        createdAt: eventRow.created_at,
-        inputTokens,
-        outputTokens,
-        cacheReadTokens,
-        cacheWriteTokens,
-      })
-    )
-    .digest("hex");
+/** Map one persisted activity-segment row to its additive sync shape. */
+function mapSyncedActivitySegment(
+  segment: SyncedSegmentQueryRow
+): SyncedActivitySegmentRow {
   return {
-    externalEventId,
-    model: eventRow.model,
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
-    createdAt: eventRow.created_at,
+    phase: segment.phase,
+    startMs: Number(segment.startMs),
+    endMs: Number(segment.endMs),
+    confidence: segment.confidence,
+    evidenceLayers: normalizeActivitySegmentEvidenceLayers(
+      segment.evidenceLayers
+    ),
+    version: segment.version,
+    workItemRef: segment.workItemRef,
+    subagentId: segment.subagentId,
   };
 }
 
@@ -2748,21 +2895,35 @@ export async function getArtifactSessionUsage(
       unpriced_output_tokens: string | null;
       unpriced_cache_read_tokens: string | null;
       unpriced_cache_write_tokens: string | null;
+      unpriced_cache_write_1h_tokens: string | null;
     }[]
   >(
     `
+      -- FEA-3391: fold the pre-compaction baselines into the effective totals
+      -- (input_tokens + baseline_input, …) so per-artifact cost attribution
+      -- counts all incurred tokens, not just the post-compaction subset. The
+      -- raw current columns undercount any compacted session; the unpriced
+      -- sums below reprice from the same folded totals. Mirrors the
+      -- session_analytics upsert fold in session-analytics-rollup.ts.
       SELECT
         a.slug,
         tu.model,
-        COALESCE(SUM(tu.input_tokens), 0) AS input_tokens,
-        COALESCE(SUM(tu.output_tokens), 0) AS output_tokens,
-        COALESCE(SUM(tu.cache_read_tokens), 0) AS cache_read_tokens,
-        COALESCE(SUM(tu.cache_write_tokens), 0) AS cache_write_tokens,
+        -- FEA-3317: fold pre-compaction baseline_* into BOTH the reported token
+        -- totals and the unpriced-token reprice sums, mirroring
+        -- aggregateSqliteUsage / aggregateSqliteAnalytics and the sync
+        -- projection, so a compacted artifact session reports its effective
+        -- (current + baseline) tokens and reprices its cost on that total.
+        -- baseline_* is NOT NULL DEFAULT 0 → current-only when never compacted.
+        COALESCE(SUM(COALESCE(tu.input_tokens, 0) + COALESCE(tu.baseline_input, 0)), 0) AS input_tokens,
+        COALESCE(SUM(COALESCE(tu.output_tokens, 0) + COALESCE(tu.baseline_output, 0)), 0) AS output_tokens,
+        COALESCE(SUM(COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.baseline_cache_read, 0)), 0) AS cache_read_tokens,
+        COALESCE(SUM(COALESCE(tu.cache_write_tokens, 0) + COALESCE(tu.baseline_cache_write, 0)), 0) AS cache_write_tokens,
         SUM(tu.cost_usd_estimated) AS cost_usd_estimated,
-        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.input_tokens, 0) ELSE 0 END) AS unpriced_input_tokens,
-        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.output_tokens, 0) ELSE 0 END) AS unpriced_output_tokens,
-        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.cache_read_tokens, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
-        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.cache_write_tokens, 0) ELSE 0 END) AS unpriced_cache_write_tokens
+        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.input_tokens, 0) + COALESCE(tu.baseline_input, 0) ELSE 0 END) AS unpriced_input_tokens,
+        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.output_tokens, 0) + COALESCE(tu.baseline_output, 0) ELSE 0 END) AS unpriced_output_tokens,
+        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.cache_read_tokens, 0) + COALESCE(tu.baseline_cache_read, 0) ELSE 0 END) AS unpriced_cache_read_tokens,
+        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.cache_write_tokens, 0) + COALESCE(tu.baseline_cache_write, 0) ELSE 0 END) AS unpriced_cache_write_tokens,
+        SUM(CASE WHEN tu.cost_usd_estimated IS NULL THEN COALESCE(tu.cache_write_1h_tokens, 0) ELSE 0 END) AS unpriced_cache_write_1h_tokens
       FROM session_artifact_links sal
       JOIN artifacts a ON a.id = sal.artifact_id
       JOIN token_usage tu ON tu.session_id = sal.session_id
@@ -2855,6 +3016,10 @@ export async function getArtifactSessionUsage(
             r.unpriced_cache_write_tokens,
             "artifact.unpriced_cache_write"
           ),
+          cache_write_1h_tokens: tokenCountValue(
+            r.unpriced_cache_write_1h_tokens,
+            "artifact.unpriced_cache_write_1h"
+          ),
           cost_usd_estimated: null,
         }) ?? 0);
     }
@@ -2886,6 +3051,10 @@ export async function loadSqliteMeteredUsageRows(
         output_tokens: unknown;
         cache_read_tokens: unknown;
         cache_write_tokens: unknown;
+        baseline_input: unknown;
+        baseline_output: unknown;
+        baseline_cache_read: unknown;
+        baseline_cache_write: unknown;
       }[]
     >(
       `
@@ -2898,7 +3067,11 @@ export async function loadSqliteMeteredUsageRows(
         tu.input_tokens AS input_tokens,
         tu.output_tokens AS output_tokens,
         tu.cache_read_tokens AS cache_read_tokens,
-        tu.cache_write_tokens AS cache_write_tokens
+        tu.cache_write_tokens AS cache_write_tokens,
+        tu.baseline_input AS baseline_input,
+        tu.baseline_output AS baseline_output,
+        tu.baseline_cache_read AS baseline_cache_read,
+        tu.baseline_cache_write AS baseline_cache_write
       FROM token_usage tu
       JOIN sessions s ON s.id = tu.session_id
       WHERE s.started_at >= $1
@@ -2916,46 +3089,37 @@ export async function loadSqliteMeteredUsageRows(
     if (!isMeteredApi(billingMode)) {
       continue;
     }
+    // FEA-3390: fold the pre-compaction baselines into the effective totals so
+    // metered reconciliation compares the full incurred token counts to the
+    // provider bill. The raw current columns hold only the post-compaction
+    // subset, which would undercount any compacted session (and falsely read as
+    // a provider over-charge). Mirrors the cloud-sync per-model fold above.
     out.push({
       sessionId: row.session_id,
       model: row.model,
       startedAt: row.started_at,
       billingMode,
-      inputTokens: tokenCountValue(row.input_tokens, "metered.input"),
-      outputTokens: tokenCountValue(row.output_tokens, "metered.output"),
-      cacheReadTokens: tokenCountValue(
+      inputTokens: addStorageTokenCounts(
+        row.input_tokens,
+        row.baseline_input,
+        "metered.input"
+      ),
+      outputTokens: addStorageTokenCounts(
+        row.output_tokens,
+        row.baseline_output,
+        "metered.output"
+      ),
+      cacheReadTokens: addStorageTokenCounts(
         row.cache_read_tokens,
+        row.baseline_cache_read,
         "metered.cache_read"
       ),
-      cacheWriteTokens: tokenCountValue(
+      cacheWriteTokens: addStorageTokenCounts(
         row.cache_write_tokens,
+        row.baseline_cache_write,
         "metered.cache_write"
       ),
     });
   }
   return out;
-}
-
-function normalizeTraceTokenEvent(
-  row: SqliteTokenEventRow
-): SessionTraceSyncInput["tokenEvents"][number] {
-  return {
-    model: row.model,
-    created_at: row.created_at,
-    input_tokens: tokenCountValue(row.input_tokens, "trace.input"),
-    output_tokens: tokenCountValue(row.output_tokens, "trace.output"),
-    cache_read_tokens: tokenCountValue(
-      row.cache_read_tokens,
-      "trace.cache_read"
-    ),
-    cache_write_tokens: tokenCountValue(
-      row.cache_write_tokens,
-      "trace.cache_write"
-    ),
-    cost_usd_estimated: row.cost_usd_estimated,
-    input_cost_usd_estimated: row.input_cost_usd_estimated,
-    output_cost_usd_estimated: row.output_cost_usd_estimated,
-    cache_read_cost_usd_estimated: row.cache_read_cost_usd_estimated,
-    cache_creation_cost_usd_estimated: row.cache_creation_cost_usd_estimated,
-  };
 }

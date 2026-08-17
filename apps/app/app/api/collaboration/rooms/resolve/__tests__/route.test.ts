@@ -255,7 +255,7 @@ describe("GET /api/collaboration/rooms/resolve", () => {
       const response = await GET(createRequest(roomId));
       const body = await response.json();
 
-      expect(body[0].url).toBe("/test-org/features/feat-001");
+      expect(body[0].url).toBe("/test-org/issues/feat-001");
     });
 
     it("leaves url null when meta.type is not a navigable type (e.g. TEMPLATE)", async () => {

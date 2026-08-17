@@ -1,5 +1,5 @@
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { LoopBranchMaterializationRole } from "@repo/api/src/types/loop-body";
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import { describe, expect, it } from "vitest";
 import { buildLoopBranchMaterialization } from "./loop-branch-materialization";
 

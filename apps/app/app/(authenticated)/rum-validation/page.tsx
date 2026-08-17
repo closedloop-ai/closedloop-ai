@@ -7,8 +7,9 @@ export default function RumValidationPage() {
     notFound();
   }
 
+  // plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate).
   return (
-    <main className="flex h-full flex-col items-center justify-center gap-4 p-6">
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-6">
       <h1 className="font-semibold text-lg">RUM validation</h1>
       <p data-testid="rum-validation-route-template">/rum-validation</p>
       <label htmlFor="rum-validation-sensitive-input">Validation input</label>
@@ -19,6 +20,6 @@ export default function RumValidationPage() {
         name="sensitive-user-input"
       />
       <RumValidationTrigger />
-    </main>
+    </div>
   );
 }

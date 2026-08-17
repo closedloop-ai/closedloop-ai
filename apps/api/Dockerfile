@@ -9,9 +9,9 @@
 # workspace `node_modules` + source rather than a traced standalone bundle.
 #
 # The workspace closure is derived mechanically with `turbo prune api --docker`
-# (no hand-maintained COPY list), satisfying the CLAUDE.md "Dockerized Workspace
+# (no hand-maintained COPY list), satisfying the AGENTS.md "Dockerized Workspace
 # Apps" rule that every required @repo/* package + transitive dep is present.
-# Validate BOTH `--target builder` and the full image (CLAUDE.md mandate).
+# Validate BOTH `--target builder` and the full image (AGENTS.md mandate).
 # ---------------------------------------------------------------------------
 
 FROM node:24-slim AS base

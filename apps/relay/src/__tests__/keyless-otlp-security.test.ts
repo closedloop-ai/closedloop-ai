@@ -1,13 +1,13 @@
 import {
+  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
+  type DesktopAgentSessionsAck,
+} from "@repo/api/src/types/agent-session";
+import {
   KEYLESS_TELEMETRY_EXPORT_EVENT,
   KEYLESS_TELEMETRY_HANDSHAKE_EVENT,
   type KeylessTelemetryExportAck,
   type KeylessTelemetrySessionAck,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
-import {
-  DESKTOP_AGENT_SESSIONS_SOCKET_EVENT,
-  type DesktopAgentSessionsAck,
-} from "@repo/api/src/types/agent-session";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveCollectorOrigin } from "../keyless-otlp-ingress";
 import {

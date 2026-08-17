@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  classifyBrowserCommandKeyRevocationCommand,
-  handleBrowserCommandKeyRevocationCommand,
-} from "../src/main/browser-command-key-revocation.js";
 import type {
   DesktopCommandAckEvent,
   DesktopCommandEvent,
   DesktopCommandStreamEvent,
-} from "../src/main/cloud-protocol.js";
+} from "../src/main/cloud/cloud-protocol.js";
+import {
+  classifyBrowserCommandKeyRevocationCommand,
+  handleBrowserCommandKeyRevocationCommand,
+} from "../src/main/command-signing/browser-command-key-revocation.js";
 import {
   BROWSER_COMMAND_KEY_REVOKE_INVALID_REASON,
   BROWSER_COMMAND_KEY_REVOKE_METHOD,

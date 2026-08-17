@@ -1,3 +1,11 @@
+/**
+ * Report-type scoping + description/collision mapping for the judges-analytics
+ * service after the FEA-2809/FEA-2742 DB-pushdown.
+ *
+ * `getAggregateStats` and `getJudgeDetail` now aggregate DB-side via `$queryRaw`
+ * (power sums), and `getJudgeScores` pages via `$queryRaw`. The mocks below feed
+ * the raw-query shapes and assert the reconstructed output + scoping.
+ */
 import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { withDb } from "@repo/database";
@@ -11,6 +19,7 @@ vi.mock("@repo/database", () => ({
       strings,
       values,
     }),
+    join: (values: unknown[]) => ({ join: values }),
   },
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
@@ -26,22 +35,48 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+/** Power-sum group row (getAggregateJudgeScoreGroups shape). */
+function groupRow(overrides: {
+  caseId: string;
+  metricName: string;
+  promptId: string | null;
+  subtype?: string;
+  scores: number[];
+  documentIds: string[];
+}) {
+  const scores = overrides.scores;
+  const count = scores.length;
+  const sum = scores.reduce((a, b) => a + b, 0);
+  const sumSq = scores.reduce((a, b) => a + b * b, 0);
+  return {
+    caseId: overrides.caseId,
+    metricName: overrides.metricName,
+    promptId: overrides.promptId,
+    subtype: overrides.subtype ?? DocumentType.ImplementationPlan,
+    count,
+    sum,
+    sumSq,
+    min: Math.min(...scores),
+    max: Math.max(...scores),
+    documentIds: overrides.documentIds,
+  };
+}
+
 describe("judgesAnalyticsService reportType scoping", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("filters aggregate stats query by evaluation.reportType", async () => {
-    const judgeScoreFindMany = vi.fn().mockResolvedValue([]);
+  it("filters the aggregate query by reportType and returns its groups", async () => {
+    // $queryRaw calls: [0] description lookup, [1] aggregate groups.
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
     const mockDb = {
-      prompt: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-      $queryRaw: vi.fn().mockResolvedValue([]),
-      judgeScore: { findMany: judgeScoreFindMany },
-      artifact: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
+      prompt: { findMany: vi.fn().mockResolvedValue([]) },
+      $queryRaw: queryRaw,
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
       artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
       artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
@@ -62,57 +97,43 @@ describe("judgesAnalyticsService reportType scoping", () => {
     );
 
     expect(result.reportType).toBe(EvaluationReportType.Code);
-    expect(judgeScoreFindMany).toHaveBeenCalledOnce();
-    const [call] = judgeScoreFindMany.mock.calls;
-    expect(call[0].where.evaluation.reportType).toBe(EvaluationReportType.Code);
+    const aggregateCall = queryRaw.mock.calls[1][0] as { values: unknown[] };
+    expect(aggregateCall.values).toContain(EvaluationReportType.Code);
   });
 
   it("maps judge descriptions from latest prompt version", async () => {
-    const mockDb = {
-      prompt: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-      // getJudgeDescriptionByPromptName now selects the latest version per name
-      // in SQL via DISTINCT ON, so the raw query returns one row per name.
-      $queryRaw: vi.fn().mockResolvedValue([
+    const queryRaw = vi
+      .fn()
+      // getJudgeDescriptionByPromptName (DISTINCT ON latest per name)
+      .mockResolvedValueOnce([
         {
           name: "clarity-judge",
           description: "Latest clarity description",
           version: 2,
         },
-      ]),
-      judgeScore: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            caseId: "clarity-judge",
-            metricName: "clarity-judge",
-            promptId: null,
-            score: 0.8,
-            evaluation: {
-              artifactId: "artifact-1",
-            },
-          },
-          {
-            caseId: "unknown-judge",
-            metricName: "unknown-judge",
-            promptId: null,
-            score: 0.7,
-            evaluation: {
-              artifactId: "artifact-1",
-            },
-          },
-        ]),
-      },
-      artifact: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([
-            { id: "artifact-1", subtype: DocumentType.ImplementationPlan },
-          ]),
-      },
-      artifactRating: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
+      ])
+      // getAggregateJudgeScoreGroups
+      .mockResolvedValueOnce([
+        groupRow({
+          caseId: "clarity-judge",
+          metricName: "clarity-judge",
+          promptId: null,
+          scores: [0.8],
+          documentIds: ["artifact-1"],
+        }),
+        groupRow({
+          caseId: "unknown-judge",
+          metricName: "unknown-judge",
+          promptId: null,
+          scores: [0.7],
+          documentIds: ["artifact-1"],
+        }),
+      ]);
+    const mockDb = {
+      prompt: { findMany: vi.fn().mockResolvedValue([]) },
+      $queryRaw: queryRaw,
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
       artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
@@ -143,8 +164,10 @@ describe("judgesAnalyticsService reportType scoping", () => {
     expect(unknownJudge?.description).toBeNull();
   });
 
-  it("filters judge detail query by evaluation.reportType", async () => {
-    const judgeScoreFindMany = vi.fn().mockResolvedValue([]);
+  it("filters the judge-detail query by reportType", async () => {
+    // getJudgeDetail: prompt.findMany resolves versions, then a single
+    // $queryRaw returns per-promptId power moments (empty here).
+    const queryRaw = vi.fn().mockResolvedValueOnce([]);
     const mockDb = {
       prompt: {
         findMany: vi.fn().mockResolvedValue([
@@ -157,7 +180,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
           },
         ]),
       },
-      judgeScore: { findMany: judgeScoreFindMany },
+      $queryRaw: queryRaw,
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -175,28 +198,16 @@ describe("judgesAnalyticsService reportType scoping", () => {
     );
 
     expect(result?.judge.reportType).toBe(EvaluationReportType.Plan);
-    expect(judgeScoreFindMany).toHaveBeenCalledOnce();
-    const [call] = judgeScoreFindMany.mock.calls;
-    expect(call[0].where.evaluation.reportType).toBe(EvaluationReportType.Plan);
+    expect(queryRaw).toHaveBeenCalledOnce();
+    const detailCall = queryRaw.mock.calls[0][0] as { values: unknown[] };
+    expect(detailCall.values).toContain(EvaluationReportType.Plan);
   });
 
   it("keeps prompt route identity separate from metric display in collision rows", async () => {
-    const mockDb = {
-      prompt: {
-        // descriptionById lookup by promptId (getJudgeDescriptionByPromptName
-        // now issues a separate $queryRaw, mocked below).
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "prompt-1",
-            description: "Judge alpha description",
-          },
-          {
-            id: "prompt-2",
-            description: "Judge beta description",
-          },
-        ]),
-      },
-      $queryRaw: vi.fn().mockResolvedValue([
+    const queryRaw = vi
+      .fn()
+      // getJudgeDescriptionByPromptName
+      .mockResolvedValueOnce([
         {
           name: "judge-alpha",
           description: "Judge alpha description",
@@ -207,38 +218,36 @@ describe("judgesAnalyticsService reportType scoping", () => {
           description: "Judge beta description",
           version: 1,
         },
-      ]),
-      judgeScore: {
+      ])
+      // getAggregateJudgeScoreGroups — same metricName from two promptIds =
+      // collision, so keys disambiguate by route name.
+      .mockResolvedValueOnce([
+        groupRow({
+          caseId: "judge-alpha",
+          metricName: "clarity",
+          promptId: "prompt-1",
+          scores: [0.8],
+          documentIds: ["artifact-1"],
+        }),
+        groupRow({
+          caseId: "judge-beta",
+          metricName: "clarity",
+          promptId: "prompt-2",
+          scores: [0.7],
+          documentIds: ["artifact-2"],
+        }),
+      ]);
+    const mockDb = {
+      prompt: {
+        // buildMetricNameDescriptionMap: descriptionById lookup by promptId.
         findMany: vi.fn().mockResolvedValue([
-          {
-            caseId: "judge-alpha",
-            metricName: "clarity",
-            promptId: "prompt-1",
-            score: 0.8,
-            evaluation: {
-              artifactId: "artifact-1",
-            },
-          },
-          {
-            caseId: "judge-beta",
-            metricName: "clarity",
-            promptId: "prompt-2",
-            score: 0.7,
-            evaluation: {
-              artifactId: "artifact-2",
-            },
-          },
+          { id: "prompt-1", description: "Judge alpha description" },
+          { id: "prompt-2", description: "Judge beta description" },
         ]),
       },
-      artifact: {
-        findMany: vi.fn().mockResolvedValue([
-          { id: "artifact-1", subtype: DocumentType.ImplementationPlan },
-          { id: "artifact-2", subtype: DocumentType.ImplementationPlan },
-        ]),
-      },
-      artifactRating: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
+      $queryRaw: queryRaw,
+      artifact: { findMany: vi.fn().mockResolvedValue([]) },
+      artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
       artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
     };
 
@@ -277,8 +286,13 @@ describe("judgesAnalyticsService reportType scoping", () => {
     );
   });
 
-  it("queries scores by resolved prompt IDs instead of metricName", async () => {
-    const judgeScoreFindMany = vi.fn().mockResolvedValue([]);
+  it("pages judge scores by resolved prompt IDs via the raw page query", async () => {
+    // getJudgeScores: prompt.findMany resolves two versions, then $queryRaw
+    // (page query, then totals fallback since the page is empty).
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ totalRows: 0, ratedRows: 0 }]);
     const mockDb = {
       prompt: {
         findMany: vi.fn().mockResolvedValue([
@@ -298,10 +312,7 @@ describe("judgesAnalyticsService reportType scoping", () => {
           },
         ]),
       },
-      judgeScore: { findMany: judgeScoreFindMany },
-      artifact: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
+      $queryRaw: queryRaw,
     };
 
     vi.mocked(withDb).mockImplementation((callback) =>
@@ -320,12 +331,10 @@ describe("judgesAnalyticsService reportType scoping", () => {
       20
     );
 
-    expect(judgeScoreFindMany).toHaveBeenCalledOnce();
-    const [findManyCall] = judgeScoreFindMany.mock.calls;
-    expect(findManyCall[0].where.promptId).toEqual({
-      in: ["prompt-1", "prompt-2"],
-    });
-    expect(findManyCall[0].where.metricName).toBeUndefined();
+    const pageCall = queryRaw.mock.calls[0][0] as { values: unknown[] };
+    const flatValues = JSON.stringify(pageCall.values);
+    expect(flatValues).toContain("prompt-1");
+    expect(flatValues).toContain("prompt-2");
     expect(result).toEqual(
       expect.objectContaining({
         rows: [],

@@ -1,4 +1,10 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import {
+  BranchTraceCompletenessState,
+  BranchTraceSessionHydrationState,
+  BranchTraceUnavailableReason,
+  type MergedTraceItem,
+} from "@repo/api/src/types/branch-trace";
+import { TraceCommentKind } from "@repo/api/src/types/comment";
 import type {
   TraceCommentItem,
   TraceTextAnchor,
@@ -76,7 +82,68 @@ export const ActiveRow: Story = {
 };
 
 export const Empty: Story = {
-  args: { traceItems: [] },
+  args: {
+    traceItems: [],
+    traceState: {
+      aggregateCompleteness: { state: BranchTraceCompletenessState.Complete },
+      completeness: { state: BranchTraceCompletenessState.Complete },
+      qualifyingSessionCount: 0,
+      sessions: [],
+    },
+  },
+};
+
+export const TraceUnavailable: Story = {
+  args: {
+    traceItems: [],
+    traceState: {
+      aggregateCompleteness: {
+        reason: BranchTraceUnavailableReason.Permission,
+        state: BranchTraceCompletenessState.Unavailable,
+      },
+      completeness: {
+        reason: BranchTraceUnavailableReason.Permission,
+        state: BranchTraceCompletenessState.Unavailable,
+      },
+      qualifyingSessionCount: 2,
+      sessions: [
+        unavailableSession("session-1", "Implementation Session"),
+        unavailableSession("session-2", "Review Session"),
+      ],
+    },
+  },
+};
+
+export const PartialHydration: Story = {
+  args: {
+    traceItems,
+    traceState: {
+      aggregateCompleteness: { state: BranchTraceCompletenessState.Incomplete },
+      completeness: { state: BranchTraceCompletenessState.Incomplete },
+      qualifyingSessionCount: 2,
+      sessions: [
+        {
+          identity: {
+            artifactId: "session-1",
+            name: "Implementation Session",
+            navigableRef: "SES-1",
+            slug: "SES-1",
+          },
+          state: BranchTraceSessionHydrationState.Loaded,
+        },
+        {
+          identity: {
+            artifactId: "session-2",
+            name: "Review Session",
+            navigableRef: "SES-2",
+            slug: "SES-2",
+          },
+          reason: BranchTraceUnavailableReason.Permission,
+          state: BranchTraceSessionHydrationState.Unavailable,
+        },
+      ],
+    },
+  },
 };
 
 export const PostedQuotedComment: Story = {
@@ -107,9 +174,14 @@ function PostedQuotedCommentStory() {
       target: { type: "branch", id: "story-branch" },
       artifactId: "story-branch",
       surface: "branch_detail",
+      kind: TraceCommentKind.Comment,
       anchor,
       body: "This quote stays anchored to the selected source passage.",
       status: "OPEN",
+      resolvedAt: null,
+      resolvedById: null,
+      resolvedByName: null,
+      resolvedByAvatarUrl: null,
       createdAt: "2026-06-17T10:06:00.000Z",
       updatedAt: "2026-06-17T10:06:00.000Z",
       editedAt: null,
@@ -145,7 +217,12 @@ function PostedQuotedCommentStory() {
                 artifactId: "story-branch",
                 surface: "branch_detail",
                 ...draft,
+                kind: draft.kind ?? TraceCommentKind.Comment,
                 status: "OPEN",
+                resolvedAt: null,
+                resolvedById: null,
+                resolvedByName: null,
+                resolvedByAvatarUrl: null,
                 createdAt: "2026-06-17T10:06:00.000Z",
                 updatedAt: "2026-06-17T10:06:00.000Z",
                 editedAt: null,
@@ -174,4 +251,17 @@ function PostedQuotedCommentStory() {
       />
     </div>
   );
+}
+
+function unavailableSession(artifactId: string, name: string) {
+  return {
+    identity: {
+      artifactId,
+      name,
+      navigableRef: artifactId,
+      slug: artifactId,
+    },
+    reason: BranchTraceUnavailableReason.Permission,
+    state: BranchTraceSessionHydrationState.Unavailable,
+  } as const;
 }

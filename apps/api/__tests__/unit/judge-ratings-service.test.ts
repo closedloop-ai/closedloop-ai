@@ -7,11 +7,7 @@
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  getMockWithDb,
-  mockWithDbCall,
-  mockWithDbTx,
-} from "../utils/db-helpers";
+import { getMockWithDb, mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -88,7 +84,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -120,7 +116,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -137,6 +133,14 @@ describe("submitJudgeRating", () => {
       metricName: "clarity",
       reportType: EvaluationReportType.Plan,
     });
+    // The recovery update must NOT ride the transaction the failed create
+    // poisoned. Each write goes through its own `withDb` (lookup, create,
+    // update = 3), and no interactive transaction is opened at all — Postgres
+    // would reject the update outright if it shared one with the create. See
+    // the DB-backed proof in
+    // __tests__/integration/judge-ratings-unique-race.test.ts.
+    expect(getMockWithDb().tx).not.toHaveBeenCalled();
+    expect(getMockWithDb()).toHaveBeenCalledTimes(3);
   });
 
   it("accepts rating = 0 (minimum boundary)", async () => {
@@ -149,7 +153,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -178,7 +182,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -201,7 +205,7 @@ describe("submitJudgeRating", () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -219,7 +223,7 @@ describe("submitJudgeRating", () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -247,7 +251,7 @@ describe("submitJudgeRating", () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,
@@ -281,7 +285,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     await submitJudgeRating(ORG_ID, USER_ID, ARTIFACT_ID, JUDGE_SCORE_ID, 0.75);
 
@@ -293,6 +297,7 @@ describe("submitJudgeRating", () => {
         organizationId: ORG_ID,
         score: 0.75,
       },
+      select: { id: true },
     });
   });
 
@@ -308,7 +313,7 @@ describe("submitJudgeRating", () => {
         update: vi.fn().mockResolvedValue({}),
       },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       ORG_ID,

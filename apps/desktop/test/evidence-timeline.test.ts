@@ -46,12 +46,13 @@ test("orders units by ms and maps Claude tools to abstract categories", () => {
   assert.deepEqual(
     timeline.map((u) => u.category),
     [
-      ToolCategory.DeclaredIntent,
+      // FEA-4184: a `plan` slash command is a PLAN-specific declaration.
+      ToolCategory.DeclaredPlan,
       ToolCategory.ReadSearch,
       ToolCategory.HumanTurn,
       ToolCategory.MutateCode,
     ],
-    "slash command → declared; Read → read_search; human msg → human_turn; Edit → mutate_code"
+    "plan slash command → declared_plan; Read → read_search; human msg → human_turn; Edit → mutate_code"
   );
   assert.equal(timeline[0].layer, EvidenceLayer.Declared);
   assert.equal(timeline[1].layer, EvidenceLayer.Structural);

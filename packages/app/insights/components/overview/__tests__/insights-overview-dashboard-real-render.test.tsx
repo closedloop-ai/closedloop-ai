@@ -1,3 +1,4 @@
+import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import { InsightsScope, InsightsSection } from "@repo/api/src/types/insights";
 import { createAgentSessionListItemFixture } from "@repo/app/agents/components/sessions/session-list-fixtures";
@@ -16,6 +17,8 @@ import {
   themeBackground,
 } from "@repo/app/test/a11y/contrast";
 import { A11yThemeRoot } from "@repo/app/test/a11y/react";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InsightsOverviewDashboard } from "../insights-overview-dashboard";
@@ -117,6 +120,9 @@ describe("InsightsOverviewDashboard real a11y render", () => {
       sortBy: SessionSortKey.LastActivity,
       sortDir: "desc",
       startDate: expect.any(String),
+      // FEA-3534: default Me scope threads viewerScope=self into the Recent
+      // Sessions read so the card stays scoped to the authenticated user.
+      viewerScope: AgentSessionViewerScope.Self,
     });
 
     await expectCriticalAxeClean(container);
@@ -170,13 +176,23 @@ describe("InsightsOverviewDashboard real a11y render", () => {
 });
 
 function renderDashboard(theme: A11yTheme) {
+  // FEA-4051: dashboard rows now render navigation-port `Link` anchors, which
+  // read the nav adapter through `useNavigationAdapter`. Mount the in-memory
+  // adapter (mirrors production, where the shell always provides one) so the
+  // rows resolve instead of throwing "requires a <NavigationProvider>".
   return render(
     <A11yThemeRoot theme={theme}>
       <InsightsDataSourceProvider value={createInsightsDataSource()}>
         <FeatureFlagAdapterProvider
           adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
         >
-          <InsightsOverviewDashboard getSessionHref={() => "/sessions/1"} />
+          <NavigationProvider
+            adapter={
+              createMemoryNavigation({ initialPath: "/dashboard" }).adapter
+            }
+          >
+            <InsightsOverviewDashboard getSessionHref={() => "/sessions/1"} />
+          </NavigationProvider>
         </FeatureFlagAdapterProvider>
       </InsightsDataSourceProvider>
     </A11yThemeRoot>

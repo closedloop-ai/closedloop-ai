@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BranchDetailTabParam,
   getNotificationEntityPath,
   NotificationEntityKind,
 } from "./notification-routes";
@@ -31,5 +32,24 @@ describe("getNotificationEntityPath", () => {
         projectId: "proj-2",
       })
     ).toBe("/teams/team-1/projects/proj-2");
+  });
+
+  it("builds the plain branch deep-link path when no tab is requested", () => {
+    expect(
+      getNotificationEntityPath({
+        kind: NotificationEntityKind.Branch,
+        branchId: "branch-7",
+      })
+    ).toBe("/branches/branch-7");
+  });
+
+  it("appends ?tab= so a branch mention deep-links to the trace tab (FEA-3490)", () => {
+    expect(
+      getNotificationEntityPath({
+        kind: NotificationEntityKind.Branch,
+        branchId: "branch-7",
+        tab: BranchDetailTabParam.SessionsTimeline,
+      })
+    ).toBe("/branches/branch-7?tab=sessions-timeline");
   });
 });

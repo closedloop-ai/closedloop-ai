@@ -33,15 +33,30 @@ describe("create-document-thread MCP tool", () => {
 
     await registeredHandler()?.({
       documentId: "FEA-42",
-      body: "Unanchored artifact-level note",
+      body: "Unanchored artifact-level comment",
     });
 
     const calledBody = apiClient.post.mock.calls[0]?.[1] as Record<
       string,
       unknown
     >;
-    expect(calledBody).toEqual({ body: "Unanchored artifact-level note" });
+    expect(calledBody).toEqual({ body: "Unanchored artifact-level comment" });
     expect(calledBody).not.toHaveProperty("anchorText");
+  });
+
+  it("describes unanchored comments as Liveblocks artifact-level comments", () => {
+    const registration = registerTool.mock.calls[0]?.[1];
+    const description = registration?.description ?? "";
+    const anchorTextDescription =
+      registeredSchema()?.anchorText?.description ?? "";
+
+    expect(description).toContain("Liveblocks-backed comment thread");
+    expect(description).toContain(
+      "unanchored Liveblocks artifact-level document comment"
+    );
+    expect(anchorTextDescription).toContain(
+      "unanchored Liveblocks artifact-level document comment"
+    );
   });
 
   it("rejects an empty string for anchorText via schema validation", () => {

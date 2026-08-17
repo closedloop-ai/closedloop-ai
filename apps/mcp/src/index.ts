@@ -7,85 +7,74 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type Server as HttpServer } from "node:http";
 import { isIPv4 } from "node:net";
 import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js";
 import { withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
+import {
+  flushLogsWithDeadline,
+  waitForDeadline,
+} from "@repo/observability/shutdown";
 import { createRedisClient } from "@repo/redis";
 import {
-  type ApiClient,
   checkApiReachable,
   createApiClient,
-  verifyApiKey,
+  verifyApiKeyDetailed,
 } from "./api-client.js";
-import {
-  API_KEY_SCOPES,
-  type ApiKeyScope,
-  type VerifiedApiKeyContext,
+import type {
+  ApiKeyVerification,
+  VerifiedApiKeyContext,
 } from "./api-key-contract.js";
+import { ApiKeyVerificationStatus } from "./api-key-contract.js";
 import {
   type AuthCacheStore,
   type AuthKeyCipher,
   RedisAuthCacheStore,
   type SerializedMcpAuth,
 } from "./auth-cache-store.js";
-import {
-  EMERGENT_FEATURE_FLAG,
-  isMcpFeatureFlagEnabled,
-} from "./feature-flags.js";
+import { handleHealth } from "./health-route.js";
+import type { HttpRouteHandler } from "./http-route-types.js";
 import { SERVER_INSTRUCTIONS } from "./instructions.js";
-import { registerAddLoopEvent } from "./tools/add-loop-event.js";
 import {
-  registerGetAgentSessionTranscript,
-  registerListAgentSessions,
-} from "./tools/agent-session-read.js";
+  normalizeOAuthTokenBody,
+  type OAuthTokenBody,
+  parseFormUrlEncoded,
+  redirectWithParams,
+  sendJson,
+  sendOAuthJson,
+} from "./oauth-http.js";
 import {
-  registerGetAgentSessionAnalytics,
-  registerGetAgentSessionUsage,
-} from "./tools/agent-session-reporting.js";
-import { registerCancelLoop } from "./tools/cancel-loop.js";
-import { registerCompleteLoop } from "./tools/complete-loop.js";
-import { registerCreateArtifactLink } from "./tools/create-artifact-link.js";
-import { registerCreateBranchArtifact } from "./tools/create-branch-artifact.js";
-import { registerCreateDocument } from "./tools/create-document.js";
-import { registerCreateDocumentThread } from "./tools/create-document-thread.js";
-import { registerCreateDocumentVersion } from "./tools/create-document-version.js";
-import { registerCreateLoop } from "./tools/create-loop.js";
-import { registerCreateProject } from "./tools/create-project.js";
-import { registerDeleteAttachment } from "./tools/delete-attachment.js";
-import { registerDownloadAttachment } from "./tools/download-attachment.js";
-import { registerFailLoop } from "./tools/fail-loop.js";
-import { registerGetDocument } from "./tools/get-document.js";
-import { registerGetDocumentComments } from "./tools/get-document-comments.js";
-import { registerGetGithubStatus } from "./tools/get-github-status.js";
-import { registerGetGoogleStatus } from "./tools/get-google-status.js";
-import { registerGetLinearStatus } from "./tools/get-linear-status.js";
-import { registerGetLoop } from "./tools/get-loop.js";
-import { registerGetMe } from "./tools/get-me.js";
-import { registerGetProject } from "./tools/get-project.js";
-import { registerListArtifactLinks } from "./tools/list-artifact-links.js";
-import { registerListAttachments } from "./tools/list-attachments.js";
-import { registerListDocumentVersions } from "./tools/list-document-versions.js";
-import { registerListDocuments } from "./tools/list-documents.js";
-import { registerListLoops } from "./tools/list-loops.js";
-import { registerListProjects } from "./tools/list-projects.js";
-import { registerListTemplates } from "./tools/list-templates.js";
-import { registerListUsers } from "./tools/list-users.js";
-import { registerMoveArtifact } from "./tools/move-artifact.js";
-import { registerSearch } from "./tools/search.js";
-import { setSessionOrgSlug } from "./tools/tool-utils.js";
-import { registerUpdateDocument } from "./tools/update-document.js";
-import { registerUpdateProject } from "./tools/update-project.js";
-import { registerUploadAttachment } from "./tools/upload-attachment.js";
+  authorizationServerMetadata,
+  mcpServerCard,
+  protectedResourceMetadata,
+} from "./oauth-metadata.js";
+import {
+  effectiveKeyScopes,
+  hasRequiredScopes,
+  hasWriteScope,
+  isValidTokenScopeClaim,
+  narrowTokenGrantToKeyScopes,
+  parseScopeParam,
+  RefreshScopeResolutionKind,
+  refreshScopeRefusalDescription,
+  resolveGrantedScopes,
+  resolveLocalKeyScopes,
+  resolveRefreshGrantScopes,
+  revalidateCachedGrant,
+  toolRequiredScopes,
+  UNRESOLVABLE_KEY_SCOPES_DESCRIPTION,
+} from "./oauth-scopes.js";
+import { createSessionUrlBuilder } from "./session-urls.js";
+import { TOOL_NAMES, TOOL_REGISTRATIONS } from "./tool-registrations.js";
 
 const BEARER_API_KEY_REGEX = /^Bearer\s+(sk_live_\S+)$/;
 const BEARER_OAUTH_TOKEN_REGEX = /^Bearer\s+(mcp_at_[A-Za-z0-9._-]+)$/;
 const OAUTH_TOKEN_PREFIX_REGEX = /^mcp_at_/;
 const OAUTH_REFRESH_TOKEN_PREFIX = "mcp_rt_";
-const SCOPE_SPLIT_REGEX = /\s+/;
 const LEADING_QUESTION_MARK_REGEX = /^\?/;
 const PORT = Number(process.env.MCP_PORT ?? 3010);
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? `http://localhost:${PORT}`;
@@ -103,7 +92,7 @@ function parsePositiveIntegerEnv(
 
   const parsedValue = Number.parseInt(rawValue, 10);
   if (!Number.isFinite(parsedValue) || parsedValue < minimumValue) {
-    console.warn(
+    log.warn(
       `${name}="${rawValue}" is invalid. Using default value ${defaultValue}.`
     );
     return defaultValue;
@@ -159,6 +148,8 @@ const MCP_READY_DB_TIMEOUT_MS = parsePositiveIntegerEnv(
 const MCP_SERVER_CACHE_TTL_MS = Number(
   process.env.MCP_SERVER_CACHE_TTL_MS ?? 60_000
 );
+const SHUTDOWN_DRAIN_DEADLINE_MS = 5000;
+const SHUTDOWN_LOG_FLUSH_RESERVED_MS = 1000;
 const MAX_REQUEST_BODY_BYTES = Number(
   process.env.MCP_MAX_REQUEST_BODY_BYTES ?? 1_048_576
 );
@@ -239,7 +230,7 @@ function requireRedirectAllowlistForEnvironment(): void {
     !isLocalOauthEnvironment() &&
     getOAuthRedirectUriAllowlist().length === 0
   ) {
-    console.warn(
+    log.warn(
       "MCP_OAUTH_REDIRECT_URIS is empty — only loopback redirect URIs will be accepted"
     );
   }
@@ -250,7 +241,7 @@ function requireInternalAllowlistForEnvironment(): void {
     !isLocalOauthEnvironment() &&
     getInternalEndpointAllowlist().length === 0
   ) {
-    console.error(
+    log.error(
       "[SECURITY WARNING] MCP_INTERNAL_ALLOWED_IPS is empty — internal OAuth endpoints will reject requests until an allowlist is configured"
     );
   }
@@ -305,179 +296,6 @@ const OAUTH_CURRENT_SIGNING_KEY = OAUTH_SIGNING_KEYS[0];
 const OAUTH_SIGNING_KEY_BY_KID = new Map(
   OAUTH_SIGNING_KEYS.map((entry) => [entry.kid, entry] as const)
 );
-const API_KEY_SCOPE_SET = new Set<string>(API_KEY_SCOPES);
-const OAUTH_NO_STORE_HEADERS = {
-  "Cache-Control": "no-store",
-  Pragma: "no-cache",
-};
-
-type ToolRegistration = {
-  name: string;
-  register: (server: McpServer, apiClient: ApiClient) => void;
-  requiredScopes?: ApiKeyScope[];
-  requiresWrite?: boolean;
-  /**
-   * PostHog feature flag key that must be enabled for the session's user before
-   * the tool is registered. Gates prototype/parity tools that are not yet GA.
-   */
-  featureFlag?: string;
-};
-
-const TOOL_REGISTRATIONS: ToolRegistration[] = [
-  {
-    name: "ping",
-    register: (server) => {
-      server.registerTool(
-        "ping",
-        { description: "Check MCP server connectivity" },
-        () =>
-          Promise.resolve({
-            content: [{ type: "text" as const, text: "pong" }],
-          })
-      );
-    },
-  },
-  { name: "search", register: registerSearch },
-  { name: "list-projects", register: registerListProjects },
-  { name: "get-project", register: registerGetProject },
-  {
-    name: "create-project",
-    register: registerCreateProject,
-    requiresWrite: true,
-  },
-  {
-    name: "update-project",
-    register: registerUpdateProject,
-    requiresWrite: true,
-  },
-  { name: "list-documents", register: registerListDocuments },
-  { name: "get-document", register: registerGetDocument },
-  {
-    name: "create-document",
-    register: registerCreateDocument,
-    requiresWrite: true,
-  },
-  {
-    name: "create-document-thread",
-    register: registerCreateDocumentThread,
-    requiresWrite: true,
-  },
-  { name: "get-document-comments", register: registerGetDocumentComments },
-  {
-    name: "update-document",
-    register: registerUpdateDocument,
-    requiresWrite: true,
-  },
-  {
-    name: "move-artifact",
-    register: registerMoveArtifact,
-    requiresWrite: true,
-  },
-  {
-    name: "create-document-version",
-    register: registerCreateDocumentVersion,
-    requiresWrite: true,
-  },
-  { name: "list-document-versions", register: registerListDocumentVersions },
-  { name: "list-attachments", register: registerListAttachments },
-  {
-    name: "upload-attachment",
-    register: registerUploadAttachment,
-    requiresWrite: true,
-  },
-  { name: "download-attachment", register: registerDownloadAttachment },
-  {
-    name: "delete-attachment",
-    register: registerDeleteAttachment,
-    requiredScopes: ["delete"],
-  },
-  { name: "get-me", register: registerGetMe },
-  { name: "list-loops", register: registerListLoops },
-  { name: "get-loop", register: registerGetLoop },
-  {
-    name: "create-loop",
-    register: registerCreateLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "add-loop-event",
-    register: registerAddLoopEvent,
-    requiresWrite: true,
-  },
-  {
-    name: "complete-loop",
-    register: registerCompleteLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "fail-loop",
-    register: registerFailLoop,
-    requiresWrite: true,
-  },
-  {
-    name: "cancel-loop",
-    register: registerCancelLoop,
-    requiresWrite: true,
-  },
-  { name: "list-users", register: registerListUsers },
-  { name: "list-artifact-links", register: registerListArtifactLinks },
-  {
-    name: "create-artifact-link",
-    register: registerCreateArtifactLink,
-    requiresWrite: true,
-  },
-  {
-    name: "create_branch_artifact",
-    register: registerCreateBranchArtifact,
-    requiresWrite: true,
-  },
-  { name: "list-templates", register: registerListTemplates },
-  { name: "get-github-status", register: registerGetGithubStatus },
-  { name: "get-linear-status", register: registerGetLinearStatus },
-  { name: "get-google-status", register: registerGetGoogleStatus },
-  {
-    name: "get-agent-session-usage",
-    register: registerGetAgentSessionUsage,
-    featureFlag: EMERGENT_FEATURE_FLAG,
-  },
-  {
-    name: "get-agent-session-analytics",
-    register: registerGetAgentSessionAnalytics,
-    featureFlag: EMERGENT_FEATURE_FLAG,
-  },
-  {
-    name: "list-agent-sessions",
-    register: registerListAgentSessions,
-    featureFlag: EMERGENT_FEATURE_FLAG,
-  },
-  {
-    name: "get-agent-session-transcript",
-    register: registerGetAgentSessionTranscript,
-    featureFlag: EMERGENT_FEATURE_FLAG,
-  },
-];
-
-/**
- * Tool manifest for /.well-known/mcp.json Server Card.
- * Built once at startup from the tool registration list.
- */
-const TOOL_NAMES = TOOL_REGISTRATIONS.map((entry) => entry.name);
-
-async function resolveOrgSlug(organizationId: string): Promise<void> {
-  try {
-    const org = await withDb((db) =>
-      db.organization.findUnique({
-        where: { id: organizationId },
-        select: { slug: true },
-      })
-    );
-    if (org?.slug) {
-      setSessionOrgSlug(org.slug);
-    }
-  } catch {
-    // Non-fatal — URLs fall back to legacy format without org slug
-  }
-}
 
 /**
  * Create a new MCP server instance with all tools registered.
@@ -501,41 +319,19 @@ async function createMcpServer(
   const apiClient = createApiClient(context, plaintextKey);
   const allowWriteTools = hasWriteScope(grantedScopes);
 
-  await resolveOrgSlug(context.organizationId);
+  const urls = await createSessionUrlBuilder(context.organizationId);
 
   for (const registration of TOOL_REGISTRATIONS) {
-    if (
-      registration.requiredScopes &&
-      !hasRequiredScopes(grantedScopes, registration.requiredScopes)
-    ) {
+    if (!hasRequiredScopes(grantedScopes, toolRequiredScopes(registration))) {
       continue;
     }
     if (registration.requiresWrite && !allowWriteTools) {
       continue;
     }
-    if (
-      registration.featureFlag &&
-      // PostHog identifies users by their Clerk id, so evaluate the flag
-      // against it; fall back to the internal DB userId only when the Clerk id
-      // wasn't resolved (fallback verification paths).
-      !(await isMcpFeatureFlagEnabled(
-        registration.featureFlag,
-        context.clerkUserId ?? context.userId
-      ))
-    ) {
-      continue;
-    }
-    registration.register(server, apiClient);
+    registration.register(server, apiClient, urls);
   }
 
   return server;
-}
-
-function hasRequiredScopes(
-  grantedScopes: string[],
-  requiredScopes: ApiKeyScope[]
-): boolean {
-  return requiredScopes.every((scope) => grantedScopes.includes(scope));
 }
 
 /**
@@ -624,21 +420,6 @@ type OAuthCleanupDbClient = {
   $queryRawUnsafe?: (query: string, ...values: unknown[]) => Promise<unknown>;
 };
 
-function effectiveKeyScopes(scopes: string[]): string[] {
-  return scopes.length > 0 ? scopes : [...API_KEY_SCOPES];
-}
-
-function normalizeApiKeyScopes(scopes: unknown): ApiKeyScope[] {
-  if (!Array.isArray(scopes)) {
-    return [];
-  }
-  const sanitized = scopes.filter(
-    (scope): scope is ApiKeyScope =>
-      typeof scope === "string" && API_KEY_SCOPE_SET.has(scope)
-  );
-  return [...new Set(sanitized)];
-}
-
 async function verifyApiKeyLocally(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
@@ -664,61 +445,105 @@ async function verifyApiKeyLocally(
     return null;
   }
 
+  // ISS-4905: resolve from the RAW stored column (see `resolveLocalKeyScopes`),
+  // and before the `lastUsedAt` write so a key about to be rejected is not
+  // marked as used.
+  const scopes = resolveLocalKeyScopes(record);
+  if (!scopes) {
+    return null;
+  }
+
   withDb((db) =>
     db.apiKey.update({
       where: { id: record.id },
       data: { lastUsedAt: now },
     })
   ).catch((error: unknown) => {
-    console.warn(
-      "[oauth] failed to update API key lastUsedAt after local verify",
-      error
-    );
+    log.warn("[oauth] failed to update API key lastUsedAt after local verify", {
+      error,
+    });
   });
 
   return {
     userId: record.userId,
     organizationId: record.organizationId,
-    scopes: normalizeApiKeyScopes(record.scopes),
+    scopes,
   };
+}
+
+/**
+ * Verify a key while preserving WHY the API refused it, falling back to local
+ * DB verification when the API is unreachable.
+ *
+ * ISS-4905 — the reason matters: "this key's stored scope set is unresolvable"
+ * is answered by reissuing the key, where a bare refusal sends the caller to
+ * re-authorize or revoke credentials that are not the problem. The local
+ * fallback cannot see the API's reason, so it collapses to `Invalid`.
+ */
+/**
+ * Resolve the verified context and usable key scopes backing a token grant, or
+ * answer the refusal that applies and return null.
+ *
+ * ISS-4905 — the two refusals are deliberately not collapsed. `Invalid` is the
+ * caller's problem and each grant words it its own way (hence
+ * `sendInvalidRefusal`); an unresolvable scope set is the stored row's problem
+ * and every grant answers it identically, with the reissue remedy. Before the
+ * verification endpoint carried a reason, the second case arrived as the first
+ * and this branch was unreachable from a same-head deploy.
+ */
+async function resolveGrantKeyScopes(
+  plaintextKey: string,
+  res: import("node:http").ServerResponse,
+  sendInvalidRefusal: () => void
+): Promise<{ context: VerifiedApiKeyContext; keyScopes: string[] } | null> {
+  const verification = await verifyApiKeyDetailedWithFallback(plaintextKey);
+  if (verification.status === ApiKeyVerificationStatus.Invalid) {
+    sendInvalidRefusal();
+    return null;
+  }
+  const context =
+    verification.status === ApiKeyVerificationStatus.Ok
+      ? verification.context
+      : null;
+  const keyScopes = context ? effectiveKeyScopes(context) : null;
+  if (!(context && keyScopes)) {
+    sendOAuthJson(res, 400, {
+      error: "invalid_scope",
+      error_description: UNRESOLVABLE_KEY_SCOPES_DESCRIPTION,
+    });
+    return null;
+  }
+  return { context, keyScopes };
+}
+
+async function verifyApiKeyDetailedWithFallback(
+  plaintextKey: string
+): Promise<ApiKeyVerification> {
+  try {
+    return await verifyApiKeyDetailed(plaintextKey);
+  } catch (error) {
+    log.warn(
+      "[oauth] upstream API key verification failed, falling back to local DB verification",
+      { error }
+    );
+    const context = await withTimeout(
+      verifyApiKeyLocally(plaintextKey),
+      OAUTH_VERIFY_FALLBACK_TIMEOUT_MS,
+      "oauth local api-key verification"
+    );
+    return context
+      ? { status: ApiKeyVerificationStatus.Ok, context }
+      : { status: ApiKeyVerificationStatus.Invalid };
+  }
 }
 
 async function verifyApiKeyWithFallback(
   plaintextKey: string
 ): Promise<VerifiedApiKeyContext | null> {
-  try {
-    return await verifyApiKey(plaintextKey);
-  } catch (error) {
-    console.warn(
-      "[oauth] upstream API key verification failed, falling back to local DB verification",
-      error
-    );
-    return withTimeout(
-      verifyApiKeyLocally(plaintextKey),
-      OAUTH_VERIFY_FALLBACK_TIMEOUT_MS,
-      "oauth local api-key verification"
-    );
-  }
-}
-
-function hasWriteScope(scopes: string[]): boolean {
-  return scopes.includes("write");
-}
-
-/**
- * OAuth 2.1: resolve the effective scope set by intersecting the requested
- * scopes with the scopes available on the API key.  Returns `null` when no
- * overlap exists (the caller should reject with `invalid_scope`).
- */
-function resolveGrantedScopes(
-  requestedScopes: string[],
-  keyScopes: string[]
-): string[] | null {
-  if (requestedScopes.length === 0) {
-    return keyScopes;
-  }
-  const intersection = requestedScopes.filter((s) => keyScopes.includes(s));
-  return intersection.length > 0 ? intersection : null;
+  const verification = await verifyApiKeyDetailedWithFallback(plaintextKey);
+  return verification.status === ApiKeyVerificationStatus.Ok
+    ? verification.context
+    : null;
 }
 
 let lastOAuthCleanupMs = 0;
@@ -792,9 +617,9 @@ async function maybeCleanupOAuthSecurityTablesSafe(
       `oauth cleanup (${context})`
     );
   } catch (error) {
-    console.error(
+    log.error(
       `[oauth] cleanup failed during ${context}; continuing without cleanup`,
-      error
+      { error }
     );
   }
 }
@@ -1325,7 +1150,7 @@ function logMcpEvent(
         .map(([key, value]) => `${key}=${String(value)}`)
         .join(" ")
     : "";
-  console.log(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
+  log.info(`[mcp] ${event}${payload ? ` ${payload}` : ""}`);
 }
 
 type InMemoryRateLimitEntry = {
@@ -1467,9 +1292,9 @@ async function consumeOAuthRateLimitSafe(
       `oauth rate-limit (${bucket})`
     );
   } catch (error) {
-    console.error(
+    log.error(
       `[oauth] rate-limit lookup failed for ${bucket}; falling back to in-memory limiter`,
-      error
+      { error }
     );
     return consumeInMemoryRateLimit(req, bucket);
   }
@@ -1626,10 +1451,7 @@ function parseSignedOAuthAccessToken(
     if (
       !payload.apiKeyCiphertext ||
       typeof payload.exp !== "number" ||
-      !Array.isArray(payload.scopes) ||
-      !payload.scopes.every(
-        (scope) => typeof scope === "string" && API_KEY_SCOPE_SET.has(scope)
-      ) ||
+      !isValidTokenScopeClaim(payload.scopes) ||
       typeof payload.userId !== "string" ||
       typeof payload.organizationId !== "string" ||
       payload.exp <= now
@@ -1659,31 +1481,6 @@ async function verifyOAuthAccessToken(
     return null;
   }
   return parseSignedOAuthAccessToken(token);
-}
-
-function sendJson(
-  res: import("node:http").ServerResponse,
-  status: number,
-  body: unknown,
-  extraHeaders?: Record<string, string>
-): void {
-  res.writeHead(status, {
-    "Content-Type": "application/json",
-    ...extraHeaders,
-  });
-  res.end(JSON.stringify(body));
-}
-
-function sendOAuthJson(
-  res: import("node:http").ServerResponse,
-  status: number,
-  body: unknown,
-  extraHeaders?: Record<string, string>
-): void {
-  sendJson(res, status, body, {
-    ...OAUTH_NO_STORE_HEADERS,
-    ...extraHeaders,
-  });
 }
 
 function isInternalSecretValid(
@@ -1783,7 +1580,8 @@ if (MCP_SESSION_STORE === "redis" && process.env.REDIS_URL) {
   const redisClient = createRedisClient({
     url: process.env.REDIS_URL,
     keyPrefix: "mcp:",
-    onError: (error) => console.warn("[mcp] redis error:", error.message),
+    logger: log,
+    onError: (error) => log.warn("[mcp] redis error", { error: error.message }),
   });
   // Set the store up front so commands issued during the connect window are
   // queued by ioredis (offline queue) and served once connected. Connecting is
@@ -1793,10 +1591,9 @@ if (MCP_SESSION_STORE === "redis" && process.env.REDIS_URL) {
   // client that will never connect.
   authCacheStore = new RedisAuthCacheStore(redisClient, authKeyCipher);
   redisClient.connect().catch((error) => {
-    console.warn(
-      "[mcp] redis connect failed, operating in memory-only mode:",
-      error.message
-    );
+    log.warn("[mcp] redis connect failed, operating in memory-only mode", {
+      error: error.message,
+    });
     authCacheStore = null;
   });
 }
@@ -1819,10 +1616,14 @@ async function resolveMcpAuth(
     if (!context) {
       return null;
     }
+    const grantedScopes = effectiveKeyScopes(context);
+    if (!grantedScopes) {
+      return null;
+    }
     return {
       plaintextKey: apiKeyFromHeader,
       context,
-      grantedScopes: effectiveKeyScopes(context.scopes),
+      grantedScopes,
     };
   }
 
@@ -1849,10 +1650,21 @@ async function resolveMcpAuth(
     return null;
   }
 
-  const keyScopes = effectiveKeyScopes(context.scopes);
-  const grantedScopes = tokenPayload.scopes.filter((scope) =>
-    keyScopes.includes(scope)
+  const keyScopes = effectiveKeyScopes(context);
+  if (!keyScopes) {
+    return null;
+  }
+  const grantedScopes = narrowTokenGrantToKeyScopes(
+    tokenPayload.scopes,
+    keyScopes
   );
+  if (!grantedScopes) {
+    logMcpEvent("oauth-token-grant-empty-after-key-narrowing", {
+      userId: context.userId,
+      organizationId: context.organizationId,
+    });
+    return null;
+  }
 
   return {
     plaintextKey,
@@ -2192,24 +2004,6 @@ async function handleMcp(
   }
 }
 
-function parseFormUrlEncoded(body: string): Record<string, string> {
-  const params = new URLSearchParams(body);
-  return Object.fromEntries(params.entries());
-}
-
-function normalizeOAuthTokenBody(input: unknown): OAuthTokenBody | null {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return null;
-  }
-  const result: OAuthTokenBody = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (typeof value === "string") {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
 async function readRequestBody(
   req: import("node:http").IncomingMessage
 ): Promise<string> {
@@ -2256,28 +2050,6 @@ async function readFormBody(
     result[key] = value;
   }
   return result;
-}
-
-function redirectWithParams(
-  res: import("node:http").ServerResponse,
-  redirectUri: string,
-  params: Record<string, string | undefined>
-): void {
-  const url = new URL(redirectUri);
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) {
-      url.searchParams.set(key, value);
-    }
-  }
-  res.writeHead(302, { Location: url.toString() });
-  res.end();
-}
-
-function parseScopeParam(scopeParam?: string): string[] {
-  if (!scopeParam?.trim()) {
-    return [];
-  }
-  return scopeParam.trim().split(SCOPE_SPLIT_REGEX);
 }
 
 function isValidRedirectUri(uri: string): boolean {
@@ -2541,7 +2313,7 @@ async function resolveAuthorizeContext(
     }
     return { apiKey, context };
   } catch (error) {
-    console.error("[oauth/authorize] API key verification failed", error);
+    log.error("[oauth/authorize] API key verification failed", { error });
     if (req.method === "POST") {
       sendAuthorizeHtmlForm(
         res,
@@ -2633,7 +2405,15 @@ async function handleOAuthAuthorize(
   }
 
   const requestedScopes = parseScopeParam(url.searchParams.get("scope") ?? "");
-  const keyScopes = effectiveKeyScopes(context.scopes);
+  const keyScopes = effectiveKeyScopes(context);
+  if (!keyScopes) {
+    redirectWithParams(res, redirectUri, {
+      error: "invalid_scope",
+      error_description: UNRESOLVABLE_KEY_SCOPES_DESCRIPTION,
+      state,
+    });
+    return;
+  }
   const scopes = resolveGrantedScopes(requestedScopes, keyScopes);
   if (scopes === null) {
     redirectWithParams(res, redirectUri, {
@@ -2661,8 +2441,6 @@ async function handleOAuthAuthorize(
 
   redirectWithParams(res, redirectUri, { code, state });
 }
-
-type OAuthTokenBody = Record<string, string>;
 
 function sendInvalidClient(
   res: import("node:http").ServerResponse,
@@ -2692,13 +2470,13 @@ async function handleClientCredentialsGrant(
     return;
   }
 
-  const context = await verifyApiKeyWithFallback(apiKey);
-  if (!context) {
-    sendInvalidClient(res, "Invalid client credentials");
+  const grant = await resolveGrantKeyScopes(apiKey, res, () =>
+    sendInvalidClient(res, "Invalid client credentials")
+  );
+  if (!grant) {
     return;
   }
-
-  const keyScopes = effectiveKeyScopes(context.scopes);
+  const { context, keyScopes } = grant;
   const requestedScopes = parseScopeParam(body.scope);
   const scopes = resolveGrantedScopes(requestedScopes, keyScopes);
   if (scopes === null) {
@@ -2793,16 +2571,16 @@ async function handleAuthorizationCodeGrant(
     return;
   }
 
-  const context = await verifyApiKeyWithFallback(codeApiKey);
-  if (!context) {
+  const grant = await resolveGrantKeyScopes(codeApiKey, res, () =>
     sendOAuthJson(res, 400, {
       error: "invalid_grant",
       error_description: "Authorization code is no longer valid",
-    });
+    })
+  );
+  if (!grant) {
     return;
   }
-
-  const keyScopes = effectiveKeyScopes(context.scopes);
+  const { context, keyScopes } = grant;
   const codeScopes = codeRecord.scopes.filter((scope) =>
     keyScopes.includes(scope)
   );
@@ -2952,10 +2730,18 @@ async function issueConcurrentGrant(
   refreshRecord: RefreshTokenRecord,
   requestedScope?: string
 ): Promise<ConcurrentGrantResult | null> {
-  const keyScopes = effectiveKeyScopes(context.scopes);
-  const grantScopes = replacementScopes.filter((scope) =>
-    keyScopes.includes(scope)
-  );
+  const keyScopes = effectiveKeyScopes(context);
+  if (!keyScopes) {
+    return null;
+  }
+  // ISS-4905: same filter-to-empty hazard as `resolveRefreshGrantScopes` —
+  // narrowing the key after the family was issued leaves nothing to grant, and
+  // minting an access token with an empty `scopes` claim hands the caller a
+  // credential `isValidTokenScopeClaim` rejects on first use. Refuse instead.
+  const grantScopes = narrowTokenGrantToKeyScopes(replacementScopes, keyScopes);
+  if (!grantScopes) {
+    return null;
+  }
 
   if (requestedScope) {
     const requested = parseScopeParam(requestedScope);
@@ -3124,13 +2910,30 @@ async function verifyApiKeyForRefresh(
 ): Promise<VerifyApiKeyForRefreshResult> {
   let context: VerifiedApiKeyContext | null;
   try {
-    context = await verifyApiKey(plaintextKey);
+    const verification = await verifyApiKeyDetailed(plaintextKey);
+    if (verification.status === ApiKeyVerificationStatus.UnresolvableScopes) {
+      // ISS-4905: the key exists and the client is legitimate — its stored
+      // scope row is what is broken. Revoking the whole family here would
+      // destroy working credentials without fixing the row, so refuse this
+      // rotation with the remedy that actually applies.
+      return {
+        ok: false,
+        reason: RefreshFailureReason.InvalidScope,
+        status: 400,
+        errorCode: "invalid_scope",
+        errorDescription: UNRESOLVABLE_KEY_SCOPES_DESCRIPTION,
+      };
+    }
+    context =
+      verification.status === ApiKeyVerificationStatus.Ok
+        ? verification.context
+        : null;
   } catch (error) {
     // Network/transient error — fall back to local verification instead of
     // revoking the family.  Only explicit API rejection (null) should revoke.
-    console.warn(
+    log.warn(
       "[oauth] upstream API key verification failed during refresh, falling back to local DB verification",
-      error
+      { error }
     );
     logMcpEvent("oauth-refresh-api-fallback", {
       familyId: refreshRecord.familyId,
@@ -3280,14 +3083,12 @@ async function handleRefreshTokenGrant(
   }
   const { context } = verification;
 
-  const keyScopes = effectiveKeyScopes(context.scopes);
-  const grantScopes = refreshRecord.scopes.filter((scope) =>
-    keyScopes.includes(scope)
+  const scopeResolution = resolveRefreshGrantScopes(
+    context,
+    refreshRecord.scopes,
+    body.scope
   );
-  const requestedScopes = parseScopeParam(body.scope);
-  const scopes = requestedScopes.length > 0 ? requestedScopes : grantScopes;
-  const hasInvalidScope = scopes.some((scope) => !grantScopes.includes(scope));
-  if (hasInvalidScope) {
+  if (scopeResolution.kind !== RefreshScopeResolutionKind.Ok) {
     logRefreshFailure({
       familyId: refreshRecord.familyId,
       clientId: refreshRecord.clientId,
@@ -3295,10 +3096,11 @@ async function handleRefreshTokenGrant(
     });
     sendOAuthJson(res, 400, {
       error: "invalid_scope",
-      error_description: "Requested scope exceeds the refresh token grant",
+      error_description: refreshScopeRefusalDescription(scopeResolution.kind),
     });
     return;
   }
+  const scopes = scopeResolution.scopes;
 
   const rotated = await rotateRefreshToken(
     body.refresh_token,
@@ -3632,65 +3434,23 @@ async function handleOAuthRevoke(
   });
 }
 
-type HttpRouteHandler = (
-  req: import("node:http").IncomingMessage,
-  res: import("node:http").ServerResponse
-) => void | Promise<void>;
-
 const GET_ROUTES: Record<string, HttpRouteHandler> = {
-  "/health": (_req, res) => {
-    sendJson(res, 200, {
-      status: "ok",
-      version: "0.0.1",
-      timestamp: new Date().toISOString(),
-    });
-  },
+  "/health": handleHealth,
   "/ready": async (_req, res) => {
     await handleReady(res);
   },
   "/.well-known/oauth-protected-resource": (_req, res) => {
-    sendJson(res, 200, {
-      resource: MCP_SERVER_URL,
-      authorization_servers: [MCP_SERVER_URL],
-      scopes_supported: [...API_KEY_SCOPES],
-      bearer_methods_supported: ["header"],
-      resource_documentation: "https://docs.closedloop.ai/mcp",
-    });
+    sendJson(res, 200, protectedResourceMetadata(MCP_SERVER_URL));
   },
   "/.well-known/oauth-authorization-server": (_req, res) => {
-    sendJson(res, 200, {
-      issuer: MCP_SERVER_URL,
-      authorization_endpoint: `${MCP_SERVER_URL}/oauth/authorize`,
-      token_endpoint: `${MCP_SERVER_URL}/oauth/token`,
-      registration_endpoint: `${MCP_SERVER_URL}/oauth/register`,
-      introspection_endpoint: `${MCP_SERVER_URL}/internal/oauth/introspect`,
-      revocation_endpoint: `${MCP_SERVER_URL}/internal/oauth/revoke`,
-      token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-      grant_types_supported: [
-        "authorization_code",
-        "client_credentials",
-        "refresh_token",
-      ],
-      response_types_supported: ["code"],
-      code_challenge_methods_supported: ["S256"],
-      scopes_supported: [...API_KEY_SCOPES],
-    });
+    sendJson(res, 200, authorizationServerMetadata(MCP_SERVER_URL));
   },
   "/.well-known/mcp.json": (_req, res) => {
-    sendJson(res, 200, {
-      name: "closedloop",
-      version: "0.0.1",
-      description:
-        "Closedloop AI software delivery platform — project management, document tracking, and work execution monitoring for AI-driven development workflows.",
-      url: `${MCP_SERVER_URL}/mcp`,
-      transport: { type: "streamable-http" },
-      authentication: { type: "bearer", format: "sk_live_*" },
-      // Advertise exactly the versions the SDK negotiates so the card stays a
-      // single source of truth and cannot silently drift from the transport.
-      protocol_versions: [...SUPPORTED_PROTOCOL_VERSIONS],
-      capabilities: { tools: true },
-      tools: TOOL_NAMES,
-    });
+    sendJson(
+      res,
+      200,
+      mcpServerCard(MCP_SERVER_URL, SUPPORTED_PROTOCOL_VERSIONS, TOOL_NAMES)
+    );
   },
 };
 
@@ -3705,9 +3465,15 @@ async function dispatchHttpRequest(
     pathname.startsWith("/oauth/") ||
     pathname.startsWith("/.well-known/oauth-")
   ) {
-    console.log(
-      `[http] method=${req.method ?? ""} path=${pathname} origin=${req.headers.origin ?? ""} host=${req.headers.host ?? ""}`
-    );
+    log.info("[http] request", {
+      method: req.method ?? "",
+      path: pathname,
+      // `requestOrigin`, not `origin`: `origin` is a reserved logger meta key
+      // that overrides the service's Datadog origin facet when it matches a
+      // known origin, so the untrusted request Origin header must not use it.
+      requestOrigin: req.headers.origin ?? "",
+      host: req.headers.host ?? "",
+    });
   }
 
   if (pathname === "/oauth/register") {
@@ -3818,9 +3584,14 @@ export function createHttpServer(): import("node:http").Server {
 
     // Reject cross-origin requests from disallowed origins (prevents blind CSRF)
     if (req.headers.origin && !corsAllowed) {
-      console.warn(
-        `[mcp] cors-blocked origin=${req.headers.origin} host=${req.headers.host ?? ""} method=${req.method ?? ""} path=${req.url ?? ""}`
-      );
+      log.warn("[mcp] cors-blocked", {
+        // `requestOrigin`, not `origin`: `origin` is a reserved logger meta key
+        // that would let this untrusted Origin header spoof the Datadog origin facet.
+        requestOrigin: req.headers.origin,
+        host: req.headers.host ?? "",
+        method: req.method ?? "",
+        path: req.url ?? "",
+      });
       res.writeHead(403);
       res.end();
       return;
@@ -3832,7 +3603,7 @@ export function createHttpServer(): import("node:http").Server {
         sendJson(res, 404, { error: "Not found" });
       }
     } catch (error) {
-      console.error("MCP server error:", error);
+      log.error("MCP server error", { error });
       if (!res.headersSent) {
         sendJson(res, 500, { error: "Internal server error" });
       }
@@ -3852,11 +3623,22 @@ async function handleCachedAuthRequest(
   if (!cachedAuth) {
     return false;
   }
+  const { plaintextKey, context, grantedScopes } = cachedAuth;
+  // ISS-4905: the cache outlives a deploy, so an entry written by an instance
+  // that still read an empty scope set as full access would otherwise be
+  // restored verbatim — and `touch` below would extend it on every request.
+  // Re-resolve the grant; on refusal, evict and fall through to full
+  // verification rather than serve the stale privilege.
+  const revalidatedScopes = revalidateCachedGrant(context, grantedScopes);
+  if (!revalidatedScopes) {
+    logMcpEvent("session-cache-evicted-unresolvable-grant", { sessionId });
+    await authCacheStore.delete(sessionId);
+    return false;
+  }
   logMcpEvent("session-restored-from-cache", {
     method: req.method,
     sessionId,
   });
-  const { plaintextKey, context, grantedScopes } = cachedAuth;
   const cachedParsedBody = await parseMcpJsonBody(req, res);
   if (cachedParsedBody === null) {
     return true;
@@ -3864,7 +3646,7 @@ async function handleCachedAuthRequest(
   await handleMcpStatelessRequest(
     req,
     res,
-    { plaintextKey, context, grantedScopes },
+    { plaintextKey, context, grantedScopes: revalidatedScopes },
     cachedParsedBody
   );
   authCacheStore.touch(sessionId, MCP_SERVER_CACHE_TTL_MS).catch(() => {});
@@ -3876,25 +3658,67 @@ export function startHttpServer(port = PORT): import("node:http").Server {
   requireInternalAllowlistForEnvironment();
   const httpServer = createHttpServer();
   httpServer.listen(port, () => {
-    console.log(`Closedloop MCP server running on port ${port}`);
-    console.log(`MCP endpoint: http://localhost:${port}/mcp`);
-    console.log(`Health: http://localhost:${port}/health`);
-    console.log(`Ready:  http://localhost:${port}/ready`);
+    log.info(`Closedloop MCP server running on port ${port}`);
+    log.info(`MCP endpoint: http://localhost:${port}/mcp`);
+    log.info(`Health: http://localhost:${port}/health`);
+    log.info(`Ready:  http://localhost:${port}/ready`);
   });
 
   httpServer.on("error", (error) => {
-    console.error("HTTP server error:", error);
-    process.exit(1);
+    // Flush the fatal startup diagnostic (e.g. EADDRINUSE/EACCES) to Datadog
+    // before exiting — otherwise the buffered log.error entry is dropped on
+    // exit and the reason the task never started is invisible in Datadog.
+    log.error("HTTP server error", { error });
+    shutdownAndExit({ exitCode: 1 }).catch(() => {
+      process.exit(1);
+    });
   });
 
   return httpServer;
+}
+
+type ShutdownOptions = {
+  exitCode?: number;
+  httpServer?: HttpServer;
+  drainDeadlineMs?: number;
+};
+
+let shutdownInFlight: Promise<void> | undefined;
+
+function shutdownAndExit(options: ShutdownOptions = {}): Promise<void> {
+  shutdownInFlight ??= runShutdownAndExit(options);
+  return shutdownInFlight;
+}
+
+async function runShutdownAndExit({
+  exitCode = 0,
+  httpServer,
+  drainDeadlineMs = SHUTDOWN_DRAIN_DEADLINE_MS,
+}: ShutdownOptions = {}): Promise<void> {
+  const drainDeadlineAtMs = Date.now() + drainDeadlineMs;
+  await closeHttpServerWithDeadline(
+    httpServer,
+    getPreFlushShutdownDeadlineMs(drainDeadlineAtMs)
+  );
+  await closeAuthCacheStoreWithDeadline(
+    getPreFlushShutdownDeadlineMs(drainDeadlineAtMs)
+  );
+  await flushLogsWithDeadline(getRemainingDeadlineMs(drainDeadlineAtMs));
+  process.exit(exitCode);
+}
+
+function installShutdownHandlers(httpServer?: HttpServer): void {
+  // Wrap so the signal name isn't passed as the exit code (graceful stop = 0).
+  process.once("SIGTERM", () => shutdownAndExit({ httpServer, exitCode: 0 }));
+  process.once("SIGINT", () => shutdownAndExit({ httpServer, exitCode: 0 }));
 }
 
 if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  startHttpServer();
+  const httpServer = startHttpServer();
+  installShutdownHandlers(httpServer);
 }
 
 export const __testables = {
@@ -3912,6 +3736,8 @@ export const __testables = {
   consumeInMemoryRateLimit,
   inMemoryRateLimits,
   handleCachedAuthRequest,
+  shutdownAndExit,
+  installShutdownHandlers,
   get authCacheStore() {
     return authCacheStore;
   },
@@ -3921,3 +3747,60 @@ export const __testables = {
     inMemoryRateLimits.clear();
   },
 };
+
+async function closeHttpServerWithDeadline(
+  httpServer: HttpServer | undefined,
+  deadlineMs: number
+): Promise<void> {
+  if (!httpServer) {
+    return;
+  }
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      httpServer.close((error) => {
+        if (error) {
+          log.warn("MCP HTTP server close failed", {
+            errorType: error instanceof Error ? error.name : typeof error,
+          });
+        }
+        resolve();
+      });
+    }),
+    waitForDeadline(deadlineMs),
+  ]);
+}
+
+async function closeAuthCacheStoreWithDeadline(
+  deadlineMs: number
+): Promise<void> {
+  if (!authCacheStore?.close) {
+    return;
+  }
+  try {
+    let closed = false;
+    await Promise.race([
+      authCacheStore.close().then(() => {
+        closed = true;
+      }),
+      waitForDeadline(deadlineMs),
+    ]);
+    if (!closed) {
+      log.warn("MCP auth cache close failed", { errorType: "Timeout" });
+    }
+  } catch (error) {
+    log.warn("MCP auth cache close failed", {
+      errorType: error instanceof Error ? error.name : typeof error,
+    });
+  }
+}
+
+function getRemainingDeadlineMs(deadlineAtMs: number): number {
+  return Math.max(0, deadlineAtMs - Date.now());
+}
+
+function getPreFlushShutdownDeadlineMs(deadlineAtMs: number): number {
+  return Math.max(
+    0,
+    getRemainingDeadlineMs(deadlineAtMs) - SHUTDOWN_LOG_FLUSH_RESERVED_MS
+  );
+}

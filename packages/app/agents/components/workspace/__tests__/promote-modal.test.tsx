@@ -13,6 +13,7 @@ import type { FixtureRoute } from "../../../../shared/storybook/fixture-fetch";
 import { PromoteModal } from "../promote-modal";
 
 const SUCCESS_MESSAGE = /promoted successfully/i;
+const DESCRIPTION_LABEL = /description/i;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -23,6 +24,7 @@ function makeComponent(
 ): AgentComponent {
   return {
     id: "uuid-component-1",
+    slug: "subagent::my-orchestrator-agent",
     name: "My Orchestrator Agent",
     kind: AgentComponentKind.Subagent,
     sourceType: SourceType.Repo,
@@ -30,9 +32,8 @@ function makeComponent(
     harness: Harness.Claude,
     invocations: 42,
     sessions: 7,
-    klocPerDollar: 3.14,
+    locPerDollar: 3.14,
     trend: [1, 2, 3],
-    owner: "alice",
     collaborators: ["bob"],
     computeTargetIds: ["target-1"],
     firstSeenAt: "2026-01-01T00:00:00.000Z",
@@ -127,5 +128,81 @@ describe("PromoteModal", () => {
     const reopenedNameInput =
       await screen.findByLabelText<HTMLInputElement>("Name");
     expect(reopenedNameInput.value).toBe("My Orchestrator Agent");
+  });
+});
+
+/**
+ * The ISS-5976 case: the parent re-renders with a NEW component OBJECT carrying
+ * the same component `id`. That is exactly what a focus-triggered refetch of the
+ * agent-component query hands `AgentDetail`, which passes it straight down here.
+ *
+ * Driven with `rerender` rather than an in-tree button because the open Radix
+ * dialog marks everything outside it inert, so a trigger rendered as a sibling is
+ * unreachable — and `rerender` models "the parent re-rendered with new data"
+ * more directly anyway.
+ */
+function PromoteModalHarness({ component }: { component: AgentComponent }) {
+  return (
+    <AppCoreStoryProviders apiRoutes={[promoteRoute]}>
+      <PromoteModal
+        component={component}
+        onOpenChange={() => {
+          // Open is pinned: this is about an identity change while the dialog
+          // stays open, not a dismiss/reopen cycle (covered above).
+        }}
+        open={true}
+      />
+    </AppCoreStoryProviders>
+  );
+}
+
+describe("PromoteModal draft survival across a refetch (ISS-5976)", () => {
+  it("keeps the admin's edited name and description when the component object is replaced", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <PromoteModalHarness component={makeComponent()} />
+    );
+
+    const nameInput = await screen.findByLabelText<HTMLInputElement>("Name");
+    await user.clear(nameInput);
+    await user.type(nameInput, "Renamed by the admin");
+    const descriptionInput =
+      screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL);
+    await user.type(descriptionInput, "Half-written description");
+
+    // A fresh object for the SAME component id. The prefill is keyed on that id,
+    // so it must not re-run and wipe the in-progress edit.
+    rerender(<PromoteModalHarness component={makeComponent()} />);
+
+    expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe(
+      "Renamed by the admin"
+    );
+    expect(
+      screen.getByLabelText<HTMLTextAreaElement>(DESCRIPTION_LABEL).value
+    ).toBe("Half-written description");
+  });
+
+  it("still prefills from a genuinely different component", async () => {
+    // The guard keys on identity; it must not suppress the prefill outright. A
+    // new component id is a new subject and MUST re-prefill.
+    const { rerender } = render(
+      <PromoteModalHarness component={makeComponent()} />
+    );
+    await screen.findByLabelText("Name");
+
+    rerender(
+      <PromoteModalHarness
+        component={makeComponent({
+          id: "uuid-component-2",
+          name: "Second Agent",
+        })}
+      />
+    );
+
+    await waitFor(() =>
+      expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe(
+        "Second Agent"
+      )
+    );
   });
 });

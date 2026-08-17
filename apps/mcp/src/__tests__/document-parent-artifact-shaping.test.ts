@@ -4,6 +4,7 @@ import {
   LinkType,
 } from "@repo/api/src/types/artifact";
 import type { ResolveInlineImagesResponse } from "@repo/api/src/types/attachment";
+import { Priority } from "@repo/api/src/types/common";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api-client.js";
@@ -17,6 +18,24 @@ import {
   registerListDocuments,
   shapeListDocumentItem,
 } from "../tools/list-documents.js";
+import {
+  createToolHarness,
+  parseToolPayload,
+} from "./fixtures/tool-harness.js";
+
+// get-document routes its inline-image failure log through @repo/observability/log
+// (FEA-3661). The logger captures console refs at module-init, so a console spy
+// installed later can't observe it — assert on the mocked logger instead.
+const { logWarn } = vi.hoisted(() => ({ logWarn: vi.fn() }));
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: logWarn,
+    error: vi.fn(),
+    flush: vi.fn(),
+  },
+}));
 
 const routeRow = {
   id: "doc-1",
@@ -100,50 +119,6 @@ const nullParentProjection = {
 const INCOMPLETE_TRUNCATED_MARKDOWN_IMAGE_REGEX =
   /!\[[^\]]*]\([^)]*\.\.\.\[truncated]/;
 
-type ToolHandler = (input: Record<string, unknown>) => Promise<{
-  content: (
-    | { type: "text"; text: string }
-    | { type: "image"; data: string; mimeType: string }
-  )[];
-  isError?: boolean;
-}>;
-
-function createToolHarness(
-  register: (
-    server: {
-      registerTool: (
-        name: string,
-        config: unknown,
-        callback: ToolHandler
-      ) => void;
-    },
-    api: ApiClient
-  ) => void,
-  apiClient: ApiClient
-): ToolHandler {
-  let handler: ToolHandler | undefined;
-  const registerTool = vi.fn(
-    (_name: string, _config: unknown, callback: ToolHandler): void => {
-      handler = callback;
-    }
-  );
-
-  register({ registerTool }, apiClient);
-
-  if (!handler) {
-    throw new Error("Tool handler was not registered");
-  }
-
-  return handler;
-}
-
-function parseToolPayload(result: Awaited<ReturnType<ToolHandler>>) {
-  if (result.isError) {
-    throw new Error(result.content[0]?.text ?? "Tool returned an error");
-  }
-  return JSON.parse(result.content[0]?.text ?? "null");
-}
-
 describe("MCP document parent artifact shaping", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -215,6 +190,31 @@ describe("MCP document parent artifact shaping", () => {
     expect(
       shapeGetDocumentPayload({ ...detailRow, sortOrder: 2000 })
     ).toMatchObject({ sortOrder: 2000 });
+  });
+
+  it("surfaces dueDate on list and detail rows", () => {
+    const dueDate = "2026-07-24T00:00:00.000Z";
+
+    expect(shapeListDocumentItem({ ...routeRow, dueDate })).toMatchObject({
+      dueDate,
+    });
+    expect(shapeGetDocumentPayload({ ...detailRow, dueDate })).toMatchObject({
+      dueDate,
+    });
+  });
+
+  it("surfaces priority in list-documents text payload", async () => {
+    const apiClient = {
+      get: vi
+        .fn()
+        .mockResolvedValueOnce([{ ...routeRow, priority: Priority.High }])
+        .mockResolvedValueOnce([]),
+    } as unknown as ApiClient;
+    const handler = createToolHarness(registerListDocuments, apiClient);
+
+    const payload = parseToolPayload(await handler({}));
+
+    expect(payload.items[0]).toMatchObject({ priority: Priority.High });
   });
 
   it("emits null sortOrder when the artifact is unranked", () => {
@@ -748,7 +748,7 @@ describe("MCP document parent artifact shaping", () => {
       status: 403,
       statusText: "Forbidden",
     } as unknown as Response);
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    logWarn.mockClear();
     const handler = createToolHarness(registerGetDocument, apiClient);
 
     await handler({
@@ -758,8 +758,8 @@ describe("MCP document parent artifact shaping", () => {
       includeParentArtifact: false,
     });
 
-    expect(warnSpy).toHaveBeenCalledTimes(1);
-    const message = String(warnSpy.mock.calls[0]?.[0]);
+    expect(logWarn).toHaveBeenCalledTimes(1);
+    const message = String(logWarn.mock.calls[0]?.[0]);
     expect(message).toContain(attachmentId);
     expect(message).toContain("FEA-1031");
     expect(message).toContain("HTTP 403 Forbidden");

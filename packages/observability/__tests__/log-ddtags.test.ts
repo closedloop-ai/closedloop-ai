@@ -1,3 +1,4 @@
+import { DEFAULT_DD_SITE } from "@repo/api/src/types/datadog-sites";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TelemetryCategory } from "../telemetry/schema";
 import {
@@ -78,6 +79,108 @@ describe("ddtags fallback values — version and git_sha unknown", () => {
     expect(body[0].ddtags).toContain("version:unknown");
     expect(body[0].ddtags).toContain("git_sha:unknown");
   });
+
+  // FEA-3565: the Vercel runtime sets neither RELEASE_VERSION nor
+  // npm_package_version, so `version` used to fall to "unknown" on every prod
+  // log (the FEA-3331 I-9 gap). It now falls back to the deployed commit SHA.
+  it("uses the commit SHA as version when only VERCEL_GIT_COMMIT_SHA is set (the Vercel prod case)", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    vi.stubEnv("DD_ENV", "prod");
+    deleteEnvForTest("RELEASE_VERSION", "npm_package_version", "GIT_SHA");
+    vi.stubEnv(
+      "VERCEL_GIT_COMMIT_SHA",
+      "9f8910b8a98de735cad4c2761c02af3daeb539f1"
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("vercel prod version test");
+    await log.flush();
+
+    const body = parseFlushedBody<{ ddtags: string }>(fetchMock);
+    // version now equals the SHA — and matches git_sha, as Unified Service
+    // Tagging expects — instead of the old version:unknown.
+    expect(body[0].ddtags).toContain(
+      "version:9f8910b8a98de735cad4c2761c02af3daeb539f1"
+    );
+    expect(body[0].ddtags).toContain(
+      "git_sha:9f8910b8a98de735cad4c2761c02af3daeb539f1"
+    );
+    expect(body[0].ddtags).not.toContain("version:unknown");
+  });
+
+  // RELEASE_VERSION still wins when explicitly set — the SHA is only a fallback.
+  it("prefers an explicit RELEASE_VERSION over the commit SHA", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    deleteEnvForTest("npm_package_version", "GIT_SHA");
+    vi.stubEnv("RELEASE_VERSION", "2.4.1");
+    vi.stubEnv(
+      "VERCEL_GIT_COMMIT_SHA",
+      "abc123def456abc123def456abc123def456abcd"
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("release version precedence test");
+    await log.flush();
+
+    const body = parseFlushedBody<{ ddtags: string }>(fetchMock);
+    expect(body[0].ddtags).toContain("version:2.4.1");
+  });
+
+  it("uses npm_package_version before the commit SHA for version", async () => {
+    vi.stubEnv("DD_API_KEY", "test-key");
+    deleteEnvForTest("RELEASE_VERSION", "GIT_SHA");
+    vi.stubEnv("npm_package_version", "4.5.6");
+    vi.stubEnv(
+      "VERCEL_GIT_COMMIT_SHA",
+      "abc123def456abc123def456abc123def456abcd"
+    );
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const log = await importLogWithFetch(fetchMock);
+
+    log.info("package version precedence test");
+    await log.flush();
+
+    const body = parseFlushedBody<{ ddtags: string }>(fetchMock);
+    expect(body[0].ddtags).toContain("version:4.5.6");
+    expect(body[0].ddtags).toContain(
+      "git_sha:abc123def456abc123def456abc123def456abcd"
+    );
+  });
+
+  it("resolves build identity through the first safe candidate", async () => {
+    vi.stubEnv("RELEASE_VERSION", "../bad release");
+    vi.stubEnv("npm_package_version", "5.6.7");
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "../bad-sha");
+    vi.stubEnv("GIT_SHA", "abc123def456");
+
+    const { resolveGitSha, resolveServerVersion } = await import(
+      "../telemetry/context"
+    );
+
+    expect(resolveServerVersion()).toBe("5.6.7");
+    expect(resolveGitSha()).toBe("abc123def456");
+  });
+
+  it("resolves malformed and oversized build identity env values to unknown", async () => {
+    const oversizedValue = "a".repeat(41);
+    const oversizedSemver = `1.2.3-${"a".repeat(500)}`;
+    vi.stubEnv("RELEASE_VERSION", oversizedSemver);
+    vi.stubEnv("npm_package_version", oversizedValue);
+    vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "../bad-sha");
+    vi.stubEnv("GIT_SHA", oversizedValue);
+
+    const { resolveGitSha, resolveServerVersion } = await import(
+      "../telemetry/context"
+    );
+
+    expect(resolveServerVersion()).toBe("unknown");
+    expect(resolveGitSha()).toBe("unknown");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -157,14 +260,123 @@ describe("DD_SERVICE empty-string — warning fires, falls back to cl-unknown", 
       1
     );
 
-    // keys.ts emptyStringAsUndefined: true converts "" → undefined,
-    // then "?? cl-unknown" fires. In the catch branch (no Next.js),
-    // process.env.DD_SERVICE ?? "cl-unknown" also yields "cl-unknown"
-    // because vi.stubEnv("DD_SERVICE", "") + emptyStringAsUndefined
-    // means the resolved value is always the fallback.
+    // keys.ts emptyStringAsUndefined: true converts "" → undefined, then
+    // "?? cl-unknown" fires. That normalization is `keys()`'s, so it covers THIS
+    // path only — `keys()` resolving is what makes this the non-catch branch.
+    // The catch branch reads process.env raw and is pinned separately by (b5).
     expect(fetchMock).toHaveBeenCalledOnce();
     const body = parseFlushedBody<{ service: string }>(fetchMock);
     expect(body[0].service).toBe("cl-unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b5) DD_SERVICE empty-string IN THE CATCH BRANCH — the case (b4) cannot cover
+//
+// (b4) leans on `keys()`'s `emptyStringAsUndefined` to normalize "" away. That
+// protection is a property of `keys()`, and the catch branch is reached only
+// when `keys()` THROWS — so it cannot apply there. This mocks the throw, which
+// (b4) does not, and pins the raw `process.env` read.
+// ---------------------------------------------------------------------------
+
+describe("DD_SERVICE empty-string via catch branch", () => {
+  it("falls back to 'cl-unknown' when keys() throws and DD_SERVICE is empty", async () => {
+    deleteEnvForTest("DD_SERVICE");
+    vi.stubEnv("DD_SERVICE", "");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    vi.doMock("../keys", () => ({
+      keys: () => {
+        throw new Error("Not a Next.js context");
+      },
+    }));
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.resetModules();
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../log");
+
+    log.info("catch-branch empty service");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ service: string }>(fetchMock);
+    // Not `""`: the startup warning tells operators these logs are tagged
+    // `cl-unknown`, and a `service:""` tag drops them out of every
+    // service-scoped Datadog query while that warning says otherwise.
+    expect(body[0].service).toBe("cl-unknown");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b6) DD_SITE empty-string via catch branch — the sink stays OPEN
+//
+// An empty site is not merely a bad tag: it fails `isAllowedDatadogSite`, so
+// `resolveExportTarget` clears the api key and NOTHING is exported at all.
+// Asserting a fetch happened at the default host is what pins that.
+// ---------------------------------------------------------------------------
+
+describe("DD_SITE empty-string via catch branch", () => {
+  it("falls back to the default site so the sink is not closed", async () => {
+    deleteEnvForTest("DD_SITE");
+    vi.stubEnv("DD_SITE", "");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    vi.doMock("../keys", () => ({
+      keys: () => {
+        throw new Error("Not a Next.js context");
+      },
+    }));
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.resetModules();
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../log");
+
+    log.info("catch-branch empty site");
+    await log.flush();
+
+    // The export happened at all — with "" the allowlist check clears the key
+    // and this call never occurs.
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      `https://http-intake.logs.${DEFAULT_DD_SITE}/api/v2/logs`
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (b7) DD_ENV empty-string via catch branch — NODE_ENV carries the tag
+//
+// NODE_ENV is pinned explicitly rather than inherited, so the fallback is
+// deterministic under any runner environment.
+// ---------------------------------------------------------------------------
+
+describe("DD_ENV empty-string via catch branch", () => {
+  it("falls through to NODE_ENV rather than tagging env:''", async () => {
+    deleteEnvForTest("DD_ENV");
+    vi.stubEnv("DD_ENV", "");
+    vi.stubEnv("NODE_ENV", "staging");
+    vi.stubEnv("DD_API_KEY", "test-key");
+
+    vi.doMock("../keys", () => ({
+      keys: () => {
+        throw new Error("Not a Next.js context");
+      },
+    }));
+
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.resetModules();
+    vi.stubGlobal("fetch", fetchMock);
+    const { log } = await import("../log");
+
+    log.info("catch-branch empty env");
+    await log.flush();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = parseFlushedBody<{ ddtags: string }>(fetchMock);
+    expect(body[0].ddtags).toContain("env:staging");
+    expect(body[0].ddtags).not.toContain("env:,");
   });
 });
 

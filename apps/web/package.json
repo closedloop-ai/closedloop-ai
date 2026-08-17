@@ -6,8 +6,9 @@
     "build": "next build",
     "start": "next start",
     "analyze": "ANALYZE=true npm run build",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "fumadocs-mdx && tsc --noEmit --emitDeclarationOnly false"
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "generate:api-reference": "tsx scripts/generate-api-reference.ts",
+    "typecheck": "fumadocs-mdx && tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@arcjet/next": "1.4.0",
@@ -17,6 +18,7 @@
     "@repo/design-system": "workspace:@closedloop-ai/design-system@*",
     "@repo/email": "workspace:*",
     "@repo/internationalization": "workspace:*",
+    "@repo/lib": "workspace:*",
     "@repo/next-config": "workspace:*",
     "@repo/observability": "workspace:*",
     "@repo/security": "workspace:*",
@@ -26,12 +28,13 @@
     "date-fns": "^4.1.0",
     "fumadocs-core": "^16.8.5",
     "fumadocs-mdx": "14.3.1",
+    "fumadocs-openapi": "10.8.6",
     "fumadocs-ui": "16.8.0",
     "import-in-the-middle": "^3.0.1",
     "lucide-react": "^0.556.0",
     "next": "catalog:",
-    "react": "19.2.5",
-    "react-dom": "19.2.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "require-in-the-middle": "8.0.1",
     "sharp": "^0.34.5",
     "zod": "^4.3.6"
@@ -40,9 +43,10 @@
     "@repo/typescript-config": "workspace:*",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "tailwindcss": "^4.1.18",
-    "typescript": "^5.9.3"
+    "tsx": "^4.21.0",
+    "typescript": "npm:@typescript/typescript6@6.0.2"
   }
 }

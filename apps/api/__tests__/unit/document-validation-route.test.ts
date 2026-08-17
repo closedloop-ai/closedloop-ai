@@ -15,7 +15,7 @@ import { Priority } from "@repo/api/src/types/common";
 import {
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
@@ -33,6 +33,8 @@ const VALID_CREATE_BASE = {
   title: "Test Document",
   content: "Test content",
 };
+const VALID_DUE_DATE = "2026-07-24T05:00:00.000Z";
+const VALID_DUE_DATE_ONLY = "2026-07-24";
 
 // ---------------------------------------------------------------------------
 // createDocumentValidator
@@ -67,20 +69,20 @@ describe("createDocumentValidator", () => {
       expect(result.success).toBe(false);
     });
 
-    it("rejects PRD type with a FeatureStatus value (TRIAGE)", () => {
+    it("rejects PRD type with a IssueStatus value (TRIAGE)", () => {
       const result = createDocumentValidator.safeParse({
         ...VALID_CREATE_BASE,
         type: DocumentType.Prd,
-        status: FeatureStatus.Triage,
+        status: IssueStatus.Triage,
       });
       expect(result.success).toBe(false);
     });
 
-    it("accepts FEATURE type with a valid FeatureStatus (TRIAGE)", () => {
+    it("accepts FEATURE type with a valid IssueStatus (TRIAGE)", () => {
       const result = createDocumentValidator.safeParse({
         ...VALID_CREATE_BASE,
         type: DocumentType.Feature,
-        status: FeatureStatus.Triage,
+        status: IssueStatus.Triage,
       });
       expect(result.success).toBe(true);
     });
@@ -103,12 +105,50 @@ describe("createDocumentValidator", () => {
         approverId: VALID_UUID,
         fileName: "spec.md",
         status: DocumentStatus.InReview,
+        dueDate: VALID_DUE_DATE,
         assigneeId: VALID_UUID,
         repositorySelection: {
           primary: { fullName: "owner/repo" },
         },
       });
       expect(result.success).toBe(true);
+    });
+
+    it("normalizes an ISO date-only dueDate to UTC midnight", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        dueDate: VALID_DUE_DATE_ONLY,
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) {
+        throw new Error(result.error.message);
+      }
+      expect(result.data.dueDate?.toISOString()).toBe(
+        "2026-07-24T00:00:00.000Z"
+      );
+    });
+
+    it("normalizes a timezone-qualified ISO datetime dueDate", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        dueDate: "2026-07-24T07:00:00+02:00",
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) {
+        throw new Error(result.error.message);
+      }
+      expect(result.data.dueDate?.toISOString()).toBe(VALID_DUE_DATE);
+    });
+
+    it("rejects an invalid dueDate", () => {
+      const result = createDocumentValidator.safeParse({
+        ...VALID_CREATE_BASE,
+        dueDate: "2026-07-32",
+      });
+
+      expect(result.success).toBe(false);
     });
   });
 });
@@ -146,11 +186,46 @@ describe("updateDocumentValidator", () => {
         approverId: VALID_UUID,
         status: DocumentStatus.InReview,
         priority: Priority.Low,
+        dueDate: null,
         projectId: "PRD-42",
         assigneeId: VALID_UUID,
         sortOrder: 5,
       });
       expect(result.success).toBe(true);
+    });
+
+    it("normalizes a timezone-qualified dueDate", () => {
+      const result = updateDocumentValidator.safeParse({
+        dueDate: VALID_DUE_DATE,
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) {
+        throw new Error(result.error.message);
+      }
+      expect(result.data.dueDate?.toISOString()).toBe(VALID_DUE_DATE);
+    });
+
+    it("normalizes a date-only dueDate to UTC midnight", () => {
+      const result = updateDocumentValidator.safeParse({
+        dueDate: VALID_DUE_DATE_ONLY,
+      });
+
+      expect(result.success).toBe(true);
+      if (!result.success) {
+        throw new Error(result.error.message);
+      }
+      expect(result.data.dueDate?.toISOString()).toBe(
+        "2026-07-24T00:00:00.000Z"
+      );
+    });
+
+    it("rejects invalid dueDate values", () => {
+      const result = updateDocumentValidator.safeParse({
+        dueDate: "not-a-date",
+      });
+
+      expect(result.success).toBe(false);
     });
   });
 });

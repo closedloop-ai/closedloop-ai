@@ -1,7 +1,7 @@
 /**
  * @file reconciliation-store.test.ts
  * @description Unit tests for the main-owned reconciliation persistence
- * (FEA-1435/1436), src/main/reconciliation-store.ts.
+ * (FEA-1435/1436), src/main/cost/reconciliation-store.ts.
  *
  * Reviewed invariants: (1) upsert is keyed on (day, vendor, model) so re-running
  * a day REPLACES rather than duplicates; (2) range/vendor queries return the
@@ -18,7 +18,7 @@ import { afterEach, test } from "node:test";
 import {
   type ReconciliationRow,
   ReconciliationStore,
-} from "../src/main/reconciliation-store.js";
+} from "../src/main/cost/reconciliation-store.js";
 
 const tempDirs: string[] = [];
 

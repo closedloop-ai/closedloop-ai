@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AuditAction } from "@repo/api/src/types/audit";
 import { DocumentStatus } from "@repo/api/src/types/document";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { documentService } from "@/app/documents/document-service";
@@ -11,11 +12,22 @@ import {
 
 let mockAuthContext: AuthContext;
 
+const mockDispatchAuditEvents = vi.fn();
+const mockCaptureBatchStatusChange = vi.fn();
+
 vi.mock("@/lib/auth/with-any-auth", () => ({
   withAnyAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context?.params),
 }));
 vi.mock("@/app/documents/document-service");
+vi.mock("@/app/audit/audit-emit-service", () => ({
+  dispatchAuditEvents: (...args: unknown[]) => mockDispatchAuditEvents(...args),
+  userAuditActor: (userId: string) => ({ actorType: "user", actorId: userId }),
+}));
+vi.mock("@/lib/artifact-activity-capture", () => ({
+  captureBatchStatusChange: (...args: unknown[]) =>
+    mockCaptureBatchStatusChange(...args),
+}));
 
 import { POST } from "@/app/documents/batch-update-status/route";
 
@@ -23,6 +35,10 @@ describe("POST /documents/batch-update-status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
+    // The route reads before-statuses for the activity feed (FEA-3864) before
+    // updating. Default it to an empty map so the auto-mock returns a Map, not
+    // undefined; individual tests can override.
+    vi.mocked(documentService.getStatusesByIds).mockResolvedValue(new Map());
   });
 
   describe("validation", () => {
@@ -75,7 +91,10 @@ describe("POST /documents/batch-update-status", () => {
   describe("success", () => {
     it("returns 200 with updatedIds on valid request", async () => {
       const ids = [randomUUID(), randomUUID()];
-      vi.mocked(documentService.batchUpdateStatus).mockResolvedValue(ids);
+      vi.mocked(documentService.batchUpdateStatus).mockResolvedValue({
+        updatedIds: ids,
+        changedIds: ids,
+      });
 
       const request = createMockRequest({
         url: "http://localhost:3002/api/documents/batch-update-status",
@@ -93,7 +112,10 @@ describe("POST /documents/batch-update-status", () => {
 
     it("passes organizationId from auth context to service", async () => {
       const ids = [randomUUID()];
-      vi.mocked(documentService.batchUpdateStatus).mockResolvedValue(ids);
+      vi.mocked(documentService.batchUpdateStatus).mockResolvedValue({
+        updatedIds: ids,
+        changedIds: ids,
+      });
 
       const request = createMockRequest({
         url: "http://localhost:3002/api/documents/batch-update-status",
@@ -108,6 +130,59 @@ describe("POST /documents/batch-update-status", () => {
         DocumentStatus.Approved,
         mockAuthContext.user.organizationId
       );
+    });
+
+    it("audits and captures activity ONLY for documents that actually changed status", async () => {
+      const changed = randomUUID();
+      const unchanged = randomUUID();
+      // The service reports both as valid (returned to the client) but only
+      // `changed` as a real transition.
+      vi.mocked(documentService.batchUpdateStatus).mockResolvedValue({
+        updatedIds: [changed, unchanged],
+        changedIds: [changed],
+      });
+      // Both ids exist with a prior status; `unchanged` is already at the
+      // target status, so it must not be recorded as a transition on either
+      // hook.
+      vi.mocked(documentService.getStatusesByIds).mockResolvedValue(
+        new Map([
+          [changed, DocumentStatus.InReview],
+          [unchanged, DocumentStatus.Approved],
+        ])
+      );
+
+      const request = createMockRequest({
+        url: "http://localhost:3002/api/documents/batch-update-status",
+        method: "POST",
+        body: {
+          documentIds: [changed, unchanged],
+          status: DocumentStatus.Approved,
+        },
+      });
+
+      const response = await POST(request, createMockRouteContext({}));
+
+      // Client still receives every valid id.
+      expect((await response.json()).data).toEqual([changed, unchanged]);
+      // A SINGLE bulk emit call, carrying only the changed id — no forged
+      // DocumentStatusChanged event for the no-op re-apply.
+      expect(mockDispatchAuditEvents).toHaveBeenCalledTimes(1);
+      const emitted = mockDispatchAuditEvents.mock.calls[0][0];
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({
+        objectId: changed,
+        action: AuditAction.DocumentStatusChanged,
+      });
+      // The activity feed hook fires on the SAME changed-only set — one change
+      // entry for `changed`, none for the no-op `unchanged` (no double-count).
+      expect(mockCaptureBatchStatusChange).toHaveBeenCalledTimes(1);
+      expect(mockCaptureBatchStatusChange.mock.calls[0][0].changes).toEqual([
+        {
+          artifactId: changed,
+          before: DocumentStatus.InReview,
+          after: DocumentStatus.Approved,
+        },
+      ]);
     });
   });
 

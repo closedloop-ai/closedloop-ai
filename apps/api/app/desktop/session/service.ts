@@ -152,6 +152,46 @@ export async function issueDesktopSessionCredentials(
   };
 }
 
+/** The device-binding fields of an active desktop session, for PoP verification. */
+export type ActiveDeviceSession = {
+  id: string;
+  gatewayId: string;
+  /** PEM-encoded Ed25519 SPKI public key the device signs PoP challenges with. */
+  boundPublicKey: string;
+};
+
+/**
+ * Look up the newest non-revoked, unexpired desktop session for a given
+ * user/org/gateway. Used by session-authenticated device operations (e.g. the
+ * PR-K DESKTOP_MANAGED key provisioning endpoint) that must prove the caller
+ * still holds the device private key bound to their live session — the returned
+ * `boundPublicKey` is fed to {@link verifyDesktopSessionPop}. Returns `null`
+ * when no live session exists for that device (revoked, expired, or never
+ * established), so callers fail closed rather than minting an unbound key.
+ */
+export async function findActiveDeviceSession(input: {
+  userId: string;
+  organizationId: string;
+  gatewayId: string;
+  now?: Date;
+}): Promise<ActiveDeviceSession | null> {
+  const now = input.now ?? new Date();
+  const session = await withDb((db) =>
+    db.desktopSession.findFirst({
+      where: {
+        userId: input.userId,
+        organizationId: input.organizationId,
+        gatewayId: input.gatewayId,
+        revokedAt: null,
+        expiresAt: { gt: now },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, gatewayId: true, boundPublicKey: true },
+    })
+  );
+  return session;
+}
+
 export const desktopSessionService = {
   /**
    * Exchange an approved device-onboarding session for first-party desktop

@@ -23,8 +23,14 @@ vi.mock("@repo/github", async (importOriginal) => {
   return {
     compareBranchFileChangesWithProviderResult: vi.fn(),
     GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
+    // Real pure classifier: the mint-rejection path folds a thrown error into
+    // provider-failure statuses through it (PLN-1525).
   };
 });
+
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: vi.fn(),
+}));
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -46,11 +52,17 @@ import {
   compareBranchFileChangesWithProviderResult,
   GitHubProviderResultStatus,
 } from "@repo/github";
+import { getInstallationOctokit } from "@repo/github/installation-auth";
 import { refreshBranchFileChangeCache } from "./file-cache-service";
 
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
 const mockCompareBranchFileChanges =
   compareBranchFileChangesWithProviderResult as unknown as Mock;
+const mockGetInstallationOctokit = getInstallationOctokit as unknown as Mock;
+
+// Marker client returned by the mocked resolver: the compare read must receive
+// this exact object as its first argument (PLN-1525).
+const INSTALLATION_OCTOKIT = { marker: "installation-octokit" };
 
 let mockDb: any;
 let mockTx: any;
@@ -73,6 +85,7 @@ function providerRateLimit(retryAfterSeconds: number | null = null) {
 describe("refreshBranchFileChangeCache", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetInstallationOctokit.mockResolvedValue(INSTALLATION_OCTOKIT);
 
     mockDb = {
       branchDetail: {
@@ -150,8 +163,12 @@ describe("refreshBranchFileChangeCache", () => {
         },
       })
     );
+    // ONE installation client is minted per refresh and threaded into the
+    // compare read (PLN-1525).
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123456");
     expect(mockCompareBranchFileChanges).toHaveBeenCalledWith(
-      "123456",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       "main",
@@ -447,6 +464,51 @@ describe("refreshBranchFileChangeCache", () => {
     });
   });
 
+  it("folds an installation client mint rejection into the failed-refresh settlement instead of rejecting (PLN-1525)", async () => {
+    // The token exchange behind getInstallationOctokit is a network call; a
+    // rejection must settle through the same marked-failed path as a failed
+    // compare read, preserving existing cached rows, instead of escaping as an
+    // uncaught throw.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-01T12:00:00.000Z"));
+    mockGetInstallationOctokit.mockRejectedValue(
+      new Error("installation token exchange failed")
+    );
+
+    const result = await refreshBranchFileChangeCache("branch-artifact-1", {
+      organizationId: "org-1",
+    });
+
+    expect(result).toEqual({ ok: false, error: 500 });
+    // The mint failed before the compare read could receive a client.
+    expect(mockCompareBranchFileChanges).not.toHaveBeenCalled();
+    expect(mockTx.branchFileChange.deleteMany).not.toHaveBeenCalled();
+    expect(mockTx.branchFileChange.createMany).not.toHaveBeenCalled();
+    expect(mockDb.branchDetail.updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        artifactId: "branch-artifact-1",
+        artifact: { organizationId: "org-1" },
+      },
+      data: {
+        fileCacheStatus: BranchFileCacheStatus.Failed,
+      },
+    });
+    expect(mockDb.branchDetail.updateMany).toHaveBeenNthCalledWith(3, {
+      where: {
+        artifactId: "branch-artifact-1",
+        artifact: { organizationId: "org-1" },
+        syncStatus: BranchSyncStatus.Syncing,
+        lastSyncStartedAt: new Date("2026-06-01T12:00:00.000Z"),
+      },
+      data: expect.objectContaining({
+        syncStatus: BranchSyncStatus.Failed,
+        lastSyncErrorCode: BranchViewFileCacheSyncErrorCode.CompareFailed,
+        lastSyncErrorMessage:
+          "GitHub compare failed while refreshing branch file cache.",
+      }),
+    });
+  });
+
   it("throttles refreshes for the same cached head when the prior sync is recent", async () => {
     const recentStart = new Date();
     mockDb.branchDetail.findFirst.mockResolvedValue({
@@ -512,8 +574,10 @@ describe("refreshBranchFileChangeCache", () => {
         }),
       })
     );
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123456");
     expect(mockCompareBranchFileChanges).toHaveBeenCalledWith(
-      "123456",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       "main",

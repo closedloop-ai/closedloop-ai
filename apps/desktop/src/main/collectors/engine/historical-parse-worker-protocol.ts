@@ -1,38 +1,47 @@
-import { truncateUtf8 } from "@closedloop-ai/loops-api/observability";
 import { z } from "zod";
-import { safeStorageTokenCountSchema } from "../../token-counts.js";
+import { safeStorageTokenCountSchema } from "../../cost/token-counts.js";
+import type {
+  OpencodeWithheldSubagentReport,
+  OpencodeWithheldSubagentRoot,
+} from "../opencode/opencode-withheld-subagents.js";
 import {
+  type CodexProtocolSupport,
+  type CodexRateLimits,
+  type CodexRateLimitWindow,
+  deriveEndedOnUnrecoveredError,
   HarnessValues,
+  type NormalizedApiError,
+  type NormalizedCodexTokenSnapshot,
+  NormalizedDefinitionKind,
+  type NormalizedDefinitionSnapshot,
+  type NormalizedHookUse,
+  type NormalizedMessage,
+  type NormalizedParseQuality,
+  type NormalizedPlan,
   type NormalizedSession,
+  type NormalizedSkillUse,
+  type NormalizedSlashCommand,
+  type NormalizedSubagent,
+  type NormalizedTokenRecord,
+  type NormalizedToolResultError,
   type NormalizedToolUse,
 } from "../types.js";
-
-export const HistoricalParseWorkerLimits = {
-  maxWorkerSessionsPerSource: 50_000,
-  // Per-array cap. Kept in line with the response-wide item budget below so a
-  // single long session (tens of thousands of messages) is not rejected by a
-  // limit far tighter than the real memory guard. The producer clamps to these
-  // limits before sending (see clampSessionsForWorkerResponse), so the response
-  // always validates and an oversized session degrades to truncated detail
-  // arrays instead of killing the worker.
-  maxSessionArrayItems: 50_000,
-  maxWorkerResponseArrayItems: 50_000,
-  maxWorkerResponseTextBytes: 8_000_000,
-  maxUnknownDepth: 8,
-  maxUnknownArrayItems: 1000,
-  maxUnknownObjectKeys: 250,
-  maxShortTextLength: 8192,
-  maxLongTextLength: 2_000_000,
-  maxWorkerStderrPreviewBytes: 512,
-} as const;
+import { isBoundedUnknownValue } from "./historical-parse-worker-bounded-value.js";
+import { HistoricalParseWorkerLimits } from "./historical-parse-worker-limits.js";
+import {
+  clampSessionsForWorkerResponse,
+  summarizeWorkerResponsePayload,
+} from "./historical-parse-worker-response-budget.js";
+import { boundedDiagnosticText } from "./historical-parse-worker-stderr-sanitize.js";
+import {
+  cacheWriteTtlSchema,
+  historicalWorkerTokenRecordSchema,
+} from "./historical-parse-worker-token-schema.js";
 
 const MAX_WORKER_SESSIONS_PER_SOURCE =
   HistoricalParseWorkerLimits.maxWorkerSessionsPerSource;
 const MAX_SESSION_ARRAY_ITEMS =
   HistoricalParseWorkerLimits.maxSessionArrayItems;
-const MAX_UNKNOWN_DEPTH = HistoricalParseWorkerLimits.maxUnknownDepth;
-const MAX_UNKNOWN_ARRAY_ITEMS =
-  HistoricalParseWorkerLimits.maxUnknownArrayItems;
 const MAX_UNKNOWN_OBJECT_KEYS =
   HistoricalParseWorkerLimits.maxUnknownObjectKeys;
 const MAX_SHORT_TEXT_LENGTH = HistoricalParseWorkerLimits.maxShortTextLength;
@@ -42,43 +51,6 @@ const MAX_RESPONSE_ISSUE_TEXT_LENGTH = 160;
 const MAX_RESPONSE_ISSUE_UNION_DEPTH = 4;
 const WORKER_INVALID_RESPONSE_MESSAGE_PREFIX =
   "historical parse worker sent an invalid response";
-const MAX_WORKER_STDERR_PREVIEW_BYTES =
-  HistoricalParseWorkerLimits.maxWorkerStderrPreviewBytes;
-const TRUNCATED_STDERR_PREVIEW_SUFFIX = "...";
-const REDACTED_PATH_SEGMENT = "[redacted-path]";
-const REDACTED_SECRET_SEGMENT = "[redacted-secret]";
-const REDACTED_TOKEN_SEGMENT = "[redacted-token]";
-// biome-ignore lint/complexity/useRegexLiterals: Control characters are clearer via escaped raw text here.
-const ANSI_ESCAPE_RE = new RegExp(
-  String.raw`[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]`,
-  "g"
-);
-// biome-ignore lint/complexity/useRegexLiterals: Control characters are clearer via escaped raw text here.
-const CONTROL_CHARACTERS_RE = new RegExp(
-  String.raw`[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]`,
-  "g"
-);
-const LINE_BREAKS_RE = /\r\n?|\n/g;
-const REPEATED_WHITESPACE_RE = /\s{2,}/g;
-const FILE_URL_ABSOLUTE_PATH_RE =
-  /\bfile:\/\/\/(?:[^\s"'`<>:]+\/)*([^\s"'`<>:]+)/g;
-const POSIX_ABSOLUTE_PATH_RE =
-  /(^|[\s"'`(=])\/(?:[^\s"'`<>:]+\/)*([^\s"'`<>:]+)(?=$|[\s"'`<>)]|:\d)/g;
-const WINDOWS_ABSOLUTE_PATH_RE =
-  /\b[A-Za-z]:\\(?:[^\s"'`<>:]+\\)*([^\s"'`<>:]+)/g;
-const CREDENTIAL_URL_RE =
-  /\bhttps:\/\/[^:\s/@]+:[^@\s/]+@([^/\s]+\/[^\s"'<>]+)/gi;
-const AWS_ACCESS_KEY_RE = /\b(?:AKIA|ASIA|AROA)[A-Z0-9]{16}\b/g;
-const BEARER_TOKEN_RE = /\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi;
-const SK_KEY_RE = /\bsk-[A-Za-z0-9\-_]{8,}/gi;
-const GITHUB_TOKEN_RE = /\b(?:ghp|gho|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}/gi;
-const SLACK_TOKEN_RE = /\bxox[abprs]-[A-Za-z0-9-]{8,}/gi;
-const SECRET_ASSIGNMENT_RE =
-  /\b([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|AUTH|CREDENTIAL)[A-Z0-9_]*|api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*["']?[^,\s"'`&]+/gi;
-const NODE_SQLITE_EXPERIMENTAL_WARNING_RE =
-  /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature and might change at any time$/;
-const NODE_TRACE_WARNINGS_HINT_RE =
-  /^\(Use `?Electron Helper --trace-warnings \.\.\.`? to show where the warning was created\)$/;
 const nullableShortTextSchema = z
   .string()
   .max(MAX_SHORT_TEXT_LENGTH)
@@ -89,6 +61,8 @@ const tokenCountsSchema = z.object({
   output: safeStorageTokenCountSchema,
   cacheRead: safeStorageTokenCountSchema,
   cacheWrite: safeStorageTokenCountSchema,
+  // FEA-3419: per-model cache-write TTL subdivision.
+  cacheWriteTtl: cacheWriteTtlSchema.optional(),
   // FEA-2085: fallback-attribution marker (see NormalizedTokenCounts).
   inferred: z.boolean().optional(),
 });
@@ -107,9 +81,27 @@ const workerMessageRequestIdSchema = z
   })
   .passthrough();
 
+const definitionSnapshotSchema = z
+  .object({
+    kind: z.enum([
+      NormalizedDefinitionKind.Command,
+      NormalizedDefinitionKind.Skill,
+      NormalizedDefinitionKind.Subagent,
+    ]),
+    rawName: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    normalizedName: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    content: z.string().max(MAX_LONG_TEXT_LENGTH),
+    capturedAt: nullableShortTextSchema,
+  })
+  .strict();
+
 const toolUseSchema = z
   .object({
     name: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    rawName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    normalizedName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    // FEA-2642 (TC-038): builtin | harness | mcp classification.
+    kind: z.enum(["builtin", "harness", "mcp"]).optional(),
     timestamp: nullableShortTextSchema,
     input: boundedUnknownValueSchema.optional(),
     output: boundedUnknownValueSchema.optional(),
@@ -124,6 +116,8 @@ const toolUseSchema = z
       })
       .optional(),
     id: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    providerToolUseId: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    definitionSnapshot: definitionSnapshotSchema.optional(),
     resultTimestamp: optionalNullableShortTextSchema,
     gitBranch: optionalNullableShortTextSchema,
     subagentId: optionalNullableShortTextSchema,
@@ -161,21 +155,31 @@ const messageSchema = z
     isSynthetic: z.boolean().optional(),
   })
   .strict();
-const tokenRecordSchema = z.object({
-  timestamp: z.string().max(MAX_SHORT_TEXT_LENGTH),
-  model: z.string().max(MAX_SHORT_TEXT_LENGTH),
-  input: safeStorageTokenCountSchema,
-  output: safeStorageTokenCountSchema,
-  cacheRead: safeStorageTokenCountSchema,
-  cacheWrite: safeStorageTokenCountSchema,
-  // FEA-2085: fallback-attribution marker (see NormalizedTokenRecord).
-  inferred: z.boolean().optional(),
-});
+const tokenRecordSchema = historicalWorkerTokenRecordSchema;
+// FEA-3526: Codex-only authoritative per-turn `last_token_usage` snapshot
+// (metadata; never alters token totals). Bounded token counters plus the
+// parser-derived delta it reconciles against and the drift flag. The counts
+// shape is `tokenCountsSchema` minus the attribution-only `inferred` flag (the
+// snapshot carries no model-attribution signal) — mirrors the
+// `NormalizedTokenCountsBare = Omit<NormalizedTokenCounts, "inferred">` type.
+const codexTokenCountsSchema = tokenCountsSchema.omit({ inferred: true });
+const codexLastTokenUsageSchema = z
+  .object({
+    timestamp: nullableShortTextSchema,
+    model: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    lastTokenUsage: codexTokenCountsSchema,
+    derivedDelta: codexTokenCountsSchema,
+    drifted: z.boolean(),
+  })
+  .strict();
 const subagentSchema = z
   .object({
     id: z.string().min(1).max(MAX_SHORT_TEXT_LENGTH),
     parentId: optionalNullableShortTextSchema,
+    childSessionId: optionalNullableShortTextSchema,
     name: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    rawName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    normalizedName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
     type: optionalNullableShortTextSchema,
     task: z.string().max(MAX_LONG_TEXT_LENGTH).nullable().optional(),
     startedAt: optionalNullableShortTextSchema,
@@ -190,9 +194,81 @@ const subagentSchema = z
       .array(tokenRecordSchema)
       .max(MAX_SESSION_ARRAY_ITEMS)
       .optional(),
-    metadata: z.record(z.string(), boundedUnknownValueSchema).optional(),
+    definitionSnapshot: definitionSnapshotSchema.optional(),
+    // ISS-5797: the key bound AND the entry-count bound are stated here rather
+    // than left implicit. Every other record at this boundary gets both from
+    // `isBoundedUnknownValue`; this one is a Zod `z.record`, which caps neither,
+    // so a malformed worker message carrying hundreds of thousands of small
+    // metadata entries passed the schema untouched (wongk review). The producer
+    // truncates to the same caps in `clampSessionPayloads`, and both sides ship
+    // in one build.
+    metadata: z
+      .record(z.string().max(MAX_SHORT_TEXT_LENGTH), boundedUnknownValueSchema)
+      .refine(
+        (record) => Object.keys(record).length <= MAX_UNKNOWN_OBJECT_KEYS,
+        {
+          message: `subagent metadata must have at most ${MAX_UNKNOWN_OBJECT_KEYS} entries`,
+        }
+      )
+      .optional(),
   })
   .strict();
+const slashCommandSchema = z
+  .object({
+    name: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    timestamp: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    userTurnId: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    rawName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    normalizedName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    definitionSnapshot: definitionSnapshotSchema.optional(),
+  })
+  .strict();
+const skillUseSchema = z
+  .object({
+    name: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    rawName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    normalizedName: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    timestamp: nullableShortTextSchema,
+    subagentId: optionalNullableShortTextSchema,
+    providerToolUseId: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+    definitionSnapshot: definitionSnapshotSchema.optional(),
+  })
+  .strict();
+// FEA-4093: a Hook firing (`attachment.type` hook_success/hook_error). The
+// `command` field can be a full shell command line, so it is bounded to the
+// long-text cap rather than the short one. `.strict()` rejects any un-modeled
+// key; the keys-covered guard below makes a new NormalizedHookUse field fail
+// `tsc` here instead of silently dropping the whole worker response at runtime.
+const hookUseSchema = z
+  .object({
+    name: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    event: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
+    command: z.string().max(MAX_LONG_TEXT_LENGTH).nullable(),
+    succeeded: z.boolean(),
+    timestamp: nullableShortTextSchema,
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<NormalizedDefinitionSnapshot>(
+  definitionSnapshotSchema.shape
+);
+assertWorkerSchemaKeysCovered<NormalizedToolUse>(toolUseSchema.shape);
+// The runtime schema rejects an unmodelled key, which rejects the containing
+// source response and turns that parse request into a nonfatal worker failure.
+// This compile-time guard catches the opposite drift: a new record key omitted
+// from the worker shape, before that source can reach a utility response.
+assertWorkerSchemaKeysCovered<NormalizedTokenRecord>(tokenRecordSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedSubagent>(subagentSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedSlashCommand>(slashCommandSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedSkillUse>(skillUseSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedHookUse>(hookUseSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedApiError>(apiErrorSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedToolResultError>(
+  toolResultErrorSchema.shape
+);
+assertWorkerSchemaKeysCovered<NormalizedMessage>(messageSchema.shape);
+assertWorkerSchemaKeysCovered<NormalizedCodexTokenSnapshot>(
+  codexLastTokenUsageSchema.shape
+);
 const planSchema = z
   .object({
     source: optionalNullableShortTextSchema,
@@ -200,15 +276,91 @@ const planSchema = z
     timestamp: nullableShortTextSchema,
   })
   .strict();
+assertWorkerSchemaKeysCovered<NormalizedPlan>(planSchema.shape);
 // FEA-2771: parse-quality signal (malformed-line drops). Optional so parsers
 // that don't track it still pass this .strict() boundary validator.
+const prRefSchema = z.object({
+  number: z.string().max(MAX_SHORT_TEXT_LENGTH),
+  repo: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
+  url: z.string().max(MAX_LONG_TEXT_LENGTH).optional(),
+});
 const parseQualitySchema = z
   .object({
     totalLines: z.number(),
     malformedLines: z.number(),
     truncatedFinalLine: z.boolean(),
+    // FEA-3702: Codex present-but-malformed rate_limits records (last-good
+    // preserved). Optional so Claude/other parsers that never set it still pass
+    // this `.strict()` boundary; a positive value is a rate-limit data-quality
+    // signal, not a parse failure.
+    malformedRateLimits: z.number().optional(),
+    // FEA-3713: unknown-record count; optional so parsers/sessions that don't
+    // track it (Claude core, clean rollouts) still pass this .strict() boundary.
+    unknownRecords: z.number().optional(),
+    // FEA-3701: tool-output records correlated to no open call (orphaned) or
+    // correlated via the legacy positional fallback (ambiguous). Both are
+    // emitted by the Codex parser only when non-zero, so they are optional here;
+    // omitting them from this `.strict()` boundary rejected the whole worker
+    // response and silently dropped the source (the drift the guard below now
+    // catches at compile time).
+    orphanedToolOutputs: z.number().optional(),
+    ambiguousToolOutputs: z.number().optional(),
   })
   .strict();
+
+/**
+ * Compile-time exhaustiveness guard (see AGENTS.md "Exhaustiveness"): a key
+ * added to `NormalizedParseQuality` that `parseQualitySchema` does not know
+ * fails to build here. Without it, the `.strict()` boundary rejects the whole
+ * worker response at runtime and the source is silently dropped — the exact
+ * FEA-3701 regression this guards against. Runtime no-op.
+ */
+function assertParseQualityKeysCovered(
+  _shape: Record<keyof NormalizedParseQuality, z.ZodTypeAny>
+): void {
+  /* type-level check only */
+}
+assertParseQualityKeysCovered(parseQualitySchema.shape);
+
+// FEA-3524: one Codex `rate_limits` window (primary/secondary). Each field is
+// nullable, matching the parser's permissive capture; `.strict()` rejects any
+// extra keys so a shape drift surfaces at the worker boundary.
+const codexRateLimitWindowObjectSchema = z
+  .object({
+    used_percent: z.number().nullable(),
+    window_minutes: z.number().nullable(),
+    resets_at: z.number().nullable(),
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<CodexRateLimitWindow>(
+  codexRateLimitWindowObjectSchema.shape
+);
+const codexRateLimitWindowSchema = codexRateLimitWindowObjectSchema.nullable();
+
+// FEA-3524: the positional primary/secondary window pair. Extracted from the
+// session shape so `.shape` stays reachable for the keys-covered guard; the
+// `.nullable().optional()` wrappers are applied at the use site.
+const codexRateLimitsSchema = z
+  .object({
+    primary: codexRateLimitWindowSchema,
+    secondary: codexRateLimitWindowSchema,
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<CodexRateLimits>(codexRateLimitsSchema.shape);
+
+// FEA-3715: the reviewed Codex protocol pin. Extracted for the same reason as
+// the rate-limit pair above; `.optional()` is applied at the use site.
+const codexProtocolSupportSchema = z
+  .object({
+    referenceRepo: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    pinnedCommit: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    reviewedOn: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    supportedRange: z.string().max(MAX_SHORT_TEXT_LENGTH),
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<CodexProtocolSupport>(
+  codexProtocolSupportSchema.shape
+);
 
 export const HistoricalParseWorkerRequestType = {
   ParseSource: "parseSource",
@@ -238,12 +390,19 @@ export type HistoricalParseWorkerRequest = z.infer<
 >;
 
 /** Runtime validator for parser output crossing the utility-process boundary. */
-export const normalizedSessionSchema: z.ZodType<NormalizedSession> = z
+const normalizedSessionObjectSchema = z
   .object({
     sessionId: z.string().min(1).max(MAX_SHORT_TEXT_LENGTH),
     name: z.string().max(MAX_LONG_TEXT_LENGTH),
     cwd: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
     model: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
+    // FEA-4376: flags `model` as a `/model`-switch display-label fallback rather
+    // than a real assistant wire id, so the importer keeps the model column
+    // upgradeable. `.optional()` (not `.default`) mirrors the NormalizedSession
+    // contract: pre-FEA-4376 cached worker payloads omit it and round-trip
+    // through this `.strict()` boundary unchanged (the importer treats an absent
+    // flag as false — a stored model that is not flagged a fallback stays sticky).
+    modelIsFallback: z.boolean().optional(),
     version: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
     slug: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
     gitBranch: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
@@ -283,9 +442,30 @@ export const normalizedSessionSchema: z.ZodType<NormalizedSession> = z
       inference_geos: z
         .array(boundedUnknownValueSchema)
         .max(MAX_SESSION_ARRAY_ITEMS),
+      // FEA-3527: Codex reasoning-output subdivision (subset of output_tokens,
+      // never additive). `.default(0)` keeps the parsed OUTPUT required (matching
+      // the NormalizedSession contract) while letting pre-FEA-3527 worker
+      // payloads that omit it validate and fill 0. The parser always emits it via
+      // `emptyUsageExtras`.
+      reasoning_output_tokens: z.number().default(0),
+      // FEA-3419: the FEA-3496 session-level `cache_creation` blob is GONE from
+      // the contract (the split now rides tokensByModel/tokenSeries as typed
+      // fields). This plain z.object strips the unknown key from any stale
+      // payload that still carries it, so old-shape payloads validate cleanly.
+      // PRD-538: session-level web-search request count. `.default(0)` keeps the
+      // parsed OUTPUT required (matching the NormalizedSession contract) while
+      // letting pre-PRD-538 worker payloads that omit it validate and fill 0. The
+      // parser always emits it via `emptyUsageExtras`.
+      web_search_requests: z.number().default(0),
     }),
     messages: z.array(messageSchema).max(MAX_SESSION_ARRAY_ITEMS),
     tokenSeries: z.array(tokenRecordSchema).max(MAX_SESSION_ARRAY_ITEMS),
+    // FEA-3526: optional so non-Codex parsers and pre-existing payloads that
+    // omit it round-trip; the Codex parser emits it only when present.
+    codexLastTokenUsage: z
+      .array(codexLastTokenUsageSchema)
+      .max(MAX_SESSION_ARRAY_ITEMS)
+      .optional(),
     diffStats: z
       .object({
         filesChanged: z.number(),
@@ -293,24 +473,17 @@ export const normalizedSessionSchema: z.ZodType<NormalizedSession> = z
         linesRemoved: z.number(),
       })
       .nullable(),
-    slashCommands: z
-      .array(
-        z.object({
-          name: z.string().max(MAX_SHORT_TEXT_LENGTH),
-          timestamp: z.string().max(MAX_SHORT_TEXT_LENGTH),
-        })
-      )
-      .max(MAX_SESSION_ARRAY_ITEMS),
+    slashCommands: z.array(slashCommandSchema).max(MAX_SESSION_ARRAY_ITEMS),
+    // FEA-2642 (TC-039): first-class Skill invocations (per-agent via subagentId).
+    skills: z.array(skillUseSchema).max(MAX_SESSION_ARRAY_ITEMS),
+    // FEA-4093: first-class Hook firings. `.default([])` keeps the parsed
+    // OUTPUT required (matching the NormalizedSession contract, where the
+    // parser always emits it via `createNormalizedSession`) while letting a
+    // pre-FEA-4093 cached worker payload that omits the field validate and
+    // fill an empty list under this `.strict()` boundary.
+    hooks: z.array(hookUseSchema).max(MAX_SESSION_ARRAY_ITEMS).default([]),
     artifacts: z.object({
-      prs: z
-        .array(
-          z.object({
-            number: z.string().max(MAX_SHORT_TEXT_LENGTH),
-            repo: z.string().max(MAX_SHORT_TEXT_LENGTH).optional(),
-            url: z.string().max(MAX_LONG_TEXT_LENGTH).optional(),
-          })
-        )
-        .max(MAX_SESSION_ARRAY_ITEMS),
+      prs: z.array(prRefSchema).max(MAX_SESSION_ARRAY_ITEMS),
       issues: z
         .array(
           z.object({
@@ -320,8 +493,79 @@ export const normalizedSessionSchema: z.ZodType<NormalizedSession> = z
         .max(MAX_SESSION_ARRAY_ITEMS),
       repo: z.string().max(MAX_SHORT_TEXT_LENGTH).nullable(),
     }),
+    prLinks: z.array(prRefSchema).max(MAX_SESSION_ARRAY_ITEMS),
+    // FEA-3525: Codex model context-window size (tokens). `.optional()` lets
+    // pre-FEA-3525 worker payloads that omit it validate under `.strict()`
+    // (mirroring the FEA-3496 default-for-round-trip precedent for an OPTIONAL
+    // field); the codex parser omits it entirely when unreported.
+    modelContextWindow: z.number().nonnegative().optional().nullable(),
+    // FEA-3524: Codex `token_count` rate_limits snapshot. `.optional()` (not
+    // `.default`) mirrors the NormalizedSession contract, where the field is
+    // absent unless a well-formed block was captured — so rate_limits-null Codex
+    // sessions and every non-Codex payload round-trip through the worker
+    // boundary unchanged. Each numeric window field is nullable; a `.strict()`
+    // object rejects the harness's un-modeled extras (limit_id, plan_type, …),
+    // which the parser already strips before this boundary.
+    codexRateLimits: codexRateLimitsSchema.nullable().optional(),
+    // FEA-3708: Codex parent-rollout lineage pointer (session_meta.forked_from_id).
+    // `optionalNullableShortTextSchema` (like the sibling short-text fields)
+    // mirrors the NormalizedSession contract: the field is absent unless the
+    // rollout was forked/resumed, so root Codex sessions and every non-Codex
+    // payload round-trip through the worker boundary unchanged under `.strict()`.
+    codexForkedFromId: optionalNullableShortTextSchema,
+    // FEA-3715: static Codex protocol pin recorded in parser output. `.optional()`
+    // (not `.default`) mirrors the NormalizedSession contract — non-Codex parsers
+    // and pre-FEA-3715 worker payloads omit it entirely and round-trip through the
+    // `.strict()` boundary unchanged. A `.strict()` inner object rejects any
+    // un-modeled extra so the pin shape stays reviewed.
+    codexProtocolSupport: codexProtocolSupportSchema.optional(),
+    // FEA-4187: failed-run signal stamped from the FULL parsed session before
+    // the response clamp (see createHistoricalParseWorkerParsedResponse), so
+    // the import path classifies a run that ended on an unrecovered API error
+    // as ERROR, not COMPLETED. `.optional()` (not `.default`) mirrors the
+    // NormalizedSession contract: pre-FEA-4187 cached worker payloads omit it
+    // and round-trip through this `.strict()` boundary unchanged, and the
+    // import path falls back to re-deriving from the on-hand arrays when absent.
+    endedOnUnrecoveredError: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * Fields deliberately NOT carried across the historical-parse-worker boundary:
+ * both are transient live-watcher/main-process context (`importMode` is absent on
+ * browser/historical parsers; `invocationDefinitionEvidence` is created only
+ * during the original live watcher pass), so the historical parser never emits
+ * them and the response schema intentionally omits them. Excluded from the
+ * key-coverage guard below so their absence is a documented boundary decision,
+ * not an accidental gap.
+ */
+type WorkerBoundaryOmittedSessionKeys =
+  | "importMode"
+  | "invocationDefinitionEvidence";
+
+/**
+ * Compile-time key-coverage guard for `normalizedSessionSchema` (mirrors
+ * `assertParseQualityKeysCovered`). `z.ZodType<NormalizedSession>` only enforces
+ * assignability, so a newly-added — especially conditionally-emitted — field
+ * on `NormalizedSession` can be OMITTED from the object schema above and still
+ * typecheck: the `.strict()` boundary would then reject the whole worker payload
+ * at runtime and silently drop the session (the FEA-3701 class of regression).
+ * Typing the raw shape as `Record<keyof …, z.ZodTypeAny>` over every carried key
+ * makes the next omitted field fail `tsc` here instead of production. Runtime
+ * no-op.
+ */
+function assertNormalizedSessionKeysCovered(
+  _shape: Record<
+    Exclude<keyof NormalizedSession, WorkerBoundaryOmittedSessionKeys>,
+    z.ZodTypeAny
+  >
+): void {
+  /* type-level check only */
+}
+assertNormalizedSessionKeysCovered(normalizedSessionObjectSchema.shape);
+
+export const normalizedSessionSchema: z.ZodType<NormalizedSession> =
+  normalizedSessionObjectSchema;
 
 export type HistoricalParseWorkerResponse = z.infer<
   typeof historicalParseWorkerResponseSchema
@@ -352,6 +596,47 @@ export class HistoricalParseWorkerFailureError extends Error {
   }
 }
 
+/**
+ * ISS-5266 (wongk review): the WITHHELD-subagent side-report, on the wire.
+ *
+ * The OpenCode collector produces this as a SIDE EFFECT of `parse`, and in the
+ * in-process path it reaches the store through the collector's injected
+ * `recordWithheld` sink. A historical/boot parse runs in the utility process
+ * instead, where the collector is a DIFFERENT instance with no DB handle and no
+ * sink — so without a wire field the report is simply discarded and the store's
+ * withheld table stays empty for every source imported the normal way.
+ *
+ * Modelled OPTIONALLY and additively, per the repo's cross-version contract: a
+ * worker build that does not send it (and every non-OpenCode parse, which never
+ * has one) parses exactly as before, and the field is OMITTED rather than sent
+ * as `null` when there is nothing to report.
+ */
+const withheldSubagentRootSchema = z
+  .object({
+    rootRawId: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    withheldCount: z.number().int().nonnegative(),
+    reason: z.string().max(MAX_SHORT_TEXT_LENGTH),
+    withheldTokens: safeStorageTokenCountSchema.nullable(),
+    withheldCacheTokens: safeStorageTokenCountSchema.nullable(),
+    earliestChildStartedAt: nullableShortTextSchema,
+    latestChildEndedAt: nullableShortTextSchema,
+    windowPartial: z.boolean(),
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<OpencodeWithheldSubagentRoot>(
+  withheldSubagentRootSchema.shape
+);
+
+const withheldSubagentReportSchema = z
+  .object({
+    sourcePath: z.string().max(MAX_LONG_TEXT_LENGTH),
+    roots: z.array(withheldSubagentRootSchema).max(MAX_SESSION_ARRAY_ITEMS),
+  })
+  .strict();
+assertWorkerSchemaKeysCovered<OpencodeWithheldSubagentReport>(
+  withheldSubagentReportSchema.shape
+);
+
 /** Worker response envelope. */
 export const historicalParseWorkerResponseSchema = z.union([
   z
@@ -361,6 +646,14 @@ export const historicalParseWorkerResponseSchema = z.union([
       sessions: z
         .array(normalizedSessionSchema)
         .max(MAX_WORKER_SESSIONS_PER_SOURCE),
+      /**
+       * ISS-5266: present only for an OpenCode parse that produced a report.
+       * The Parsed branch is a PLAIN `z.object`, so an unmodelled key here would
+       * be silently STRIPPED rather than rejected (see
+       * {@link assertWorkerSchemaKeysCovered}) — the quiet half of the FEA-3701
+       * failure mode, and precisely how this field would have gone missing.
+       */
+      withheldOpencodeSubagents: withheldSubagentReportSchema.optional(),
     })
     .superRefine((response, context) => {
       const summary = summarizeWorkerResponsePayload(response.sessions);
@@ -406,11 +699,27 @@ export const historicalParseWorkerResponseSchema = z.union([
  */
 export function createHistoricalParseWorkerParsedResponse(
   requestId: string,
-  sessions: NormalizedSession[]
+  sessions: NormalizedSession[],
+  // ISS-5266: the parse's side-report, when it produced one. Optional so every
+  // existing caller and every non-OpenCode parse is unchanged, and OMITTED from
+  // the envelope (never sent as `null`) when absent.
+  withheldOpencodeSubagents?: OpencodeWithheldSubagentReport
 ): HistoricalParseWorkerResponse {
+  // FEA-4187: stamp the failed-run signal from the FULL parsed session BEFORE
+  // the response array clamp, so a truncated trailing `apiErrors`/`messages`
+  // tail can't erase it. The import path (write-core) reads this flag to
+  // classify a run that ended on an unrecovered API error as ERROR rather than
+  // COMPLETED. Preserve an explicit flag a parser already set (never downgrade
+  // a known failure); otherwise derive it here.
+  const signaledSessions = sessions.map((session) => ({
+    ...session,
+    endedOnUnrecoveredError:
+      session.endedOnUnrecoveredError === true ||
+      deriveEndedOnUnrecoveredError(session),
+  }));
   let clampedSessions: NormalizedSession[];
   try {
-    clampedSessions = clampSessionsForWorkerResponse(sessions);
+    clampedSessions = clampSessionsForWorkerResponse(signaledSessions);
   } catch (error) {
     return createHistoricalParseWorkerFailedResponse(
       requestId,
@@ -425,6 +734,7 @@ export function createHistoricalParseWorkerParsedResponse(
     type: HistoricalParseWorkerResponseType.Parsed,
     requestId,
     sessions: clampedSessions,
+    ...(withheldOpencodeSubagents ? { withheldOpencodeSubagents } : {}),
   };
   const parsedResponse =
     historicalParseWorkerResponseSchema.safeParse(response);
@@ -501,205 +811,6 @@ export function createHistoricalParseWorkerFailedResponse(
   return options?.fatal ? { ...fallback, fatal: true } : fallback;
 }
 
-export function clampSessionsForWorkerResponse(
-  sessions: NormalizedSession[]
-): NormalizedSession[] {
-  // Bound unknown payload content before trimming array lengths — the response
-  // schema enforces both, and `sliceSessionArrays` alone leaves an oversized
-  // tool input in place (see clampSessionUnknownValues).
-  const limited = sessions
-    .slice(0, MAX_WORKER_SESSIONS_PER_SOURCE)
-    .map((session) => clampSessionUnknownValues(session));
-  let limit: number = MAX_SESSION_ARRAY_ITEMS;
-  let working = limited.map((session) => sliceSessionArrays(session, limit));
-  // Halve the per-array limit until the response-wide item + text budgets fit.
-  // Bounded by log2(maxSessionArrayItems); limit 0 empties every detail array,
-  // which always fits, so this terminates.
-  while (limit > 0 && !fitsResponseBudget(working)) {
-    limit = limit > 1 ? Math.floor(limit / 2) : 0;
-    working = limited.map((session) => sliceSessionArrays(session, limit));
-  }
-  return working;
-}
-
-function fitsResponseBudget(sessions: NormalizedSession[]): boolean {
-  const summary = summarizeWorkerResponsePayload(sessions);
-  return (
-    summary.arrayItems <=
-      HistoricalParseWorkerLimits.maxWorkerResponseArrayItems &&
-    summary.textBytes <= HistoricalParseWorkerLimits.maxWorkerResponseTextBytes
-  );
-}
-
-function sliceSessionArrays(
-  session: NormalizedSession,
-  limit: number
-): NormalizedSession {
-  const sliced: NormalizedSession = {
-    ...session,
-    teams: session.teams.slice(0, limit),
-    messageTimestamps: session.messageTimestamps.slice(0, limit),
-    toolUses: session.toolUses.slice(0, limit),
-    plans: session.plans?.slice(0, limit),
-    compactions: session.compactions.slice(0, limit),
-    apiErrors: session.apiErrors.slice(0, limit),
-    turnDurations: session.turnDurations.slice(0, limit),
-    toolResultErrors: session.toolResultErrors.slice(0, limit),
-    usageExtras: {
-      ...session.usageExtras,
-      service_tiers: session.usageExtras.service_tiers.slice(0, limit),
-      speeds: session.usageExtras.speeds.slice(0, limit),
-      inference_geos: session.usageExtras.inference_geos.slice(0, limit),
-    },
-    messages: session.messages.slice(0, limit),
-    tokenSeries: session.tokenSeries.slice(0, limit),
-    slashCommands: session.slashCommands.slice(0, limit),
-    artifacts: {
-      ...session.artifacts,
-      prs: session.artifacts.prs.slice(0, limit),
-      issues: session.artifacts.issues.slice(0, limit),
-    },
-  };
-  if (session.subagents) {
-    sliced.subagents = session.subagents.slice(0, limit).map((subagent) => ({
-      ...subagent,
-      toolUses: subagent.toolUses?.slice(0, limit),
-      tokenSeries: subagent.tokenSeries?.slice(0, limit),
-    }));
-  }
-  return sliced;
-}
-
-/** Replaces payloads the bounded-unknown validator would reject outright. */
-const TRUNCATED_UNKNOWN_VALUE = "[truncated]";
-
-/**
- * Bound every schema-`unknown` payload (tool-use input/output, subagent
- * metadata, teams/compactions/usageExtras entries) to the limits
- * `isBoundedUnknownValue` enforces. `sliceSessionArrays` only trims array
- * lengths, so without this pass a single oversized tool input (e.g. a >2MB
- * Write payload in a transcript) fails response validation and the whole
- * parse job degrades to a Failed envelope — the source is dropped and
- * re-parsed on every collector cycle instead of ingesting with truncated
- * detail.
- */
-function clampSessionUnknownValues(
-  session: NormalizedSession
-): NormalizedSession {
-  const clamped: NormalizedSession = {
-    ...session,
-    teams: session.teams.map((item) => clampUnknownValue(item, 0)),
-    toolUses: session.toolUses.map((toolUse) =>
-      clampToolUseUnknownValues(toolUse)
-    ),
-    compactions: session.compactions.map((item) => clampUnknownValue(item, 0)),
-    usageExtras: {
-      ...session.usageExtras,
-      service_tiers: session.usageExtras.service_tiers.map((item) =>
-        clampUnknownValue(item, 0)
-      ),
-      speeds: session.usageExtras.speeds.map((item) =>
-        clampUnknownValue(item, 0)
-      ),
-      inference_geos: session.usageExtras.inference_geos.map((item) =>
-        clampUnknownValue(item, 0)
-      ),
-    },
-  };
-  if (session.subagents) {
-    clamped.subagents = session.subagents.map((subagent) => ({
-      ...subagent,
-      toolUses: subagent.toolUses?.map((toolUse) =>
-        clampToolUseUnknownValues(toolUse)
-      ),
-      metadata: subagent.metadata
-        ? Object.fromEntries(
-            Object.entries(subagent.metadata).map(([key, item]) => [
-              key,
-              clampUnknownValue(item, 0),
-            ])
-          )
-        : undefined,
-    }));
-  }
-  return clamped;
-}
-
-function clampToolUseUnknownValues(
-  toolUse: NormalizedToolUse
-): NormalizedToolUse {
-  const input =
-    toolUse.input === undefined
-      ? undefined
-      : clampUnknownValue(toolUse.input, 0);
-  const output =
-    toolUse.output === undefined
-      ? undefined
-      : clampUnknownValue(toolUse.output, 0);
-  if (input === toolUse.input && output === toolUse.output) {
-    return toolUse;
-  }
-  return { ...toolUse, input, output };
-}
-
-/**
- * Degrade an out-of-bounds unknown value to the nearest in-bounds shape:
- * oversized strings truncate, oversized arrays/objects drop trailing entries,
- * non-finite numbers become null, and containers at the depth cap (whose
- * children the validator rejects wholesale) collapse to a marker string.
- * Already-bounded values return by reference.
- */
-function clampUnknownValue(value: unknown, depth: number): unknown {
-  if (isBoundedUnknownValue(value, depth)) {
-    return value;
-  }
-  if (typeof value === "number") {
-    // Only a non-finite number fails the bounded check above.
-    return null;
-  }
-  if (typeof value === "string") {
-    return truncateUtf8(value, MAX_LONG_TEXT_LENGTH);
-  }
-  if (Array.isArray(value)) {
-    if (depth >= MAX_UNKNOWN_DEPTH) {
-      return TRUNCATED_UNKNOWN_VALUE;
-    }
-    return value
-      .slice(0, MAX_UNKNOWN_ARRAY_ITEMS)
-      .map((item) => clampUnknownValue(item, depth + 1));
-  }
-  if (isPlainRecord(value)) {
-    if (depth >= MAX_UNKNOWN_DEPTH) {
-      return TRUNCATED_UNKNOWN_VALUE;
-    }
-    return Object.fromEntries(
-      Object.entries(value)
-        .slice(0, MAX_UNKNOWN_OBJECT_KEYS)
-        .map(([key, item]) => [
-          key.slice(0, MAX_SHORT_TEXT_LENGTH),
-          clampUnknownValue(item, depth + 1),
-        ])
-    );
-  }
-  // null/boolean/finite numbers are always bounded; anything else (bigint,
-  // function, class instance) has no bounded representation.
-  return TRUNCATED_UNKNOWN_VALUE;
-}
-
-/**
- * Return a bounded diagnostic preview for worker stderr. This protects the
- * log sink that records utility-process warnings/errors, not the raw stderr
- * stream itself.
- */
-export function summarizeHistoricalWorkerStderr(chunk: Buffer): string | null {
-  const text = chunk.toString("utf8");
-  if (isIgnorableHistoricalWorkerStderr(text)) {
-    return null;
-  }
-  const preview = summarizeHistoricalWorkerStderrPreview(text);
-  return `historical parse worker stderr (${chunk.byteLength} bytes): ${preview}`;
-}
-
 /** Return bounded schema diagnostics without echoing raw transcript payloads. */
 export function summarizeHistoricalWorkerResponseIssues(
   error: z.ZodError
@@ -760,40 +871,6 @@ function invalidResponseMessage(requestId: string): string {
   return `${WORKER_INVALID_RESPONSE_MESSAGE_PREFIX} for ${requestId}`;
 }
 
-function boundedDiagnosticText(text: string): string {
-  const sanitized = sanitizeHistoricalWorkerDiagnosticText(text);
-  if (Buffer.byteLength(sanitized, "utf8") <= MAX_LONG_TEXT_LENGTH) {
-    return sanitized;
-  }
-  return truncateUtf8(sanitized, MAX_LONG_TEXT_LENGTH);
-}
-
-function summarizeHistoricalWorkerStderrPreview(text: string): string {
-  const sanitized = sanitizeHistoricalWorkerDiagnosticText(text);
-  const preview =
-    Buffer.byteLength(sanitized, "utf8") <= MAX_WORKER_STDERR_PREVIEW_BYTES
-      ? sanitized
-      : `${truncateUtf8(
-          sanitized,
-          MAX_WORKER_STDERR_PREVIEW_BYTES -
-            Buffer.byteLength(TRUNCATED_STDERR_PREVIEW_SUFFIX, "utf8")
-        )}${TRUNCATED_STDERR_PREVIEW_SUFFIX}`;
-  return preview || "<empty>";
-}
-
-function sanitizeHistoricalWorkerDiagnosticText(text: string): string {
-  return redactHistoricalWorkerStderrPaths(
-    redactHistoricalWorkerStderrSecrets(
-      text
-        .replaceAll(ANSI_ESCAPE_RE, "")
-        .replaceAll(CONTROL_CHARACTERS_RE, "")
-        .replaceAll(LINE_BREAKS_RE, " | ")
-        .replaceAll(REPEATED_WHITESPACE_RE, " ")
-        .trim()
-    )
-  );
-}
-
 function flattenZodIssues(issues: z.ZodIssue[], depth = 0): z.ZodIssue[] {
   const flattened: z.ZodIssue[] = [];
   for (const issue of issues) {
@@ -818,116 +895,27 @@ function flattenZodIssues(issues: z.ZodIssue[], depth = 0): z.ZodIssue[] {
   return flattened;
 }
 
-function isIgnorableHistoricalWorkerStderr(text: string): boolean {
-  const lines = text
-    .replaceAll(ANSI_ESCAPE_RE, "")
-    .replaceAll(CONTROL_CHARACTERS_RE, "")
-    .split(LINE_BREAKS_RE)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-  return (
-    lines.length > 0 &&
-    lines.every(
-      (line) =>
-        NODE_SQLITE_EXPERIMENTAL_WARNING_RE.test(line) ||
-        NODE_TRACE_WARNINGS_HINT_RE.test(line)
-    )
-  );
-}
-
-function redactHistoricalWorkerStderrSecrets(text: string): string {
-  return text
-    .replaceAll(CREDENTIAL_URL_RE, `https://${REDACTED_SECRET_SEGMENT}@$1`)
-    .replaceAll(AWS_ACCESS_KEY_RE, REDACTED_TOKEN_SEGMENT)
-    .replaceAll(BEARER_TOKEN_RE, `Bearer ${REDACTED_TOKEN_SEGMENT}`)
-    .replaceAll(SK_KEY_RE, REDACTED_TOKEN_SEGMENT)
-    .replaceAll(GITHUB_TOKEN_RE, REDACTED_TOKEN_SEGMENT)
-    .replaceAll(SLACK_TOKEN_RE, REDACTED_TOKEN_SEGMENT)
-    .replaceAll(SECRET_ASSIGNMENT_RE, `$1=${REDACTED_SECRET_SEGMENT}`);
-}
-
-function redactHistoricalWorkerStderrPaths(text: string): string {
-  return text
-    .replaceAll(
-      FILE_URL_ABSOLUTE_PATH_RE,
-      `file:///${REDACTED_PATH_SEGMENT}/$1`
-    )
-    .replaceAll(POSIX_ABSOLUTE_PATH_RE, `$1${REDACTED_PATH_SEGMENT}/$2`)
-    .replaceAll(WINDOWS_ABSOLUTE_PATH_RE, `${REDACTED_PATH_SEGMENT}\\$1`);
-}
-
-function isBoundedUnknownValue(value: unknown, depth: number): boolean {
-  if (depth > MAX_UNKNOWN_DEPTH) {
-    return false;
-  }
-  if (value === null || typeof value === "boolean") {
-    return true;
-  }
-  if (typeof value === "number") {
-    return Number.isFinite(value);
-  }
-  if (typeof value === "string") {
-    return Buffer.byteLength(value) <= MAX_LONG_TEXT_LENGTH;
-  }
-  if (Array.isArray(value)) {
-    return (
-      value.length <= MAX_UNKNOWN_ARRAY_ITEMS &&
-      value.every((item) => isBoundedUnknownValue(item, depth + 1))
-    );
-  }
-  if (isPlainRecord(value)) {
-    const entries = Object.entries(value);
-    return (
-      entries.length <= MAX_UNKNOWN_OBJECT_KEYS &&
-      entries.every(
-        ([key, item]) =>
-          key.length <= MAX_SHORT_TEXT_LENGTH &&
-          isBoundedUnknownValue(item, depth + 1)
-      )
-    );
-  }
-  return false;
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function summarizeWorkerResponsePayload(value: unknown): {
-  arrayItems: number;
-  textBytes: number;
-} {
-  if (typeof value === "string") {
-    return { arrayItems: 0, textBytes: Buffer.byteLength(value) };
-  }
-  if (Array.isArray(value)) {
-    return value.reduce(
-      (summary, item) => {
-        const child = summarizeWorkerResponsePayload(item);
-        return {
-          arrayItems: summary.arrayItems + 1 + child.arrayItems,
-          textBytes: summary.textBytes + child.textBytes,
-        };
-      },
-      { arrayItems: 0, textBytes: 0 }
-    );
-  }
-  if (isPlainRecord(value)) {
-    return Object.entries(value).reduce(
-      (summary, [key, item]) => {
-        const child = summarizeWorkerResponsePayload(item);
-        return {
-          arrayItems: summary.arrayItems + child.arrayItems,
-          textBytes:
-            summary.textBytes + Buffer.byteLength(key) + child.textBytes,
-        };
-      },
-      { arrayItems: 0, textBytes: 0 }
-    );
-  }
-  return { arrayItems: 0, textBytes: 0 };
+/**
+ * Compile-time guard for worker-boundary schemas over normalized types.
+ *
+ * FEA-3597: applies to BOTH schema kinds, which fail differently when a key is
+ * unmodelled — a `.strict()` schema rejects the whole worker response (loud, the
+ * source is dropped and retried); a plain `z.object` silently STRIPS the key
+ * (quiet, the field is simply gone and every consumer sees a default). The
+ * guard is therefore most valuable on the non-strict schemas, where nothing
+ * else would ever surface the omission.
+ *
+ * ONE-DIRECTIONAL, deliberately. Callers pass `schema.shape`, a property access
+ * rather than a fresh object literal, so TypeScript applies ordinary structural
+ * assignability and NOT excess-property checking: a key ADDED to the normalized
+ * type and left untaught here fails `tsc` (the FEA-3701 case this exists for),
+ * but a STRAY key present on the schema and absent from the type does not. The
+ * `satisfies Record<keyof T, z.ZodTypeAny>` spelling used on shape literals
+ * elsewhere in the repo catches both directions; prefer it for a NEW boundary,
+ * and read a green result here as "nothing is missing", not "nothing is extra".
+ */
+function assertWorkerSchemaKeysCovered<T>(
+  _shape: { [Key in keyof T]-?: z.ZodTypeAny }
+): void {
+  /* type-level check only */
 }

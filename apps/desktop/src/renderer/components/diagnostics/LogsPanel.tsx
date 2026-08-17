@@ -1,3 +1,4 @@
+import { formatTime } from "@repo/app/shared/lib/date-utils";
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import {
   Card,
@@ -5,7 +6,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@closedloop-ai/design-system/components/ui/card";
-import { formatTime } from "@repo/app/shared/lib/date-utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { isRecord } from "../../../shared/type-guards";
 

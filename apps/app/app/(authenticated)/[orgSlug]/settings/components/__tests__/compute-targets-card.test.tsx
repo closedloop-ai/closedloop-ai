@@ -3,6 +3,7 @@ import {
   type ComputeTarget,
   DesktopSecurityStatus,
   HarnessType,
+  HealthCheckRepairAction,
 } from "@repo/api/src/types/compute-target";
 import { EngineerRoutingMode } from "@repo/api/src/types/relay";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -27,6 +28,9 @@ const RE_DOWNLOAD_UNAVAILABLE = /Download unavailable/i;
 const RE_UPDATE_REQUIRED = /Update required/i;
 const RE_REGISTER_BROWSER = /Register Browser/i;
 const RE_UNREGISTER = /Unregister/i;
+const RE_REPAIR_BUTTON = /^repair \d+ failures?$/i;
+const RE_MANUAL_MCP_INSTALL = /Project-local MCP installs are not supported/i;
+const RE_REPAIR_DEFERRAL = /Repair can fix this from here/i;
 const TEST_TARGET_ID = "target-1";
 const TEST_TARGET_NAME = "Daniel-MBP";
 const TEST_DESKTOP_DOWNLOAD_URL =
@@ -38,6 +42,7 @@ vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: vi.fn(), replace: vi.fn() })),
 }));
 
+const mockUseFeatureFlagEnabled = vi.fn();
 const mockUseComputeTargets = vi.fn();
 const mockUseDeleteComputeTarget = vi.fn();
 const mockDeleteMutate = vi.fn();
@@ -94,6 +99,10 @@ vi.mock("@/hooks/queries/use-compute-targets", () => ({
   useToggleComputeTargetSharing: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
+
 vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
   useLatestElectronRelease: () => mockUseLatestElectronRelease(),
 }));
@@ -121,6 +130,8 @@ describe("ComputeTargetsCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
+    // Closed by default — the Repair control is gated (ISS-5389).
+    mockUseFeatureFlagEnabled.mockReturnValue(false);
     mockUseComputeTargets.mockReturnValue({
       data: [makeComputeTarget()],
       isLoading: false,
@@ -195,6 +206,179 @@ describe("ComputeTargetsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: RE_SYSTEM_CHECK }));
 
     expect(screen.getByText("Install git")).toBeInTheDocument();
+  });
+
+  it("offers Repair for a repairable failing row once the flag is on", () => {
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    const queryClient = createTestQueryClient();
+    const healthCheckTargetKey = getHealthCheckTargetKey({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: TEST_TARGET_ID,
+    });
+    mockUnexpectedHealthCheckFetch();
+    queryClient.setQueryData(
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
+      {
+        checks: [
+          {
+            id: "claude-cli",
+            label: "Claude CLI",
+            required: true,
+            passed: false,
+            error: "Override path does not exist or is not executable",
+            repair: { repairable: true, action: "clear_binary_override" },
+          },
+          {
+            id: "app-version",
+            label: "Gateway Version",
+            required: true,
+            passed: false,
+            error: "Update available",
+            repair: {
+              repairable: false,
+              reason: "Update it on that machine.",
+            },
+          },
+        ],
+        allRequiredPassed: false,
+      }
+    );
+
+    renderWithClient(queryClient);
+
+    // Only the repairable row is counted.
+    expect(
+      screen.getByRole("button", { name: RE_REPAIR_BUTTON })
+    ).toHaveTextContent("Repair 1 failure");
+  });
+
+  it("offers Repair when the ONLY repairable row is a synthesized MCP row", () => {
+    // The MCP rows are not in `response.checks` — the web builds them from
+    // `mcpServers`. A surface that hands the raw gateway array to the repair
+    // hook counts zero repairable rows here and paints no control, which is the
+    // dead end ISS-5435 exists to remove.
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    const queryClient = createTestQueryClient();
+    const healthCheckTargetKey = getHealthCheckTargetKey({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: TEST_TARGET_ID,
+    });
+    mockUnexpectedHealthCheckFetch();
+    queryClient.setQueryData(
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
+      {
+        // Every gateway row passes. The only fault on screen is Codex MCP.
+        checks: [
+          {
+            id: "claude-cli",
+            label: "Claude CLI",
+            required: true,
+            passed: true,
+          },
+        ],
+        allRequiredPassed: true,
+        // The web does not re-derive repairability; it plumbs through whatever
+        // verdict the gateway attached. That plumbing is what this asserts —
+        // the classification rules themselves are the desktop suite's contract.
+        mcpServers: {
+          codex: {
+            available: false,
+            serverName: "closedloop",
+            matchedUrl: "https://mcp.example.com/mcp",
+            checkedAt: "2026-04-12T00:00:00.000Z",
+            repair: {
+              repairable: true,
+              action: HealthCheckRepairAction.ConfigureMcp,
+            },
+          },
+        },
+      }
+    );
+
+    renderWithClient(queryClient);
+
+    expect(
+      screen.getByRole("button", { name: RE_REPAIR_BUTTON })
+    ).toHaveTextContent("Repair 1 failure");
+  });
+
+  it("defers a repairable MCP row's manual install copy to the Repair button", () => {
+    // One voice per row: the manual "Install a user/global MCP server…" copy and
+    // a button offering to do exactly that must not both address one failure.
+    mockUseFeatureFlagEnabled.mockReturnValue(true);
+    const queryClient = createTestQueryClient();
+    const healthCheckTargetKey = getHealthCheckTargetKey({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: TEST_TARGET_ID,
+    });
+    mockUnexpectedHealthCheckFetch();
+    queryClient.setQueryData(
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
+      {
+        checks: [
+          {
+            id: "claude-cli",
+            label: "Claude CLI",
+            required: true,
+            passed: true,
+          },
+        ],
+        allRequiredPassed: true,
+        mcpServers: {
+          // No `serverName`: nothing is configured, so the synthesized row
+          // carries the install instructions rather than a connect hint.
+          codex: {
+            available: false,
+            serverName: null,
+            matchedUrl: "https://mcp.example.com/mcp",
+            checkedAt: "2026-04-12T00:00:00.000Z",
+            repair: {
+              repairable: true,
+              action: HealthCheckRepairAction.ConfigureMcp,
+            },
+          },
+        },
+      }
+    );
+
+    renderWithClient(queryClient);
+    // The results live in a collapsed section; the copy is only on screen once
+    // the user opens it.
+    fireEvent.click(screen.getByRole("button", { name: RE_SYSTEM_CHECK }));
+
+    expect(screen.getByText(RE_REPAIR_DEFERRAL)).toBeTruthy();
+    expect(screen.queryByText(RE_MANUAL_MCP_INSTALL)).toBe(null);
+  });
+
+  it("withholds Repair while the flag is off, with the same repairable row present", () => {
+    const queryClient = createTestQueryClient();
+    const healthCheckTargetKey = getHealthCheckTargetKey({
+      mode: EngineerRoutingMode.CloudRelay,
+      computeTargetId: TEST_TARGET_ID,
+    });
+    mockUnexpectedHealthCheckFetch();
+    queryClient.setQueryData(
+      queryKeys.healthCheck(healthCheckTargetKey, expectedMcpUrl, "9.9.9"),
+      {
+        checks: [
+          {
+            id: "claude-cli",
+            label: "Claude CLI",
+            required: true,
+            passed: false,
+            error: "Override path does not exist or is not executable",
+            repair: { repairable: true, action: "clear_binary_override" },
+          },
+        ],
+        allRequiredPassed: false,
+      }
+    );
+
+    renderWithClient(queryClient);
+
+    // The row is repairable, so this can only pass because of the gate.
+    expect(screen.getByText("1 failure")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: RE_REPAIR_BUTTON })).toBeNull();
   });
 
   it("shows the last checked timestamp when cached results exist", () => {

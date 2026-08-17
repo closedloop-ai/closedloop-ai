@@ -3,16 +3,25 @@ import { test } from "node:test";
 import {
   type GatewayRecoveryDeps,
   GatewayRecoveryManager,
-} from "../src/main/gateway-recovery.js";
+} from "../src/main/lifecycle/gateway-recovery.js";
 
-function createStubDeps(
-  overrides?: Partial<GatewayRecoveryDeps>
-): GatewayRecoveryDeps & {
+/**
+ * The stub's own surface: the real dependency contract plus the mutable knobs a
+ * test flips (`paused`, `shuttingDown`) and the call log it asserts on. Named
+ * rather than inlined because the object literal below must be annotated with
+ * it: `isShuttingDown` reads `state.shuttingDown` back off the object being
+ * built, and a self-referential initializer has no inferable type.
+ */
+type StubGatewayRecoveryDeps = GatewayRecoveryDeps & {
   calls: Record<string, unknown[][]>;
   cloudState: { state: string };
   paused: boolean;
   shuttingDown: boolean;
-} {
+};
+
+function createStubDeps(
+  overrides?: Partial<GatewayRecoveryDeps>
+): StubGatewayRecoveryDeps {
   const calls: Record<string, unknown[][]> = {};
   const record = (name: string, ...args: unknown[]) => {
     calls[name] ??= [];
@@ -20,7 +29,7 @@ function createStubDeps(
   };
 
   const cloudState = { state: "online" };
-  const state = {
+  const state: StubGatewayRecoveryDeps = {
     calls,
     cloudState,
     paused: false,

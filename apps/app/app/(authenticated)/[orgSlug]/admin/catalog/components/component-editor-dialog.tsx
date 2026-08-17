@@ -12,6 +12,7 @@ import {
   type ComponentDraft,
   type ComponentKind,
   parseComponentContent,
+  tryParseComponentContent,
 } from "@repo/app/packs/lib/component-anatomy";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -49,6 +50,7 @@ const EMPTY_DRAFT: ComponentDraft = {
   description: "",
   fields: {},
   body: "",
+  unknownFields: [],
 };
 type ComponentAnatomy = (typeof COMPONENT_ANATOMY)[ComponentKind];
 
@@ -316,7 +318,28 @@ export function ComponentEditorDialog({
           {supportsContentEdit ? (
             <Button
               onClick={() => {
-                if (!rawMode) {
+                if (rawMode) {
+                  // Returning to form mode: parse the raw edits back into the
+                  // draft so hand-authored content isn't silently discarded
+                  // (FEA-3163). The always-visible name/description inputs stay
+                  // authoritative and aren't clobbered by the raw frontmatter.
+                  const parsed = tryParseComponentContent(kind, rawContent);
+                  if (!parsed.ok) {
+                    // Invalid config (JSON) content: keep the raw edits and the
+                    // current draft intact and surface the error rather than
+                    // wiping every field on the toggle.
+                    setError(
+                      "Raw content is not valid JSON. Fix it or revert your edits before switching to form fields."
+                    );
+                    return;
+                  }
+                  setError(null);
+                  setDraft((prev) => ({
+                    ...parsed.draft,
+                    name: prev.name,
+                    description: prev.description,
+                  }));
+                } else {
                   setRawContent(assembled);
                 }
                 setRawMode((prev) => !prev);

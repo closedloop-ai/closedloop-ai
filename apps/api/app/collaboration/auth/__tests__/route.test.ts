@@ -1,3 +1,7 @@
+import {
+  AuthErrorCode,
+  ORG_UNVERIFIABLE_MESSAGE,
+} from "@repo/api/src/types/auth-error";
 import type { User } from "@repo/api/src/types/user";
 import { ApproverRole } from "@repo/api/src/types/user";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -55,12 +59,17 @@ const createRequest = (body: unknown) =>
     body: JSON.stringify(body),
   });
 
+import {
+  ORG_UNVERIFIABLE,
+  UNAUTHENTICATED,
+} from "@/lib/auth/auth-context-failure";
+
 describe("POST /collaboration/auth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockResolveAnyAuthContext.mockResolvedValue({
-      userId: "user-123",
-      organizationId: "org-123",
+      ok: true,
+      context: { userId: "user-123", organizationId: "org-123" },
     });
     mockFindById.mockResolvedValue(createMockUser());
     // `authenticate()` returns the Liveblocks `authorize().body` — a JSON string
@@ -73,12 +82,33 @@ describe("POST /collaboration/auth", () => {
   });
 
   test("returns 401 when authentication fails", async () => {
-    mockResolveAnyAuthContext.mockResolvedValueOnce(null);
+    mockResolveAnyAuthContext.mockResolvedValueOnce(UNAUTHENTICATED);
 
     const response = await POST(createRequest({ room: "org-123:artifact:a1" }));
 
     expect(response.status).toBe(401);
     expect(await response.text()).toBe("Unauthorized");
+    expect(mockAuthenticate).not.toHaveBeenCalled();
+  });
+
+  // ISS-5118 review (wongk): this boundary cannot use `withAuth`, and before the
+  // resolver carried a discriminated failure it mapped every outcome to the 401
+  // above — so a Clerk membership outage arrived here looking like bad
+  // credentials, and the web boundary latched its "session expired" card over a
+  // live session. The 503 and its code are the contract `withAuth` already
+  // answers; asserting the body is what stops this silently degrading back.
+  test("returns a retryable 503 — not a 401 — when the org cannot be verified", async () => {
+    mockResolveAnyAuthContext.mockResolvedValueOnce(ORG_UNVERIFIABLE);
+
+    const response = await POST(createRequest({ room: "org-123:artifact:a1" }));
+
+    expect(response.status).toBe(503);
+    expect(response.status).not.toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: ORG_UNVERIFIABLE_MESSAGE,
+      code: AuthErrorCode.OrgUnverifiable,
+    });
     expect(mockAuthenticate).not.toHaveBeenCalled();
   });
 

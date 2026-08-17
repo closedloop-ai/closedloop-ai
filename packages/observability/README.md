@@ -12,12 +12,13 @@ utilities shared across `apps/api` and `apps/relay`.
 - [Origin semantics](#origin-semantics)
 - [Origin precedence in `buildEntry()`](#origin-precedence-in-buildentry)
 - [Metric-tag allowlist](#metric-tag-allowlist)
+- [db_pool_* connection-pool telemetry](#db_pool_-connection-pool-telemetry)
 - [Call-path invariant for desktop telemetry](#call-path-invariant-for-desktop-telemetry)
 - [loop.perf.* telemetry categories](#loopperf-telemetry-categories)
 - [job.* command attribution](#job-command-attribution)
 - [`origin` vs `service` fields](#origin-vs-service-fields)
 - [One-shot startup warnings](#one-shot-startup-warnings)
-- [No kill switch](#no-kill-switch)
+- [No kill switch for enrichment](#no-kill-switch-for-enrichment)
 - [Test setup](#test-setup)
 - [See also](#see-also)
 
@@ -28,6 +29,13 @@ utilities shared across `apps/api` and `apps/relay`.
 `log` is a drop-in replacement for `console`. It always writes to stdout and,
 when `DD_API_KEY` + `DD_SITE` are present, batches and ships entries to the
 Datadog HTTP log intake (agentless — no Datadog agent required).
+
+Set `DD_LOGS_DISABLED=1` to force the intake sink closed even when `DD_API_KEY`
+is present. This exists because `DD_API_KEY` has a second, unrelated consumer:
+dd-trace's agentless Test Optimization reporter, which CI sets on every
+instrumented test lane (ISS-4399). Without the flag, feeding the tracer would
+also ship the code-under-test's log calls to Datadog as if they were
+production. Console output is unaffected.
 
 ```ts
 import { log } from "@repo/observability/log";
@@ -57,7 +65,7 @@ Every Datadog log entry carries a `ddtags` string with exactly three tags:
 | Tag | Source env var(s) | Fallback |
 |---|---|---|
 | `env` | `DD_ENV` → `NODE_ENV` | `"development"` |
-| `version` | `RELEASE_VERSION` → `npm_package_version` (via `resolveServerVersion`) | `"unknown"` |
+| `version` | `RELEASE_VERSION` → `npm_package_version` → `VERCEL_GIT_COMMIT_SHA` (via `resolveServerVersion`) | `"unknown"` |
 | `git_sha` | `VERCEL_GIT_COMMIT_SHA` → `GIT_SHA` | `"unknown"` |
 
 These values are resolved **once at module load** and cached in the module-scope
@@ -172,6 +180,59 @@ attached to metric emissions (via `emitQueueMetric` / `emitProtocolMetric`):
 
 Do **not** add high-cardinality values (user IDs, request IDs, free-form
 strings) to metric emissions.
+
+---
+
+## db_pool_* connection-pool telemetry
+
+`emitDbPoolMetric()` (`telemetry/metrics.ts`) emits pg connection-pool health for
+`service:cl-api` (FEA-3300). The samples originate in `@repo/database`'s
+`pool-telemetry.ts` and reach this package through an **injected sink** that
+`apps/api/instrumentation.ts` registers in `register()`.
+
+**Why injected and not imported:** `@repo/database` must not depend on
+`@repo/observability`. `apps/mcp` consumes `@repo/database` through a narrow
+Docker context that copies an explicit list of workspace packages, so a static
+import there would build green locally and fail at runtime inside the mcp image.
+A consumer that registers no sink emits nothing and warns once
+(`db_pool_telemetry.sink_missing`).
+
+| `metric` | Field | Emitted when |
+|---|---|---|
+| `db_pool_acquire_wait` | `value` (ms) | an acquisition waited ≥10ms — **always** at ≥1s, otherwise throttled to 1/s |
+| `db_pool_acquire_timeout` | `count: 1` | pg raised `timeout exceeded when trying to connect` |
+| `db_pool_checkout_duration` | `value` (ms) | first terminal event (`release` **or** `remove`) for a client |
+| `db_pool_wait_queue_depth` | `value` | sampled at `connect` entry, every 10s |
+| `db_pool_in_use` / `db_pool_idle` / `db_pool_total` | `value` | sampled at `connect` entry, every 10s |
+
+All use `value:` except `db_pool_acquire_timeout`, which is a true counter and
+uses `count:` — see [Metric field semantics](#metric-field-semantics-count-vs-value).
+
+`origin` is **required** on `DbPoolMetric` and is stamped by the sink adapter in
+`apps/api/instrumentation.ts`, matching `QueueMetric`/`ProtocolMetric`. Do not
+rely on `buildEntry()` for it: `buildEntry()` enriches only the agentless HTTP
+intake payload, while `writeConsole()` emits `{...meta, message, level, status}` to
+stdout — so on the Vercel Log Drain path `@origin` comes **solely from the
+emitted payload**.
+
+**Contention is measured, not sampled.** The failure mode these exist to catch is
+triggered by simultaneity: one request fanning out N concurrent queries against a
+pool of `max` starves every other caller. A periodic gauge can miss a
+multi-second saturation entirely, so `db_pool_acquire_wait` times *every*
+acquisition and emits only above a threshold — a warm-pool hit is sub-millisecond
+and costs nothing.
+
+**`poolMax`, `waitingCount`, `inUse`, `idle` and `total` ride on every sample as
+log attributes — never as metric tags** (see the allowlist above). `poolMax` is
+read from `pool.options.max` rather than assumed: the IAM branch sets 20 and the
+DATABASE_URL branch inherits pg's default of 10, so utilization is
+`in_use / poolMax`, never `in_use / 20`.
+
+> ⚠️ **Emitting these does not create Datadog metrics.** Each one needs a
+> `datadog_logs_metric` rule in `cl-tofu-aws-live/_modules/datadog/pipelines/`,
+> filtered on the **attribute** (`@metric:db_pool_*`) and pinned to a single
+> ingestion path (`source:nodejs`). `service:cl-api @origin:api` alone matches
+> **both** the agentless and Vercel Log Drain copies and would double-count.
 
 ---
 
@@ -440,7 +501,7 @@ noise).
 |---|---|
 | `telemetry.dd_service_fallback` | `DD_SERVICE` is unset or empty string; co-fires with `telemetry.origin_fallback` since both trigger when `DD_SERVICE` is absent |
 | `telemetry.origin_fallback` | `DD_SERVICE` is unset or not a known origin |
-| `telemetry.version_fallback` | `version` resolved to `"unknown"` |
+| `telemetry.version_fallback` | `version` resolved to `"unknown"` (only off Vercel now — Vercel surfaces resolve to `VERCEL_GIT_COMMIT_SHA`) |
 | `telemetry.git_sha_fallback` | `git_sha` resolved to `"unknown"` |
 
 ### Cold-start delivery caveat
@@ -465,13 +526,17 @@ production deploy does not exercise this path.
 
 ---
 
-## No kill switch
+## No kill switch for enrichment
 
 Telemetry enrichment (`ddtags`, `origin`) is unconditional. There is no
 `DD_DDTAGS_DEPLOY_CORRELATION_DISABLED` flag or similar gate. The only rollback
 path is a `git revert` of the enablement commit. This is intentional — the
 added complexity of a feature flag outweighs the benefit given that the logic is
 stateless and low-risk.
+
+This covers enrichment only. `DD_LOGS_DISABLED` gates whether the intake sink
+opens at all, and `DD_LOGS_JSON` gates the console format; neither changes what
+a shipped entry carries.
 
 ---
 

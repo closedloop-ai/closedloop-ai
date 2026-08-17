@@ -22,24 +22,43 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
       "Cloud reads branch-creation and merge timestamps from PR state. Desktop reads the PR's first-observed time and the start of its linked session (the creating session when available, otherwise the earliest linked one) from local session logs.",
   },
   "kpi:kloc": {
-    what: "Thousands of lines landed via merged PRs.",
-    how: "Sum of additions + deletions across merged branches, divided by 1,000.",
-    sessions: "Line counts come from the merged branch's file changes.",
+    what: "Thousands of lines changed. The two surfaces measure different PR populations: the cloud dashboard sums merged PRs ('KLOC merged'), the desktop dashboard sums all captured PRs ('KLOC captured').",
+    how: "On both surfaces, sum of additions + deletions (gross), divided by 1,000 and rounded to one decimal. Cloud sums merged branches only; desktop sums every captured PR in the window (merged or not), folding un-enriched PRs in as 0. Either surface shows a dash instead of a number when it has no line counts to sum — cloud when no merged PR carries both counts, desktop when no captured PR carries either. A dash means unknown, not zero.",
+    sessions:
+      "Cloud reads line counts from the merged branch's file changes. Desktop reads added + removed line counts from each captured PR harvested from local session logs.",
   },
   "kpi:cost": {
-    what: "Estimated model spend in the period.",
-    how: "Sum of estimated cost across agent sessions in range.",
+    // ISS-4994: "spend" claimed this was money billed. It is the estimated cost of
+    // all usage, most of which a subscription already covered.
+    what: "Estimated cost of all model usage in the period.",
+    how: "Sum of estimated cost across agent sessions in range, including usage covered by a subscription. Sessions shows the non-subscription portion separately.",
     sessions: "Cost is summed from each session's recorded token spend.",
   },
   "kpi:merge-rate": {
-    what: "Share of opened PRs that merged.",
-    how: "Merged PRs divided by PRs opened in the range.",
-    sessions: "Opened and merged PRs are read from PR state.",
+    // ISS-5501: this said "divided by PRs opened in the range", a denominator
+    // neither producer uses — both compute merged ÷ decided through the shared
+    // `ssotMergeRateFromCounts` SSOT, and the tile's own caption right beside
+    // this popover already says "of decided PRs (merged + closed)".
+    what: "Share of decided PRs (merged or closed) that merged.",
+    how: "Merged PRs divided by decided PRs (merged + closed). PRs still open are excluded, so they don't drag the rate down.",
+    sessions: "Merged and closed PRs are read from PR state.",
   },
   "kpi:pr-size": {
-    what: "Median size of a merged PR.",
-    how: "Median of additions + deletions per merged branch.",
-    sessions: "Lines changed come from the merged branch's file diffs.",
+    // ISS-5502: neither producer medians "per merged branch" from branch file
+    // diffs — PLN-1535 M4 moved cloud onto each PR's own projected counts, and
+    // desktop was always a captured-PR median. Names both populations, like the
+    // sibling `kpi:kloc` / `kpi:ttm` entries, and both edges that shrink them:
+    // cloud's MERGED_PR_SCAN_CAP row scan (merged-pr-queries.ts) and desktop's
+    // non-delivery gate (non-delivery-artifacts.ts), which drops a PR whose only
+    // session links are reviews OR prose mentions.
+    what: "Median size of a PR. The two surfaces measure different PR populations: the cloud dashboard medians merged PRs, the desktop dashboard medians captured PRs (merged or not).",
+    how: "On both surfaces, median of additions + deletions across the PRs whose size is known. Cloud medians merged PRs — deduplicated so a PR seen by more than one source counts once — and skips any PR missing either count; it reads at most the newest 25,000 merged PRs in the range, so a very wide range can leave older merged PRs out of the median altogether. Desktop medians the captured PRs it holds both counts for, dropping any PR it only ever saw reviewed or only ever saw mentioned in prose. Either surface shows a dash when no PR it read has a known size — which is not proof that no PR in the range has one. A dash means unknown, not zero.",
+    // The popover heading over this field is the fixed literal "From session
+    // logs" (info-tip.tsx), and neither line count is read from one — so this
+    // field says where they DO come from rather than leaving the heading to
+    // assert an origin the producers contradict.
+    sessions:
+      "Neither figure is read from a session log. Cloud takes additions and deletions from each merged PR's own record. Desktop uses local session logs only to decide which PRs it captured; their line counts come from the PR record synced down from the cloud.",
   },
   "kpi:sessions": {
     what: "Agent sessions run in the period.",
@@ -62,8 +81,10 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Events come from the session event stream.",
   },
   "kpi:tokens": {
-    what: "Model tokens consumed in the period.",
-    how: "Sum of input + output tokens across sessions in range.",
+    what: "Model tokens consumed in the period, excluding cache.",
+    // ISS-5004: the other half of the reconciliation. Stated on BOTH entries so
+    // a reader who opens either one learns the same thing about the other.
+    how: "Sum of input + output tokens across sessions in range. Cache read and write are excluded here and shown in the all-tokens chart.",
     sessions: "Summed from per-session token usage.",
   },
   "kpi:input-tokens": {
@@ -98,10 +119,10 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
       "Agent-raised means a captured session created the PR (PR-creation evidence on the artifact link). PRs without that evidence — raised by hand, on another machine, or by a bot — fall in Manual/untracked.",
   },
   "chart:klocTrend": {
-    what: "Thousands of changed lines landed over time.",
-    how: "Merged PR line-change totals are bucketed by merge day and divided by 1,000.",
+    what: "Thousands of lines changed over time. The two surfaces measure different PR populations: the cloud dashboard sums merged PRs ('KLOC merged'), the desktop dashboard sums all captured PRs ('KLOC captured').",
+    how: "Both sum additions + deletions (gross) and divide by 1,000. The cloud dashboard buckets merged PRs by merge day and leaves a merged PR it cannot size out of that day's sum — so a day plots as 0 whether nothing merged or nothing that merged could be sized, and any window holding unsized PRs reads as a lower bound over the PRs with known line counts. Desktop buckets every captured PR by the local day it was first observed, and shows no chart at all when no captured PR carries line counts — an unknown period, not a flat line at zero.",
     sessions:
-      "Line counts come from branch file changes on the session's merged PR.",
+      "Cloud line counts come from branch file changes on the session's merged PR. Desktop line counts come from each captured PR harvested from local session logs.",
   },
   "chart:prByRepo": {
     what: "Merged PRs grouped by repository.",
@@ -120,8 +141,8 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Status comes from PR state on each session's proposal.",
   },
   "chart:checkStatus": {
-    what: "CI health across branches.",
-    how: "Branches grouped by their latest checks status.",
+    what: "CI health across every branch we observed active in the selected period.",
+    how: "The range picks which branches are counted by their last activity; each is grouped by its checks status right now. Counts every non-deleted branch, so it can be broader than the Branches list's session-linked filter.",
     sessions: "Check outcomes are captured from CI events on the session's PR.",
   },
   "chart:branchLifespan": {
@@ -131,8 +152,8 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
       "Creation and close times come from the sessions that first touched and last closed the branch.",
   },
   "chart:branchesWithoutPr": {
-    what: "Branches that have a PR vs. those that don't.",
-    how: "Branches split by whether a current pull request exists.",
+    what: "Whether every branch we observed active in the selected period has a pull request.",
+    how: "The range picks which branches are counted by their last activity; each is split by whether it has a PR right now. Counts every non-deleted branch, so it can be broader than the Branches list's session-linked filter.",
     sessions:
       "PR association is taken from session metadata linking a branch to its proposal.",
   },
@@ -168,20 +189,28 @@ export const METRIC_INFO: Record<string, MetricInfo> = {
     sessions: "Queue state is derived from PR review status on each proposal.",
   },
   "chart:modelUsageOverTime": {
-    what: "Estimated model spend (USD) over time.",
+    what: "Estimated model cost (USD) over time, including subscription-covered usage.",
     how: "Estimated cost bucketed by day and stacked by model.",
     sessions:
       "Per-session token usage is priced per model; cost is cache-neutral, unlike a raw token count.",
   },
   "chart:modelBreakdown": {
-    what: "Estimated spend (USD) share by model.",
+    what: "Estimated cost (USD) share by model, including subscription-covered usage.",
     how: "Estimated cost summed per model. Cost — not input+output tokens — so cache-heavy harnesses (e.g. Claude Code) aren't understated.",
     sessions:
       "Model attribution and estimated cost come straight from session token usage.",
   },
+  "chart:spendByOutcome": {
+    what: "Estimated spend (USD) split by the outcome of the session it came from.",
+    how: "Estimated cost summed over the same session token usage as 'Spend by model', in four buckets: sessions that ended clean, sessions that ended with an error, sessions still running, and sessions whose outcome was never recorded. The four sum to total spend for the period.",
+    sessions:
+      "A session counts as ended only once it has an end time. Until then its spend sits under 'Still running' rather than being given an outcome it has not reached. For sessions that did end, the outcome comes from whether their own logs ended in an error; where the logs never reported either way the spend is counted as 'Not recorded' rather than assumed clean. Outcome is recorded per session, so a long session that hit an error and then recovered still counts wholly as ended with an error.",
+  },
   "chart:tokenDistribution": {
-    what: "Token usage split by token class.",
-    how: "Input, output, cache-read, and cache-write tokens are summed separately.",
+    what: "Every token class recorded, including cache.",
+    // ISS-5004: says out loud that this chart and the Tokens KPI count different
+    // populations. Without it the two just disagree on screen.
+    how: "Input, output, cache-read, and cache-write tokens are summed separately. The total is larger than the Tokens metric, which counts input and output only.",
     sessions: "Token classes are recorded in session token usage.",
   },
   "chart:toolUsage": {

@@ -1,3 +1,4 @@
+import { ACTIVITY_SOURCE_ID } from "@repo/app/documents/components/feed-sidebar/sources/activity-types";
 import { LIVEBLOCKS_COMMENT_SOURCE_ID } from "@repo/app/documents/components/feed-sidebar/sources/liveblocks-comment-source";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -5,6 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 
 const mockFeedSidebar = vi.fn();
 const mockProviderValue = vi.fn();
+const mockActivityProviderValue = vi.fn();
 
 vi.mock("@repo/app/documents/components/feed-sidebar/feed-sidebar", () => {
   const FeedTab = {
@@ -33,6 +35,22 @@ vi.mock(
     }) => {
       mockProviderValue(value);
       return <div data-testid="liveblocks-provider">{children}</div>;
+    },
+  })
+);
+
+vi.mock(
+  "@repo/app/documents/components/feed-sidebar/sources/activity-source-provider",
+  () => ({
+    ActivitySourceProvider: ({
+      children,
+      value,
+    }: {
+      children: ReactNode;
+      value: unknown;
+    }) => {
+      mockActivityProviderValue(value);
+      return <div data-testid="activity-provider">{children}</div>;
     },
   })
 );
@@ -74,6 +92,7 @@ describe("DocumentFeedRail", () => {
       <DocumentFeedRail
         artifactType="PRD"
         currentVersion={1}
+        documentId="doc-1"
         enabled={false}
         isViewingHistorical={false}
         latestVersion={1}
@@ -94,6 +113,7 @@ describe("DocumentFeedRail", () => {
         artifactType="PRD"
         chatPanel={<div>Chat</div>}
         currentVersion={2}
+        documentId="doc-42"
         enabled
         isViewingHistorical
         latestVersion={5}
@@ -109,6 +129,9 @@ describe("DocumentFeedRail", () => {
       latestVersion: 5,
       onCommentClick,
     });
+    expect(mockActivityProviderValue).toHaveBeenCalledWith({
+      documentId: "doc-42",
+    });
     expect(mockFeedSidebar).toHaveBeenCalledWith(
       expect.objectContaining({
         activeTab: "feed",
@@ -122,7 +145,36 @@ describe("DocumentFeedRail", () => {
           },
         },
         organizationId: "org-1",
+        sources: [
+          expect.objectContaining({ id: LIVEBLOCKS_COMMENT_SOURCE_ID }),
+          expect.objectContaining({ id: ACTIVITY_SOURCE_ID }),
+        ],
         visible: true,
+      })
+    );
+  });
+
+  test("registers the Liveblocks comment source and the Activity source for the live document view", () => {
+    render(
+      <DocumentFeedRail
+        artifactType="PRD"
+        currentVersion={5}
+        documentId="doc-7"
+        enabled
+        isViewingHistorical={false}
+        latestVersion={5}
+        onClose={() => undefined}
+        organizationId="org-1"
+        visible
+      />
+    );
+
+    expect(mockFeedSidebar).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sources: [
+          expect.objectContaining({ id: LIVEBLOCKS_COMMENT_SOURCE_ID }),
+          expect.objectContaining({ id: ACTIVITY_SOURCE_ID }),
+        ],
       })
     );
   });

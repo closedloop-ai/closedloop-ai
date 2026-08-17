@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
-import { parseJwtExpiry } from "../src/main/jwt-utils.js";
-import { LoopTokenStore } from "../src/main/loop-token-store.js";
+import { parseJwtExpiry } from "../src/main/auth/jwt-utils.js";
+import { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
 import {
   createTestLoopTokenMeta,
   createTestLoopTokenSafeStorage,

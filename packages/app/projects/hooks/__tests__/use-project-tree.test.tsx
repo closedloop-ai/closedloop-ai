@@ -6,7 +6,9 @@ import {
   MovePosition,
 } from "@repo/api/src/types/project-artifact-move";
 import {
+  PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM,
   PROJECT_TREE_INCLUDE_PARAM,
+  PROJECT_TREE_LIMIT_PARAM,
   type ProjectTreeDetailsResponse,
   ProjectTreeInclude,
   type ProjectTreeResponse,
@@ -16,10 +18,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useMergedProjectTrees } from "../use-merged-project-trees";
 import {
   applyMoveToTree,
   projectTreeKeys,
   useMoveArtifact,
+  useProjectTree,
   useProjectTreeWithDetails,
 } from "../use-project-tree";
 
@@ -56,6 +60,8 @@ vi.mock("../../../shared/api/use-api-client", () => ({
 }));
 
 const PROJECT_ID = "11111111-1111-7111-8111-111111111111";
+const SECOND_PROJECT_ID = "22222222-2222-7222-8222-222222222222";
+const CONTRIBUTOR_USER_ID = "33333333-3333-7333-8333-333333333333";
 
 function makeNode(id: string, name: string, sortOrder: number): TreeNode {
   const artifact = {
@@ -292,6 +298,67 @@ describe("useMoveArtifact", () => {
   });
 });
 
+describe("useProjectTree", () => {
+  it("serializes contributor filters and isolates the query cache key", async () => {
+    const queryClient = createInspectableQueryClient();
+    const wrapper = createWrapperWithClient(queryClient);
+    const filters = { contributorUserId: CONTRIBUTOR_USER_ID };
+    const response = makeTree(makeNode(A_ID, "A", 1000));
+    mockApiClient.get.mockResolvedValue(response);
+
+    const { result } = renderHook(
+      () => useProjectTree(PROJECT_ID, { filters }),
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual(response);
+    });
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      `/projects/${PROJECT_ID}/tree?${PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM}=${CONTRIBUTOR_USER_ID}`
+    );
+    expect(queryClient.getQueryData(projectTreeKeys.detail(PROJECT_ID))).toBe(
+      undefined
+    );
+    expect(
+      queryClient.getQueryData(projectTreeKeys.detail(PROJECT_ID, filters))
+    ).toEqual(response);
+  });
+});
+
+describe("useMergedProjectTrees", () => {
+  it("serializes contributor filters for every merged project tree request", async () => {
+    const queryClient = createInspectableQueryClient();
+    const wrapper = createWrapperWithClient(queryClient);
+    const responseA = makeTree(makeNode(A_ID, "A", 1000));
+    const responseB = makeTree(makeNode(B_ID, "B", 2000));
+    mockApiClient.get
+      .mockResolvedValueOnce(responseA)
+      .mockResolvedValueOnce(responseB);
+
+    const { result } = renderHook(
+      () =>
+        useMergedProjectTrees([PROJECT_ID, SECOND_PROJECT_ID], {
+          filters: { contributorUserId: CONTRIBUTOR_USER_ID },
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(result.current.data?.nodes.map((node) => node.root.id)).toEqual([
+        A_ID,
+        B_ID,
+      ]);
+    });
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      `/projects/${PROJECT_ID}/tree?${PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM}=${CONTRIBUTOR_USER_ID}`
+    );
+    expect(mockApiClient.get).toHaveBeenCalledWith(
+      `/projects/${SECOND_PROJECT_ID}/tree?${PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM}=${CONTRIBUTOR_USER_ID}`
+    );
+  });
+});
+
 describe("useProjectTreeWithDetails", () => {
   it("fetches the detail-enriched tree from the include=details endpoint", async () => {
     const queryClient = createInspectableQueryClient();
@@ -314,5 +381,65 @@ describe("useProjectTreeWithDetails", () => {
     expect(
       queryClient.getQueryData(projectTreeKeys.withDetails(PROJECT_ID))
     ).toEqual(response);
+  });
+});
+
+describe("useProjectTreeWithDetails — bounded read (ISS-5307)", () => {
+  it("sends the root bound on the wire when a limit is supplied", async () => {
+    const queryClient = createInspectableQueryClient();
+    const wrapper = createWrapperWithClient(queryClient);
+    const response: ProjectTreeDetailsResponse = makeTree(
+      makeNode(A_ID, "A", 1000)
+    );
+    mockApiClient.get.mockResolvedValue(response);
+
+    renderHook(
+      () => useProjectTreeWithDetails(PROJECT_ID, { filters: { limit: 25 } }),
+      { wrapper }
+    );
+
+    // The bound must reach the SERVER — a limit the client keeps to itself
+    // would leave the payload exactly as unbounded as before.
+    await waitFor(() => {
+      expect(mockApiClient.get).toHaveBeenCalledWith(
+        `/projects/${PROJECT_ID}/tree?${PROJECT_TREE_INCLUDE_PARAM}=${ProjectTreeInclude.Details}&${PROJECT_TREE_LIMIT_PARAM}=25`
+      );
+    });
+  });
+
+  it("omits the parameter entirely when no limit is supplied", async () => {
+    const queryClient = createInspectableQueryClient();
+    const wrapper = createWrapperWithClient(queryClient);
+    mockApiClient.get.mockResolvedValue(makeTree());
+
+    renderHook(() => useProjectTreeWithDetails(PROJECT_ID), { wrapper });
+
+    await waitFor(() => {
+      expect(mockApiClient.get).toHaveBeenCalledWith(
+        expect.not.stringContaining(PROJECT_TREE_LIMIT_PARAM)
+      );
+    });
+  });
+
+  it("caches a bounded read separately from an unbounded one", () => {
+    // Two different node sets under one key would let a bounded read serve the
+    // page that asked for everything, or the reverse.
+    expect(projectTreeKeys.withDetails(PROJECT_ID, { limit: 25 })).not.toEqual(
+      projectTreeKeys.withDetails(PROJECT_ID)
+    );
+    expect(projectTreeKeys.withDetails(PROJECT_ID, { limit: 25 })).not.toEqual(
+      projectTreeKeys.withDetails(PROJECT_ID, { limit: 50 })
+    );
+  });
+
+  it("keeps a bounded query under the detail-key prefix the move mutation invalidates", () => {
+    const bounded = projectTreeKeys.withDetails(PROJECT_ID, { limit: 25 });
+    const invalidationPrefix = projectTreeKeys.detail(PROJECT_ID);
+
+    // Stack-rank reorder invalidates by prefix; a bounded query outside that
+    // prefix would keep rendering the pre-move order after a drag.
+    expect(bounded.slice(0, invalidationPrefix.length)).toEqual(
+      invalidationPrefix
+    );
   });
 });

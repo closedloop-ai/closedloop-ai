@@ -1,0 +1,63 @@
+---
+title: Integration Status
+description: 'Check the connection status of the GitHub, Google, and Linear integrations'
+---
+
+## Overview
+
+These read-only tools report whether an external integration is connected for the organization. Use them to confirm an integration is ready before invoking dependent workflows (for example, checking GitHub connectivity before creating a branch artifact).
+
+Each tool returns the raw integration status payload from the corresponding `/integrations/*` endpoint.
+
+<Callout>
+  Like every Closedloop MCP tool, these run against the org resolved from your authenticated connection — complete the OAuth flow with your `sk_live_...` API key first (see the [MCP Server Overview](./introduction#connecting-an-ai-agent)). They take no arguments and report status for that org only.
+</Callout>
+
+---
+
+## GitHub Status
+
+**Tool**: `get-github-status`
+**Underlying API**: `GET /integrations/github`
+
+```
+get-github-status()
+```
+
+Reports the GitHub integration connection status for the organization.
+
+---
+
+## Google Status
+
+**Tool**: `get-google-status`
+**Underlying API**: `GET /integrations/google`
+
+```
+get-google-status()
+```
+
+Reports the Google integration connection status for the organization.
+
+---
+
+## Linear Status
+
+**Tool**: `get-linear-status`
+**Underlying API**: `GET /integrations/linear`
+
+```
+get-linear-status()
+```
+
+Reports the Linear integration connection status for the organization.
+
+---
+
+## Example
+
+```
+# Confirm GitHub is connected before creating a branch artifact
+get-github-status()
+  → if connected, proceed to create_branch_artifact(...)
+```

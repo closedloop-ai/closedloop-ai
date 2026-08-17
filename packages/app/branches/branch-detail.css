@@ -1,0 +1,605 @@
+/* ── Branch Detail "quiet" panels (FEA-1950 / Epic D) ──────────────────────
+   Ported from the Branches Page Claude Design handoff (branch-quiet.css),
+   aligned to the shared design tokens. The Properties panel reuses the session
+   detail's `.sd3-props` styling (same quiet aesthetic); these `.bq-*` rules
+   cover the Epic-D-owned metric panels: section heads, the cost-to-merge
+   breakdown bar, and the lead-time waterfall. */
+.bq-add {
+  color: var(--success-foreground);
+  font-weight: 600;
+}
+
+.bq-del {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+.bq-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 32px 0 8px;
+}
+
+/* Real section heading (matches the prototype's computed 13px
+   `text-foreground text-sm font-semibold` treatment, normal case). Uppercase-muted
+   micro-type is an eyebrow treatment reserved for the metric-CARD labels, not a
+   heading — a muted-grey heading fails "keep real headings above
+   muted-foreground", and when every section wears the eyebrow nothing reads as a
+   heading (FEA-4234). */
+.bq-sec-title {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
+/* Section totals follow the prototype's subordinate count treatment. */
+.bq-sec-count {
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+/* Branch Details follows the approved prototype's compact Properties rhythm;
+   the shared session panel keeps its own larger top offset. */
+.sd3-props.bq-props {
+  margin-top: 0;
+}
+
+.sd3-props.bq-props .prd-props-header {
+  padding: 4px 0;
+  color: var(--foreground);
+}
+
+.sd3-props.bq-props .prd-props-title {
+  color: var(--foreground);
+  font-size: 0.8125rem;
+}
+
+.bq-props .sd3-pp {
+  font-size: 0.8125rem;
+}
+
+/* Branch detail runs a step larger than Session detail, so the shared dot grows
+   with the strip. The 3px radius is DELIBERATE and not fallout from
+   `--radius-full` having been undefined (wongk, #4943): the handed-off Branch
+   prototype styles both of its status dots `rounded-[0.1875rem]`
+   (`apps/prototypes/app/p/branches/components/detail-panels.tsx`), and the
+   conformance commit that built this screen carried that exact value over for
+   fidelity. Branch's dot is an approved 3px rounded square, Session's is a
+   circle; changing it belongs with a revision of the prototype, not with the
+   token fix. */
+.bq-props .sd3-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 0.1875rem;
+}
+
+/* Files-changed list (Epic F / FEA-1952 — F1). Ported from the Branches Page
+   design handoff (branch-quiet.css). Rows open the existing branch-view
+   per-file diff route when live PR files are available. */
+.bq-files {
+  display: flex;
+  flex-direction: column;
+}
+
+.bq-file {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--foreground);
+}
+
+.bq-file-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bq-file-button:hover,
+.bq-file-button:focus-visible,
+.bq-file-button[aria-expanded="true"] {
+  background: var(--muted);
+}
+
+.bq-file-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.bq-file-ic {
+  color: var(--muted-foreground);
+  flex: 0 0 auto;
+}
+
+.bq-file-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bq-file-diff {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+.bq-file-diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  padding: 0 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted-foreground);
+}
+
+.bq-file-diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.bq-file-diff-close {
+  display: inline-flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: calc(var(--radius) - 4px);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.bq-file-diff-close:hover,
+.bq-file-diff-close:focus-visible {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.bq-file-diff-close:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.bq-file-diff-pane {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--muted);
+}
+
+.bq-file-diff-pane-title {
+  border-bottom: 1px solid var(--border);
+  padding: 5px 8px;
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.bq-file-diff-code {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+/* "What was delivered" section (Epic F / FEA-1952). Ported from the Branches
+   Page design handoff (branch-quiet.css): a linked-artifacts list + the
+   read-only PR description (clamped/expandable). */
+.bq-ctx {
+  margin-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bq-ctx-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* FEA-4292: a recognized slug links the WHOLE row (.bq-ctx-issue-link) to its
+   canonical record; an unrecognized/untyped slug (or the desktop renderer, which
+   injects no href) stays an inert <div>. The base row is therefore click-neutral
+   — only the link variant carries hover + the link-colored key, so on both
+   surfaces link-colored means clickable. */
+.bq-ctx-issue {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 8px 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+  color: var(--foreground);
+}
+
+.bq-ctx-issue-link {
+  text-decoration: none;
+  transition:
+    border-color 0.12s ease,
+    background 0.12s ease;
+}
+
+.bq-ctx-issue-link:hover {
+  border-color: var(--primary);
+  background: var(--accent);
+}
+
+.bq-ctx-iss-key {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+/* Only a linked row's key is link-colored — the affordance the reviewer asked
+   for: link-colored == clickable, on web and desktop alike.
+
+   ISS-4793: `--link`, not `--primary`. `--primary` is tuned as a FILL, and as
+   11.5px text on this row it measures ~2.9:1 in dark mode — under the 4.5:1
+   floor for the one element on the row we want people to click. `--link` is the
+   same blue family at 6.6:1 (light) / 5.6:1 (dark). Sharing the token with the
+   session-detail pills also means one artifact key (ISS-4544) is the SAME blue
+   on the Branch page and in Session Properties, two clicks apart, instead of
+   two near-identical blues nobody notices in a diff and everybody feels in the
+   product. */
+.bq-ctx-issue-link .bq-ctx-iss-key {
+  color: var(--link);
+}
+
+.bq-ctx-issue-link:hover .bq-ctx-iss-key {
+  text-decoration: underline;
+}
+
+.bq-ctx-iss-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bq-ctx-empty-hint {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.bq-ctx-pr {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--card);
+}
+
+.bq-ctx-prhead {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 8px;
+  color: var(--muted-foreground);
+}
+
+.bq-ctx-prlabel {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.bq-ctx-prnum {
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+
+.bq-ctx-prbody {
+  position: relative;
+  font-size: 0.8125rem;
+  line-height: 1.625;
+  color: var(--foreground);
+  word-break: break-word;
+}
+
+.bq-ctx-prbody.clamped {
+  max-height: 92px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+.bq-ctx-prbody .contains-task-list,
+.bq-ctx-prbody .task-list-item {
+  list-style: none;
+}
+
+.bq-ctx-prbody .task-list-item input[type="checkbox"] {
+  accent-color: var(--primary);
+}
+
+.bq-ctx-more {
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--primary);
+  cursor: pointer;
+}
+
+.bq-ctx-more:hover {
+  text-decoration: underline;
+}
+
+.bq-ctx-empty-t {
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.bq-statcards {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 12px;
+}
+
+/*
+ * A headline card whose value reads "No data" renders no delta chip at all
+ * (there is nothing for a comparison to describe), so its caption used to float
+ * a chip-height above its sibling's and the two cards read as misaligned
+ * (#4242 review). The grid already stretches both cards to one height, so
+ * pinning the footer to the bottom of the card puts the captions on one line
+ * whatever the delta slot holds. Scoped to this strip rather than baked into
+ * `MetricCard`, which would charge every consumer for a reservation only the
+ * side-by-side surfaces need.
+ */
+.bq-statcards [data-slot="card-content"] {
+  margin-top: auto;
+}
+
+/* Cost-to-merge breakdown (bar + per-phase rows) */
+.bq-costbd {
+  margin-top: 0;
+}
+
+.bq-cost-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 0;
+  gap: 0;
+  background: var(--muted);
+}
+
+.bq-cost-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.bq-costbd-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.bq-costbd-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+}
+
+.bq-cost-sw {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+/* min-width:0 lets the label wrap to a second line on narrow viewports instead
+   of shoving the value off-screen, the mobile drift where rows read as color-only
+   (FEA-4240). Labels are short single words, so wrapping stays fully readable. */
+.bq-costbd-name {
+  flex: 1;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: 0.8125rem;
+}
+
+/* The value stays a whole, non-wrapping $cost/pct figure, flush right (FEA-4240). */
+.bq-costbd-val {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+.bq-costbd-foot,
+.bq-lead-foot {
+  margin-top: 8px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* Lead-time-for-change waterfall (staged wall-clock; idle gaps hatched) */
+.bq-lead {
+  margin-top: 0;
+}
+
+.bq-lead-track-wrap {
+  position: relative;
+}
+
+.bq-lead-track {
+  display: flex;
+  height: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-top: 0;
+  gap: 1px;
+  background: var(--muted);
+}
+
+/* Visible phase slices receive the same canonical Build / Review / Rework
+   colors as Cost breakdown inline; this fallback protects a malformed slice
+   from disappearing while Idle retains the hatched treatment below. */
+.bq-lead-seg {
+  height: 100%;
+  min-width: 2px;
+  background: var(--primary);
+}
+
+.bq-lead-gap {
+  height: 100%;
+  min-width: 2px;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    color-mix(in oklab, var(--muted-foreground) 28%, transparent) 3px,
+    color-mix(in oklab, var(--muted-foreground) 28%, transparent) 6px
+  );
+}
+
+.bq-lead-axis {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+.bq-lead-axis[data-pr-opened-edge] {
+  padding-bottom: 18px;
+}
+
+.bq-lead-pr-opened-marker {
+  position: absolute;
+  top: -4px;
+  height: 20px;
+  border-left: 1px solid color-mix(in oklab, var(--foreground) 50%, transparent);
+}
+
+.bq-lead-pr-opened-label {
+  position: absolute;
+  transform: translateX(-50%);
+}
+
+.bq-lead-pr-opened-label[data-edge="start"],
+.bq-lead-pr-opened-label[data-edge="end"] {
+  top: 18px;
+}
+
+.bq-lead-pr-opened-label[data-edge="start"] {
+  transform: none;
+}
+
+.bq-lead-pr-opened-label[data-edge="end"] {
+  transform: translateX(-100%);
+}
+
+.bq-lead-mergept {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bq-lead-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 8px;
+}
+
+.bq-lead-kitem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--foreground);
+  font-size: var(--text-xs);
+}
+
+.bq-lead-kitem b {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.bq-lead-ksw {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  /* Match the track's work fill (the `.sd3-seg` kind treatment), not a phase
+     color — the `.idle` modifier below overrides this with the hatch. */
+  background: var(--primary);
+}
+
+.bq-lead-ksw.idle {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 38%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 38%, transparent) 4px
+  );
+  border: 1px solid var(--border);
+}
+
+/* Non-blocking multi-PR notice + the deferred (Epic F) slot stubs */
+.bq-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 9px 12px;
+  border: 1px solid
+    color-mix(in oklab, var(--warning, #d9a441) 40%, var(--border));
+  border-radius: calc(var(--radius) - 2px);
+  background: color-mix(in oklab, var(--warning, #d9a441) 10%, transparent);
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bq-notice svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warning, #d9a441);
+}

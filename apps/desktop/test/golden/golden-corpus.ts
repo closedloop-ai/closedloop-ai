@@ -30,6 +30,11 @@
  * on both sides). Coverage cannot silently shrink: the manifest-reconciliation
  * test fails if a dossier cited by the coverage CSVs disappears, or a dossier
  * exists that no CSV row cites.
+ *
+ * ISS-4499: the expectations types + fact machinery (builders, checkFact,
+ * required-facts policy, new-block Zod validation) live in the sibling
+ * golden-layer1-facts.ts; this module keeps discovery/parse/normalize/
+ * registration and re-exports DossierExpectations for existing importers.
  */
 import assert from "node:assert/strict";
 import {
@@ -56,86 +61,39 @@ import {
 } from "../../src/main/collectors/golden/corpus-layout.js";
 import { loadSessionsFromDb } from "../../src/main/collectors/opencode/opencode-parser.js";
 import type { NormalizedSession } from "../../src/main/collectors/types.js";
-import { findDivergence, KNOWN_DIVERGENCES } from "./golden-divergences.js";
+import { KNOWN_DIVERGENCES } from "./golden-divergences.js";
+import {
+  cacheWriteTtlFacts,
+  captureLayer1Extras,
+  checkFact,
+  type DossierExpectations,
+  getFiredDivergences,
+  LAYER1_FACTS,
+  missingRequiredFacts,
+  PARSE_QUALITY_FACTS,
+  type ParsedSessionView,
+  SESSION_CLASSIFICATION_FACTS,
+  subagentFacts,
+  tokenFacts,
+  toolResultFacts,
+  USAGE_EXTRAS_FACTS,
+  validateNewExpectationBlocks,
+} from "./golden-layer1-facts.js";
+
+// Re-exported so existing importers (golden-layer2.ts,
+// regen-golden-sync-payloads.ts) keep resolving the type from this module
+// after the ISS-4499 split.
+export type { DossierExpectations } from "./golden-layer1-facts.js";
 
 const CORPUS_DIR = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "../../../../packages/golden-sessions"
 );
-const TICKET_ID = /^FEA-\d+$/;
+// The platform renamed FEA → ISS; both prefixes are valid ticket citations.
+const TICKET_ID = /^(FEA|ISS)-\d+$/;
 // Session ids as they appear in the coverage CSVs: UUIDs plus opencode ses_* ids.
 const SESSION_ID_TOKEN =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|ses_[A-Za-z0-9]+/g;
-
-type DossierTokenCounts = {
-  input?: number;
-  output?: number;
-  cache_read?: number;
-  cache_write?: number;
-};
-
-type DossierSubagent = {
-  subagent_id?: string;
-  model?: string | null;
-  tokens?: DossierTokenCounts;
-};
-
-/** The Layer-1-relevant slice of expectations.yaml (extra keys are ignored). */
-export type DossierExpectations = {
-  session?: {
-    status?: string;
-    billing_mode?: string;
-    primary_model?: string | null;
-    models_used?: string[];
-    lifecycle?: {
-      fresh?: boolean;
-      resumed?: boolean;
-      compacted?: boolean;
-      interrupted?: boolean;
-    };
-  };
-  turns?: {
-    total?: number;
-    user?: number;
-    assistant?: number;
-    tool_result?: number;
-  };
-  tokens_by_model?: Record<string, DossierTokenCounts>;
-  cost?: { total?: number; metered_total?: number };
-  subagents?: { count?: number; attributed?: DossierSubagent[] };
-  activity?: {
-    tools?: { name?: string; count?: number }[];
-    commands?: { name?: string; count?: number }[];
-    thinking_blocks?: number;
-  };
-  pr_lifecycle?: { observed?: boolean };
-  notes?: string;
-};
-
-type ParsedSubagentView = {
-  id?: string;
-  nativeSubagentId?: string | null;
-  tokensByModel?: Record<
-    string,
-    { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
-  >;
-};
-
-/** The Layer-1-relevant slice of a JSON-normalized parse result. */
-type ParsedSessionView = {
-  userMessages?: number;
-  assistantMessages?: number;
-  model?: string | null;
-  tokensByModel?: Record<
-    string,
-    { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
-  >;
-  subagents?: ParsedSubagentView[];
-  thinkingBlockCount?: number;
-  slashCommands?: { name?: string }[];
-  toolUses?: { name?: string; subagentId?: string | null }[];
-  compactions?: unknown[];
-};
 
 export type GoldenDossier = {
   sessionId: string;
@@ -171,70 +129,6 @@ export function discoverDossiers(): GoldenDossier[] {
     });
   }
   return dossiers;
-}
-
-/**
- * Required expectations keys — a dossier missing any of these fails instead of
- * silently skipping the assertion (codex-review finding: optional-key skipping
- * lets a hollow dossier pass).
- */
-function missingRequiredFacts(exp: DossierExpectations): string[] {
-  const missing: string[] = [];
-  const need = (cond: boolean, key: string) => {
-    if (!cond) {
-      missing.push(key);
-    }
-  };
-  need(typeof exp.session?.status === "string", "session.status");
-  need(
-    exp.session?.billing_mode === "unknown",
-    'session.billing_mode=="unknown"'
-  );
-  need(exp.session?.primary_model !== undefined, "session.primary_model");
-  need(Array.isArray(exp.session?.models_used), "session.models_used");
-  for (const flag of [
-    "fresh",
-    "resumed",
-    "compacted",
-    "interrupted",
-  ] as const) {
-    need(
-      typeof exp.session?.lifecycle?.[flag] === "boolean",
-      `session.lifecycle.${flag}`
-    );
-  }
-  for (const t of ["total", "user", "assistant", "tool_result"] as const) {
-    need(typeof exp.turns?.[t] === "number", `turns.${t}`);
-  }
-  const turns = exp.turns;
-  if (turns) {
-    need(
-      (turns.total ?? 0) ===
-        (turns.user ?? 0) + (turns.assistant ?? 0) + (turns.tool_result ?? 0),
-      "turns.total==user+assistant+tool_result"
-    );
-  }
-  need(
-    typeof exp.tokens_by_model === "object" && exp.tokens_by_model !== null,
-    "tokens_by_model"
-  );
-  need(exp.cost?.total === 0 && exp.cost?.metered_total === 0, "cost zeroed");
-  need(typeof exp.subagents?.count === "number", "subagents.count");
-  need(Array.isArray(exp.activity?.tools), "activity.tools");
-  need(Array.isArray(exp.activity?.commands), "activity.commands");
-  need(
-    typeof exp.activity?.thinking_blocks === "number",
-    "activity.thinking_blocks"
-  );
-  need(
-    typeof exp.pr_lifecycle?.observed === "boolean",
-    "pr_lifecycle.observed"
-  );
-  need(
-    typeof exp.notes === "string" && exp.notes.trim().length > 0,
-    "notes (evidence trail)"
-  );
-  return missing;
 }
 
 /**
@@ -332,15 +226,164 @@ function opencodeDropPreconditionsIn(
 }
 
 /** JSON round-trip + strip capture-machine noise so deep-equal is hermetic. */
-function jsonNormalize(
+// Exported for the FEA-3419 amendment-proposal tooling (agent-generated,
+// human-applied): a proposal must be the SAME projection the Layer-1 deep-equal
+// compares, so the compare semantics and the amendment generator can never
+// drift apart.
+export function jsonNormalize(
   session: NormalizedSession | null
 ): Record<string, unknown> | null {
   if (session === null) {
     return null;
   }
-  const plain = JSON.parse(JSON.stringify(session)) as Record<string, unknown>;
+  // FEA-3525: `modelContextWindow` is an additive Codex-parser field captured
+  // AFTER these dossiers' `normalized.json` oracles were frozen (their raw
+  // rollouts carry `model_context_window`, but the frozen oracles predate
+  // the field). Strip it from the Layer-1 deep-equal — same pattern as FEA-3128
+  // `prLinks` below — so the frozen oracles round-trip UNCHANGED rather than
+  // forcing an oracle amendment. Its capture is covered by the
+  // parse-codex + worker-protocol unit tests instead.
+  const {
+    prLinks: _prLinks,
+    // FEA-3526: `codexLastTokenUsage` is an additive metadata field that
+    // postdates the frozen normalized.json oracles (which must not be
+    // regenerated). Strip it before the Layer 1 deep-equal, exactly
+    // as `prLinks` is, so the additive Codex per-turn snapshot round-trips
+    // without a coincidental oracle mismatch. The field's own correctness is
+    // covered by the parser unit tests + worker-protocol round-trip tests.
+    codexLastTokenUsage: _codexLastTokenUsage,
+    modelContextWindow: _modelContextWindow,
+    // FEA-3524: additive Codex rate_limits capture the frozen normalized.json
+    // predates. Stripped before the Layer 1 deep-equal (like prLinks) so a Codex
+    // dossier carrying a populated block round-trips against a frozen oracle
+    // that does not model the field; asserted separately in FEA-3524's unit tests.
+    codexRateLimits: _codexRateLimits,
+    // FEA-3715: the static Codex protocol pin is emitted on every Codex session
+    // but postdates these frozen oracles. Strip it before the Layer 1
+    // deep-equal — exactly as codexRateLimits is — so the frozen oracles
+    // round-trip UNCHANGED; the pin's presence/shape is asserted directly by the
+    // parse-codex + protocol-inventory unit tests.
+    codexProtocolSupport: _codexProtocolSupport,
+    // FEA-4093: the Claude parser now emits first-class `hooks` firings from
+    // `attachment` (hook_success/hook_error) records — every Claude session
+    // carries `hooks: []` (or a populated list where hooks fired) where the
+    // frozen oracles predate the field and omit the key entirely.
+    // Strip it before the Layer 1 deep-equal — exactly as prLinks is — so the
+    // oracles round-trip UNCHANGED without a regeneration. Hook-capture
+    // correctness is asserted directly by the parse-claude-hooks unit tests
+    // (packages/lib/harness/claude/parse-claude-hooks.test.ts).
+    hooks: _hooks,
+    ...plain
+  } = JSON.parse(JSON.stringify(session)) as Record<string, unknown> & {
+    prLinks?: unknown;
+    codexLastTokenUsage?: unknown;
+    modelContextWindow?: unknown;
+    codexRateLimits?: unknown;
+    codexProtocolSupport?: unknown;
+    hooks?: unknown;
+  };
   plain.fileModifiedAt = null;
+  // ISS-4884: transcript-entry source identity is additive evidence the frozen
+  // normalized oracles predate. Keep the corpus immutable and strip only this
+  // new field from Layer 1 comparison; focused adapter, boot/live parity, cache,
+  // and persistence tests assert the populated evidence and replay behavior.
+  stripTokenSourceIdentity(plain);
+  // FEA-3527: `usageExtras.reasoning_output_tokens` is an ADDITIVE metadata
+  // subdivision that the frozen normalized.json oracles predate (they carry only
+  // service_tiers/speeds/inference_geos). Strip it here — exactly as prLinks is
+  // stripped above — so the frozen oracles round-trip unchanged; the field
+  // is a non-additive subset of the already-asserted output total, so removing
+  // it from the deep-equal loses no Layer-1 token fact. Asserted directly by the
+  // Codex parser unit tests in packages/lib/harness/codex/parse-codex.test.ts.
+  //
+  // PRD-538: `usageExtras.web_search_requests` is likewise an ADDITIVE field the
+  // frozen oracles predate. Every corpus dossier used no web search (the raw
+  // transcripts carry `server_tool_use.web_search_requests: 0`), so the parser
+  // emits 0 and stripping it is lossless against the oracles — no oracle
+  // amendment required. Its capture + per-request cost pricing are asserted by
+  // the parse-claude unit tests and the write-core "web-search cost is added
+  // once" integration test.
+  //
+  // ISS-4499: both stripped fields are now ALSO asserted as Layer-1 facts via
+  // the pre-normalize capture in the dossier test below (usage_extras block in
+  // expectations.yaml) — the strip here keeps the frozen normalized.json
+  // deep-equal unchanged while the oracle assertion happens on the captured
+  // values.
+  if (plain.usageExtras && typeof plain.usageExtras === "object") {
+    const {
+      reasoning_output_tokens: _reasoning,
+      web_search_requests: _webSearchRequests,
+      ...usageExtrasRest
+    } = plain.usageExtras as Record<string, unknown>;
+    plain.usageExtras = usageExtrasRest;
+  }
+  // FEA-3419: `cacheWriteTtl` (tokensByModel + tokenSeries, main and subagent)
+  // is deliberately NOT stripped here, unlike the additive precedents above:
+  // Layer 2 imports the FROZEN normalized.json, so an oracle without the typed
+  // split would import with absent provenance and pin FIVE-MINUTE-only prices
+  // for the corpus's genuine 1-hour sessions — institutionalizing the exact
+  // undercount FEA-3419 fixes. The split is a hard Layer-1 token fact; the
+  // frozen oracles gain it (and lose the retired
+  // `usageExtras.cache_creation` blob) via the FEA-3419 amendments.
+  // FEA-3553: the Claude parser now emits `plans` (ExitPlanMode input + inline
+  // prose), so every Claude session carries `plans: []` where the frozen
+  // Claude oracles predate the field and omit the key entirely. An EMPTY plans
+  // array is a no-op — drop it (parse side) so those frozen oracles
+  // round-trip UNCHANGED, exactly as prLinks/codexRateLimits are stripped above.
+  // The oracle projection at the assertion site drops an empty `plans` too, so
+  // the Codex oracles that DO carry `plans: []` still match. A POPULATED plans
+  // array is preserved on both sides and remains a hard Layer-1 fact — so a real
+  // captured plan can never be silently dropped from the deep-equal.
+  if (Array.isArray(plain.plans) && plain.plans.length === 0) {
+    const { plans: _emptyPlans, ...withoutPlans } = plain;
+    return withoutPlans;
+  }
   return plain;
+}
+
+/**
+ * FEA-3553: mirror `jsonNormalize`'s empty-`plans` drop on the ORACLE side so
+ * the Layer-1 deep-equal treats "no plans key" (frozen Claude oracle) and
+ * "plans: []" (frozen Codex oracle) as equivalent, without editing either
+ * frozen file. A non-empty oracle `plans` is passed through untouched.
+ */
+function projectOracle(
+  normalized: Record<string, unknown>
+): Record<string, unknown> {
+  const oracle: Record<string, unknown> = {
+    ...normalized,
+    fileModifiedAt: null,
+  };
+  if (Array.isArray(oracle.plans) && oracle.plans.length === 0) {
+    const { plans: _emptyPlans, ...withoutPlans } = oracle;
+    return withoutPlans;
+  }
+  return oracle;
+}
+
+function stripTokenSourceIdentity(session: Record<string, unknown>): void {
+  stripTokenSeriesSourceIdentity(session.tokenSeries);
+  if (!Array.isArray(session.subagents)) {
+    return;
+  }
+  for (const subagent of session.subagents) {
+    if (subagent && typeof subagent === "object") {
+      stripTokenSeriesSourceIdentity(
+        (subagent as Record<string, unknown>).tokenSeries
+      );
+    }
+  }
+}
+
+function stripTokenSeriesSourceIdentity(value: unknown): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+  for (const record of value) {
+    if (record && typeof record === "object") {
+      Reflect.deleteProperty(record, "sourceIdentity");
+    }
+  }
 }
 
 /** First differing path between two JSON values — for citable deep-equal failures. */
@@ -374,237 +417,6 @@ function firstDiffPath(a: unknown, b: unknown, path = "$"): string | null {
   return `${path}: (values differ)`;
 }
 
-type Layer1Fact = {
-  /** expectations.yaml key path — cited verbatim in failure messages */
-  key: string;
-  /** Extract the expected value from expectations.yaml (undefined = not asserted) */
-  expected: (exp: DossierExpectations) => unknown;
-  /** Extract the actual value from the parse result */
-  actual: (s: ParsedSessionView) => unknown;
-};
-
-function commandTally(
-  entries: { name?: string; count?: number }[] | undefined
-): Record<string, number> {
-  const tally: Record<string, number> = {};
-  for (const e of entries ?? []) {
-    const name = e.name ?? "(unnamed)";
-    tally[name] = (tally[name] ?? 0) + (e.count ?? 1);
-  }
-  return tally;
-}
-
-/**
- * The Layer-1-mappable dossier facts (FEA-2646): turn counts, model set,
- * per-model token totals, subagent count + per-child attribution, thinking
- * blocks, slash-command identities, parent-transcript tool tallies, compaction
- * flag. Cost/billing_mode are excluded by corpus convention (tested
- * separately); PR lifecycle and autonomy classification are Layer 2+.
- */
-const LAYER1_FACTS: Layer1Fact[] = [
-  {
-    key: "turns.user",
-    expected: (e) => e.turns?.user,
-    actual: (s) => s.userMessages,
-  },
-  {
-    key: "turns.assistant",
-    expected: (e) => e.turns?.assistant,
-    actual: (s) => s.assistantMessages,
-  },
-  {
-    key: "session.primary_model",
-    expected: (e) => e.session?.primary_model ?? null,
-    actual: (s) => s.model,
-  },
-  {
-    key: "session.models_used",
-    expected: (e) => [...(e.session?.models_used ?? [])].sort(),
-    actual: (s) => Object.keys(s.tokensByModel ?? {}).sort(),
-  },
-  {
-    key: "subagents.count",
-    expected: (e) => e.subagents?.count,
-    actual: (s) => (s.subagents ?? []).length,
-  },
-  {
-    key: "activity.thinking_blocks",
-    expected: (e) => e.activity?.thinking_blocks,
-    actual: (s) => s.thinkingBlockCount,
-  },
-  {
-    key: "activity.commands",
-    expected: (e) => commandTally(e.activity?.commands),
-    actual: (s) =>
-      commandTally((s.slashCommands ?? []).map((c) => ({ name: c.name }))),
-  },
-  {
-    key: "activity.tools",
-    expected: (e) => commandTally(e.activity?.tools),
-    // Parent-transcript tally by corpus convention ("Activity elements used
-    // (parent transcript)") — folded child toolUses carry a subagentId.
-    actual: (s) =>
-      commandTally(
-        (s.toolUses ?? [])
-          .filter((tu) => tu.subagentId == null)
-          .map((tu) => ({ name: tu.name }))
-      ),
-  },
-  {
-    key: "session.lifecycle.compacted",
-    expected: (e) => e.session?.lifecycle?.compacted,
-    actual: (s) => (s.compactions ?? []).length > 0,
-  },
-];
-
-function tokenFacts(exp: DossierExpectations): Layer1Fact[] {
-  const models = Object.keys(exp.tokens_by_model ?? {}).sort();
-  const fields: [
-    keyof DossierTokenCounts,
-    "input" | "output" | "cacheRead" | "cacheWrite",
-  ][] = [
-    ["input", "input"],
-    ["output", "output"],
-    ["cache_read", "cacheRead"],
-    ["cache_write", "cacheWrite"],
-  ];
-  return models.flatMap((m) =>
-    fields.map(([dossierField, parsedField]) => ({
-      key: `tokens_by_model[${m}].${dossierField}`,
-      expected: (e: DossierExpectations) =>
-        e.tokens_by_model?.[m]?.[dossierField],
-      actual: (s: ParsedSessionView) => s.tokensByModel?.[m]?.[parsedField],
-    }))
-  );
-}
-
-function findParsedSubagent(
-  s: ParsedSessionView,
-  subagentId: string
-): ParsedSubagentView | undefined {
-  return (s.subagents ?? []).find(
-    (sub) => sub.id === subagentId || sub.nativeSubagentId === subagentId
-  );
-}
-
-function subagentTokenTotal(
-  sub: ParsedSubagentView | undefined,
-  model: string | null | undefined,
-  field: "input" | "output" | "cacheRead" | "cacheWrite"
-): number | undefined {
-  if (!sub) {
-    return undefined;
-  }
-  // When the dossier names the child's model, read that model's counts — an
-  // all-model sum would let tokens misattributed under another model still
-  // satisfy the fact.
-  if (model) {
-    return sub.tokensByModel?.[model]?.[field] ?? 0;
-  }
-  let total = 0;
-  for (const counts of Object.values(sub.tokensByModel ?? {})) {
-    total += counts?.[field] ?? 0;
-  }
-  return total;
-}
-
-/** Per-child attribution facts: presence, model, and the four token fields. */
-function subagentFacts(exp: DossierExpectations): Layer1Fact[] {
-  const facts: Layer1Fact[] = [];
-  const fields: [
-    keyof DossierTokenCounts,
-    "input" | "output" | "cacheRead" | "cacheWrite",
-  ][] = [
-    ["input", "input"],
-    ["output", "output"],
-    ["cache_read", "cacheRead"],
-    ["cache_write", "cacheWrite"],
-  ];
-  for (const child of exp.subagents?.attributed ?? []) {
-    const id = child.subagent_id;
-    if (!id) {
-      continue;
-    }
-    facts.push({
-      key: `subagents.attributed[${id}].present`,
-      expected: () => true,
-      actual: (s) => findParsedSubagent(s, id) !== undefined,
-    });
-    if (child.model) {
-      facts.push({
-        key: `subagents.attributed[${id}].model`,
-        expected: () => true,
-        actual: (s) =>
-          Object.keys(findParsedSubagent(s, id)?.tokensByModel ?? {}).includes(
-            child.model as string
-          ),
-      });
-    }
-    for (const [dossierField, parsedField] of fields) {
-      const expectedValue = child.tokens?.[dossierField];
-      if (expectedValue === undefined) {
-        continue;
-      }
-      facts.push({
-        key: `subagents.attributed[${id}].tokens.${dossierField}`,
-        expected: () => expectedValue,
-        actual: (s) =>
-          subagentTokenTotal(
-            findParsedSubagent(s, id),
-            child.model,
-            parsedField
-          ),
-      });
-    }
-  }
-  return facts;
-}
-
-/** Divergence entries that actually fired this run (three-way self-guard). */
-const firedDivergences = new Set<string>();
-
-function checkFact(
-  sessionId: string,
-  fact: Layer1Fact,
-  exp: DossierExpectations,
-  parsed: ParsedSessionView,
-  diagnostics: string[],
-  failures: string[]
-): void {
-  const expected = fact.expected(exp);
-  if (expected === undefined) {
-    return; // dossier doesn't assert this key (required keys are enforced separately)
-  }
-  const actual = fact.actual(parsed);
-  const divergence = findDivergence(sessionId, fact.key);
-  const matches = isDeepStrictEqual(actual, expected);
-  if (divergence) {
-    firedDivergences.add(`${sessionId} ${fact.key}`);
-    if (matches) {
-      failures.push(
-        `${fact.key} — registered divergence (${divergence.ticket}) no longer reproduces; ` +
-          "a human must remove the golden-divergences.ts entry to promote this key to a hard assertion"
-      );
-    } else if (isDeepStrictEqual(actual, divergence.actual)) {
-      diagnostics.push(
-        `expected-fail ${sessionId}: ${fact.key} oracle=${JSON.stringify(expected)} parser=${JSON.stringify(actual)} (${divergence.ticket})`
-      );
-    } else {
-      failures.push(
-        `${fact.key} — parser drifted to a THIRD value ${JSON.stringify(actual)} ` +
-          `(oracle ${JSON.stringify(expected)}, registered divergence ${JSON.stringify(divergence.actual)}, ${divergence.ticket}); new regression`
-      );
-    }
-    return;
-  }
-  if (!matches) {
-    failures.push(
-      `${fact.key} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)} ` +
-        `(oracle: packages/golden-sessions/${sessionId}/expectations.yaml → ${fact.key})`
-    );
-  }
-}
-
 /** Register the full Layer 1 suite under the current process TZ. */
 export function registerGoldenLayer1Suite(): void {
   const dossiers = discoverDossiers();
@@ -624,7 +436,18 @@ export function registerGoldenLayer1Suite(): void {
         existsSync(d.rawDir),
         `${d.sessionId}: missing raw/ — incomplete dossier must not merge`
       );
-      const missing = missingRequiredFacts(d.expectations ?? {});
+      // ISS-4499: strict validation of the new oracle blocks — a typo'd or
+      // unknown nested key fails loudly instead of silently disabling the
+      // assertion it was meant to feed.
+      const schemaIssues = validateNewExpectationBlocks(d.expectations ?? {});
+      assert.ok(
+        schemaIssues.length === 0,
+        `${d.sessionId}: expectations.yaml new-block schema violations:\n  - ${schemaIssues.join("\n  - ")}`
+      );
+      const missing = missingRequiredFacts(d.expectations ?? {}, {
+        hasNormalized: d.normalized != null,
+        harness: d.expectations?.harness,
+      });
       assert.ok(
         missing.length === 0,
         `${d.sessionId}: expectations.yaml missing required facts: ${missing.join(", ")}`
@@ -666,9 +489,9 @@ export function registerGoldenLayer1Suite(): void {
       assert.match(
         d.ticket,
         TICKET_ID,
-        `divergence ${d.sessionId}:${d.key} must cite a FEA ticket`
+        `divergence ${d.sessionId}:${d.key} must cite a FEA/ISS ticket`
       );
-      const dup = `${d.sessionId} ${d.key}`;
+      const dup = `${d.sessionId} ${d.key}`;
       assert.ok(
         !seen.has(dup),
         `duplicate divergence entry ${d.sessionId}:${d.key}`
@@ -684,7 +507,12 @@ export function registerGoldenLayer1Suite(): void {
           d.expectations !== (undefined as never),
         `${d.sessionId}: incomplete dossier (missing normalized.json or expectations.yaml)`
       );
-      const parsed = jsonNormalize(await parseDossierRaw(d));
+      const rawParsed = await parseDossierRaw(d);
+      // FEA-3128/ISS-4499: capture prLinks, the jsonNormalize-stripped
+      // usageExtras fields, and the worker-parity failed-run signal BEFORE
+      // normalization (the capture semantics live in the facts module).
+      const extras = captureLayer1Extras(rawParsed);
+      const parsed = jsonNormalize(rawParsed);
 
       if (d.normalized === null) {
         assert.equal(
@@ -707,7 +535,7 @@ export function registerGoldenLayer1Suite(): void {
       // 1. The Layer 1 contract: parse(raw) deep-equals the frozen normalized.json.
       // fileModifiedAt is a capture-time mtime, not a semantic fact — nulled on
       // BOTH sides (a dossier may freeze a real mtime; c8dcfab8 does).
-      const oracle = { ...d.normalized, fileModifiedAt: null };
+      const oracle = projectOracle(d.normalized);
       if (!isDeepStrictEqual(parsed, oracle)) {
         const diff = firstDiffPath(parsed, oracle);
         assert.fail(
@@ -718,11 +546,19 @@ export function registerGoldenLayer1Suite(): void {
 
       // 2. The human-signed facts (expectations.yaml), key by key. ALL facts are
       // checked before failing so one divergence can't mask another.
-      const parsedView = parsed as ParsedSessionView;
+      const parsedView = {
+        ...(parsed as ParsedSessionView),
+        ...extras,
+      };
       const diagnostics: string[] = [];
       const failures: string[] = [];
       const facts = [
         ...LAYER1_FACTS,
+        ...SESSION_CLASSIFICATION_FACTS,
+        ...toolResultFacts(d.expectations),
+        ...PARSE_QUALITY_FACTS,
+        ...cacheWriteTtlFacts(d.expectations),
+        ...USAGE_EXTRAS_FACTS,
         ...tokenFacts(d.expectations),
         ...subagentFacts(d.expectations),
       ];
@@ -750,12 +586,13 @@ export function registerGoldenLayer1Suite(): void {
   // Registered LAST: node:test runs top-level tests in registration order, so
   // every dossier test above has completed by the time this sweep runs.
   test("every registered divergence for a present dossier was exercised", () => {
+    const fired = getFiredDivergences();
     for (const entry of KNOWN_DIVERGENCES) {
       if (!dossierIds.has(entry.sessionId)) {
         continue; // inert pre-seeded entry for a dossier arriving via another PR
       }
       assert.ok(
-        firedDivergences.has(`${entry.sessionId} ${entry.key}`),
+        fired.has(`${entry.sessionId} ${entry.key}`),
         `divergence ${entry.sessionId}:${entry.key} (${entry.ticket}) never fired — ` +
           "stale key path or the dossier stopped asserting it; remove or fix the entry"
       );

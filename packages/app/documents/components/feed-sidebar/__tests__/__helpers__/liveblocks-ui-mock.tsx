@@ -12,6 +12,9 @@ type ThreadMockProps = {
   commentDropdownItems?:
     | ReactNode
     | ((args: { comment: { id: string }; children: ReactNode }) => ReactNode);
+  components?: {
+    Comment?: (props: { comment: { id: string } }) => ReactNode;
+  };
 };
 
 export type LiveblocksUiMockOptions = {
@@ -36,33 +39,61 @@ export type LiveblocksUiMockOptions = {
  */
 export function createLiveblocksUiMock(options: LiveblocksUiMockOptions = {}) {
   const threadTestId = options.threadTestId ?? (() => "lb-thread");
+  // `Comment` is both a renderable component (invoked by the DS chrome override
+  // as the native primitive it wraps) and a namespace holding `DropdownItem`.
+  const Comment = ({
+    avatar,
+    author,
+    date,
+    body,
+  }: {
+    avatar?: ReactNode;
+    author?: ReactNode;
+    date?: ReactNode;
+    body?: ReactNode;
+  }) => (
+    <div data-testid="lb-comment">
+      {avatar}
+      {author}
+      {date}
+      {body}
+    </div>
+  );
+  Comment.DropdownItem = ({
+    children,
+    icon,
+    onSelect,
+    "aria-label": ariaLabel,
+  }: DropdownItemProps) => (
+    <button
+      aria-label={ariaLabel}
+      onClick={() => onSelect?.(new Event("select"))}
+      type="button"
+    >
+      {icon}
+      {children}
+    </button>
+  );
   return {
-    Comment: {
-      DropdownItem: ({
-        children,
-        icon,
-        onSelect,
-        "aria-label": ariaLabel,
-      }: DropdownItemProps) => (
-        <button
-          aria-label={ariaLabel}
-          onClick={() => onSelect?.(new Event("select"))}
-          type="button"
-        >
-          {icon}
-          {children}
-        </button>
-      ),
-    },
-    Thread: ({ thread, commentDropdownItems }: ThreadMockProps) => {
+    Comment,
+    Thread: ({ thread, commentDropdownItems, components }: ThreadMockProps) => {
       const rootComment = thread.comments?.[0] ?? { id: "stub" };
       const items =
         typeof commentDropdownItems === "function"
           ? commentDropdownItems({ comment: rootComment, children: null })
           : commentDropdownItems;
+      // Render each comment through the DS chrome override when provided, so
+      // tests exercise the same per-comment component the production thread
+      // uses (FEA-4058 shared chrome).
+      const CommentComponent = components?.Comment;
       return (
         <div data-testid={threadTestId(thread)}>
           {thread.id}
+          {CommentComponent
+            ? thread.comments?.map((comment) => (
+                <CommentComponent comment={comment} key={comment.id} />
+              ))
+            : null}
           {items}
         </div>
       );

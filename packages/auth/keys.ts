@@ -1,11 +1,15 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { AuthMode } from "./auth-mode";
 
 export const keys = () =>
   createEnv({
     emptyStringAsUndefined: true,
     server: {
-      AUTH_MODE: z.enum(["clerk", "local_trusted"]).default("clerk").optional(),
+      AUTH_MODE: z
+        .enum([AuthMode.Clerk, AuthMode.LocalTrusted])
+        .default(AuthMode.Clerk)
+        .optional(),
       CLERK_SECRET_KEY: z.string().startsWith("sk_").optional(),
       CLERK_WEBHOOK_SECRET: z.string().startsWith("whsec_").optional(),
     },

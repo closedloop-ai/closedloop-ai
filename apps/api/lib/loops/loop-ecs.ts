@@ -5,6 +5,7 @@
  * Pure AWS SDK wrapper — no business logic.
  */
 
+import { createHash } from "node:crypto";
 import {
   ECSClient,
   RunTaskCommand,
@@ -56,6 +57,13 @@ function getEcsConfig() {
   };
 }
 
+// RunTask and StopTask are control-plane calls that normally answer in well
+// under a second. Since the launch routes await dispatch on the request path
+// under a 60s ceiling, bound each attempt explicitly: with the SDK default of 3
+// attempts a hung socket would otherwise eat the whole request budget.
+const ECS_CONNECTION_TIMEOUT_MS = 3000;
+const ECS_REQUEST_TIMEOUT_MS = 10_000;
+
 // Lazy-init ECS client
 let _ecsClient: ECSClient | null = null;
 function getEcsClient(): ECSClient {
@@ -63,6 +71,10 @@ function getEcsClient(): ECSClient {
     _ecsClient = new ECSClient({
       region: process.env.AWS_REGION ?? "us-east-1",
       credentials: getAwsCredentials(),
+      requestHandler: {
+        connectionTimeout: ECS_CONNECTION_TIMEOUT_MS,
+        requestTimeout: ECS_REQUEST_TIMEOUT_MS,
+      },
     });
   }
   return _ecsClient;
@@ -74,6 +86,12 @@ function getEcsClient(): ECSClient {
 
 export type RunEcsTaskOptions = {
   loopId: string;
+  /**
+   * Identifier unique to this launch attempt — the runner token's JTI, which the
+   * orchestrator issues fresh per launch. Feeds the RunTask idempotency token;
+   * see `buildRunTaskClientToken`.
+   */
+  launchAttemptId: string;
   organizationId: string;
   command: string;
   s3StateKey: string;
@@ -150,6 +168,9 @@ export async function runEcsTask(opts: RunEcsTaskOptions): Promise<string> {
   const command = new RunTaskCommand({
     cluster: config.cluster,
     taskDefinition: config.taskDefinition,
+    // Makes the SDK's own retry idempotent — without it a retried throttle or
+    // 5xx starts a second container for the same loop (ISS-5742).
+    clientToken: buildRunTaskClientToken(opts.loopId, opts.launchAttemptId),
     // Use EC2 capacity provider (not Fargate) — matches IaC warm pool config
     capacityProviderStrategy: [
       {
@@ -182,7 +203,20 @@ export async function runEcsTask(opts: RunEcsTaskOptions): Promise<string> {
     ],
   });
 
-  const result = await ecs.send(command);
+  // A send can fail after AWS already accepted the request (per-attempt
+  // timeout, socket error). The clientToken keeps that from becoming a second
+  // task, but the caller never learns the ARN, so `cleanupOnLaunchFailure` has
+  // nothing to stop. Leave the operator a pointer: any such task carries the
+  // `loop-id` tag set above. `warn`, not `error`, for the same reason as
+  // `loop.launch_failed` — `dispatchAndClassify` owns the one error-level entry
+  // per dropped dispatch.
+  const result = await ecs.send(command).catch((error: unknown) => {
+    log.warn("[loop-ecs] ECS RunTask failed; a task may have started", {
+      loopId: opts.loopId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  });
 
   const task = result.tasks?.[0];
   if (!task?.taskArn) {
@@ -217,4 +251,29 @@ export async function stopLoopTask(
       reason,
     })
   );
+}
+
+/**
+ * Build the RunTask idempotency token for one launch attempt.
+ *
+ * The client keeps the SDK's default retry policy, so a throttle, a 5xx, or a
+ * response lost after AWS already accepted the request is retried
+ * automatically. Without a `clientToken` that retry starts a SECOND
+ * `claude-runner` container for the same loop, and since only the first task
+ * ARN is kept as `containerId`, the duplicate is unreachable by `stopLoopTask`.
+ *
+ * Derived from the loop id plus the launch attempt id so the token is stable
+ * across every retry of one launch but distinct for a genuine relaunch of the
+ * same loop. The pair is hashed rather than concatenated because two ids
+ * together can exceed ECS's cap: a sha256 hex digest is exactly the 64
+ * characters ECS allows, and every hex character is inside the ASCII 33-126
+ * range it requires.
+ */
+function buildRunTaskClientToken(
+  loopId: string,
+  launchAttemptId: string
+): string {
+  return createHash("sha256")
+    .update(`${loopId}:${launchAttemptId}`)
+    .digest("hex");
 }

@@ -23,6 +23,12 @@ import { createHash, X509Certificate } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  readStatusJsonPath,
+  shouldCheck,
+  shouldRunMain,
+  statusExitCode,
+} from "./rds-ca-cli.js";
+import {
   RdsCaBundleStatus as PackageRdsCaBundleStatus,
   type RdsCaBundleStatusReport as PackageRdsCaBundleStatusReport,
   type RdsCaBundleStatus as PackageRdsCaBundleStatusType,
@@ -193,45 +199,11 @@ export function classifyStatusError(error: unknown): RdsCaBundleStatus {
   return RdsCaBundleStatus.UnexpectedFailure;
 }
 
-function statusExitCode(status: RdsCaBundleStatus): number {
-  if (status === RdsCaBundleStatus.Match) {
-    return 0;
-  }
-  if (status === RdsCaBundleStatus.Drift) {
-    return 2;
-  }
-  return 1;
-}
-
 async function writeStatusJson(path: string): Promise<RdsCaBundleStatusReport> {
   const status = await getStatus();
   writeFileSync(path, `${JSON.stringify(status, null, 2)}\n`);
   console.log(JSON.stringify(status));
   return status;
-}
-
-function readStatusJsonPath(): string | undefined {
-  const index = process.argv.indexOf("--status-json");
-  if (index === -1) {
-    return undefined;
-  }
-  const path = process.argv[index + 1];
-  if (!path) {
-    throw new Error("--status-json requires an output path");
-  }
-  return path;
-}
-
-function shouldCheck(): boolean {
-  return process.argv.includes("--check");
-}
-
-function shouldWriteStatusJson(): boolean {
-  return process.argv.includes("--status-json");
-}
-
-function shouldRunMain(): boolean {
-  return process.argv[1]?.endsWith("generate-rds-ca-bundle.ts") ?? false;
 }
 
 async function generate(): Promise<void> {
@@ -243,22 +215,21 @@ async function generate(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const statusJsonPath = readStatusJsonPath();
-  if (shouldWriteStatusJson()) {
-    if (!statusJsonPath) {
-      throw new Error("--status-json requires an output path");
-    }
+  // `readStatusJsonPath` already throws when the flag is present without a
+  // path, so reaching here with the flag set guarantees a path.
+  const statusJsonPath = readStatusJsonPath(process.argv);
+  if (statusJsonPath) {
     const status = await writeStatusJson(statusJsonPath);
     process.exit(statusExitCode(status.status));
   }
-  if (shouldCheck()) {
+  if (shouldCheck(process.argv)) {
     await check();
   } else {
     await generate();
   }
 }
 
-if (shouldRunMain()) {
+if (shouldRunMain(process.argv)) {
   main().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

@@ -120,7 +120,7 @@ export function PlansView() {
 
   return (
     <PageShell
-      description="Plans extracted from agent sessions -- review, confirm, or reject"
+      description="Plans extracted from agent sessions — review, confirm, or reject"
       title="Plans"
     >
       <LightPlansShell

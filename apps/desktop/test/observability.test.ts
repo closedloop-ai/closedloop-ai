@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, mock, test } from "node:test";
-import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import { afterEach, describe, test } from "node:test";
 import { DESKTOP_ANALYTICS_STRING_MAX_LENGTH } from "@repo/api/src/types/desktop-analytics";
-import type { DesktopAnalyticsEvent } from "../src/main/cloud-protocol.js";
-import { Observability } from "../src/main/observability.js";
-import type { TelemetryCategory } from "../src/main/telemetry-protocol.js";
-import type { EnrichedTelemetryEvent } from "../src/main/telemetry-service.js";
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import { vi } from "vitest";
+import type { DesktopAnalyticsEvent } from "../src/main/cloud/cloud-protocol.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import { OBSERVABILITY_SHUTDOWN_DEADLINE_MS } from "../src/main/telemetry/shutdown-deadline.js";
+import type { TelemetryCategory } from "../src/main/telemetry/telemetry-protocol.js";
+import type { EnrichedTelemetryEvent } from "../src/main/telemetry/telemetry-service.js";
 import { validateOutboundUrlForSurface } from "../src/server/outbound-url-policy.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 type AnalyticsEvent = Omit<
   DesktopAnalyticsEvent,
@@ -25,7 +28,7 @@ const _jobDecisionTableVerificationCategoryCheck: TelemetryCategory =
 afterEach(async () => {
   await Observability.shutdown();
   Observability.reset();
-  mock.restoreAll();
+  vi.restoreAllMocks();
 });
 
 describe("Observability", () => {
@@ -701,5 +704,56 @@ describe("Observability", () => {
       ),
       ["model-a", "model-b"]
     );
+  });
+});
+
+describe("Observability.shutdown deadline (ISS-4585)", () => {
+  test("a never-resolving telemetry flush does not wedge shutdown", async () => {
+    // The keyless OTel / collector_unavailable path can leave the flush hung on
+    // a wedged keepalive socket. shutdown() must fail-fast via its internal
+    // deadline instead of blocking process exit (which force-killed desktop-dev
+    // with SIGKILL 137). Drive the deadline with fake timers so there is no
+    // wall-clock wait.
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      let flushStarted = false;
+      Observability.init({
+        telemetrySend: () => {},
+        telemetryFlush: () => {
+          flushStarted = true;
+          return new Promise<void>(() => {}); // never resolves
+        },
+      });
+
+      const shutdownPromise = Observability.shutdown();
+      // Let the flush start and the deadline timer register, then trip it.
+      // Advance by the production deadline (not a duplicated literal) so this
+      // test follows the contract if the deadline ever changes.
+      await Promise.resolve();
+      nodeTestTimers.tick(OBSERVABILITY_SHUTDOWN_DEADLINE_MS);
+
+      // Resolves via the deadline even though the flush never settled.
+      await shutdownPromise;
+      assert.equal(flushStarted, true);
+    } finally {
+      // Drop the hung flush before the afterEach shutdown so it does not hit the
+      // (now real-timer) deadline and add a wall-clock wait.
+      Observability.reset();
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("a fast flush resolves shutdown without waiting on the deadline", async () => {
+    let flushed = false;
+    Observability.init({
+      telemetrySend: () => {},
+      telemetryFlush: () => {
+        flushed = true;
+        return Promise.resolve();
+      },
+    });
+
+    await Observability.shutdown();
+    assert.equal(flushed, true);
   });
 });

@@ -18,10 +18,13 @@ import { FeedSourcesProvider } from "../feed-sources-context";
 
 type StubFilter = { tag: "all" | "pending" };
 
-function makeSource(id: string): AnyFeedSource {
+function makeSource(
+  id: string,
+  kind: FeedItemKind = FeedItemKind.PrComment
+): AnyFeedSource {
   return {
     id,
-    kind: FeedItemKind.PrComment,
+    kind,
     label: id,
     Icon: MessageSquare,
     useItems: () => ({ items: [], isLoading: false, isError: false }),
@@ -64,6 +67,7 @@ function Wrapper({
 function mountProvider(args?: {
   scrollToThreadId?: string;
   initialSourceState?: Record<string, unknown>;
+  sources?: readonly AnyFeedSource[];
 }) {
   const ref: { current: FeedFilterContextValue | null } = { current: null };
   function Probe() {
@@ -74,6 +78,7 @@ function mountProvider(args?: {
     <Wrapper
       initialSourceState={args?.initialSourceState}
       scrollToThreadId={args?.scrollToThreadId}
+      sources={args?.sources}
     >
       <Probe />
     </Wrapper>
@@ -91,6 +96,18 @@ function mountProvider(args?: {
         <Wrapper
           initialSourceState={args?.initialSourceState}
           scrollToThreadId={nextId}
+          sources={args?.sources}
+        >
+          <Probe />
+        </Wrapper>
+      );
+    },
+    rerenderWithSources(nextSources: readonly AnyFeedSource[]) {
+      utils.rerender(
+        <Wrapper
+          initialSourceState={args?.initialSourceState}
+          scrollToThreadId={args?.scrollToThreadId}
+          sources={nextSources}
         >
           <Probe />
         </Wrapper>
@@ -222,6 +239,24 @@ describe("FeedFilterProvider (new shape)", () => {
       expect(probe.value.getSourceState<StubFilter>("stub")).toEqual({
         tag: "pending",
       });
+    });
+
+    it("resets activeKind when the selected source is removed", () => {
+      const liveSources = [
+        makeSource("liveblocks", FeedItemKind.LiveblocksComment),
+        makeSource("native", FeedItemKind.NativeDocumentComment),
+      ];
+      const historicalSources = [
+        makeSource("liveblocks", FeedItemKind.LiveblocksComment),
+      ];
+      const probe = mountProvider({ sources: liveSources });
+
+      act(() => probe.value.setActiveKind(FeedItemKind.NativeDocumentComment));
+      expect(probe.value.activeKind).toBe(FeedItemKind.NativeDocumentComment);
+
+      act(() => probe.rerenderWithSources(historicalSources));
+
+      expect(probe.value.activeKind).toBe(ACTIVE_KIND_ALL);
     });
   });
 

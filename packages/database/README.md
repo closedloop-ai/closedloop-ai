@@ -87,8 +87,9 @@ If `pnpm migrate` fails after switching branches or pulling main:
 
 1. Run `pnpm migrate:status` from the repo root to inspect pending or failed migrations.
 2. Preserve the failing output; do not wrap the command in a shell fallback that exits successfully.
-3. If the local database is disposable, run `cd packages/database && pnpm prisma migrate reset` to rebuild it from migration history. This drops local data.
-4. If the local data must be preserved, reconcile the reported failed migration or checksum intentionally instead of resetting.
+3. If the failure is a reverted migration — an orphan `_prisma_migrations` row naming a `migration.sql` no longer in the tree — do not reset. See "Local divergence after a migration revert" in `packages/database/AGENTS.md` for the non-destructive recovery.
+4. Otherwise, reconcile the reported failed migration or checksum intentionally instead of resetting.
+5. **Last resort only, and only once you have confirmed no other worktree is using this instance:** `cd packages/database && pnpm prisma migrate reset` rebuilds the database from migration history and **drops all local data**. The local Postgres is one instance shared by every git worktree, so it usually is *not* disposable, and resetting from one worktree wipes the data every other worktree is using. Exhaust steps 3 and 4 first.
 
 If deploy output includes `P0001`, a user-defined migration invariant raised an
 exception from Postgres. The deploy runner intentionally fails fast for this

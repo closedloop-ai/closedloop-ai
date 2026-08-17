@@ -9,7 +9,7 @@ import { DocumentStatusIcon } from "./document-status-icon";
 /**
  * One glyph per Document lifecycle status (PRD/Implementation Plan/Template).
  * Documents progress through a filling ring, terminating in a filled ✕ for
- * Obsolete. Features use the separate `FeatureStatusIcon`.
+ * Obsolete. Features use the separate `IssueStatusIcon`.
  */
 const meta = {
   title: "App Core/Documents/Document Status Icon",
@@ -18,7 +18,6 @@ const meta = {
   argTypes: {
     status: { control: "select", options: DOCUMENT_STATUS_OPTIONS },
     size: { control: "select", options: [16, 20] },
-    thinking: { control: "boolean" },
   },
   parameters: { layout: "centered" },
 } satisfies Meta<typeof DocumentStatusIcon>;

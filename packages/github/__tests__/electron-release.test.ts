@@ -6,6 +6,7 @@ import {
   DesktopReleaseRepo,
   DesktopReleaseUpdaterMetadataAssetName,
   getDesktopReleaseTag,
+  getPublicDesktopReleaseDownloadUrl,
 } from "@repo/api/src/types/desktop-release";
 import { describe, expect, it, vi } from "vitest";
 
@@ -31,6 +32,69 @@ const DOWNLOAD_URL = `https://github.com/${DesktopReleaseOwner}/${DesktopRelease
 const FEED_TEXT = `version: ${VERSION}\nfiles:\n  - url: ${ZIP_ASSET}\n    sha512: abc\n    size: 123\npath: ${ZIP_ASSET}\nsha512: abc\nreleaseDate: "2026-06-16T00:00:00.000Z"\n`;
 const SIGNED_REDIRECT_URL =
   "https://objects.githubusercontent.com/github-production-release-asset-2e65be/12345?X-Amz-Signature=abc";
+// The login-free public mirror URL the release workflow writes into
+// downloadUrl once the DMG is mirrored (FEA-3372).
+const MIRROR_DOWNLOAD_URL = getPublicDesktopReleaseDownloadUrl(VERSION);
+
+describe("selectLatestDesktopRelease public mirror (FEA-3372)", () => {
+  it("resolves a release whose downloadUrl points at the public mirror", async () => {
+    // The keystone case. The DMG asset still lives on this (private) release, but
+    // downloadUrl now points at the public mirror so the public can download it
+    // without a GitHub account. The completeness check used to require those two
+    // to be equal, so this returned null — 404ing the download for EVERYONE,
+    // team included. Fails on main before the isCompleteDesktopRelease change.
+    const release = await selectLatestDesktopRelease(
+      [makeDesktopRelease()],
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            ...makeMetadata(),
+            downloadUrl: MIRROR_DOWNLOAD_URL,
+          })
+        )
+    );
+
+    expect(release).toEqual({
+      downloadUrl: MIRROR_DOWNLOAD_URL,
+      version: VERSION,
+      releaseNotes: "Desktop release notes",
+    });
+  });
+
+  it("still resolves the private asset URL when the mirror failed", async () => {
+    // NFR-2 fallback: a failed mirror leaves downloadUrl on the private repo and
+    // the release must still resolve. Asserted explicitly rather than leaning on
+    // the pre-existing happy-path test, so a future tightening of the mirror arm
+    // cannot silently drop this path.
+    const release = await selectLatestDesktopRelease(
+      [makeDesktopRelease()],
+      loadMetadata
+    );
+
+    expect(release).toEqual({
+      downloadUrl: DOWNLOAD_URL,
+      version: VERSION,
+      releaseNotes: "Desktop release notes",
+    });
+  });
+
+  it("returns null when the mirror downloadUrl is for a different version", async () => {
+    // The relaxed equality must not become "any allowlisted URL rides on any
+    // release" — a cross-version swap is still a mismatch.
+    const release = await selectLatestDesktopRelease(
+      [makeDesktopRelease()],
+      () =>
+        Promise.resolve(
+          JSON.stringify({
+            ...makeMetadata(),
+            downloadUrl: getPublicDesktopReleaseDownloadUrl("9.9.9"),
+          })
+        )
+    );
+
+    expect(release).toBeNull();
+  });
+});
 
 describe("selectLatestDesktopRelease", () => {
   it("ignores newer non-Desktop symphony-alpha releases", async () => {

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OrganizationCommandPublicKey } from "../src/main/authorized-public-keys-client.js";
+import type { OrganizationCommandPublicKey } from "../src/main/command-signing/authorized-public-keys-client.js";
 import {
   BrowserCommandKeyAppLifecycle,
   resetBrowserCommandKeyProfileState,
-} from "../src/main/command-key-app-lifecycle.js";
+} from "../src/main/command-signing/command-key-app-lifecycle.js";
 import { BROWSER_KEY_TARGET_ACCESS } from "../src/shared/contracts.js";
 
 const TARGET_ID = "11111111-1111-4111-8111-111111111111";

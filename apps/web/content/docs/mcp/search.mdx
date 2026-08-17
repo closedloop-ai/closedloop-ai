@@ -1,0 +1,181 @@
+---
+title: Search
+description: 'Free-text search across projects and documents via MCP'
+---
+
+## Overview
+
+Use `search` to run a single free-text query across the organization's projects and documents. It matches documents by title, slug, type, and tag, and projects by name, slug, and description, returning compact result rows for each.
+
+The returned `slug` values (`PRO-*`, `PRD-*`, `PLN-*`, `FEA-*`) are the preferred user-facing handles for follow-up calls such as `get-document` or `get-project`.
+
+**Tool**: `search`
+**Underlying API**: `GET /search`
+
+```
+search(
+  q: string,        // Free-text query, 2–200 characters
+  mode?: string,    // "fulltext" (default) or "prefix" — enables unified search
+  types?: string[], // Restrict unified results by entity kind — see Unified search
+  limit?: number,   // Unified page size, 1–100; omit for the server default (25)
+  cursor?: string   // Continuation token from a prior response's `nextCursor`
+)
+```
+
+The `q` parameter is required and must be between 2 and 200 characters; queries outside that range are rejected before the request is made.
+
+By default — a plain-text `q` on its own — the tool returns the legacy documents + projects response described below. It switches to the **unified full-text search** across the searchable corpus, returning ranked heterogeneous hits with highlighted snippets, when any one of these holds:
+
+- `mode` is supplied;
+- `types` is supplied;
+- `cursor` is supplied, so a continuation call reaches the unified corpus rather than dead-ending on the legacy path;
+- `q` itself carries an inline query-language filter — an `@handle` owner mention, or one of the five filter keys `type:`, `status:`, `priority:`, `project:`, and `updated:` (for example `type:loop deploy`). `key:value` is the equality form; the ordered keys also take a comparison operator suffixed on the key — `status` accepts `!=`, and `priority` and `updated` accept `!=`, `>`, `<`, `>=`, and `<=` — so `status!=DONE`, `priority>=MEDIUM`, and `updated>7d` select the unified path the same way, as does the `updated:2026-07-01..2026-07-15` range form. `type` and `project` are equality-only. A `word:value` token whose key is none of the five is ordinary free text and leaves the legacy response in place.
+
+`limit` is the one input that does **not** switch the response shape: it is a page-size modifier on the unified search. The legacy documents + projects search ignores it and returns at most 25 rows per collection, with no way to page past them. See [Unified search](#unified-search).
+
+---
+
+## Response
+
+The default (legacy) response is a JSON payload with the echoed query, per-collection counts, and the two result arrays:
+
+```json
+{
+  "query": "bulk export",
+  "documentCount": 2,
+  "projectCount": 1,
+  "documents": [
+    {
+      "id": "...",
+      "title": "Add bulk export",
+      "slug": "FEA-1035",
+      "type": "FEATURE",
+      "status": "IN_PROGRESS",
+      "priority": "HIGH",
+      "projectName": "Enterprise",
+      "assignee": {
+        "id": "...",
+        "email": "alice@example.com",
+        "firstName": "Alice",
+        "lastName": "Nguyen",
+        "avatarUrl": "https://..."
+      },
+      "updatedAt": "2026-01-15T12:00:00.000Z",
+      "webUrl": "https://app.closedloop.ai/acme/features/FEA-1035"
+    }
+  ],
+  "projects": [
+    {
+      "id": "...",
+      "name": "Enterprise Onboarding",
+      "slug": "PRO-26",
+      "status": "IN_PROGRESS",
+      "priority": "HIGH",
+      "teamName": "Platform",
+      "teamId": "...",
+      "assignee": null,
+      "updatedAt": "2026-01-15T12:00:00.000Z"
+    }
+  ]
+}
+```
+
+### Document results
+
+Each entry in `documents` describes a matching PRD, implementation plan, template, or feature:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Document UUID |
+| `title` | Document title |
+| `slug` | User-facing handle (`PRD-*`, `PLN-*`, `FEA-*`) — pass to `get-document` |
+| `type` | `PRD`, `IMPLEMENTATION_PLAN`, `TEMPLATE`, or `FEATURE` |
+| `status` | Document or Feature status, depending on `type` |
+| `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT`, or `null` |
+| `projectName` | Name of the owning project, or `null` |
+| `assignee` | Assigned user (`id`, `email`, `firstName`, `lastName`, `avatarUrl`), or `null` when unassigned |
+| `updatedAt` | Last-updated timestamp |
+| `webUrl` | Full webapp URL for the document, or `null` |
+
+The `webUrl` field is a ready-to-open link to the document in the Closedloop web app (for example `https://app.closedloop.ai/acme/features/FEA-1035`). It is derived from the document's `slug` and `type`; when either is missing the field is `null`.
+
+### Project results
+
+Each entry in `projects` describes a matching project:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Project UUID |
+| `name` | Project name |
+| `slug` | User-facing handle (`PRO-*`), or `null` — pass to `get-project` |
+| `status` | `NOT_STARTED`, `IN_PROGRESS`, or `COMPLETED` |
+| `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT`, or `null` |
+| `teamName` | Owning team's name, or `null` |
+| `teamId` | Owning team's UUID, or `null` |
+| `assignee` | Assigned user, or `null` when unassigned |
+| `updatedAt` | Last-updated timestamp |
+
+Archived projects are excluded from `search` results, so `status` is never `ARCHIVED`.
+
+Project results do not include a `webUrl` field — reference a project by its `PRO-*` slug instead.
+
+---
+
+## Unified search
+
+Supplying `mode`, `types`, or `cursor` — or typing an inline query-language filter into `q` — runs the unified full-text search across the whole searchable corpus and returns a single ranked list of heterogeneous hits instead of the split documents/projects arrays.
+
+| Input | Description |
+|-------|-------------|
+| `mode` | `fulltext` (default) is phrase/operator-aware; `prefix` is typeahead — the trailing token matches as a prefix so a partially-typed word still matches |
+| `types` | Restrict results to these entity kinds: `document`, `project`, `loop`, `agent_session`, `comment`, `pull_request`, `branch`, `agent_component`. A value outside that set is rejected, never silently dropped. Omit for all |
+| `limit` | Page size, 1–100. Omit for the server default of 25. Does not on its own switch to the unified response |
+| `cursor` | Continuation token from a prior response's `nextCursor`. The cursor carries only the paging position, so re-send the original `q` verbatim — inline filters included, not the response's echoed `query` — plus `mode`, `types`, and `limit` alongside it |
+
+`agent_session` is accepted for every organization but only matches for one that has opted into transcript search. `comment`, `pull_request`, and `branch` are queryable like the rest of the corpus — the backfill and the write-time indexing hooks populate all three — so filtering to them returns real hits: comment text, a pull request's title and description, and a branch's name plus its repository and base branch.
+
+The response carries the free-text query that was actually run and the mode, a `resultCount`, an optional `nextCursor`, and the ranked `results`. `query` is the remainder after any inline filter tokens were lifted out of `q`, so it is not a copy of what you sent — `status:TODO rocket` comes back as `rocket`:
+
+```json
+{
+  "mode": "fulltext",
+  "query": "bulk export",
+  "resultCount": 1,
+  "nextCursor": null,
+  "results": [
+    {
+      "entityType": "document",
+      "entityId": "...",
+      "title": "Add bulk export",
+      "snippet": "…streaming <b>bulk export</b> for large…",
+      "rank": 0.83,
+      "updatedAt": "2026-01-15T12:00:00.000Z",
+      "webUrl": "https://app.closedloop.ai/acme/documents/..."
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `entityType` | The matched entity's kind — one of the `types` values above |
+| `entityId` | Identifier of the matched entity |
+| `title` | Title of the matched entity |
+| `snippet` | Highlighted excerpt, or a plain title fallback |
+| `rank` | Relevance score; higher is more relevant |
+| `updatedAt` | The source entity's last-updated timestamp |
+| `webUrl` | Ready-to-open webapp link to the entity, or `null` |
+
+A non-null `nextCursor` means the scan may hold more hits. Page from MCP by calling `search` again with the original `q` — the string you sent, inline filters and all — plus the same `mode`, `types`, and `limit`, and `cursor` set to that value. Retain that string yourself: paging with the response's `query` field instead drops the filters it had already stripped, so page two silently runs a different, broader search. Because `cursor` selects the unified path on its own, the continuation keeps paging the unified corpus instead of falling back to the legacy response. Follow the cursors until one comes back `null` — that is the only end-of-results signal, and an intermediate page can legitimately return zero hits when per-hit re-authorization drops everything the scan found. `resultCount` counts the hits on the page in hand, not the whole match set.
+
+---
+
+## Example workflow
+
+```
+1. search(q: "bulk export")
+   → returns { documents: [{ slug: "FEA-1035", webUrl: "..." }], projects: [...] }
+
+2. get-document(documentId: "FEA-1035", includeContent: true)
+   → read the full feature spec
+```

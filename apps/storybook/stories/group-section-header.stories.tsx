@@ -10,7 +10,12 @@ function GroupSectionHeaderDemo({
   tone,
 }: {
   label: string;
-  count: number;
+  /**
+   * Omitted by the `NoCount` story: a caller holding only a PAGE of a larger
+   * set passes no count, and the header then renders label + icon with no
+   * number beside it.
+   */
+  count?: number;
   defaultOpen: boolean;
   tone: "status" | "priority" | "assignee";
 }) {
@@ -69,5 +74,19 @@ export const Closed: Story = {
     defaultOpen: false,
     label: "Medium Priority",
     tone: "priority",
+  },
+};
+
+/**
+ * #4480 review: `count` is optional. With it omitted the header renders the
+ * chevron, the icon and the label, and NO number — the honest presentation when
+ * the caller holds only a page of a server-paginated set, where a bare number
+ * would read as the whole population. Compare with {@link Default}, which
+ * passes a count.
+ */
+export const NoCount: Story = {
+  args: {
+    count: undefined,
+    label: "Active",
   },
 };

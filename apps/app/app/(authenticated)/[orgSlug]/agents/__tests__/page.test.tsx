@@ -1,4 +1,3 @@
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -11,16 +10,6 @@ const COLON_RE = /:/;
 
 const { headerMock } = vi.hoisted(() => ({
   headerMock: vi.fn(),
-}));
-
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
-  FeatureFlagged: ({
-    children,
-    flag,
-  }: {
-    children: ReactNode;
-    flag: string;
-  }) => <div data-feature-flag={flag}>{children}</div>,
 }));
 
 vi.mock(
@@ -46,7 +35,7 @@ vi.mock("@/app/(authenticated)/components/header", () => ({
 }));
 
 describe("AgentsPage (list route)", () => {
-  it("wraps content in FeatureFlagged keyed on AGENTS_FEATURE_FLAG_KEY", () => {
+  it("renders the agents list unconditionally (always-on, FEA-3994)", () => {
     headerMock.mockImplementation(({ children }: { children?: ReactNode }) =>
       children ? (
         <div data-testid="header">{children}</div>
@@ -57,12 +46,10 @@ describe("AgentsPage (list route)", () => {
 
     render(<AgentsPage />);
 
-    // The container is inside the FeatureFlagged gate
+    // The container renders directly, no longer behind a feature-flag gate.
     const link = screen.getByRole("link", { name: "My Test Agent" });
-    expect(link.closest("[data-feature-flag]")).toHaveAttribute(
-      "data-feature-flag",
-      AGENTS_FEATURE_FLAG_KEY
-    );
+    expect(link.closest("[data-feature-flag]")).toBeNull();
+    expect(link).toBeInTheDocument();
   });
 
   it("list page links use UUID format, not colon-slug", () => {

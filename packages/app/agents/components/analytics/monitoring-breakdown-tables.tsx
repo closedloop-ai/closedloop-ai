@@ -186,7 +186,7 @@ export function MonitoringRepositoryBreakdown({
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
+    <div className="grid gap-6 lg:grid-cols-2">
       {repositoryRows.length > 0 ? (
         <Card>
           <CardHeader>

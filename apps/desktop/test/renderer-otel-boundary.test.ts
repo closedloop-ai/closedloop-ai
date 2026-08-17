@@ -1,17 +1,23 @@
 import assert from "node:assert/strict";
-import { afterEach, mock, test } from "node:test";
+import { afterEach, test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
 import { metrics, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
+import { vi } from "vitest";
+import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import {
   createDesktopOtelRuntime,
   type DesktopOtelRuntime,
-} from "../src/main/app-otel-runtime.js";
-import { createRendererOtelExportHandler } from "../src/main/renderer-otel-ipc.js";
+} from "../src/main/telemetry/app-otel-runtime.js";
 import {
   DesktopOtelSignal,
   RendererOtelAllowedAttributeKey,
+  type RendererOtelBridgeRecord,
   RendererOtelExportFailureReason,
   type RendererOtelExportResult,
 } from "../src/shared/renderer-otel-bridge-constants.js";
@@ -19,6 +25,8 @@ import {
 let activeRuntime: DesktopOtelRuntime | null = null;
 
 const INSTALLATION_FAILURE_PATTERN = /installation failure/;
+const TRACE_ID_PATTERN = /^[0-9a-f]{32}$/;
+const SPAN_ID_PATTERN = /^[0-9a-f]{16}$/;
 
 afterEach(async () => {
   await activeRuntime?.shutdown();
@@ -44,6 +52,9 @@ test("preload API forwards renderer telemetry through the production handler int
     records: [
       {
         signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        kind: SpanKind.Internal,
         instrumentationScope: { name: "renderer-boundary" },
         name: "renderer.boundary.span",
         attributes: { [RendererOtelAllowedAttributeKey.Mode]: "boundary" },
@@ -59,6 +70,9 @@ test("preload API forwards renderer telemetry through the production handler int
     record?.attributes?.[RendererOtelAllowedAttributeKey.Mode],
     "boundary"
   );
+  assert.match(record?.traceId ?? "", TRACE_ID_PATTERN);
+  assert.match(record?.spanId ?? "", SPAN_ID_PATTERN);
+  assert.match(record?.parentSpanId ?? "", SPAN_ID_PATTERN);
   assert.equal(
     record?.resourceAttributes[TelemetryAttribute.ServiceName],
     "closedloop-desktop"
@@ -71,7 +85,10 @@ test("preload API forwards renderer telemetry through the production handler int
     record?.resourceAttributes[TelemetryAttribute.AppInstallationId],
     "install_boundary"
   );
-  assert.equal(record?.resourceAttributes["device.id"], undefined);
+  assert.equal(
+    record?.resourceAttributes[TelemetryAttribute.DeviceId],
+    "device_boundary"
+  );
 });
 
 test("preload API forwards renderer exception telemetry through the production handler into the main buffer", async () => {
@@ -113,7 +130,7 @@ test("preload API forwards renderer exception telemetry through the production h
   );
   assert.equal(
     record?.attributes?.[TelemetryAttribute.ExceptionStacktrace],
-    "[redacted]"
+    "Error: failed at [redacted-path]"
   );
   assert.equal(
     record?.attributes?.[TelemetryAttribute.AppExceptionOrigin],
@@ -123,7 +140,60 @@ test("preload API forwards renderer exception telemetry through the production h
     record?.resourceAttributes[TelemetryAttribute.ServiceName],
     "closedloop-desktop"
   );
-  assert.equal(record?.resourceAttributes["device.id"], undefined);
+  assert.equal(
+    record?.resourceAttributes[TelemetryAttribute.DeviceId],
+    "device_boundary"
+  );
+});
+
+test("preload API forwards trace-form renderer exception telemetry with sanitized status", async () => {
+  const runtime = createRuntime();
+  await runtime.start();
+  const handler = createRendererOtelExportHandler({
+    isTrustedSender: () => true,
+    runtime,
+  });
+  const desktopApi = await createBoundaryDesktopApi({
+    invokeImpl: (_channel, payload) =>
+      Promise.resolve(handler({ sender: { id: "trusted" } }, payload)),
+  });
+
+  const result = await desktopApi.exportOtelTelemetry({
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        kind: SpanKind.Internal,
+        status: {
+          code: SpanStatusCode.Error,
+          message: "failed with token sk-proj-secret",
+        },
+        name: "exception",
+        attributes: {
+          [TelemetryAttribute.ExceptionType]: "Error",
+          [TelemetryAttribute.ExceptionMessage]: "Renderer failed",
+          [TelemetryAttribute.ExceptionStacktrace]:
+            "Error: failed at /Users/example/project/app.ts",
+          [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
+        },
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  const record = runtime
+    .getBufferedRecords()
+    .find((item) => item.name === "exception");
+  assert.equal(record?.signal, DesktopOtelSignal.Trace);
+  assert.match(record?.traceId ?? "", TRACE_ID_PATTERN);
+  assert.match(record?.spanId ?? "", SPAN_ID_PATTERN);
+  assert.match(record?.parentSpanId ?? "", SPAN_ID_PATTERN);
+  assert.deepEqual(record?.status, { code: SpanStatusCode.Error });
+  assert.equal(
+    record?.attributes?.[TelemetryAttribute.ExceptionStacktrace],
+    "Error: failed at [redacted-path]"
+  );
 });
 
 test("boundary failure cases fail closed without buffer append", async () => {
@@ -146,9 +216,39 @@ test("boundary failure cases fail closed without buffer append", async () => {
     runtime,
     trusted: true,
   });
+  // A version-skewed or tampered renderer can put keys on the IPC wire that the
+  // compile-time bridge record does not declare. `bridgeRecordSchema` is
+  // `.strict()`, so the boundary must reject the whole batch. The extra key is
+  // spelled in the annotation (rather than left as a bare excess property on the
+  // call's object literal) so this stays a real value of the wire shape under
+  // test instead of tripping the fresh-literal excess-property check.
+  const recordWithUnknownWireKey: RendererOtelBridgeRecord & { body: string } =
+    {
+      signal: DesktopOtelSignal.Trace,
+      body: "raw body",
+    };
   assert.deepEqual(
     await trustedDesktopApi.exportOtelTelemetry({
-      records: [{ signal: DesktopOtelSignal.Trace, body: "raw body" }],
+      records: [recordWithUnknownWireKey],
+    }),
+    {
+      ok: false,
+      reason: RendererOtelExportFailureReason.InvalidPayload,
+    }
+  );
+  assert.deepEqual(runtime.getBufferedRecords(), []);
+
+  assert.deepEqual(
+    await trustedDesktopApi.exportOtelTelemetry({
+      records: [
+        {
+          signal: DesktopOtelSignal.Trace,
+          name: "renderer.bad.identity",
+          traceId: "00000000000000000000000000000000",
+          spanId: "2222222222222222",
+          kind: SpanKind.Internal,
+        },
+      ],
     }),
     {
       ok: false,
@@ -311,6 +411,7 @@ function createRuntime(
     bufferLimit: 10,
     env: {},
     getAppInstallationId: () => "install_boundary",
+    getDeviceId: () => "device_boundary",
     isPackaged: true,
     metricExportIntervalMs: 60_000,
     ...options,
@@ -339,13 +440,13 @@ async function createBoundaryDesktopApi(
         });
   const invoke =
     "invokeImpl" in options
-      ? mock.fn(options.invokeImpl)
-      : mock.fn((_channel: string, payload: unknown) => {
+      ? vi.fn(options.invokeImpl)
+      : vi.fn((_channel: string, payload: unknown) => {
           return Promise.resolve(
             handler?.({ sender: { id: "boundary" } }, payload)
           );
         });
-  const send = mock.fn();
+  const send = vi.fn();
   const { createDesktopApi } = await import("../src/main/preload-common.js");
   return createDesktopApi({ invoke, send });
 }

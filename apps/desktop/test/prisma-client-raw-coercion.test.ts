@@ -13,7 +13,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import {
   createDesktopPrisma,
   type DesktopPrisma,

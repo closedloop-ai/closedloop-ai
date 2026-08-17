@@ -2,7 +2,6 @@ import "server-only";
 
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
-import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { type NextRequest, NextResponse } from "next/server";
@@ -135,8 +134,7 @@ export function withApiKeyAuth<TResponse, TRoute extends string = string>(
       response = await handler(authContext, request, routeContext.params);
       return response;
     } catch (error) {
-      const errorMessage = parseError(error);
-      log.error("API key authentication failed", { error: errorMessage });
+      log.error("API key authentication failed", { error });
       response = NextResponse.json(failure("Authentication failed"), {
         status: 500,
       });

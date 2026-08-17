@@ -193,8 +193,10 @@ describe("useDocumentRunLoop", () => {
       const additionalRepos = [{ fullName: "org/extra-repo", branch: "main" }];
       const executeOwnerKey = `run-loop:${RunLoopCommand.Execute}:artifact-123`;
 
+      // The provider always hands the callback an execution context; mirror
+      // that here so the mock cannot pass where production would not.
       mockRunWithPreLoopSystemCheck.mockImplementation((_metadata, execute) => {
-        execute();
+        execute({ computeTargetId: "target-abc" });
         return Promise.resolve({
           status: "skipped_no_local_target",
           attemptId: "attempt-1",
@@ -243,6 +245,50 @@ describe("useDocumentRunLoop", () => {
           command: RunLoopCommand.Execute,
           computeTargetId: "target-abc",
           additionalRepos,
+        }),
+        expect.objectContaining({ onError: expect.any(Function) })
+      );
+    });
+
+    test("selectTarget replay launches on Cloud when the gate falls back, not on the unreachable target (ISS-5171)", async () => {
+      // The gate reports `fell_back_to_cloud` by handing the callback an
+      // explicit `null`. Before this was threaded through, the replay closure
+      // still carried the captured target, so we reported a Cloud fallback and
+      // launched locally against the machine we had just failed to reach.
+      mockRunWithPreLoopSystemCheck.mockImplementation((_metadata, execute) => {
+        execute({ computeTargetId: null });
+        return Promise.resolve({
+          status: "fell_back_to_cloud",
+          attemptId: "attempt-cloud",
+        });
+      });
+      mockUseOptionalPreLoopSystemCheckGate.mockReturnValue(
+        createPreLoopGate()
+      );
+
+      const { result } = renderHook(
+        () => useDocumentRunLoop({ documentId: "artifact-123" }),
+        { wrapper: createWrapperWithClient(queryClient) }
+      );
+
+      act(() => {
+        result.current.prepareConflictRefs({
+          command: RunLoopCommand.Execute,
+        });
+      });
+
+      await act(async () => {
+        await result.current.selectTarget("target-abc");
+      });
+
+      await waitFor(() => {
+        expect(mockMutate).toHaveBeenCalledOnce();
+      });
+      expect(mockMutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: "artifact-123",
+          command: RunLoopCommand.Execute,
+          computeTargetId: null,
         }),
         expect.objectContaining({ onError: expect.any(Function) })
       );
@@ -391,8 +437,10 @@ describe("useDocumentRunLoop", () => {
     });
 
     test("backend mismatch replay preserves explicit Cloud target through the pre-loop check", () => {
+      // The gate expressed no opinion here (`undefined`), so the caller's own
+      // explicit Cloud selection must stand.
       mockRunWithPreLoopSystemCheck.mockImplementation((_metadata, execute) => {
-        execute();
+        execute({});
         return Promise.resolve({
           status: "skipped_no_local_target",
           attemptId: "attempt-2",
@@ -500,10 +548,10 @@ describe("useDocumentRunLoop", () => {
 
       expect(toast.error).toHaveBeenCalledOnce();
       expect(toast.error).toHaveBeenCalledWith(
-        "Feature eval is already running on this document",
+        "Issue eval is already running on this document",
         expect.objectContaining({
           action: expect.objectContaining({
-            label: "View Loop",
+            label: "View run",
             onClick: expect.any(Function),
           }),
         })

@@ -5,14 +5,38 @@ import {
   BranchPrCommentKind,
   type BranchPrCommentsResponse,
   BranchStatus,
-  type MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import {
+  BranchAssociatedPullRequestCompletenessState,
+  BranchAssociatedPullRequestProvenance,
+  BranchAssociatedPullRequestSelectionReason,
+} from "@repo/api/src/types/branch-associated-pull-request";
+import {
+  type BranchSelectedPullRequestFile,
+  BranchSelectedPullRequestFileCompleteness,
+  type BranchSelectedPullRequestFilesResponse,
+  BranchSelectedPullRequestGrossTotalAvailability,
+  BranchSelectedPullRequestReadAvailability,
+} from "@repo/api/src/types/branch-selected-pull-request-files";
+import {
+  BranchTraceCompletenessState,
+  BranchTraceSessionHydrationState,
+  type MergedTraceItem,
+} from "@repo/api/src/types/branch-trace";
+import { GitHubPRState } from "@repo/api/src/types/github-status";
+import { SelectedPullRequestFileStatus } from "@repo/api/src/types/selected-pull-request-evidence";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
-import { AppCoreStoryProviders } from "../../shared/storybook/decorators";
+import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import type { BranchesDataSource } from "../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../data-source/provider";
 import { BranchDetailPage } from "./branch-detail-page";
+import {
+  completeMetrics,
+  completePhaseAttribution,
+  completeSelectedPullRequest,
+  completeSelectedPullRequestChecks,
+} from "./branch-story-metric-fixtures";
 
 // PLN-1148 Phase 2: the Sessions & timeline tab lazily fetches the merged trace
 // through the data-source port (`useBranchTrace` → `useBranchesDataSource` →
@@ -24,12 +48,41 @@ const storyBranchesSource: BranchesDataSource = {
   list: () => Promise.reject(new Error("list unused")),
   detail: () => Promise.reject(new Error("detail unused")),
   comments: (id) => Promise.resolve(makeStoryCommentsResponse(id)),
-  trace: () => Promise.resolve(storyTraceItems),
+  trace: () => Promise.resolve(storyTraceResult),
   usage: () => Promise.reject(new Error("usage unused")),
   analytics: () => Promise.reject(new Error("analytics unused")),
+  pageData: () => Promise.reject(new Error("pageData unused")),
 };
 
 const storyTraceItems = makeScrollableTraceItems();
+const storyTraceResult = {
+  items: storyTraceItems,
+  sessions: [
+    {
+      identity: {
+        artifactId: "s1",
+        name: "Scaffold the shell",
+        slug: "sess-one",
+        navigableRef: "sess-one",
+      },
+      state: BranchTraceSessionHydrationState.Loaded,
+    },
+  ],
+  qualifyingSessionCount: 1,
+  completeness: { state: BranchTraceCompletenessState.Complete },
+  aggregateCompleteness: { state: BranchTraceCompletenessState.Complete },
+};
+
+const storyApiRoutes: FixtureRoute[] = [
+  {
+    method: "GET",
+    path: "/branches/*",
+    respond: ({ pathname }) =>
+      pathname.endsWith("/selected-pull-request/files")
+        ? storyFilesResponse
+        : {},
+  },
+];
 
 function makeStoryCommentsResponse(branchId: string): BranchPrCommentsResponse {
   const state = storyCommentsStateByBranchId(branchId);
@@ -110,42 +163,96 @@ function makeBaseStoryCommentsResponse(
     providerProofedAt: "2026-06-17T12:30:00.000Z",
     stale: false,
     mixedProjection: false,
+    repositoryFullName: "owner/repo",
     prNumber: 1270,
     prUrl: "https://github.com/owner/repo/pull/1270",
   };
 }
 
+const storySelectedPullRequest = completeSelectedPullRequest();
+const storyChecksProjection = completeSelectedPullRequestChecks();
+const storyFilesResponse: BranchSelectedPullRequestFilesResponse = {
+  status: BranchSelectedPullRequestReadAvailability.Available,
+  value: {
+    identity: {
+      githubId: "PR_kwDO_story_1270",
+      repositoryFullName: storySelectedPullRequest.repositoryFullName,
+      number: storySelectedPullRequest.number,
+      url:
+        storySelectedPullRequest.url ??
+        "https://github.com/owner/repo/pull/1270",
+    },
+    revision: {
+      baseSha: "a".repeat(40),
+      headSha: storySelectedPullRequest.headRefOid ?? "b".repeat(40),
+    },
+    files: [
+      storyFile("packages/app/branches/branch-detail.tsx", 100, 10),
+      storyFile("packages/app/branches/branch-detail.css", 60, 8),
+      storyFile("e2e/branch-details.spec.ts", 20, 6),
+    ],
+    counts: {
+      expected: 3,
+      loaded: 3,
+      providerExpected: 3,
+      providerReturned: 3,
+    },
+    coverage: {
+      completeness: BranchSelectedPullRequestFileCompleteness.Complete,
+      reasons: [],
+    },
+    grossTotals: {
+      additions: {
+        availability: BranchSelectedPullRequestGrossTotalAvailability.Available,
+        value: 180,
+        completeness: BranchSelectedPullRequestFileCompleteness.Complete,
+      },
+      deletions: {
+        availability: BranchSelectedPullRequestGrossTotalAvailability.Available,
+        value: 24,
+        completeness: BranchSelectedPullRequestFileCompleteness.Complete,
+      },
+    },
+    pagination: {
+      pageSize: 100,
+      pagesFetched: 1,
+      providerMaximum: 500,
+      reachedProviderMaximum: false,
+    },
+  },
+};
+
 const populatedDetail: BranchPageDetail = {
-  id: "owner%2Frepo::feature%2Fx",
+  id: "b-1",
   branchName: "feature/branches-detail",
   baseBranch: "main",
   repoFullName: "owner/repo",
   owner: "alice",
-  status: BranchStatus.Open,
+  status: BranchStatus.Merged,
   prNumber: 1270,
   prTitle: "Add Branch Detail page",
-  prState: "OPEN",
+  prState: GitHubPRState.Merged,
   prUrl: "https://github.com/owner/repo/pull/1270",
   multiPrWarning: false,
-  checksStatus: null,
-  checksPassed: null,
-  checksTotal: null,
-  reviewDecision: null,
+  checksStatus: storyChecksProjection.legacy.checksStatus,
+  checksPassed: storyChecksProjection.legacy.checksPassed,
+  checksTotal: storyChecksProjection.legacy.checksTotal,
+  reviewDecision: storySelectedPullRequest.reviewDecision,
   ahead: null,
   behind: null,
-  additions: null,
-  deletions: null,
-  filesChanged: null,
-  estimatedCostUsd: 4.2,
+  additions: 180,
+  deletions: 24,
+  filesChanged: 3,
+  estimatedCostUsd: 4,
   lastActivityAt: "2026-06-17T12:00:00.000Z",
-  sessionIds: ["s1", "s2"],
+  sessionIds: ["s1"],
   prBody: "Implements the Branch Detail shell.",
   prBodyHtmlUrl: "https://github.com/owner/repo/pull/1270",
-  headSha: null,
-  mergeCommitSha: null,
-  mergedAt: null,
-  closedAt: null,
-  openedAt: null,
+  headSha: storySelectedPullRequest.headRefOid,
+  mergeCommitSha: storySelectedPullRequest.mergeCommitSha,
+  mergedAt: "2026-06-17T12:00:00.000Z",
+  closedAt: "2026-06-17T12:00:00.000Z",
+  openedAt: storySelectedPullRequest.openedAt,
   commits: [],
   sessions: [
     {
@@ -156,17 +263,47 @@ const populatedDetail: BranchPageDetail = {
       startedAt: "2026-06-17T09:00:00.000Z",
       endedAt: "2026-06-17T10:00:00.000Z",
       isPrimary: true,
-      estimatedCostUsd: 2.1,
+      estimatedCostUsd: 4,
       inputTokens: 1000,
       outputTokens: 2000,
       cacheReadTokens: 500,
       cacheWriteTokens: 300,
+      ownerUserName: "Chris",
     },
   ],
   mergedTrace: [{ type: "end", sessionId: "s1", text: "Session ended" }],
   leadTime: { firstActivityT: null, lastActivityT: null, idleSpans: [] },
   linkedPrNumbers: [1270],
   linkedArtifacts: [{ slug: "FEA-1952" }, { slug: "PLN-988" }],
+  associatedPullRequests: {
+    items: [
+      {
+        id: "owner/repo#1270",
+        repositoryFullName: "owner/repo",
+        number: 1270,
+        title: "Add Branch Detail page",
+        url: "https://github.com/owner/repo/pull/1270",
+        state: GitHubPRState.Merged,
+        isDraft: false,
+        reviewDecision: storySelectedPullRequest.reviewDecision,
+        openedAt: storySelectedPullRequest.openedAt,
+        closedAt: storySelectedPullRequest.closedAt,
+        mergedAt: storySelectedPullRequest.mergedAt,
+      },
+    ],
+    selectedId: "owner/repo#1270",
+    selectionReason:
+      BranchAssociatedPullRequestSelectionReason.MostRecentTerminal,
+    completeness: {
+      state: BranchAssociatedPullRequestCompletenessState.Complete,
+      reasons: [],
+      provenance: BranchAssociatedPullRequestProvenance.PersistedCloud,
+    },
+  },
+  selectedPullRequest: storySelectedPullRequest,
+  selectedPullRequestChecks: storyChecksProjection.response,
+  phaseAttribution: completePhaseAttribution(),
+  canonicalMetrics: completeMetrics(),
 };
 
 const StoryFrame = ({ children }: { children: ReactNode }) => (
@@ -179,14 +316,13 @@ const meta = {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
+    appCore: { apiRoutes: storyApiRoutes },
   },
   decorators: [
     (Story) => (
-      <AppCoreStoryProviders>
-        <BranchesDataSourceProvider dataSource={storyBranchesSource}>
-          <StoryFrame>{<Story />}</StoryFrame>
-        </BranchesDataSourceProvider>
-      </AppCoreStoryProviders>
+      <BranchesDataSourceProvider dataSource={storyBranchesSource}>
+        <StoryFrame>{<Story />}</StoryFrame>
+      </BranchesDataSourceProvider>
     ),
   ],
   args: {
@@ -329,4 +465,19 @@ function makeScrollableTraceItems(): MergedTraceItem[] {
 
   items.push({ type: "end", sessionId: "s1", text: "Session ended" });
   return items;
+}
+
+function storyFile(
+  path: string,
+  additions: number,
+  deletions: number
+): BranchSelectedPullRequestFile {
+  return {
+    path,
+    providerStatus: "modified",
+    status: SelectedPullRequestFileStatus.Modified,
+    additions,
+    deletions,
+    changes: additions + deletions,
+  };
 }

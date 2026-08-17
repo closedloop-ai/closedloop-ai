@@ -19,16 +19,21 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   type BinaryName,
+  isResolvedOnHost,
   resolveBinaryFromLoginShellSync,
 } from "../../server/shell-path.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { gatewayLog } from "../gateway-logger.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
+import { resolveClaudeHome, resolveCodexHome } from "./claude-home.js";
+import {
+  RESERVED_PLUGIN_PACK_IDS,
+  readClaudeInstalledPluginRegistry,
+} from "./claude-plugin-registry.js";
 import {
   upsertPack,
   upsertProjectAssociation,
@@ -70,19 +75,6 @@ type ScanMarketplacesResult = {
   plugins?: number;
 };
 
-type RunPackScannerOverrides = {
-  scanGStack?: (db: PackScannerDb) => Promise<ScanGStackResult>;
-  scanBmad?: (db: PackScannerDb) => Promise<ScanBmadResult>;
-  scanClaudeMarketplaces?: (
-    db: PackScannerDb
-  ) => Promise<ScanMarketplacesResult>;
-  scanProjectGStackAssociations?: (db: PackScannerDb) => Promise<number>;
-  runCatalogDetectorAdapters?: (
-    db: PackScannerDb
-  ) => Promise<Record<string, boolean>>;
-  cooperativeDelay?: (ms: number) => Promise<void>;
-};
-
 export type PackScannerSummary = {
   gstack: ScanGStackResult;
   bmad: ScanBmadResult;
@@ -94,6 +86,142 @@ export type PackScannerSummary = {
   pruned: boolean;
   pruneSkipped: boolean;
 };
+
+// ---------------------------------------------------------------------------
+// Compute/write split (FEA-3628)
+//
+// The heavy scan work (filesystem walk, execFileSync, frontmatter/marketplace
+// parsing) is pure compute and must NOT run inside the db-host utilityProcess,
+// where it starves renderer DB reads. Instead the scan phases write their
+// results into a `PackScanSink` — an in-memory collector, NOT a DB connection —
+// which produces a serializable `PackScanPlan`. The db-host then replays the
+// plan through the real pack-store upserts as the SOLE SQLite writer. This
+// keeps a single writer (no cross-process WAL contention / OOM — FEA-3132) and
+// moves the CPU-heavy scan off the DB process.
+//
+// The row shapes below are exactly the `pack-store` upsert argument shapes, so
+// a plan entry replays 1:1 into `upsertPack`/`upsertSkill`/
+// `upsertProjectAssociation`. Every field is a JSON-serializable primitive so
+// the plan crosses the utilityProcess IPC boundary unchanged.
+// ---------------------------------------------------------------------------
+
+export type PackUpsertRow = {
+  pack_id: string;
+  harness: string;
+  install_path: string;
+  install_kind: string;
+  source_url?: string | null;
+  version?: string | null;
+};
+
+export type SkillUpsertRow = {
+  skill_id: string;
+  pack_id?: string | null;
+  harness: string;
+  install_path: string;
+  name: string;
+  version?: string | null;
+  description?: string | null;
+  source_url?: string | null;
+};
+
+export type AssociationUpsertRow = {
+  project_path: string;
+  pack_id: string;
+};
+
+/**
+ * The write surface the scan phases target. In the compute worker this is a
+ * `CollectingSink` (pushes rows into arrays); nothing here touches a database.
+ * `recentProjectRoots()` returns the roots resolved by the db-host BEFORE the
+ * worker starts (the scanner's single DB read), passed in so the worker owns no
+ * DB connection.
+ */
+export type PackScanSink = {
+  pack(row: PackUpsertRow): Promise<void>;
+  skill(row: SkillUpsertRow): Promise<void>;
+  association(row: AssociationUpsertRow): Promise<void>;
+  recentProjectRoots(): string[];
+};
+
+/** Serializable output of a pure-compute scan, replayed by the db-host. */
+export type PackScanPlan = {
+  packs: PackUpsertRow[];
+  skills: SkillUpsertRow[];
+  associations: AssociationUpsertRow[];
+};
+
+/** The full result of a pure-compute scan: the write plan plus per-phase counts. */
+export type PackScanComputeResult = {
+  plan: PackScanPlan;
+  counts: {
+    gstack: ScanGStackResult;
+    bmad: ScanBmadResult;
+    marketplaces: ScanMarketplacesResult;
+    catalogDetectors: Record<string, boolean>;
+    gstackProjects: number;
+  };
+  scopes: Record<string, boolean>;
+};
+
+type ComputePackScanOverrides = {
+  scanGStack?: (sink: PackScanSink) => Promise<ScanGStackResult>;
+  scanBmad?: (sink: PackScanSink) => Promise<ScanBmadResult>;
+  scanClaudeMarketplaces?: (
+    sink: PackScanSink
+  ) => Promise<ScanMarketplacesResult>;
+  scanProjectGStackAssociations?: (sink: PackScanSink) => Promise<number>;
+  runCatalogDetectorAdapters?: (
+    sink: PackScanSink
+  ) => Promise<Record<string, boolean>>;
+  cooperativeDelay?: (ms: number) => Promise<void>;
+};
+
+/**
+ * In-memory `PackScanSink` that accumulates a `PackScanPlan`. Deduplicates on
+ * the same keys the pack-store upserts use so a plan never carries two writes
+ * that would collide on replay (last-write-wins, mirroring re-scan idempotency).
+ */
+export class CollectingSink implements PackScanSink {
+  private readonly packsByKey = new Map<string, PackUpsertRow>();
+  private readonly skillsByKey = new Map<string, SkillUpsertRow>();
+  private readonly associationsByKey = new Map<string, AssociationUpsertRow>();
+  private readonly roots: string[];
+
+  constructor(roots: string[]) {
+    this.roots = roots;
+  }
+
+  pack(row: PackUpsertRow): Promise<void> {
+    this.packsByKey.set(
+      `${row.pack_id}\n${row.harness}\n${row.install_path}`,
+      row
+    );
+    return Promise.resolve();
+  }
+
+  skill(row: SkillUpsertRow): Promise<void> {
+    this.skillsByKey.set(row.skill_id, row);
+    return Promise.resolve();
+  }
+
+  association(row: AssociationUpsertRow): Promise<void> {
+    this.associationsByKey.set(`${row.project_path}\n${row.pack_id}`, row);
+    return Promise.resolve();
+  }
+
+  recentProjectRoots(): string[] {
+    return this.roots;
+  }
+
+  toPlan(): PackScanPlan {
+    return {
+      packs: [...this.packsByKey.values()],
+      skills: [...this.skillsByKey.values()],
+      associations: [...this.associationsByKey.values()],
+    };
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -136,14 +264,6 @@ const MARKETPLACE_BUNDLE_AS_PACK = new Set(["closedloop-ai"]);
 // Filesystem helpers (sync — fine for probing)
 // ---------------------------------------------------------------------------
 
-function resolveClaudeHome(): string {
-  return process.env.CLAUDE_HOME || path.join(os.homedir(), ".claude");
-}
-
-function resolveCodexHome(): string {
-  return process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-}
-
 function safeStat(p: string) {
   try {
     return lstatSync(p);
@@ -160,7 +280,7 @@ function safeReadDir(p: string) {
   }
 }
 
-function safeReadFile(p: string): string | null {
+export function safeReadFile(p: string): string | null {
   try {
     return readFileSync(p, "utf8");
   } catch {
@@ -201,6 +321,32 @@ export function deterministicSkillId(
  * returned as null rather than throwing. Returns null when no frontmatter
  * block is present.
  */
+/**
+ * Unquote a YAML scalar value read from frontmatter.
+ *
+ * A double-quoted value (the form our writers emit via `JSON.stringify`, which
+ * is a valid YAML double-quoted flow scalar) must be *unescaped*, not merely
+ * stripped of its outer quotes — otherwise a name/description containing a quote
+ * or backslash (e.g. `Deploy: production "now"`) round-trips back with literal
+ * `\"`/`\\` in it. JSON string-escapes are a subset of YAML double-quote
+ * escapes, so `JSON.parse` decodes them faithfully; we fall back to a plain
+ * strip if the value is not valid JSON. Single-quoted scalars keep the simple
+ * strip (YAML single quotes only escape `''`, which our writers never emit).
+ */
+function unquoteScalar(value: string): string {
+  if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+    try {
+      return JSON.parse(value) as string;
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
+    return value.slice(1, -1).replace(/''/g, "'");
+  }
+  return value;
+}
+
 export function parseSkillFrontmatter(
   content: string
 ): Record<string, string> | null {
@@ -222,14 +368,7 @@ export function parseSkillFrontmatter(
       continue;
     }
     const key = line.slice(0, sep).trim().toLowerCase();
-    let value = line.slice(sep + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    fields[key] = value;
+    fields[key] = unquoteScalar(line.slice(sep + 1).trim());
   }
   return fields;
 }
@@ -243,7 +382,7 @@ export function parseSkillFrontmatter(
  * Symlinks inside a pack are followed once; depth is capped to avoid runaway
  * traversal if a user has a weird layout.
  */
-function findSkillFiles(root: string, maxDepth = 6): string[] {
+export function findSkillFiles(root: string, maxDepth = 6): string[] {
   const results: string[] = [];
   const stack: Array<{ dir: string; depth: number }> = [
     { dir: root, depth: 0 },
@@ -300,7 +439,9 @@ function deriveGitRemoteUrl(dir: string): string | null {
  * Returns string[] of absolute paths (already de-duped by SELECT DISTINCT).
  * Returns [] (not throws) on any failure.
  */
-async function getRecentProjectRoots(db: PackScannerDb): Promise<string[]> {
+export async function getRecentProjectRoots(
+  db: PackScannerDb
+): Promise<string[]> {
   try {
     const since = new Date(
       Date.now() - PROJECT_LOOKBACK_DAYS * 24 * 60 * 60 * 1000
@@ -351,7 +492,7 @@ function readGStackVersion(installPath: string): string | null {
  * SKILL.md it contains. Used by both gstack and bmad detection paths.
  */
 async function ingestPackDir(
-  db: PackScannerDb,
+  sink: PackScanSink,
   opts: {
     packId: string;
     harness: string;
@@ -364,7 +505,7 @@ async function ingestPackDir(
   const installKind = isSymlink(opts.installPath) ? "symlink" : "directory";
   const remoteUrl = opts.sourceUrl || deriveGitRemoteUrl(real);
 
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: opts.packId,
     harness: opts.harness,
     install_path: opts.installPath,
@@ -385,7 +526,7 @@ async function ingestPackDir(
     if (!name) {
       continue;
     }
-    await upsertSkill(db, {
+    await sink.skill({
       skill_id: deterministicSkillId(opts.harness, opts.installPath, name),
       pack_id: opts.packId,
       harness: opts.harness,
@@ -419,7 +560,9 @@ async function ingestPackDir(
  * than registering 46 install rows), and still ingest every linked SKILL.md
  * into the skills table.
  */
-export async function scanGStack(db: PackScannerDb): Promise<ScanGStackResult> {
+export async function scanGStack(
+  sink: PackScanSink
+): Promise<ScanGStackResult> {
   const results: ScanGStackResult = { installs: 0, skills: 0 };
 
   // --- Claude ---
@@ -434,7 +577,7 @@ export async function scanGStack(db: PackScannerDb): Promise<ScanGStackResult> {
       continue;
     }
     const version = readGStackVersion(real);
-    const added = await ingestPackDir(db, {
+    const added = await ingestPackDir(sink, {
       packId: "gstack",
       harness: "claude",
       installPath,
@@ -472,7 +615,7 @@ export async function scanGStack(db: PackScannerDb): Promise<ScanGStackResult> {
         break;
       }
     }
-    await upsertPack(db, {
+    await sink.pack({
       pack_id: "gstack",
       harness: "codex",
       install_path: codexSkillsRoot,
@@ -495,7 +638,7 @@ export async function scanGStack(db: PackScannerDb): Promise<ScanGStackResult> {
         if (!name) {
           continue;
         }
-        await upsertSkill(db, {
+        await sink.skill({
           skill_id: deterministicSkillId("codex", codexSkillsRoot, name),
           pack_id: "gstack",
           harness: "codex",
@@ -613,10 +756,10 @@ function detectBmadProjectInstall(
  * directories whose name is prefixed "bmad-".
  */
 async function ingestBmadProjectSkills(
-  db: PackScannerDb,
+  sink: PackScanSink,
   opts: { installPath: string; harness: string; version: string | null }
 ): Promise<number> {
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "bmad-method",
     harness: opts.harness,
     install_path: opts.installPath,
@@ -639,7 +782,7 @@ async function ingestBmadProjectSkills(
     }
     const meta = parseSkillFrontmatter(content) || {};
     const name = meta.name || entry.name;
-    await upsertSkill(db, {
+    await sink.skill({
       skill_id: deterministicSkillId(opts.harness, opts.installPath, name),
       pack_id: "bmad-method",
       harness: opts.harness,
@@ -665,7 +808,7 @@ async function ingestBmadProjectSkills(
  *      marketplace.json
  *   3. Legacy per-project install via _bmad/ directory (very old)
  */
-export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
+export async function scanBmad(sink: PackScanSink): Promise<ScanBmadResult> {
   const results: ScanBmadResult = { installs: 0, skills: 0, projects: 0 };
 
   // 1. Legacy global installs under ~/.claude/skills/<dir>/.claude-plugin/
@@ -679,7 +822,7 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
     if (!marketplace) {
       continue;
     }
-    const added = await ingestPackDir(db, {
+    const added = await ingestPackDir(sink, {
       packId: "bmad-method",
       harness: "claude",
       installPath,
@@ -690,7 +833,7 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
   }
 
   // 2 & 3. Per-project: walk distinct sessions.cwd from the last 90 days.
-  for (const projectRoot of await getRecentProjectRoots(db)) {
+  for (const projectRoot of sink.recentProjectRoots()) {
     let added = 0;
     let installedHere = false;
 
@@ -700,7 +843,7 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
     const v6 = detectBmadProjectInstall(projectRoot);
     if (v6) {
       for (const harness of ["claude", "codex"]) {
-        added += await ingestBmadProjectSkills(db, {
+        added += await ingestBmadProjectSkills(sink, {
           installPath: v6.installPath,
           harness,
           version: v6.version,
@@ -722,7 +865,7 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
           break; // hit fs root
         }
       }
-      added += await ingestPackDir(db, {
+      added += await ingestPackDir(sink, {
         packId: "bmad-method",
         harness: "claude",
         installPath: legacyBmadDir,
@@ -733,7 +876,7 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
     }
 
     if (installedHere) {
-      await upsertProjectAssociation(db, {
+      await sink.association({
         project_path: projectRoot,
         pack_id: "bmad-method",
       });
@@ -758,24 +901,14 @@ export async function scanBmad(db: PackScannerDb): Promise<ScanBmadResult> {
  * its own per-plugin version. Skills aggregate across all plugins.
  */
 export async function scanClaudeMarketplaces(
-  db: PackScannerDb
+  sink: PackScanSink
 ): Promise<ScanMarketplacesResult> {
-  const registryPath = path.join(
-    resolveClaudeHome(),
-    "plugins",
-    "installed_plugins.json"
-  );
-  const raw = safeReadFile(registryPath);
-  if (!raw) {
-    return { installs: 0, skills: 0, marketplaces: 0 };
-  }
-  let registry: { plugins?: Record<string, unknown[]> };
-  try {
-    registry = JSON.parse(raw);
-  } catch {
-    return { installs: 0, skills: 0, marketplaces: 0 };
-  }
-  if (!registry || typeof registry.plugins !== "object") {
+  // Shared low-level read/parse of ~/.claude/plugins/installed_plugins.json.
+  // The pack projection collapses a marketplace bundle to ONE pack, so it only
+  // groups entries that carry a marketplace (`<name>@<marketplace>`); a plugin
+  // installed directly into the harness (null marketplace) is not a pack.
+  const read = readClaudeInstalledPluginRegistry();
+  if (read.status !== "ok") {
     return { installs: 0, skills: 0, marketplaces: 0 };
   }
 
@@ -784,39 +917,22 @@ export async function scanClaudeMarketplaces(
     string,
     Array<{ pluginName: string; installPath: string; version: string | null }>
   >();
-  for (const [pluginRef, scopes] of Object.entries(registry.plugins!)) {
-    const at = pluginRef.lastIndexOf("@");
-    if (at < 1) {
+  for (const entry of read.entries) {
+    if (entry.marketplace === null) {
       continue;
     }
-    const pluginName = pluginRef.slice(0, at);
-    const marketplace = pluginRef.slice(at + 1);
-    if (!Array.isArray(scopes)) {
-      continue;
-    }
-    for (const entry of scopes) {
-      if (
-        !entry ||
-        typeof entry !== "object" ||
-        !(entry as Record<string, unknown>).installPath
-      ) {
-        continue;
-      }
-      const e = entry as { installPath: string; version?: string };
-      if (!byMarketplace.has(marketplace)) {
-        byMarketplace.set(marketplace, []);
-      }
-      byMarketplace.get(marketplace)!.push({
-        pluginName,
-        installPath: e.installPath,
-        version: e.version || null,
-      });
-    }
+    const bucket = byMarketplace.get(entry.marketplace) ?? [];
+    bucket.push({
+      pluginName: entry.pluginName,
+      installPath: entry.installPath,
+      version: entry.version,
+    });
+    byMarketplace.set(entry.marketplace, bucket);
   }
 
   // Pack IDs that already have dedicated scanners — skip them here so
   // marketplace installs of gstack or bmad-method don't get double-counted.
-  const reservedPackIds = new Set(["gstack", "bmad-method"]);
+  const reservedPackIds = RESERVED_PLUGIN_PACK_IDS;
 
   const results: ScanMarketplacesResult & { plugins: number } = {
     installs: 0,
@@ -840,7 +956,7 @@ export async function scanClaudeMarketplaces(
         "cache",
         marketplace
       );
-      await upsertPack(db, {
+      await sink.pack({
         pack_id: marketplace,
         harness: "claude",
         install_path: cacheRoot,
@@ -865,7 +981,7 @@ export async function scanClaudeMarketplaces(
           if (!name) {
             continue;
           }
-          await upsertSkill(db, {
+          await sink.skill({
             skill_id: deterministicSkillId("claude", cacheRoot, name),
             pack_id: marketplace,
             harness: "claude",
@@ -890,7 +1006,7 @@ export async function scanClaudeMarketplaces(
       if (reservedPackIds.has(plugin.pluginName)) {
         continue;
       }
-      await upsertPack(db, {
+      await sink.pack({
         pack_id: plugin.pluginName,
         harness: "claude",
         install_path: plugin.installPath,
@@ -912,7 +1028,7 @@ export async function scanClaudeMarketplaces(
         if (!name) {
           continue;
         }
-        await upsertSkill(db, {
+        await sink.skill({
           skill_id: deterministicSkillId("claude", plugin.installPath, name),
           pack_id: plugin.pluginName,
           harness: "claude",
@@ -939,15 +1055,15 @@ export async function scanClaudeMarketplaces(
  * per-project associations.
  */
 export async function scanProjectGStackAssociations(
-  db: PackScannerDb
+  sink: PackScanSink
 ): Promise<number> {
   let count = 0;
-  for (const projectRoot of await getRecentProjectRoots(db)) {
+  for (const projectRoot of sink.recentProjectRoots()) {
     const marker = path.join(projectRoot, ".gstack", "conductor.json");
     if (!safeStat(marker)) {
       continue;
     }
-    await upsertProjectAssociation(db, {
+    await sink.association({
       project_path: projectRoot,
       pack_id: "gstack",
     });
@@ -960,12 +1076,12 @@ export async function scanProjectGStackAssociations(
 // Catalog detection adapters (ported from catalog-detector.js)
 // ---------------------------------------------------------------------------
 
-async function detectVoltagentSubagents(db: PackScannerDb): Promise<boolean> {
+async function detectVoltagentSubagents(sink: PackScanSink): Promise<boolean> {
   const root = path.join(resolveClaudeHome(), "skills", "voltagent-subagents");
   if (!safeStat(root)) {
     return false;
   }
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "voltagent-subagents",
     harness: "claude",
     install_path: root,
@@ -989,7 +1105,7 @@ async function detectVoltagentSubagents(db: PackScannerDb): Promise<boolean> {
           continue;
         }
         const name = path.basename(agent.name, ".md");
-        await upsertSkill(db, {
+        await sink.skill({
           skill_id: deterministicSkillId("claude", root, name),
           pack_id: "voltagent-subagents",
           harness: "claude",
@@ -1006,7 +1122,7 @@ async function detectVoltagentSubagents(db: PackScannerDb): Promise<boolean> {
   return true;
 }
 
-async function detectAlirezaSkills(db: PackScannerDb): Promise<boolean> {
+async function detectAlirezaSkills(sink: PackScanSink): Promise<boolean> {
   const root = path.join(
     resolveClaudeHome(),
     "skills",
@@ -1015,7 +1131,7 @@ async function detectAlirezaSkills(db: PackScannerDb): Promise<boolean> {
   if (!safeStat(root)) {
     return false;
   }
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "alirezarezvani-claude-skills",
     harness: "claude",
     install_path: root,
@@ -1034,7 +1150,7 @@ async function detectAlirezaSkills(db: PackScannerDb): Promise<boolean> {
     if (!name) {
       continue;
     }
-    await upsertSkill(db, {
+    await sink.skill({
       skill_id: deterministicSkillId("claude", root, name),
       pack_id: "alirezarezvani-claude-skills",
       harness: "claude",
@@ -1048,13 +1164,13 @@ async function detectAlirezaSkills(db: PackScannerDb): Promise<boolean> {
   return true;
 }
 
-async function detectSuperClaude(db: PackScannerDb): Promise<boolean> {
+async function detectSuperClaude(sink: PackScanSink): Promise<boolean> {
   // SuperClaude installs commands (NOT skills) into ~/.claude/commands/sc/.
   const root = path.join(resolveClaudeHome(), "commands", "sc");
   if (!safeStat(root)) {
     return false;
   }
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "superclaude",
     harness: "claude",
     install_path: root,
@@ -1071,7 +1187,7 @@ async function detectSuperClaude(db: PackScannerDb): Promise<boolean> {
     }
     const baseName = path.basename(entry.name, ".md");
     const name = `sc:${baseName}`;
-    await upsertSkill(db, {
+    await sink.skill({
       skill_id: deterministicSkillId("claude", root, name),
       pack_id: "superclaude",
       harness: "claude",
@@ -1086,7 +1202,7 @@ async function detectSuperClaude(db: PackScannerDb): Promise<boolean> {
 }
 
 async function detectClaudePluginsOfficial(
-  db: PackScannerDb
+  sink: PackScanSink
 ): Promise<boolean> {
   const root = path.join(
     resolveClaudeHome(),
@@ -1097,7 +1213,7 @@ async function detectClaudePluginsOfficial(
   if (!safeStat(root)) {
     return false;
   }
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "claude-plugins-official",
     harness: "claude",
     install_path: root,
@@ -1114,7 +1230,7 @@ async function detectClaudePluginsOfficial(
  * agent_packs row for EACH harness in `harnesses`.
  */
 async function detectBinaryTool(
-  db: PackScannerDb,
+  sink: PackScanSink,
   opts: {
     pack_id: string;
     binNames: BinaryName[];
@@ -1126,7 +1242,7 @@ async function detectBinaryTool(
   let binaryPath: string | null = null;
   for (const bin of opts.binNames) {
     const resolved = resolveBinaryFromLoginShellSync(bin);
-    if (resolved.source === "path") {
+    if (isResolvedOnHost(resolved.source)) {
       binaryPath = resolved.path;
       break;
     }
@@ -1151,7 +1267,7 @@ async function detectBinaryTool(
     }
   }
   for (const harness of opts.harnesses) {
-    await upsertPack(db, {
+    await sink.pack({
       pack_id: opts.pack_id,
       harness,
       install_path: binaryPath,
@@ -1163,8 +1279,8 @@ async function detectBinaryTool(
   return true;
 }
 
-async function detectRtk(db: PackScannerDb): Promise<boolean> {
-  return detectBinaryTool(db, {
+async function detectRtk(sink: PackScanSink): Promise<boolean> {
+  return detectBinaryTool(sink, {
     pack_id: "rtk",
     binNames: ["rtk"],
     source_url: "https://github.com/rtk-ai/rtk",
@@ -1173,7 +1289,7 @@ async function detectRtk(db: PackScannerDb): Promise<boolean> {
   });
 }
 
-async function detectClaudeCodeRouter(db: PackScannerDb): Promise<boolean> {
+async function detectClaudeCodeRouter(sink: PackScanSink): Promise<boolean> {
   // Global npm install — probe via `npm ls -g` (fast, no network).
   let installed = false;
   try {
@@ -1185,12 +1301,12 @@ async function detectClaudeCodeRouter(db: PackScannerDb): Promise<boolean> {
     installed = true;
   } catch {
     // Fall back to probing the binary on PATH.
-    installed = resolveBinaryFromLoginShellSync("ccr").source === "path";
+    installed = isResolvedOnHost(resolveBinaryFromLoginShellSync("ccr").source);
   }
   if (!installed) {
     return false;
   }
-  await upsertPack(db, {
+  await sink.pack({
     pack_id: "claude-code-router",
     harness: "claude",
     install_path: "@musistudio/claude-code-router (npm -g)",
@@ -1268,7 +1384,7 @@ function readCommandPackVersion(installPath: string): string | null {
 }
 
 export async function detectClosedloopWebCommandPack(
-  db: PackScannerDb
+  sink: PackScanSink
 ): Promise<boolean> {
   const installPath = resolveBundledCommandPackPath();
   if (!installPath) {
@@ -1276,7 +1392,7 @@ export async function detectClosedloopWebCommandPack(
   }
   const version = readCommandPackVersion(installPath);
   for (const harness of CLOSEDLOOP_WEB_COMMAND_PACK_HARNESSES) {
-    await upsertPack(db, {
+    await sink.pack({
       pack_id: CLOSEDLOOP_WEB_COMMAND_PACK_ID,
       harness,
       install_path: installPath,
@@ -1288,7 +1404,7 @@ export async function detectClosedloopWebCommandPack(
   return true;
 }
 
-type CatalogAdapter = [string, (db: PackScannerDb) => Promise<boolean>];
+type CatalogAdapter = [string, (sink: PackScanSink) => Promise<boolean>];
 
 const CATALOG_ADAPTERS: CatalogAdapter[] = [
   [CLOSEDLOOP_WEB_COMMAND_PACK_ID, detectClosedloopWebCommandPack],
@@ -1306,7 +1422,7 @@ const CATALOG_ADAPTERS: CatalogAdapter[] = [
  * probe outside the fixture sandbox.
  */
 export async function runCatalogDetectorAdapters(
-  db: PackScannerDb
+  sink: PackScanSink
 ): Promise<Record<string, boolean>> {
   if (process.env.SKIP_CATALOG_DETECTORS === "1") {
     return {};
@@ -1314,7 +1430,7 @@ export async function runCatalogDetectorAdapters(
   const results: Record<string, boolean> = {};
   for (const [name, fn] of CATALOG_ADAPTERS) {
     try {
-      results[name] = await fn(db);
+      results[name] = await fn(sink);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       gatewayLog.warn("catalog-detector", `adapter ${name} failed: ${msg}`);
@@ -1380,16 +1496,21 @@ async function pruneStaleRows(
 // ---------------------------------------------------------------------------
 
 /**
- * Top-level entry: run every scan path. Best-effort — exceptions in one branch
- * never block another. Safe to call repeatedly. At the end, prune any
- * inventory rows whose last_seen_at wasn't refreshed. Pruning is skipped when
- * any detector fails so a transient error cannot tombstone real installs.
+ * PURE COMPUTE (FEA-3628). Run every scan path against an in-memory
+ * `PackScanSink` — NO database connection. Best-effort: an exception in one
+ * branch never blocks another. Returns the collected write plan plus per-phase
+ * counts/scopes. Runs inside the pack-scan utilityProcess (or in-process via
+ * {@link runPackScanner}). The single DB read (recent project roots) is done by
+ * the caller and supplied via `input.recentProjectRoots`.
  */
-export async function runPackScanner(
-  db: PackScannerDb,
-  overrides: RunPackScannerOverrides = {}
-): Promise<PackScannerSummary> {
-  const scanStartedAt = new Date().toISOString();
+export async function computePackScan(
+  input: {
+    recentProjectRoots: string[];
+    cooperativeDelay?: (ms: number) => Promise<void>;
+  },
+  overrides: ComputePackScanOverrides = {}
+): Promise<PackScanComputeResult> {
+  const sink = new CollectingSink(input.recentProjectRoots);
   const scanners = {
     scanGStack: overrides.scanGStack || scanGStack,
     scanBmad: overrides.scanBmad || scanBmad,
@@ -1400,55 +1521,53 @@ export async function runPackScanner(
     runCatalogDetectorAdapters:
       overrides.runCatalogDetectorAdapters || runCatalogDetectorAdapters,
   };
+  const cooperativeDelay = overrides.cooperativeDelay ?? input.cooperativeDelay;
   const pauseAfterScannerPhase = () =>
-    overrides.cooperativeDelay?.(PACK_SCANNER_PHASE_PAUSE_MS) ??
-    Promise.resolve();
-  const summary: PackScannerSummary = {
+    cooperativeDelay?.(PACK_SCANNER_PHASE_PAUSE_MS) ?? Promise.resolve();
+
+  const counts: PackScanComputeResult["counts"] = {
     gstack: { installs: 0, skills: 0 },
     bmad: { installs: 0, skills: 0, projects: 0 },
     marketplaces: { installs: 0, skills: 0, marketplaces: 0 },
     catalogDetectors: {},
     gstackProjects: 0,
-    prunedBefore: scanStartedAt,
-    scopes: {
-      gstack: false,
-      bmad: false,
-      marketplaces: false,
-      gstackProjects: false,
-      catalogDetectors: false,
-    },
-    pruned: false,
-    pruneSkipped: false,
+  };
+  const scopes: Record<string, boolean> = {
+    gstack: false,
+    bmad: false,
+    marketplaces: false,
+    gstackProjects: false,
+    catalogDetectors: false,
   };
 
   await pauseAfterScannerPhase();
   try {
-    summary.gstack = await scanners.scanGStack(db);
-    summary.scopes.gstack = true;
+    counts.gstack = await scanners.scanGStack(sink);
+    scopes.gstack = true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn("pack-scanner", `gstack scan failed: ${msg}`);
   }
   await pauseAfterScannerPhase();
   try {
-    summary.bmad = await scanners.scanBmad(db);
-    summary.scopes.bmad = true;
+    counts.bmad = await scanners.scanBmad(sink);
+    scopes.bmad = true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn("pack-scanner", `bmad scan failed: ${msg}`);
   }
   await pauseAfterScannerPhase();
   try {
-    summary.marketplaces = await scanners.scanClaudeMarketplaces(db);
-    summary.scopes.marketplaces = true;
+    counts.marketplaces = await scanners.scanClaudeMarketplaces(sink);
+    scopes.marketplaces = true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn("pack-scanner", `claude marketplace scan failed: ${msg}`);
   }
   await pauseAfterScannerPhase();
   try {
-    summary.gstackProjects = await scanners.scanProjectGStackAssociations(db);
-    summary.scopes.gstackProjects = true;
+    counts.gstackProjects = await scanners.scanProjectGStackAssociations(sink);
+    scopes.gstackProjects = true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn(
@@ -1458,21 +1577,59 @@ export async function runPackScanner(
   }
   await pauseAfterScannerPhase();
   try {
-    summary.catalogDetectors = await scanners.runCatalogDetectorAdapters(db);
-    summary.scopes.catalogDetectors = true;
+    counts.catalogDetectors = await scanners.runCatalogDetectorAdapters(sink);
+    scopes.catalogDetectors = true;
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     gatewayLog.warn("pack-scanner", `catalog detectors failed: ${msg}`);
   }
   await pauseAfterScannerPhase();
 
-  const allSucceeded = Object.values(summary.scopes).every(Boolean);
+  return { plan: sink.toPlan(), counts, scopes };
+}
+
+/**
+ * DB WRITE (FEA-3628). Replay a compute result through the real pack-store
+ * upserts on the db-host's SOLE SQLite writer, then prune. Pruning tombstones
+ * rows whose `last_seen_at` predates `scanStartedAt`; it is skipped when any
+ * scan scope failed so a transient error can never tombstone real installs.
+ * Each upsert is an independent single-statement `prisma.write`, matching the
+ * original scanner's write granularity.
+ */
+export async function applyPackScan(
+  db: PackScannerDb,
+  compute: PackScanComputeResult,
+  scanStartedAt: string
+): Promise<PackScannerSummary> {
+  for (const row of compute.plan.packs) {
+    await upsertPack(db, row);
+  }
+  for (const row of compute.plan.skills) {
+    await upsertSkill(db, row);
+  }
+  for (const row of compute.plan.associations) {
+    await upsertProjectAssociation(db, row);
+  }
+
+  const summary: PackScannerSummary = {
+    gstack: compute.counts.gstack,
+    bmad: compute.counts.bmad,
+    marketplaces: compute.counts.marketplaces,
+    catalogDetectors: compute.counts.catalogDetectors,
+    gstackProjects: compute.counts.gstackProjects,
+    prunedBefore: scanStartedAt,
+    scopes: compute.scopes,
+    pruned: false,
+    pruneSkipped: false,
+  };
+
+  const allSucceeded = Object.values(compute.scopes).every(Boolean);
   if (allSucceeded) {
     await pruneStaleRows(db, scanStartedAt);
     summary.pruned = true;
   } else {
     summary.pruneSkipped = true;
-    const failedScopes = Object.entries(summary.scopes)
+    const failedScopes = Object.entries(compute.scopes)
       .filter(([, ok]) => !ok)
       .map(([k]) => k)
       .join(", ");
@@ -1482,6 +1639,24 @@ export async function runPackScanner(
     );
   }
   return summary;
+}
+
+/**
+ * In-process entry: read recent roots, run the pure-compute scan, then apply
+ * the plan on `db`. This does the heavy compute ON the caller's process — it is
+ * the fallback for when the pack-scan utilityProcess is unavailable, and the
+ * path used by tests. The db-host normally runs the compute in the worker (see
+ * `packScanner.run` in db-host-worker.ts) so scanning never starves DB reads.
+ * Best-effort and safe to call repeatedly.
+ */
+export async function runPackScanner(
+  db: PackScannerDb,
+  overrides: ComputePackScanOverrides = {}
+): Promise<PackScannerSummary> {
+  const scanStartedAt = new Date().toISOString();
+  const recentProjectRoots = await getRecentProjectRoots(db);
+  const compute = await computePackScan({ recentProjectRoots }, overrides);
+  return applyPackScan(db, compute, scanStartedAt);
 }
 
 // ---------------------------------------------------------------------------

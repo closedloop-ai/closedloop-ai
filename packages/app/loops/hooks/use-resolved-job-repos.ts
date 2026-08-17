@@ -44,6 +44,13 @@ export type UseResolvedJobReposResult = {
   additional: ResolvedRepo[];
   pool: TeamRepoWithTeamId[];
   isLoading: boolean;
+  // Why the pool is empty, when it is empty because the read FAILED (ISS-5095).
+  // Without this the resolver hands consumers an empty `pool` and they render
+  // "No repositories curated on this project's team" — a claim about the team's
+  // configuration that the code has no evidence for, pointing the user at a
+  // settings page to fix something that isn't broken. `null` when the reads
+  // succeeded, in which case an empty pool really is empty.
+  poolError: string | null;
 };
 
 export type UseResolvedJobReposArgs = {
@@ -83,11 +90,14 @@ export function useResolvedJobRepos({
     () => projectData?.teams.map((t) => t.id) ?? [],
     [projectData?.teams]
   );
-  const { repositories: pool, isLoading: isLoadingPool } =
-    useTeamRepositoriesUnion({
-      teamIds,
-      enabled: enabled && teamIds.length > 0,
-    });
+  const {
+    repositories: pool,
+    isLoading: isLoadingPool,
+    error: poolError,
+  } = useTeamRepositoriesUnion({
+    teamIds,
+    enabled: enabled && teamIds.length > 0,
+  });
 
   const inheritEnabled = enabled && Boolean(artifactId) && Boolean(command);
   const { data: inherited, isLoading: isLoadingInherited } =
@@ -148,9 +158,10 @@ export function useResolvedJobRepos({
       priorPeers: inherited?.additionalRepos ?? [],
     });
 
-    return { primary, additional, pool, isLoading };
+    return { primary, additional, pool, isLoading, poolError };
   }, [
     pool,
+    poolError,
     resolved,
     projectPrimarySource,
     primaryFullNameSeed,

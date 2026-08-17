@@ -39,7 +39,6 @@ export type EditorWithAnchoredCommentsProps = {
   onBodyClick?: (event: React.MouseEvent<HTMLDivElement>) => void;
   placeholder?: string;
   readOnly?: boolean;
-  scrollMode?: "inner" | "outer";
   showComments?: boolean;
   /**
    * When true, the Feed sidebar is mounted at the editor host level and
@@ -55,6 +54,13 @@ export type EditorWithAnchoredCommentsProps = {
    * `metadata.version` on threads it creates.
    */
   currentVersion?: number;
+  /**
+   * Hides the body's leading H1 when it just repeats the artifact title the
+   * chrome already renders above (ISS-5006). Read view only — the host clears
+   * it in edit mode so the author always sees and edits the real document.
+   * Presentational: the node stays in the content and is never rewritten.
+   */
+  hideLeadingTitleHeading?: boolean;
 };
 
 export function EditorWithAnchoredComments({
@@ -70,10 +76,10 @@ export function EditorWithAnchoredComments({
   onBodyClick,
   placeholder,
   readOnly,
-  scrollMode = "outer",
   showComments = true,
   hasFeedSidebar = false,
   currentVersion,
+  hideLeadingTitleHeading = false,
 }: Readonly<EditorWithAnchoredCommentsProps>) {
   const [editor, setEditor] = useState<TiptapEditor | null>(null);
   const roomMounted = !!liveblocksRoomId;
@@ -90,9 +96,13 @@ export function EditorWithAnchoredComments({
         />
       )}
 
-      {/* Scrollable area: editor + anchored comments side by side */}
-      <div className="relative min-h-0 flex-1 overflow-y-auto">
-        <div className="relative flex min-h-full min-w-0 items-stretch">
+      {/* Editor + anchored comments side by side. Deliberately not a scroll
+          container: a page-level ancestor owns scrolling, and a scroller here
+          would nest a second scrollbar beside the page's own. */}
+      <div className="relative min-h-0 flex-1">
+        {/* items-stretch is what keeps the comments column the full height of
+            the body beside it; no min-height, since nothing above sets one. */}
+        <div className="relative flex min-w-0 items-stretch">
           <div className="relative mx-auto flex min-w-0 max-w-[900px] flex-1 flex-col">
             {headerContent}
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-to-edit wrapper; keyboard users enter edit mode by focusing the editor directly */}
@@ -101,7 +111,8 @@ export function EditorWithAnchoredComments({
             <div
               className={cn(
                 "flex min-h-0 flex-1 flex-col",
-                onBodyClick && readOnly && "cursor-text"
+                onBodyClick && readOnly && "cursor-text",
+                hideLeadingTitleHeading && HIDE_LEADING_TITLE_HEADING_CLASS
               )}
               onClick={onBodyClick}
             >
@@ -117,7 +128,9 @@ export function EditorWithAnchoredComments({
                 }}
                 placeholder={placeholder}
                 readOnly={readOnly}
-                scrollMode={scrollMode}
+                // The page scrolls, not the editor — keeps Tiptap from adding
+                // its own scroller inside this one.
+                scrollMode="outer"
                 value={value}
               />
             </div>
@@ -153,3 +166,13 @@ export function EditorWithAnchoredComments({
     </div>
   );
 }
+
+/**
+ * Hides only the editor's first top-level heading (ISS-5006). Scoped to
+ * `.ProseMirror`'s direct child so it can never reach a heading nested in a
+ * blockquote or list, and never a second `#` further down the document. The
+ * node stays in the content and the Y.Doc — this is display only, so nothing a
+ * save writes back is affected.
+ */
+const HIDE_LEADING_TITLE_HEADING_CLASS =
+  "[&_.ProseMirror>h1:first-child]:hidden";

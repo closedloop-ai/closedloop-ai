@@ -111,8 +111,80 @@ describe("parseArtifactReferences", () => {
     });
   });
 
+  // FEA-4137: Feature → Issue. The parser now accepts the canonical ISS- prefix
+  // AND the legacy FEA- alias (above), emitting the MATCHED prefix verbatim so
+  // both resolve to the same numeric identity via the DB alias resolver.
+  describe("ISS slug pattern (FEA-4137)", () => {
+    it("extracts ISS-{n} from title as a Feature/Issue ref", () => {
+      const results = parseArtifactReferences(
+        "ISS-42: fix login timeout",
+        null
+      );
+      expect(results).toEqual([
+        {
+          slug: "ISS-42",
+          prefix: SlugPrefix.Issue,
+          docType: DocumentType.Feature,
+          matchType: MatchType.Slug,
+          source: MatchSource.Title,
+        },
+      ]);
+    });
+
+    it("is case-insensitive (iss-42)", () => {
+      const results = parseArtifactReferences("closes iss-42", null);
+      expect(results).toHaveLength(1);
+      expect(results[0].slug).toBe("ISS-42");
+      expect(results[0].prefix).toBe(SlugPrefix.Issue);
+    });
+
+    it("enforces word boundary — no match for MYISS-42", () => {
+      expect(parseArtifactReferences("MYISS-42 nope", null)).toEqual([]);
+    });
+
+    it("keeps FEA- and ISS- for the same number as distinct references", () => {
+      const results = parseArtifactReferences("FEA-42 and ISS-42", null);
+      expect(results.map((r) => r.slug).sort()).toEqual(["FEA-42", "ISS-42"]);
+    });
+  });
+
   describe("URL pattern", () => {
     const appBaseUrl = "https://app.closedloop.dev";
+
+    it("extracts an issue from the canonical /issues/ISS- URL (FEA-4137)", () => {
+      const body = "See https://app.closedloop.dev/issues/ISS-17 for context";
+      const results = parseArtifactReferences("Some PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "ISS-17",
+        prefix: SlugPrefix.Issue,
+        docType: DocumentType.Feature,
+        matchType: MatchType.Url,
+      });
+    });
+
+    it("still extracts a legacy /features/FEA- URL (FEA-4137 compat)", () => {
+      const body = "See https://app.closedloop.dev/features/FEA-17 old link";
+      const results = parseArtifactReferences("Some PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "FEA-17",
+        prefix: SlugPrefix.Feature,
+        docType: DocumentType.Feature,
+        matchType: MatchType.Url,
+      });
+    });
+
+    it("extracts an issue from the org-scoped /issues/ISS- URL", () => {
+      const body = "https://app.closedloop.dev/acme/issues/ISS-9 shipped";
+      const results = parseArtifactReferences("PR", body, appBaseUrl);
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        slug: "ISS-9",
+        docType: DocumentType.Feature,
+        matchType: MatchType.Url,
+      });
+    });
 
     it("extracts plan from full URL in body", () => {
       const body =

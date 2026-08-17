@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { authenticate } from "../server/auth";
+import { ROOM_NAMESPACES } from "../shared/room-utils";
 
 // Mock @liveblocks/node
 const mockAuthorize = vi.fn();
@@ -89,6 +90,41 @@ describe("authenticate", () => {
         "org-456:artifact:*",
         "full-access-constant"
       );
+    });
+
+    it("grants every namespace the room parser accepts, at the same org scope", async () => {
+      // PR #4285 reviewer wongk: `parseDocumentRoomId` still accepts the
+      // pre-rename `:document:` namespace (Liveblocks room IDs are immutable, so
+      // that compatibility arm is permanent), but the session used to allow only
+      // `:artifact:*`. A legacy room therefore parsed, authorized with a 200, and
+      // returned a token with no permission for the room it was minted for.
+      // Derived from ROOM_NAMESPACES rather than listed here, so the grant and
+      // the parser cannot drift apart again.
+      await authenticate({
+        userId: "user-123",
+        organizationId: "org-456",
+        userInfo: { name: "Test User", color: "var(--color-blue)" },
+      });
+
+      for (const namespace of ROOM_NAMESPACES) {
+        expect(mockAllow).toHaveBeenCalledWith(
+          `org-456:${namespace}:*`,
+          "full-access-constant"
+        );
+      }
+      expect(mockAllow).toHaveBeenCalledTimes(ROOM_NAMESPACES.length);
+    });
+
+    it("scopes every grant to the caller's own organization", async () => {
+      await authenticate({
+        userId: "user-123",
+        organizationId: "org-tenant-a",
+        userInfo: { name: "Test User", color: "var(--color-blue)" },
+      });
+
+      for (const [room] of mockAllow.mock.calls) {
+        expect(String(room).startsWith("org-tenant-a:")).toBe(true);
+      }
     });
   });
 

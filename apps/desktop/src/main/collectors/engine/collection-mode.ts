@@ -41,16 +41,41 @@ export type HooksInstalledState = {
 };
 
 /**
+ * FEA-3741 (slice 1): per-tool collector enable toggles, resolved by the caller
+ * from `DesktopSettings` (default ON — see the feature-flag registry). A harness
+ * whose entry is explicitly `false` is routed to `"disabled"` BEFORE any
+ * hooks/watcher decision, so neither the live watcher nor the hook path attaches
+ * for it. This keeps the enable decision inside the single routing SSOT rather
+ * than as an inline conditional at a call site (per the file-level INVARIANT).
+ *
+ * Kept out of this module's imports (a plain optional record) so the predicate
+ * stays pure and unit-testable with no electron/settings dependency. Omitting it
+ * (or omitting a harness key) means "enabled" — preserving the always-on default
+ * and every existing call site's behavior.
+ *
+ * Only harnesses that own an on/off toggle appear here (Claude/Cursor/Copilot —
+ * the ones whose tool-home walk can incidentally touch TCC-protected folders).
+ */
+export type CollectorEnabledState = Partial<Record<Harness, boolean>>;
+
+/**
  * The single typed predicate that answers "what mode is harness X in right now?".
- * Claude runs in `"hooks"` mode when its hook config is installed, otherwise
- * `"watcher"`; Codex / Cursor / Copilot / OpenCode have no hook path and always
- * run in `"watcher"` mode (Codex hooks were removed — PRD-431). See the
- * file-level INVARIANT.
+ * A harness whose per-tool collector toggle is off (FEA-3741) is `"disabled"`.
+ * Otherwise: Claude runs in `"hooks"` mode when its hook config is installed,
+ * otherwise `"watcher"`; Codex / Cursor / Copilot / OpenCode have no hook path
+ * and always run in `"watcher"` mode (Codex hooks were removed — PRD-431). See
+ * the file-level INVARIANT.
  */
 export function getActiveCollectionMode(
   harness: Harness,
-  hooks: HooksInstalledState
+  hooks: HooksInstalledState,
+  enabled?: CollectorEnabledState
 ): CollectionMode {
+  // FEA-3741: an explicit per-tool disable short-circuits to no live capture
+  // (and, upstream, no tool-home walk) regardless of hook/watcher state.
+  if (enabled?.[harness] === false) {
+    return "disabled";
+  }
   switch (harness) {
     case "claude":
       return hooks.claude ? "hooks" : "watcher";

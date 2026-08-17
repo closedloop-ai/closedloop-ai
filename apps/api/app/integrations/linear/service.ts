@@ -150,6 +150,7 @@ async function ensureValidAccessToken(
           refreshTokenEncrypted: encryptedRefreshToken ?? undefined,
           tokenExpiresAt: calculateTokenExpiration(tokens.expiresIn),
         },
+        select: { id: true },
       })
     );
 
@@ -247,6 +248,7 @@ export const linearService = {
             linearOrgId: linearOrg.id,
             linearOrgName: linearOrg.name,
           },
+          select: { id: true },
         })
       );
 
@@ -365,13 +367,15 @@ export const linearService = {
     organizationId: string,
     userId: string
   ): Promise<ExportResult> {
-    // Fetch the artifact
+    // Fetch the artifact. Scoped on the artifact's own organizationId — the org
+    // SSOT (PRD-510 FR13) — and never through the Project relation: an artifact
+    // with no project would silently fail that implicit inner join and 404.
     const artifact = await withDb((db) =>
       db.artifact.findFirst({
         where: {
           id: documentId,
           type: ArtifactType.DOCUMENT,
-          project: { organizationId },
+          organizationId,
         },
       })
     );

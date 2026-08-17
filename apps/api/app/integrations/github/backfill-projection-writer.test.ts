@@ -3,22 +3,27 @@ import {
   ChecksStatus,
   ReviewDecision,
 } from "@repo/api/src/types/branch-checks";
-import { GitHubPRState } from "@repo/api/src/types/github";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
   GitHubFetchTrigger,
-  GitHubReadModelSource,
   GitHubSyncResultReason,
 } from "@repo/api/src/types/github-read-model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GitHubBackfillPullRequestMetadata } from "./backfill-projection-writer";
+import {
+  existingPullRequest,
+  pullRequestMetadata,
+  readModelPullRequest,
+  statusCheckOnlyMetadata,
+} from "@/__tests__/support/integrations/github/backfill-projection-writer.test-fixtures";
 
 const resolveExternalGitHubAuthorMock = vi.fn();
 const softDeleteGitHubCommentProjectionMock = vi.fn();
 const upsertGitHubIssueCommentThreadMock = vi.fn();
 const upsertGitHubReviewCommentThreadMock = vi.fn();
 const persistBranchStatusChecksFromRollupMock = vi.fn();
+const persistLatestGitHubPRReviewMock = vi.fn();
 const recomputeAndUpdateAggregateMock = vi.fn();
 
 const dbMock = {
@@ -84,9 +89,12 @@ vi.mock("@/lib/branch-status-checks", () => ({
 }));
 
 vi.mock("@/app/comments/external-authors", () => ({
-  normalizeExternalGitHubAuthor: (author: { id?: number | null } | null) => ({
+  normalizeExternalGitHubAuthor: (
+    author: { id?: number | null; actorType?: string } | null
+  ) => ({
     providerUserId: String(author?.id ?? "ghost"),
     isGhost: author?.id == null,
+    ...(author?.actorType ? { actorType: author.actorType } : {}),
   }),
   resolveExternalGitHubAuthorInTransaction: resolveExternalGitHubAuthorMock,
 }));
@@ -103,6 +111,10 @@ vi.mock("@/app/comments/github-projection", () => ({
 
 vi.mock("@/lib/review-decision-utils", () => ({
   recomputeAndUpdateAggregate: recomputeAndUpdateAggregateMock,
+}));
+
+vi.mock("./pr-review-projection", () => ({
+  persistLatestGitHubPRReview: persistLatestGitHubPRReviewMock,
 }));
 
 const { githubBackfillProjectionWriter } = await import(
@@ -140,7 +152,7 @@ describe("githubBackfillProjectionWriter", () => {
     txMock.pullRequestDetail.upsert.mockResolvedValue({ id: "pr-detail-1" });
     txMock.pullRequestDetail.updateMany.mockResolvedValue({ count: 0 });
     txMock.branchDetail.update.mockResolvedValue({});
-    txMock.gitHubPRReview.upsert.mockResolvedValue({});
+    persistLatestGitHubPRReviewMock.mockResolvedValue(undefined);
     txMock.gitHubPRReview.findMany.mockResolvedValue([]);
     txMock.gitHubCommentProjection.findMany.mockResolvedValue([]);
     txMock.gitHubCommentThreadProjection.findMany.mockResolvedValue([]);
@@ -243,6 +255,13 @@ describe("githubBackfillProjectionWriter", () => {
         }),
       })
     );
+    const headObservationWrite = txMock.branchDetail.update.mock.calls.find(
+      ([input]) => input.data.headShaObservedAt !== undefined
+    )?.[0];
+    expect(headObservationWrite?.data).toMatchObject({
+      headShaObservedAt: new Date(readModelPullRequest().updatedAt),
+    });
+    expect(headObservationWrite?.data).not.toHaveProperty("lastActivityAt");
     expect(txMock.branchDetail.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { artifactId: "branch-artifact-1" },
@@ -286,6 +305,34 @@ describe("githubBackfillProjectionWriter", () => {
     expect(diff.pullRequestProjectionChangeCount).toBe(0);
   });
 
+  // FEA-3552: an existing row from before the createdAt column (null
+  // githubCreatedAt) must re-project when the read model supplies openedAt, so the
+  // rail's "PR opened" dot back-fills.
+  it("re-projects a PR row missing the persisted createdAt to back-fill openedAt", async () => {
+    dbMock.pullRequestDetail.findMany.mockResolvedValue([
+      {
+        ...existingPullRequest(),
+        githubCreatedAt: null,
+      },
+    ]);
+
+    const diff = await githubBackfillProjectionWriter.diff({
+      organizationId: "org-1",
+      repository: {
+        id: "repo-1",
+        fullName: "closedloop-ai/symphony-alpha",
+      },
+      pullRequests: [
+        {
+          ...readModelPullRequest(),
+          openedAt: "2026-07-05T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(diff.pullRequestProjectionChangeCount).toBe(1);
+  });
+
   it("writes comments, review rows, review threads, and per-check rows through shared writers", async () => {
     const diff = await githubBackfillProjectionWriter.write({
       organizationId: "org-1",
@@ -322,19 +369,13 @@ describe("githubBackfillProjectionWriter", () => {
       })
     );
     expect(softDeleteGitHubCommentProjectionMock).toHaveBeenCalledTimes(2);
-    expect(txMock.gitHubPRReview.upsert).toHaveBeenCalledWith(
+    expect(persistLatestGitHubPRReviewMock).toHaveBeenCalledWith(
+      txMock,
       expect.objectContaining({
-        where: {
-          pullRequestId_authorLogin: {
-            pullRequestId: "pr-detail-1",
-            authorLogin: "reviewer",
-          },
-        },
-        create: expect.objectContaining({
-          state: ReviewDecision.Approved,
-          ...expectedBackfillStoredProvenance(),
-        }),
-        update: expect.objectContaining(expectedBackfillStoredProvenance()),
+        pullRequestId: "pr-detail-1",
+        authorLogin: "reviewer",
+        state: ReviewDecision.Approved,
+        ...expectedBackfillStoredProvenance(),
       })
     );
     expect(recomputeAndUpdateAggregateMock).toHaveBeenCalledWith(
@@ -348,6 +389,59 @@ describe("githubBackfillProjectionWriter", () => {
         organizationId: "org-1",
         headSha: "abc123",
         fetchProvenance: expectedGraphqlBackfillFetchProvenance(),
+      })
+    );
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["unknown", GitHubActorType.Unknown],
+  ])("refreshes a cached backfill author when %s evidence is followed by a known type", async (_label, initialActorType) => {
+    const metadata = pullRequestMetadata();
+    const issueComment = metadata.issueComments[0];
+    const reviewComment = metadata.reviewComments[0];
+    if (!(issueComment?.user && reviewComment?.user)) {
+      throw new Error("Expected comment authors in backfill fixture");
+    }
+
+    await githubBackfillProjectionWriter.write({
+      organizationId: "org-1",
+      repository: {
+        id: "repo-1",
+        fullName: "closedloop-ai/symphony-alpha",
+      },
+      pullRequests: [readModelPullRequest()],
+      pullRequestMetadata: [
+        {
+          ...metadata,
+          issueComments: [
+            {
+              ...issueComment,
+              user: {
+                ...issueComment.user,
+                ...(initialActorType ? { actorType: initialActorType } : {}),
+              },
+            },
+          ],
+          reviewComments: [
+            {
+              ...reviewComment,
+              user: {
+                ...reviewComment.user,
+                id: issueComment.user.id,
+                actorType: GitHubActorType.Bot,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(resolveExternalGitHubAuthorMock).toHaveBeenCalledTimes(2);
+    expect(resolveExternalGitHubAuthorMock).toHaveBeenLastCalledWith(
+      txMock,
+      expect.objectContaining({
+        author: expect.objectContaining({ actorType: GitHubActorType.Bot }),
       })
     );
   });
@@ -425,157 +519,6 @@ describe("githubBackfillProjectionWriter", () => {
     );
   });
 });
-
-function readModelPullRequest() {
-  return {
-    githubId: "4242",
-    number: 42,
-    title: "Backfilled PR",
-    htmlUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
-    headBranch: "feature/test",
-    baseBranch: "main",
-    headSha: "abc123",
-    state: GitHubPRState.Open,
-    isDraft: false,
-    additions: 1,
-    deletions: 0,
-    changedFiles: 1,
-    reviewDecision: ReviewDecision.Approved,
-    checksStatus: ChecksStatus.Passing,
-    statusCheckRollup: "SUCCESS",
-    openedAt: "2026-07-05T00:00:00.000Z",
-    closedAt: null,
-    mergedAt: null,
-    mergeCommitSha: null,
-    updatedAt: "2026-07-05T01:00:00.000Z",
-    author: "octocat",
-    source: GitHubReadModelSource.Provider,
-  };
-}
-
-function existingPullRequest() {
-  return {
-    id: "pr-detail-1",
-    githubId: "4242",
-    number: 42,
-    title: "Backfilled PR",
-    htmlUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
-    prState: GitHubPRState.Open,
-    isDraft: false,
-    additions: 1,
-    deletions: 0,
-    changedFiles: 1,
-    reviewDecision: ReviewDecision.Approved,
-    closedAt: null,
-    mergedAt: null,
-    mergeCommitSha: null,
-  };
-}
-
-function statusCheckOnlyMetadata(): GitHubBackfillPullRequestMetadata {
-  return {
-    ...pullRequestMetadata(),
-    issueComments: [],
-    issueCommentsComplete: false,
-    reviewComments: [],
-    reviewCommentsComplete: false,
-    reviews: [],
-  };
-}
-
-function pullRequestMetadata(): GitHubBackfillPullRequestMetadata {
-  return {
-    number: 42,
-    issueComments: [
-      {
-        id: 1001,
-        node_id: "issue-node-1001",
-        user: {
-          id: 501,
-          login: "octocat",
-          node_id: "user-node-501",
-          avatar_url: "https://avatars.githubusercontent.com/u/501",
-        },
-        body: "Issue comment",
-        author_association: "MEMBER",
-        created_at: "2026-07-05T00:00:00.000Z",
-        updated_at: "2026-07-05T00:01:00.000Z",
-        html_url:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#issuecomment-1001",
-        deleted_at: null,
-        is_deleted: false,
-        is_updated: true,
-      },
-    ],
-    issueCommentsComplete: true,
-    reviewComments: [
-      {
-        id: 2001,
-        node_id: "review-node-2001",
-        path: "app.ts",
-        line: 10,
-        side: "RIGHT",
-        start_line: null,
-        start_side: null,
-        original_line: 10,
-        original_start_line: null,
-        body: "Review comment",
-        user: {
-          id: 502,
-          login: "reviewer",
-          node_id: "user-node-502",
-          avatar_url: "https://avatars.githubusercontent.com/u/502",
-        },
-        author_association: "MEMBER",
-        created_at: "2026-07-05T00:02:00.000Z",
-        updated_at: "2026-07-05T00:03:00.000Z",
-        html_url:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r2001",
-        commit_id: "abc123",
-        pull_request_review_id: 3001,
-        review_thread_node_id: "thread-node-2001",
-        review_thread_is_resolved: true,
-        in_reply_to_id: null,
-        deleted_at: null,
-        is_deleted: false,
-        is_updated: true,
-      },
-    ],
-    reviewCommentsComplete: true,
-    reviews: [
-      {
-        id: 3001,
-        user: {
-          login: "reviewer",
-          avatar_url: "https://avatars.githubusercontent.com/u/502",
-        },
-        state: ReviewDecision.Approved,
-        body: "Approved",
-        submitted_at: "2026-07-05T00:04:00.000Z",
-        html_url:
-          "https://github.com/closedloop-ai/symphony-alpha/pull/42#pullrequestreview-3001",
-      },
-    ],
-    statusCheckRollup: {
-      ok: true,
-      state: "SUCCESS",
-      checks: [
-        {
-          id: "check-1",
-          providerNodeId: "check-node-1",
-          kind: "check_run",
-          name: "unit",
-          status: "COMPLETED",
-          conclusion: "SUCCESS",
-          targetUrl: "https://github.com/checks/1",
-          position: 0,
-        },
-      ],
-      totalCount: 1,
-      truncated: false,
-    },
-  };
-}
 
 function expectedBackfillFetchProvenance() {
   return expect.objectContaining({

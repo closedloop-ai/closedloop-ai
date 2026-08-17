@@ -14,6 +14,7 @@ import {
   isAcceptedDesktopReleaseZipAssetName,
   isAllowedDesktopReleaseAssetRedirectUrl,
   isAllowedDesktopReleaseDownloadUrl,
+  isDesktopReleaseDownloadUrlForRelease,
   isDesktopReleaseUpdaterZipAssetName,
   isVersionedDesktopReleaseTag,
 } from "@repo/api/src/types/desktop-release";
@@ -411,7 +412,13 @@ function isCompleteDesktopRelease(
     return false;
   }
 
-  return dmgAsset.browserDownloadUrl === metadata.downloadUrl;
+  // Shared with the release preflight's completeness check — see the helper's
+  // doc comment for why downloadUrl may legitimately point at another repo.
+  return isDesktopReleaseDownloadUrlForRelease(
+    metadata.downloadUrl,
+    dmgAsset.browserDownloadUrl,
+    metadata.version
+  );
 }
 
 async function getDesktopReleaseChannel(

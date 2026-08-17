@@ -6,7 +6,6 @@ import type {
   ComputeTargetHealthCheckSnapshot,
   ComputeTargetSecurity,
   ComputeTargetServerCapabilities,
-  HealthCheckResponse,
   RegisterComputeTargetInput,
   UpdateComputeTargetInput,
   UpsertComputeTargetHealthCheckSnapshotInput,
@@ -16,27 +15,31 @@ import {
   DesktopSecurityStatus,
   deriveAvailableHarnesses,
   HarnessType,
+  HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
 } from "@repo/api/src/types/compute-target";
 import {
   type Result as DomainResult,
   Result,
 } from "@repo/api/src/types/result";
-import {
-  ApiKeySource,
-  type Prisma,
-  type TransactionClient,
-  withDb,
-} from "@repo/database";
+import { type Prisma, type TransactionClient, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { loadProtectedGateways } from "@/app/compute-targets/protected-gateways";
 import { isAgentSessionSyncSupportedForUser } from "@/lib/agent-session-sync-feature";
 import { isDesktopManagedPopEnforcementEnabled } from "@/lib/auth/desktop-managed-pop";
 import {
   CommandSigningEligibilityStatus,
   loadActiveDesktopManagedGatewayIds,
 } from "@/lib/compute-target-signing-eligibility";
+import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import { parseJsonObject } from "@/lib/json-schema";
 import { purgeTranscriptObjectsBestEffort } from "@/lib/transcript-object-purge";
+import { formatUserFullName } from "@/lib/user-display-name";
+import {
+  buildHealthCheckSnapshotWrite,
+  toHealthCheckSnapshot,
+  toStringArray,
+} from "./health-check-snapshot-record";
 
 export const COMPUTE_TARGET_STALE_MS = 90_000;
 export const DESKTOP_SECURITY_UPGRADE_PROTOCOL_VERSION = 1;
@@ -78,22 +81,6 @@ type ComputeTargetRecord = {
   } | null;
 };
 
-type ComputeTargetHealthCheckRecord = {
-  id: string;
-  organizationId: string;
-  computeTargetId: string;
-  checkedAt: Date;
-  expectedMcpUrl: string | null;
-  latestVersion: string | null;
-  pluginAutoUpdateEnabled: boolean;
-  result: unknown;
-  allRequiredPassed: boolean;
-  requiredFailureIds: unknown;
-  schemaVersion: number;
-  createdAt: Date;
-  updatedAt: Date;
-};
-
 const VALID_HARNESS_VALUES = new Set<string>(Object.values(HarnessType));
 
 export function parseSelectedHarness(
@@ -106,43 +93,6 @@ export function parseSelectedHarness(
 
 function toJsonObject(value: unknown): JsonObject {
   return parseJsonObject(value) ?? {};
-}
-
-function toStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-function toHealthCheckSnapshot(
-  record: ComputeTargetHealthCheckRecord | null
-): ComputeTargetHealthCheckSnapshot | null {
-  if (!record) {
-    return null;
-  }
-  return {
-    id: record.id,
-    organizationId: record.organizationId,
-    computeTargetId: record.computeTargetId,
-    checkedAt: record.checkedAt,
-    expectedMcpUrl: record.expectedMcpUrl,
-    latestVersion: record.latestVersion,
-    pluginAutoUpdateEnabled: record.pluginAutoUpdateEnabled ?? false,
-    result: record.result as HealthCheckResponse,
-    allRequiredPassed: record.allRequiredPassed,
-    requiredFailureIds: toStringArray(record.requiredFailureIds),
-    schemaVersion: record.schemaVersion,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
-}
-
-function getRequiredFailureIds(result: HealthCheckResponse): string[] {
-  return result.checks
-    .filter((check) => check.required && !check.passed)
-    .map((check) => check.id)
-    .sort();
 }
 
 function normalizeForStableJson(value: unknown): unknown {
@@ -332,47 +282,12 @@ function buildSecurity(
   };
 }
 
-async function loadProtectedGateways(
-  organizationId: string,
-  userId: string,
-  gatewayIds: string[]
-): Promise<{ protectedGateways: Set<string>; lookupFailed: boolean }> {
-  if (gatewayIds.length === 0) {
-    return { protectedGateways: new Set(), lookupFailed: false };
-  }
-  try {
-    const keys = await withDb((db) =>
-      db.apiKey.findMany({
-        where: {
-          organizationId,
-          userId,
-          source: ApiKeySource.DESKTOP_MANAGED,
-          revokedAt: null,
-          gatewayId: { in: gatewayIds },
-          boundPublicKey: { not: null },
-        },
-        select: { gatewayId: true },
-      })
-    );
-    return {
-      protectedGateways: new Set(
-        keys.flatMap((key) => (key.gatewayId ? [key.gatewayId] : []))
-      ),
-      lookupFailed: false,
-    };
-  } catch {
-    return { protectedGateways: new Set(), lookupFailed: true };
-  }
-}
-
 function formatOwnerName(
   user: { firstName: string | null; lastName: string | null } | null | undefined
 ): string {
-  if (!user) {
-    return "Teammate";
-  }
-  const parts = [user.firstName, user.lastName].filter(Boolean);
-  return parts.length > 0 ? parts.join(" ") : "Teammate";
+  // Divergent fallback ("Teammate") kept at the call site per FEA-3506; the
+  // name derivation itself routes through the shared SSOT.
+  return (user && formatUserFullName(user)) || "Teammate";
 }
 
 function toComputeTarget(
@@ -449,44 +364,45 @@ async function toComputeTargetList(
           viewerOwnedGateways
         )
       : { protectedGateways: new Set<string>(), lookupFailed: false };
-  const ownerCapabilityEntries = await Promise.all(
-    Array.from(new Set(targets.map((target) => target.userId))).map(
-      async (ownerUserId) => {
-        const ownerTargets = targets.filter(
-          (target) => target.userId === ownerUserId
-        );
-        const ownerTarget = ownerTargets[0];
-        const ownerClerkUserId =
-          ownerUserId === viewerUserId
-            ? viewerClerkUserId
-            : ownerTarget?.user?.clerkId;
-        const ownerGatewayIds = ownerTargets.flatMap((target) =>
-          target.gatewayId ? [target.gatewayId] : []
-        );
-        const [signingGatewayResult, agentSessionSync] = await Promise.all([
-          ownerTarget
-            ? loadActiveDesktopManagedGatewayIds({
-                organizationId: ownerTarget.organizationId,
-                userId: ownerUserId,
-                clerkUserId: ownerClerkUserId,
-                gatewayIds: ownerGatewayIds,
-              })
-            : Promise.resolve({
-                status: CommandSigningEligibilityStatus.Ineligible,
-                gatewayIds: new Set<string>(),
-                reason: "owner_not_found" as const,
-              }),
-          isAgentSessionSyncSupportedForUser({
-            userId: ownerUserId,
-            clerkUserId: ownerClerkUserId,
-          }),
-        ]);
-        return [
-          ownerUserId,
-          { signingGatewayResult, agentSessionSync },
-        ] as const;
-      }
-    )
+  // Bounded: one task per distinct compute-target owner, and via
+  // `listAvailableForOrg` that set is every org member sharing a target — an
+  // uncapped query. Each task takes pooled connections and holds one across a
+  // co-scheduled PostHog call, so a large org could drain the pool from a single
+  // GET. The bound also shortens the hold window (FEA-3299 / PRD-528).
+  const ownerCapabilityEntries = await mapWithDbConcurrency(
+    Array.from(new Set(targets.map((target) => target.userId))),
+    async (ownerUserId) => {
+      const ownerTargets = targets.filter(
+        (target) => target.userId === ownerUserId
+      );
+      const ownerTarget = ownerTargets[0];
+      const ownerClerkUserId =
+        ownerUserId === viewerUserId
+          ? viewerClerkUserId
+          : ownerTarget?.user?.clerkId;
+      const ownerGatewayIds = ownerTargets.flatMap((target) =>
+        target.gatewayId ? [target.gatewayId] : []
+      );
+      const [signingGatewayResult, agentSessionSync] = await Promise.all([
+        ownerTarget
+          ? loadActiveDesktopManagedGatewayIds({
+              organizationId: ownerTarget.organizationId,
+              userId: ownerUserId,
+              clerkUserId: ownerClerkUserId,
+              gatewayIds: ownerGatewayIds,
+            })
+          : Promise.resolve({
+              status: CommandSigningEligibilityStatus.Ineligible,
+              gatewayIds: new Set<string>(),
+              reason: "owner_not_found" as const,
+            }),
+        isAgentSessionSyncSupportedForUser({
+          userId: ownerUserId,
+          clerkUserId: ownerClerkUserId,
+        }),
+      ]);
+      return [ownerUserId, { signingGatewayResult, agentSessionSync }] as const;
+    }
   );
   const serverCapabilitiesByOwner = new Map(ownerCapabilityEntries);
 
@@ -1185,6 +1101,28 @@ export const computeTargetsService = {
     return Boolean(target);
   },
 
+  /**
+   * PRD-536 §5: org-wide "has any real desktop compute target ever registered?"
+   * signal for the Sessions onboarding empty state. Unlike `listAvailableForOrg`
+   * (which filters to the viewer's own + org-shared targets), this counts every
+   * target in the org so a teammate's unshared desktop still counts as
+   * "connected" — the Sessions list is an org-wide view, so its
+   * onboarding-vs-filters decision must be org-wide too. Excludes the synthetic
+   * cloud sentinel to match the "real device?" semantics of `hasAnyForOwner`.
+   */
+  async hasAnyForOrg(organizationId: string): Promise<boolean> {
+    const target = await withDb((db) =>
+      db.computeTarget.findFirst({
+        where: {
+          organizationId,
+          isCloudSentinel: false,
+        },
+        select: { id: true },
+      })
+    );
+    return Boolean(target);
+  },
+
   async getStatusSnapshot(
     organizationId: string
   ): Promise<Map<string, boolean>> {
@@ -1271,8 +1209,11 @@ export const computeTargetsService = {
     targetId: string,
     payload: UpsertComputeTargetHealthCheckSnapshotInput
   ): Promise<ComputeTargetHealthCheckSnapshot | null> {
-    const requiredFailureIds = getRequiredFailureIds(payload.result);
-    const allRequiredPassed = requiredFailureIds.length === 0;
+    const {
+      result: normalizedResult,
+      requiredFailureIds,
+      allRequiredPassed,
+    } = buildHealthCheckSnapshotWrite(payload.result);
     const checkedAt = new Date();
     const availableHarnesses = deriveAvailableHarnesses(payload.result);
     const snapshot = await withDb.tx(async (tx) => {
@@ -1303,35 +1244,35 @@ export const computeTargetsService = {
         });
       }
 
-      // payload.result is already shape-validated by healthCheckSnapshotValidator
-      // (no top-level passthrough), so the casts below only bridge the Zod-typed
-      // value into Prisma's JSON column type — they don't widen an unvalidated shape.
+      // ONE set of column values, spread into both branches, so a `create` and
+      // an `update` of the same payload cannot diverge (ISS-5868 — that is how
+      // `schemaVersion` was once stamped on one branch only, and how
+      // `normalizedResult` could have reached one branch and not the other).
+      // `normalizedResult` is `payload.result` — already shape-validated by
+      // healthCheckSnapshotValidator, which has no top-level passthrough — with
+      // `allRequiredPassed` replaced by the derivation the sibling column also
+      // uses, so the JSON blob and the boolean column can never disagree. The
+      // casts only bridge that Zod-typed value into Prisma's JSON column type;
+      // they don't widen an unvalidated shape.
+      const snapshotColumns = {
+        organizationId,
+        checkedAt,
+        expectedMcpUrl: payload.expectedMcpUrl ?? null,
+        latestVersion: payload.latestVersion ?? null,
+        pluginAutoUpdateEnabled,
+        result: normalizedResult as unknown as Prisma.InputJsonValue,
+        allRequiredPassed,
+        requiredFailureIds:
+          requiredFailureIds as unknown as Prisma.InputJsonValue,
+        // The column defaults to 1, so a `create` that left it to the default
+        // would stamp every brand-new snapshot as the version consumers now
+        // reject (ISS-5811).
+        schemaVersion: HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
+      };
       return tx.computeTargetHealthCheck.upsert({
         where: { computeTargetId: targetId },
-        create: {
-          organizationId,
-          computeTargetId: targetId,
-          checkedAt,
-          expectedMcpUrl: payload.expectedMcpUrl ?? null,
-          latestVersion: payload.latestVersion ?? null,
-          pluginAutoUpdateEnabled,
-          result: payload.result as unknown as Prisma.InputJsonValue,
-          allRequiredPassed,
-          requiredFailureIds:
-            requiredFailureIds as unknown as Prisma.InputJsonValue,
-        },
-        update: {
-          organizationId,
-          checkedAt,
-          expectedMcpUrl: payload.expectedMcpUrl ?? null,
-          latestVersion: payload.latestVersion ?? null,
-          pluginAutoUpdateEnabled,
-          result: payload.result as unknown as Prisma.InputJsonValue,
-          allRequiredPassed,
-          requiredFailureIds:
-            requiredFailureIds as unknown as Prisma.InputJsonValue,
-          schemaVersion: 1,
-        },
+        create: { ...snapshotColumns, computeTargetId: targetId },
+        update: snapshotColumns,
       });
     });
 

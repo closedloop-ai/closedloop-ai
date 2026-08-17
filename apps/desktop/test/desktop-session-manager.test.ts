@@ -1,313 +1,26 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, beforeEach, test } from "node:test";
-import { DESKTOP_AUTHORIZE_QUERY_PARAMS } from "@repo/api/src/types/desktop-authorize-url";
-import type { RedeemDesktopAuthorizationCodeInput } from "../src/main/desktop-authorize-client.js";
-import type { DesktopPkce } from "../src/main/desktop-authorize-pkce.js";
-import type {
-  DesktopLoopbackListener,
-  LoopbackCallback,
-} from "../src/main/desktop-loopback-listener.js";
-import type { DesktopPopHeaders } from "../src/main/desktop-pop.js";
+import { test } from "node:test";
 import type {
   DesktopSessionResult,
   DesktopSessionTokens,
-} from "../src/main/desktop-session-client.js";
+} from "../src/main/session/desktop-session-client.js";
 import {
-  type DesktopBrowserSignInDeps,
-  DesktopSessionManager,
-} from "../src/main/desktop-session-manager.js";
+  DesktopAuthStatus,
+  type DesktopExistingUserResolution,
+} from "../src/shared/contracts.js";
+import { deferred } from "./deferred.js";
 import {
-  type DesktopSessionRecord,
-  DesktopSessionStore,
-} from "../src/main/desktop-session-store.js";
-import type { SafeStorageLike } from "../src/main/electron-safe-storage.js";
-// The DesktopAuthStatus runtime value lives in the shared wire-contract module
-// (its canonical home); the manager re-exports only the type.
-import { DesktopAuthStatus } from "../src/shared/contracts.js";
-import { type Deferred, deferred } from "./deferred.js";
+  ACCESS_TTL_MS,
+  createExistingUserStub,
+  createManager,
+  createStubClient,
+  installTempRoot,
+  makeTokens,
+  storedRecord,
+  T0,
+} from "./helpers/desktop-session-manager-fixtures.js";
 
-const API_ORIGIN = "https://api.closedloop.test";
-const T0 = 1_700_000_000_000;
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-let tempRoot = "";
-
-beforeEach(async () => {
-  tempRoot = await fs.mkdtemp(
-    path.join(os.tmpdir(), "desktop-session-manager-test-")
-  );
-});
-
-afterEach(async () => {
-  if (tempRoot) {
-    await fs.rm(tempRoot, { recursive: true, force: true });
-  }
-});
-
-function mockSafeStorage(): SafeStorageLike {
-  return {
-    isEncryptionAvailable: () => true,
-    encryptString: (s: string) =>
-      Buffer.from(Buffer.from(s, "utf8").toString("base64"), "utf8"),
-    decryptString: (b: Buffer) =>
-      Buffer.from(b.toString("utf8"), "base64").toString("utf8"),
-  };
-}
-
-function popSigner(): DesktopPopHeaders {
-  return {
-    "X-Desktop-Gateway-Id": "gateway-1",
-    "X-Desktop-Timestamp": "1700000000",
-    "X-Desktop-Signature": "sig",
-  };
-}
-
-function makeTokens(
-  overrides: Partial<DesktopSessionTokens> = {}
-): DesktopSessionTokens {
-  return {
-    accessToken: "access-1",
-    accessTokenExpiresAt: new Date(T0 + ACCESS_TTL_MS).toISOString(),
-    refreshToken: "refresh-1",
-    refreshTokenExpiresAt: new Date(T0 + REFRESH_TTL_MS).toISOString(),
-    userId: "user-1",
-    organizationId: "org-1",
-    ...overrides,
-  };
-}
-
-function storedRecord(
-  overrides: Partial<DesktopSessionRecord> = {}
-): DesktopSessionRecord {
-  return {
-    refreshToken: "stored-refresh",
-    refreshTokenExpiresAt: new Date(T0 + REFRESH_TTL_MS).toISOString(),
-    userId: "user-1",
-    organizationId: "org-1",
-    gatewayId: "gateway-1",
-    ...overrides,
-  };
-}
-
-type StubClient = {
-  client: {
-    refresh: () => Promise<DesktopSessionResult<DesktopSessionTokens>>;
-    revoke: () => Promise<DesktopSessionResult<true>>;
-  };
-  calls: { refresh: number; revoke: number };
-  setRefresh: (
-    r:
-      | DesktopSessionResult<DesktopSessionTokens>
-      | (() => Promise<DesktopSessionResult<DesktopSessionTokens>>)
-  ) => void;
-};
-
-function createStubClient(): StubClient {
-  const calls = { refresh: 0, revoke: 0 };
-  let refreshResult:
-    | DesktopSessionResult<DesktopSessionTokens>
-    | (() => Promise<DesktopSessionResult<DesktopSessionTokens>>) = {
-    ok: true,
-    value: makeTokens(),
-  };
-
-  return {
-    calls,
-    setRefresh: (r) => {
-      refreshResult = r;
-    },
-    client: {
-      refresh: () => {
-        calls.refresh += 1;
-        return typeof refreshResult === "function"
-          ? refreshResult()
-          : Promise.resolve(refreshResult);
-      },
-      revoke: () => {
-        calls.revoke += 1;
-        return Promise.resolve({ ok: true, value: true });
-      },
-    },
-  };
-}
-
-function createManager(options?: {
-  stub?: StubClient;
-  now?: () => number;
-  storeName?: string;
-  browserSignIn?: DesktopBrowserSignInDeps;
-}): { manager: DesktopSessionManager; store: DesktopSessionStore } {
-  const store = new DesktopSessionStore({
-    cwd: tempRoot,
-    name: options?.storeName ?? "dsm",
-    safeStorage: mockSafeStorage(),
-  });
-  const stub = options?.stub ?? createStubClient();
-  const manager = new DesktopSessionManager({
-    store,
-    popSigner,
-    resolveApiOrigin: () => API_ORIGIN,
-    resolveGatewayId: () => "gateway-1",
-    now: options?.now ?? (() => T0),
-    client: stub.client as never,
-    browserSignIn: options?.browserSignIn,
-  });
-  return { manager, store };
-}
-
-const AUTHORIZE_REDIRECT_URI = "http://127.0.0.1:49152/cb";
-
-function loopbackPkce(): DesktopPkce {
-  return {
-    codeVerifier: "verifier-1",
-    codeChallenge: "challenge-1",
-    codeChallengeMethod: "S256",
-  };
-}
-
-/** Resolves null when the signal aborts — the fake listener's abort branch. */
-function resolveOnAbort(signal: AbortSignal): Promise<null> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve(null);
-      return;
-    }
-    signal.addEventListener("abort", () => resolve(null), { once: true });
-  });
-}
-
-type LoopbackStubState = {
-  descriptorThrows: boolean;
-  listenerStartRejects: boolean;
-  /** When set, startLoopbackListener resolves only once this gate resolves. */
-  listenerStartGate?: Deferred<void>;
-  openShouldThrow: boolean;
-  openCalls: string[];
-  redeemResult: DesktopSessionResult<DesktopSessionTokens>;
-  /** When true, the redeem port rejects (models a thrown, not a typed failure). */
-  redeemThrows: boolean;
-  redeemCalls: number;
-  redeemInputs: RedeemDesktopAuthorizationCodeInput[];
-  onRedeem?: () => void;
-  closeCalls: number;
-  waitCalls: number;
-  /** Value waitForCallback resolves with. A `{ code }` object models the real
-   *  callback; the harness never returns the top-level `null` (that is abort). */
-  callbackValue: LoopbackCallback;
-  /** When set, waitForCallback resolves only once this gate resolves. */
-  callbackGate?: Deferred<void>;
-  onWait?: () => void;
-  /** When true, the injected callback-timeout timer fires (the callback loses). */
-  timeoutFires: boolean;
-  oauthState: string;
-  /** Race signal captured from the last delayMs call (timeout side). */
-  timeoutSignal?: AbortSignal;
-  /** Race signal captured from the last waitForCallback call (callback side). */
-  waitSignal?: AbortSignal;
-  /** Diagnostic messages captured from logDiagnostic (start-failure causes). */
-  diagnostics: string[];
-};
-
-function createLoopbackStub(): {
-  deps: DesktopBrowserSignInDeps;
-  state: LoopbackStubState;
-} {
-  const state: LoopbackStubState = {
-    descriptorThrows: false,
-    listenerStartRejects: false,
-    openShouldThrow: false,
-    openCalls: [],
-    redeemResult: {
-      ok: true,
-      value: makeTokens({ refreshToken: "redeemed-refresh" }),
-    },
-    redeemThrows: false,
-    redeemCalls: 0,
-    redeemInputs: [],
-    closeCalls: 0,
-    waitCalls: 0,
-    callbackValue: { code: "auth-code", state: "state-1" },
-    timeoutFires: false,
-    oauthState: "state-1",
-    diagnostics: [],
-  };
-
-  const listener: DesktopLoopbackListener = {
-    redirectUri: AUTHORIZE_REDIRECT_URI,
-    waitForCallback: (signal) => {
-      state.waitCalls += 1;
-      state.waitSignal = signal;
-      state.onWait?.();
-      const gated = (async (): Promise<LoopbackCallback | null> => {
-        if (state.callbackGate) {
-          await state.callbackGate.promise;
-        }
-        return state.callbackValue;
-      })();
-      return Promise.race([gated, resolveOnAbort(signal)]);
-    },
-    close: () => {
-      state.closeCalls += 1;
-      return Promise.resolve();
-    },
-  };
-
-  const deps: DesktopBrowserSignInDeps = {
-    resolveWebAppOrigin: () => "https://app.closedloop.test",
-    resolveDeviceDescriptor: () => {
-      if (state.descriptorThrows) {
-        throw new Error("signing key unavailable");
-      }
-      return {
-        gatewayId: "gateway-1",
-        gatewayPublicKeyPem: "public-key-pem",
-        machineName: "test-machine",
-        platform: "darwin",
-        desktopVersion: "1.0.0",
-      };
-    },
-    openExternal: (url: string) => {
-      state.openCalls.push(url);
-      return state.openShouldThrow
-        ? Promise.reject(new Error("blocked"))
-        : Promise.resolve();
-    },
-    logDiagnostic: (message: string) => {
-      state.diagnostics.push(message);
-    },
-    startLoopbackListener: async () => {
-      if (state.listenerStartRejects) {
-        throw new Error("port bind failed");
-      }
-      if (state.listenerStartGate) {
-        await state.listenerStartGate.promise;
-      }
-      return listener;
-    },
-    generatePkce: loopbackPkce,
-    generateState: () => state.oauthState,
-    redeem: (input) => {
-      state.redeemCalls += 1;
-      state.redeemInputs.push(input);
-      state.onRedeem?.();
-      return state.redeemThrows
-        ? Promise.reject(new Error("redeem crashed"))
-        : Promise.resolve(state.redeemResult);
-    },
-    callbackTimeoutMs: 1000,
-    delayMs: (_ms, signal) => {
-      state.timeoutSignal = signal;
-      return state.timeoutFires
-        ? Promise.resolve()
-        : new Promise<void>(() => undefined);
-    },
-  };
-  return { deps, state };
-}
+installTempRoot();
 
 test("restore with no stored session becomes signed out", async () => {
   const { manager } = createManager({ storeName: "dsm-none" });
@@ -378,6 +91,38 @@ test("getAccessToken serves the cached token within the expiry skew", async () =
   nowMs = T0 + 5 * 60 * 1000;
   assert.equal(await manager.getAccessToken(), "access-1");
   assert.equal(stub.calls.refresh, 1, "no extra refresh while token is fresh");
+});
+
+test("FEA-3425: invalidateAccessToken forces a refresh on the next getAccessToken", async () => {
+  const stub = createStubClient();
+  let nowMs = T0;
+  const { manager, store } = createManager({
+    stub,
+    now: () => nowMs,
+    storeName: "dsm-invalidate",
+  });
+  store.setSession(storedRecord());
+  await manager.restore();
+  assert.equal(stub.calls.refresh, 1);
+
+  // Still well inside the token's TTL — a plain read would serve the cache.
+  nowMs = T0 + 5 * 60 * 1000;
+  stub.setRefresh({ ok: true, value: makeTokens({ accessToken: "access-2" }) });
+
+  // A server 401 reported the cached (unexpired) token as revoked.
+  manager.invalidateAccessToken();
+  assert.equal(
+    manager.getState().status,
+    DesktopAuthStatus.Authenticated,
+    "invalidation drops the cached token, never the auth state"
+  );
+
+  assert.equal(await manager.getAccessToken(), "access-2");
+  assert.equal(
+    stub.calls.refresh,
+    2,
+    "next read refreshes instead of re-serving the revoked token"
+  );
 });
 
 test("getAccessToken refreshes once when concurrent calls race past expiry", async () => {
@@ -465,358 +210,6 @@ test("sign-out during an in-flight refresh is not overwritten by the resolving r
   );
 });
 
-test("beginBrowserSignIn opens the authorize URL, redeems the callback code, and authenticates", async () => {
-  const loopback = createLoopbackStub();
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-ok",
-  });
-  const statuses: string[] = [];
-  manager.subscribe((state) => statuses.push(state.status));
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: true });
-  const opened = new URL(loopback.state.openCalls[0]);
-  const openedParams = opened.searchParams;
-  const key = DESKTOP_AUTHORIZE_QUERY_PARAMS;
-  assert.equal(opened.origin, "https://app.closedloop.test");
-  assert.equal(opened.pathname, "/settings/integrations/desktop/authorize");
-  assert.equal(openedParams.get(key.codeChallenge), "challenge-1");
-  assert.equal(openedParams.get(key.codeChallengeMethod), "S256");
-  assert.equal(openedParams.get(key.state), "state-1");
-  assert.equal(openedParams.get(key.redirectUri), AUTHORIZE_REDIRECT_URI);
-  assert.equal(openedParams.get(key.gatewayId), "gateway-1");
-  assert.equal(openedParams.get(key.deviceName), "test-machine");
-
-  const redeemInput = loopback.state.redeemInputs[0];
-  assert.equal(redeemInput.apiOrigin, API_ORIGIN);
-  assert.equal(redeemInput.code, "auth-code");
-  assert.equal(redeemInput.codeVerifier, "verifier-1");
-  assert.equal(redeemInput.gatewayId, "gateway-1");
-  assert.equal(redeemInput.redirectUri, AUTHORIZE_REDIRECT_URI);
-
-  assert.equal(manager.getState().status, DesktopAuthStatus.Authenticated);
-  assert.deepEqual(manager.getIdentity(), {
-    userId: "user-1",
-    organizationId: "org-1",
-  });
-  assert.equal(store.getSession()?.refreshToken, "redeemed-refresh");
-  assert.equal(loopback.state.closeCalls, 1, "listener closed after success");
-  assert.equal(
-    loopback.state.timeoutSignal?.aborted,
-    true,
-    "callback-timeout timer torn down once the callback won"
-  );
-  assert.deepEqual(statuses, [
-    DesktopAuthStatus.OpeningBrowser,
-    DesktopAuthStatus.AwaitingRedirect,
-    DesktopAuthStatus.Exchanging,
-    DesktopAuthStatus.Authenticated,
-  ]);
-});
-
-test("beginBrowserSignIn returns start_failed when a resolver port throws", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.descriptorThrows = true;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-descriptor-throw",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "start_failed" });
-  assert.equal(loopback.state.openCalls.length, 0, "browser never opened");
-  assert.equal(
-    manager.getState().status,
-    DesktopAuthStatus.SignedOut,
-    "never stranded in opening_browser"
-  );
-  assert.deepEqual(
-    loopback.state.diagnostics,
-    ["Browser sign-in failed to start: signing key unavailable"],
-    "the swallowed root cause is surfaced to diagnostics"
-  );
-});
-
-test("beginBrowserSignIn returns start_failed when the loopback listener won't start", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.listenerStartRejects = true;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-listener-fail",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "start_failed" });
-  assert.equal(loopback.state.openCalls.length, 0);
-  assert.deepEqual(
-    loopback.state.diagnostics,
-    ["Browser sign-in failed to start: port bind failed"],
-    "the loopback bind failure is surfaced to diagnostics"
-  );
-});
-
-test("beginBrowserSignIn returns open_failed and closes the listener when the browser can't launch", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.openShouldThrow = true;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-open-fail",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "open_failed" });
-  assert.equal(loopback.state.closeCalls, 1, "listener closed on open failure");
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("beginBrowserSignIn rejects a callback whose state does not match", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.callbackValue = { code: "auth-code", state: "wrong-state" };
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-state-mismatch",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "state_mismatch" });
-  assert.equal(loopback.state.redeemCalls, 0, "no redeem on state mismatch");
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("beginBrowserSignIn rejects a callback with no code as a state mismatch", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.callbackValue = { code: null, state: "state-1" };
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-no-code",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "state_mismatch" });
-  assert.equal(loopback.state.redeemCalls, 0);
-});
-
-test("beginBrowserSignIn times out when no loopback callback arrives", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.callbackGate = deferred<void>(); // callback never resolves
-  loopback.state.timeoutFires = true;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-timeout",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "redirect_timeout" });
-  assert.equal(loopback.state.redeemCalls, 0);
-  assert.equal(loopback.state.closeCalls, 1, "listener closed on timeout");
-  assert.equal(
-    loopback.state.waitSignal?.aborted,
-    true,
-    "loopback wait torn down once the timeout won"
-  );
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("beginBrowserSignIn maps an invalid/expired code to expired", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.redeemResult = {
-    ok: false,
-    error: "invalid",
-    retryable: false,
-  };
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-code-invalid",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "expired" });
-  assert.equal(store.hasSession(), false);
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("beginBrowserSignIn maps a PoP-rejected redeem to exchange_failed", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.redeemResult = {
-    ok: false,
-    error: "pop_rejected",
-    retryable: false,
-  };
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-redeem-pop",
-  });
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "exchange_failed" });
-  assert.equal(store.hasSession(), false);
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("beginBrowserSignIn is unavailable without browser sign-in ports", async () => {
-  const { manager } = createManager({ storeName: "dsm-signin-unavailable" });
-  const result = await manager.beginBrowserSignIn();
-  assert.deepEqual(result, { ok: false, reason: "unavailable" });
-});
-
-test("beginBrowserSignIn rejects a concurrent call as already_in_progress", async () => {
-  const loopback = createLoopbackStub();
-  const gate = deferred<void>();
-  loopback.state.callbackGate = gate;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-concurrent",
-  });
-
-  const first = manager.beginBrowserSignIn();
-  const second = await manager.beginBrowserSignIn();
-  assert.deepEqual(second, { ok: false, reason: "already_in_progress" });
-
-  gate.resolve();
-  assert.deepEqual(await first, { ok: true });
-});
-
-test("beginBrowserSignIn rejects when a session already exists", async () => {
-  const loopback = createLoopbackStub();
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-have-session",
-  });
-  store.setSession(storedRecord());
-  await manager.restore();
-  assert.equal(manager.getState().status, DesktopAuthStatus.Authenticated);
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "already_in_progress" });
-  assert.equal(loopback.state.openCalls.length, 0, "never opened a browser");
-});
-
-test("cancelSignIn frees the run slot so a later sign-in is not locked out", async () => {
-  const loopback = createLoopbackStub();
-  const gate = deferred<void>();
-  loopback.state.callbackGate = gate;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-lockout",
-  });
-
-  // The first run parks awaiting the loopback callback; cancel releases the slot
-  // synchronously so a second sign-in is not rejected as already_in_progress.
-  const first = manager.beginBrowserSignIn();
-  manager.cancelSignIn();
-  loopback.state.callbackGate = undefined; // the retry's callback resolves at once
-  const second = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(await first, { ok: false, reason: "cancelled" });
-  assert.deepEqual(second, { ok: true });
-  assert.equal(manager.getState().status, DesktopAuthStatus.Authenticated);
-});
-
-test("signOut cancels an in-flight browser sign-in", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.callbackGate = deferred<void>();
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-signout",
-  });
-  // signOut() synchronously cancels the run the instant it parks on the callback.
-  let signOut: Promise<void> | undefined;
-  loopback.state.onWait = () => {
-    signOut = manager.signOut();
-  };
-
-  const result = await manager.beginBrowserSignIn();
-  await signOut;
-
-  assert.deepEqual(result, { ok: false, reason: "cancelled" });
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("a cancel during the redeem does not authenticate the device", async () => {
-  const loopback = createLoopbackStub();
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-cancel-redeem",
-  });
-  // Cancel fires the instant the redeem request is issued (mid round-trip).
-  loopback.state.onRedeem = () => manager.cancelSignIn();
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "cancelled" });
-  assert.equal(store.hasSession(), false, "no session persisted after cancel");
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-  assert.equal(await manager.getAccessToken(), null);
-});
-
-test("a cancel during the async listener start never opens a browser", async () => {
-  const loopback = createLoopbackStub();
-  const startGate = deferred<void>();
-  loopback.state.listenerStartGate = startGate;
-  const { manager } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-cancel-setup",
-  });
-
-  // The run parks inside prepareSignIn awaiting the (gated) listener start;
-  // cancel supersedes it before setup completes.
-  const first = manager.beginBrowserSignIn();
-  manager.cancelSignIn();
-  startGate.resolve(); // setup finishes, but the run is now superseded
-
-  assert.deepEqual(await first, { ok: false, reason: "cancelled" });
-  assert.equal(
-    loopback.state.openCalls.length,
-    0,
-    "browser never opened for a superseded run"
-  );
-  assert.equal(loopback.state.redeemCalls, 0);
-  assert.equal(
-    loopback.state.closeCalls,
-    1,
-    "the listener started during setup is released"
-  );
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
-test("a thrown redeem settles to exchange_failed without stranding exchanging", async () => {
-  const loopback = createLoopbackStub();
-  loopback.state.redeemThrows = true; // redeem rejects instead of returning a typed result
-  const statuses: string[] = [];
-  const { manager, store } = createManager({
-    browserSignIn: loopback.deps,
-    storeName: "dsm-signin-redeem-throw",
-  });
-  manager.subscribe((state) => statuses.push(state.status));
-
-  const result = await manager.beginBrowserSignIn();
-
-  assert.deepEqual(result, { ok: false, reason: "exchange_failed" });
-  assert.equal(store.hasSession(), false);
-  // It reaches exchanging, then settles back out of it — never stranded.
-  assert.ok(
-    statuses.includes(DesktopAuthStatus.Exchanging),
-    "entered exchanging"
-  );
-  assert.equal(
-    statuses.at(-1),
-    DesktopAuthStatus.SignedOut,
-    "settled back to a resting state"
-  );
-  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
-});
-
 test("subscribe is notified on state transitions", async () => {
   const stub = createStubClient();
   const { manager, store } = createManager({
@@ -834,4 +227,198 @@ test("subscribe is notified on state transitions", async () => {
     DesktopAuthStatus.Authenticated,
     DesktopAuthStatus.SignedOut,
   ]);
+});
+
+// --- Existing-user resolution (PRD-532 §8 / M6) ---------------------------
+
+test("existing user with an API key + no session surfaces the prompt", async () => {
+  const existing = createExistingUserStub({ hasApiKey: true });
+  const { manager } = createManager({
+    storeName: "dsm-eur-prompt",
+    existingUser: existing.deps,
+  });
+
+  await manager.restore(); // no stored session -> signed_out
+
+  assert.deepEqual(manager.getExistingUserResolution(), {
+    kind: "prompt",
+    dismissed: false,
+  });
+});
+
+test("no prompt when there is no API key", async () => {
+  const existing = createExistingUserStub({ hasApiKey: false });
+  const { manager } = createManager({
+    storeName: "dsm-eur-nokey",
+    existingUser: existing.deps,
+  });
+
+  await manager.restore();
+
+  assert.equal(manager.getExistingUserResolution().kind, "none");
+});
+
+test("refreshExistingUserResolution re-derives + re-emits after an out-of-band key change", async () => {
+  const existing = createExistingUserStub({ hasApiKey: false });
+  const { manager } = createManager({
+    storeName: "dsm-eur-refresh",
+    existingUser: existing.deps,
+  });
+
+  await manager.restore(); // signed_out, no key -> none
+
+  const emitted: DesktopExistingUserResolution[] = [];
+  manager.subscribeExistingUserResolution((r) => emitted.push(r));
+  assert.equal(manager.getExistingUserResolution().kind, "none");
+
+  // Simulate an api-key mutation path (desktop:set-api-key etc.) setting a key
+  // without any auth transition, then calling the refresh hook.
+  existing.state.hasApiKey = true;
+  manager.refreshExistingUserResolution();
+
+  assert.equal(manager.getExistingUserResolution().kind, "prompt");
+  assert.deepEqual(emitted, [{ kind: "prompt", dismissed: false }]);
+
+  // Clearing the key + refresh settles back to none and re-emits.
+  existing.state.hasApiKey = false;
+  manager.refreshExistingUserResolution();
+  assert.equal(manager.getExistingUserResolution().kind, "none");
+  assert.equal(emitted.at(-1)?.kind, "none");
+});
+
+test("no prompt while authenticated (local data + settings untouched)", async () => {
+  const stub = createStubClient();
+  const existing = createExistingUserStub({ hasApiKey: true });
+  const { manager, store } = createManager({
+    stub,
+    storeName: "dsm-eur-authed",
+    existingUser: existing.deps,
+  });
+  store.setSession(storedRecord());
+
+  await manager.restore(); // stored session refreshes -> authenticated
+
+  assert.equal(manager.getState().status, DesktopAuthStatus.Authenticated);
+  assert.equal(manager.getExistingUserResolution().kind, "none");
+  // Data-preservation: the persisted session/settings record is intact and the
+  // dismissal was never touched by resolution.
+  assert.equal(store.getSession()?.userId, "user-1");
+  assert.equal(existing.state.persistCalls, 0);
+});
+
+test("dismiss persists and clears the prompt one-time", async () => {
+  const existing = createExistingUserStub({ hasApiKey: true });
+  const { manager } = createManager({
+    storeName: "dsm-eur-dismiss",
+    existingUser: existing.deps,
+  });
+  await manager.restore();
+  assert.equal(manager.getExistingUserResolution().kind, "prompt");
+
+  const seen: string[] = [];
+  manager.subscribeExistingUserResolution((r) => seen.push(r.kind));
+  manager.dismissExistingUserPrompt();
+
+  assert.equal(existing.state.persistCalls, 1, "dismissal is persisted");
+  assert.deepEqual(manager.getExistingUserResolution(), {
+    kind: "none",
+    dismissed: true,
+  });
+  assert.deepEqual(seen, ["none"], "subscribers see the prompt clear");
+});
+
+test("an already-dismissed prompt never reappears", async () => {
+  const existing = createExistingUserStub({ hasApiKey: true, dismissed: true });
+  const { manager } = createManager({
+    storeName: "dsm-eur-predismissed",
+    existingUser: existing.deps,
+  });
+
+  await manager.restore();
+
+  assert.deepEqual(manager.getExistingUserResolution(), {
+    kind: "none",
+    dismissed: true,
+  });
+});
+
+test("an API key alone never mints a session — it only offers the prompt", async () => {
+  const existing = createExistingUserStub({ hasApiKey: true });
+  const { manager, store } = createManager({
+    storeName: "dsm-eur-no-auto-mint",
+    existingUser: existing.deps,
+  });
+
+  await manager.restore(); // no stored session -> signed_out, key present
+  // Drain the microtasks any background mint would have resolved on.
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
+  assert.equal(store.hasSession(), false, "no session was minted from the key");
+  assert.equal(await manager.getAccessToken(), null);
+  assert.equal(manager.getExistingUserResolution().kind, "prompt");
+});
+
+test("sign-out stays signed out while an API key is still present", async () => {
+  const stub = createStubClient();
+  const existing = createExistingUserStub({ hasApiKey: true });
+  const { manager, store } = createManager({
+    stub,
+    storeName: "dsm-eur-signout-sticks",
+    existingUser: existing.deps,
+  });
+  store.setSession(storedRecord());
+  await manager.restore();
+  assert.equal(manager.getState().status, DesktopAuthStatus.Authenticated);
+
+  await manager.signOut();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // The API key outlives the session and cannot be cleared (it may come from an
+  // environment variable). Sign-out must not be undone by its presence.
+  assert.equal(manager.getState().status, DesktopAuthStatus.SignedOut);
+  assert.equal(store.hasSession(), false);
+  assert.equal(await manager.getAccessToken(), null);
+  assert.equal(manager.getExistingUserResolution().kind, "prompt");
+});
+
+test("sign-out survives a relaunch with an API key still present", async () => {
+  const storeName = "dsm-eur-signout-relaunch";
+  const first = createManager({
+    storeName,
+    existingUser: createExistingUserStub({ hasApiKey: true }).deps,
+  });
+  first.store.setSession(storedRecord());
+  await first.manager.restore();
+  await first.manager.signOut();
+
+  // A second manager over the same persisted store models the next app launch.
+  const relaunched = createManager({
+    storeName,
+    existingUser: createExistingUserStub({ hasApiKey: true }).deps,
+  });
+  await relaunched.manager.restore();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(
+    relaunched.manager.getState().status,
+    DesktopAuthStatus.SignedOut
+  );
+  assert.equal(relaunched.store.hasSession(), false);
+});
+
+test("existing-user resolution is inert when the ports are absent", async () => {
+  const { manager } = createManager({ storeName: "dsm-eur-off" });
+
+  await manager.restore();
+
+  // Flag/feature off (no ports): resolution stays the default `none` and never
+  // blocks — today's behavior unchanged.
+  assert.deepEqual(manager.getExistingUserResolution(), {
+    kind: "none",
+    dismissed: false,
+  });
 });

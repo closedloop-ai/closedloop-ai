@@ -1,20 +1,6 @@
 import { BranchViewCheckKind } from "@repo/api/src/types/branch-view";
 import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github-status";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
-const mockGraphql = vi.fn();
-
-vi.mock("@octokit/auth-app", () => ({
-  createAppAuth: vi.fn(() => async (_opts: unknown) => ({
-    token: "test-token",
-  })),
-}));
-
-vi.mock("@octokit/rest", () => ({
-  Octokit: class {
-    graphql = mockGraphql;
-  },
-}));
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -24,69 +10,88 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { queryStatusCheckRollup } from "../index";
+import type { Octokit } from "@octokit/rest";
+import {
+  type GitHubProviderResult,
+  GitHubProviderResultStatus,
+  queryStatusCheckRollupWithProviderResult,
+  type StatusCheckRollupResult,
+} from "../index";
+
+// The function is credential-agnostic (PLN-1525 step 4): callers inject the
+// Octokit, so the tests do too — no App env, no auth mocking.
+const mockGraphql = vi.fn();
+
+const octokit = { graphql: mockGraphql } as unknown as Octokit;
 
 const VALID_SHA = "a".repeat(40);
-const INSTALLATION_ID = "12345";
 const OWNER = "acme";
 const REPO = "my-repo";
 
-describe("queryStatusCheckRollup", () => {
-  beforeAll(() => {
-    process.env.GITHUB_APP_ID = "1";
-    process.env.GITHUB_APP_PRIVATE_KEY = "test-key";
-    process.env.GITHUB_APP_WEBHOOK_SECRET = "test-secret";
-    process.env.GITHUB_APP_CLIENT_ID = "test-client-id";
-    process.env.GITHUB_APP_CLIENT_SECRET = "test-client-secret";
-    process.env.GITHUB_APP_DISPATCH_REPO = "owner/dispatch";
-    process.env.WEBAPP_ENV = "stage";
-  });
+function expectSuccessValue(
+  result: GitHubProviderResult<StatusCheckRollupResult>
+): StatusCheckRollupResult {
+  if (result.status !== GitHubProviderResultStatus.Success) {
+    throw new Error(`Expected a Success provider result, got ${result.status}`);
+  }
+  return result.value;
+}
 
+describe("queryStatusCheckRollupWithProviderResult", () => {
   beforeEach(() => {
     mockGraphql.mockReset();
   });
 
-  it("returns invalid_input when owner is empty", async () => {
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+  it("wraps invalid_input in a Success result when owner is empty", async () => {
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       "",
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.InvalidInput,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.InvalidInput,
+      },
     });
     expect(mockGraphql).not.toHaveBeenCalled();
   });
 
-  it("returns invalid_input when repo is empty", async () => {
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+  it("wraps invalid_input in a Success result when repo is empty", async () => {
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       "",
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.InvalidInput,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.InvalidInput,
+      },
     });
     expect(mockGraphql).not.toHaveBeenCalled();
   });
 
-  it("returns invalid_input when commit SHA is not 40 characters", async () => {
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+  it("wraps invalid_input in a Success result when commit SHA is not 40 characters", async () => {
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       "abc123"
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.InvalidInput,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.InvalidInput,
+      },
     });
     expect(mockGraphql).not.toHaveBeenCalled();
   });
@@ -127,14 +132,15 @@ describe("queryStatusCheckRollup", () => {
       },
     });
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
-    expect(result).toMatchObject({
+    const value = expectSuccessValue(result);
+    expect(value).toMatchObject({
       ok: true,
       state: "SUCCESS",
       totalCount: 3,
@@ -160,12 +166,12 @@ describe("queryStatusCheckRollup", () => {
         },
       ],
     });
-    expect(result.ok && result.checks[0]?.id.startsWith("node:")).toBe(true);
-    expect(result.ok && result.checks[1]?.id.startsWith("context:")).toBe(true);
+    expect(value.ok && value.checks[0]?.id.startsWith("node:")).toBe(true);
+    expect(value.ok && value.checks[1]?.id.startsWith("context:")).toBe(true);
     expect(mockGraphql).toHaveBeenCalledOnce();
   });
 
-  it("uses valid partial rollup data when GitHub returns GraphQL errors", async () => {
+  it("recovers valid partial rollup data when GitHub returns GraphQL errors", async () => {
     mockGraphql.mockRejectedValueOnce(
       Object.assign(new Error("Request failed due to response errors"), {
         data: {
@@ -203,14 +209,15 @@ describe("queryStatusCheckRollup", () => {
       })
     );
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
-    expect(result).toMatchObject({
+    const value = expectSuccessValue(result);
+    expect(value).toMatchObject({
       ok: true,
       state: "FAILURE",
       totalCount: 2,
@@ -242,19 +249,22 @@ describe("queryStatusCheckRollup", () => {
       },
     });
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: true,
-      state: null,
-      checks: [],
-      totalCount: 0,
-      truncated: false,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: true,
+        state: null,
+        checks: [],
+        totalCount: 0,
+        truncated: false,
+      },
     });
   });
 
@@ -321,15 +331,16 @@ describe("queryStatusCheckRollup", () => {
       },
     });
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
-    expect(result.ok && result.checks).toHaveLength(2);
-    expect(result).toMatchObject({
+    const value = expectSuccessValue(result);
+    expect(value.ok && value.checks).toHaveLength(2);
+    expect(value).toMatchObject({
       ok: true,
       totalCount: 2,
       truncated: false,
@@ -354,41 +365,44 @@ describe("queryStatusCheckRollup", () => {
     });
   });
 
-  it("returns rate_limited when a rate limit error is thrown", async () => {
+  it("returns provider_rate_limit when a rate limit error is thrown", async () => {
     mockGraphql.mockRejectedValueOnce(new Error("API rate limit exceeded"));
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.RateLimited,
+      status: GitHubProviderResultStatus.ProviderRateLimit,
+      retryAfterSeconds: null,
     });
   });
 
-  it("returns graphql_error when the repository is missing", async () => {
+  it("wraps graphql_error in a Success result when the repository is missing", async () => {
     mockGraphql.mockResolvedValueOnce({
       repository: null,
     });
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.GraphqlError,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.GraphqlError,
+      },
     });
   });
 
-  it("returns graphql_error when the commit object is missing or not a Commit", async () => {
+  it("wraps graphql_error in a Success result when the commit object is missing or not a Commit", async () => {
     mockGraphql
       .mockResolvedValueOnce({
         repository: {
@@ -402,49 +416,53 @@ describe("queryStatusCheckRollup", () => {
       });
 
     await expect(
-      queryStatusCheckRollup(INSTALLATION_ID, OWNER, REPO, VALID_SHA)
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, VALID_SHA)
     ).resolves.toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.GraphqlError,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.GraphqlError,
+      },
     });
     await expect(
-      queryStatusCheckRollup(INSTALLATION_ID, OWNER, REPO, VALID_SHA)
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, VALID_SHA)
     ).resolves.toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.GraphqlError,
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        ok: false,
+        reason: StatusCheckRollupFailureReason.GraphqlError,
+      },
     });
   });
 
-  it("returns permission_denied when a 403 error is thrown", async () => {
+  it("returns provider_unavailable when a non-rate-limit 403 error is thrown", async () => {
     const error = Object.assign(new Error("Forbidden"), { status: 403 });
     mockGraphql.mockRejectedValueOnce(error);
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.PermissionDenied,
+      status: GitHubProviderResultStatus.ProviderUnavailable,
     });
   });
 
-  it("returns graphql_error when a generic error is thrown", async () => {
+  it("returns provider_unavailable when a generic error is thrown", async () => {
     mockGraphql.mockRejectedValueOnce(new Error("Unexpected GraphQL failure"));
 
-    const result = await queryStatusCheckRollup(
-      INSTALLATION_ID,
+    const result = await queryStatusCheckRollupWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       VALID_SHA
     );
 
     expect(result).toEqual({
-      ok: false,
-      reason: StatusCheckRollupFailureReason.GraphqlError,
+      status: GitHubProviderResultStatus.ProviderUnavailable,
     });
   });
 });

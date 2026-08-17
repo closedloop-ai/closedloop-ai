@@ -1,3 +1,4 @@
+import { CheckSeverity } from "@repo/api/src/types/compute-target";
 import { makeQueryClient } from "@repo/app/shared/query/query-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COMPUTE_TARGET_HEADER } from "@/lib/desktop-command-signing/constants";
@@ -5,6 +6,7 @@ import {
   GATEWAY_HEALTH_CHECK_PATH,
   GATEWAY_RELAY_HEALTH_CHECK_PATH,
 } from "@/lib/engineer/constants";
+import { HealthCheckFailureKind } from "@/lib/system-check/health-check-failure";
 import { PRE_LOOP_PLUGIN_UPDATE_HEALTH_CHECK_TIMEOUT_MS } from "@/lib/system-check/health-check-timeouts";
 import {
   buildHealthCheckRequest,
@@ -152,7 +154,7 @@ describe("getRenderableHealthChecks", () => {
     ]);
   });
 
-  it("normalizes app-version responses into required blocking rows", () => {
+  it("normalizes an old gateway's blocking app-version row into a non-blocking warning", () => {
     const checks = getRenderableHealthChecks(
       {
         checks: [
@@ -183,9 +185,13 @@ describe("getRenderableHealthChecks", () => {
     expect(checks).toEqual([
       {
         id: "app-version",
+        // ISS-5369: the desktop fleet still sends `required: false, passed:
+        // false` here. A version finding informs; it must never block, and it
+        // must not render as a hard failure.
         label: "Gateway Version",
-        required: true,
-        passed: false,
+        required: false,
+        passed: true,
+        severity: CheckSeverity.Warning,
         version: "0.14.10",
         error: "Update available: 0.14.11",
         remediation: "Open the Closedloop Gateway app to update",
@@ -225,6 +231,232 @@ describe("getRenderableHealthChecks", () => {
         required: false,
         passed: true,
       },
+    ]);
+  });
+
+  it("returns undefined when no response is available", () => {
+    expect(getRenderableHealthChecks(undefined, null)).toBeUndefined();
+  });
+
+  it("resolves the expected MCP URL from the environment default when none is passed", () => {
+    // NEXT_PUBLIC_MCP_SERVER_URL is unset in the test environment, so the
+    // default parameter resolves to null and no MCP rows are appended.
+    const checks = getRenderableHealthChecks({
+      checks: [{ id: "git", label: "Git", required: true, passed: true }],
+      allRequiredPassed: true,
+    });
+
+    expect(checks).toEqual([expect.objectContaining({ label: "Git" })]);
+  });
+
+  it("omits the MCP row entirely when a provider's availability is not reported", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          codex: {
+            closedloopAvailable: true,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
+        },
+      },
+      null
+    );
+
+    expect(checks).toEqual([expect.objectContaining({ label: "Codex MCP" })]);
+    expect(checks?.some((check) => check.label === "Claude MCP")).toBe(false);
+  });
+
+  it("reports the legacy MCP provider as passed when closedloopAvailable is true", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            closedloopAvailable: true,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
+        },
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      {
+        id: "claude-mcp",
+        label: "Claude MCP",
+        required: false,
+        passed: true,
+      },
+    ]);
+  });
+
+  it("reports the legacy MCP provider as unavailable with the install remediation when an MCP URL is expected", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            closedloopAvailable: false,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
+        },
+      },
+      "https://example.com/mcp"
+    );
+
+    expect(checks).toEqual([
+      {
+        id: "claude-mcp",
+        label: "Claude MCP",
+        required: false,
+        passed: false,
+        error: "Unavailable",
+        remediation:
+          "Install a user/global MCP server pointing to https://example.com/mcp. Project-local MCP installs are not supported.",
+      },
+    ]);
+  });
+
+  it("omits the version field when an available neutral MCP provider reports no server name", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: true,
+            serverName: null,
+            matchedUrl: null,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+          },
+        },
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      {
+        id: "claude-mcp",
+        label: "Claude MCP",
+        required: false,
+        passed: true,
+        version: undefined,
+      },
+    ]);
+  });
+
+  it("uses the install remediation when the MCP error reports an unsupported project-local config", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: false,
+            serverName: "team-claude",
+            matchedUrl: "https://example.com/mcp",
+            checkedAt: "2026-04-13T18:41:00.000Z",
+            error: "Project-local config unsupported",
+          },
+        },
+      },
+      "https://example.com/mcp"
+    );
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        error: "Project-local config unsupported",
+        remediation:
+          "Install a user/global MCP server pointing to https://example.com/mcp. Project-local MCP installs are not supported.",
+      }),
+    ]);
+  });
+
+  it("falls back to a generic MCP URL phrase when a matched server has no matchedUrl or expectedMcpUrl", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: false,
+            serverName: "team-claude",
+            matchedUrl: null,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+            error: "Discovery timed out",
+          },
+        },
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        remediation:
+          "Retry check. team-claude is configured for the expected MCP URL",
+      }),
+    ]);
+  });
+
+  it("points the remediation at the expected MCP URL when no server matched but a URL is expected", () => {
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: false,
+            serverName: null,
+            matchedUrl: null,
+            checkedAt: "2026-04-13T18:41:00.000Z",
+            error: "Discovery timed out",
+          },
+        },
+      },
+      "https://example.com/mcp"
+    );
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        remediation:
+          "Retry check. If this persists, verify a user/global MCP server pointing to https://example.com/mcp is configured.",
+      }),
+    ]);
+  });
+
+  it("uses a bare retry remediation when a URL matched but no server name resolved and no MCP URL is expected", () => {
+    // hasDetectionContext requires expectedMcpUrl || available || serverName ||
+    // matchedUrl to be truthy, so a genuinely empty availability (all falsy)
+    // returns null instead of a check row (see the preceding test). A truthy
+    // matchedUrl with no serverName and no expectedMcpUrl is the only
+    // combination that both passes that guard and skips every specific
+    // remediation branch, landing on the bare "Retry check." fallback.
+    const checks = getRenderableHealthChecks(
+      {
+        checks: [],
+        allRequiredPassed: true,
+        mcpServers: {
+          claude: {
+            available: false,
+            serverName: null,
+            matchedUrl: "https://matched.example.com/mcp",
+            checkedAt: "2026-04-13T18:41:00.000Z",
+            error: "Discovery timed out",
+          },
+        },
+      },
+      null
+    );
+
+    expect(checks).toEqual([
+      expect.objectContaining({
+        error: "Discovery timed out",
+        remediation: "Retry check.",
+      }),
     ]);
   });
 });
@@ -534,6 +766,115 @@ describe("healthCheckOptions", () => {
       ],
       allRequiredPassed: false,
     });
+  });
+
+  it("classifies a budget abort as a local timeout for direct (non-relay) routing", async () => {
+    const timeoutController = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        timeoutController.abort();
+        return Promise.reject(
+          new DOMException("The operation was aborted.", "AbortError")
+        );
+      })
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toMatchObject({
+      name: "HealthCheckTimeoutError",
+      kind: HealthCheckFailureKind.LocalTimeout,
+    });
+  });
+
+  it("classifies a budget abort as a relay timeout for CloudRelay routing", async () => {
+    const timeoutController = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        timeoutController.abort();
+        return Promise.reject(
+          new DOMException("The operation was aborted.", "AbortError")
+        );
+      })
+    );
+    const options = healthCheckOptions("cloud-relay:target-1", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toMatchObject({
+      name: "HealthCheckTimeoutError",
+      kind: HealthCheckFailureKind.RelayTimeout,
+    });
+  });
+
+  it("rethrows the original abort error when the caller's own signal aborted too, instead of a timeout verdict", async () => {
+    const timeoutController = new AbortController();
+    const queryController = new AbortController();
+    vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    const originalError = new DOMException(
+      "The operation was aborted.",
+      "AbortError"
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        timeoutController.abort();
+        queryController.abort();
+        return Promise.reject(originalError);
+      })
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(
+      runHealthCheckQuery(options, queryController.signal)
+    ).rejects.toBe(originalError);
+  });
+
+  it("reuses the caller's already-aborted signal directly instead of composing a new one", async () => {
+    const queryController = new AbortController();
+    queryController.abort();
+    const anySpy = vi.spyOn(AbortSignal, "any");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        Response.json({ checks: [], allRequiredPassed: true })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const options = healthCheckOptions("default", null);
+
+    await runHealthCheckQuery(options, queryController.signal);
+
+    expect(anySpy).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls[0][1].signal).toBe(queryController.signal);
+  });
+
+  it("falls back to the message field when the error body has no error key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ message: "target machine offline" }, { status: 502 })
+        )
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toThrow(
+      "Gateway health check failed: target machine offline"
+    );
+  });
+
+  it("falls back to a generic HTTP status message when the error body is not parseable JSON", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("not json", { status: 500 }))
+    );
+    const options = healthCheckOptions("default", null);
+
+    await expect(runHealthCheckQuery(options)).rejects.toThrow(
+      "Gateway health check failed with HTTP 500"
+    );
   });
 });
 

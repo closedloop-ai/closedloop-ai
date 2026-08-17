@@ -1,3 +1,4 @@
+import type { Octokit } from "@octokit/rest";
 import {
   ChecksStatus,
   ReviewDecision,
@@ -9,27 +10,17 @@ import {
 } from "@repo/api/src/types/github-read-model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const {
-  mockFetchReviewThreadMetadataByCommentId,
-  mockGetInstallationOctokit,
-  mockLogWarn,
-} = vi.hoisted(() => ({
-  mockFetchReviewThreadMetadataByCommentId: vi.fn(),
-  mockGetInstallationOctokit: vi.fn(),
-  mockLogWarn: vi.fn(),
-}));
-
-vi.mock("../installation-auth", () => ({
-  getInstallationAccessToken: vi.fn(),
-  getInstallationOctokit: mockGetInstallationOctokit,
-}));
-
+const { mockFetchReviewThreadMetadataByCommentId, mockLogWarn } = vi.hoisted(
+  () => ({
+    mockFetchReviewThreadMetadataByCommentId: vi.fn(),
+    mockLogWarn: vi.fn(),
+  })
+);
 vi.mock("../review-thread-lookup", () => ({
   MAX_PR_METADATA_PAGES: 10,
   fetchReviewThreadMetadataByCommentId:
     mockFetchReviewThreadMetadataByCommentId,
 }));
-
 vi.mock("@repo/observability/log", () => ({
   log: {
     error: vi.fn(),
@@ -39,25 +30,21 @@ vi.mock("@repo/observability/log", () => ({
 }));
 
 import {
-  classifyGitHubProviderError,
-  compareBranchFileChanges,
   compareBranchFileChangesWithProviderResult,
   GitHubProviderResultStatus,
-  getGitHubRetryAfterSeconds,
-  getRepositoryPullRequests,
   getRepositoryPullRequestsWithMetadata,
   getSinglePullRequest,
   getSinglePullRequestWithProviderResult,
-  listPullRequestIssueComments,
   listPullRequestIssueCommentsWithProviderResult,
-  listPullRequestReviewComments,
   listPullRequestReviewCommentsWithProviderResult,
-  listPullRequestReviews,
   listPullRequestReviewsWithProviderResult,
   queryBundledPullRequestsWithProviderResult,
-  queryStatusCheckRollup,
   queryStatusCheckRollupWithProviderResult,
 } from "../index";
+import {
+  classifyGitHubProviderError,
+  getGitHubRetryAfterSeconds,
+} from "../provider-error-classification";
 
 const mockOctokit = {
   graphql: vi.fn(),
@@ -79,7 +66,10 @@ const mockOctokit = {
   },
 };
 
-const INSTALLATION_ID = "12345";
+// The read functions are credential-agnostic (PLN-1525 step 4): callers
+// inject the Octokit, so the tests do too — no App env, no auth mocking.
+const octokit = mockOctokit as unknown as Octokit;
+
 const OWNER = "acme";
 const REPO = "repo";
 const PULL_NUMBER = 42;
@@ -149,7 +139,6 @@ function buildRepositoryPullRequestNode(number: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockGetInstallationOctokit.mockResolvedValue(mockOctokit);
   mockFetchReviewThreadMetadataByCommentId.mockResolvedValue(new Map());
   mockOctokit.graphql.mockReset();
   mockOctokit.issues.listComments.mockReset();
@@ -159,7 +148,7 @@ beforeEach(() => {
   mockOctokit.rest.pulls.get.mockReset();
 });
 
-describe("getRepositoryPullRequests", () => {
+describe("getRepositoryPullRequestsWithMetadata", () => {
   it("preserves bundled check and review summaries on repository PR list rows", async () => {
     mockOctokit.graphql.mockResolvedValue({
       rateLimit: {
@@ -205,12 +194,17 @@ describe("getRepositoryPullRequests", () => {
       },
     });
 
-    await expect(
-      getRepositoryPullRequests(INSTALLATION_ID, OWNER, REPO, {
+    const result = await getRepositoryPullRequestsWithMetadata(
+      octokit,
+      OWNER,
+      REPO,
+      {
         state: "all",
         limit: 100,
-      })
-    ).resolves.toEqual([
+      }
+    );
+
+    expect(result.pullRequests).toEqual([
       expect.objectContaining({
         number: 42,
         additions: 22,
@@ -243,7 +237,7 @@ describe("getRepositoryPullRequests", () => {
     });
 
     const result = await getRepositoryPullRequestsWithMetadata(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       {
@@ -305,7 +299,7 @@ describe("queryBundledPullRequestsWithProviderResult", () => {
       });
 
     const result = await queryBundledPullRequestsWithProviderResult(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       [150],
@@ -353,7 +347,7 @@ describe("queryBundledPullRequestsWithProviderResult", () => {
     });
 
     const result = await queryBundledPullRequestsWithProviderResult(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       [150],
@@ -370,6 +364,80 @@ describe("queryBundledPullRequestsWithProviderResult", () => {
       expect(result.value.truncated).toBe(true);
     }
     expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports each fetched page's rate-limit budget to the observer (PLN-1535 M0)", async () => {
+    mockOctokit.graphql
+      .mockResolvedValueOnce({
+        rateLimit: {
+          cost: 3,
+          remaining: 4800,
+          resetAt: "2026-07-06T08:00:00Z",
+        },
+        repository: {
+          pullRequests: {
+            pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+            nodes: [
+              {
+                id: "PR_1",
+                number: 1,
+                title: "One",
+                url: "https://github.com/acme/repo/pull/1",
+              },
+            ],
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        rateLimit: {
+          cost: 2,
+          remaining: 4798,
+          resetAt: "2026-07-06T08:00:00Z",
+        },
+        repository: {
+          pullRequests: {
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                id: "PR_2",
+                number: 2,
+                title: "Two",
+                url: "https://github.com/acme/repo/pull/2",
+              },
+            ],
+          },
+        },
+      });
+
+    const observed: Array<{
+      page: number;
+      itemCount: number;
+      cost: number | null;
+      remaining: number | null;
+    }> = [];
+    const result = await queryBundledPullRequestsWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      [],
+      { maxItems: 300, maxPages: 3 },
+      (observation) => {
+        observed.push({
+          page: observation.page,
+          itemCount: observation.itemCount,
+          cost: observation.rateLimit.cost,
+          remaining: observation.rateLimit.remaining,
+        });
+      }
+    );
+
+    expect(result.status).toBe(GitHubProviderResultStatus.Success);
+    // One observation per fetched page, in order, each carrying the page's
+    // own cost (the field the read otherwise discards) and item count.
+    expect(observed).toEqual([
+      { page: 0, itemCount: 1, cost: 3, remaining: 4800 },
+      { page: 1, itemCount: 1, cost: 2, remaining: 4798 },
+    ]);
   });
 });
 
@@ -550,12 +618,7 @@ describe("provider-result wrappers", () => {
     mockOctokit.pulls.listReviews.mockResolvedValue({ data: [] });
 
     await expect(
-      getSinglePullRequestWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        PULL_NUMBER
-      )
+      getSinglePullRequestWithProviderResult(octokit, OWNER, REPO, PULL_NUMBER)
     ).resolves.toMatchObject({
       status: GitHubProviderResultStatus.Success,
       value: {
@@ -566,7 +629,7 @@ describe("provider-result wrappers", () => {
     });
     await expect(
       compareBranchFileChangesWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         "main",
@@ -577,16 +640,11 @@ describe("provider-result wrappers", () => {
       value: [expect.objectContaining({ filename: "src/app.ts" })],
     });
     await expect(
-      queryStatusCheckRollupWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        COMMIT_SHA
-      )
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, COMMIT_SHA)
     ).resolves.toMatchObject({ status: GitHubProviderResultStatus.Success });
     await expect(
       listPullRequestReviewCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -597,7 +655,7 @@ describe("provider-result wrappers", () => {
     });
     await expect(
       listPullRequestIssueCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -608,7 +666,7 @@ describe("provider-result wrappers", () => {
     });
     await expect(
       listPullRequestReviewsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -619,7 +677,7 @@ describe("provider-result wrappers", () => {
     });
   });
 
-  it("preserves status-check retry metadata while legacy rollup remains compatible", async () => {
+  it("preserves status-check retry metadata from rate-limit reset headers", async () => {
     const resetEpoch = Math.floor(Date.now() / 1000) + 120;
     const error = Object.assign(new Error("rate limit"), {
       status: 403,
@@ -628,21 +686,10 @@ describe("provider-result wrappers", () => {
     mockOctokit.graphql.mockRejectedValue(error);
 
     await expect(
-      queryStatusCheckRollupWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        COMMIT_SHA
-      )
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, COMMIT_SHA)
     ).resolves.toEqual({
       status: GitHubProviderResultStatus.ProviderRateLimit,
       retryAfterSeconds: expect.any(Number),
-    });
-    await expect(
-      queryStatusCheckRollup(INSTALLATION_ID, OWNER, REPO, COMMIT_SHA)
-    ).resolves.toMatchObject({
-      ok: false,
-      reason: "rate_limited",
     });
   });
 
@@ -652,26 +699,10 @@ describe("provider-result wrappers", () => {
     );
 
     await expect(
-      queryStatusCheckRollupWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        COMMIT_SHA
-      )
+      queryStatusCheckRollupWithProviderResult(octokit, OWNER, REPO, COMMIT_SHA)
     ).resolves.toEqual({
       status: GitHubProviderResultStatus.ProviderRateLimit,
       retryAfterSeconds: null,
-    });
-
-    mockOctokit.graphql.mockRejectedValueOnce(
-      partialRateLimitedStatusRollupError()
-    );
-    await expect(
-      queryStatusCheckRollup(INSTALLATION_ID, OWNER, REPO, COMMIT_SHA)
-    ).resolves.toMatchObject({
-      ok: true,
-      state: "FAILURE",
-      totalCount: 1,
     });
   });
 
@@ -683,12 +714,7 @@ describe("provider-result wrappers", () => {
     mockOctokit.rest.pulls.get.mockRejectedValueOnce(rateLimitError);
 
     await expect(
-      getSinglePullRequestWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        PULL_NUMBER
-      )
+      getSinglePullRequestWithProviderResult(octokit, OWNER, REPO, PULL_NUMBER)
     ).resolves.toEqual({
       status: GitHubProviderResultStatus.ProviderRateLimit,
       retryAfterSeconds: 33,
@@ -697,7 +723,7 @@ describe("provider-result wrappers", () => {
     mockOctokit.paginate.mockRejectedValueOnce(rateLimitError);
     await expect(
       compareBranchFileChangesWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         "main",
@@ -714,7 +740,7 @@ describe("provider-result wrappers", () => {
     );
     await expect(
       listPullRequestReviewCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -727,7 +753,7 @@ describe("provider-result wrappers", () => {
     mockOctokit.issues.listComments.mockRejectedValueOnce(rateLimitError);
     await expect(
       listPullRequestIssueCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -740,7 +766,7 @@ describe("provider-result wrappers", () => {
     mockOctokit.pulls.listReviews.mockRejectedValueOnce(rateLimitError);
     await expect(
       listPullRequestReviewsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -751,7 +777,7 @@ describe("provider-result wrappers", () => {
     });
   });
 
-  it("returns provider_unavailable discriminants and preserves legacy null shapes without raw logs", async () => {
+  it("returns provider_unavailable discriminants and maps single-PR failures to null without raw logs", async () => {
     const providerError = Object.assign(new Error("token ghp_secret leaked"), {
       status: 500,
     });
@@ -762,18 +788,13 @@ describe("provider-result wrappers", () => {
     mockOctokit.pulls.listReviews.mockRejectedValue(providerError);
 
     await expect(
-      getSinglePullRequestWithProviderResult(
-        INSTALLATION_ID,
-        OWNER,
-        REPO,
-        PULL_NUMBER
-      )
+      getSinglePullRequestWithProviderResult(octokit, OWNER, REPO, PULL_NUMBER)
     ).resolves.toEqual({
       status: GitHubProviderResultStatus.ProviderUnavailable,
     });
     await expect(
       compareBranchFileChangesWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         "main",
@@ -784,7 +805,7 @@ describe("provider-result wrappers", () => {
     });
     await expect(
       listPullRequestIssueCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -794,7 +815,7 @@ describe("provider-result wrappers", () => {
     });
     await expect(
       listPullRequestReviewsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER
@@ -804,19 +825,7 @@ describe("provider-result wrappers", () => {
     });
 
     await expect(
-      getSinglePullRequest(INSTALLATION_ID, OWNER, REPO, PULL_NUMBER)
-    ).resolves.toBeNull();
-    await expect(
-      compareBranchFileChanges(INSTALLATION_ID, OWNER, REPO, "main", "feature")
-    ).resolves.toBeNull();
-    await expect(
-      listPullRequestReviewComments(INSTALLATION_ID, OWNER, REPO, PULL_NUMBER)
-    ).resolves.toBeNull();
-    await expect(
-      listPullRequestIssueComments(INSTALLATION_ID, OWNER, REPO, PULL_NUMBER)
-    ).resolves.toBeNull();
-    await expect(
-      listPullRequestReviews(INSTALLATION_ID, OWNER, REPO, PULL_NUMBER)
+      getSinglePullRequest(octokit, OWNER, REPO, PULL_NUMBER)
     ).resolves.toBeNull();
     expect(JSON.stringify(mockLogWarn.mock.calls)).not.toContain("ghp_secret");
   });
@@ -831,7 +840,7 @@ describe("provider-result wrappers", () => {
 
     await expect(
       listPullRequestReviewCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER,
@@ -860,7 +869,7 @@ describe("provider-result wrappers", () => {
 
     await expect(
       listPullRequestIssueCommentsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER,
@@ -888,7 +897,7 @@ describe("provider-result wrappers", () => {
 
     await expect(
       listPullRequestReviewsWithProviderResult(
-        INSTALLATION_ID,
+        octokit,
         OWNER,
         REPO,
         PULL_NUMBER,

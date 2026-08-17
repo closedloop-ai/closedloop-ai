@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/renderer-ipc.ts
+ * Unit tests for apps/desktop/src/main/ipc/renderer-ipc.ts
  *
  * Covers:
  *   - sendToRendererWindow guards null / destroyed / disposed-frame teardown
@@ -8,17 +8,21 @@
  *   - evaluateRenderProcessGone reload policy: skips clean exits and teardown,
  *     reloads on abnormal disappearance, and trips the rolling-window
  *     reload-loop breaker.
+ *   - isTrustedRendererSender fails closed through teardown instead of throwing
+ *     "Object has been destroyed" out of every IPC handler gated on it.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { WebContents } from "electron";
 import {
   CRASH_RELOAD_WINDOW_MS,
   evaluateRenderProcessGone,
   isFrameDisposed,
+  isTrustedRendererSender,
   MAX_CRASH_RELOADS,
   sendToRendererWindow,
-} from "../src/main/renderer-ipc.js";
+} from "../src/main/ipc/renderer-ipc.js";
 import { fakeWindow, type SendCall } from "./helpers/fake-window.js";
 
 test("sendToRendererWindow drops when the window is gone", () => {
@@ -207,4 +211,45 @@ test("sendToRendererWindow returns false early when mainFrame is destroyed (no s
   );
   assert.equal(sent, false);
   assert.equal(calls.length, 0);
+});
+
+test("isTrustedRendererSender trusts this window's own webContents", () => {
+  const window = fakeWindow({});
+  assert.equal(
+    isTrustedRendererSender(window, window.webContents as WebContents),
+    true
+  );
+});
+
+test("isTrustedRendererSender rejects another window's webContents", () => {
+  const window = fakeWindow({});
+  const stranger = fakeWindow({});
+  assert.equal(
+    isTrustedRendererSender(window, stranger.webContents as WebContents),
+    false
+  );
+});
+
+test("isTrustedRendererSender rejects when there is no window", () => {
+  assert.equal(
+    isTrustedRendererSender(null, fakeWindow({}).webContents as WebContents),
+    false
+  );
+});
+
+test("isTrustedRendererSender fails closed on a destroyed window without reading webContents", () => {
+  // The production crash: IPC invokes still in flight while the window goes away
+  // (quit, or an app.exit() from the process error handlers). Reading
+  // `.webContents` on a destroyed BrowserWindow THROWS "Object has been
+  // destroyed", so `sender === window?.webContents` — whose `?.` covers null
+  // only — raised out of every handler gated on this, flooding the log with
+  // "Error occurred in handler for 'desktop:get-runtime-status'". The
+  // window-level isDestroyed() guard must short-circuit before that read, and an
+  // unverifiable sender must read as untrusted.
+  const destroyed = fakeWindow({
+    windowDestroyed: true,
+    webContentsThrows: new Error("Object has been destroyed"),
+  });
+  const sender = fakeWindow({}).webContents as WebContents;
+  assert.equal(isTrustedRendererSender(destroyed, sender), false);
 });

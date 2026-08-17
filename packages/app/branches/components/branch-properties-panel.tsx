@@ -6,29 +6,21 @@ import type {
 } from "@repo/api/src/types/branch";
 import { BranchStatus as BranchStatusEnum } from "@repo/api/src/types/branch";
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
-import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activation";
-import {
-  ChevronRightIcon,
-  GitBranchIcon,
-  GitPullRequestIcon,
-} from "lucide-react";
+import { ChevronRightIcon, GitBranchIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { BRANCH_STATUS_CONFIG } from "../lib/branch-row";
 import { toRenderStatus } from "../lib/branch-row-adapter";
-import type { PreferredBranchLoc } from "../lib/live-overlays/use-preferred-branch-loc";
+import type { PreferredBranchLoc } from "../lib/preferred-branch-loc";
 
 /**
  * Branch Properties panel (Epic D / D8) — restyled to the Branches Page design
- * handoff. Reuses the session-detail's `.sd3-props` "quiet" aesthetic (same
- * collapsible header, preview chips when collapsed, and `prd-props` grid when
- * open) so the branch and session detail rails match. Shows the fields with a
- * real v1 producer (Status, Branch, Pull request, Changes, Reviewer,
- * Repository, Sessions); the empty placeholder fields are not rendered until
- * their enrichment lands. Defaults collapsed, like the session detail.
+ * handoff. Reuses the session-detail's `.sd3-props` quiet aesthetic and keeps
+ * only Branch-owned facts here. Pull-request selection belongs to the
+ * persistent selector below this panel.
  */
 export type BranchPropertiesPanelProps = {
   detail: BranchPageDetail;
-  /** PR-preferred LOC from `usePreferredBranchLoc`; omit to use `detail` columns. */
+  /** Branch changed-LOC from `resolvePreferredBranchLoc`; omit to use `detail` columns. */
   loc?: PreferredBranchLoc;
 };
 
@@ -60,7 +52,9 @@ function buildPropertyRows({
   statusLabel: string;
   loc?: PreferredBranchLoc;
 }): [string, ReactNode][] {
-  // Prefer the connected PR's live LOC (authoritative) over enrichment columns.
+  // PLN-1535 M5.3 retired the live `/pr/files` overlay, so `loc` is now just
+  // `resolvePreferredBranchLoc`'s read of the same projection columns; it stays
+  // a prop so the page resolves LOC once and every panel shows one number.
   const additions = loc ? loc.additions : detail.additions;
   const deletions = loc ? loc.deletions : detail.deletions;
   const hasChanges = additions != null && deletions != null;
@@ -87,29 +81,7 @@ function buildPropertyRows({
         {detail.branchName}
       </span>,
     ],
-    [
-      "Pull request",
-      detail.prNumber == null ? (
-        <span className="text-muted-foreground" key="pr">
-          No PR yet
-        </span>
-      ) : (
-        <span className="sd3-pp" key="pr" title={formatPrTitle(detail)}>
-          <GitPullRequestIcon aria-hidden className="size-3.5" />
-          <span className="font-mono">#{detail.prNumber}</span>
-          {detail.prTitle ? (
-            <span className="min-w-0 truncate">{detail.prTitle}</span>
-          ) : null}
-        </span>
-      ),
-    ],
     ["Changes", changesValue],
-    [
-      "Reviewer",
-      <span className="text-muted-foreground" key="rev">
-        Unassigned
-      </span>,
-    ],
     [
       "Repository",
       detail.repoFullName ? (
@@ -138,20 +110,31 @@ export function BranchPropertiesPanel({
 
   return (
     <section className="prd-props-section sd3-props bq-props" data-open={open}>
-      {/* biome-ignore lint/a11y/useSemanticElements: matches the session detail's role="button" properties header for design parity (FEA-1769). */}
-      <div
+      <button
         aria-expanded={open}
-        className="prd-props-header"
+        className="w-full border-0 bg-transparent p-0 text-left"
         onClick={() => setOpen((value) => !value)}
-        onKeyDown={activateOnEnterOrSpace(() => setOpen((value) => !value))}
-        role="button"
-        tabIndex={0}
+        type="button"
       >
-        <span className="prd-props-title">Properties</span>
-        <span className="prd-props-chevron">
-          <ChevronRightIcon aria-hidden className="size-4" />
+        <span className="prd-props-header">
+          <span className="prd-props-title">Properties</span>
+          <span className="prd-props-chevron">
+            <ChevronRightIcon aria-hidden className="size-4" />
+          </span>
         </span>
-      </div>
+        {open ? null : (
+          <span className="sd3-props-preview">
+            <span className="sd3-pp">
+              <span className="sd3-status-dot" style={{ background: dot }} />
+              {statusLabel}
+            </span>
+            <span className="sd3-pp font-mono" title={detail.branchName}>
+              <GitBranchIcon aria-hidden className="size-3.5" />
+              <span className="min-w-0 truncate">{detail.branchName}</span>
+            </span>
+          </span>
+        )}
+      </button>
 
       {open ? (
         <div className="prd-props">
@@ -164,34 +147,7 @@ export function BranchPropertiesPanel({
             </div>
           ))}
         </div>
-      ) : (
-        <button
-          className="sd3-props-preview"
-          onClick={() => setOpen(true)}
-          type="button"
-        >
-          <span className="sd3-pp">
-            <span className="sd3-status-dot" style={{ background: dot }} />
-            {statusLabel}
-          </span>
-          <span className="sd3-pp font-mono" title={detail.branchName}>
-            <GitBranchIcon aria-hidden className="size-3" />
-            <span className="min-w-0 truncate">{detail.branchName}</span>
-          </span>
-          {detail.prNumber == null ? null : (
-            <span className="sd3-pp font-mono">
-              <GitPullRequestIcon aria-hidden className="size-3" />#
-              {detail.prNumber}
-            </span>
-          )}
-        </button>
-      )}
+      ) : null}
     </section>
   );
-}
-
-function formatPrTitle(detail: BranchPageDetail): string {
-  return detail.prTitle
-    ? `#${detail.prNumber} ${detail.prTitle}`
-    : `#${detail.prNumber}`;
 }

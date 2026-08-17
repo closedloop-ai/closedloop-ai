@@ -19,8 +19,18 @@ import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { TimeSeriesAreaChart } from "@repo/design-system/components/ui/time-series-area-chart";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
+import { useChartMaxSeries } from "../../shared/lib/use-chart-max-series";
+import { chartTileTitle } from "../lib/chart-tile-title";
 import { metricAllowsFractions, metricValueFormatter } from "../lib/format";
-import { type TileDescriptor, TileKind } from "../lib/tile-catalog";
+import {
+  type ChartTileDescriptor,
+  type TileDescriptor,
+  TileKind,
+} from "../lib/tile-catalog";
+import {
+  UsageGrouping,
+  usageOtherSeriesLabel,
+} from "./overview/usage-graph-toggles";
 import { ReviewerTable } from "./reviewer-table";
 
 export type InsightsSectionData = {
@@ -31,12 +41,86 @@ export type InsightsSectionData = {
 
 const LOCAL_DATA_UNAVAILABLE = "No data yet";
 
+/**
+ * Aggregate-band noun for a tile whose series dimension has no domain word —
+ * every time-series tile grouped by `date` draws one series per metric, not one
+ * per entity, so there is no entity to name.
+ */
+const GENERIC_OTHER_SERIES_LABEL = "Other series";
+
+/**
+ * ISS-5523 (thadeusb review) — the noun the tile's aggregate band is named with.
+ *
+ * The tile path DOES know its grouping, which was the open question on the
+ * review: every chart tile descriptor already carries `groupBy`, and the
+ * per-model tile declares `{ key: "model", label: "Model" }`. So this reads the
+ * dimension off the descriptor instead of falling back to a generic word, and
+ * routes it through the SAME {@link usageOtherSeriesLabel} the dashboard row
+ * (`ModelUsageChart`) and the agent-detail trend (`TokenTrendChart`) use. That
+ * is the point: a shared helper means the tile cannot drift into saying "Other
+ * series (3)" beside a row saying "Other models (7)" for the same dimension, and
+ * a future rename lands on all three surfaces at once.
+ *
+ * `TileGroupBy.key` is matched against `UsageGrouping` rather than the human
+ * `label` because the key is the stable machine identifier — the label is display
+ * copy and is free to change ("Model" → "Model name") without meaning a different
+ * dimension.
+ *
+ * Anything else keeps {@link GENERIC_OTHER_SERIES_LABEL}. A date-grouped tile is
+ * single-series and cannot reach the cap at all, so that branch is a floor rather
+ * than a live inconsistency — but it stays correct if such a tile ever gains
+ * categorical series.
+ */
+function tileOtherSeriesLabel(tile: TileDescriptor): string {
+  if (tile.groupBy?.key === UsageGrouping.Model) {
+    return usageOtherSeriesLabel(UsageGrouping.Model);
+  }
+  if (tile.groupBy?.key === UsageGrouping.Provider) {
+    return usageOtherSeriesLabel(UsageGrouping.Provider);
+  }
+  return GENERIC_OTHER_SERIES_LABEL;
+}
+
 export function selectKpi(
   tile: TileDescriptor,
   sections: InsightsSectionData
 ): KpiStat | undefined {
   const response = sections[tile.section];
   return response?.kpis.find((entry) => entry.key === tile.dataKey);
+}
+
+/**
+ * The card heading for a chart tile, per {@link chartTileTitle} (ISS-5507) —
+ * this is the section-dispatch half, resolving the tile's own series and KPI
+ * stat out of whichever section response it reads.
+ */
+export function selectChartTitle(
+  tile: ChartTileDescriptor,
+  sections: InsightsSectionData
+): string {
+  return chartTileTitle(
+    tile,
+    selectTimeSeries(tile, sections),
+    sections[tile.section]?.kpis
+  );
+}
+
+function selectTimeSeries(
+  tile: TileDescriptor,
+  sections: InsightsSectionData
+): TimeSeries | undefined {
+  if (tile.section === InsightsSection.Delivery) {
+    const response = sections[InsightsSection.Delivery];
+    return response ? getDeliveryTimeSeries(tile.dataKey, response) : undefined;
+  }
+  if (tile.section === InsightsSection.Utilization) {
+    const response = sections[InsightsSection.Utilization];
+    return response
+      ? getUtilizationTimeSeries(tile.dataKey, response)
+      : undefined;
+  }
+  const response = sections[InsightsSection.Agents];
+  return response ? getAgentsTimeSeries(tile.dataKey, response) : undefined;
 }
 
 export function InsightsChartContent({
@@ -101,7 +185,8 @@ function renderDelivery(
       comparison ? getDeliveryTimeSeries(tile.dataKey, comparison) : undefined,
       comparisonLabel,
       metricValueFormatter(tile.metricKey),
-      metricAllowsFractions(tile.metricKey)
+      metricAllowsFractions(tile.metricKey),
+      tileOtherSeriesLabel(tile)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
@@ -113,9 +198,15 @@ function renderDelivery(
     );
   }
   if (tile.kind === TileKind.Heatmap) {
+    const chart = getDeliveryTimeSeries(tile.dataKey, response);
     return renderHeatmap(
-      getDeliveryTimeSeries(tile.dataKey, response),
-      metricValueFormatter(tile.metricKey)
+      chart,
+      metricValueFormatter(tile.metricKey),
+      // The heatmap's sr-only grid name, resolved through the SAME helper and
+      // the SAME two sources as the visible card heading (ISS-5507) — a second
+      // resolution here is how a screen reader ends up hearing a different
+      // population than the one printed above the chart.
+      chartTileTitle(tile, chart, response.kpis)
     );
   }
 
@@ -144,7 +235,8 @@ function renderUtilization(
         : undefined,
       comparisonLabel,
       metricValueFormatter(tile.metricKey),
-      metricAllowsFractions(tile.metricKey)
+      metricAllowsFractions(tile.metricKey),
+      tileOtherSeriesLabel(tile)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
@@ -156,9 +248,11 @@ function renderUtilization(
     );
   }
   if (tile.kind === TileKind.Heatmap) {
+    const chart = getUtilizationTimeSeries(tile.dataKey, response);
     return renderHeatmap(
-      getUtilizationTimeSeries(tile.dataKey, response),
-      metricValueFormatter(tile.metricKey)
+      chart,
+      metricValueFormatter(tile.metricKey),
+      chartTileTitle(tile, chart, response.kpis)
     );
   }
   if (tile.kind === TileKind.ReviewerTable) {
@@ -187,7 +281,8 @@ function renderAgents(
       comparison ? getAgentsTimeSeries(tile.dataKey, comparison) : undefined,
       comparisonLabel,
       metricValueFormatter(tile.metricKey),
-      metricAllowsFractions(tile.metricKey)
+      metricAllowsFractions(tile.metricKey),
+      tileOtherSeriesLabel(tile)
     );
   }
   if (tile.kind === TileKind.TimeSeriesBar) {
@@ -199,9 +294,11 @@ function renderAgents(
     );
   }
   if (tile.kind === TileKind.Heatmap) {
+    const chart = getAgentsTimeSeries(tile.dataKey, response);
     return renderHeatmap(
-      getAgentsTimeSeries(tile.dataKey, response),
-      metricValueFormatter(tile.metricKey)
+      chart,
+      metricValueFormatter(tile.metricKey),
+      chartTileTitle(tile, chart, response.kpis)
     );
   }
 
@@ -213,19 +310,67 @@ function renderTimeSeries(
   comparison: TimeSeries | undefined,
   comparisonLabel: string | undefined,
   valueFormatter: (value: number) => string,
-  allowDecimals: boolean
+  allowDecimals: boolean,
+  otherSeriesLabel: string
 ): ReactNode {
   return chart && hasTimeSeriesData(chart) ? (
-    <TimeSeriesAreaChart
+    <GatedTimeSeriesAreaChart
       allowDecimals={allowDecimals}
+      chart={chart}
       comparison={comparison}
       comparisonLabel={comparisonLabel}
-      points={chart.points}
-      series={chart.series}
+      otherSeriesLabel={otherSeriesLabel}
       valueFormatter={valueFormatter}
     />
   ) : (
     <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />
+  );
+}
+
+/**
+ * ISS-5523 — the tile's time-series chart, capped at one series per
+ * distinguishable palette colour once the gate opens.
+ *
+ * A component rather than a `maxSeries` argument threaded down from
+ * `InsightsChartContent`: the flag read is a hook, and `renderTimeSeries` and
+ * its three `render*` callers are plain functions. Reading it here keeps the
+ * gate at the one place that draws the chart instead of adding a parameter to
+ * four signatures that have no other use for it.
+ *
+ * The aggregate band's noun comes from {@link tileOtherSeriesLabel}, which reads
+ * the tile's own `groupBy` dimension — so a per-model tile says "Other models
+ * (N)" in step with the dashboard row rather than a generic word of its own, and
+ * a tile with no entity dimension still gets something that stands on its own
+ * the moment someone screenshots the legend out of the card, away from the title
+ * that would have explained it.
+ */
+function GatedTimeSeriesAreaChart({
+  chart,
+  comparison,
+  comparisonLabel,
+  valueFormatter,
+  allowDecimals,
+  otherSeriesLabel,
+}: {
+  chart: TimeSeries;
+  comparison: TimeSeries | undefined;
+  comparisonLabel: string | undefined;
+  valueFormatter: (value: number) => string;
+  allowDecimals: boolean;
+  otherSeriesLabel: string;
+}): ReactNode {
+  const maxSeries = useChartMaxSeries();
+  return (
+    <TimeSeriesAreaChart
+      allowDecimals={allowDecimals}
+      comparison={comparison}
+      comparisonLabel={comparisonLabel}
+      maxSeries={maxSeries}
+      otherSeriesLabel={otherSeriesLabel}
+      points={chart.points}
+      series={chart.series}
+      valueFormatter={valueFormatter}
+    />
   );
 }
 
@@ -309,25 +454,36 @@ function TrackedTimeSeriesBarChart({
 
 function renderHeatmap(
   chart: TimeSeries | undefined,
-  valueFormatter: (value: number) => string
+  valueFormatter: (value: number) => string,
+  label: string
 ): ReactNode {
   if (!(chart && hasTimeSeriesData(chart))) {
     return <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />;
   }
-  return <HeatmapChart chart={chart} valueFormatter={valueFormatter} />;
+  return (
+    <HeatmapChart chart={chart} label={label} valueFormatter={valueFormatter} />
+  );
 }
 
 function HeatmapChart({
   chart,
   valueFormatter,
+  label,
 }: {
   chart: TimeSeries;
   valueFormatter: (value: number) => string;
+  label: string;
 }) {
   // The sort + iterative Date walk is non-trivial; memoize per chart so it
   // doesn't recompute on every tile re-render.
   const weeks = useMemo(() => timeSeriesToHeatmapWeeks(chart), [chart]);
-  return <ActivityHeatmap valueFormatter={valueFormatter} weeks={weeks} />;
+  return (
+    <ActivityHeatmap
+      label={label}
+      valueFormatter={valueFormatter}
+      weeks={weeks}
+    />
+  );
 }
 
 function renderCategory(
@@ -335,14 +491,39 @@ function renderCategory(
   data: CategoryBucket[] | undefined
 ): ReactNode {
   if (!data?.some((bucket) => bucket.value > 0)) {
-    return <ChartEmpty message={LOCAL_DATA_UNAVAILABLE} />;
+    // wongk (#4282): a producer that emits every bucket for an empty period is
+    // reporting a MEASURED zero — it ran the query and the answer was nothing.
+    // That is a different fact from an absent field (a peer that never computed
+    // this chart), and a tile that declares its own zero-state copy says so
+    // instead of showing the same "no data" as a chart nobody populated.
+    const measuredZero =
+      tile.zeroStateMessage !== undefined &&
+      data !== undefined &&
+      data.length > 0;
+    return (
+      <ChartEmpty
+        message={
+          measuredZero
+            ? (tile.zeroStateMessage ?? LOCAL_DATA_UNAVAILABLE)
+            : LOCAL_DATA_UNAVAILABLE
+        }
+      />
+    );
   }
   const valueFormatter = metricValueFormatter(tile.metricKey);
   return tile.kind === TileKind.Donut ? (
-    <DonutChart data={data} valueFormatter={valueFormatter} />
+    <DonutChart
+      colorByKey={tile.colorByKey}
+      data={data}
+      showSharePercent={tile.showSharePercent}
+      textureByKey={tile.textureByKey}
+      textureMarkColorByKey={tile.textureMarkColorByKey}
+      valueFormatter={valueFormatter}
+    />
   ) : (
     <CategoryBarChart
       allowDecimals={metricAllowsFractions(tile.metricKey)}
+      colorByKey={tile.colorByKey}
       data={data}
       horizontal={tile.horizontal}
       showValueLabels={tile.showValueLabels}
@@ -568,6 +749,11 @@ function getAgentsCategory(
       return charts.agentsByStatus;
     case "agentsByType":
       return charts.agentsByType;
+    // ISS-4463: omitted by peers that don't compute it (older cloud builds, the
+    // desktop-local backend), so this stays undefined there and the tile renders
+    // its empty state rather than a fabricated set of zero buckets.
+    case "spendByOutcome":
+      return charts.spendByOutcome;
     default:
       return undefined;
   }

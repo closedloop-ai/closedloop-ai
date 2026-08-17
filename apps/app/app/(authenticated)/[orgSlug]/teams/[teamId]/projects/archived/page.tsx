@@ -107,8 +107,10 @@ export default function TeamArchivedProjectsPage() {
           { label: team.name, href: `/${orgSlug}/teams/${teamId}/projects` },
           { label: "Archived Projects" },
         ]}
+        suppressPageHeading
       />
-      <main className="flex flex-1 flex-col overflow-hidden">
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex flex-1 flex-col overflow-hidden">
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Archived Projects</h1>
           <TableViewMenu
@@ -131,7 +133,7 @@ export default function TeamArchivedProjectsPage() {
             visibleColumns={visibleColumns}
           />
         </div>
-      </main>
+      </div>
     </>
   );
 }

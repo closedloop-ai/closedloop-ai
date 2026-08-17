@@ -21,6 +21,7 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { CheckCircleIcon, KeyIcon, Loader2Icon, TrashIcon } from "lucide-react";
 import { useState } from "react";
+import { ANTHROPIC_API_KEY_CARD_ANCHOR } from "../settings-tabs";
 
 function KeyStatusRow({
   label,
@@ -125,7 +126,10 @@ export function AnthropicApiKeyCard({
   };
 
   return (
-    <Card>
+    // Anchor target for `?tab=integrations#anthropic-api-key`. The card owns
+    // its own id so every render site is linkable, and so the six-card
+    // Integrations stack does not make a one-click fix into a scan.
+    <Card id={ANTHROPIC_API_KEY_CARD_ANCHOR} tabIndex={-1}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <KeyIcon className="h-5 w-5" />

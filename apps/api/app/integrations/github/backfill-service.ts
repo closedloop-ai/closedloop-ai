@@ -2,7 +2,16 @@ import {
   GitHubBackfillStatus,
   type GitHubBackfillSummary,
 } from "@repo/api/src/types/github";
-import { GitHubProviderBudgetState } from "@repo/api/src/types/github-read-model";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+  GitHubProviderBudgetState,
+} from "@repo/api/src/types/github-read-model";
+import {
+  type RepositoryDefaultProvenance,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity";
 import type { Prisma } from "@repo/database";
 import {
   ArtifactType,
@@ -18,12 +27,17 @@ import {
   queryBundledPullRequestsWithProviderResult,
   queryStatusCheckRollupWithProviderResult,
 } from "@repo/github";
+import type { Octokit } from "@repo/github/user-token-auth";
 import { z } from "zod";
 import { parseGitHubPullRequestUrl } from "@/app/artifact-links/pull-requests/pull-request-url";
+import { writeReconciledPullRequestFailures } from "@/app/cron/reconcile-pull-requests/reconcile-projection-write";
 import {
-  type GitHubBackfillPullRequestMetadata,
-  githubBackfillProjectionWriter,
-} from "./backfill-projection-writer";
+  createGitHubReadCostObserver,
+  GitHubReadCostRoute,
+} from "@/lib/github/github-read-cost-log";
+import { acquireInstallationClient } from "@/lib/github/installation-client";
+import type { GitHubBackfillPullRequestMetadata } from "./backfill-projection-contract";
+import { githubBackfillProjectionWriter } from "./backfill-projection-writer";
 import { githubService } from "./service";
 
 export type RunGitHubBackfillInput = {
@@ -132,6 +146,27 @@ async function runPostConnectBackfillAfterClaim(
         repository.id,
         repository.fullName
       );
+      // One installation client per repository sweep, shared by the bundled
+      // read and every per-PR metadata read below (PLN-1525: resolve once
+      // per operation, thread down). A failed acquisition is classified like
+      // any other provider failure so a throttled token endpoint stays
+      // distinguishable in the summary.
+      const acquired = await acquireInstallationClient(
+        repository.installation.installationId
+      );
+      if (acquired.status !== GitHubProviderResultStatus.Success) {
+        failures.push(`${repository.fullName}:${acquired.status}`);
+        continue;
+      }
+      const octokit = acquired.value;
+      const authorityProvenance: RepositoryDefaultProvenance = {
+        source: RepositoryDefaultSource.PullRequestGraphql,
+        mechanism: GitHubFetchMechanism.Graphql,
+        trigger: GitHubFetchTrigger.Backfill,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: randomUUID(),
+        observedAt: new Date().toISOString(),
+      };
       const [branches, pullRequests, bundledPullRequests] = await Promise.all([
         githubService.getBranches(
           repository.id,
@@ -142,10 +177,11 @@ async function runPostConnectBackfillAfterClaim(
           repository.id,
           input.organizationId,
           null,
-          { limit: PULL_REQUEST_PAGE_LIMIT }
+          { limit: PULL_REQUEST_PAGE_LIMIT },
+          GitHubReadCostRoute.Backfill
         ),
         queryBundledPullRequestsWithProviderResult(
-          repository.installation.installationId,
+          octokit,
           repository.owner,
           repository.name,
           targetNumbers,
@@ -159,16 +195,40 @@ async function runPostConnectBackfillAfterClaim(
                 ? PULL_REQUEST_BACKFILL_MAX_PAGES
                 : undefined,
             targetNumbers,
+          },
+          createGitHubReadCostObserver({
+            route: GitHubReadCostRoute.Backfill,
+            organizationId: input.organizationId,
+            repositoryId: repository.id,
+            repositoryFullName: repository.fullName,
+          }),
+          {
+            mechanism: authorityProvenance.mechanism,
+            trigger: authorityProvenance.trigger,
+            credentialType: authorityProvenance.credentialType,
+            observationKey: authorityProvenance.observationKey,
+            observedAt: authorityProvenance.observedAt,
           }
         ),
       ]);
       branchCount += branches.branches.length;
       pullRequestCount += pullRequests.pullRequests.length;
       if (bundledPullRequests.status !== GitHubProviderResultStatus.Success) {
+        if (input.approvedForVisibleWrites) {
+          await writeReconciledPullRequestFailures({
+            organizationId: input.organizationId,
+            repositoryId: repository.id,
+            repositoryFullName: repository.fullName,
+            pullRequestNumbers: targetNumbers,
+            result: bundledPullRequests,
+            provenance: authorityProvenance,
+          });
+        }
         failures.push(`${repository.fullName}:${bundledPullRequests.status}`);
         continue;
       }
       const metadata = await fetchPullRequestMetadata(
+        octokit,
         repository,
         bundledPullRequests.value.pullRequests
       );
@@ -234,9 +294,9 @@ async function runPostConnectBackfillAfterClaim(
 }
 
 async function fetchPullRequestMetadata(
+  octokit: Octokit,
   repository: {
     fullName: string;
-    installation: { installationId: string };
     owner: string;
     name: string;
   },
@@ -252,6 +312,7 @@ async function fetchPullRequestMetadata(
     PULL_REQUEST_METADATA_LIMIT
   )) {
     const metadata = await fetchSinglePullRequestMetadata(
+      octokit,
       repository,
       pullRequest
     );
@@ -262,9 +323,9 @@ async function fetchPullRequestMetadata(
 }
 
 async function fetchSinglePullRequestMetadata(
+  octokit: Octokit,
   repository: {
     fullName: string;
-    installation: { installationId: string };
     owner: string;
     name: string;
   },
@@ -280,21 +341,21 @@ async function fetchSinglePullRequestMetadata(
   const [issueComments, reviewComments, reviews, statusCheckRollup] =
     await Promise.all([
       listPullRequestIssueCommentsWithProviderResult(
-        repository.installation.installationId,
+        octokit,
         repository.owner,
         repository.name,
         pullRequest.number,
         metadataOptions
       ),
       listPullRequestReviewCommentsWithProviderResult(
-        repository.installation.installationId,
+        octokit,
         repository.owner,
         repository.name,
         pullRequest.number,
         metadataOptions
       ),
       listPullRequestReviewsWithProviderResult(
-        repository.installation.installationId,
+        octokit,
         repository.owner,
         repository.name,
         pullRequest.number,
@@ -302,7 +363,7 @@ async function fetchSinglePullRequestMetadata(
       ),
       pullRequest.headSha
         ? queryStatusCheckRollupWithProviderResult(
-            repository.installation.installationId,
+            octokit,
             repository.owner,
             repository.name,
             pullRequest.headSha
@@ -505,6 +566,7 @@ function claimBackfillRun(
           },
         } satisfies Prisma.InputJsonObject,
       },
+      select: { id: true },
     });
     return { claimed: true };
   });
@@ -529,6 +591,7 @@ async function releaseBackfillRun(organizationId: string): Promise<void> {
           },
         } satisfies Prisma.InputJsonObject,
       },
+      select: { id: true },
     });
   });
 }
@@ -563,6 +626,7 @@ async function persistLatestBackfillSummary(
           [BACKFILL_SETTINGS_KEY]: summary,
         } satisfies Prisma.InputJsonObject,
       },
+      select: { id: true },
     });
   });
 }
@@ -597,3 +661,5 @@ function emptyBackfillSummary(): GitHubBackfillSummary {
     failures: [],
   };
 }
+
+import { randomUUID } from "node:crypto";

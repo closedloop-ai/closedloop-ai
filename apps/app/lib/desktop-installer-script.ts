@@ -352,11 +352,22 @@ validate_desktop_download_url() {
   # server's release-resolution path now surfaces legacy DMG URLs, so managed
   # onboarding must download them rather than fail validation. Closed[Ll]oop
   # matches the single-letter casing difference.
-  local desktop_release_url_pattern='^https://github\.com/closedloop-ai/symphony-alpha/releases/download/desktop-v([0-9]+\.[0-9]+\.[0-9]+)/Closed[Ll]oop-([0-9]+\.[0-9]+\.[0-9]+)-universal\.dmg$'
-  if [[ "$CL_DESKTOP_DOWNLOAD_URL" =~ $desktop_release_url_pattern ]] && [ "${SHELL_VAR}{BASH_REMATCH[1]}" = "${SHELL_VAR}{BASH_REMATCH[2]}" ]; then
+  #
+  # Two repos are accepted (FEA-3372): the private release repo (symphony-alpha)
+  # and the public repo the signed DMG is mirrored to, which is what makes this
+  # download work with no credentials — this function's caller fetches the URL
+  # with no Authorization header. Keep in sync with
+  # isAllowedDesktopReleaseDownloadUrl in
+  # packages/api/src/types/desktop-release.ts; a parity test in
+  # apps/app/lib/__tests__/desktop-managed-onboarding.test.ts pins the two
+  # together. POSIX ERE has no non-capturing groups, so the repo alternation is a
+  # real capture group and the version back-references are [2] and [3], not [1]
+  # and [2].
+  local desktop_release_url_pattern='^https://github\.com/closedloop-ai/(symphony-alpha|closedloop-ai)/releases/download/desktop-v([0-9]+\.[0-9]+\.[0-9]+)/Closed[Ll]oop-([0-9]+\.[0-9]+\.[0-9]+)-universal\.dmg$'
+  if [[ "$CL_DESKTOP_DOWNLOAD_URL" =~ $desktop_release_url_pattern ]] && [ "${SHELL_VAR}{BASH_REMATCH[2]}" = "${SHELL_VAR}{BASH_REMATCH[3]}" ]; then
     return 0
   fi
-  fail_step "desktop_download" "symphony-alpha Desktop release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS Closedloop Desktop release asset from closedloop-ai/symphony-alpha."
+  fail_step "desktop_download" "Closedloop Desktop release" "CL_DESKTOP_DOWNLOAD_URL must be an HTTPS Closedloop Desktop release asset from closedloop-ai/symphony-alpha or closedloop-ai/closedloop-ai."
 }
 
 ensure_node_npm() {

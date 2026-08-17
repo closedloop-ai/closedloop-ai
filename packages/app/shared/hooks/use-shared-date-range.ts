@@ -2,10 +2,14 @@
 
 import { useCallback, useRef } from "react";
 import { z } from "zod";
-import { DATE_RANGES, type DateRange } from "../lib/format-utils";
+import {
+  DATE_RANGES,
+  type DateRange,
+  DEFAULT_DATE_RANGE,
+} from "../lib/format-utils";
 import { useLocalStorageState } from "./use-local-storage-state";
 
-const DEFAULT_RANGE: DateRange = "90d";
+const DEFAULT_RANGE: DateRange = DEFAULT_DATE_RANGE;
 const rangeSchema = z.enum(DATE_RANGES);
 
 function storageKey(surface: string): string {
@@ -40,7 +44,10 @@ export type SharedDateRangeState = {
   setDateRange: (range: DateRange) => void;
 };
 
-export function useSharedDateRange(surface: string): SharedDateRangeState {
+export function useSharedDateRange(
+  surface: string,
+  defaultRange: DateRange = DEFAULT_RANGE
+): SharedDateRangeState {
   const migrated = useRef(false);
   if (!migrated.current) {
     migrated.current = true;
@@ -49,11 +56,11 @@ export function useSharedDateRange(surface: string): SharedDateRangeState {
 
   const [raw, setRaw] = useLocalStorageState<string>(
     storageKey(surface),
-    DEFAULT_RANGE
+    defaultRange
   );
 
   const parsed = rangeSchema.safeParse(raw);
-  const dateRange: DateRange = parsed.success ? parsed.data : DEFAULT_RANGE;
+  const dateRange: DateRange = parsed.success ? parsed.data : defaultRange;
 
   const setDateRange = useCallback(
     (range: DateRange) => {

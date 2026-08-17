@@ -48,3 +48,18 @@ export function withDesktopApiNamespaceCapability(
   delete next[DESKTOP_API_NAMESPACE_CAPABILITY_KEY];
   return next;
 }
+
+/**
+ * The pathname of a desktop API path that may carry a query string.
+ *
+ * Command payloads store `path` verbatim, and the relay appends a search string
+ * (e.g. `/api/gateway/health-check/repair?latestVersion=1.2.3`), so any per-path
+ * authorization has to normalize before comparing or it is trivially bypassed.
+ */
+export function toDesktopApiPathname(path: string): string {
+  try {
+    return new URL(path, "http://desktop.local").pathname;
+  } catch {
+    return path.split("?")[0] ?? path;
+  }
+}

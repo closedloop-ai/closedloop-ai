@@ -1,3 +1,7 @@
+import {
+  NAV_FROM_PARAM,
+  NavReferrerSurface,
+} from "@repo/app/shared/lib/nav-referrer";
 import { describe, expect, it } from "vitest";
 import {
   agentDetailHref,
@@ -144,6 +148,21 @@ describe("href builders", () => {
       params: { id },
     });
   });
+
+  // FEA-4262 (desktop producer side): a session's Branch cross-link tags its
+  // branch-detail href with `?from=session` so Back resolves to the referring
+  // sessions list. Pinning the producer here keeps the branch-detail destination
+  // tests (which inject `from=session` directly) from staying green vacuously if
+  // this emission regresses.
+  it("tags branchDetailHref with ?from=session when a referrer surface is given", () => {
+    expect(branchDetailHref("b-1", NavReferrerSurface.Session)).toBe(
+      `/branches/b-1?${NAV_FROM_PARAM}=${NavReferrerSurface.Session}`
+    );
+  });
+
+  it("omits the referrer param from branchDetailHref when no surface is given", () => {
+    expect(branchDetailHref("b-1")).toBe("/branches/b-1");
+  });
 });
 
 describe("normalizeNavId", () => {
@@ -151,6 +170,13 @@ describe("normalizeNavId", () => {
     expect(normalizeNavId("analytics")).toBe("insights");
     expect(normalizeNavId("bogus")).toBe("sessions");
     expect(normalizeNavId(null)).toBe("sessions");
+  });
+
+  it("aliases the legacy scheduled-tasks tab id to Routines (PRD-566/FEA-4348)", () => {
+    // A bare `desktop:navigate-tab` payload or a legacy `#tab=scheduled-tasks`
+    // hash resolves through here; without the alias it would default to
+    // sessions instead of landing on Routines (wongk, #3896).
+    expect(normalizeNavId("scheduled-tasks")).toBe("routines");
   });
 });
 
@@ -170,6 +196,10 @@ describe("hashToHrefEntries", () => {
     expect(hashToHrefEntries("#tab=analytics")).toEqual(["/insights"]);
   });
 
+  it("migrates a legacy scheduled-tasks tab to routines (PRD-566/FEA-4348)", () => {
+    expect(hashToHrefEntries("#tab=scheduled-tasks")).toEqual(["/routines"]);
+  });
+
   it("migrates a legacy tab+sessionId hash to a two-entry stack", () => {
     expect(hashToHrefEntries("#tab=dashboard&sessionId=s-1")).toEqual([
       "/dashboard",
@@ -182,35 +212,36 @@ describe("hashToHrefEntries", () => {
   });
 });
 
-// T-18.6: Packs-Lab removal route tests (AC-020, AC-025)
-describe("NavId — Packs-Lab entries removed (T-18.6)", () => {
-  it("does not include Packs, Skills, Tools, or Subagents in NavId", () => {
+// T-18.6 + FEA-4087: the retired Skills/Tools/Subagents Packs-Lab ids stay
+// removed, but "packs" is reclaimed as the real top-level Packs page (NavId.Packs).
+describe("NavId — retired Packs-Lab entries removed, Packs reclaimed (FEA-4087)", () => {
+  it("does not include Skills, Tools, or Subagents in NavId", () => {
     const values = Object.values(NavId);
-    expect(values).not.toContain("packs");
     expect(values).not.toContain("skills");
     expect(values).not.toContain("tools");
     expect(values).not.toContain("subagents");
   });
 
-  it("includes Agents in NavId", () => {
+  it("includes Agents and the reclaimed Packs in NavId", () => {
     expect(NavId.Agents).toBe("agents");
+    expect(NavId.Packs).toBe("packs");
   });
 
-  // Type-level guard: ensure the NavId object does not have deprecated keys.
-  // This is a runtime check that mirrors the compile-time absence.
-  it("does not have Packs, Skills, Tools, or Subagents keys on the NavId object", () => {
-    expect("Packs" in NavId).toBe(false);
+  // Type-level guard: ensure the NavId object does not have the retired keys,
+  // but does carry the reclaimed Packs key (FEA-4087).
+  it("has the Packs key but not Skills, Tools, or Subagents keys on the NavId object", () => {
+    expect("Packs" in NavId).toBe(true);
     expect("Skills" in NavId).toBe(false);
     expect("Tools" in NavId).toBe(false);
     expect("Subagents" in NavId).toBe(false);
   });
 });
 
-describe("matchRoute — Packs-Lab legacy aliases → Agents (T-18.6)", () => {
-  it("redirects /packs to NavId.Agents", () => {
+describe("matchRoute — /packs is the Packs page; other Packs-Lab aliases → Agents (FEA-4087)", () => {
+  it("resolves /packs to the reclaimed NavId.Packs (no longer Agents)", () => {
     expect(matchRoute("/packs")).toEqual({
       kind: "nav",
-      navId: "agents",
+      navId: "packs",
       params: {},
     });
   });
@@ -278,9 +309,9 @@ describe("matchRoute — Packs-Lab legacy aliases → Agents (T-18.6)", () => {
   });
 });
 
-describe("normalizeNavId — Packs-Lab legacy hash values → Agents (T-18.6)", () => {
-  it("maps legacy 'packs' hash tab to Agents", () => {
-    expect(normalizeNavId("packs")).toBe("agents");
+describe("normalizeNavId — 'packs' is the Packs page; other Packs-Lab values → Agents (FEA-4087)", () => {
+  it("passes 'packs' through to the reclaimed Packs nav (no longer Agents)", () => {
+    expect(normalizeNavId("packs")).toBe("packs");
   });
 
   it("maps legacy 'skills' hash tab to Agents", () => {
@@ -309,9 +340,9 @@ describe("normalizeNavId — Packs-Lab legacy hash values → Agents (T-18.6)", 
   });
 });
 
-describe("hashToHrefEntries — Packs-Lab legacy tab hashes → Agents (T-18.6)", () => {
-  it("migrates a legacy packs tab hash to the Agents workspace", () => {
-    expect(hashToHrefEntries("#tab=packs")).toEqual(["/agents"]);
+describe("hashToHrefEntries — 'packs' tab → Packs page; other Packs-Lab tabs → Agents (FEA-4087)", () => {
+  it("migrates a 'packs' tab hash to the reclaimed Packs page (no longer Agents)", () => {
+    expect(hashToHrefEntries("#tab=packs")).toEqual(["/packs"]);
   });
 
   it("migrates a legacy skills tab hash to the Agents workspace", () => {

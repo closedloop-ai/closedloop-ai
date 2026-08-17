@@ -11,7 +11,7 @@ import { test } from "node:test";
 import type {
   SessionMarker,
   SyncedAgentSession,
-} from "../src/main/agent-session-sync-contract.js";
+} from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   type BackfillResult,
   backfillArtifactLinksFromTranscripts,
@@ -58,9 +58,12 @@ test("FEA-2060: created commit links produce markers and non-created commit link
       "commit"
     );
     assert.equal(marker.label, "Implement marker helper");
-    assert.equal(marker.t, "2026-06-22T10:03:00.000Z");
+    // FEA-3329: the AUTHORITATIVE committed_at (10:04) wins over the shared
+    // per-import ingest link observed_at (10:03). The session span is
+    // 10:00 -> ended_at 10:05, so a 10:04 commit sits at x=80%.
+    assert.equal(marker.t, "2026-06-22T10:04:00.000Z");
     assert.equal(marker.tl, 1);
-    assert.equal(marker.x, 30);
+    assert.equal(marker.x, 80);
     assert.equal(
       byId
         .get("commit-referenced")
@@ -122,8 +125,10 @@ test("FEA-2060: created and workspace PR links produce markers while referenced 
       byId.get("pr-workspace")?.markers,
       "pr"
     );
-    assert.equal(workspaceMarker.t, "2026-06-22T10:02:00.000Z");
-    assert.equal(workspaceMarker.tl, 0);
+    // FEA-3594: no pr_opened_at → falls back to sessionEndMs (last real
+    // activity, 10:05 from seedTimelineEvents), not artifact_observed_at (10:02).
+    assert.equal(workspaceMarker.t, "2026-06-22T10:05:00.000Z");
+    assert.equal(workspaceMarker.tl, 2);
     assert.equal(
       byId.get("pr-referenced")?.markers?.some((item) => item.kind === "pr") ??
         false,
@@ -261,9 +266,12 @@ test("FEA-2060: timestamp fallbacks and malformed rows follow the marker contrac
       "pr-last-seen",
       "malformed",
     ]);
+    // FEA-3329: committed_at (10:02) now wins over the link observed_at (10:01);
+    // both `commit-link` and `commit-committed` share `fallback-commit`
+    // (committed_at 10:02), so both resolve to the real commit time.
     assert.equal(
       onlyMarkerOfKind(byId.get("commit-link")?.markers, "commit").t,
-      "2026-06-22T10:01:00.000Z"
+      "2026-06-22T10:02:00.000Z"
     );
     assert.equal(
       onlyMarkerOfKind(byId.get("commit-committed")?.markers, "commit").t,
@@ -277,13 +285,16 @@ test("FEA-2060: timestamp fallbacks and malformed rows follow the marker contrac
       onlyMarkerOfKind(byId.get("commit-last-seen")?.markers, "commit").t,
       "2026-06-22T10:06:00.000Z"
     );
+    // FEA-3594: no pr_opened_at → falls back to sessionEndMs (last real
+    // activity, 10:05 from seedTimelineEvents) for both PR cases, regardless
+    // of what artifact_observed_at / artifact_last_seen_at contain.
     assert.equal(
       onlyMarkerOfKind(byId.get("pr-observed")?.markers, "pr").t,
-      "2026-06-22T10:07:00.000Z"
+      "2026-06-22T10:05:00.000Z"
     );
     assert.equal(
       onlyMarkerOfKind(byId.get("pr-last-seen")?.markers, "pr").t,
-      "2026-06-22T10:09:00.000Z"
+      "2026-06-22T10:05:00.000Z"
     );
     assert.equal(
       byId
@@ -798,7 +809,6 @@ test("FEA-2060: runtime store-op backfill summaries invalidate marker projection
   });
   assert.deepEqual(markerOnly.storeOps, ["artifactLinks.backfill"]);
   assert.deepEqual(markerOnly.sentMessages, [["desktop:db:changed", {}]]);
-  assert.equal(markerOnly.enrichmentSweeps, 0);
 
   const capturedOnly = await runRuntimeBackfillBoundaryCase({
     captured: 1,
@@ -806,7 +816,6 @@ test("FEA-2060: runtime store-op backfill summaries invalidate marker projection
   });
   assert.deepEqual(capturedOnly.storeOps, ["artifactLinks.backfill"]);
   assert.deepEqual(capturedOnly.sentMessages, [["desktop:db:changed", {}]]);
-  assert.equal(capturedOnly.enrichmentSweeps, 1);
 
   const unchanged = await runRuntimeBackfillBoundaryCase({
     captured: 0,
@@ -814,7 +823,6 @@ test("FEA-2060: runtime store-op backfill summaries invalidate marker projection
   });
   assert.deepEqual(unchanged.storeOps, ["artifactLinks.backfill"]);
   assert.deepEqual(unchanged.sentMessages, []);
-  assert.equal(unchanged.enrichmentSweeps, 0);
 });
 
 // FEA-2986: marker `label` is sourced from free text (commit/PR titles, tool
@@ -888,16 +896,164 @@ test("FEA-2986: oversized artifact- and trace-marker labels are clamped to the c
   });
 });
 
+// FEA-3329: the PR/commit timeline markers must land at their REAL times — the
+// PR from `pull_requests.opened_at` and the commit from `artifacts.committed_at`
+// — NOT the single shared per-import ingest `now` stamped on every artifact
+// link's `observed_at` in one extraction pass. Before this fix every PR marker
+// bunched at one synthetic timestamp and every commit at another (identical to
+// the millisecond), collapsing them all to the end of the Session Timeline.
+test("FEA-3329: PR/commit markers use pull_requests.opened_at + committed_at, not the shared link ingest now", async () => {
+  await withTestDb(async (db) => {
+    await seedSession(db, "real-times");
+    await seedTimelineEvents(db, "real-times");
+
+    // Two PRs opened at genuinely different times; the SHARED ingest `now`
+    // (link observed_at) is identical for both, exactly as the extractor stamps
+    // it. With the bug, both markers would collapse to 10:09:00.000Z.
+    const sharedIngestNow = "2026-06-22T10:09:00.000Z";
+    await seedPullRequestArtifact(db, {
+      id: "pr-early-artifact",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3329,
+      title: "Early PR",
+      observedAt: sharedIngestNow,
+      lastSeenAt: sharedIngestNow,
+    });
+    await seedPullRequestArtifact(db, {
+      id: "pr-late-artifact",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3330,
+      title: "Late PR",
+      observedAt: sharedIngestNow,
+      lastSeenAt: sharedIngestNow,
+    });
+    await seedPullRequestLifecycle(db, {
+      id: "pr-early-lifecycle",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3329,
+      openedAt: "2026-06-22T10:02:00.000Z",
+    });
+    await seedPullRequestLifecycle(db, {
+      id: "pr-late-lifecycle",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3330,
+      openedAt: "2026-06-22T10:07:00.000Z",
+    });
+    await linkArtifact(db, {
+      id: "pr-early-link",
+      sessionId: "real-times",
+      artifactId: "pr-early-artifact",
+      relation: "created",
+      method: "pr_create_output",
+      observedAt: sharedIngestNow,
+    });
+    await linkArtifact(db, {
+      id: "pr-late-link",
+      sessionId: "real-times",
+      artifactId: "pr-late-artifact",
+      relation: "created",
+      method: "pr_create_output",
+      observedAt: sharedIngestNow,
+    });
+
+    // A commit whose committed_at differs from the shared ingest `now`.
+    await seedCommitArtifact(db, {
+      id: "real-commit-artifact",
+      sha: "realtime12345",
+      title: "Real-time commit",
+      committedAt: "2026-06-22T10:04:00.000Z",
+      observedAt: sharedIngestNow,
+      lastSeenAt: sharedIngestNow,
+    });
+    await linkArtifact(db, {
+      id: "real-commit-link",
+      sessionId: "real-times",
+      artifactId: "real-commit-artifact",
+      relation: "created",
+      method: "commit_output",
+      observedAt: sharedIngestNow,
+    });
+
+    const byId = await loadById(db, ["real-times"]);
+    const markers = byId.get("real-times")?.markers ?? [];
+    const prMarkers = markers.filter((marker) => marker.kind === "pr");
+    const commitMarker = onlyMarkerOfKind(markers, "commit");
+
+    // Both PRs resolve to their real opened_at — NOT the shared ingest now.
+    const early = prMarkers.find((marker) => marker.label.includes("#3329"));
+    const late = prMarkers.find((marker) => marker.label.includes("#3330"));
+    assert.ok(early && late, "both PR markers present");
+    assert.equal(early.t, "2026-06-22T10:02:00.000Z");
+    assert.equal(late.t, "2026-06-22T10:07:00.000Z");
+    // The two PR markers land at DIFFERENT positions, not bunched together.
+    assert.notEqual(early.t, late.t);
+    assert.notEqual(early.x, late.x);
+    assert.ok(
+      early.x < late.x,
+      "earlier PR sits earlier on the timeline than the later PR"
+    );
+
+    // The commit resolves to its real committed_at, not the shared ingest now.
+    assert.equal(commitMarker.t, "2026-06-22T10:04:00.000Z");
+    for (const marker of [early, late, commitMarker]) {
+      assert.notEqual(
+        marker.t,
+        sharedIngestNow,
+        `${marker.label} must not fall back to the shared ingest now`
+      );
+    }
+  });
+});
+
+// FEA-3329 + FEA-3594: when opened_at is genuinely absent (PR not yet
+// enriched), the PR marker falls back to sessionEndMs — the corrected
+// activity-end anchor — rather than the import timestamps (link_observed_at,
+// artifact_observed_at) which are meaningless rebuild artifacts.
+test("FEA-3329: an un-enriched PR (null opened_at) falls back to sessionEndMs", async () => {
+  await withTestDb(async (db) => {
+    await seedSession(db, "unenriched-pr");
+    await seedTimelineEvents(db, "unenriched-pr");
+    await seedPullRequestArtifact(db, {
+      id: "unenriched-pr-artifact",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3331,
+      title: "Un-enriched PR",
+      observedAt: "2026-06-22T10:03:00.000Z",
+      lastSeenAt: "2026-06-22T10:08:00.000Z",
+    });
+    // pull_requests row exists but opened_at is null (enrichment not yet run).
+    await seedPullRequestLifecycle(db, {
+      id: "unenriched-pr-lifecycle",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3331,
+      openedAt: null,
+    });
+    await linkArtifact(db, {
+      id: "unenriched-pr-link",
+      sessionId: "unenriched-pr",
+      artifactId: "unenriched-pr-artifact",
+      relation: "created",
+      method: "pr_create_output",
+      observedAt: "2026-06-22T10:04:00.000Z",
+    });
+
+    const byId = await loadById(db, ["unenriched-pr"]);
+    const marker = onlyMarkerOfKind(byId.get("unenriched-pr")?.markers, "pr");
+    // FEA-3594: opened_at null → fall back to sessionEndMs (last real activity
+    // from seedTimelineEvents = "2026-06-22T10:05:00.000Z"), NOT link_observed_at
+    // ("2026-06-22T10:04:00.000Z") which is a meaningless rebuild artifact.
+    assert.equal(marker.t, "2026-06-22T10:05:00.000Z");
+  });
+});
+
 async function runRuntimeBackfillBoundaryCase(
   summary: Pick<BackfillResult, "captured" | "touchedForMarkers">
 ): Promise<{
   storeOps: string[];
   sentMessages: ["desktop:db:changed", Record<string, never>][];
-  enrichmentSweeps: number;
 }> {
   const storeOps: string[] = [];
   const sentMessages: ["desktop:db:changed", Record<string, never>][] = [];
-  let enrichmentSweeps = 0;
   const backfillSummary: BackfillResult = {
     captured: summary.captured,
     deduped: 0,
@@ -925,16 +1081,9 @@ async function runRuntimeBackfillBoundaryCase(
         },
       },
     }),
-    triggerEnrichmentSweep: () => {
-      enrichmentSweeps += 1;
-      return Promise.resolve();
-    },
-    onEnrichmentSweepFailure: (error) => {
-      throw error;
-    },
   });
 
-  return { storeOps, sentMessages, enrichmentSweeps };
+  return { storeOps, sentMessages };
 }
 
 async function withTestDb(run: (db: TestDb) => Promise<void>): Promise<void> {
@@ -984,7 +1133,15 @@ async function seedSession(
     sessionId,
     "2026-06-22T10:00:00.000Z",
     updatedAt,
-    "2026-06-22T10:10:00.000Z",
+    /* ISS-5182: a terminal session's `ended_at` IS `max(event.created_at)`,
+       frozen at the terminal transition (`session-maintenance.ts`, FEA-3580).
+       `seedTimelineEvents` plants its last event at 10:05, so 10:05 is the only
+       contract-valid end here. This previously read 10:10 — an `ended_at` five
+       minutes past the last event, i.e. the sweeper-wall-clock-stamp scenario
+       FEA-3594 was written to defend against. That defect no longer exists, so
+       the fixture must not simulate it; `updated_at` stays at 10:10 to keep
+       proving the re-sync bump is ignored. */
+    "2026-06-22T10:05:00.000Z",
     metadata ? JSON.stringify(metadata) : null
   );
 }
@@ -1059,6 +1216,31 @@ async function seedPullRequestArtifact(
   );
 }
 
+// FEA-3329: seed the `pull_requests` lifecycle row the enrichment runner writes,
+// carrying the AUTHORITATIVE `opened_at` the PR marker prefers. Distinct from the
+// artifact row (kind='pull_request') seeded by seedPullRequestArtifact.
+async function seedPullRequestLifecycle(
+  db: TestDb,
+  input: {
+    id: string;
+    repoFullName: string;
+    prNumber: number;
+    openedAt: string | null;
+  }
+): Promise<void> {
+  await db.run(
+    `INSERT INTO pull_requests
+       (id, pr_url, pr_number, repo_full_name, state, opened_at, observed_at, created_at)
+     VALUES ($1, $2, $3, $4, 'OPEN', $5, $6, $6)`,
+    input.id,
+    `https://github.com/${input.repoFullName}/pull/${input.prNumber}`,
+    input.prNumber,
+    input.repoFullName,
+    input.openedAt,
+    "2026-06-22T10:00:00.000Z"
+  );
+}
+
 async function linkArtifact(
   db: TestDb,
   input: {
@@ -1120,3 +1302,57 @@ async function markerSyncStateKey(
   }
   return rows[0].source_key;
 }
+
+/* FEA-3594: when pr_opened_at is null (PR not yet enriched or no lifecycle row
+   at all), the PR marker falls back to sessionEndMs — the session's own end
+   anchor from resolveTraceEndMs — rather than import timestamps such as
+   link_observed_at, which are meaningless rebuild artifacts that happened to be
+   stamped at ingest time. That fallback is the contract under test here;
+   ISS-5182 only changed which timestamp the anchor resolves to. */
+test("FEA-3594: un-enriched PR (null pr_opened_at) uses sessionEndMs, not link_observed_at", async () => {
+  await withTestDb(async (db) => {
+    // Session with real timeline activity: seedTimelineEvents plants 3
+    // AssistantMessage events at 10:01, 10:03, 10:05, and the fixture's
+    // ended_at is that same 10:05. resolveTraceEndMs returns the last real
+    // activity timestamp: "2026-06-22T10:05:00.000Z" (sessionEndMs).
+    await seedSession(db, "fea3594-unenriched-pr");
+    await seedTimelineEvents(db, "fea3594-unenriched-pr");
+    await seedPullRequestArtifact(db, {
+      id: "fea3594-pr-artifact",
+      repoFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 3594,
+      title: "Un-enriched PR",
+      observedAt: "2026-06-22T10:03:00.000Z",
+      lastSeenAt: "2026-06-22T10:08:00.000Z",
+    });
+    // No pull_requests lifecycle row at all: pr_opened_at is null in the
+    // correlated subquery (SELECT MIN(opened_at) ... returns null when no row
+    // matches). The link_observed_at is deliberately stamped at a distinct time
+    // to prove it is NOT used as the fallback.
+    await linkArtifact(db, {
+      id: "fea3594-pr-link",
+      sessionId: "fea3594-unenriched-pr",
+      artifactId: "fea3594-pr-artifact",
+      relation: "created",
+      method: "pr_create_output",
+      observedAt: "2026-06-22T10:04:00.000Z",
+    });
+
+    const byId = await loadById(db, ["fea3594-unenriched-pr"]);
+    const marker = onlyMarkerOfKind(
+      byId.get("fea3594-unenriched-pr")?.markers,
+      "pr"
+    );
+    // sessionEndMs = last real activity = "2026-06-22T10:05:00.000Z"
+    assert.equal(
+      marker.t,
+      "2026-06-22T10:05:00.000Z",
+      "PR marker must anchor to sessionEndMs when pr_opened_at is absent"
+    );
+    assert.notEqual(
+      marker.t,
+      "2026-06-22T10:04:00.000Z",
+      "link_observed_at must not be used as a fallback for PR markers"
+    );
+  });
+});

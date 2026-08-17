@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ManagedOnboardingRunTracker } from "../src/main/managed-onboarding-run.js";
+import { ManagedOnboardingRunTracker } from "../src/main/onboarding/managed-onboarding-run.js";
 
 test("managed onboarding run token remains current until cancelled", () => {
   const tracker = new ManagedOnboardingRunTracker();

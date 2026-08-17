@@ -38,9 +38,13 @@ describe("AgentComponentKind — Plugin value T-18.1(b)", () => {
     expect(AgentComponentKind.Plugin).toBe("plugin");
     // FEA-3048: first-class observable-only Tool kind.
     expect(AgentComponentKind.Tool).toBe("tool");
+    // FEA-2642: observable-only Orchestration kind (agent-runtime / harness
+    // tools). Named `orchestration`, NOT `harness` — that string is the vendor
+    // axis (see the Harness enum) and already a column on the usage row.
+    expect(AgentComponentKind.Orchestration).toBe("orchestration");
   });
 
-  it("AgentComponentKind has exactly 9 values (Plugin + Tool, no extras)", () => {
-    expect(Object.keys(AgentComponentKind)).toHaveLength(9);
+  it("AgentComponentKind has exactly 10 values (Plugin + Tool + Orchestration, no extras)", () => {
+    expect(Object.keys(AgentComponentKind)).toHaveLength(10);
   });
 });

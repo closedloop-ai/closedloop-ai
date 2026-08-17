@@ -8,6 +8,7 @@ import {
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
 import { useCopyToClipboard } from "@repo/design-system/hooks/use-copy-to-clipboard";
+import { Link } from "@repo/navigation/link";
 import {
   CopyIcon,
   EllipsisVerticalIcon,
@@ -35,14 +36,19 @@ export type BranchRowActionsMenuProps = {
    * hidden otherwise, so the list never offers navigation it can't fulfill.
    */
   onOpenDetail?: (item: BranchRow) => void;
-  /** Provided when the surface can navigate to the sessions view. */
-  onViewSessions?: (item: BranchRow) => void;
+  /**
+   * FEA-4259: builds the href for the "View linked sessions" item — the branch
+   * detail's Sessions & timeline tab, the same destination as the row's Linked
+   * Sessions count chip. Supplied only when the surface can navigate there;
+   * absent (or a 0-count row) → the item is hidden, never a dead action.
+   */
+  getSessionsHref?: (item: BranchRow) => string;
 };
 
 export function BranchRowActionsMenu({
   item,
   onOpenDetail,
-  onViewSessions,
+  getSessionsHref,
 }: BranchRowActionsMenuProps) {
   const [, copy] = useCopyToClipboard(1500);
   // Only enable "Open PR" for a canonical GitHub PR URL (persisted local data
@@ -87,13 +93,12 @@ export function BranchRowActionsMenu({
           <ExternalLinkIcon className="size-3.5" />
           Open PR
         </DropdownMenuItem>
-        {onViewSessions ? (
-          <DropdownMenuItem
-            disabled={item.sessionCount === 0}
-            onSelect={() => onViewSessions(item)}
-          >
-            <UsersIcon className="size-3.5" />
-            View linked sessions
+        {getSessionsHref && item.sessionCount > 0 ? (
+          <DropdownMenuItem asChild>
+            <Link href={getSessionsHref(item)}>
+              <UsersIcon className="size-3.5" />
+              View linked sessions
+            </Link>
           </DropdownMenuItem>
         ) : null}
       </DropdownMenuContent>

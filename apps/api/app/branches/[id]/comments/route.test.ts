@@ -1,4 +1,7 @@
-import { BranchCommentsState } from "@repo/api/src/types/branch";
+import {
+  BranchCommentsState,
+  BranchPrCommentKind,
+} from "@repo/api/src/types/branch";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -93,22 +96,48 @@ function routeContext(id: string) {
 function commentsResponse() {
   return {
     branchId,
-    state: BranchCommentsState.UnsyncedUnknown,
-    comments: [],
+    repositoryFullName: "closedloop-ai/symphony-alpha",
+    state: BranchCommentsState.StaleMixed,
+    comments: [
+      {
+        id: "review-1",
+        providerNodeId: "PRRC_1",
+        providerCommentId: "1",
+        kind: BranchPrCommentKind.Review,
+        threadId: "thread-1",
+        inReplyToId: null,
+        path: "packages/app/branches/components/comments/branch-comment-card.tsx",
+        line: 42,
+        resolved: false,
+        author: {
+          login: "reviewer",
+          displayName: "Review Author",
+          avatarUrl: "https://avatars.example/reviewer.png",
+          profileUrl: "https://github.com/reviewer",
+        },
+        body: "Review body",
+        createdAt: "2026-08-10T10:00:00.000Z",
+        updatedAt: "2026-08-10T10:01:00.000Z",
+        providerUrl:
+          "https://github.com/closedloop-ai/symphony-alpha/pull/42#discussion_r1",
+        stale: true,
+        bodyTruncated: true,
+      },
+    ],
     budget: {
       maxComments: 100,
       pageSize: 50,
       maxBodyBytes: 16_384,
       maxResponseBytes: 524_288,
-      providerTruncated: false,
-      responseTruncated: false,
-      omittedComments: 0,
-      bodyTruncatedCount: 0,
+      providerTruncated: true,
+      responseTruncated: true,
+      omittedComments: 3,
+      bodyTruncatedCount: 1,
     },
-    providerProofedAt: null,
-    stale: false,
-    mixedProjection: false,
-    prNumber: null,
-    prUrl: null,
+    providerProofedAt: "2026-08-10T10:02:00.000Z",
+    stale: true,
+    mixedProjection: true,
+    prNumber: 42,
+    prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
   };
 }

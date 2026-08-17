@@ -45,6 +45,47 @@ describe("getDatadogRumConfig", () => {
     });
   });
 
+  // ISS-4659: RUM→APM trace propagation. Off unless explicitly switched on,
+  // because `traceparent` is not CORS-safelisted — sending it to an API that
+  // does not advertise it in Access-Control-Allow-Headers fails preflight and
+  // takes the app down rather than merely losing a trace.
+  it("does not propagate trace context unless explicitly enabled", async () => {
+    clearRumEnv();
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID = "rum-app-id";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN = "rum-client-token";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_SITE = "datadoghq.com";
+
+    const { getDatadogRumConfig } = await loadConfig();
+    const config = getDatadogRumConfig();
+
+    expect(config?.allowedTracingUrls).toBeUndefined();
+    expect(config?.traceSampleRate).toBeUndefined();
+  });
+
+  it("propagates W3C trace context to the API origin once enabled", async () => {
+    clearRumEnv();
+    process.env.NEXT_PUBLIC_APP_URL = "https://app.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_API_URL = "https://api.closedloop-stage.ai";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_APPLICATION_ID = "rum-app-id";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_CLIENT_TOKEN = "rum-client-token";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_SITE = "datadoghq.com";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_TRACING_ENABLED = "1";
+    process.env.NEXT_PUBLIC_DATADOG_RUM_TRACE_SAMPLE_RATE = "20";
+
+    const { getDatadogRumConfig } = await loadConfig();
+    const config = getDatadogRumConfig();
+
+    expect(config?.allowedTracingUrls).toEqual([
+      {
+        match: "https://api.closedloop-stage.ai",
+        propagatorTypes: ["tracecontext"],
+      },
+    ]);
+    expect(config?.traceSampleRate).toBe(20);
+  });
+
   it("uses explicit local/test RUM version before Vercel git metadata", async () => {
     process.env.NEXT_PUBLIC_DATADOG_RUM_VERSION = "rum-e2e-version-20260522";
     process.env.VERCEL_GIT_COMMIT_SHA = "abcdef123456";

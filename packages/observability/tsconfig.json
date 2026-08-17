@@ -1,8 +1,8 @@
 {
   "extends": "@repo/typescript-config/nextjs.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
+      "@repo/api/*": ["../api/*"],
       "@closedloop-ai/loops-api/*": ["../loops-api/src/*"],
       "@closedloop-ai/telemetry-contract/*": ["../telemetry-contract/src/*"]
     }

@@ -13,6 +13,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "../../shared/api/api-timeout";
 import { useApiClient } from "../../shared/api/use-api-client";
 
 export const GDRIVE_FOLDER_ID_REGEX = /^[a-zA-Z0-9_-]{28,40}$/;
@@ -71,11 +72,23 @@ export function useImportGoogleDocs(
 
   return useMutation({
     mutationFn: (input) =>
+      // Long-running by design: the route imports every doc in the selected
+      // Drive folder (one fetch + one artifact create each) before responding,
+      // so it needs more than the default client deadline.
       apiClient.post<ImportGoogleDocsResponse>(
         "/integrations/google/import",
-        input
+        input,
+        { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
       ),
-    onSuccess: () => {
+    // ISS-5013: invalidate on SETTLED, not only on success — the same reason as
+    // the pack-import mutations in `agents/hooks/use-catalog.ts`. The route
+    // creates one artifact per Drive doc as it goes, so a client deadline can
+    // abandon a request whose documents already landed. On `onSuccess` alone the
+    // documents list would keep its pre-import population beside a toast about
+    // that same import — two claims about one folder, one of them false.
+    // `onSettled` does not displace the shared default error toast the way an
+    // `onError` override would.
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
     },
     ...options,

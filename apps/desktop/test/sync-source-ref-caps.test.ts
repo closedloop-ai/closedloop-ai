@@ -2,13 +2,19 @@
  * @file sync-source-ref-caps.test.ts
  * @description FEA-2711 — the desktop sync source must bound each session's
  * `artifactRefs` / `prRefs` — AND the legacy `prs` field derived from the same
- * PR rows — to the same per-session caps the cloud wire schema enforces
- * (`MAX_SYNCED_ARTIFACT_REFS` / `MAX_SYNCED_SESSION_PR_REFS`).
+ * PR rows — before emitting. Artifacts use the desktop PRODUCER cap
+ * `MAX_SYNCED_ARTIFACT_REFS_PRODUCER` (100); PR refs use the desktop PRODUCER cap
+ * `MAX_SYNCED_SESSION_PR_REFS_PRODUCER` (100 in PR1). ISS-4445 raised the cloud
+ * validator cap (`MAX_SYNCED_SESSION_PR_REFS`) to 500, and ISS-4448+4449 raised
+ * the artifactRefs validator cap (`MAX_SYNCED_ARTIFACT_REFS`) to 500, both while
+ * keeping the producer at 100 so a new desktop never emits a payload an old
+ * `.max(100)` cloud rejects — this test drives the producer slice, so it asserts
+ * the producer cap.
  *
- * Without the cap, a session that accumulated more than 100 artifact-links (or
- * PR-links) syncs an oversized array. The cloud validates the whole batch (up
- * to 200 sessions) with a single parse, so one oversized session would reject
- * the ENTIRE batch and silently stall sync — not just truncate that session.
+ * Without the cap, a session that accumulated more than the producer bound of
+ * artifact-links (or PR-links) syncs an oversized array. The cloud validates the
+ * whole batch (up to 200 sessions) with a single parse, so one oversized session
+ * would reject the ENTIRE batch and silently stall sync — not just truncate it.
  * The cloud schema also validates the legacy `prs` field with `.max(...)`, so a
  * capped `prRefs` alone is not enough: the same PR rows flow into
  * `buildSessionTraceSyncFields` and emit `prs`, which must be capped too. This
@@ -24,9 +30,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
 import {
-  MAX_SYNCED_ARTIFACT_REFS,
-  MAX_SYNCED_SESSION_PR_REFS,
+  ArtifactRefMethod,
+  MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
+  MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
 } from "@repo/api/src/types/session-artifact-link";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
@@ -40,19 +48,27 @@ function emptyAttributionCache() {
   };
 }
 
-const OVERSIZED = 150; // comfortably past the 100 cap for both arrays
+// Each seed count must comfortably overshoot the cap of the array it drives.
+// ISS-4445 raised the cloud *validator* cap (MAX_SYNCED_SESSION_PR_REFS, 100 →
+// 500) but deliberately kept the desktop *producer* slice at 100
+// (MAX_SYNCED_SESSION_PR_REFS_PRODUCER) so a new desktop never emits a payload an
+// old `.max(100)` cloud rejects. This test drives the PRODUCER slice, so it
+// asserts against the producer cap (100) — both PR-links and artifact-links
+// overshoot 100 here.
+const OVERSIZED_ARTIFACTS = MAX_SYNCED_ARTIFACT_REFS_PRODUCER + 50; // past the 100 producer cap
+const OVERSIZED_PRS = MAX_SYNCED_SESSION_PR_REFS_PRODUCER + 50; // past the 100 producer cap
 
 /**
  * Seed one session with more links than either cap allows:
- *   - OVERSIZED `closedloop_artifact` links (each → one `artifactRefs` entry)
- *   - OVERSIZED `pull_request` links (each → one `prRefs` entry)
+ *   - OVERSIZED_ARTIFACTS `closedloop_artifact` links (each → one `artifactRefs`)
+ *   - OVERSIZED_PRS `pull_request` links (each → one `prRefs` entry)
  */
 async function seedOversizedSession(db: {
   run(sql: string, ...params: unknown[]): Promise<void>;
 }): Promise<void> {
   await db.run("INSERT INTO sessions (id, status) VALUES ('busy','completed')");
 
-  for (let i = 0; i < OVERSIZED; i++) {
+  for (let i = 0; i < OVERSIZED_ARTIFACTS; i++) {
     // A closedloop artifact ref: kind + slug drive the `artifactRefs` branch.
     await db.run(
       `INSERT INTO artifacts (id, identity_key, kind, slug, created_at, last_seen_at)
@@ -70,7 +86,9 @@ async function seedOversizedSession(db: {
       // created_at drives the ORDER BY the slice keeps; zero-pad for stable order.
       `t-cl-${String(i).padStart(4, "0")}`
     );
+  }
 
+  for (let i = 0; i < OVERSIZED_PRS; i++) {
     // A pull_request ref: repo_full_name + pr_number + url drive `prRefs`.
     await db.run(
       `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, pr_number, url, created_at, last_seen_at)
@@ -394,21 +412,27 @@ test("FEA-2711: oversized artifactRefs/prRefs are sliced to the shared caps", as
 
       assert.equal(
         session.artifactRefs?.length,
-        MAX_SYNCED_ARTIFACT_REFS,
-        "artifactRefs sliced to the shared cap"
+        MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
+        "artifactRefs sliced to the desktop producer cap"
       );
+      // `prRefs` is an OPTIONAL wire field (an older peer may omit it), so
+      // prove this producer actually populated it before measuring the cap.
+      const { prRefs } = session;
+      if (!prRefs) {
+        throw new Error("expected the hydrated session to carry prRefs");
+      }
       assert.equal(
-        session.prRefs.length,
-        MAX_SYNCED_SESSION_PR_REFS,
-        "prRefs sliced to the shared cap"
+        prRefs.length,
+        MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
+        "prRefs sliced to the desktop producer cap"
       );
       // The legacy `prs` field is derived from the SAME PR rows via
       // buildSessionTraceSyncFields; capping only prRefs would still ship an
       // oversized `prs` and fail the cloud's `prs.max(...)` validation.
       assert.equal(
         session.prs?.length,
-        MAX_SYNCED_SESSION_PR_REFS,
-        "legacy prs field sliced to the same shared cap"
+        MAX_SYNCED_SESSION_PR_REFS_PRODUCER,
+        "legacy prs field sliced to the same producer cap"
       );
 
       // Links are ordered oldest-first, so the slice keeps the earliest N.
@@ -425,12 +449,127 @@ test("FEA-2711: oversized artifactRefs/prRefs are sliced to the shared caps", as
       }
 
       // `prs` rows are ordered by pr_number ascending, so the cap keeps the
-      // earliest PRs (#1..#100) and drops the tail (#101..#150).
+      // earliest PRs (#1..#cap) and drops the tail past the cap. With
+      // OVERSIZED_PRS = cap + 50 seeded, PR #(cap+1)..#OVERSIZED_PRS are dropped.
       const prNums = new Set(session.prs?.map((pr) => pr.num));
       assert.ok(prNums.has(1), "prs keeps the earliest PR (#1)");
       assert.ok(
-        !prNums.has(OVERSIZED),
+        !prNums.has(OVERSIZED_PRS),
         "prs drops the newest PR beyond the cap"
+      );
+    } finally {
+      await db.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3585: a `reviewed` PR link syncs as relationType REVIEWED (URL and bare number)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fea3585-reviewed-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  try {
+    const db = await openSqliteAgentDatabase({
+      dataDir,
+      detectBillingMode: () => "metered_api",
+      now: () => "2026-07-10T00:00:00.000Z",
+    });
+    try {
+      await db.run(
+        "INSERT INTO sessions (id, status) VALUES ('rev','completed')"
+      );
+      // Reviewed PR named by URL — carries a url.
+      await db.run(
+        `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, pr_number, url, created_at, last_seen_at)
+         VALUES ('a-rev-url', 'pull_request:2990', 'pull_request', 'acme/repo', 2990, 'https://github.com/acme/repo/pull/2990', 't1', 't1')`
+      );
+      await db.run(
+        `INSERT INTO session_artifact_links
+           (id, session_id, artifact_id, relation, method, evidence, extractor_version, observed_at, created_at)
+         VALUES ('l-rev-url', 'rev', 'a-rev-url', 'reviewed', 'pr_review_command', '{}', 16, 't1', 't-1')`
+      );
+      await db.run(
+        `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, pr_number, url, created_at, last_seen_at)
+         VALUES ('a-feedback', 'pull_request:2992', 'pull_request', 'acme/repo', 2992, 'https://github.com/acme/repo/pull/2992', 't1', 't1')`
+      );
+      await db.run(
+        `INSERT INTO session_artifact_links
+           (id, session_id, artifact_id, relation, method, evidence, extractor_version, observed_at, created_at)
+         VALUES ('l-feedback', 'rev', 'a-feedback', 'reviewed', ?, '{}', 20, '2026-07-10T12:00:00.000Z', 't-1b')`,
+        ArtifactRefMethod.PrReviewFeedbackCommand
+      );
+      // Reviewed PR named by bare number — NO url (the #2990-not-linked shape).
+      await db.run(
+        `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, pr_number, created_at, last_seen_at)
+         VALUES ('a-rev-num', 'pull_request:2991', 'pull_request', 'acme/repo', 2991, 't1', 't1')`
+      );
+      await db.run(
+        `INSERT INTO session_artifact_links
+           (id, session_id, artifact_id, relation, method, evidence, extractor_version, observed_at, created_at)
+         VALUES ('l-rev-num', 'rev', 'a-rev-num', 'reviewed', 'pr_review_command', '{}', 16, 't1', 't-2')`
+      );
+
+      const [session] = await db.syncSource.loadSyncedSessions(
+        ["rev"],
+        emptyAttributionCache()
+      );
+      assert.ok(session, "session hydrated");
+
+      // `prRefs` is an OPTIONAL wire field; prove the producer emitted it
+      // rather than indexing into a possibly-absent array.
+      const { prRefs } = session;
+      if (!prRefs) {
+        throw new Error("expected the hydrated session to carry prRefs");
+      }
+      const byNumber = new Map(prRefs.map((r) => [r.prNumber, r]));
+      assert.equal(
+        byNumber.get(2990)?.relationType,
+        "REVIEWED",
+        "URL-named reviewed PR maps to REVIEWED"
+      );
+      // A bare-number review has no local url but must still sync (the cloud
+      // derives the canonical prUrl); its relationType is REVIEWED.
+      const bareNum = byNumber.get(2991);
+      assert.ok(
+        bareNum,
+        "bare-number reviewed PR is synced even without a url"
+      );
+      assert.equal(bareNum?.relationType, "REVIEWED");
+      assert.equal(
+        byNumber.get(2990)?.branchLifecycleEvents?.[0]?.kind,
+        BranchLifecycleBoundaryKind.ReadOnlyReference,
+        "read-only PR review refs are not feedback evidence"
+      );
+      assert.equal(
+        byNumber.get(2992)?.branchLifecycleEvents?.[0]?.kind,
+        BranchLifecycleBoundaryKind.ReviewFeedback,
+        "feedback write PR refs carry review-feedback evidence"
+      );
+      assert.equal(
+        byNumber.get(2992)?.branchLifecycleEvents?.[0]?.observedAt,
+        "2026-07-10T12:00:00.000Z",
+        "feedback write lifecycle events keep the artifact-link event time"
+      );
+
+      // The reviewed PRs also ride the fact-carrying artifactRef with the same
+      // relation so the cloud can surface a review state.
+      const reviewedArtifactRef = session.artifactRefs?.find(
+        (r) => r.kind === "pull_request" && r.prNumber === 2990
+      );
+      assert.equal(
+        reviewedArtifactRef?.kind === "pull_request"
+          ? reviewedArtifactRef.relation
+          : undefined,
+        "reviewed"
+      );
+      const feedbackArtifactRef = session.artifactRefs?.find(
+        (r) => r.kind === "pull_request" && r.prNumber === 2992
+      );
+      assert.equal(
+        feedbackArtifactRef?.kind === "pull_request"
+          ? feedbackArtifactRef.branchLifecycleEvents?.[0]?.kind
+          : undefined,
+        BranchLifecycleBoundaryKind.ReviewFeedback
       );
     } finally {
       await db.close();

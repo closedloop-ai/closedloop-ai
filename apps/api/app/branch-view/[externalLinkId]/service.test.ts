@@ -9,6 +9,7 @@ import { GitHubProviderResultStatus } from "@repo/github";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  mockGetInstallationOctokit,
   mockListPullRequestIssueComments,
   mockListPullRequestReviewComments,
   mockListPullRequestReviews,
@@ -29,6 +30,7 @@ const {
   mockUpsertGitHubReviewCommentThread,
   mockWithDb,
 } = vi.hoisted(() => ({
+  mockGetInstallationOctokit: vi.fn(),
   mockListPullRequestIssueComments: vi.fn(),
   mockListPullRequestReviewComments: vi.fn(),
   mockListPullRequestReviews: vi.fn(),
@@ -104,8 +106,18 @@ vi.mock("@repo/github", async (importOriginal) => {
     queryStatusCheckRollup: mockQueryStatusCheckRollup,
     queryStatusCheckRollupWithProviderResult: async (...args: unknown[]) =>
       toGitHubProviderResultMock(await mockQueryStatusCheckRollup(...args)),
+    // Real classifier: the sync paths fold a getInstallationOctokit mint
+    // rejection through it into provider-failure statuses (PLN-1525 step 4).
   };
 });
+
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: mockGetInstallationOctokit,
+}));
+
+// Marker client returned by the mocked resolver: provider-read mocks must
+// receive this exact object as their first argument (PLN-1525).
+const INSTALLATION_OCTOKIT = { marker: "installation-octokit" };
 
 vi.mock("@/app/branches/branch-sync-status", () => ({
   markBranchSyncCompleted: mockMarkBranchSyncCompleted,
@@ -132,20 +144,6 @@ vi.mock("@/lib/resolve-pr-context", () => ({
 }));
 
 vi.mock("@/app/integrations/github/service", () => ({
-  RepositoryArtifactRelinkReason: {
-    None: "none",
-    NoActiveInstallation: "no_active_installation",
-    NoActiveRepositories: "no_active_repositories",
-    ActiveRepositoryAmbiguous: "active_repository_ambiguous",
-    BranchNameCollision: "branch_name_collision",
-    PullRequestNumberCollision: "pull_request_number_collision",
-    GuardedWriteFailed: "guarded_write_failed",
-  },
-  RepositoryArtifactRelinkStatus: {
-    Completed: "completed",
-    Partial: "partial",
-    Skipped: "skipped",
-  },
   githubService: {
     relinkBranchViewRepositoryCredential:
       mockRelinkBranchViewRepositoryCredential,
@@ -209,100 +207,21 @@ import {
   GitHubDiffSide,
   PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
+import {
+  currentPrContext,
+  currentPullRequestDetail,
+} from "@/__tests__/utils/branch-view-pr-context";
 import { statusRollup } from "@/__tests__/utils/status-check-helpers";
 import {
-  RepositoryArtifactRelinkReason,
-  type RepositoryArtifactRelinkResult,
-  RepositoryArtifactRelinkStatus,
-} from "@/app/integrations/github/service";
-import {
-  BranchViewContextCredentialMode,
   BranchViewContextCredentialSource,
   type PrContext,
 } from "@/lib/resolve-pr-context";
 import {
-  buildCanonicalGitHubPullRequestUrl,
-  buildStaleCommentDeleteWhere,
   fetchUnifiedBranchViewComments,
   getBranchViewData,
   resolveBranchViewMissingContextFailure,
-  resolveBranchViewSyncPreflightContext,
   syncBranchViewDataWithRequest,
 } from "./service";
-
-describe("buildStaleCommentDeleteWhere", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("deletes all comment rows when GitHub returns no comments", () => {
-    expect(buildStaleCommentDeleteWhere("pr-1", new Set())).toEqual({
-      pullRequestId: "pr-1",
-    });
-  });
-
-  it("deletes only rows missing from the live GitHub comment set", () => {
-    expect(
-      buildStaleCommentDeleteWhere("pr-1", new Set(["101", "202"]))
-    ).toEqual({
-      pullRequestId: "pr-1",
-      githubCommentId: { notIn: ["101", "202"] },
-    });
-  });
-});
-
-describe("buildCanonicalGitHubPullRequestUrl", () => {
-  it("accepts only canonical identity-matched GitHub pull request URLs", () => {
-    expect(
-      buildCanonicalGitHubPullRequestUrl({
-        candidateUrls: ["https://github.com/Acme/Repo/pull/42"],
-        owner: "acme",
-        repo: "repo",
-        pullNumber: 42,
-      })
-    ).toBe("https://github.com/acme/repo/pull/42");
-
-    for (const candidateUrl of [
-      "https://github.com/other/repo/pull/42",
-      "https://github.com/acme/other/pull/42",
-      "https://github.com/acme/repo/pull/43",
-      "https://github.com/acme/repo/pull/42?check=1",
-      "https://github.com/acme/repo/pull/42#discussion_r1",
-      "https://github.com/acme/repo/pull/42/files",
-      "https://example.com/acme/repo/pull/42",
-      "javascript:alert(1)",
-      "not a url",
-    ]) {
-      expect(
-        buildCanonicalGitHubPullRequestUrl({
-          candidateUrls: [candidateUrl],
-          owner: "acme",
-          repo: "repo",
-          pullNumber: 42,
-        })
-      ).toBeUndefined();
-    }
-  });
-
-  it("rejects unsafe identity inputs before reading candidate URLs", () => {
-    expect(
-      buildCanonicalGitHubPullRequestUrl({
-        candidateUrls: ["https://github.com/acme/repo/pull/42"],
-        owner: "acme",
-        repo: "repo",
-        pullNumber: null,
-      })
-    ).toBeUndefined();
-    expect(
-      buildCanonicalGitHubPullRequestUrl({
-        candidateUrls: ["https://github.com/acme/repo/pull/42"],
-        owner: "acme/bad",
-        repo: "repo",
-        pullNumber: 42,
-      })
-    ).toBeUndefined();
-  });
-});
 
 describe("getBranchViewData", () => {
   beforeEach(() => {
@@ -2132,168 +2051,10 @@ describe("fetchUnifiedBranchViewComments", () => {
   });
 });
 
-describe("resolveBranchViewSyncPreflightContext", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockResolvePrContext.mockReset();
-    mockRelinkBranchViewRepositoryCredential.mockReset();
-  });
-
-  it("returns pinned-active contexts without relinking", async () => {
-    const ctx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.PinnedActive,
-    };
-    mockResolvePrContext.mockResolvedValueOnce(ctx);
-
-    const result = await resolveBranchViewSyncPreflightContext(
-      "branch-artifact-1",
-      "org-1"
-    );
-
-    expect(result).toEqual({ status: "ready", ctx });
-    expect(mockResolvePrContext).toHaveBeenCalledWith(
-      "branch-artifact-1",
-      "org-1",
-      { credentialMode: BranchViewContextCredentialMode.RenderRead }
-    );
-    expect(mockRelinkBranchViewRepositoryCredential).not.toHaveBeenCalled();
-  });
-
-  it("fails stale active-sibling current PR relations before relink", async () => {
-    const ctx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.ActiveSibling,
-      credentialRepositoryId: "active-repo-1",
-    };
-    ctx.branch!.invalidCurrentPullRequestRelation = true;
-    mockResolvePrContext.mockResolvedValueOnce(ctx);
-
-    const result = await resolveBranchViewSyncPreflightContext(
-      "branch-artifact-1",
-      "org-1"
-    );
-
-    expect(result).toEqual({
-      status: "failed",
-      error: "Branch current pull request relation is stale",
-      code: BranchViewSyncErrorCode.CurrentPullRequestStale,
-      httpStatus: 409,
-      reason: BranchViewSyncFailureReason.StaleCurrentPullRequestRelation,
-    });
-    expect(mockRelinkBranchViewRepositoryCredential).not.toHaveBeenCalled();
-    expect(mockResolvePrContext).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    RepositoryArtifactRelinkStatus.Partial,
-    RepositoryArtifactRelinkStatus.Skipped,
-  ])("reloads after %s active-sibling relink outcomes before provider sync", async (status) => {
-    const activeSiblingCtx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.ActiveSibling,
-      credentialRepositoryId: "active-repo-1",
-    };
-    const pinnedCtx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.PinnedActive,
-    };
-    mockResolvePrContext
-      .mockResolvedValueOnce(activeSiblingCtx)
-      .mockResolvedValueOnce(pinnedCtx);
-    mockRelinkBranchViewRepositoryCredential.mockResolvedValueOnce(
-      repositoryRelinkResult({ status })
-    );
-
-    const result = await resolveBranchViewSyncPreflightContext(
-      "branch-artifact-1",
-      "org-1"
-    );
-
-    expect(result).toEqual({ status: "ready", ctx: pinnedCtx });
-    expect(mockRelinkBranchViewRepositoryCredential).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      activeRepositoryId: "active-repo-1",
-    });
-    expect(mockResolvePrContext).toHaveBeenNthCalledWith(
-      2,
-      "branch-artifact-1",
-      "org-1"
-    );
-  });
-
-  it("stops before reloading when relink fails before transaction state is known", async () => {
-    const activeSiblingCtx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.ActiveSibling,
-      credentialRepositoryId: "active-repo-1",
-    };
-    mockResolvePrContext.mockResolvedValueOnce(activeSiblingCtx);
-    mockRelinkBranchViewRepositoryCredential.mockResolvedValueOnce(
-      repositoryRelinkResult({
-        status: RepositoryArtifactRelinkStatus.Skipped,
-        reasons: [RepositoryArtifactRelinkReason.GuardedWriteFailed],
-      })
-    );
-
-    const result = await resolveBranchViewSyncPreflightContext(
-      "branch-artifact-1",
-      "org-1"
-    );
-
-    expect(result).toEqual({
-      status: "failed",
-      error: "Failed to fetch data from GitHub",
-      code: BranchViewSyncErrorCode.PrSyncFailed,
-      httpStatus: 409,
-      reason: BranchViewSyncFailureReason.GitHubPrSyncUnavailable,
-    });
-    expect(mockResolvePrContext).toHaveBeenCalledTimes(1);
-  });
-
-  it("relinks active-sibling contexts and reloads pinned-active before syncing", async () => {
-    const activeSiblingCtx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.ActiveSibling,
-      credentialRepositoryId: "active-repo-1",
-    };
-    const pinnedCtx = {
-      ...currentPrContext(),
-      credentialSource: BranchViewContextCredentialSource.PinnedActive,
-    };
-    mockResolvePrContext
-      .mockResolvedValueOnce(activeSiblingCtx)
-      .mockResolvedValueOnce(pinnedCtx);
-    mockRelinkBranchViewRepositoryCredential.mockResolvedValueOnce(
-      repositoryRelinkResult({
-        status: RepositoryArtifactRelinkStatus.Completed,
-        branchRelinkedCount: 1,
-      })
-    );
-
-    const result = await resolveBranchViewSyncPreflightContext(
-      "branch-artifact-1",
-      "org-1"
-    );
-
-    expect(result).toEqual({ status: "ready", ctx: pinnedCtx });
-    expect(mockResolvePrContext).toHaveBeenNthCalledWith(
-      1,
-      "branch-artifact-1",
-      "org-1",
-      { credentialMode: BranchViewContextCredentialMode.RenderRead }
-    );
-    expect(mockResolvePrContext).toHaveBeenNthCalledWith(
-      2,
-      "branch-artifact-1",
-      "org-1"
-    );
-  });
-});
-
 describe("syncBranchViewDataWithRequest", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetInstallationOctokit.mockResolvedValue(INSTALLATION_OCTOKIT);
     mockStartBranchSync.mockResolvedValue({
       throttled: false,
       fileCount: 0,
@@ -2563,6 +2324,32 @@ describe("syncBranchViewDataWithRequest", () => {
     expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
 
+  it("returns PR sync failure when the installation client mint fails for comments sync", async () => {
+    mockGetInstallationOctokit.mockRejectedValueOnce(
+      new Error("token exchange failed")
+    );
+
+    const result = await syncBranchViewDataWithRequest(currentPrContext(), {
+      scope: BranchViewSyncScope.Comments,
+    });
+
+    // The mint rejection folds into the same typed provider failure the
+    // failed list reads produce instead of escaping as a route 500.
+    expect(result).toEqual({
+      synced: false,
+      error: "Failed to fetch data from GitHub",
+      code: BranchViewSyncErrorCode.PrSyncFailed,
+      httpStatus: 502,
+      details: { reason: BranchViewSyncFailureReason.GitHubPrSyncUnavailable },
+      scope: BranchViewSyncScope.Comments,
+    });
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
+    expect(mockListPullRequestReviewComments).not.toHaveBeenCalled();
+    expect(mockListPullRequestIssueComments).not.toHaveBeenCalled();
+    expect(mockListPullRequestReviews).not.toHaveBeenCalled();
+    expect(mockWithDb.tx).not.toHaveBeenCalled();
+  });
+
   it("returns comments provider throttle without writing partial projections", async () => {
     mockListPullRequestReviewComments.mockResolvedValue({
       status: GitHubProviderResultStatus.ProviderRateLimit,
@@ -2585,6 +2372,16 @@ describe("syncBranchViewDataWithRequest", () => {
       throttleReason: BranchViewSyncThrottleReason.ProviderRateLimit,
       scope: BranchViewSyncScope.Comments,
     });
+    // ONE installation client is minted for the whole three-read comments sync
+    // and threaded into each list read (PLN-1525).
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
+    expect(mockListPullRequestReviewComments).toHaveBeenCalledWith(
+      INSTALLATION_OCTOKIT,
+      "acme",
+      "repo",
+      42
+    );
     expect(mockWithDb.tx).not.toHaveBeenCalled();
     expect(mockSoftDeleteGitHubCommentProjection).not.toHaveBeenCalled();
     expect(mockUpsertGitHubIssueCommentThread).not.toHaveBeenCalled();
@@ -2631,8 +2428,15 @@ describe("syncBranchViewDataWithRequest", () => {
         repositoryId: "repo-1",
       })
     );
+    // ONE installation client is minted for the branch sync and threaded into
+    // both the lifecycle refresh and the checks rollup (PLN-1525).
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
+    expect(mockRefreshPullRequestLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({ octokit: INSTALLATION_OCTOKIT })
+    );
     expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
-      "123",
+      INSTALLATION_OCTOKIT,
       "acme",
       "repo",
       "provider-head-sha"
@@ -2670,6 +2474,44 @@ describe("syncBranchViewDataWithRequest", () => {
         message: "Failed to refresh pull request lifecycle",
       })
     );
+    expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
+    expect(mockListPullRequestReviewComments).not.toHaveBeenCalled();
+    expect(mockListPullRequestIssueComments).not.toHaveBeenCalled();
+    expect(mockListPullRequestReviews).not.toHaveBeenCalled();
+  });
+
+  it("marks lifecycle failure and skips the checks refresh when the installation client mint fails", async () => {
+    mockGetInstallationOctokit.mockRejectedValueOnce(
+      new Error("token exchange failed")
+    );
+    mockRefreshBranchFileChangeCache.mockResolvedValue({
+      ok: true,
+      value: { throttled: false, fileCount: 1, patchBytes: 12 },
+    });
+
+    const result = await syncBranchViewDataWithRequest(currentPrContext());
+
+    // The mint rejection is synthesized into the ProviderUnavailable
+    // lifecycle failure instead of escaping as a route 500.
+    expect(result).toEqual({
+      synced: false,
+      error: "Failed to refresh pull request lifecycle",
+      code: BranchViewSyncErrorCode.PrLifecycleUnavailable,
+      httpStatus: 502,
+      details: { reason: BranchViewSyncFailureReason.GitHubPrUnavailable },
+      scope: BranchViewSyncScope.Branch,
+    });
+    expect(mockMarkBranchSyncFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        branchArtifactId: "branch-artifact-1",
+        organizationId: "org-1",
+        code: BranchViewSyncErrorCode.PrLifecycleUnavailable,
+        message: "Failed to refresh pull request lifecycle",
+      })
+    );
+    // No client, so neither the lifecycle read nor the checks-status
+    // refresh is attempted.
+    expect(mockRefreshPullRequestLifecycle).not.toHaveBeenCalled();
     expect(mockQueryStatusCheckRollup).not.toHaveBeenCalled();
     expect(mockListPullRequestReviewComments).not.toHaveBeenCalled();
     expect(mockListPullRequestIssueComments).not.toHaveBeenCalled();
@@ -2780,8 +2622,10 @@ describe("syncBranchViewDataWithRequest", () => {
       error: null,
       scope: BranchViewSyncScope.Branch,
     });
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
     expect(mockQueryStatusCheckRollup).toHaveBeenCalledWith(
-      "123",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       "abc123def456abc123def456abc123def456abc1"
@@ -3221,79 +3065,6 @@ function makeStatusCheckTx(overrides: { checksStatus?: string } = {}) {
   };
 }
 
-function repositoryRelinkResult(
-  overrides: Partial<RepositoryArtifactRelinkResult> = {}
-): RepositoryArtifactRelinkResult {
-  return {
-    status: RepositoryArtifactRelinkStatus.Skipped,
-    reasons: [RepositoryArtifactRelinkReason.None],
-    activeRepositoryCount: 0,
-    staleRepositoryCount: 0,
-    branchRelinkedCount: 0,
-    pullRequestRelinkedCount: 0,
-    branchCollisionSkippedCount: 0,
-    pullRequestCollisionSkippedCount: 0,
-    ambiguousRepositorySkippedCount: 0,
-    blockedBranchCount: 0,
-    ...overrides,
-  };
-}
-
-function currentPrContext(
-  branchHeadSha: string | null = "head-sha"
-): PrContext {
-  return {
-    externalLink: {
-      id: "branch-artifact-1",
-      title: "feature/branch-artifact",
-      externalUrl:
-        "https://github.com/acme/repo/tree/feature%2Fbranch-artifact",
-      status: "OPEN",
-      metadata: null,
-      projectId: "project-1",
-      organizationId: "org-1",
-      createdBy: { githubUsername: "OctoCat" },
-    },
-    prMetadata: null,
-    branch: {
-      artifactId: "branch-artifact-1",
-      repositoryId: "repo-1",
-      branchName: "feature/branch-artifact",
-      baseBranch: "main",
-      baseBranchSource: "repository_default",
-      headSha: branchHeadSha,
-      headShaSource: "push_webhook",
-      headShaObservedAt: new Date("2026-05-15T00:00:00Z"),
-      lastPushBeforeSha: "before-sha",
-      currentPullRequestDetailId: "pr-detail-1",
-      checksStatus: "UNKNOWN",
-      checksDetailHeadSha: null,
-      checksDetailTotalCount: 0,
-      checksDetailTruncated: false,
-      checksDetailProviderState: null,
-      checksDetailUnavailableReason: null,
-      checksDetailUpdatedAt: null,
-      statusChecks: [],
-      fileCacheStatus: "fresh",
-      fileCacheHeadSha: "head-sha",
-      fileCacheFileCount: 0,
-      fileCachePatchBytes: 0,
-      fileCacheUpdatedAt: new Date("2026-05-15T00:00:00Z"),
-      syncStatus: "fresh",
-      lastSyncStartedAt: null,
-      lastSyncCompletedAt: null,
-      lastSyncErrorCode: null,
-      lastSyncErrorMessage: null,
-    },
-    gitHubPullRequest: currentPullRequestDetail(),
-    repositoryId: "repo-1",
-    installationId: "123",
-    owner: "acme",
-    repo: "repo",
-    pullNumber: 42,
-  };
-}
-
 function expectOk<T, E>(
   result: { ok: true; value: T } | { ok: false; error: E }
 ): T {
@@ -3301,27 +3072,6 @@ function expectOk<T, E>(
     throw new Error("Expected branch view result to be ok");
   }
   return result.value;
-}
-
-function currentPullRequestDetail() {
-  return {
-    id: "pr-detail-1",
-    repositoryId: "repo-1",
-    documentId: null,
-    githubId: "github-pr-1",
-    headSha: "head-sha",
-    number: 42,
-    title: "Feature branch",
-    htmlUrl: "https://github.com/acme/repo/pull/42",
-    baseBranch: "main",
-    headBranch: "feature/branch-artifact",
-    state: "OPEN",
-    isDraft: false,
-    checksStatus: null,
-    reviewDecision: null,
-    lastVerifiedAt: null,
-    lastRefreshAttemptAt: null,
-  };
 }
 
 function projectRecoveryRow() {

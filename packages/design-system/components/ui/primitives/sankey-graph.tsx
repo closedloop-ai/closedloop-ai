@@ -102,13 +102,13 @@ function setTooltipPosition(
 
   let nextLeft = left + 14;
   let nextTop = top + 14;
-  if (nextLeft + width > window.innerWidth - margin) {
-    nextLeft = window.innerWidth - width - margin;
+  if (nextLeft + width > globalThis.window.innerWidth - margin) {
+    nextLeft = globalThis.window.innerWidth - width - margin;
   }
   if (nextLeft < margin) {
     nextLeft = margin;
   }
-  if (nextTop + height > window.innerHeight - margin) {
+  if (nextTop + height > globalThis.window.innerHeight - margin) {
     nextTop = top - height - 14;
   }
   if (nextTop < margin) {
@@ -130,28 +130,28 @@ function renderTooltip(
 ) {
   tooltip.textContent = "";
 
-  const titleElement = document.createElement("p");
+  const titleElement = globalThis.document.createElement("p");
   titleElement.style.cssText =
     "font-size:12px;font-weight:600;color:#e2e8f0;margin:0 0 2px";
   titleElement.textContent = title;
   tooltip.appendChild(titleElement);
 
-  const subtitleElement = document.createElement("p");
+  const subtitleElement = globalThis.document.createElement("p");
   subtitleElement.style.cssText =
     "font-size:10px;color:#64748b;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.05em";
   subtitleElement.textContent = subtitle;
   tooltip.appendChild(subtitleElement);
 
   for (const row of rows) {
-    const rowElement = document.createElement("div");
+    const rowElement = globalThis.document.createElement("div");
     rowElement.style.cssText =
       "display:flex;justify-content:space-between;gap:16px;font-size:11px;line-height:1.6";
 
-    const labelElement = document.createElement("span");
+    const labelElement = globalThis.document.createElement("span");
     labelElement.style.color = "#64748b";
     labelElement.textContent = row.label;
 
-    const valueElement = document.createElement("span");
+    const valueElement = globalThis.document.createElement("span");
     valueElement.style.cssText =
       "color:#cbd5e1;font-weight:500;font-variant-numeric:tabular-nums";
     valueElement.textContent = row.value;

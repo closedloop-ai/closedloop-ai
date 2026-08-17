@@ -16,3 +16,64 @@
   --lb-background: var(--popover);
   --lb-foreground: var(--popover-foreground);
 }
+
+/* ISS-5010: notification rows gained their first avatars. A member with no
+   avatarUrl (createResolveUsers passes `avatarUrl ?? undefined`) falls back to
+   an initials chip, which Liveblocks paints from --lb-foreground-subtle behind
+   --lb-foreground-moderate: roughly 8% foreground under ~39% foreground text,
+   which does not clear WCAG 2.1 SC 1.4.3 (4.5:1). Match the design-system
+   Avatar fallback, which is `bg-muted` with the foreground inherited, so inbox
+   initials read at the same weight as the initials in every other avatar in the
+   product. `color` has to say `inherit` rather than be left off: .lb-avatar
+   sets --lb-foreground-moderate explicitly, so omitting it inherits nothing and
+   lands lighter than --muted-foreground, not darker. `inherit` picks up the
+   row's own `color: var(--lb-foreground)`.
+
+   Both rules here are scoped to the flagged rows. Unscoped they would also
+   repaint the built-in Liveblocks thread rows, which already show avatars in
+   this list with the flag off. */
+.cl-inbox-notification-actor-row .lb-inbox-notification-aside
+  :where(.lb-avatar) {
+  background: var(--muted);
+  color: inherit;
+}
+
+/* Liveblocks capitalizes the title's first letter. That was invisible while
+   every headline began with "You" or "Your", but the actor-led headline now
+   leads with a resolved display name, and `mentionMatchDisplayName` falls back
+   to a raw email address for a member with no first/last name, which that rule
+   would render as "Mike.angstadt@example.com assigned you …". Leave the name
+   exactly as the resolver returned it. */
+.cl-inbox-notification-actor-row .lb-inbox-notification-title::first-letter {
+  text-transform: none;
+}
+
+/* ISS-5010: while the actor lookup is in flight the headline keeps its
+   actor-led shape and stands this bar where the name will land, so a row being
+   scanned does not rewrite every one of its words a beat later. Mirrors the
+   design-system Skeleton (accent fill, md radius, pulse) so it reads as the
+   same loading affordance used everywhere else. Sized in `ch` and `em` so it
+   tracks the row's own type scale rather than pinning a pixel width. */
+.cl-inbox-notification-actor-row .cl-inbox-notification-actor-name-placeholder {
+  display: inline-block;
+  inline-size: 7ch;
+  block-size: 1em;
+  vertical-align: text-bottom;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  animation: cl-inbox-notification-actor-name-pulse 2s
+    cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes cl-inbox-notification-actor-name-pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-inbox-notification-actor-row
+    .cl-inbox-notification-actor-name-placeholder {
+    animation: none;
+  }
+}

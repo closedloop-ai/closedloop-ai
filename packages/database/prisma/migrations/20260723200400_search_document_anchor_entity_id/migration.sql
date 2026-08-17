@@ -1,0 +1,27 @@
+-- FEA-3930 (parent FEA-3800, PLN-1456) — comment/pull_request/branch corpus
+-- slice for unified search. Additive route-ANCHOR column on the search
+-- projection `search_document`.
+--
+-- WHY: the Phase-1/Phase-2 route fields (slug/entity_subtype/team_id) let a hit
+-- route to ITSELF by `entity_id`. The comment/PR corpus needs to route to a
+-- DIFFERENT entity: a `pull_request` hit navigates to its owning BRANCH detail
+-- page (anchor = the branch's artifact id), and a `comment` hit navigates to the
+-- artifact it is anchored on — a session or a branch (anchor = that artifact's
+-- id, with the anchor artifact's TYPE stored in the existing `entity_subtype`
+-- column so the route helper can pick session vs branch). One nullable column
+-- carries exactly that anchor id.
+--
+-- ADDITIVE / BACKFILL-SAFE: the column is NULLABLE with no default, so adding it
+-- takes only a metadata-level lock and every existing row (document/project/loop/
+-- session) stays valid with a NULL anchor (those types route off `entity_id`).
+-- The values are populated by
+-- `packages/database/scripts/backfill-search-documents.ts` and the live
+-- write-time hooks. It is NOT part of the generated `tsv` vector and NOT part of
+-- any index, so the GIN/btree indexes are untouched.
+--
+-- Generated verbatim from schema.prisma's SearchDocument model (one `ADD COLUMN`
+-- statement) — no Prisma-inexpressible construct here; committed alongside the
+-- schema change so `prisma migrate dev` reports no drift.
+
+-- AlterTable
+ALTER TABLE "search_document" ADD COLUMN "anchor_entity_id" UUID;

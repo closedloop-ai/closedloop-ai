@@ -23,6 +23,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { log } from "@repo/observability/log";
+import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import {
   KEYLESS_TELEMETRY_COLLECTOR_DIAGNOSTIC_MAX_BYTES,
   KEYLESS_TELEMETRY_COLLECTOR_TIMEOUT_MS,
@@ -45,8 +47,6 @@ import {
   validateKeylessTelemetryEnvelope,
   validateKeylessTelemetrySessionRequest,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
-import { log } from "@repo/observability/log";
-import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import type { Server, Socket } from "socket.io";
 import { z } from "zod";
 import { createConcurrencyLimiter } from "./concurrency-limiter";

@@ -8,7 +8,7 @@
  * no network, no code-signing.
  *
  * The desktop main process is pointed at this server via the
- * `CL_DESKTOP_FAKE_UPDATE_FEED` env seam (see src/main/fake-update-feed.ts).
+ * `CL_DESKTOP_FAKE_UPDATE_FEED` env seam (see src/main/update/fake-update-feed.ts).
  * electron-updater's real `checkForUpdates()` fetches and parses the channel
  * file from here, so `update-available` fires for real; the download→ready
  * transition is then driven deterministically in main (autoDownload is off in

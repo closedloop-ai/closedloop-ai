@@ -1,5 +1,6 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import {
+  GitHubFetchCredentialType,
   GitHubFetchTrigger,
   type GitHubFetchTrigger as GitHubFetchTriggerValue,
   GitHubSyncResultReason,
@@ -17,10 +18,20 @@ import {
   GitHubProviderResultStatus,
   type GitHubSinglePullRequestResult,
   GitHubUserTokenProviderResultStatus,
-  getSinglePullRequestWithUserTokenProviderResult,
+  getSinglePullRequestWithProviderResult,
 } from "@repo/github";
+import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import {
+  createPullRequestRestAuthorityProvenance,
+  persistPullRequestProviderFailure,
+  toPullRequestRestAuthorityObservation,
+} from "@/app/branches/pull-request-authority-producer";
+import {
+  persistPullRequestHeadRepositoryAuthority,
+  pullRequestHeadRepositoryObservation,
+} from "@/app/branches/pull-request-head-authority";
 import { pullRequestLocData } from "@/app/branches/pull-request-loc-data";
 import {
   gitHubFetchProvenanceData,
@@ -99,6 +110,7 @@ type GitHubServerSyncClient = Pick<
   | "branchDetail"
   | "gitHubUserConnection"
   | "pullRequestDetail"
+  | "repositoryDefaultObservationReceipt"
 >;
 
 type BranchSyncTargetRecord = NonNullable<
@@ -242,13 +254,29 @@ async function refreshTombstonedBranchPullRequestWithClient(
     return retryable(GitHubServerSyncReason.AlreadyRefreshing);
   }
 
-  const providerResult = await getSinglePullRequestWithUserTokenProviderResult(
-    credential.token,
+  const authorityProvenance = createPullRequestRestAuthorityProvenance({
+    credentialType: GitHubFetchCredentialType.UserOAuth,
+    credentialOwnerId: input.actorUserId,
+    observedAt: now,
+    trigger: input.trigger ?? GitHubFetchTrigger.UserAction,
+  });
+  const providerResult = await getSinglePullRequestWithProviderResult(
+    getUserTokenOctokit(credential.token),
     repositoryIdentity.owner,
     repositoryIdentity.name,
-    currentPullRequest.number
+    currentPullRequest.number,
+    toPullRequestRestAuthorityObservation(authorityProvenance)
   );
   if (providerResult.status === GitHubProviderResultStatus.ProviderRateLimit) {
+    await persistPullRequestProviderFailure(
+      db,
+      {
+        organizationId: input.organizationId,
+        pullRequestDetailId: currentPullRequest.id,
+      },
+      providerResult,
+      authorityProvenance
+    );
     await stampTombstonedRefreshFailure(
       db,
       input,
@@ -265,6 +293,15 @@ async function refreshTombstonedBranchPullRequestWithClient(
     providerResult.status ===
     GitHubUserTokenProviderResultStatus.CredentialUnauthorized
   ) {
+    await persistPullRequestProviderFailure(
+      db,
+      {
+        organizationId: input.organizationId,
+        pullRequestDetailId: currentPullRequest.id,
+      },
+      providerResult,
+      authorityProvenance
+    );
     await stampTombstonedRefreshFailure(
       db,
       input,
@@ -278,6 +315,15 @@ async function refreshTombstonedBranchPullRequestWithClient(
     providerResult.status ===
     GitHubUserTokenProviderResultStatus.CredentialInsufficientScope
   ) {
+    await persistPullRequestProviderFailure(
+      db,
+      {
+        organizationId: input.organizationId,
+        pullRequestDetailId: currentPullRequest.id,
+      },
+      providerResult,
+      authorityProvenance
+    );
     await stampTombstonedRefreshFailure(
       db,
       input,
@@ -288,6 +334,15 @@ async function refreshTombstonedBranchPullRequestWithClient(
     return failed(GitHubSyncResultReason.CredentialInsufficientScope);
   }
   if (providerResult.status !== GitHubProviderResultStatus.Success) {
+    await persistPullRequestProviderFailure(
+      db,
+      {
+        organizationId: input.organizationId,
+        pullRequestDetailId: currentPullRequest.id,
+      },
+      providerResult,
+      authorityProvenance
+    );
     await stampTombstonedRefreshFailure(
       db,
       input,
@@ -609,6 +664,9 @@ async function settleTombstonedPullRequestRefresh(
       title: input.pullRequest.title,
       htmlUrl: input.pullRequest.htmlUrl,
       isDraft: input.pullRequest.isDraft,
+      // FEA-3552: persist the GitHub PR createdAt (idempotent) so the rail's "PR
+      // opened" dot back-fills on sync for existing App rows too.
+      githubCreatedAt: parseNullableDate(input.pullRequest.createdAt),
       closedAt: parseNullableDate(input.pullRequest.closedAt),
       mergedAt: parseNullableDate(input.pullRequest.mergedAt),
       mergeCommitSha: input.pullRequest.mergeCommitSha,
@@ -620,7 +678,18 @@ async function settleTombstonedPullRequestRefresh(
   if (result.count !== 1) {
     return false;
   }
-  const branchActivityAt = pullRequestActivityDate(input.pullRequest);
+  await persistPullRequestHeadRepositoryAuthority(
+    db,
+    {
+      organizationId: input.organizationId,
+      pullRequestDetailId: currentPullRequest.id,
+    },
+    pullRequestHeadRepositoryObservation(input.pullRequest),
+    {
+      name: input.pullRequest.headBranch,
+      oid: input.pullRequest.headSha,
+    }
+  );
   const branchResult = await db.branchDetail.updateMany({
     where: {
       artifactId: input.target.id,
@@ -632,7 +701,6 @@ async function settleTombstonedPullRequestRefresh(
       baseBranch: input.pullRequest.baseBranch,
       headSha: input.pullRequest.headSha,
       headShaObservedAt: input.now,
-      ...(branchActivityAt ? { lastActivityAt: branchActivityAt } : {}),
       ...provenance,
     },
   });
@@ -752,23 +820,6 @@ function parseRepositoryFullName(
 
 function parseNullableDate(value: string | null): Date | null {
   return value ? new Date(value) : null;
-}
-
-function pullRequestActivityDate(
-  pullRequest: GitHubSinglePullRequestResult
-): Date | null {
-  return maxNullableDate(
-    parseNullableDate(pullRequest.mergedAt),
-    parseNullableDate(pullRequest.closedAt)
-  );
-}
-
-function maxNullableDate(...values: (Date | null)[]): Date | null {
-  const concrete = values.filter((value): value is Date => value !== null);
-  if (concrete.length === 0) {
-    return null;
-  }
-  return new Date(Math.max(...concrete.map((value) => value.getTime())));
 }
 
 function retryable(

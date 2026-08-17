@@ -1,5 +1,5 @@
-import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
+import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import { z } from "zod";
 
 /**

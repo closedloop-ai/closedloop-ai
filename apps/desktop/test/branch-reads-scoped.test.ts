@@ -111,15 +111,16 @@ async function seedCorpus(
   await link("l5", "s1", "art-c", "git_commit", 0, "2026-06-01T00:32:00.000Z");
   await link("l6", "s3", "art-bl", "git_push", 1, "2026-06-03T00:30:00.000Z");
 
-  // token_usage: s1 input 400 (split alpha/beta), s2 input 100 (alpha), s3 50.
+  // token_usage: s1 input/cost 400/$80 (split alpha/beta), s2 100/$20
+  // (alpha), s3 50/$0 (priced zero).
   await db.run(
-    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) VALUES ('s1', 'm1', 400, 40, 4, 2)"
+    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated) VALUES ('s1', 'm1', 400, 40, 4, 2, 80)"
   );
   await db.run(
-    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) VALUES ('s2', 'm1', 100, 10, 0, 0)"
+    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated) VALUES ('s2', 'm1', 100, 10, 0, 0, 20)"
   );
   await db.run(
-    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) VALUES ('s3', 'm1', 50, 5, 0, 0)"
+    "INSERT INTO token_usage (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_estimated) VALUES ('s3', 'm1', 50, 5, 0, 0, 0)"
   );
 
   // PRs (one per repo'd branch). The global read EXISTS-scopes via the branch
@@ -250,6 +251,8 @@ test("PLN-1148: scoped token aggregate keeps the FEA-2032 even-split denominator
     assert.equal(row.outputTokens, 30, "20 (s1 split) + 10 (s2)");
     assert.equal(row.cacheReadTokens, 2, "4/2 (s1) + 0 (s2)");
     assert.equal(row.cacheWriteTokens, 1, "2/2 (s1) + 0 (s2)");
+    assert.equal(row.rawCostUsdEstimated, 100, "raw = s1 $80 + s2 $20");
+    assert.equal(row.costUsdEstimated, 60, "attributed = s1 $40 + s2 $20");
 
     // Cross-check: beta gets exactly s1's other half, and the two sum to s1+s2.
     const beta = await readBranchTokenAggregateRowsForBranch(prisma, {
@@ -257,6 +260,8 @@ test("PLN-1148: scoped token aggregate keeps the FEA-2032 even-split denominator
       branchName: "feature/beta",
     });
     assert.equal(beta[0].inputTokens, 200, "beta = s1's other half (400/2)");
+    assert.equal(beta[0].rawCostUsdEstimated, 80, "raw cost stays replicated");
+    assert.equal(beta[0].costUsdEstimated, 40, "beta gets s1's other half");
     assert.equal(
       row.inputTokens + beta[0].inputTokens,
       500,
@@ -291,6 +296,8 @@ test("PLN-1148: null-repo branch is matched null-safely and never leaks repo'd b
     assert.equal(tokens[0].repoFullName, null);
     assert.equal(tokens[0].branchName, "local-only");
     assert.equal(tokens[0].inputTokens, 50);
+    assert.equal(tokens[0].rawCostUsdEstimated, 0);
+    assert.equal(tokens[0].costUsdEstimated, 0);
 
     // And it equals the global read filtered the old way.
     assert.deepEqual(

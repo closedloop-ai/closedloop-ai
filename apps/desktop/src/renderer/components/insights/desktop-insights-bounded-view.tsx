@@ -1,15 +1,16 @@
-import { Button } from "@closedloop-ai/design-system/components/ui/button";
-import {
-  Card,
-  CardContent,
-} from "@closedloop-ai/design-system/components/ui/card";
-import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
+import { Button } from "@closedloop-ai/design-system/components/ui/button";
+import { Card, CardContent } from "@closedloop-ai/design-system/components/ui/card";
+import { TablePagination } from "@closedloop-ai/design-system/components/ui/table-pagination";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import { desktopSessionDetailHashHref } from "../../shared-agent-sessions/session-hrefs";
+import { desktopSessionDetailHref } from "../../shared-agent-sessions/session-hrefs";
 import { PageShell } from "../layout/page-shell";
+import {
+  INSIGHTS_PAGE_DESCRIPTION,
+  INSIGHTS_PAGE_TITLE,
+} from "./insights-view-constants";
 
 const PAGE_SIZE = 25;
 
@@ -40,57 +41,48 @@ export function DesktopInsightsBoundedView() {
     sessionsQuery.refetch().catch(() => undefined);
   };
 
+  // FEA-3989: one page subtitle (INSIGHTS_PAGE_DESCRIPTION) instead of a
+  // subtitle plus a card heading plus a card paragraph all restating "recent
+  // synced session activity". The Refresh control moves to the PageShell header;
+  // the sessions list + pagination render directly as PageShell children so the
+  // shell owns the 24px vertical rhythm (no competing space-y wrapper).
   return (
     <PageShell
-      description="Recent agent-session activity across your synced compute targets."
-      title="Agent Monitoring"
+      actions={
+        <Button
+          disabled={sessionsQuery.isFetching}
+          onClick={handleRefresh}
+          type="button"
+          variant="outline"
+        >
+          <RefreshCw className="mr-2 h-4 w-4" />
+          Refresh
+        </Button>
+      }
+      description={INSIGHTS_PAGE_DESCRIPTION}
+      title={INSIGHTS_PAGE_TITLE}
     >
-      <div className="space-y-4">
-        <Card className="rounded-xl border-border/80 bg-card shadow-sm">
-          <CardContent className="flex flex-col gap-3 p-5 md:flex-row md:items-center md:justify-between">
-            <div className="space-y-1">
-              <h2 className="font-medium text-[var(--foreground)] text-base">
-                Recent session activity
-              </h2>
-              <p className="max-w-2xl text-[var(--muted-foreground)] text-sm">
-                Showing synced sessions in bounded pages so large local
-                histories remain responsive.
-              </p>
+      <Card>
+        <CardContent className="space-y-4">
+          <InsightsSessionsContent
+            isError={sessionsQuery.isError}
+            isLoading={sessionsQuery.isLoading}
+            items={items}
+          />
+          <div className="flex flex-col gap-3 border-border/70 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="shrink-0 text-[var(--muted-foreground)] text-xs uppercase tracking-[0.18em]">
+              {from.toLocaleString()}-{to.toLocaleString()} of{" "}
+              {total.toLocaleString()}
             </div>
-            <Button
-              disabled={sessionsQuery.isFetching}
-              onClick={handleRefresh}
-              type="button"
-              variant="outline"
-            >
-              <RefreshCw className="mr-2 h-4 w-4" />
-              Refresh
-            </Button>
-          </CardContent>
-        </Card>
-
-        <Card className="rounded-xl border-border/80 bg-card shadow-sm">
-          <CardContent className="space-y-4 p-5">
-            <InsightsSessionsContent
-              isError={sessionsQuery.isError}
-              isLoading={sessionsQuery.isLoading}
-              items={items}
+            <TablePagination
+              className="justify-start sm:justify-end"
+              onPageChange={setPage}
+              page={page}
+              totalPages={totalPages}
             />
-            <div className="flex flex-col gap-3 border-border/70 border-t pt-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="shrink-0 text-[var(--muted-foreground)] text-xs uppercase tracking-[0.18em]">
-                {from.toLocaleString()}-{to.toLocaleString()} of{" "}
-                {total.toLocaleString()}
-              </div>
-              <TablePagination
-                className="justify-start sm:justify-end"
-                onPageChange={setPage}
-                page={page}
-                totalPages={totalPages}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
     </PageShell>
   );
 }
@@ -127,7 +119,7 @@ function InsightsSessionsContent({
           No synced sessions found.
         </div>
       }
-      getSessionHref={desktopSessionDetailHashHref}
+      getSessionHref={desktopSessionDetailHref}
       items={items}
     />
   );

@@ -7,7 +7,11 @@
  *   - Sidebar:             apps/app/app/(authenticated)/components/sidebar.tsx
  *   - Sidebar teams group: apps/app/app/(authenticated)/components/sidebar-teams.tsx
  *   - Top nav / header:    apps/app/app/(authenticated)/components/header.tsx
- *   - Active loops banner: apps/app/app/(authenticated)/teams/[teamId]/projects/[projectId]/components/active-loops-status.tsx
+ *   - Active loops banner: NO LONGER MIRRORS PRODUCTION. ISS-5355 replaced that
+ *     strip with `.../projects/[projectId]/components/project-active-sessions-status.tsx`,
+ *     which counts active sessions instead of loops. This marketing mock was
+ *     deliberately left on the old visual — re-styling the landing page is not
+ *     ISS-5355's scope; retiring the Loops vocabulary everywhere is ISS-4477's.
  *   - Artifacts toolbar:   apps/app/app/(authenticated)/teams/[teamId]/projects/[projectId]/page.tsx (filters row)
  *   - Table header:        apps/app/components/document-table/table-header.tsx
  *   - Table row:           apps/app/components/document-table/document-row.tsx
@@ -15,10 +19,16 @@
  *
  * Colors use design-system semantic tokens (bg-sidebar, bg-muted, border-border,
  * text-muted-foreground, etc.) so the mock tracks theme updates automatically.
- * Status-signal colors (blue-500 spinner, red-500 failure) match the product.
+ * The blue-500 running spinner matches the product's own active-loops banner.
  *
- * Columns shown here are only Assignee / Loop / Priority per the marketing
- * brief — the real product supports more columns (see DocumentColumn).
+ * Columns shown here are only Assignee / Priority per the marketing brief —
+ * the real product supports more columns (see DocumentColumn). There is no
+ * Loop column: the product removed it, and a hero advertising a column the
+ * app does not have is worse than a thinner mock.
+ *
+ * Loop STATE is still modelled on each artifact, because the product still
+ * surfaces it in two places this mock mirrors — the per-row status icon's
+ * `thinking` spinner, and the "N loops running" banner above the table.
  */
 
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
@@ -28,7 +38,6 @@ import {
   ArrowUpDown,
   Boxes,
   BoxIcon,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   EllipsisIcon,
@@ -592,7 +601,7 @@ const ActiveLoopsBanner = () => {
 };
 
 /* Table — mirrors document-table/table-header.tsx + documents-view.tsx.
-   Column set is restricted to Assignee / Loop / Priority per the marketing brief. */
+   Column set is restricted to Assignee / Priority per the marketing brief. */
 const ArtifactsTable = () => {
   return (
     <div className="flex-1 overflow-hidden">
@@ -604,7 +613,7 @@ const ArtifactsTable = () => {
   );
 };
 
-const COLUMN_GRID = "grid-cols-[minmax(0,1fr)_124px_124px_124px_40px]" as const;
+const COLUMN_GRID = "grid-cols-[minmax(0,1fr)_124px_124px_40px]" as const;
 
 const TableHeaderRow = () => {
   return (
@@ -616,9 +625,6 @@ const TableHeaderRow = () => {
       </div>
       <div className="flex h-10 min-w-0 items-center border-border border-l px-3 py-2">
         <HeaderLabel label="Assignee" />
-      </div>
-      <div className="flex h-10 min-w-0 items-center border-border border-l px-3 py-2">
-        <HeaderLabel label="Loop" />
       </div>
       <div className="flex h-10 min-w-0 items-center border-border border-l px-3 py-2">
         <HeaderLabel label="Priority" />
@@ -678,7 +684,6 @@ const ArtifactRow = ({
     >
       <NameCell artifact={artifact} rowStatus={rowStatus} />
       <AssigneeCell assignee={artifact.assignee} />
-      <LoopCell artifact={artifact} />
       <PriorityCell priority={artifact.priority} />
       <MoreMenuCell />
     </div>
@@ -727,38 +732,6 @@ const AssigneeCell = ({ assignee }: { assignee: Assignee }) => {
       <span className="truncate font-medium text-muted-foreground text-xs">
         {assignee.name}
       </span>
-    </div>
-  );
-};
-
-/* Loop cell — mirrors LoopCell in document-row.tsx.
-   Running:   Loader2 (blue-500) + Monitor + user name.
-   Completed: CheckCircle2 + "Loop Completed" (success token). */
-const LoopCell = ({ artifact }: { artifact: Artifact }) => {
-  if (artifact.loop === "running") {
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-border border-l px-3 py-2">
-        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-500" />
-        <MonitorIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <span className="truncate font-medium text-muted-foreground text-xs">
-          {artifact.assignee.name.split(" ")[0]}
-        </span>
-      </div>
-    );
-  }
-  if (artifact.loop === "completed") {
-    return (
-      <div className="flex h-11 w-[124px] shrink-0 items-center gap-1.5 border-border border-l px-3 py-2">
-        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
-        <span className="truncate font-medium text-success text-xs">
-          Loop Completed
-        </span>
-      </div>
-    );
-  }
-  return (
-    <div className="flex h-11 w-[124px] shrink-0 items-center border-border border-l px-3 py-2">
-      <span className="font-medium text-muted-foreground text-xs">—</span>
     </div>
   );
 };

@@ -2,8 +2,8 @@ import {
   type BranchPageDetail,
   type BranchSession,
   BranchStatus,
-  type MergedTraceItem,
 } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
 import { BranchPrSessionSwimlane } from "./branch-pr-session-swimlane";
 
@@ -21,6 +21,7 @@ function session(over: Partial<BranchSession>): BranchSession {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    ownerUserName: null,
     ...over,
   };
 }

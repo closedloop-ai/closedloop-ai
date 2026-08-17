@@ -1,0 +1,162 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": null,
+      "cost_source": null,
+      "cost_usd_estimated": null,
+      "cwd": "<HOME>",
+      "data_revision": 78,
+      "ended_at": "2026-06-03T19:15:06.452Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "codex",
+      "id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "last_activity_at": "2026-06-03T19:15:05.497Z",
+      "metadata": {
+        "sha256": "a694e32d08a5f4d717b4b68d4f2ff25875110c0a1113508737a30c6d30218262",
+        "chars": 5448
+      },
+      "model": "gpt-5.5",
+      "name": "testuser2",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-06-03T19:15:05.479Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-06-03T20:15:06.452Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-06-03T19:15:06.452Z",
+      "id": "019e8ee8-ee53-7001-8b20-6b39272312c0-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "started_at": "2026-06-03T19:15:05.479Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-06-03T20:15:06.452Z"
+    }
+  ],
+  "events": [
+    {
+      "agent_id": "019e8ee8-ee53-7001-8b20-6b39272312c0-main",
+      "created_at": "2026-06-03T19:15:05.497Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "55e7ebc1-b4ed-4c6b-a629-6a0a161c53a2",
+      "session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "summary": null,
+      "tool_name": null
+    }
+  ],
+  "token_usage": [],
+  "token_events": [],
+  "session_analytics": [
+    {
+      "agent_turns": 0,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0,
+      "event_count": 1,
+      "harness": "codex",
+      "human_turns": 1,
+      "input_tokens": 0,
+      "is_human": 0,
+      "output_tokens": 0,
+      "runtime_ms": 972,
+      "session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "started_at": "2026-06-03T19:15:05.479Z",
+      "started_day": "2026-06-03",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-06-03T20:15:06.452Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [
+    {
+      "session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "ts": "2026-06-03T19:15:05.503Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    }
+  ],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1780514106453,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "4b97f47bfc379ac5",
+      "observed_at": "2026-06-03T20:15:06.452Z",
+      "phase": "other",
+      "session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "start_ms": 1780514105479,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [],
+  "artifacts": [],
+  "pull_requests": [],
+  "agent_component_invocations": [],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-06-03T20:15:06.452Z",
+      "data_revision": 78,
+      "external_generation_id": "89c4897f1c66086559f03c5f422bd82683a01eeef83feb71c0da15f0a29a879d",
+      "external_session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "f7264ce0d5eb5dd8a01e0f977d7cb20db10dd7e6b0ba1dac23c7a06887424b3c",
+      "part_index": 0,
+      "payload": {
+        "sha256": "49e6ceffb60d0920bcef66994fa7219603d244d2caf145d88ee1b90ffb54c837",
+        "chars": 369
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-06-03T20:15:06.452Z",
+      "status": "pending",
+      "updated_at": "2026-06-03T20:15:06.452Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "89c4897f1c66086559f03c5f422bd82683a01eeef83feb71c0da15f0a29a879d",
+      "external_session_id": "019e8ee8-ee53-7001-8b20-6b39272312c0",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-06-03T20:15:06.452Z"
+    },
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-06-03T20:15:06.452Z"
+    }
+  ],
+  "agent_component_session_usage": [],
+  "agent_components": [],
+  "agent_component_versions": []
+}

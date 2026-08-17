@@ -3,16 +3,18 @@
 import type { CategoryBucket } from "@repo/api/src/types/insights";
 import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
 import type { InsightsSectionData } from "@repo/app/insights/components/tile-content";
-import { formatKpiValue, formatNumber } from "@repo/app/insights/lib/format";
+import {
+  formatKpiTileValue,
+  formatKpiValue,
+  formatNumber,
+} from "@repo/app/insights/lib/format";
 import { DashboardCard } from "./dashboard-card";
+import { OverviewMetric } from "./overview-metric";
 
-/**
- * PostHog flag gating the AI Impact slice. Reuses the shared `emergent`
- * prototype flag (the same key behind the command palette and Active Runs), so
- * the card ships dark until that flag is enabled. Named locally per the
- * per-surface flag-key convention.
- */
-export const AI_IMPACT_FEATURE_FLAG_KEY = "emergent";
+// This card is presentational and renders for everyone on both surfaces. It
+// was gated per-surface (web `ai-impact-card` PostHog flag; desktop
+// `aiImpactCardEnabled` Labs flag) through FEA-3266; FEA-4000 graduated it and
+// removed both gates, so the hosts mount it unconditionally.
 
 const PERCENT = 100;
 const NO_VALUE = "—";
@@ -33,8 +35,14 @@ function kpiValue(
   // to undefined so this card's existing honest-empty handling applies. The
   // keys this card reads (kloc/cost/tokens/mergedCount) are real sums that are
   // never null in practice — this only keeps the type honest.
+  //
+  // Guard `.kpis` too, not just the section: a resolved section can arrive
+  // without a `kpis` array (version-skewed payload, or a partial section still
+  // loading). Optional-chaining only the section would then throw on `.find`.
+  // Falling through to undefined routes those cases to the card's honest-empty
+  // (`—`) state instead of crashing the whole dashboard.
   return (
-    sections[section]?.kpis.find((kpi) => kpi.key === key)?.value ?? undefined
+    sections[section]?.kpis?.find((kpi) => kpi.key === key)?.value ?? undefined
   );
 }
 
@@ -90,62 +98,78 @@ export function deriveAiImpact(
     "mergedCount"
   );
   const tokens = kpiValue(sections, InsightsSection.Agents, "tokens");
-  const kloc = kpiValue(sections, InsightsSection.Delivery, "kloc");
+  // FEA-2947: "Tokens per KLOC" must divide by the SAME KLOC population on BOTH
+  // surfaces. The visible `kloc` Delivery KPI is surface-ambiguous — cloud sets it
+  // to MERGED-lines KLOC, but desktop sets it to CAPTURED-PR KLOC (all states, its
+  // "KLOC captured" tile), so reading `kloc` here divided the shared tile by two
+  // different denominators and contradicted this tile's own "lines merged" label on
+  // desktop (understating tokens-per-KLOC there relative to cloud). Read ONLY the
+  // dedicated, surface-agnostic `mergedKloc` KPI both surfaces now expose (merged-
+  // lines KLOC populated in lockstep — apps/api's insights service and desktop's
+  // local-insights — mirroring the `mergedCount` reconciliation in FEA-2946) so the
+  // same tile divides by the same KLOC population everywhere.
+  //
+  // No `?? kloc` version-skew fallback: falling back to the ambiguous `kloc` KPI
+  // would reintroduce the exact captured-vs-merged divergence above on desktop. When
+  // `mergedKloc` is absent (version skew) or zero, the card renders the honest empty
+  // state `—` (SSOT "don't fabricate") rather than a number derived from a
+  // surface-ambiguous denominator.
+  const mergedKloc = kpiValue(sections, InsightsSection.Delivery, "mergedKloc");
+  // Guard `.charts` too, not just the section: a resolved-but-partial section
+  // (version skew, or a section still loading) can arrive without a `charts`
+  // object, and `topBucket` already treats undefined as the honest-empty state.
   const topModel = topBucket(
-    sections[InsightsSection.Agents]?.charts.modelBreakdown
+    sections[InsightsSection.Agents]?.charts?.modelBreakdown
   );
   const topRepo = topBucket(
-    sections[InsightsSection.Delivery]?.charts.prByRepo
+    sections[InsightsSection.Delivery]?.charts?.prByRepo
   );
-  // FEA-2941: "Top repo by output" reads `prByRepo`, which reflects only
-  // genuinely MERGED PRs on both surfaces (on cloud it equals `mergedCount`; on
-  // desktop it excludes captured-unmerged and reference-only PRs — FEA-2862). Its
-  // bucket total is therefore a second, chart-derived merged-PR reference.
-  const mergedPrCount = topRepo?.total;
-
-  // "Tokens per KLOC" is a merged-lines claim, but `kloc` is CAPTURED-KLOC on
-  // desktop and `InsightsSectionData` carries no merged-only KLOC signal to
-  // correct it. So gate this card on there being NO captured-but-unmerged PR
-  // divergence: it renders only when the surface-agnostic `mergedCount` KPI
-  // equals the genuine merged count from `prByRepo` (always true on cloud; on
-  // desktop only when every captured PR merged). Comparing against `mergedCount`
-  // — not the ambiguous `merged` KPI — keeps the check surface-agnostic; when
-  // they diverge the captured-KLOC denominator would mislabel a captured ratio as
-  // "per KLOC merged", so it falls back to the honest empty state.
-  const klocIsMergedAccurate =
-    mergedPrCount !== undefined && mergedCount === mergedPrCount;
 
   return [
     {
       key: "cost-per-pr",
       label: "Cost per merged PR",
-      // Divide model spend by the surface-agnostic `mergedCount` KPI ONLY. When
+      // Divide model cost by the surface-agnostic `mergedCount` KPI ONLY. When
       // it is absent (version skew) or zero, render `—` rather than falling back
       // to the ambiguous `merged` KPI or fabricating a value.
       value:
         cost !== undefined && mergedCount
-          ? formatKpiValue(cost / mergedCount, KpiFormat.Currency)
+          ? formatKpiTileValue(cost / mergedCount, KpiFormat.Currency)
           : NO_VALUE,
-      detail: "Model spend ÷ PRs shipped",
+      // ISS-4994: this divides the `cost` KPI, which is subscription-INCLUSIVE,
+      // so the ratio inherits that basis. "Model spend" claimed billed money;
+      // the numerator is named for what it is instead — using the SAME name every
+      // other surface gives this number, "estimated cost" (review thread), rather
+      // than minting a third one.
+      detail: "Estimated cost ÷ PRs shipped",
     },
     {
       key: "tokens-per-kloc",
       label: "Tokens per KLOC",
+      // Divide summed tokens by the surface-agnostic `mergedKloc` KPI ONLY. When it
+      // is absent (version skew) or zero, render `—` rather than falling back to the
+      // ambiguous captured/merged `kloc` KPI or fabricating a value.
       value:
-        tokens !== undefined && kloc && klocIsMergedAccurate
-          ? formatKpiValue(tokens / kloc, KpiFormat.Tokens)
+        tokens !== undefined && mergedKloc
+          ? formatKpiValue(tokens / mergedKloc, KpiFormat.Tokens)
           : NO_VALUE,
       detail: "Tokens ÷ thousands of lines merged",
     },
     {
       key: "top-model",
-      // FEA-2331: modelBreakdown is now estimated spend (USD), so this leader is
-      // the costliest model and the share is a share of spend, not tokens.
-      label: "Top model by spend",
+      // FEA-2331: modelBreakdown is estimated cost (USD), so this leader is the
+      // costliest model and the share is a share of cost, not tokens.
+      //
+      // ISS-4994 (review thread): "cost", not "spend". These three strings are
+      // driven by the very series retitled "Cost share by model" two rows down,
+      // and they carry the identical subscription-inclusive basis as the KPI —
+      // leaving them on "spend" had the card arguing with its own chart and with
+      // the number above it.
+      label: "Top model by cost",
       value: topModel ? topModel.bucket.label : NO_VALUE,
       detail: topModel
-        ? `${Math.round((topModel.bucket.value / topModel.total) * PERCENT)}% of spend`
-        : "No model spend yet",
+        ? `${Math.round((topModel.bucket.value / topModel.total) * PERCENT)}% of cost`
+        : "No model cost yet",
     },
     {
       key: "top-repo",
@@ -170,23 +194,17 @@ export function AiImpactCard({ sections }: { sections: InsightsSectionData }) {
   const metrics = deriveAiImpact(sections);
   return (
     <DashboardCard
-      description="How spend translates into shipped value"
+      description="How estimated cost translates into shipped value"
       title="AI Impact"
     >
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {metrics.map((metric) => (
-          <div className="space-y-1" key={metric.key}>
-            <p className="font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]">
-              {metric.label}
-            </p>
-            <p
-              className="truncate font-semibold text-2xl tracking-tight"
-              title={metric.value}
-            >
-              {metric.value}
-            </p>
-            <p className="text-muted-foreground text-sm">{metric.detail}</p>
-          </div>
+          <OverviewMetric
+            detail={metric.detail}
+            key={metric.key}
+            label={metric.label}
+            value={metric.value}
+          />
         ))}
       </div>
     </DashboardCard>

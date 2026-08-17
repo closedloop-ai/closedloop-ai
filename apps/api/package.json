@@ -9,11 +9,14 @@
     "build": "next build && npm run server:import-smoke",
     "start": "npm run server:start",
     "server:import-smoke": "tsx scripts/smoke-desktop-gateway-import.ts",
+    "backfill:transcript-search": "tsx scripts/backfill-transcript-search.ts",
     "analyze": "ANALYZE=true npm run build",
     "test": "NODE_ENV=test vitest run",
+    "test:coverage": "NODE_ENV=test vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=app/**/*.{ts,tsx}' '--coverage.include=lib/**/*.{ts,tsx}' '--coverage.include=*.{ts,tsx}'",
     "test:compatibility": "NODE_ENV=test vitest run --config vitest.config.compatibility.mts",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "test:integration": "NODE_ENV=test vitest run --config vitest.config.integration.mts --no-file-parallelism",
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "next typegen && tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@aws-sdk/client-ecs": "^3.985.0",
@@ -38,6 +41,7 @@
     "@repo/linear": "workspace:*",
     "@repo/next-config": "workspace:*",
     "@repo/observability": "workspace:*",
+    "@repo/pensero": "workspace:*",
     "@t3-oss/env-nextjs": "^0.13.11",
     "@vercel/functions": "^3.4.3",
     "adm-zip": "^0.5.16",
@@ -47,8 +51,9 @@
     "next": "catalog:",
     "p-limit": "^7.3.0",
     "pg": "^8.20.0",
-    "react": "19.2.5",
-    "react-dom": "19.2.5",
+    "prisma": "~7.8.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "require-in-the-middle": "8.0.1",
     "sanitize-html": "^2.17.4",
     "socket.io": "^4.8.1",
@@ -61,13 +66,15 @@
     "@repo/typescript-config": "workspace:*",
     "@types/adm-zip": "^0.5.7",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/sanitize-html": "^2.16.1",
     "@vitejs/plugin-react": "^5.1.3",
     "dotenv": "^17.4.2",
-    "typescript": "^5.9.3",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript6": "npm:@typescript/typescript6@6.0.2",
     "uuid": "^14.0.0",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "yaml": ">=2.8.3"
   }
 }

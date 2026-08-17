@@ -1,0 +1,437 @@
+{
+  "provenance": {
+    "warning": "DERIVED fixture — regenerated, never hand-edited. Regenerate on an AGENT_SESSION_SYNC_SCHEMA_VERSION bump or a sync-source/importer change. Not an oracle.",
+    "sourceSessionId": "f9830b64-52fb-47c7-a115-07fc17372bb5",
+    "harness": "claude",
+    "schemaVersion": 2,
+    "generatedBy": "apps/desktop/scripts/regen-golden-sync-payloads.ts",
+    "regenCommand": "pnpm --filter desktop run regen:golden-sync-payloads",
+    "oracle": "packages/golden-sessions/f9830b64-52fb-47c7-a115-07fc17372bb5/expectations.yaml"
+  },
+  "schemaVersion": 2,
+  "sessions": [
+    {
+      "externalSessionId": "f9830b64-52fb-47c7-a115-07fc17372bb5",
+      "name": "Analyze largest files by line count",
+      "status": "completed",
+      "harness": "claude",
+      "billingMode": "unknown",
+      "cwd": "/Users/testuser1/conductor/workspaces/symphony-alpha/mogadishu",
+      "model": "claude-sonnet-4-6",
+      "startedAt": "2026-06-25T19:52:59.435Z",
+      "updatedAt": "2026-06-25T19:58:53.811Z",
+      "lastActivityAt": "2026-06-25T19:58:53.811Z",
+      "endedAt": "2026-06-25T19:58:53.811Z",
+      "awaitingInputSince": null,
+      "metadata": {
+        "version": "2.1.170",
+        "gitBranch": "mogadishu",
+        "userMessages": 6,
+        "assistantMessages": 4,
+        "entrypoint": "sdk-ts",
+        "permissionMode": "bypassPermissions",
+        "thinkingBlockCount": 2,
+        "teams": [],
+        "plans": [],
+        "usageExtras": {
+          "service_tiers": [
+            "standard"
+          ],
+          "speeds": [
+            "standard"
+          ],
+          "inference_geos": [],
+          "cache_creation": {
+            "ephemeral_5m_input_tokens": 0,
+            "ephemeral_1h_input_tokens": 12405
+          }
+        },
+        "compactions": [],
+        "messages": [
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:52:59.435Z",
+            "text": "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>claude-sonnet-4-6[1m]</command-args>"
+          },
+          {
+            "role": "system",
+            "timestamp": "2026-06-25T19:52:59.435Z",
+            "text": "<local-command-stdout>Set model to claude-sonnet-4-6[1m]</local-command-stdout>"
+          },
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:52:59.452Z",
+            "text": "<system_instruction>\nYou are working inside Conductor, a Mac app that lets the user run many coding agents in parallel.\nYour work should take place in the /User"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:52:59.779Z",
+            "model": "<synthetic>",
+            "text": "API Error: Usage credits required for 1M context · turn on usage credits at claude.ai/settings/usage, or use --model to switch to standard context"
+          },
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:53:44.168Z",
+            "text": "<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>"
+          },
+          {
+            "role": "system",
+            "timestamp": "2026-06-25T19:53:44.168Z",
+            "text": "<local-command-stdout>Set model to sonnet (claude-sonnet-4-6)</local-command-stdout>"
+          },
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:53:44.171Z",
+            "text": "List the ten largest files by line count"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:53:47.008Z",
+            "model": "claude-sonnet-4-6",
+            "isThinking": true
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:53:47.008Z",
+            "model": "claude-sonnet-4-6"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:53:49.167Z",
+            "model": "claude-sonnet-4-6"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:53:55.498Z",
+            "model": "claude-sonnet-4-6",
+            "text": "Here are the ten largest files by line count (excluding `node_modules`, `dist`, `.next`, and generated files):\n\n| Rank | Lines | File |\n|------|-------|------|\n"
+          },
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:57:17.810Z",
+            "text": "cd .."
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:57:24.347Z",
+            "model": "claude-sonnet-4-6",
+            "isThinking": true
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:57:24.347Z",
+            "model": "claude-sonnet-4-6"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:57:24.351Z",
+            "model": "claude-sonnet-4-6",
+            "text": "My working directory is fixed at `/Users/testuser1/conductor/workspaces/symphony-alpha/mogadishu` — `cd` commands don't carry over between my tool calls. If you"
+          },
+          {
+            "role": "human",
+            "timestamp": "2026-06-25T19:58:51.282Z",
+            "text": "How do I list all of the files recursively in a directory and its descendents?"
+          },
+          {
+            "role": "assistant",
+            "timestamp": "2026-06-25T19:58:53.811Z",
+            "model": "claude-sonnet-4-6",
+            "text": "```bash\nfind . -type f\n```\n\nOr with `ls` if you prefer:\n\n```bash\nls -R\n```\n\nThe `find` version is generally more useful — you can add filters like `-name \"*.ts\""
+          }
+        ],
+        "slashCommands": [
+          {
+            "name": "/model",
+            "timestamp": "2026-06-25T19:52:59.435Z"
+          },
+          {
+            "name": "/model",
+            "timestamp": "2026-06-25T19:53:44.168Z"
+          }
+        ],
+        "artifacts": {
+          "prs": [],
+          "issues": [],
+          "repo": "mogadishu"
+        },
+        "parseQuality": {
+          "totalLines": 34,
+          "malformedLines": 0,
+          "truncatedFinalLine": false
+        }
+      },
+      "deviceTimeZone": "UTC",
+      "dataRevision": 26,
+      "attribution": {
+        "repositoryFullName": null,
+        "worktreePath": "/Users/testuser1/conductor/workspaces/symphony-alpha/mogadishu",
+        "sourceArtifactId": null,
+        "sourceLoopId": null,
+        "baseBranch": null
+      },
+      "branch": null,
+      "wallClock": "5m",
+      "activeAgent": "21s",
+      "waitingUser": "4m idle",
+      "activityBuckets": [
+        {
+          "label": "0:00:00",
+          "cIn": 0.000012,
+          "cOut": 0.009975,
+          "cCache": 0.056738,
+          "total": 15,
+          "toolStart": 1,
+          "tl0": 0,
+          "byModel": {
+            "claude-sonnet-4-6": {
+              "cIn": 0.000012,
+              "cOut": 0.009975,
+              "cCache": 0.056738
+            }
+          }
+        },
+        {
+          "label": "0:02:57",
+          "cIn": 0.000018,
+          "cOut": 0.005355,
+          "cCache": 0.019161,
+          "total": 8,
+          "toolStart": 0,
+          "tl0": 15,
+          "byModel": {
+            "claude-sonnet-4-6": {
+              "cIn": 0.000018,
+              "cOut": 0.005355,
+              "cCache": 0.019161
+            }
+          }
+        }
+      ],
+      "span": {
+        "first": "0:00:00",
+        "last": "0:05:54"
+      },
+      "turns": 10,
+      "steeringEpisodes": 0,
+      "autonomy": 100,
+      "tracePhaseSources": [],
+      "throttleSources": [],
+      "correctionSources": [],
+      "phases": [],
+      "phaseIterations": {},
+      "phaseLoopbacks": [],
+      "throttles": [],
+      "markers": [
+        {
+          "kind": "prompt",
+          "x": 0,
+          "t": "0:00:00",
+          "label": "Prompt",
+          "tl": 0
+        },
+        {
+          "kind": "prompt",
+          "x": 0,
+          "t": "0:00:00",
+          "label": "Prompt",
+          "tl": 2
+        },
+        {
+          "kind": "fail",
+          "x": 0.1,
+          "t": "0:00:00",
+          "label": "API Error: Usage credits required for 1M context · turn on usage credits at claude.ai/settings/usage, or use --model to switch to standard context",
+          "tl": 4
+        },
+        {
+          "kind": "prompt",
+          "x": 12.62,
+          "t": "0:00:45",
+          "label": "Prompt",
+          "tl": 5
+        },
+        {
+          "kind": "prompt",
+          "x": 12.62,
+          "t": "0:00:45",
+          "label": "Prompt",
+          "tl": 7
+        },
+        {
+          "kind": "prompt",
+          "x": 72.91,
+          "t": "0:04:18",
+          "label": "Prompt",
+          "tl": 15
+        },
+        {
+          "kind": "prompt",
+          "x": 99.29,
+          "t": "0:05:52",
+          "label": "Prompt",
+          "tl": 20
+        }
+      ],
+      "prRefs": [],
+      "agents": [
+        {
+          "externalAgentId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "name": "main",
+          "type": "main",
+          "subagentType": null,
+          "status": "completed",
+          "task": null,
+          "currentTool": null,
+          "startedAt": "2026-06-25T19:52:59.435Z",
+          "updatedAt": "2026-06-25T20:58:53.811Z",
+          "endedAt": "2026-06-25T19:58:53.811Z",
+          "awaitingInputSince": null,
+          "parentExternalAgentId": null,
+          "metadata": null
+        }
+      ],
+      "events": [
+        {
+          "externalEventId": "68f853d8-74a9-4fc1-8eac-c51bae32c545",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "APIError",
+          "toolName": null,
+          "createdAt": "2026-06-25T19:52:59.779Z"
+        },
+        {
+          "externalEventId": "b4418791-f04f-4008-a613-04e09fb9b626",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "Stop",
+          "toolName": null,
+          "createdAt": "2026-06-25T19:53:47.008Z"
+        },
+        {
+          "externalEventId": "50c9dc2e-dd09-43ea-93ce-9b56cffa4215",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "PostToolUse",
+          "toolName": "Bash",
+          "createdAt": "2026-06-25T19:53:49.167Z"
+        },
+        {
+          "externalEventId": "4846440e-9df2-42a2-913b-62265029e7c2",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "Stop",
+          "toolName": null,
+          "createdAt": "2026-06-25T19:53:55.498Z"
+        },
+        {
+          "externalEventId": "cacaea23-0f1f-4891-bf92-f2d3b9e9cd7d",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "Stop",
+          "toolName": null,
+          "createdAt": "2026-06-25T19:57:24.347Z"
+        },
+        {
+          "externalEventId": "7f62711c-c293-4f85-8efd-391051b6b420",
+          "agentExternalId": "f9830b64-52fb-47c7-a115-07fc17372bb5-main",
+          "eventType": "Stop",
+          "toolName": null,
+          "createdAt": "2026-06-25T19:58:53.811Z"
+        }
+      ],
+      "tokenUsageByModel": [
+        {
+          "model": "claude-sonnet-4-6",
+          "inputTokens": 10,
+          "outputTokens": 1022,
+          "cacheReadTokens": 97935,
+          "cacheWriteTokens": 12405,
+          "estimatedCostUsd": 0.09125925
+        }
+      ],
+      "tokenEvents": [
+        {
+          "externalEventId": "a73e9a70eb30abf29c2bf748da263e0e09f6137ff32e3574de0aa2d78beb8bde",
+          "model": "claude-sonnet-4-6",
+          "inputTokens": 3,
+          "outputTokens": 290,
+          "cacheReadTokens": 15729,
+          "cacheWriteTokens": 11207,
+          "estimatedCostUsd": 0.05110395,
+          "createdAt": "2026-06-25T19:53:47.008Z"
+        },
+        {
+          "externalEventId": "1fef693b0b5ada65049e5d8f503b289a8fd85bb46a1c759b10669121a1cbb890",
+          "model": "claude-sonnet-4-6",
+          "inputTokens": 1,
+          "outputTokens": 375,
+          "cacheReadTokens": 26936,
+          "cacheWriteTokens": 510,
+          "estimatedCostUsd": 0.015621299999999998,
+          "createdAt": "2026-06-25T19:53:55.498Z"
+        },
+        {
+          "externalEventId": "564ef052d480066c75aef868fd6e838ec689076782170e9390fb30498875d25f",
+          "model": "claude-sonnet-4-6",
+          "inputTokens": 3,
+          "outputTokens": 289,
+          "cacheReadTokens": 27446,
+          "cacheWriteTokens": 378,
+          "estimatedCostUsd": 0.0139953,
+          "createdAt": "2026-06-25T19:57:24.347Z"
+        },
+        {
+          "externalEventId": "3301f011d587e57cf5a0c5db9d5bceb81d10be78901daace842f81b85340bda9",
+          "model": "claude-sonnet-4-6",
+          "inputTokens": 3,
+          "outputTokens": 68,
+          "cacheReadTokens": 27824,
+          "cacheWriteTokens": 310,
+          "estimatedCostUsd": 0.0105387,
+          "createdAt": "2026-06-25T19:58:53.811Z"
+        }
+      ],
+      "sessionAnalytics": {
+        "startedAt": "2026-06-25T19:52:59.435Z",
+        "startedDay": "2026-06-25",
+        "status": "completed",
+        "harness": "claude",
+        "isHuman": false,
+        "humanTurns": 6,
+        "agentTurns": 4,
+        "eventCount": 6,
+        "toolInvocations": 1,
+        "errorEvents": 1,
+        "inputTokens": 10,
+        "outputTokens": 1022,
+        "cacheReadTokens": 97935,
+        "cacheWriteTokens": 12405,
+        "estimatedCostUsd": 0.09125925,
+        "runtimeMs": 354376,
+        "updatedAt": "2026-06-25T20:58:53.811Z"
+      },
+      "components": [
+        {
+          "componentKind": "command",
+          "componentKey": "//model",
+          "externalComponentId": null,
+          "harness": "claude",
+          "invocations": 2,
+          "errorCount": 0,
+          "firstInvokedAt": "2026-06-25T19:52:59.435Z",
+          "lastInvokedAt": "2026-06-25T19:53:44.168Z",
+          "gitBranch": null,
+          "componentVersionHash": null
+        },
+        {
+          "componentKind": "tool",
+          "componentKey": "Bash",
+          "externalComponentId": null,
+          "harness": "claude",
+          "invocations": 1,
+          "errorCount": 0,
+          "firstInvokedAt": "2026-06-25T19:53:49.167Z",
+          "lastInvokedAt": "2026-06-25T19:53:49.167Z",
+          "gitBranch": "find-largest-files-by-lines",
+          "componentVersionHash": null
+        }
+      ]
+    }
+  ]
+}

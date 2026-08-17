@@ -7,23 +7,40 @@
  * fields on pack_catalog and appends a row to pack_catalog_history (for the
  * sparkline).
  *
- * Auth preference:
- *   1. Local `gh` CLI (`gh api repos/<owner>/<repo>`) — uses the user's
- *      `gh auth login`, zero credentials in the sidecar
- *   2. Unauthenticated REST (`https://api.github.com/repos/...`) — 60
- *      req/hr; the catalog has ~10 packs / 24h so this is comfortable
+ * ISS-5274 SPLIT. The run is two halves that execute in DIFFERENT processes:
+ *
+ *   - {@link collectCatalogFetchPlan} — network only, no DB. Runs in the MAIN
+ *     process, where ~20 `gh`/HTTPS calls can take their time without occupying
+ *     the db-host's op queue. This is the expensive half: it was measured at
+ *     13.4s of `store:catalog.fetch.run` on a real machine, two orders of
+ *     magnitude over the 100ms db-op budget.
+ *   - {@link applyCatalogFetchPlan} — DB only, no network. Runs in the db-host,
+ *     the sole SQLite writer.
+ *
+ * {@link runCatalogFetch} composes the same two halves in-process and remains
+ * the unchanged fallback store op, so a machine where the coordinator can't run
+ * still gets a completed fetch. Composing rather than duplicating the loop is
+ * deliberate: a second copy of the per-row policy would be free to drift, and
+ * the drift would be invisible because the fallback only runs when the split
+ * path already failed.
+ *
+ * The GitHub transport itself lives in `./catalog-github-client.js`.
  *
  * Best-effort: a single pack's 404/rate-limit logs a warning and continues;
  * the run as a whole always returns a summary.
  */
 
-import { execFile } from "node:child_process";
-import https from "node:https";
-import { promisify } from "node:util";
+import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
 import { resolveBinaryFromLoginShellSync } from "../../server/shell-path.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { gatewayLog } from "../gateway-logger.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
+import {
+  fetchPluginManifest,
+  fetchRepoStats,
+  parseGithubUrl,
+} from "./catalog-github-client.js";
 import { applyFetchResult } from "./catalog-store.js";
+import { sha256Hex } from "./definition-variant-fold.js";
 
 // FEA-1314 v6: marketplace sub-plugins (e.g. code-review, context7) live as
 // folders inside a parent marketplace repo. The default per-repo fetch
@@ -34,17 +51,9 @@ import { applyFetchResult } from "./catalog-store.js";
 // for its plugin-specific name/description/version, and leave stars NULL —
 // the marketplace's star count doesn't represent the individual plugin.
 
-const REQUEST_TIMEOUT_MS = 5000;
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
-const USER_AGENT = "closedloop-electron-agent-monitor";
-const execFileAsync = promisify(execFile);
 
-type ParsedRepo = {
-  owner: string;
-  repo: string;
-};
-
-type FetchSummary = {
+export type FetchSummary = {
   started_at: string;
   ended_at?: string;
   used_gh_cli: boolean;
@@ -59,226 +68,53 @@ type ContentsJson = {
   plugin_path?: string;
 };
 
-type GitHubRepoResponse = {
-  stargazers_count?: number;
-  forks_count?: number;
-  description?: string;
+/** The `pack_catalog` columns the fetch reads — its ONE db-host read. */
+export type CatalogFetchRow = {
+  packId: string;
+  githubUrl: string;
+  contents: unknown;
 };
 
-type GitHubReleaseResponse = {
-  tag_name?: string;
-  name?: string;
+/** One row's fetched values, ready to write. */
+export type CatalogFetchPlanEntry = {
+  packId: string;
+  /**
+   * Identity of the SOURCE this entry was fetched for. Re-checked at apply
+   * time so a seed that rewrote the row mid-fetch is not overwritten with
+   * stats fetched for its previous source.
+   */
+  sourceFingerprint: string;
+  stars: number | null;
+  forks: number | null;
+  description: string | null;
+  lastRelease: string | null;
 };
 
-type PluginManifest = {
-  description?: string;
-  version?: string;
+export type CatalogFetchPlan = {
+  startedAt: string;
+  usedGhCli: boolean;
+  entries: CatalogFetchPlanEntry[];
+  /** Rows whose `github_url` did not parse — nothing to fetch. */
+  skipped: number;
+  /** Rows whose network fetch produced nothing usable. */
+  failed: number;
 };
 
+/**
+ * Whether the local `gh` CLI is usable, resolved SYNCHRONOUSLY through a login
+ * shell.
+ *
+ * ISS-5274 — DO NOT call this from the main process. The sync resolver
+ * (`resolveBinaryFromLoginShellSync`) spawns a login shell and measured 2,667ms
+ * of `resolveExecutablesOnPathSync` in the perf baseline; on the main thread
+ * that is a hard UI freeze, strictly worse than today where it only blocks the
+ * db-host. It stays exported for {@link runCatalogFetch}, the in-db-host
+ * fallback. Main-process callers inject the ASYNC resolver instead — see
+ * `catalog-fetch-coordinator.ts`.
+ */
 export function ghCliAvailable(): boolean {
   const result = resolveBinaryFromLoginShellSync("gh");
   return result.source !== "fallback" && result.source !== "override_invalid";
-}
-
-/**
- * Parse owner/repo out of a github URL.
- *   https://github.com/owner/repo            -> { owner, repo }
- *   https://github.com/owner/repo.git        -> { owner, repo }
- *   https://github.com/owner/repo/tree/main  -> { owner, repo }
- */
-export function parseGithubUrl(
-  url: string | null | undefined
-): ParsedRepo | null {
-  if (typeof url !== "string") {
-    return null;
-  }
-  const m = url.match(/github\.com[/:]([^/]+)\/([^/?#.]+)/);
-  if (!m) {
-    return null;
-  }
-  return { owner: m[1], repo: m[2].replace(/\.git$/, "") };
-}
-
-async function ghFetch(
-  owner: string,
-  repo: string
-): Promise<GitHubRepoResponse | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      "gh",
-      [
-        "api",
-        `repos/${owner}/${repo}`,
-        "--header",
-        "Accept: application/vnd.github+json",
-      ],
-      { timeout: REQUEST_TIMEOUT_MS }
-    );
-    return JSON.parse(stdout) as GitHubRepoResponse;
-  } catch {
-    return null;
-  }
-}
-
-async function ghFetchLatestRelease(
-  owner: string,
-  repo: string
-): Promise<string | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      "gh",
-      ["api", `repos/${owner}/${repo}/releases/latest`],
-      { timeout: REQUEST_TIMEOUT_MS }
-    );
-    const parsed = JSON.parse(stdout) as GitHubReleaseResponse;
-    return parsed && (parsed.tag_name || parsed.name)
-      ? (parsed.tag_name || parsed.name)!
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function httpGetJson<T = unknown>(urlPath: string): Promise<T | null> {
-  return new Promise((resolve) => {
-    const req = https.get(
-      {
-        host: "api.github.com",
-        path: urlPath,
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "application/vnd.github+json",
-        },
-        timeout: REQUEST_TIMEOUT_MS,
-      },
-      (res) => {
-        let body = "";
-        res.on("data", (chunk: Buffer | string) => {
-          body += chunk;
-        });
-        res.on("end", () => {
-          if (res.statusCode === 200) {
-            try {
-              resolve(JSON.parse(body) as T);
-            } catch {
-              resolve(null);
-            }
-          } else {
-            resolve(null);
-          }
-        });
-      }
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-async function restFetch(
-  owner: string,
-  repo: string
-): Promise<GitHubRepoResponse | null> {
-  return httpGetJson<GitHubRepoResponse>(`/repos/${owner}/${repo}`);
-}
-
-async function restFetchLatestRelease(
-  owner: string,
-  repo: string
-): Promise<string | null> {
-  const parsed = await httpGetJson<GitHubReleaseResponse>(
-    `/repos/${owner}/${repo}/releases/latest`
-  );
-  return parsed && (parsed.tag_name || parsed.name)
-    ? (parsed.tag_name || parsed.name)!
-    : null;
-}
-
-/**
- * Fetch a marketplace sub-plugin's .claude-plugin/plugin.json from the
- * parent marketplace repo. Returns the parsed JSON or null. Used to source
- * plugin-specific description + version for catalog entries whose
- * `contents.type === 'github-claude-plugin'`.
- */
-async function ghFetchPluginManifest(
-  owner: string,
-  repo: string,
-  pluginPath: string
-): Promise<PluginManifest | null> {
-  try {
-    const { stdout } = await execFileAsync(
-      "gh",
-      [
-        "api",
-        `repos/${owner}/${repo}/contents/${encodeURI(pluginPath)}/.claude-plugin/plugin.json`,
-        "--header",
-        "Accept: application/vnd.github.raw",
-      ],
-      { timeout: REQUEST_TIMEOUT_MS }
-    );
-    return JSON.parse(stdout) as PluginManifest;
-  } catch {
-    return null;
-  }
-}
-
-function restFetchPluginManifest(
-  owner: string,
-  repo: string,
-  pluginPath: string
-): Promise<PluginManifest | null> {
-  return new Promise((resolve) => {
-    const req = https.get(
-      {
-        host: "api.github.com",
-        path: `/repos/${owner}/${repo}/contents/${encodeURI(pluginPath)}/.claude-plugin/plugin.json`,
-        headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "application/vnd.github.raw",
-        },
-        timeout: REQUEST_TIMEOUT_MS,
-      },
-      (res) => {
-        if (res.statusCode !== 200) {
-          resolve(null);
-          res.resume();
-          return;
-        }
-        let body = "";
-        res.setEncoding("utf8");
-        res.on("data", (c: string) => (body += c));
-        res.on("end", () => {
-          try {
-            resolve(JSON.parse(body) as PluginManifest);
-          } catch {
-            resolve(null);
-          }
-        });
-      }
-    );
-    req.on("error", () => resolve(null));
-    req.on("timeout", () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
-async function fetchPluginManifest(
-  owner: string,
-  repo: string,
-  pluginPath: string,
-  useGh: boolean
-): Promise<PluginManifest | null> {
-  if (useGh) {
-    const m = await ghFetchPluginManifest(owner, repo, pluginPath);
-    if (m) {
-      return m;
-    }
-  }
-  return restFetchPluginManifest(owner, repo, pluginPath);
 }
 
 function parseJsonField(value: unknown): ContentsJson | null {
@@ -302,158 +138,210 @@ function parseJsonField(value: unknown): ContentsJson | null {
 }
 
 /**
- * Fetch stats for every pack in pack_catalog and apply them via the store.
- * Best-effort per pack; returns a summary.
+ * Identity of the row's fetch SOURCE — the inputs that decide what gets
+ * fetched and how the result is interpreted.
+ *
+ * `githubUrl` alone is insufficient: `catalog-store` rewrites `contents` and
+ * `githubUrl` together as seed-owned fields, so a seed can replace `contents`
+ * while `githubUrl` stays byte-identical — and `contents` is what selects the
+ * marketplace-sub-plugin branch and supplies `marketplace_repo`/`plugin_path`.
+ *
+ * `contents` is fingerprinted through {@link parseJsonField} rather than raw, so
+ * the same value read once as an object and once as a JSON string produces the
+ * SAME fingerprint. Fingerprinting the raw column would make every apply look
+ * stale and silently stop the catalog from ever updating.
+ *
+ * The NUL separator is written `\u0000` (never a raw byte) per the repo's
+ * source-gate convention: a raw NUL makes the whole file read as binary to git
+ * and grep.
  */
-export async function runCatalogFetch(
-  prisma: DesktopPrisma
-): Promise<FetchSummary> {
-  const summary: FetchSummary = {
-    started_at: new Date().toISOString(),
-    used_gh_cli: ghCliAvailable(),
-    succeeded: 0,
-    failed: 0,
-    skipped: 0,
-  };
+export function catalogSourceFingerprint(row: {
+  githubUrl: string | null;
+  contents: unknown;
+}): string {
+  return sha256Hex(
+    `${row.githubUrl ?? ""}\u0000${stableStringify(parseJsonField(row.contents))}`
+  );
+}
 
-  let rows: { packId: string; githubUrl: string; contents: unknown }[];
-  try {
-    rows = await prisma.client.packCatalog.findMany({
-      select: { packId: true, githubUrl: true, contents: true },
-    });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : String(e);
-    gatewayLog.warn("catalog-fetcher", `cannot read pack_catalog: ${msg}`);
-    return summary;
+/**
+ * The GitHub calls the collect half makes. Injectable so the per-row branch
+ * POLICY — which of the two paths a row takes, when stars are deliberately left
+ * null, what the fallback ordering is — can be tested without a network.
+ */
+export type CatalogFetchTransport = {
+  fetchRepoStats: typeof fetchRepoStats;
+  fetchPluginManifest: typeof fetchPluginManifest;
+};
+
+const REAL_TRANSPORT: CatalogFetchTransport = {
+  fetchRepoStats,
+  fetchPluginManifest,
+};
+
+/**
+ * Fetch stats for every catalog row. NETWORK ONLY — takes the rows and returns
+ * a plan, touching no database, so it can run in the main process while the
+ * db-host serves renderer reads.
+ *
+ * `ghAvailable` is a PARAMETER, never resolved here: the main process must
+ * supply it from the async resolver (see {@link ghCliAvailable}).
+ *
+ * `shouldStop` is checked BETWEEN rows so app teardown does not keep launching
+ * requests. This matters because of where the work now runs: while the fetch
+ * lived in the db-host, closing that child process killed any in-flight
+ * requests outright. In the main process nothing does that, so without this
+ * check a quit during the first row would still march through every remaining
+ * row — up to two 5s-timeout calls each — keeping the main process busy long
+ * after the user asked it to close. A stopped collect returns what it has and
+ * the caller (already stopped) never applies it.
+ */
+export async function collectCatalogFetchPlan(
+  rows: readonly CatalogFetchRow[],
+  options: {
+    ghAvailable: boolean;
+    transport?: CatalogFetchTransport;
+    shouldStop?: () => boolean;
   }
-
+): Promise<CatalogFetchPlan> {
+  const transport = options.transport ?? REAL_TRANSPORT;
+  const shouldStop = options.shouldStop ?? (() => false);
+  const plan: CatalogFetchPlan = {
+    startedAt: new Date().toISOString(),
+    usedGhCli: options.ghAvailable,
+    entries: [],
+    skipped: 0,
+    failed: 0,
+  };
   for (const row of rows) {
+    if (shouldStop()) {
+      return plan;
+    }
     const parsed = parseGithubUrl(row.githubUrl);
     if (!parsed) {
-      summary.skipped += 1;
+      plan.skipped += 1;
       continue;
     }
-
     const contents = parseJsonField(row.contents);
-    const isMarketplaceSubPlugin =
-      contents && contents.type === "github-claude-plugin";
+    const entry =
+      contents?.type === "github-claude-plugin"
+        ? await collectMarketplacePluginEntry(
+            row,
+            parsed,
+            contents,
+            plan,
+            transport
+          )
+        : await collectRepoEntry(row, parsed, plan, transport);
+    if (entry) {
+      plan.entries.push(entry);
+    }
+  }
+  return plan;
+}
 
-    if (isMarketplaceSubPlugin) {
-      // FEA-1314 v7: marketplace sub-plugin path. Always fetch the manifest
-      // from contents.marketplace_repo (where the install lives). For
-      // stars/forks: if `github_url` parses to the SAME repo as
-      // contents.marketplace_repo, then github_url is a subdirectory of the
-      // marketplace and has no independent star count — leave stars null
-      // (avoids the v5 "all 4 cards show 21.3k" bug). If github_url is a
-      // DIFFERENT repo (e.g. context7's github_url=upstash/context7,
-      // marketplace_repo=anthropics/claude-plugins-official), that's a true
-      // upstream and we fetch its real star count.
-      const mkRepo = contents.marketplace_repo
-        ? parseGithubUrl(`https://github.com/${contents.marketplace_repo}`)
-        : null;
-      const manifestOwner = mkRepo ? mkRepo.owner : parsed.owner;
-      const manifestRepo = mkRepo ? mkRepo.repo : parsed.repo;
-      const manifest = await fetchPluginManifest(
-        manifestOwner,
-        manifestRepo,
-        contents.plugin_path!,
-        summary.used_gh_cli
+/**
+ * Write a collected plan. DB ONLY — no network, so this is all that remains on
+ * the db-host.
+ *
+ * An entry whose row no longer matches the fingerprint it was fetched for is
+ * SKIPPED, not written: between collect and apply a seed may have re-pointed
+ * the row at a different repo, and writing then would attach one source's stars
+ * to another source's row. It counts as `skipped` alongside the unparseable-URL
+ * rows — both mean "considered, not written" — and is logged with its packId so
+ * the two are distinguishable in the log.
+ */
+export async function applyCatalogFetchPlan(
+  prisma: DesktopPrisma,
+  plan: CatalogFetchPlan
+): Promise<FetchSummary> {
+  const summary: FetchSummary = {
+    started_at: plan.startedAt,
+    used_gh_cli: plan.usedGhCli,
+    succeeded: 0,
+    failed: plan.failed,
+    skipped: plan.skipped,
+  };
+  const current = await readCatalogFetchRows(prisma);
+  const fingerprints = new Map(
+    current.map((row) => [row.packId, catalogSourceFingerprint(row)])
+  );
+  for (const entry of plan.entries) {
+    if (fingerprints.get(entry.packId) !== entry.sourceFingerprint) {
+      summary.skipped += 1;
+      gatewayLog.warn(
+        "catalog-fetcher",
+        `skipping ${entry.packId}: catalog source changed during fetch`
       );
-      if (!manifest) {
-        summary.failed += 1;
-        continue;
-      }
-
-      // Decide if github_url points to a distinct upstream.
-      const sameAsMarketplace =
-        mkRepo && parsed.owner === mkRepo.owner && parsed.repo === mkRepo.repo;
-      let stars: number | null = null;
-      let forks: number | null = null;
-      let release: string | null = null;
-      if (!sameAsMarketplace) {
-        let repo: GitHubRepoResponse | null = summary.used_gh_cli
-          ? await ghFetch(parsed.owner, parsed.repo)
-          : null;
-        if (!repo) {
-          repo = await restFetch(parsed.owner, parsed.repo);
-        }
-        if (repo) {
-          stars = repo.stargazers_count == null ? null : repo.stargazers_count;
-          forks = repo.forks_count == null ? null : repo.forks_count;
-          release = summary.used_gh_cli
-            ? await ghFetchLatestRelease(parsed.owner, parsed.repo)
-            : await restFetchLatestRelease(parsed.owner, parsed.repo);
-        }
-      }
-
-      try {
-        await applyFetchResult(prisma, {
-          pack_id: row.packId,
-          stars,
-          forks,
-          description: manifest.description || null,
-          last_release: manifest.version || release || null,
-        });
-        summary.succeeded += 1;
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        gatewayLog.warn(
-          "catalog-fetcher",
-          `applyFetchResult failed for ${row.packId}: ${msg}`
-        );
-        summary.failed += 1;
-      }
-      continue;
-    }
-
-    // Default path: standalone repo — fetch its stars + description.
-    let repo: GitHubRepoResponse | null = null;
-    let release: string | null = null;
-    if (summary.used_gh_cli) {
-      repo = await ghFetch(parsed.owner, parsed.repo);
-      if (repo) {
-        release = await ghFetchLatestRelease(parsed.owner, parsed.repo);
-      }
-    }
-    if (!repo) {
-      repo = await restFetch(parsed.owner, parsed.repo);
-      if (repo) {
-        release = await restFetchLatestRelease(parsed.owner, parsed.repo);
-      }
-    }
-    if (!repo) {
-      summary.failed += 1;
       continue;
     }
     try {
       await applyFetchResult(prisma, {
-        pack_id: row.packId,
-        stars: repo.stargazers_count == null ? null : repo.stargazers_count,
-        forks: repo.forks_count == null ? null : repo.forks_count,
-        description: repo.description || null,
-        last_release: release,
+        pack_id: entry.packId,
+        stars: entry.stars,
+        forks: entry.forks,
+        description: entry.description,
+        last_release: entry.lastRelease,
       });
       summary.succeeded += 1;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       gatewayLog.warn(
         "catalog-fetcher",
-        `applyFetchResult failed for ${row.packId}: ${msg}`
+        `applyFetchResult failed for ${entry.packId}: ${msg}`
       );
       summary.failed += 1;
     }
   }
-
   summary.ended_at = new Date().toISOString();
   return summary;
+}
+
+/** The fetch's single catalog read, surfaced as its own db-host store op. */
+export async function readCatalogFetchRows(
+  prisma: DesktopPrisma
+): Promise<CatalogFetchRow[]> {
+  return await prisma.client.packCatalog.findMany({
+    select: { packId: true, githubUrl: true, contents: true },
+  });
+}
+
+/**
+ * Fetch stats for every pack in pack_catalog and apply them via the store.
+ * Best-effort per pack; returns a summary.
+ *
+ * The in-db-host fallback: same two halves as the split path, composed here so
+ * the per-row policy has exactly one implementation.
+ */
+export async function runCatalogFetch(
+  prisma: DesktopPrisma
+): Promise<FetchSummary> {
+  const startedAt = new Date().toISOString();
+  const ghAvailable = ghCliAvailable();
+  let rows: CatalogFetchRow[];
+  try {
+    rows = await readCatalogFetchRows(prisma);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    gatewayLog.warn("catalog-fetcher", `cannot read pack_catalog: ${msg}`);
+    return {
+      started_at: startedAt,
+      used_gh_cli: ghAvailable,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+    };
+  }
+  const plan = await collectCatalogFetchPlan(rows, { ghAvailable });
+  return await applyCatalogFetchPlan(prisma, plan);
 }
 
 /**
  * Schedule recurring fetches. Returns a handle that can be cleared. Called by
  * startup code; the immediate run happens separately. Takes a `run` thunk rather
- * than a `DesktopPrisma` because `runCatalogFetch`'s `prisma.write` can't cross
- * the FEA-2038 DB-host proxy — callers pass `() => invokeStoreOp("catalog.fetch.run")`
- * so the fetch executes in the DB host child (see db-host-worker.ts storeOps).
+ * than a `DesktopPrisma` because the fetch's `prisma.write` can't cross the
+ * FEA-2038 DB-host proxy — callers pass the catalog coordinator's thunk (or,
+ * without a coordinator, `() => invokeStoreOp("catalog.fetch.run")`).
  */
 export function scheduleCatalogFetch(
   run: () => Promise<unknown>,
@@ -469,4 +357,76 @@ export function scheduleCatalogFetch(
     handle.unref();
   }
   return handle;
+}
+
+/**
+ * FEA-1314 v7: marketplace sub-plugin path. Always fetch the manifest from
+ * `contents.marketplace_repo` (where the install lives). For stars/forks: if
+ * `github_url` parses to the SAME repo as `contents.marketplace_repo`, then
+ * github_url is a subdirectory of the marketplace and has no independent star
+ * count — leave stars null (avoids the v5 "all 4 cards show 21.3k" bug). If
+ * github_url is a DIFFERENT repo (e.g. context7's github_url=upstash/context7,
+ * marketplace_repo=anthropics/claude-plugins-official), that's a true upstream
+ * and we fetch its real star count.
+ */
+async function collectMarketplacePluginEntry(
+  row: CatalogFetchRow,
+  parsed: { owner: string; repo: string },
+  contents: ContentsJson,
+  plan: CatalogFetchPlan,
+  transport: CatalogFetchTransport
+): Promise<CatalogFetchPlanEntry | null> {
+  const mkRepo = contents.marketplace_repo
+    ? parseGithubUrl(`https://github.com/${contents.marketplace_repo}`)
+    : null;
+  const manifest = await transport.fetchPluginManifest(
+    mkRepo ? mkRepo.owner : parsed.owner,
+    mkRepo ? mkRepo.repo : parsed.repo,
+    contents.plugin_path ?? "",
+    plan.usedGhCli
+  );
+  if (!manifest) {
+    plan.failed += 1;
+    return null;
+  }
+  // Decide if github_url points to a distinct upstream.
+  const sameAsMarketplace =
+    mkRepo && parsed.owner === mkRepo.owner && parsed.repo === mkRepo.repo;
+  const stats = sameAsMarketplace
+    ? null
+    : await transport.fetchRepoStats(parsed.owner, parsed.repo, plan.usedGhCli);
+  return {
+    packId: row.packId,
+    sourceFingerprint: catalogSourceFingerprint(row),
+    stars: stats?.repo.stargazers_count ?? null,
+    forks: stats?.repo.forks_count ?? null,
+    description: manifest.description || null,
+    lastRelease: manifest.version || stats?.release || null,
+  };
+}
+
+/** Default path: standalone repo — fetch its stars + description. */
+async function collectRepoEntry(
+  row: CatalogFetchRow,
+  parsed: { owner: string; repo: string },
+  plan: CatalogFetchPlan,
+  transport: CatalogFetchTransport
+): Promise<CatalogFetchPlanEntry | null> {
+  const stats = await transport.fetchRepoStats(
+    parsed.owner,
+    parsed.repo,
+    plan.usedGhCli
+  );
+  if (!stats) {
+    plan.failed += 1;
+    return null;
+  }
+  return {
+    packId: row.packId,
+    sourceFingerprint: catalogSourceFingerprint(row),
+    stars: stats.repo.stargazers_count ?? null,
+    forks: stats.repo.forks_count ?? null,
+    description: stats.repo.description || null,
+    lastRelease: stats.release,
+  };
 }

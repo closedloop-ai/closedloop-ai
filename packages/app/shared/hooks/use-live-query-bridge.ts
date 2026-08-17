@@ -60,7 +60,7 @@ export function useLiveQueryBridge<TChange>(params: {
     }
 
     const hidden = () =>
-      typeof document !== "undefined" && document.hidden === true;
+      globalThis.document !== undefined && globalThis.document.hidden === true;
 
     let pendingBroad = false;
     const pendingIds = new Set<string>();
@@ -113,14 +113,20 @@ export function useLiveQueryBridge<TChange>(params: {
     };
 
     const unsubscribe = subscribe(handleChange);
-    if (typeof document !== "undefined") {
-      document.addEventListener("visibilitychange", handleVisibility);
+    if (globalThis.document !== undefined) {
+      globalThis.document.addEventListener(
+        "visibilitychange",
+        handleVisibility
+      );
     }
 
     return () => {
       unsubscribe();
-      if (typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", handleVisibility);
+      if (globalThis.document !== undefined) {
+        globalThis.document.removeEventListener(
+          "visibilitychange",
+          handleVisibility
+        );
       }
       if (timer !== null) {
         clearTimeout(timer);

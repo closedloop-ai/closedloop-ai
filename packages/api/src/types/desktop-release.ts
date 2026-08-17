@@ -2,6 +2,17 @@ import { z } from "zod";
 
 export const DesktopReleaseOwner = "closedloop-ai" as const;
 export const DesktopReleaseRepo = "symphony-alpha" as const;
+/**
+ * Public open-source repo the signed DMG is mirrored to so it can be downloaded
+ * with no GitHub account (FEA-3372). The release itself still lives in
+ * `DesktopReleaseRepo` and is still the source of truth for the updater feed —
+ * only the DMG is copied here, purely to give the installer a public URL.
+ */
+export const DesktopPublicMirrorRepo = "closedloop-ai" as const;
+const AllowedDesktopReleaseDownloadRepos: ReadonlySet<string> = new Set([
+  DesktopReleaseRepo,
+  DesktopPublicMirrorRepo,
+]);
 export const DesktopReleaseRepository =
   `${DesktopReleaseOwner}/${DesktopReleaseRepo}` as const;
 export const DesktopReleaseTagPrefix = "desktop-v" as const;
@@ -40,6 +51,14 @@ export const DesktopReleasePreflightStatus = {
   FailWrongTarget: "fail_wrong_target",
   FailMalformedMetadata: "fail_malformed_metadata",
   FailNonDesktopReleaseSelected: "fail_non_desktop_release_selected",
+  /**
+   * @deprecated ISS-5434 removed the packaging gate from the release path, so
+   * nothing emits this any more — the release job proves packaging by building
+   * it. Retained rather than deleted under the AGENTS.md Compatibility
+   * Guardrail: dropping a contract value needs explicit human approval, and
+   * historical workflow runs still carry this string.
+   * `desktop-release-preflight.test.ts` asserts it is now unreachable.
+   */
   FailUnvalidatedPackaging: "fail_unvalidated_packaging",
   FailGitHubApiError: "fail_github_api_error",
 } as const;
@@ -47,20 +66,46 @@ export type DesktopReleasePreflightStatus =
   (typeof DesktopReleasePreflightStatus)[keyof typeof DesktopReleasePreflightStatus];
 
 /**
- * GitHub commit-status context the post-merge packaging validation (FEA-1935)
- * posts on a `main` SHA, and the release preflight gate (FEA-1936) reads. SSOT
- * for the context string on the consumer side; the producing workflow
+ * GitHub commit-status context the scheduled packaging validation (FEA-1935,
+ * retargeted to the release target by ISS-5215) posts on a `main` SHA.
+ *
+ * ADVISORY / DETECTION ONLY since ISS-5434. It used to gate the release
+ * (FEA-1936 preflight + FEA-1941 pre-check); it no longer does, and no code on
+ * the release path reads it. Its consumers are now the per-episode main-health
+ * alerter (`scripts/ci/main-health-alert.ts`) and the scheduled validator's own
+ * target resolver (`scripts/deploy/desktop-packaging-target.ts`), both via
+ * `scripts/deploy/desktop-validation-status.ts`.
+ *
+ * SSOT for the context string on the consumer side; the producing workflow
  * (`desktop-packaging-validation.yml`) pins the same literal, asserted equal by
- * `desktop-release-preflight.test.ts`.
+ * `desktop-validation-status.test.ts`.
  */
 export const DesktopPackagingValidationContext =
   "desktop-packaging/validated" as const;
 
 /**
+ * GitHub commit-status context the post-merge desktop TEST validation (FEA-2341)
+ * posts on a `main` SHA. Produced now (FEA-3902) so the per-episode main-health
+ * alerter (`scripts/ci/main-health-alert.ts`) can suppress duplicate red-streak
+ * Slack pings; the release-gating consumer (mirroring FEA-1936 packaging) is a
+ * tracked follow-up (FEA-3902 item 2b child FEA). It shares the generic
+ * commit-status state vocabulary of {@link DesktopPackagingValidationState} — the
+ * states are GitHub's own commit-status states, not packaging-specific — so no
+ * parallel state enum is defined. The producing workflow
+ * (`desktop-test-validation.yml`) pins the same literal, asserted equal by
+ * `desktop-test-validation-workflow.test.ts`.
+ */
+export const DesktopTestValidationContext = "desktop-test/validated" as const;
+
+/**
  * Resolved state of the `desktop-packaging/validated` commit status for a SHA.
  * `Success`/`Pending`/`Failure`/`Error` mirror GitHub's commit-status states;
- * `Missing` is the synthetic state for a SHA carrying no such status. The
- * release gate fails closed on every state except `Success`.
+ * `Missing` is the synthetic state for a SHA carrying no such status.
+ *
+ * ISS-5434: no release gate consumes this any more. The scheduled validator
+ * treats `Success`/`Failure` as decided (anything else means "validate this
+ * target"), and the main-health alerter uses the same notion for its ancestry
+ * walk — but a non-`Success` state no longer blocks a release.
  */
 export const DesktopPackagingValidationState = {
   Success: "success",
@@ -71,6 +116,18 @@ export const DesktopPackagingValidationState = {
 } as const;
 export type DesktopPackagingValidationState =
   (typeof DesktopPackagingValidationState)[keyof typeof DesktopPackagingValidationState];
+
+/**
+ * Generic alias for the same value set, for consumers that resolve a commit
+ * status independent of the packaging backstop — e.g. the shared per-episode
+ * alert reducer (`scripts/ci/main-health-alert.ts`) that now drives BOTH the
+ * `desktop-packaging/validated` and `desktop-test/validated` statuses. The
+ * states are GitHub's own commit-status vocabulary (plus the synthetic
+ * `missing`), so a generically-named import reads correctly in code with no
+ * packaging-specific logic. Same object — not a copy — so there is one SSOT.
+ */
+export const GithubCommitStatusState = DesktopPackagingValidationState;
+export type GithubCommitStatusState = DesktopPackagingValidationState;
 
 /**
  * Returns true only when a SHA's packaging-validation status is `success`. The
@@ -118,6 +175,45 @@ export function getDesktopReleaseTag(version: string): string {
  */
 export function getDesktopReleaseDmgAssetName(version: string): string {
   return `Closedloop-${version}${DesktopReleaseDmgAssetSuffix}`;
+}
+
+/**
+ * Builds the public-mirror download URL for a version's DMG (FEA-3372) — the
+ * login-free URL the release workflow writes into `downloadUrl` once the mirror
+ * succeeds. Always the current "Closedloop-*" casing: the legacy "ClosedLoop-*"
+ * assets predate the mirror and only ever existed on the private release repo.
+ */
+export function getPublicDesktopReleaseDownloadUrl(version: string): string {
+  return `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${getDesktopReleaseTag(version)}/${getDesktopReleaseDmgAssetName(version)}`;
+}
+
+/**
+ * Whether a release's `downloadUrl` is the right one for that release.
+ *
+ * The DMG is attached to the private release AND mirrored to the public repo so
+ * it can be downloaded without a GitHub account (FEA-3372), so `downloadUrl`
+ * legitimately points at a different repo than the release it hangs off. Exactly
+ * two values are valid: the release's own DMG asset URL (what the workflow falls
+ * back to when the mirror fails) or the public mirror URL for THIS EXACT
+ * version. Anything else — a metadata/asset mismatch, or a URL for a different
+ * version — is a mismatch.
+ *
+ * Both release-completeness checks share this: `isCompleteDesktopRelease` in
+ * packages/github/electron-release.ts (which decides whether the app can resolve
+ * a release at all) and `hasRequiredDesktopAssets` in
+ * scripts/deploy/desktop-release-preflight.ts (which decides whether an existing
+ * release is complete). They must agree — when this rule lived in both files
+ * independently, updating only one of them was enough to break the other.
+ */
+export function isDesktopReleaseDownloadUrlForRelease(
+  downloadUrl: string,
+  releaseDmgAssetUrl: string,
+  version: string
+): boolean {
+  return (
+    downloadUrl === releaseDmgAssetUrl ||
+    downloadUrl === getPublicDesktopReleaseDownloadUrl(version)
+  );
 }
 
 /**
@@ -455,7 +551,9 @@ export function isAllowedDesktopReleaseAssetRedirectUrl(
 }
 
 /**
- * Returns true only for active macOS Desktop release assets in symphony-alpha.
+ * Returns true only for active macOS Desktop DMG download URLs — either on the
+ * private release repo (`DesktopReleaseRepo`) or on the public mirror the DMG is
+ * copied to for login-free download (`DesktopPublicMirrorRepo`, FEA-3372).
  */
 export function isAllowedDesktopReleaseDownloadUrl(
   candidateUrl: string
@@ -493,7 +591,7 @@ export function isAllowedDesktopReleaseDownloadUrl(
   if (
     pathParts.length !== 6 ||
     owner !== DesktopReleaseOwner ||
-    repo !== DesktopReleaseRepo ||
+    !AllowedDesktopReleaseDownloadRepos.has(repo) ||
     releasesSegment !== "releases" ||
     downloadSegment !== "download"
   ) {

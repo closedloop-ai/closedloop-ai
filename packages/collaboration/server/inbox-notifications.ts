@@ -57,8 +57,12 @@ async function triggerInboxNotification({
       activityData,
     });
   } catch (error) {
+    // Pass the raw error: the logger's jsonReplacer serializes name/message/
+    // stack for an Error, so reducing it to `.message` here discarded the stack
+    // and left a Datadog line that could not be traced back to a source line
+    // (FEA-3030). Matches apps/api/lib/desktop-analytics-handler.ts.
     log.error(errorLabel, {
-      error: error instanceof Error ? error.message : String(error),
+      error,
       userId,
       subjectId,
       ...logContext,
@@ -129,34 +133,79 @@ export async function sendLoopCompletedNotification(
   });
 }
 
-export type AwaitingInputNotificationParams = {
-  userId: string;
+export const MentionEntityType = {
+  Session: "session",
+  Branch: "branch",
+} as const;
+
+export type MentionEntityType =
+  (typeof MentionEntityType)[keyof typeof MentionEntityType];
+
+export type MentionNotificationParams = {
+  mentionedUserId: string;
+  actorUserId: string;
   organizationId: string;
-  sessionTitle: string;
-  sessionUrl: string;
+  entityType: MentionEntityType;
+  entityTitle: string;
+  entityUrl: string;
+  commentPreview: string;
   subjectId: string;
 };
 
 /**
- * Notify a run's owner that it transitioned into awaiting-input (blocked on the
- * user). Delegates to `triggerInboxNotification`, which no-ops when the
+ * Notify a user that they were @-mentioned in a session/branch trace comment
+ * (FEA-3490). Delegates to `triggerInboxNotification`, which no-ops when the
  * Liveblocks secret is unset and swallows trigger failures so a notification
- * error never fails the session-sync path that detected the transition.
+ * error never fails the comment-write path. Self-mentions are dropped defensively
+ * (the caller's `computeNewMentions` already excludes the actor).
  */
-export async function sendAwaitingInputNotification(
-  params: AwaitingInputNotificationParams
+export async function sendMentionNotification(
+  params: MentionNotificationParams
 ): Promise<void> {
+  if (params.mentionedUserId === params.actorUserId) {
+    return;
+  }
+
   await triggerInboxNotification({
-    userId: params.userId,
+    userId: params.mentionedUserId,
     organizationId: params.organizationId,
-    kind: "$awaitingInput",
+    kind: "$mention",
     subjectId: params.subjectId,
     activityData: {
-      sessionTitle: params.sessionTitle,
-      sessionUrl: params.sessionUrl,
+      entityType: params.entityType,
+      entityTitle: params.entityTitle,
+      entityUrl: params.entityUrl,
+      actorId: params.actorUserId,
+      commentPreview: params.commentPreview,
     },
-    errorLabel: "Failed to send awaiting-input notification",
+    errorLabel: "Failed to send mention notification",
+    logContext: { entityType: params.entityType },
   });
+}
+
+/**
+ * The set of mention recipients that should be notified for a comment write:
+ * the mentions present after the write, minus those already present before it
+ * (so an edit only pings newly-added people, never re-pings existing mentions),
+ * minus the actor (never notify yourself for your own mention). De-duplicated and
+ * input-order-stable. `previousMentions` is empty for a create/reply.
+ */
+export function computeNewMentions(
+  nextMentions: readonly string[],
+  previousMentions: readonly string[],
+  actorUserId: string
+): string[] {
+  const previous = new Set(previousMentions);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of nextMentions) {
+    if (id === actorUserId || previous.has(id) || seen.has(id)) {
+      continue;
+    }
+    seen.add(id);
+    result.push(id);
+  }
+  return result;
 }
 
 /**

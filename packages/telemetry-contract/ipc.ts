@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { TelemetryAttribute } from "./src/attributes";
-import { boundedText, TelemetryTextMaxLength } from "./src/schema-primitives";
+import {
+  boundedText,
+  TelemetryDurationMsMax,
+  TelemetryTextMaxLength,
+} from "./src/schema-primitives";
 
 /**
  * Strict IPC perf wide-event schema (FEA-1997). One event per Agent Dashboard
@@ -19,7 +23,11 @@ export const IpcTelemetrySchema = z
     // Reuses the span schema's duration bound (0..24h in ms). Carried as an
     // explicit wide-event dimension in addition to the native span duration the
     // collector tail-sampling latency policy reads.
-    [TelemetryAttribute.DurationMs]: z.number().int().min(0).max(86_400_000),
+    [TelemetryAttribute.DurationMs]: z
+      .number()
+      .int()
+      .min(0)
+      .max(TelemetryDurationMsMax),
     [TelemetryAttribute.IpcPayloadBytes]: z.number().int().min(0),
     [TelemetryAttribute.IpcResultCount]: z.number().int().min(0),
     [TelemetryAttribute.IpcSessionCount]: z.number().int().min(0),

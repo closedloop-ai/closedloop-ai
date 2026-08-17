@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
-import { createRendererOtelExportHandler } from "../src/main/renderer-otel-ipc.js";
+import {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
+import { vi } from "vitest";
+import { createRendererOtelExportHandler } from "../src/main/ipc/renderer-otel-ipc.js";
 import { parseRendererOtelBridgePayload } from "../src/shared/renderer-otel-bridge.js";
 import {
   DesktopOtelSignal,
@@ -14,6 +19,10 @@ import {
   type RendererOtelBridgePayload,
   RendererOtelExportFailureReason,
 } from "../src/shared/renderer-otel-bridge-constants.js";
+import {
+  expectExceptionRecord,
+  expectGenericRecord,
+} from "./renderer-otel-bridge-test-fixtures.js";
 
 const trustedEvent = { sender: { id: "trusted" } };
 
@@ -45,6 +54,127 @@ test("parses valid minimized renderer records and preserves optional omission", 
   }
 });
 
+test("parses valid renderer span identity and canonical status", () => {
+  const payload: RendererOtelBridgePayload = {
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        parentSpanId: "3333333333333333",
+        kind: SpanKind.Internal,
+        status: { code: SpanStatusCode.Ok },
+        name: "renderer.span",
+      },
+    ],
+  };
+
+  const parsed = parseRendererOtelBridgePayload(payload);
+
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.deepEqual(parsed.payload.records[0], payload.records[0]);
+  }
+});
+
+test("omits unsafe renderer span status messages", () => {
+  const parsed = parseRendererOtelBridgePayload({
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        kind: SpanKind.Internal,
+        status: {
+          code: SpanStatusCode.Error,
+          message: "failed with token sk-proj-secret",
+        },
+        name: "renderer.span",
+      },
+    ],
+  });
+
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.deepEqual(parsed.payload.records[0]?.status, {
+      code: SpanStatusCode.Error,
+    });
+  }
+});
+
+test("rejects malformed renderer span identity and non-canonical status", () => {
+  const mutations: unknown[] = [
+    { traceId: null },
+    { traceId: "1111111111111111111111111111111" },
+    { traceId: "1111111111111111111111111111111A" },
+    { traceId: "00000000000000000000000000000000" },
+    { spanId: null },
+    { spanId: "222222222222222" },
+    { spanId: "222222222222222G" },
+    { spanId: "0000000000000000" },
+    { parentSpanId: null },
+    { parentSpanId: "333333333333333" },
+    { kind: "background" },
+    { status: { code: "success" } },
+    {
+      signal: DesktopOtelSignal.Log,
+      traceId: "11111111111111111111111111111111",
+    },
+  ].map((record) => ({
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        name: "renderer.span",
+        ...record,
+      },
+    ],
+  }));
+
+  for (const mutation of mutations) {
+    assert.deepEqual(parseRendererOtelBridgePayload(mutation), {
+      ok: false,
+      result: {
+        ok: false,
+        reason: RendererOtelExportFailureReason.InvalidPayload,
+      },
+    });
+  }
+});
+
+test("rejects partial renderer span identity", () => {
+  const mutations: unknown[] = [
+    { traceId: "11111111111111111111111111111111" },
+    { spanId: "2222222222222222" },
+    { parentSpanId: "3333333333333333" },
+    {
+      traceId: "11111111111111111111111111111111",
+      parentSpanId: "3333333333333333",
+    },
+    {
+      spanId: "2222222222222222",
+      parentSpanId: "3333333333333333",
+    },
+  ].map((record) => ({
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        name: "renderer.span",
+        ...record,
+      },
+    ],
+  }));
+
+  for (const mutation of mutations) {
+    assert.deepEqual(parseRendererOtelBridgePayload(mutation), {
+      ok: false,
+      result: {
+        ok: false,
+        reason: RendererOtelExportFailureReason.InvalidPayload,
+      },
+    });
+  }
+});
+
 test("parses renderer exception records with closed attributes and renderer origin", () => {
   const payload: RendererOtelBridgePayload = {
     records: [
@@ -71,6 +201,68 @@ test("parses renderer exception records with closed attributes and renderer orig
   }
 });
 
+test("parses trace-form renderer exception records with complete identity and error status", () => {
+  const payload: RendererOtelBridgePayload = {
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        kind: SpanKind.Internal,
+        status: { code: SpanStatusCode.Error },
+        name: "exception",
+        attributes: {
+          [TelemetryAttribute.ExceptionType]: "Error",
+          [TelemetryAttribute.ExceptionMessage]: "Render failed",
+          [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
+        },
+      },
+    ],
+  };
+
+  const parsed = parseRendererOtelBridgePayload(payload);
+
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.deepEqual(parsed.payload.records[0], payload.records[0]);
+  }
+});
+
+test("rejects trace-form renderer exceptions without complete error identity", () => {
+  const mutations: unknown[] = [
+    { traceId: undefined },
+    { spanId: undefined },
+    { status: { code: SpanStatusCode.Unset } },
+    { status: { code: SpanStatusCode.Ok } },
+  ].map((record) => ({
+    records: [
+      {
+        signal: DesktopOtelSignal.Trace,
+        traceId: "11111111111111111111111111111111",
+        spanId: "2222222222222222",
+        kind: SpanKind.Internal,
+        status: { code: SpanStatusCode.Error },
+        name: "exception",
+        attributes: {
+          [TelemetryAttribute.ExceptionType]: "Error",
+          [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
+        },
+        ...record,
+      },
+    ],
+  }));
+
+  for (const mutation of mutations) {
+    assert.deepEqual(parseRendererOtelBridgePayload(mutation), {
+      ok: false,
+      result: {
+        ok: false,
+        reason: RendererOtelExportFailureReason.InvalidPayload,
+      },
+    });
+  }
+});
+
 test("redacts unsafe renderer exception optional fields without dropping the event", () => {
   const parsed = parseRendererOtelBridgePayload({
     records: [
@@ -91,21 +283,24 @@ test("redacts unsafe renderer exception optional fields without dropping the eve
 
   assert.equal(parsed.ok, true);
   if (parsed.ok) {
-    const attributes = parsed.payload.records[0]?.attributes;
-    assert.equal(attributes?.[TelemetryAttribute.ExceptionType], "Error");
+    const attributes = expectExceptionRecord(
+      parsed.payload.records,
+      0
+    ).attributes;
+    assert.equal(attributes[TelemetryAttribute.ExceptionType], "Error");
     assert.equal(
-      attributes?.[TelemetryAttribute.AppExceptionOrigin],
+      attributes[TelemetryAttribute.AppExceptionOrigin],
       AppExceptionOrigin.Renderer
     );
+    assert.equal(attributes[TelemetryAttribute.ExceptionMessage], "[redacted]");
     assert.equal(
-      attributes?.[TelemetryAttribute.ExceptionMessage],
-      "[redacted]"
+      attributes[TelemetryAttribute.ExceptionStacktrace],
+      "Error: failed at [redacted-path]"
     );
-    assert.equal(
-      attributes?.[TelemetryAttribute.ExceptionStacktrace],
-      "[redacted]"
-    );
-    assert.equal(Object.values(attributes ?? {}).includes(null), false);
+    // The sanitizer must OMIT an unsafe attribute, never emit an explicit
+    // `null` — read the values untyped so the runtime check is meaningful.
+    const attributeValues: unknown[] = Object.values(attributes);
+    assert.equal(attributeValues.includes(null), false);
   }
 });
 
@@ -141,6 +336,34 @@ test("rejects renderer exception records with spoofed origin, resource fields, o
           signal: DesktopOtelSignal.Log,
           name: "exception",
           resourceAttributes: { "service.name": "renderer" },
+          attributes: {
+            [TelemetryAttribute.ExceptionType]: "Error",
+            [TelemetryAttribute.AppExceptionOrigin]:
+              AppExceptionOrigin.Renderer,
+          },
+        },
+      ],
+    },
+    {
+      records: [
+        {
+          signal: DesktopOtelSignal.Log,
+          name: "exception",
+          droppedEventsCount: 1,
+          attributes: {
+            [TelemetryAttribute.ExceptionType]: "Error",
+            [TelemetryAttribute.AppExceptionOrigin]:
+              AppExceptionOrigin.Renderer,
+          },
+        },
+      ],
+    },
+    {
+      records: [
+        {
+          signal: DesktopOtelSignal.Log,
+          name: "exception",
+          droppedLinksCount: 1,
           attributes: {
             [TelemetryAttribute.ExceptionType]: "Error",
             [TelemetryAttribute.AppExceptionOrigin]:
@@ -362,6 +585,23 @@ test("rejects secret-shaped values in allowlisted renderer attributes", () => {
         [RendererOtelAllowedAttributeKey.Status]: String.raw`..\relative\project.json`,
       },
     },
+    // Google OAuth shapes. Both are written so ONLY the ya29./1// secret
+    // alternatives can match: no path delimiter precedes `1//`, which would
+    // otherwise let the canonical relative-path pattern reject it and leave the
+    // refresh-token alternative untested. ISS-6229 added `=` to that delimiter
+    // set, so the separator here is `:`, which is deliberately not one.
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]:
+          "ya29.a0AfB1234567890abcdefghijklmn",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]:
+          "refreshed:1//0gABCDEFGHIJKLMNOPQRSTUVWX1234",
+      },
+    },
     {
       attributes: {
         [RendererOtelAllowedAttributeKey.Status]: "ready",
@@ -401,6 +641,55 @@ test("rejects secret-shaped values in allowlisted renderer attributes", () => {
         [RendererOtelAllowedAttributeKey.Values]: [
           "active",
           String.raw`relative\project\data.json`,
+        ],
+      },
+    },
+    // ISS-6229: the shapes the bridge's own copies of the path/URL patterns
+    // could not see — a `file://` frame (they had no `file://` arm), a
+    // `(`-wrapped V8 location (no `(` in the delimiter class), a non-http
+    // scheme (http-only URL matching), and an email (no email check at all).
+    //
+    // The `/opt/...` and `bob@...` values are the load-bearing ones: they carry
+    // no substring of SENSITIVE_KEY_PATTERN, so nothing but the canonical
+    // path/URL/email check can reject them. `/Users/...` would be caught
+    // incidentally by that key pattern's bare `user`/`file` alternatives and so
+    // proves nothing on its own.
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "file:///opt/acme/build.js",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "at fn (/opt/acme/build.js)",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "bob@example.com",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "opened closedloop://a/b",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "file:///Users/alice/app.js",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "at fn (/Users/alice/app.js)",
+      },
+    },
+    {
+      attributes: {
+        [RendererOtelAllowedAttributeKey.Status]: "ready",
+        [RendererOtelAllowedAttributeKey.Values]: [
+          "active",
+          "at fn (/opt/acme/build.js)",
         ],
       },
     },
@@ -522,8 +811,11 @@ test("preserves safe renderer record scalar values", () => {
 
   assert.equal(parsed.ok, true);
   if (parsed.ok) {
-    assert.equal(parsed.payload.records[0]?.value, 3);
-    assert.deepEqual(parsed.payload.records[1]?.value, ["ready", "active"]);
+    assert.equal(expectGenericRecord(parsed.payload.records, 0).value, 3);
+    assert.deepEqual(expectGenericRecord(parsed.payload.records, 1).value, [
+      "ready",
+      "active",
+    ]);
   }
 });
 
@@ -552,7 +844,7 @@ test("rejects oversized batches before append", () => {
 });
 
 test("handler rejects untrusted sender before parse or append", async () => {
-  const parsePayload = mock.fn(() => {
+  const parsePayload = vi.fn(() => {
     throw new Error("parse should not run");
   });
   const runtime = makeRuntime();
@@ -600,8 +892,10 @@ test("handler forwards sanitized records and rate-limits sustained batches", asy
 });
 
 test("production preload API invokes only the renderer OTel channel", async () => {
-  const invoke = mock.fn(async () => ({ ok: true }));
-  const send = mock.fn();
+  const invoke = vi.fn((_channel: string, ..._args: unknown[]) =>
+    Promise.resolve({ ok: true })
+  );
+  const send = vi.fn();
   const { createDesktopApi } = await import("../src/main/preload-common.js");
   const desktopApi = createDesktopApi({ invoke, send });
 
@@ -611,16 +905,16 @@ test("production preload API invokes only the renderer OTel channel", async () =
   await desktopApi.exportOtelTelemetry({ records: [] });
 
   assert.equal(invoke.mock.calls.length, 1);
-  assert.equal(
-    invoke.mock.calls[0]?.arguments[0],
-    RENDERER_OTEL_EXPORT_CHANNEL
-  );
+  assert.equal(invoke.mock.calls[0][0], RENDERER_OTEL_EXPORT_CHANNEL);
 });
 
 function makeRuntime() {
   return {
     exportCalls: 0,
     start() {
+      return Promise.resolve();
+    },
+    flush() {
       return Promise.resolve();
     },
     shutdown() {
@@ -630,6 +924,14 @@ function makeRuntime() {
       return [];
     },
     resetBuffer() {},
+    // The renderer-export handler only ever reaches `exportExternalRecords`;
+    // the emit surface is stubbed so this double satisfies the whole
+    // DesktopOtelRuntime contract rather than a convenient slice of it.
+    emitAppLifecycleEvent() {},
+    emitAppExceptionEvent() {},
+    emitIpcPerfEvent() {},
+    emitSyncBatchEvent() {},
+    emitImportHealthEvent() {},
     exportExternalRecords() {
       this.exportCalls += 1;
       return {

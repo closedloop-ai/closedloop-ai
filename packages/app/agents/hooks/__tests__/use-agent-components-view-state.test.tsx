@@ -16,12 +16,12 @@ afterEach(() => {
 });
 
 describe("useAgentComponentsViewState", () => {
-  it("defaults to Name sort ascending, None group-by, KlocPerDollar metric", () => {
+  it("defaults to Name sort ascending, None group-by, LOC/$ metric", () => {
     const { result } = renderHook(() => useAgentComponentsViewState());
     expect(result.current.sortKey).toBe(AgentComponentSortKey.Name);
     expect(result.current.sortDir).toBe(AgentComponentSortDir.Asc);
     expect(result.current.groupBy).toBe(AgentComponentGroupBy.None);
-    expect(result.current.metricMode).toBe(AgentMetricMode.KlocPerDollar);
+    expect(result.current.metricMode).toBe(AgentMetricMode.LocPerDollar);
   });
 
   it("all toggleable columns are visible by default", () => {
@@ -76,30 +76,72 @@ describe("useAgentComponentsViewState", () => {
 
   it("updates metricMode", () => {
     const { result } = renderHook(() => useAgentComponentsViewState());
-    act(() => result.current.setMetricMode(AgentMetricMode.DollarPerKloc));
-    expect(result.current.metricMode).toBe(AgentMetricMode.DollarPerKloc);
+    act(() => result.current.setMetricMode(AgentMetricMode.ValueIndex));
+    expect(result.current.metricMode).toBe(AgentMetricMode.ValueIndex);
+  });
+
+  // ISS-4667: the KLOC-unit and inverted $/KLOC modes are gone. A view persisted
+  // under either legacy value must MIGRATE to LOC/$ — not fail validation, which
+  // would discard the rest of the saved view (sort, hidden columns, order) too.
+  it.each([
+    ["kloc-per-dollar"],
+    ["dollar-per-kloc"],
+  ])("migrates a persisted %s metricMode to LOC/$ and keeps the rest of the view", (legacyMode) => {
+    localStorage.setItem(
+      "agents:saved-view:agents:legacy",
+      JSON.stringify({
+        sortKey: AgentComponentSortKey.Source,
+        sortDir: AgentComponentSortDir.Desc,
+        groupBy: AgentComponentGroupBy.Harness,
+        metricMode: legacyMode,
+        hiddenColumns: ["harness"],
+        columnOrder: ["metric", "type"],
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useAgentComponentsViewState("agents:legacy")
+    );
+
+    expect(result.current.metricMode).toBe(AgentMetricMode.LocPerDollar);
+    // The rest of the saved view survives the migration — a failed parse would
+    // have reset every one of these to its default.
+    expect(result.current.sortKey).toBe(AgentComponentSortKey.Source);
+    expect(result.current.sortDir).toBe(AgentComponentSortDir.Desc);
+    expect(result.current.groupBy).toBe(AgentComponentGroupBy.Harness);
+    expect(result.current.visibleColumns.has("harness")).toBe(false);
+    expect(result.current.columnOrder).toEqual(["metric", "type"]);
   });
 
   it("persists and restores view state via localStorage persistKey", () => {
     const persistKey = "agents:web";
     const first = renderHook(() => useAgentComponentsViewState(persistKey));
     act(() => {
+      // FEA-4098 (Slice 3): Owner is gone as a sort key; group-by-Owner became
+      // group-by-Collaborators. Persist a still-valid sort key (Source) and the
+      // Collaborators group-by to prove round-trip.
       first.result.current.setSort(
-        AgentComponentSortKey.Owner,
+        AgentComponentSortKey.Source,
         AgentComponentSortDir.Desc
       );
-      first.result.current.setGroupBy(AgentComponentGroupBy.Owner);
+      first.result.current.setGroupBy(AgentComponentGroupBy.Collaborators);
       first.result.current.setMetricMode(AgentMetricMode.ValueIndex);
       first.result.current.toggleColumn("harness");
+      // FEA-4150: persist a reordered data-column order (metric before type) to
+      // prove the columnOrder dimension round-trips through localStorage.
+      first.result.current.setColumnOrder(["metric", "type"]);
     });
 
     // A second hook instance reads from localStorage
     const second = renderHook(() => useAgentComponentsViewState(persistKey));
-    expect(second.result.current.sortKey).toBe(AgentComponentSortKey.Owner);
+    expect(second.result.current.sortKey).toBe(AgentComponentSortKey.Source);
     expect(second.result.current.sortDir).toBe(AgentComponentSortDir.Desc);
-    expect(second.result.current.groupBy).toBe(AgentComponentGroupBy.Owner);
+    expect(second.result.current.groupBy).toBe(
+      AgentComponentGroupBy.Collaborators
+    );
     expect(second.result.current.metricMode).toBe(AgentMetricMode.ValueIndex);
     expect(second.result.current.visibleColumns.has("harness")).toBe(false);
+    expect(second.result.current.columnOrder).toEqual(["metric", "type"]);
   });
 
   it("restores without a persistKey — no localStorage access", () => {
@@ -117,7 +159,7 @@ describe("useAgentComponentsViewState", () => {
         sortKey: AgentComponentSortKey.Name,
         sortDir: AgentComponentSortDir.Asc,
         groupBy: AgentComponentGroupBy.None,
-        metricMode: AgentMetricMode.KlocPerDollar,
+        metricMode: AgentMetricMode.LocPerDollar,
         hiddenColumns: ["future-col", "type"],
       })
     );
@@ -160,5 +202,23 @@ describe("useAgentComponentsViewState", () => {
     for (const column of AGENT_COMPONENT_TOGGLEABLE_COLUMNS) {
       expect(result.current.visibleColumns.has(column.id)).toBe(true);
     }
+  });
+
+  // ISS-4672: the Name lead and the trailing row-actions column are
+  // always-rendered chrome that `agents-table.tsx` renders regardless of
+  // `visibleColumns`. They must NOT appear in the toggleable list, or the View
+  // menu would offer a toggle whose persisted `hiddenColumns` state the grid
+  // never honors (checkbox flips, column keeps rendering — a state
+  // contradiction).
+  it("excludes always-rendered chrome (name, actions) from the toggleable list", () => {
+    const toggleableIds: string[] = AGENT_COMPONENT_TOGGLEABLE_COLUMNS.map(
+      (column) => column.id
+    );
+    expect(toggleableIds).not.toContain("name");
+    expect(toggleableIds).not.toContain("actions");
+    // And therefore they are not part of the honored visible set the grid reads.
+    const { result } = renderHook(() => useAgentComponentsViewState());
+    expect(result.current.visibleColumns.has("name" as never)).toBe(false);
+    expect(result.current.visibleColumns.has("actions" as never)).toBe(false);
   });
 });

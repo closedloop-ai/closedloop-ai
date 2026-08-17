@@ -1,5 +1,11 @@
 import { GitHubBackfillStatus } from "@repo/api/src/types/github";
-import { GitHubProviderBudgetState } from "@repo/api/src/types/github-read-model";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+  GitHubProviderBudgetState,
+} from "@repo/api/src/types/github-read-model";
+import type * as GitHubModule from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getBranchesMock = vi.fn();
@@ -16,6 +22,10 @@ const listReviewsMock = vi.fn();
 const queryStatusCheckRollupMock = vi.fn();
 const projectionDiffMock = vi.fn();
 const projectionWriteMock = vi.fn();
+const getInstallationOctokitMock = vi.fn();
+// Marker object the mocked resolver mints; provider read functions must
+// receive it as their first argument (PLN-1525: resolve once, thread down).
+const installationOctokit = { kind: "installation-octokit" };
 
 vi.mock("@repo/database", () => ({
   ArtifactType: {
@@ -50,17 +60,23 @@ vi.mock("@repo/database", () => ({
   ),
 }));
 
-vi.mock("@repo/github", () => ({
-  GitHubProviderResultStatus: {
-    Success: "success",
-    ProviderRateLimit: "provider_rate_limit",
-    ProviderUnavailable: "provider_unavailable",
-  },
-  listPullRequestIssueCommentsWithProviderResult: listIssueCommentsMock,
-  listPullRequestReviewCommentsWithProviderResult: listReviewCommentsMock,
-  listPullRequestReviewsWithProviderResult: listReviewsMock,
-  queryBundledPullRequestsWithProviderResult: queryBundledPullRequestsMock,
-  queryStatusCheckRollupWithProviderResult: queryStatusCheckRollupMock,
+// The provider reads are stubbed, but the status contract and the failure
+// classifier are the real ones: the summary's failure entries must carry the
+// same statuses the bundled reads report.
+vi.mock("@repo/github", async (importOriginal) => {
+  const actual = await importOriginal<typeof GitHubModule>();
+  return {
+    GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
+    listPullRequestIssueCommentsWithProviderResult: listIssueCommentsMock,
+    listPullRequestReviewCommentsWithProviderResult: listReviewCommentsMock,
+    listPullRequestReviewsWithProviderResult: listReviewsMock,
+    queryBundledPullRequestsWithProviderResult: queryBundledPullRequestsMock,
+    queryStatusCheckRollupWithProviderResult: queryStatusCheckRollupMock,
+  };
+});
+
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: getInstallationOctokitMock,
 }));
 
 vi.mock("./backfill-projection-writer", () => ({
@@ -78,10 +94,12 @@ vi.mock("./service", () => ({
 }));
 
 const { githubBackfillService } = await import("./backfill-service");
+const { GitHubProviderResultStatus } = await import("@repo/github");
 
 describe("githubBackfillService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    getInstallationOctokitMock.mockResolvedValue(installationOctokit);
     artifactFindManyMock.mockResolvedValue([]);
     findManyMock.mockResolvedValue([
       {
@@ -296,8 +314,12 @@ describe("githubBackfillService", () => {
     });
     expect(projectionDiffMock).toHaveBeenCalledTimes(1);
     expect(projectionWriteMock).not.toHaveBeenCalled();
+    // One client minted for the repository sweep, threaded into the bundled
+    // read and every per-PR metadata read (PLN-1525: resolve once, thread down).
+    expect(getInstallationOctokitMock).toHaveBeenCalledTimes(1);
+    expect(getInstallationOctokitMock).toHaveBeenCalledWith("123");
     expect(queryBundledPullRequestsMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       [],
@@ -305,31 +327,39 @@ describe("githubBackfillService", () => {
         maxItems: undefined,
         maxPages: undefined,
         targetNumbers: [],
-      }
+      },
+      // PLN-1535 M0: backfill passes a read-cost observer (labeled backfill).
+      expect.any(Function),
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        mechanism: GitHubFetchMechanism.Graphql,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
     );
     expect(listIssueCommentsMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       1,
       { limit: 25, pageSize: 100 }
     );
     expect(listReviewCommentsMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       1,
       { limit: 25, pageSize: 100 }
     );
     expect(listReviewsMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       1,
       { limit: 25, pageSize: 100 }
     );
     expect(queryStatusCheckRollupMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       "abc"
@@ -345,6 +375,7 @@ describe("githubBackfillService", () => {
           }),
         }),
       },
+      select: { id: true },
     });
     expect(executeRawMock).toHaveBeenCalled();
   });
@@ -393,6 +424,7 @@ describe("githubBackfillService", () => {
           }),
         }),
       },
+      select: { id: true },
     });
   });
 
@@ -413,7 +445,7 @@ describe("githubBackfillService", () => {
     });
 
     expect(queryBundledPullRequestsMock).toHaveBeenCalledWith(
-      "123",
+      installationOctokit,
       "closedloop-ai",
       "symphony-alpha",
       [150],
@@ -421,7 +453,14 @@ describe("githubBackfillService", () => {
         maxItems: 500,
         maxPages: 5,
         targetNumbers: [150],
-      }
+      },
+      expect.any(Function),
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        mechanism: GitHubFetchMechanism.Graphql,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
     );
   });
 
@@ -536,6 +575,7 @@ describe("githubBackfillService", () => {
     expect(summary.failures).toEqual(["repo:provider_rate_limit"]);
     expect(findManyMock).not.toHaveBeenCalled();
     expect(getBranchesMock).not.toHaveBeenCalled();
+    expect(getInstallationOctokitMock).not.toHaveBeenCalled();
     expect(queryBundledPullRequestsMock).not.toHaveBeenCalled();
     expect(projectionWriteMock).not.toHaveBeenCalled();
     expect(organizationUpdateMock).not.toHaveBeenCalled();
@@ -669,6 +709,42 @@ describe("githubBackfillService", () => {
     expect(summary.failures).toEqual(["closedloop-ai/symphony-alpha"]);
     expect(summary.repositoryCount).toBe(2);
     expect(summary.branchCount).toBe(1);
+    // One mint per repository in the loop, even when a repository fails.
+    expect(getInstallationOctokitMock).toHaveBeenCalledTimes(2);
+    expect(getInstallationOctokitMock).toHaveBeenCalledWith("123");
+  });
+
+  it("records the classified provider status when the installation client mint fails", async () => {
+    getInstallationOctokitMock.mockRejectedValueOnce(
+      Object.assign(new Error("secondary rate limit"), { status: 429 })
+    );
+
+    const summary = await githubBackfillService.runPostConnectBackfill({
+      organizationId: "org-1",
+    });
+
+    expect(summary.status).toBe(GitHubBackfillStatus.Degraded);
+    expect(summary.failures).toEqual([
+      `closedloop-ai/symphony-alpha:${GitHubProviderResultStatus.ProviderRateLimit}`,
+    ]);
+    expect(summary.repositoryCount).toBe(2);
+    // The sweep continues: only the second repository reaches the reads.
+    expect(summary.branchCount).toBe(1);
+    expect(queryBundledPullRequestsMock).toHaveBeenCalledTimes(1);
+    expect(queryBundledPullRequestsMock).toHaveBeenCalledWith(
+      installationOctokit,
+      "closedloop-ai",
+      "other",
+      [],
+      { maxItems: undefined, maxPages: undefined, targetNumbers: [] },
+      expect.any(Function),
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        mechanism: GitHubFetchMechanism.Graphql,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
+    );
   });
 
   it("returns the latest persisted summary without provider calls", async () => {

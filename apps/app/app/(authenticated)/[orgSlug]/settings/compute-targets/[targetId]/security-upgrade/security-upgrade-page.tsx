@@ -191,8 +191,9 @@ export function DesktopSecurityUpgradePage({
     );
   };
 
+  // plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate).
   return (
-    <main className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
+    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
       <div>
         <Button asChild size="sm" variant="ghost">
           <Link href={`/${orgSlug}/settings?tab=integrations`}>
@@ -279,6 +280,6 @@ export function DesktopSecurityUpgradePage({
           </CardContent>
         </Card>
       </div>
-    </main>
+    </div>
   );
 }

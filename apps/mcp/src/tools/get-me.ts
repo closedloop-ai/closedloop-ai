@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ApiClient } from "../api-client.js";
-import { asRecord, withErrorHandling } from "./tool-utils.js";
+import { withErrorHandling } from "./tool-utils.js";
 
 export function registerGetMe(server: McpServer, apiClient: ApiClient): void {
   server.registerTool(
@@ -8,8 +8,7 @@ export function registerGetMe(server: McpServer, apiClient: ApiClient): void {
     { description: "Get the authenticated user's profile and identity." },
     () =>
       withErrorHandling(async () => {
-        const response = await apiClient.get<unknown>("/me");
-        const user = asRecord(response).data ?? response;
+        const user = await apiClient.get<unknown>("/me");
         return {
           content: [
             {

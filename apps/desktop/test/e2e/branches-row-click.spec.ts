@@ -22,7 +22,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  breadcrumbParentLink,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
+import { startFakeGitHubAuthorityServer } from "./helpers/fake-github-authority-server";
 import {
   seedNoPullRequestBranch,
   waitForBranchesSchema,
@@ -38,8 +43,20 @@ const SEED = {
 // The detail route hash and the breadcrumb parent-link href.
 const BRANCH_DETAIL_HASH = /^#\/branches\/.+/;
 const BRANCHES_LIST_HREF = /\/branches$/;
+// FEA-4259: the Linked Sessions count links to the branch detail's Sessions &
+// timeline tab, so its hash carries `?tab=sessions-timeline`.
+const BRANCH_SESSIONS_HASH = /^#\/branches\/.+\?tab=sessions-timeline$/;
+const SESSIONS_TAB_NAME = /sessions & timeline/i;
+// The seeded branch links exactly one session, so the count chip's accessible
+// name is the singular form.
+const LINKED_SESSION_COUNT_NAME = "1 linked session";
+let authorityServer: Awaited<ReturnType<typeof startFakeGitHubAuthorityServer>>;
 
 test.describe("Branches row click → detail (FEA-2939)", () => {
+  test.beforeAll(async () => {
+    authorityServer = await startFakeGitHubAuthorityServer([SEED.repoFullName]);
+  });
+  test.afterAll(async () => authorityServer.close());
   test("clicking a branch row opens its detail view", async () => {
     test.setTimeout(180_000);
 
@@ -56,7 +73,11 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
     try {
       // Launch 1: create + migrate the SQLite schema, then close before seed.
       const firstLaunch = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+        env: {
+          CLAUDE_HOME: claudeHome,
+          CODEX_HOME: codexHome,
+          ...authorityServer.env,
+        },
         keepUserDataDir: true,
         userDataDir,
       });
@@ -70,7 +91,11 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
 
       // Launch 2: the real Branches source reads the seeded local branch.
       const { page, pageErrors, cleanup } = await launchDesktopApp({
-        env: { CLAUDE_HOME: claudeHome, CODEX_HOME: codexHome },
+        env: {
+          CLAUDE_HOME: claudeHome,
+          CODEX_HOME: codexHome,
+          ...authorityServer.env,
+        },
         keepUserDataDir: true,
         userDataDir,
       });
@@ -105,12 +130,124 @@ test.describe("Branches row click → detail (FEA-2939)", () => {
 
         // Detail mounted: the Topbar breadcrumb now has a "Branches" parent LINK
         // (absent on the list, where "Branches" is the current-page span).
-        const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
-        const backLink = breadcrumb.getByRole("link", { name: "Branches" });
+        const backLink = breadcrumbParentLink(page, "Branches");
         await expect(backLink).toBeVisible({ timeout: 30_000 });
 
         // Its parent link targets the branches list route.
         await expect(backLink).toHaveAttribute("href", BRANCHES_LIST_HREF);
+
+        expect(pageErrors).toEqual([]);
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+      fs.rmSync(claudeHome, { recursive: true, force: true });
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  // FEA-4259: the two unit tests cover each half of the linked-session-count
+  // deep-link in isolation (the branches-table renders the count as a link to
+  // `?tab=sessions-timeline`; the branch-detail view seeds/syncs the Sessions
+  // tab from that query). This E2E stitches the two halves plus the Desktop
+  // query handoff end to end so a regression in the wiring — the count href, the
+  // hash-preserved query, or the tab seed — reddens here even if each unit test
+  // stays green (wongk review request).
+  test("clicking the linked-session count opens the branch detail on the Sessions tab", async () => {
+    test.setTimeout(180_000);
+
+    const claudeHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "desktop-branch-session-count-claude-")
+    );
+    const codexHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "desktop-branch-session-count-codex-")
+    );
+    const userDataDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "desktop-branch-session-count-udd-")
+    );
+
+    try {
+      // Launch 1: create + migrate the SQLite schema, then close before seed.
+      const firstLaunch = await launchDesktopApp({
+        env: {
+          CLAUDE_HOME: claudeHome,
+          CODEX_HOME: codexHome,
+          ...authorityServer.env,
+        },
+        keepUserDataDir: true,
+        userDataDir,
+      });
+      try {
+        await waitForBranchesSchema(userDataDir);
+      } finally {
+        await firstLaunch.cleanup();
+      }
+
+      // One local branch with one linked session → the Linked Sessions count
+      // renders 1 and links to the branch detail's Sessions tab.
+      await seedNoPullRequestBranch(userDataDir, SEED);
+
+      // Launch 2: the real Branches source reads the seeded local branch.
+      const { page, pageErrors, cleanup } = await launchDesktopApp({
+        env: {
+          CLAUDE_HOME: claudeHome,
+          CODEX_HOME: codexHome,
+          ...authorityServer.env,
+        },
+        keepUserDataDir: true,
+        userDataDir,
+      });
+
+      try {
+        await gotoNav(page, "branches");
+        await expect(
+          page.locator("header").getByText("Branches", { exact: true })
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(page.getByText("AI spend", { exact: true })).toBeVisible({
+          timeout: 30_000,
+        });
+
+        // The seeded activity is fixed in the past for deterministic fixtures.
+        // Widen the list window so the row is present regardless of run date.
+        await page.locator('[aria-label="All time"]:visible').click();
+
+        // Wait for the seeded row to be present via its branch-name link, then
+        // click the Linked Sessions count chip (an accessible-named link).
+        const branchLink = page
+          .locator('a[href^="#/branches/"]')
+          .filter({ hasText: SEED.branchName });
+        await expect(branchLink).toBeVisible({ timeout: 30_000 });
+
+        const sessionCountLink = page.getByRole("link", {
+          name: LINKED_SESSION_COUNT_NAME,
+        });
+        await expect(sessionCountLink).toBeVisible({ timeout: 30_000 });
+        // The count link carries the Sessions-tab query in its own href.
+        await expect(sessionCountLink).toHaveAttribute(
+          "href",
+          BRANCH_SESSIONS_HASH
+        );
+        await sessionCountLink.click();
+
+        // The hash navigated to the branch detail route WITH the Sessions-tab
+        // query preserved (the Desktop adapter keeps `?tab=` on the hash).
+        await expect
+          .poll(() => page.evaluate(() => window.location.hash), {
+            timeout: 15_000,
+          })
+          .toMatch(BRANCH_SESSIONS_HASH);
+
+        // Detail mounted on the Sessions & timeline tab (aria-selected), not the
+        // default Branch details tab — the count and the Name link resolve to
+        // the same branch, and the query seeded the tab.
+        const sessionsTab = page.getByRole("tab", { name: SESSIONS_TAB_NAME });
+        await expect(sessionsTab).toHaveAttribute("aria-selected", "true", {
+          timeout: 30_000,
+        });
+        await expect(
+          page.getByRole("tab", { name: "Branch details" })
+        ).toHaveAttribute("aria-selected", "false");
 
         expect(pageErrors).toEqual([]);
       } finally {

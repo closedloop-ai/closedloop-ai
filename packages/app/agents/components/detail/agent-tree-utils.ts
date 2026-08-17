@@ -1,3 +1,9 @@
+import {
+  AGENT_FAILED_STATUS_PATTERN,
+  AGENT_SUCCESS_STATUS_PATTERN,
+} from "@repo/api/src/agent-session-status";
+import { AgentComponentKind } from "@repo/api/src/types/agent-component";
+import { routableComponentSlug } from "@repo/api/src/types/agent-component-analytics";
 import type {
   SyncedAgentSessionAgent,
   SyncedAgentSessionEvent,
@@ -44,7 +50,6 @@ export function buildAgentTree(
   for (const agent of agents) {
     const agentEvents = eventsByAgent.get(agent.externalAgentId) ?? [];
     const durationMs = computeDuration(agent.startedAt, agent.endedAt);
-    const statusLower = agent.status.toLowerCase();
 
     nodeMap.set(agent.externalAgentId, {
       agent,
@@ -54,8 +59,8 @@ export function buildAgentTree(
       eventCount: agentEvents.length,
       errorCount: agentEvents.filter(isErrorEvent).length,
       toolInvocationCount: agentEvents.filter((e) => e.toolName).length,
-      isSuccess: statusLower === "completed",
-      isFailed: statusLower.includes("fail") || statusLower.includes("error"),
+      isSuccess: AGENT_SUCCESS_STATUS_PATTERN.test(agent.status),
+      isFailed: AGENT_FAILED_STATUS_PATTERN.test(agent.status),
     });
   }
 
@@ -88,14 +93,16 @@ export function buildSessionAgents(
   const roots = buildAgentTree(agents, events);
 
   function buildNode(node: AgentTreeNode): SessionAgent {
+    const type: SessionAgent["type"] =
+      node.depth === 0 && !node.agent.parentExternalAgentId
+        ? "main"
+        : "subagent";
     return {
       id: node.agent.externalAgentId,
       sessionId: "session",
       name: node.agent.name,
-      type:
-        node.depth === 0 && !node.agent.parentExternalAgentId
-          ? "main"
-          : "subagent",
+      componentSlug: resolveAgentComponentSlug(type, node.agent),
+      type,
       subagentType: node.agent.subagentType,
       status: normalizeAgentStatus(node.agent.status),
       task: node.agent.task,
@@ -137,10 +144,10 @@ export function flattenTree(roots: AgentTreeNode[]): AgentTreeNode[] {
  */
 export function getStatusColor(status: string): string {
   const lower = status.toLowerCase();
-  if (lower === "completed") {
+  if (AGENT_SUCCESS_STATUS_PATTERN.test(status)) {
     return "bg-emerald-500";
   }
-  if (lower.includes("fail") || lower.includes("error")) {
+  if (AGENT_FAILED_STATUS_PATTERN.test(status)) {
     return "bg-red-500";
   }
   if (lower === "running" || lower === "active") {
@@ -157,10 +164,10 @@ export function getStatusColor(status: string): string {
  */
 export function getStatusBorderColor(status: string): string {
   const lower = status.toLowerCase();
-  if (lower === "completed") {
+  if (AGENT_SUCCESS_STATUS_PATTERN.test(status)) {
     return "border-emerald-500";
   }
-  if (lower.includes("fail") || lower.includes("error")) {
+  if (AGENT_FAILED_STATUS_PATTERN.test(status)) {
     return "border-red-500";
   }
   if (lower === "running" || lower === "active") {
@@ -231,7 +238,13 @@ function computeDuration(
   if (Number.isNaN(start) || Number.isNaN(end)) {
     return null;
   }
-  return end - start;
+  const duration = end - start;
+  // `Number.isFinite` here is defensive only: past the NaN guard both operands
+  // are finite (JS `Date` is bounded to ±8.64e15 ms), so their difference is
+  // always finite and this branch is unreachable in practice. The `>= 0` clamp
+  // is the real guard — out-of-order timestamps (clock skew) yield a negative
+  // span, which we drop to null rather than propagate a nonsensical duration.
+  return Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
 function assignDepths(nodes: AgentTreeNode[], depth: number) {
@@ -239,4 +252,30 @@ function assignDepths(nodes: AgentTreeNode[], depth: number) {
     node.depth = depth;
     assignDepths(node.children, depth + 1);
   }
+}
+
+/**
+ * FEA-4258: derive the org-level agent-component identity slug
+ * (`subagent::<normalizedKey>`) so the session agents section can link a card
+ * out to the component inventory detail route. Only a `subagent`-typed agent
+ * has a component identity — the `main` agent is the session itself, not a
+ * reusable component, so it gets `null` (non-link). The component key mirrors
+ * the desktop collector's subagent identity (`subagentType`/`type` → normalized
+ * key, `component-invocations.ts`): prefer `subagentType`, fall back to the
+ * agent `name`. `routableComponentSlug` returns `null` when neither yields a
+ * non-empty key, so a keyless subagent degrades to a non-link rather than a
+ * dead `subagent::` anchor.
+ */
+function resolveAgentComponentSlug(
+  type: SessionAgent["type"],
+  agent: SyncedAgentSessionAgent
+): string | null {
+  if (type !== "subagent") {
+    return null;
+  }
+  return routableComponentSlug(
+    AgentComponentKind.Subagent,
+    agent.subagentType,
+    agent.name
+  );
 }

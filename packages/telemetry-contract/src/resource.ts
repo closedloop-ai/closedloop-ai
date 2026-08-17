@@ -11,6 +11,9 @@ export const ResourceTelemetrySchema = z
     [TelemetryAttribute.ServiceVersion]: boundedText(
       TelemetryTextMaxLength.ServiceVersion
     ).optional(),
+    [TelemetryAttribute.DeviceId]: boundedText(
+      TelemetryTextMaxLength.DeviceId
+    ).optional(),
     [TelemetryAttribute.HarnessName]: z
       .enum(["claude", "codex", "cursor", "copilot", "opencode"])
       .optional(),

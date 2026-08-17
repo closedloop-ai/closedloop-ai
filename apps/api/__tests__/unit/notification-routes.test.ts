@@ -1,6 +1,7 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import {
   getNotificationEntityPath,
+  isArtifactRoutePrefix,
   NotificationEntityKind,
 } from "@repo/api/src/types/notification-routes";
 import { describe, expect, it } from "vitest";
@@ -27,14 +28,16 @@ describe("getNotificationEntityPath", () => {
       ).toBe("/implementation-plans/PLN-12");
     });
 
-    it("routes features to /features/<slug>", () => {
+    // FEA-4137: Feature (Issue) notifications route under /issues/; the FEA-
+    // slug stays valid as a compat alias.
+    it("routes features to /issues/<slug>", () => {
       expect(
         getNotificationEntityPath({
           kind: NotificationEntityKind.Artifact,
           slug: "FEA-877",
           subtype: DocumentType.Feature,
         })
-      ).toBe("/features/FEA-877");
+      ).toBe("/issues/FEA-877");
     });
 
     it("falls back to /documents/<slug> for unknown subtypes", () => {
@@ -65,5 +68,28 @@ describe("getNotificationEntityPath", () => {
         loopId: "loop-9",
       })
     ).toBe("/loops/loop-9");
+  });
+});
+
+describe("isArtifactRoutePrefix", () => {
+  it("recognizes the canonical artifact-detail prefixes", () => {
+    expect(isArtifactRoutePrefix("prds")).toBe(true);
+    expect(isArtifactRoutePrefix("implementation-plans")).toBe(true);
+    // FEA-4137: Issue is the canonical Feature prefix now.
+    expect(isArtifactRoutePrefix("issues")).toBe(true);
+    expect(isArtifactRoutePrefix("documents")).toBe(true);
+  });
+
+  // FEA-4137: the retired `/features/` prefix must keep resolving so old
+  // deep-links (external bookmarks, push notifications minted before the
+  // rename) still land on the artifact-detail screen. Dropping it silently
+  // broke the mobile navigation adapter's `resolveRouteFromHref`.
+  it("still recognizes the legacy /features/ prefix as a compat alias", () => {
+    expect(isArtifactRoutePrefix("features")).toBe(true);
+  });
+
+  it("rejects non-artifact prefixes", () => {
+    expect(isArtifactRoutePrefix("loops")).toBe(false);
+    expect(isArtifactRoutePrefix("branches")).toBe(false);
   });
 });

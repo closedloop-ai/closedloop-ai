@@ -47,6 +47,31 @@ describe("generateSlug", () => {
     expect(second).toBe("PRO-2");
   });
 
+  // FEA-4137: Issues mint `ISS-###` but increment the org's EXISTING `FEA`
+  // counter row so the numeric series stays continuous across the rename
+  // (no counter reset, no data migration). The issue after `FEA-592` is
+  // `ISS-593`.
+  it("mints ISS- display slug against the shared FEA counter row", async () => {
+    const upsert = vi.fn().mockResolvedValue({ currentValue: 593 });
+    mockWithDbCall({ slugCounter: { upsert } });
+
+    const result = await generateSlug(ORG_ID, SlugPrefix.Issue);
+
+    expect(result).toBe("ISS-593");
+    // Counter row is keyed on FEA (the continuity source), NOT on ISS.
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId_typePrefix: {
+            organizationId: ORG_ID,
+            typePrefix: SlugPrefix.Feature,
+          },
+        },
+        create: expect.objectContaining({ typePrefix: SlugPrefix.Feature }),
+      })
+    );
+  });
+
   it("uses separate counters per type prefix", async () => {
     const mockDb = {
       slugCounter: {

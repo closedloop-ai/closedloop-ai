@@ -2,13 +2,13 @@ import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
 } from "@repo/api/src/types/artifact";
+import { Result, Status } from "@repo/api/src/types/result";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
   type LoopBranchMaterializationEntry,
   type LoopBranchMaterializationEnvelope,
   LoopBranchMaterializationRole,
-} from "@repo/api/src/types/loop-body";
-import { Result, Status } from "@repo/api/src/types/result";
-import { GitHubInstallationStatus, withDb } from "@repo/database";
+} from "@closedloop-ai/loops-api/desktop-request";
 import { z } from "zod";
 import {
   branchService,
@@ -94,10 +94,6 @@ export async function createLoopBranchArtifact({
   if (!allowedRepo) {
     return Result.err(Status.Forbidden);
   }
-  if (body.branchName === body.defaultBranch) {
-    return Result.err(Status.BadRequest);
-  }
-
   const branchMaterializationResult = parseStoredBranchMaterialization(
     loop.metadata
   );

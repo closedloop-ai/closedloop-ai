@@ -1,5 +1,5 @@
 import { BackendMismatchModal } from "@repo/app/compute/components/backend-mismatch-modal";
-import { mockBackendMismatch } from "@repo/design-system/storybook/mock-data";
+import { mockBackendMismatch } from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {

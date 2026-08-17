@@ -12,7 +12,7 @@ import { test } from "node:test";
 import {
   evaluateFrameRecovery,
   MAX_CRASH_RELOADS,
-} from "../src/main/renderer-ipc.js";
+} from "../src/main/ipc/renderer-ipc.js";
 import { fakeWindow } from "./helpers/fake-window.js";
 
 test("frame recovery skips when window is null", () => {

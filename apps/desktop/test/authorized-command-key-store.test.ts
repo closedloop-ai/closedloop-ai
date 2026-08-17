@@ -7,7 +7,7 @@ import { afterEach, test } from "node:test";
 import {
   AuthorizedCommandKeyStore,
   fingerprintCommandPublicKey,
-} from "../src/main/authorized-command-key-store.js";
+} from "../src/main/command-signing/authorized-command-key-store.js";
 
 const tempDirs: string[] = [];
 

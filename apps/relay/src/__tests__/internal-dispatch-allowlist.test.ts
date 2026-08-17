@@ -1,13 +1,16 @@
 import { request } from "node:http";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { InstanceInfo } from "../target-registry.js";
+import { reserveTestPort } from "./helpers/reserve-test-port.js";
 
-const TEST_PORT = 40_000 + Math.floor(Math.random() * 10_000);
+const TEST_PORT = await reserveTestPort(27_000, 1500);
 const TEST_SECRET = "test-internal-secret";
 const TEST_API_URL = "http://127.0.0.1:19877";
 const ORIGINAL_ENV = { ...process.env };
 
 let baseUrl: string;
 let stopRelay: (() => Promise<void>) | null = null;
+let isAllowedPeerInstance: (info: InstanceInfo) => boolean;
 
 vi.mock("socket.io", () => {
   const mockNamespace = { use: vi.fn(), on: vi.fn() };
@@ -35,6 +38,7 @@ beforeAll(async () => {
   const relayModule = await import("../index");
   await relayModule.startRelayServer("127.0.0.1");
   stopRelay = relayModule.stopRelayServer;
+  isAllowedPeerInstance = relayModule.isAllowedPeerInstance;
 
   baseUrl = `http://127.0.0.1:${TEST_PORT}`;
   await new Promise<void>((resolve) => setTimeout(resolve, 50));
@@ -81,5 +85,45 @@ describe("POST /internal/dispatch with a CIDR allowlist", () => {
       JSON.stringify({ targetId: "t1", operation: {} })
     );
     expect(response.status).toBe(403);
+  });
+});
+
+describe("isAllowedPeerInstance with RELAY_INTERNAL_ALLOWED_IPS set (L1948)", () => {
+  // RELAY_INTERNAL_ALLOWED_IPS = "10.0.0.0/foo,192.168.0.0/16" is set in beforeAll.
+  // When the allowlist is non-empty, isAllowedPeerInstance uses the CIDR branch
+  // (L1948 arm0) instead of the RFC1918 fallback.
+
+  it("allows a peer whose IP falls within a valid allowlist CIDR", () => {
+    // 192.168.0.1 is in 192.168.0.0/16 (the second, valid CIDR entry).
+    expect(
+      isAllowedPeerInstance({
+        privateIp: "192.168.0.1",
+        port: TEST_PORT,
+        startedAt: 0,
+      })
+    ).toBe(true);
+  });
+
+  it("rejects a peer whose IP matches only the malformed allowlist entry (fails closed)", () => {
+    // "10.0.0.0/foo" is malformed → isAddressInCidr fails closed → false.
+    // No valid CIDR in the allowlist matches 10.0.0.1 → rejected.
+    expect(
+      isAllowedPeerInstance({
+        privateIp: "10.0.0.1",
+        port: TEST_PORT,
+        startedAt: 0,
+      })
+    ).toBe(false);
+  });
+
+  it("rejects a peer IP that is outside all allowlist CIDRs", () => {
+    // 172.16.0.1 matches neither "10.0.0.0/foo" (malformed) nor "192.168.0.0/16".
+    expect(
+      isAllowedPeerInstance({
+        privateIp: "172.16.0.1",
+        port: TEST_PORT,
+        startedAt: 0,
+      })
+    ).toBe(false);
   });
 });

@@ -1,14 +1,15 @@
+import { DocumentType } from "@repo/api/src/types/document.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpApiError } from "../api-error.js";
 import {
-  buildDocumentUrl,
-  buildDocumentUrlFromRecord,
-  buildLoopUrl,
   buildPaginatedPayload,
+  createUrlBuilder,
   extractArrayItems,
-  setSessionOrgSlug,
+  shapeParentArtifact,
   withErrorHandling,
 } from "../tools/tool-utils.js";
+
+const orglessUrls = createUrlBuilder(() => null);
 
 describe("withErrorHandling", () => {
   it("returns friendly text for structured API errors", async () => {
@@ -69,6 +70,15 @@ describe("withErrorHandling", () => {
     expect(result.content[0]?.text).toContain("Operation failed");
     expect(result.content[0]?.text).toContain("legacy raw failure");
   });
+
+  it("maps a non-Error rejection to the Unknown error technical detail", async () => {
+    const result = await withErrorHandling(() =>
+      Promise.reject("bare string rejection")
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain("Unknown error");
+  });
 });
 
 describe("extractArrayItems", () => {
@@ -106,6 +116,24 @@ describe("extractArrayItems", () => {
     expect(message).toContain('received type "object"');
     expect(message).toContain("...[truncated]");
   });
+
+  it("falls back to String(value) when the payload is undefined", () => {
+    expect(() => extractArrayItems(undefined)).toThrow(
+      'received type "undefined" (sample: undefined)'
+    );
+  });
+
+  it("detects a circular reference and replaces it with [Circular] in the sample", () => {
+    const obj: Record<string, unknown> = { a: 1 };
+    obj.self = obj;
+    expect(() => extractArrayItems(obj)).toThrow("[Circular]");
+  });
+
+  it("truncates arrays longer than 5 items in the payload sample", () => {
+    expect(() => extractArrayItems({ items: [1, 2, 3, 4, 5, 6, 7] })).toThrow(
+      "more)"
+    );
+  });
 });
 
 describe("buildPaginatedPayload", () => {
@@ -119,99 +147,150 @@ describe("buildPaginatedPayload", () => {
   });
 });
 
-describe("buildDocumentUrl", () => {
+describe("buildDocumentUrlFromRecord route prefixes", () => {
   it("builds a URL for PRD documents", () => {
-    const url = buildDocumentUrl("PRD-7", "PRD");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "PRD-7",
+      type: DocumentType.Prd,
+    });
     expect(url).toBe("https://app.closedloop.ai/prds/PRD-7");
   });
 
   it("builds a URL for IMPLEMENTATION_PLAN documents", () => {
-    const url = buildDocumentUrl("PLN-4", "IMPLEMENTATION_PLAN");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "PLN-4",
+      type: DocumentType.ImplementationPlan,
+    });
     expect(url).toBe("https://app.closedloop.ai/implementation-plans/PLN-4");
   });
 
+  // FEA-4137: FEATURE documents route under /issues/ (the FEA- slug is a compat
+  // alias that still resolves; only the route path changed).
   it("builds a URL for FEATURE documents", () => {
-    const url = buildDocumentUrl("FEA-42", "FEATURE");
-    expect(url).toBe("https://app.closedloop.ai/features/FEA-42");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "FEA-42",
+      type: DocumentType.Feature,
+    });
+    expect(url).toBe("https://app.closedloop.ai/issues/FEA-42");
   });
 
   it("falls back to /documents/ prefix for TEMPLATE type", () => {
-    const url = buildDocumentUrl("TPL-1", "TEMPLATE");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "TPL-1",
+      type: DocumentType.Template,
+    });
     expect(url).toBe("https://app.closedloop.ai/documents/TPL-1");
   });
 
   it("falls back to /documents/ prefix for unknown type", () => {
-    const url = buildDocumentUrl("DOC-1", "UNKNOWN_TYPE");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "DOC-1",
+      type: "UNKNOWN_TYPE",
+    });
     expect(url).toBe("https://app.closedloop.ai/documents/DOC-1");
   });
 
   it("encodes special characters in slug", () => {
-    const url = buildDocumentUrl("../../admin", "PRD");
+    const url = orglessUrls.buildDocumentUrlFromRecord({
+      slug: "../../admin",
+      type: DocumentType.Prd,
+    });
     expect(url).toBe("https://app.closedloop.ai/prds/..%2F..%2Fadmin");
   });
 });
 
 describe("buildDocumentUrlFromRecord", () => {
   it("builds URL when slug and type are present", () => {
-    const url = buildDocumentUrlFromRecord({
+    const url = orglessUrls.buildDocumentUrlFromRecord({
       slug: "FEA-42",
-      type: "FEATURE",
+      type: DocumentType.Feature,
     });
-    expect(url).toBe("https://app.closedloop.ai/features/FEA-42");
+    expect(url).toBe("https://app.closedloop.ai/issues/FEA-42");
   });
 
   it("returns null when slug is missing", () => {
-    expect(buildDocumentUrlFromRecord({ type: "FEATURE" })).toBeNull();
+    expect(
+      orglessUrls.buildDocumentUrlFromRecord({ type: DocumentType.Feature })
+    ).toBeNull();
   });
 
   it("returns null when type is missing", () => {
-    expect(buildDocumentUrlFromRecord({ slug: "FEA-42" })).toBeNull();
+    expect(
+      orglessUrls.buildDocumentUrlFromRecord({ slug: "FEA-42" })
+    ).toBeNull();
   });
 
   it("returns null for empty record", () => {
-    expect(buildDocumentUrlFromRecord({})).toBeNull();
+    expect(orglessUrls.buildDocumentUrlFromRecord({})).toBeNull();
   });
 });
 
 describe("buildLoopUrl", () => {
   it("builds a URL with a UUID", () => {
     const id = "019abc12-3456-7890-abcd-ef0123456789";
-    const url = buildLoopUrl(id);
+    const url = orglessUrls.buildLoopUrl(id);
     expect(url).toBe(`https://app.closedloop.ai/loops/${id}`);
   });
 
   it("encodes special characters in loop ID", () => {
-    const url = buildLoopUrl("../evil");
+    const url = orglessUrls.buildLoopUrl("../evil");
     expect(url).toBe("https://app.closedloop.ai/loops/..%2Fevil");
   });
 });
 
-describe("org-scoped URLs via setSessionOrgSlug", () => {
-  afterEach(() => {
-    // Reset to no org slug by importing a fresh module would be ideal,
-    // but for simplicity we set it back to a known state
-    setSessionOrgSlug("");
+describe("org-scoped URLs via createUrlBuilder", () => {
+  const acmeUrls = createUrlBuilder(() => "acme");
+
+  it("includes org slug in document URLs", () => {
+    expect(
+      acmeUrls.buildDocumentUrlFromRecord({
+        slug: "FEA-42",
+        type: DocumentType.Feature,
+      })
+    ).toBe("https://app.closedloop.ai/acme/issues/FEA-42");
   });
 
-  it("includes org slug in document URLs when set", () => {
-    setSessionOrgSlug("acme");
-    expect(buildDocumentUrl("FEA-42", "FEATURE")).toBe(
-      "https://app.closedloop.ai/acme/features/FEA-42"
-    );
-  });
-
-  it("includes org slug in loop URLs when set", () => {
-    setSessionOrgSlug("acme");
-    expect(buildLoopUrl("abc-123")).toBe(
+  it("includes org slug in loop URLs", () => {
+    expect(acmeUrls.buildLoopUrl("abc-123")).toBe(
       "https://app.closedloop.ai/acme/loops/abc-123"
     );
   });
 
   it("includes org slug in buildDocumentUrlFromRecord", () => {
-    setSessionOrgSlug("acme");
-    expect(buildDocumentUrlFromRecord({ slug: "PRD-7", type: "PRD" })).toBe(
-      "https://app.closedloop.ai/acme/prds/PRD-7"
+    expect(
+      acmeUrls.buildDocumentUrlFromRecord({
+        slug: "PRD-7",
+        type: DocumentType.Prd,
+      })
+    ).toBe("https://app.closedloop.ai/acme/prds/PRD-7");
+  });
+
+  // ISS-6570 regression: the slug is captured per builder (one per MCP
+  // session). Creating a builder for another org must not change what an
+  // existing builder emits — the module-global this replaced let whichever
+  // tenant initialized a session last stamp its slug into every other
+  // tenant's webUrl.
+  it("keeps each builder's org slug independent of later builders", () => {
+    const orgA = createUrlBuilder(() => "org-a");
+    const orgB = createUrlBuilder(() => "org-b");
+    expect(orgB.buildLoopUrl("abc")).toBe(
+      "https://app.closedloop.ai/org-b/loops/abc"
     );
+    expect(
+      orgA.buildDocumentUrlFromRecord({ slug: "PRD-7", type: DocumentType.Prd })
+    ).toBe("https://app.closedloop.ai/org-a/prds/PRD-7");
+    expect(orgA.buildLoopUrl("abc")).toBe(
+      "https://app.closedloop.ai/org-a/loops/abc"
+    );
+  });
+
+  it("builds org-less URLs when the slug is null", () => {
+    expect(
+      createUrlBuilder(() => null).buildDocumentUrlFromRecord({
+        slug: "PRD-7",
+        type: DocumentType.Prd,
+      })
+    ).toBe("https://app.closedloop.ai/prds/PRD-7");
   });
 });
 
@@ -234,12 +313,17 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.buildLoopUrl("abc")).toBe(
+    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
       "https://custom.example.com/loops/abc"
     );
-    expect(mod.buildDocumentUrl("FEA-1", "FEATURE")).toBe(
-      "https://custom.example.com/features/FEA-1"
-    );
+    expect(
+      mod
+        .createUrlBuilder(() => null)
+        .buildDocumentUrlFromRecord({
+          slug: "FEA-1",
+          type: DocumentType.Feature,
+        })
+    ).toBe("https://custom.example.com/issues/FEA-1");
   });
 
   it("strips trailing slashes from WEBAPP_URL", async () => {
@@ -248,7 +332,7 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.buildLoopUrl("abc")).toBe(
+    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
       "https://custom.example.com/loops/abc"
     );
   });
@@ -260,6 +344,40 @@ describe("WEBAPP_URL env var fallback", () => {
 
     const mod = await import("../tools/tool-utils.js");
 
-    expect(mod.buildLoopUrl("abc")).toBe("https://app.closedloop.ai/loops/abc");
+    expect(mod.createUrlBuilder(() => null).buildLoopUrl("abc")).toBe(
+      "https://app.closedloop.ai/loops/abc"
+    );
+  });
+});
+
+describe("shapeParentArtifact", () => {
+  it("fills null for every omitted parentArtifact field and for null link fields", () => {
+    const result = shapeParentArtifact({
+      parentArtifact: {},
+      linkId: null,
+      linkType: null,
+      linkCreatedAt: null,
+    });
+    expect(result).toEqual({
+      id: null,
+      type: null,
+      subtype: null,
+      name: null,
+      slug: null,
+      externalUrl: null,
+      linkId: null,
+      linkType: null,
+      linkCreatedAt: null,
+    });
+  });
+
+  it("returns null when parentArtifact itself is null", () => {
+    const result = shapeParentArtifact({
+      parentArtifact: null,
+      linkId: null,
+      linkType: null,
+      linkCreatedAt: null,
+    });
+    expect(result).toBeNull();
   });
 });

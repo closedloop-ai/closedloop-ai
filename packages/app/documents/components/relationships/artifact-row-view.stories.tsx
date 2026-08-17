@@ -1,5 +1,10 @@
-import { FeatureStatus } from "@repo/api/src/types/document";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import {
+  DocumentType,
+  IssueStatus,
+  TYPE_ROUTE_PREFIX,
+} from "@repo/api/src/types/document";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
+import { DOCUMENT_TYPE_LABELS } from "@repo/app/documents/lib/document-type-labels";
 import {
   Avatar,
   AvatarFallback,
@@ -19,17 +24,20 @@ const meta = {
       </Avatar>
     ),
     depth: 1,
-    href: "/acme/features/platform-shell",
+    // FEA-4137: the Feature subtype routes under /issues/ and displays as
+    // "Issue". Read both from their canonical maps so this fixture cannot drift
+    // back to the retired "Feature" vocabulary.
+    href: `/acme/${TYPE_ROUTE_PREFIX[DocumentType.Feature]}/platform-shell`,
     onDetach: () => undefined,
     priority: "HIGH",
-    slug: "feature-shell",
-    statusIcon: <FeatureStatusIcon status={FeatureStatus.InReview} />,
+    slug: "platform-shell",
+    statusIcon: <IssueStatusIcon status={IssueStatus.InReview} />,
     statusLabel: "In review",
     title: "Platform shell convergence",
     typeIcon: (
       <FileCodeIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
     ),
-    typeLabel: "Feature",
+    typeLabel: DOCUMENT_TYPE_LABELS[DocumentType.Feature],
   },
   parameters: {
     layout: "padded",

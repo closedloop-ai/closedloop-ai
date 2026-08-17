@@ -243,3 +243,23 @@ function timeFormatPattern(options: {
   }
   return options.includeSeconds ? "h:mm:ss a" : "h:mm a";
 }
+
+/**
+ * Format a timestamp as a viewer-local month/day plus time, WITHOUT the year
+ * or the "at" connector (e.g. "Jun 6, 9:04 AM").
+ *
+ * ISS-4955 (stage review): {@link formatDateTime} is the right label for a
+ * prose timestamp, but on a chart axis its year and connector are noise, and
+ * two labels that long wrap the axis row onto a second line in the desktop
+ * detail pane. This carries the same disambiguating information — which DAY
+ * each edge falls on — in roughly half the characters.
+ */
+export function formatMonthDayTime(
+  date: Date | string,
+  options: { includeSeconds?: boolean; hour12?: boolean } = {}
+): string {
+  return format(
+    ensureDateRequired(date),
+    `MMM d, ${timeFormatPattern(options)}`
+  );
+}

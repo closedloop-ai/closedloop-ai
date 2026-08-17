@@ -14,7 +14,11 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { segmentIndexForMs } from "../src/main/collectors/parsing/activity-segment-classifier.js";
-import type { NormalizedTokenRecord } from "../src/main/collectors/types.js";
+import type {
+  NormalizedSubagent,
+  NormalizedTokenRecord,
+  NormalizedToolUse,
+} from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { makeSession } from "./normalized-session-test-utils.js";
 
@@ -30,6 +34,13 @@ function turn(timestamp: string, input: number): NormalizedTokenRecord {
     cacheRead: 10,
     cacheWrite: 5,
   };
+}
+
+function readTool(timestamp: string): NormalizedToolUse {
+  return { name: "Read", timestamp, input: { file_path: "/src/x.ts" } };
+}
+function editTool(timestamp: string): NormalizedToolUse {
+  return { name: "Edit", timestamp, input: { file_path: "/src/x.ts" } };
 }
 
 async function openDb(): Promise<{ db: Db; cleanup: () => Promise<void> }> {
@@ -240,6 +251,101 @@ test("deleting a session removes its activity segments (no orphans)", async () =
       (await readSegments(db, "to-delete")).length,
       0,
       "session_activity_segments rows are removed with the session"
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+async function readSegmentsWithSubagent(
+  db: Db,
+  sessionId: string
+): Promise<
+  { startMs: number; endMs: number; phase: string; subagentId: string | null }[]
+> {
+  const rows = await db.prisma.client.$queryRawUnsafe<
+    {
+      start_ms: bigint | number;
+      end_ms: bigint | number;
+      phase: string;
+      subagent_id: string | null;
+    }[]
+  >(
+    `SELECT start_ms, end_ms, phase, subagent_id FROM session_activity_segments
+       WHERE session_id = $1 ORDER BY start_ms ASC`,
+    sessionId
+  );
+  return rows.map((r) => ({
+    startMs: Number(r.start_ms),
+    endMs: Number(r.end_ms),
+    phase: r.phase,
+    subagentId: r.subagent_id,
+  }));
+}
+
+test("import persists the FEA-2271 subagent_id marker: delegated slice carries its id, main-agent rows are null", async () => {
+  const { db, cleanup } = await openDb();
+  try {
+    // Main agent implements throughout; a read-only subagent's folded turns sit
+    // inside the implement window — the FR-8 shape, driven through the REAL
+    // importer so Prisma createMany + the SQLite column are exercised end-to-end
+    // (a pure classifier test cannot catch a dropped mapping here).
+    const session = makeSession({
+      sessionId: "fr8-store",
+      startedAt: "2026-06-07T00:00:00.000Z",
+      endedAt: "2026-06-07T00:10:00.000Z",
+      toolUses: [
+        editTool("2026-06-07T00:01:00.000Z"),
+        editTool("2026-06-07T00:02:00.000Z"),
+        editTool("2026-06-07T00:08:00.000Z"),
+      ],
+      tokenSeries: [
+        turn("2026-06-07T00:01:00.000Z", 100),
+        turn("2026-06-07T00:02:00.000Z", 100),
+        turn("2026-06-07T00:04:00.000Z", 40), // folded subagent turn
+        turn("2026-06-07T00:05:00.000Z", 40), // folded subagent turn
+        turn("2026-06-07T00:08:00.000Z", 100),
+      ],
+      subagents: [
+        {
+          id: "reviewer",
+          name: "reviewer",
+          toolUses: [
+            readTool("2026-06-07T00:04:00.000Z"),
+            readTool("2026-06-07T00:05:00.000Z"),
+          ],
+          tokenSeries: [
+            turn("2026-06-07T00:04:00.000Z", 40),
+            turn("2026-06-07T00:05:00.000Z", 40),
+          ],
+        } satisfies NormalizedSubagent,
+      ],
+    });
+    await db.importer.importSession(session, "claude");
+
+    const segments = await readSegmentsWithSubagent(db, "fr8-store");
+
+    const delegatedIdx = segmentIndexForMs(
+      segments,
+      Date.parse("2026-06-07T00:04:30.000Z")
+    );
+    assert.ok(delegatedIdx >= 0, "the delegated instant lands in a segment");
+    assert.equal(segments[delegatedIdx].phase, "explore");
+    assert.equal(
+      segments[delegatedIdx].subagentId,
+      "reviewer",
+      "the delegated slice persists its subagent_id provenance marker"
+    );
+
+    const mainIdx = segmentIndexForMs(
+      segments,
+      Date.parse("2026-06-07T00:01:00.000Z")
+    );
+    assert.equal(segments[mainIdx].phase, "implement");
+    assert.equal(
+      segments[mainIdx].subagentId,
+      null,
+      "main-agent rows persist a NULL subagent_id (not the delegated id, not undefined)"
     );
   } finally {
     await cleanup();

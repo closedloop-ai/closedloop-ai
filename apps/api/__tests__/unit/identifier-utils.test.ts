@@ -73,7 +73,15 @@ describe("uuidOrSlug", () => {
   });
 
   it("accepts all typed slug prefixes", () => {
-    for (const slug of ["PRO-1", "WRK-99", "PRD-42", "PLN-7", "FEA-123"]) {
+    // FEA-4137: ISS- (canonical Issue) and FEA- (compat alias) both accepted.
+    for (const slug of [
+      "PRO-1",
+      "WRK-99",
+      "PRD-42",
+      "PLN-7",
+      "FEA-123",
+      "ISS-123",
+    ]) {
       expect(schema.safeParse(slug).success).toBe(true);
     }
   });
@@ -117,16 +125,55 @@ describe("resolveDocumentId", () => {
   it("queries by slug when input is not a UUID", async () => {
     const mockDb = {
       artifact: {
-        findUnique: vi.fn().mockResolvedValue({ id: "resolved-uuid" }),
+        findFirst: vi.fn().mockResolvedValue({ id: "resolved-uuid" }),
       },
     };
     mockWithDbCall(mockDb);
 
     const result = await resolveDocumentId("PRD-42", "org-1");
     expect(result).toBe("resolved-uuid");
-    expect(mockDb.artifact.findUnique).toHaveBeenCalledWith({
+    // A prefix with no alias expands to just its own slug.
+    expect(mockDb.artifact.findFirst).toHaveBeenCalledWith({
       where: {
-        organizationId_slug: { organizationId: "org-1", slug: "PRD-42" },
+        organizationId: "org-1",
+        slug: { in: ["PRD-42"] },
+        type: "DOCUMENT",
+      },
+      select: { id: true },
+    });
+  });
+
+  // FEA-4137: an incoming ISS-### slug must resolve an existing row stored as
+  // FEA-### (and vice-versa) — the resolver tries every alias slug for the same
+  // numeric identity, so old FEA links keep resolving after the rename.
+  it("resolves an ISS- slug against both ISS- and FEA- rows (compat alias)", async () => {
+    const findFirst = vi.fn().mockResolvedValue({ id: "issue-uuid" });
+    mockWithDbCall({ artifact: { findFirst } });
+
+    const result = await resolveDocumentId("ISS-592", "org-1");
+
+    expect(result).toBe("issue-uuid");
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        organizationId: "org-1",
+        slug: { in: ["ISS-592", "FEA-592"] },
+        type: "DOCUMENT",
+      },
+      select: { id: true },
+    });
+  });
+
+  it("still resolves a legacy FEA- slug (expands to include ISS-)", async () => {
+    const findFirst = vi.fn().mockResolvedValue({ id: "issue-uuid" });
+    mockWithDbCall({ artifact: { findFirst } });
+
+    const result = await resolveDocumentId("FEA-1", "org-1");
+
+    expect(result).toBe("issue-uuid");
+    expect(findFirst).toHaveBeenCalledWith({
+      where: {
+        organizationId: "org-1",
+        slug: { in: ["FEA-1", "ISS-1"] },
         type: "DOCUMENT",
       },
       select: { id: true },
@@ -136,7 +183,7 @@ describe("resolveDocumentId", () => {
   it("returns null when slug not found", async () => {
     const mockDb = {
       artifact: {
-        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
       },
     };
     mockWithDbCall(mockDb);
@@ -178,7 +225,7 @@ describe("resolveArtifactIdentifier", () => {
   it("resolves document slug via artifact lookup", async () => {
     const mockDb = {
       artifact: {
-        findUnique: vi.fn().mockResolvedValue({ id: "art-uuid" }),
+        findFirst: vi.fn().mockResolvedValue({ id: "art-uuid" }),
       },
     };
     mockWithDbCall(mockDb);
@@ -216,7 +263,7 @@ describe("resolveArtifactIdentifier", () => {
   it("returns null when slug cannot be resolved", async () => {
     const mockDb = {
       artifact: {
-        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
       },
     };
     mockWithDbCall(mockDb);

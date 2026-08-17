@@ -4,8 +4,12 @@ import {
   type BranchFilters,
   type BranchRow,
   BranchRowStatus,
+  DEFAULT_BRANCH_FILTERS,
 } from "../../lib/branch-row";
-import { useBranchFilterState } from "../use-branch-filter-state";
+import {
+  APPROVED_BRANCH_PAGE_SIZE,
+  useBranchFilterState,
+} from "../use-branch-filter-state";
 
 /**
  * Behavior coverage for the shared filter+pagination hook consumed by both the
@@ -52,12 +56,31 @@ const ROWS: BranchRow[] = [
 ];
 
 const ownerFilter = (owner: string): BranchFilters => ({
+  ...DEFAULT_BRANCH_FILTERS,
   statuses: [],
   owners: [owner],
   repos: [],
+  sessionPresence: [],
 });
 
 describe("useBranchFilterState", () => {
+  test("uses the approved fixed 20-row page size", () => {
+    const rows = Array.from({ length: 21 }, (_, index) =>
+      makeRow(`row-${index}`, "Alex", BranchRowStatus.Open)
+    );
+    const { result } = renderHook(() =>
+      useBranchFilterState(
+        rows,
+        APPROVED_BRANCH_PAGE_SIZE,
+        DEFAULT_BRANCH_FILTERS,
+        true
+      )
+    );
+
+    expect(result.current.pagedRows).toHaveLength(20);
+    expect(result.current.totalPages).toBe(2);
+  });
+
   test("paginates the rows by the given page size and reports the visible range", () => {
     const { result } = renderHook(() => useBranchFilterState(ROWS, 4));
 
@@ -163,6 +186,46 @@ describe("useBranchFilterState", () => {
       "c",
       "d",
     ]);
+  });
+
+  // Regression for the reported web bug: on a LATER page, applying a facet filter
+  // whose result set is smaller than the current page offset must reset to a
+  // populated FIRST page — never strand the viewer on a blank, out-of-range page,
+  // and never merely clamp them onto the filtered set's last page. Exercises the
+  // branches consumer end to end (real BranchRow + BranchFilters). The filtered
+  // set is deliberately multi-page so a reset (page 0) is distinguishable from a
+  // clamp (last valid page).
+  test("filtering below the current page resets to page 0 of the filtered rows (not blank, not clamped)", () => {
+    // 14 rows: 8 owned by "Alex" (multi-page under pageSize 2). Full set = 7
+    // pages, Alex-filtered = 4 pages. Start on page 6 (index) — beyond both.
+    const many: BranchRow[] = [
+      ...Array.from({ length: 8 }, (_, i) =>
+        makeRow(`x${i}`, "Alex", BranchRowStatus.Open)
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeRow(`y${i}`, "Sam", BranchRowStatus.Open)
+      ),
+    ];
+
+    const { result } = renderHook(() => useBranchFilterState(many, 2));
+
+    act(() => {
+      result.current.setPage(6);
+    });
+    expect(result.current.page).toBe(6);
+
+    // Filter to Alex — 8 rows → 4 pages (indices 0-3). Page 6 is out of range.
+    act(() => {
+      result.current.handleFiltersChange(ownerFilter("Alex"));
+    });
+
+    expect(result.current.totalPages).toBe(4);
+    // Reset lands on page 0 (first filtered slice), NOT clamped to page 3.
+    expect(result.current.page).toBe(0);
+    expect(result.current.pagedRows.map((r) => r.id)).toEqual(["x0", "x1"]);
+    expect(result.current.pagedRows.length).toBeGreaterThan(0);
+    expect(result.current.from).toBe(1);
+    expect(result.current.to).toBe(2);
   });
 
   test("keeps at least one page and a zeroed range when nothing matches", () => {

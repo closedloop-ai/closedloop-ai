@@ -17,6 +17,15 @@ vi.mock("@/app/documents/document-version-service", () => ({
   },
 }));
 
+// FEA-3951: buildContextPackInMemory resolves RelatesTo links via
+// artifactLinksService (its real impl hits the DB). These tests exercise loops
+// with no linked evergreen Documents, so stub it to return no source links.
+vi.mock("@/app/artifact-links/service", () => ({
+  artifactLinksService: {
+    findSourceLinks: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 vi.mock("@/app/documents/document-service", () => ({
   documentService: {
     findByIdSimple: vi.fn().mockResolvedValue(null),

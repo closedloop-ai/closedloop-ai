@@ -8,22 +8,19 @@ import { afterEach, beforeEach, test } from "node:test";
 import { gunzipSync } from "node:zlib";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
-import { gatewayLog } from "../src/main/gateway-logger.js";
-import { JobStore, type LocalJob } from "../src/main/job-store.js";
+import { JobStore, type LocalJob } from "../src/main/jobs/job-store.js";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
+import { EXECUTE_NO_WORK_LIVE_ACTIVITY } from "../src/main/loop/loop-failure-reason.js";
 import {
-  EXECUTE_NO_WORK_LIVE_ACTIVITY,
-  emitFinalizationTelemetry,
   finalizeLoopFromRuntime,
-  parseJobWarnings,
-  persistFinalJobStatus,
   tryPostCompletedEvent,
   tryPostErrorEvent,
   tryUploadArtifacts,
   tryUploadSupportBundle,
-} from "../src/main/loop-finalizer.js";
-import { LoopTokenStore } from "../src/main/loop-token-store.js";
-import { Observability } from "../src/main/observability.js";
-import type { TelemetryEventPayload } from "../src/main/telemetry-protocol.js";
+} from "../src/main/loop/loop-finalizer.js";
+import { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import type { TelemetryEventPayload } from "../src/main/telemetry/telemetry-protocol.js";
 import { resetResolvedClaudePath } from "../src/server/operations/symphony-loop.js";
 import {
   resetShellPathCache,
@@ -791,15 +788,6 @@ test("finalizeLoopFromRuntime boot-recovery RUNNING with CANCELLED snapshot reso
 });
 
 // --- Step functions (minimal scenarios per step)
-
-test("parseJobWarnings returns empty array when missing or blank", () => {
-  assert.deepEqual(parseJobWarnings({}), []);
-  assert.deepEqual(parseJobWarnings({ warning: "" }), []);
-});
-
-test("parseJobWarnings splits on semicolon, trims, and drops empty segments", () => {
-  assert.deepEqual(parseJobWarnings({ warning: "a; b;  ;c" }), ["a", "b", "c"]);
-});
 
 const artifactDeps = (
   jobStore: JobStore,
@@ -2413,134 +2401,6 @@ test("tryPostErrorEvent includes tokenUsage when only cache tokens are non-zero"
   assert.equal(tokenUsage.cacheReadInputTokens, 500);
   assert.equal(tokenUsage.inputTokens, 0);
   assert.equal(tokenUsage.outputTokens, 0);
-});
-
-test("persistFinalJobStatus sets COMPLETED when isSuccessStatus", () => {
-  const jobStore = createStore("step-persist-success");
-  const job = createBaseJob({ status: "RUNNING" });
-  jobStore.upsert(job);
-
-  persistFinalJobStatus(job, true, [], jobStore);
-
-  const persisted = jobStore.getByLoopId("loop-1");
-  assert.equal(persisted?.status, "COMPLETED");
-  assert.ok(persisted?.finalStatusPersistedAt);
-});
-
-test("persistFinalJobStatus preserves FAILED when not success", () => {
-  const jobStore = createStore("step-persist-failed");
-  const job = createBaseJob({ status: "FAILED", exitCode: 2 });
-  jobStore.upsert(job);
-
-  persistFinalJobStatus(job, false, [], jobStore);
-
-  assert.equal(jobStore.getByLoopId("loop-1")?.status, "FAILED");
-});
-
-test("persistFinalJobStatus maps CANCEL_PENDING to CANCELLED when not success", () => {
-  const jobStore = createStore("step-persist-cancel-pending");
-  const job = createBaseJob({ status: "CANCEL_PENDING", exitCode: 130 });
-  jobStore.upsert(job);
-
-  persistFinalJobStatus(job, false, [], jobStore);
-
-  const persisted = jobStore.getByLoopId("loop-1");
-  assert.equal(persisted?.status, "CANCELLED");
-  assert.ok(persisted?.finalStatusPersistedAt);
-});
-
-test("persistFinalJobStatus is a no-op when finalStatusPersistedAt already set", () => {
-  const jobStore = createStore("step-persist-idem");
-  const firstFinalized = new Date().toISOString();
-  const job = createBaseJob({
-    status: "RUNNING",
-    finalStatusPersistedAt: firstFinalized,
-  });
-  jobStore.upsert(job);
-
-  persistFinalJobStatus(job, true, ["X"], jobStore);
-
-  const persisted = jobStore.getByLoopId("loop-1");
-  assert.equal(persisted?.finalStatusPersistedAt, firstFinalized);
-  assert.notEqual(persisted?.status, "COMPLETED");
-});
-
-test("persistFinalJobStatus serializes warnings with sanitization", () => {
-  const jobStore = createStore("step-persist-warn");
-  const job = createBaseJob({ status: "RUNNING" });
-  jobStore.upsert(job);
-
-  const longToken = "a".repeat(50);
-  persistFinalJobStatus(
-    job,
-    true,
-    [`https://user:${longToken}@host`],
-    jobStore
-  );
-
-  const w = jobStore.getByLoopId("loop-1")?.warning ?? "";
-  assert.match(w, /^\S*:\/\/\*\*\*@/);
-  assert.ok(w.length <= 600);
-});
-
-test("emitFinalizationTelemetry uses job.completed on live-exit", () => {
-  const jobStore = createStore("step-tel-live");
-  const job = createBaseJob();
-  jobStore.upsert(job);
-
-  const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
-  emitFinalizationTelemetry(
-    job,
-    "live-exit",
-    claudeWorkDir,
-    true,
-    {
-      emit: (e) => telemetryEvents.push(e),
-    },
-    jobStore
-  );
-
-  assert.equal(telemetryEvents[0]?.category, "job.completed");
-  assert.equal(telemetryEvents[0]?.severity, "info");
-  assert.equal(telemetryEvents[0]?.message, "Job completed successfully");
-});
-
-test("emitFinalizationTelemetry uses recovery category on boot-recovery", () => {
-  const jobStore = createStore("step-tel-recovery");
-  const job = createBaseJob({ status: "RUNNING" });
-  jobStore.upsert(job);
-
-  const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
-  emitFinalizationTelemetry(
-    job,
-    "boot-recovery",
-    claudeWorkDir,
-    true,
-    { emit: (e) => telemetryEvents.push(e) },
-    jobStore
-  );
-
-  assert.equal(telemetryEvents[0]?.category, "job.recovery.finalize_replayed");
-  assert.equal(telemetryEvents[0]?.severity, "info");
-});
-
-test("emitFinalizationTelemetry emits error severity for failed recovery finalization", () => {
-  const jobStore = createStore("step-tel-err");
-  const job = createBaseJob({ status: "FAILED" });
-  jobStore.upsert(job);
-
-  const claudeWorkDir = path.join(tempRoot, "repo", "workdir");
-  emitFinalizationTelemetry(
-    job,
-    "manual-repair",
-    claudeWorkDir,
-    false,
-    { emit: (e) => telemetryEvents.push(e) },
-    jobStore
-  );
-
-  assert.equal(telemetryEvents[0]?.category, "job.recovery.finalize_replayed");
-  assert.equal(telemetryEvents[0]?.severity, "error");
 });
 
 test("finalizeLoopFromRuntime cleans up persisted additionalWorktreeDirs on boot-recovery and clears the field", async () => {

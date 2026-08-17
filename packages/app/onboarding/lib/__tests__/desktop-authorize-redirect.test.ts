@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildLoopbackRedirectUrl } from "../desktop-authorize-redirect";
+import {
+  buildLoopbackCancelUrl,
+  buildLoopbackRedirectUrl,
+  DESKTOP_AUTHORIZE_ACCESS_DENIED,
+} from "../desktop-authorize-redirect";
 
 describe("buildLoopbackRedirectUrl", () => {
   it("appends code and state to the loopback redirect", () => {
@@ -36,5 +40,33 @@ describe("buildLoopbackRedirectUrl", () => {
 
     expect(url).toContain("code=a+b%2Fc");
     expect(url).toContain("state=x%26y");
+  });
+});
+
+describe("buildLoopbackCancelUrl", () => {
+  it("hands the loopback an access_denied error and the round-tripped state", () => {
+    const url = new URL(
+      buildLoopbackCancelUrl("http://127.0.0.1:52100/cb", "state-1")
+    );
+    expect(url.searchParams.get("error")).toBe(DESKTOP_AUTHORIZE_ACCESS_DENIED);
+    expect(url.searchParams.get("state")).toBe("state-1");
+  });
+
+  it("carries no code, which is what makes an older desktop build settle", () => {
+    // A desktop that predates the `error` param fails its own code-present
+    // check and ends the run as a state mismatch. Wrong wording, but it
+    // RESOLVES — where before it waited out the full sign-in timeout.
+    const url = new URL(
+      buildLoopbackCancelUrl("http://127.0.0.1:52100/cb", "state-1")
+    );
+    expect(url.searchParams.get("code")).toBeNull();
+  });
+
+  it("preserves an existing path and port on the loopback redirect", () => {
+    const url = new URL(
+      buildLoopbackCancelUrl("http://127.0.0.1:52100/cb", "state-1")
+    );
+    expect(url.host).toBe("127.0.0.1:52100");
+    expect(url.pathname).toBe("/cb");
   });
 });

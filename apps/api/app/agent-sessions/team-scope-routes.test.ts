@@ -11,7 +11,6 @@ let mockAuthContext: AuthContext;
 
 const mocks = vi.hoisted(() => ({
   findById: vi.fn(),
-  isAgentMonitoringEnabledForUser: vi.fn(),
   isMember: vi.fn(),
   isOrgAdmin: vi.fn(),
 }));
@@ -26,10 +25,6 @@ vi.mock("@/app/teams/service", () => ({
     findById: mocks.findById,
     isMember: mocks.isMember,
   },
-}));
-
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentMonitoringEnabledForUser: mocks.isAgentMonitoringEnabledForUser,
 }));
 
 vi.mock("@/lib/auth/org-admin", () => ({
@@ -86,7 +81,6 @@ describe("agent-session team-scope route boundaries", () => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
     mocks.findById.mockResolvedValue({ id: TEAM_ID });
-    mocks.isAgentMonitoringEnabledForUser.mockResolvedValue(true);
     mocks.isMember.mockResolvedValue(true);
     mocks.isOrgAdmin.mockResolvedValue(false);
     vi.mocked(agentSessionsService.getUsageSummary).mockResolvedValue({
@@ -138,7 +132,6 @@ describe("agent-session team-scope route boundaries", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(service()).not.toHaveBeenCalled();
   });
@@ -156,7 +149,6 @@ describe("agent-session team-scope route boundaries", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(service()).not.toHaveBeenCalled();
   });
@@ -176,7 +168,6 @@ describe("agent-session team-scope route boundaries", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(service()).not.toHaveBeenCalled();
   });
@@ -207,6 +198,14 @@ describe("agent-session team-scope route boundaries", () => {
     expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
     expect(service()).toHaveBeenCalledWith({
       organizationId: mockAuthContext.user.organizationId,
+      viewerId: mockAuthContext.user.id,
+      // ISS-4556 / ISS-4559: every Sessions read resolves the
+      // `sessions-displayed-status-parity` gate, and it must reach the service
+      // on ALL FOUR routes (list/usage/analytics/export) — a partial rollout
+      // would let the table return a row under Active that the cards above it do
+      // not count. `false` here is the closed-by-default state: PostHog is
+      // unconfigured in tests, and `resolveDisplayedStatusParity` fails closed.
+      displayedStatusParity: false,
       filters: expect.objectContaining({
         teamId: TEAM_ID,
         viewerScope: AgentSessionViewerScope.Team,
@@ -258,19 +257,25 @@ describe("agent-session team-scope route boundaries", () => {
     );
     expect(service()).toHaveBeenCalledWith({
       organizationId: mockAuthContext.user.organizationId,
+      viewerId: mockAuthContext.user.id,
+      displayedStatusParity: false,
       filters: expect.objectContaining({ teamId: TEAM_ID }),
     });
   });
 
+  // FEA-4155 (wongk review #3789): the winding-down `DESKTOP_AGENT_SESSION_SYNC`
+  // monitoring gate is gone from the sessions read path — including the
+  // team-scope authorization, which used to fail closed on that flag. A valid
+  // in-team request must now resolve on team-membership RBAC alone and never
+  // 403 as the flag winds down. (Cross-org/foreign-team/non-member RBAC still
+  // 403s — proven by the cases below.)
   it.each(
     ROUTES
-  )("rejects disabled monitoring before $name service access", async ({
+  )("resolves an in-team $name request with no monitoring-flag gate (FEA-4155)", async ({
     handler,
     path,
     service,
   }) => {
-    mocks.isAgentMonitoringEnabledForUser.mockResolvedValueOnce(false);
-
     const response = await handler(
       request(
         `${path}?viewerScope=${AgentSessionViewerScope.Team}&teamId=${TEAM_ID}`
@@ -278,10 +283,12 @@ describe("agent-session team-scope route boundaries", () => {
       createMockRouteContext({})
     );
 
-    expect(response.status).toBe(403);
-    expect(mocks.findById).not.toHaveBeenCalled();
-    expect(service()).not.toHaveBeenCalled();
-    expect(csvResponseContentType(response, path)).not.toContain("text/csv");
+    expect(response.status).toBe(200);
+    expect(mocks.findById).toHaveBeenCalledWith(
+      TEAM_ID,
+      mockAuthContext.user.organizationId
+    );
+    expect(service()).toHaveBeenCalled();
   });
 
   it.each(

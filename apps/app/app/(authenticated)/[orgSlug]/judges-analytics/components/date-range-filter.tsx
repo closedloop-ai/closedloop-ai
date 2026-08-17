@@ -1,13 +1,13 @@
 "use client";
 
 import {
-  JUDGES_ANALYTICS_ALL_TIME_START_DATE,
   JUDGES_ANALYTICS_DATE_RANGE_DAYS,
+  JudgesAnalyticsDateRangePreset,
+  judgesAnalyticsAllTimeRange,
 } from "@repo/app/judges-analytics/lib/judges-analytics";
-import { Button } from "@repo/design-system/components/ui/button";
+import { DateRangeFilter as SegmentedRangeFilter } from "@repo/app/shared/components/date-range-filter";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import { format, parse, subDays } from "date-fns";
-import { useState } from "react";
 
 /** Parse "yyyy-MM-dd" as local midnight (not UTC) */
 const toLocalDate = (dateStr: string) =>
@@ -16,33 +16,55 @@ const toLocalDate = (dateStr: string) =>
 type DateRangeFilterProps = {
   startDate: string;
   endDate: string;
-  onRangeChange: (start: string, end: string) => void;
+  activePreset: JudgesAnalyticsDateRangePreset;
+  onRangeChange: (
+    start: string,
+    end: string,
+    preset: JudgesAnalyticsDateRangePreset
+  ) => void;
+};
+
+/**
+ * The presets exposed as a segmented control. `Custom` is driven by the date
+ * pickers below, not a pill, so it is intentionally absent here; when it is
+ * active no pill reads selected.
+ */
+const RANGE_PRESETS = [
+  JudgesAnalyticsDateRangePreset.Day,
+  JudgesAnalyticsDateRangePreset.Week,
+  JudgesAnalyticsDateRangePreset.Month,
+  JudgesAnalyticsDateRangePreset.Year,
+  JudgesAnalyticsDateRangePreset.All,
+] as const;
+
+type RangePreset = (typeof RANGE_PRESETS)[number];
+
+const RANGE_PRESET_LABELS: Record<RangePreset, string> = {
+  [JudgesAnalyticsDateRangePreset.Day]: "Day",
+  [JudgesAnalyticsDateRangePreset.Week]: "Week",
+  [JudgesAnalyticsDateRangePreset.Month]: "Month",
+  [JudgesAnalyticsDateRangePreset.Year]: "Year",
+  [JudgesAnalyticsDateRangePreset.All]: "All time",
 };
 
 export function DateRangeFilter({
   startDate,
   endDate,
+  activePreset,
   onRangeChange,
 }: DateRangeFilterProps) {
-  const [activePreset, setActivePreset] = useState<
-    "day" | "week" | "month" | "year" | "all" | "custom" | null
-  >("month");
-
-  const handlePresetClick = (
-    preset: "day" | "week" | "month" | "year",
-    days: number
-  ) => {
+  const handlePresetChange = (preset: RangePreset) => {
+    if (preset === JudgesAnalyticsDateRangePreset.All) {
+      const { start, end, preset: allPreset } = judgesAnalyticsAllTimeRange();
+      onRangeChange(start, end, allPreset);
+      return;
+    }
     const end = new Date();
-    const start = subDays(end, days);
-    setActivePreset(preset);
-    onRangeChange(format(start, "yyyy-MM-dd"), format(end, "yyyy-MM-dd"));
-  };
-
-  const handleAllTimeClick = () => {
-    setActivePreset("all");
+    const start = subDays(end, JUDGES_ANALYTICS_DATE_RANGE_DAYS[preset]);
     onRangeChange(
-      JUDGES_ANALYTICS_ALL_TIME_START_DATE,
-      format(new Date(), "yyyy-MM-dd")
+      format(start, "yyyy-MM-dd"),
+      format(end, "yyyy-MM-dd"),
+      preset
     );
   };
 
@@ -50,62 +72,31 @@ export function DateRangeFilter({
     dateType: "start" | "end",
     date: Date | null
   ) => {
-    setActivePreset("custom");
-
     if (dateType === "start" && date) {
-      onRangeChange(format(date, "yyyy-MM-dd"), endDate);
+      onRangeChange(
+        format(date, "yyyy-MM-dd"),
+        endDate,
+        JudgesAnalyticsDateRangePreset.Custom
+      );
     } else if (dateType === "end" && date) {
-      onRangeChange(startDate, format(date, "yyyy-MM-dd"));
+      onRangeChange(
+        startDate,
+        format(date, "yyyy-MM-dd"),
+        JudgesAnalyticsDateRangePreset.Custom
+      );
     }
   };
 
   return (
     <div className="flex flex-wrap items-center gap-4">
-      <div className="flex gap-2">
-        <Button
-          className={activePreset === "day" ? "bg-accent" : ""}
-          onClick={() =>
-            handlePresetClick("day", JUDGES_ANALYTICS_DATE_RANGE_DAYS.day)
-          }
-          variant="outline"
-        >
-          Day
-        </Button>
-        <Button
-          className={activePreset === "week" ? "bg-accent" : ""}
-          onClick={() =>
-            handlePresetClick("week", JUDGES_ANALYTICS_DATE_RANGE_DAYS.week)
-          }
-          variant="outline"
-        >
-          Week
-        </Button>
-        <Button
-          className={activePreset === "month" ? "bg-accent" : ""}
-          onClick={() =>
-            handlePresetClick("month", JUDGES_ANALYTICS_DATE_RANGE_DAYS.month)
-          }
-          variant="outline"
-        >
-          Month
-        </Button>
-        <Button
-          className={activePreset === "year" ? "bg-accent" : ""}
-          onClick={() =>
-            handlePresetClick("year", JUDGES_ANALYTICS_DATE_RANGE_DAYS.year)
-          }
-          variant="outline"
-        >
-          Year
-        </Button>
-        <Button
-          className={activePreset === "all" ? "bg-accent" : ""}
-          onClick={handleAllTimeClick}
-          variant="outline"
-        >
-          All time
-        </Button>
-      </div>
+      <SegmentedRangeFilter<RangePreset>
+        ariaLabel="Date range"
+        labels={RANGE_PRESET_LABELS}
+        onChange={handlePresetChange}
+        ranges={RANGE_PRESETS}
+        shortLabels={RANGE_PRESET_LABELS}
+        value={activePreset as RangePreset}
+      />
 
       <div className="flex items-center gap-2">
         <span className="text-muted-foreground text-sm">Custom:</span>

@@ -1,11 +1,16 @@
 import { teamsService } from "@/app/teams/service";
-import { isAgentMonitoringEnabledForUser } from "@/lib/agent-session-sync-feature";
 import { isOrgAdmin } from "@/lib/auth/org-admin";
 
 /**
  * Authorizes a team-scoped read before any resource-specific data access.
  * Missing team ids fail closed when the caller requested team scope; callers
  * with no team-shaped request are allowed to continue through their own scope.
+ *
+ * FEA-4155 (wongk review #3789): the winding-down `DESKTOP_AGENT_SESSION_SYNC`
+ * monitoring flag check that used to gate this team-scope read is gone — it was
+ * the same flag the always-on Sessions surface no longer gates on, so a
+ * team-scoped read would still 403 as the flag winds down. Team membership and
+ * org-admin below are the real RBAC boundary and stay.
  */
 export async function authorizeTeamScopeRead(input: {
   organizationId: string;
@@ -17,14 +22,6 @@ export async function authorizeTeamScopeRead(input: {
 }): Promise<boolean> {
   if (!input.teamId) {
     return !input.requiresTeamScope;
-  }
-
-  const monitoringEnabled = await isAgentMonitoringEnabledForUser({
-    userId: input.userId,
-    clerkUserId: input.clerkUserId,
-  });
-  if (!monitoringEnabled) {
-    return false;
   }
 
   const team = await teamsService.findById(input.teamId, input.organizationId);

@@ -6,15 +6,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   CloudCommandExecutor,
   type CloudCommandExecutorOptions,
-} from "../src/main/cloud-command-executor.js";
+} from "../src/main/cloud/cloud-command-executor.js";
 import type {
   DesktopCancelEvent,
   DesktopCommandAckEvent,
   DesktopCommandEvent,
   DesktopCommandStreamEvent,
-} from "../src/main/cloud-protocol.js";
-import { Observability } from "../src/main/observability.js";
-import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/signed-loop-launch-error.js";
+} from "../src/main/cloud/cloud-protocol.js";
+import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/loop/signed-loop-launch-error.js";
+import { Observability } from "../src/main/telemetry/observability.js";
 import { COMMAND_SIGNING_REJECTION_REASONS } from "../src/shared/contracts.js";
 
 Observability.initNoOp();
@@ -140,6 +140,244 @@ test("cancels queued command with terminal done(cancelled=true)", async () => {
   assert.ok(cancelledDone);
   assert.equal((cancelledDone.data as Record<string, unknown>).cancelled, true);
   assert.deepEqual(started, ["c1"]);
+});
+
+test("force-settles a cancelled command whose tool ignores the abort, freeing its slot (FEA-1004)", async () => {
+  // Simulate an underlying tool that ignores the AbortSignal: prepareCommand
+  // ForExecution runs BEFORE the gateway fetch and is not signal-aware, so a
+  // cancel that arrives while it is running has nothing to interrupt — the fetch
+  // never even starts, so execute()'s finally (which frees the slot) never runs.
+  // Without the force-settle watchdog the in-flight slot leaks forever and, at
+  // maxInFlightCommands: 1, the scheduler wedges: the queued conflicting command
+  // never dispatches. The watchdog must reclaim the slot so `queued` runs.
+  let releasePrepare: (() => void) | null = null;
+  const preparePromise = new Promise<void>((resolve) => {
+    releasePrepare = resolve;
+  });
+
+  await startGateway(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const command = url.searchParams.get("command") ?? "unknown";
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({ ok: true, command }));
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    maxInFlightCommands: 1,
+    onEvent: (event) => events.push(event),
+    cancelForceSettleGraceMs: 40,
+    prepareCommandForExecution: async (command) => {
+      // Only the first (cancelled) command hangs in prepare; the queued command
+      // that dispatches after the slot frees resolves immediately.
+      if (command.commandId === "wedged") {
+        await preparePromise;
+      }
+      return command;
+    },
+  });
+  executor.setConnected(true);
+
+  executor.enqueue(
+    buildCommand("wedged", { command: "wedged" }, { repoPath: "/repo/a" })
+  );
+  // Same lock key: it can only dispatch once the wedged command's slot frees.
+  executor.enqueue(
+    buildCommand("queued", { command: "queued" }, { repoPath: "/repo/a" })
+  );
+
+  // Let the wedged command occupy the single slot (parked in prepare).
+  await waitFor(() => executor?.getStats().activeCommands === 1);
+  executor.cancel(buildCancel("wedged", "user requested cancel"));
+
+  // The wedged command finalizes to terminal done(cancelled) immediately, even
+  // though its fetch never ran and its prepare is still parked.
+  await waitFor(() => countDone(events, "wedged") === 1);
+  const cancelledDone = events.find(
+    (event) => event.commandId === "wedged" && event.eventType === "done"
+  );
+  assert.equal(
+    (cancelledDone?.data as Record<string, unknown>).cancelled,
+    true
+  );
+
+  // The force-settle watchdog reclaims the leaked slot, so the conflicting
+  // queued command dispatches and completes despite the wedged prepare still
+  // being parked.
+  await waitFor(() => countDone(events, "queued") === 1);
+
+  // Cleanup: release the parked prepare so the wedged execute() can unwind.
+  releasePrepare?.();
+});
+
+test("suppresses late events from a cancelled command's stream (FEA-1004)", async () => {
+  // A streaming gateway that keeps emitting after the client aborts. undici
+  // rejects the pending read on abort, but events already buffered on the wire
+  // can still arrive between the cancel and the reject. Because cancel() marks
+  // the command terminal synchronously, emitTrackedEvent's terminal guard must
+  // drop those late events so they are never forwarded to the cloud (where they
+  // would replay onto a later command reusing this lock key).
+  let sawChunkAfterFirst = false;
+  await startGateway(async (request, response) => {
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/x-ndjson");
+    response.flushHeaders();
+    response.write(`${JSON.stringify({ type: "text", content: "early" })}\n`);
+    // Keep streaming "late" output; the executor must not forward any of it once
+    // the command is cancelled. Never end so only the abort tears it down.
+    const interval = setInterval(() => {
+      sawChunkAfterFirst = true;
+      response.write(`${JSON.stringify({ type: "text", content: "late" })}\n`);
+    }, 10);
+    // `.unref()` so this server-side ticker can never keep the Node event loop
+    // (and thus the test process) alive after the run: the client abort should
+    // fire `close` and clear it, but if that teardown is missed the unref'd timer
+    // still lets the process exit. Clear on both `request` and `response` close.
+    interval.unref?.();
+    const stop = () => clearInterval(interval);
+    request.on("close", stop);
+    response.on("close", stop);
+  });
+
+  const events: Omit<
+    DesktopCommandStreamEvent,
+    "protocolVersion" | "messageId" | "timestamp"
+  >[] = [];
+  executor = createExecutor({
+    maxInFlightCommands: 1,
+    onEvent: (event) => events.push(event),
+  });
+  executor.setConnected(true);
+
+  executor.enqueue(
+    buildCommand("streamer", { command: "streamer" }, { repoPath: "/repo/a" })
+  );
+
+  // Wait for the first streamed chunk to be forwarded, then cancel.
+  await waitFor(() =>
+    events.some(
+      (event) =>
+        event.commandId === "streamer" &&
+        event.eventType === "chunk" &&
+        asRecord(event.data).content === "early"
+    )
+  );
+  await waitFor(() => sawChunkAfterFirst);
+  const forwardedBeforeCancel = events.filter(
+    (event) => event.commandId === "streamer"
+  ).length;
+  executor.cancel(buildCancel("streamer", "user requested cancel"));
+
+  await waitFor(() => countDone(events, "streamer") === 1);
+  const cancelledDone = events.find(
+    (event) => event.commandId === "streamer" && event.eventType === "done"
+  );
+  assert.equal(
+    (cancelledDone?.data as Record<string, unknown>).cancelled,
+    true
+  );
+
+  // Give the wedged stream time to emit several more "late" chunks server-side.
+  await sleep(80);
+
+  // No non-terminal event is forwarded after the terminal done(cancelled): the
+  // only events beyond the pre-cancel set are the single terminal done.
+  const afterCancel = events.filter((event) => event.commandId === "streamer");
+  const nonTerminalAfterCancel = afterCancel.filter(
+    (event) => event.eventType !== "done"
+  ).length;
+  assert.equal(nonTerminalAfterCancel, forwardedBeforeCancel);
+  assert.equal(countDone(events, "streamer"), 1);
+});
+
+test("cancel is a no-op (no cancelled telemetry, no second done) when the command already finished (FEA-1004)", async () => {
+  // Race: a streaming command reaches its terminal `done` from the gateway while
+  // its in-flight entry is still draining, then a late cancel arrives for it.
+  // cancel() must NOT fire Observability.commandCancelled or emit a second
+  // done(cancelled) for a command that actually finished; it may only abort the
+  // idle socket. Emitting cancelled telemetry here would misattribute a completed
+  // command as user-cancelled.
+  await startGateway(async (_request, response) => {
+    response.statusCode = 200;
+    response.setHeader("content-type", "application/x-ndjson");
+    response.flushHeaders();
+    // Emit the terminal done, then hold the socket open so the command's
+    // in-flight entry lingers and a cancel can still find a `running` record.
+    response.write(`${JSON.stringify({ type: "done" })}\n`);
+    // Never end; only the executor's abort tears this down.
+  });
+
+  const cancelCalls: string[] = [];
+  const failedCalls: string[] = [];
+  const origCancelled = Observability.commandCancelled;
+  const origFailed = Observability.commandFailed;
+  try {
+    Observability.commandCancelled = (
+      commandId: string,
+      operationId: string
+    ) => {
+      cancelCalls.push(commandId);
+      origCancelled.call(Observability, commandId, operationId);
+    };
+    Observability.commandFailed = (
+      commandId: string,
+      operationId: string,
+      errorClass: string
+    ) => {
+      failedCalls.push(commandId);
+      origFailed.call(Observability, commandId, operationId, errorClass);
+    };
+
+    const events: Omit<
+      DesktopCommandStreamEvent,
+      "protocolVersion" | "messageId" | "timestamp"
+    >[] = [];
+    executor = createExecutor({
+      maxInFlightCommands: 1,
+      onEvent: (event) => events.push(event),
+    });
+    executor.setConnected(true);
+
+    executor.enqueue(
+      buildCommand("finished", { command: "finished" }, { repoPath: "/repo/a" })
+    );
+
+    // Wait until the command is terminal (its done was forwarded).
+    await waitFor(() => countDone(events, "finished") === 1);
+    const doneBeforeCancel = countDone(events, "finished");
+
+    // Late cancel for the already-finished command.
+    executor.cancel(buildCancel("finished", "user requested cancel"));
+
+    // Give any (erroneous) emit/telemetry a chance to run.
+    await sleep(60);
+
+    assert.equal(
+      cancelCalls.length,
+      0,
+      "commandCancelled must not fire for an already-terminal command"
+    );
+    assert.equal(
+      countDone(events, "finished"),
+      doneBeforeCancel,
+      "no second done should be emitted for an already-terminal command"
+    );
+    // Aborting the still-open socket must not be misreported as a command
+    // failure either: the abort-driven fetch rejection is an intentional cancel,
+    // not a gateway error.
+    assert.equal(
+      failedCalls.length,
+      0,
+      "commandFailed must not fire for an already-terminal command's abort"
+    );
+  } finally {
+    Observability.commandCancelled = origCancelled;
+    Observability.commandFailed = origFailed;
+  }
 });
 
 test("emits terminal timeout error when command exceeds timeoutMs", async () => {
@@ -954,6 +1192,7 @@ function createExecutor(options: {
   prepareCommandForExecution?: CloudCommandExecutorOptions["prepareCommandForExecution"];
   gatewayResponseTimeoutMs?: number;
   maxBufferedEventsPerCommand?: number;
+  cancelForceSettleGraceMs?: number;
 }): CloudCommandExecutor {
   return new CloudCommandExecutor({
     getGatewayPort: () => gatewayPort,
@@ -968,6 +1207,9 @@ function createExecutor(options: {
     ...(options.maxBufferedEventsPerCommand === undefined
       ? {}
       : { maxBufferedEventsPerCommand: options.maxBufferedEventsPerCommand }),
+    ...(options.cancelForceSettleGraceMs === undefined
+      ? {}
+      : { cancelForceSettleGraceMs: options.cancelForceSettleGraceMs }),
     ...(options.commandSignatureVerifier
       ? { commandSignatureVerifier: options.commandSignatureVerifier }
       : {}),

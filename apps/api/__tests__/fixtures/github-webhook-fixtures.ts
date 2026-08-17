@@ -70,6 +70,12 @@ type PullRequestOverrides = Partial<{
   merge_commit_sha: string | null;
   html_url: string;
   head: { sha: string; ref?: string };
+  // PLN-1535 M0: diff stats the pull_request payload carries; the projection
+  // persists them for the merged-LOC metric. Undefined by default so existing
+  // fixtures are unchanged.
+  additions: number;
+  deletions: number;
+  changed_files: number;
 }>;
 
 export function createPullRequest(overrides: PullRequestOverrides = {}) {
@@ -86,6 +92,9 @@ export function createPullRequest(overrides: PullRequestOverrides = {}) {
     closed_at: overrides.closed_at ?? null,
     merged_at: overrides.merged_at ?? null,
     merge_commit_sha: overrides.merge_commit_sha ?? null,
+    additions: overrides.additions,
+    deletions: overrides.deletions,
+    changed_files: overrides.changed_files,
     head: { sha: "abc123", ref: "feature-branch", ...overrides.head },
     base: { ref: "main" },
     url: "",

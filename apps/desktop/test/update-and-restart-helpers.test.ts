@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FORCE_INTERACTIVE_OPERATIONS } from "../src/main/approval-policy.js";
+import { FORCE_INTERACTIVE_OPERATIONS } from "../src/main/approvals/approval-policy.js";
 import {
   buildUpdateAndRestartDisabledResult,
   canApplyPackagedUpdate,
   resolvePackagedUpdateCheckResult,
   shouldHonorAlwaysAllowRule,
-} from "../src/main/update-and-restart-helpers.js";
+} from "../src/main/update/update-and-restart-helpers.js";
 
 test("disabled update_and_restart approval result returns 501 feature_disabled", () => {
   assert.deepEqual(buildUpdateAndRestartDisabledResult(), {

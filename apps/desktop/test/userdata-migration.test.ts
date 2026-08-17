@@ -1,7 +1,7 @@
 /**
  * @file userdata-migration.test.ts
  * @description Unit tests for the brand-rename (FEA-2101) userData directory
- * migration, src/main/userdata-migration.ts.
+ * migration, src/main/lifecycle/userdata-migration.ts.
  *
  * Reviewed invariants: (1) on case-sensitive volumes where the legacy
  * `<appData>/ClosedLoop` and new `<appData>/Closedloop` paths are distinct and
@@ -18,7 +18,7 @@ import { test } from "node:test";
 import {
   LEGACY_DESKTOP_USER_DATA_DIR_NAME,
   migrateLegacyUserDataDirectory,
-} from "../src/main/userdata-migration.js";
+} from "../src/main/lifecycle/userdata-migration.js";
 
 const APP_DATA = "/home/user/.config";
 const NEW_USER_DATA = path.join(APP_DATA, "Closedloop");

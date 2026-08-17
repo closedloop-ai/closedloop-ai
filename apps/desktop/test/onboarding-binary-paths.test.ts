@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { SettingsStore } from "../src/main/settings-store.js";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
 
 const tempDirs: string[] = [];
 

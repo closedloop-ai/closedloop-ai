@@ -1,23 +1,23 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { ApiKeyProvenance } from "../main/api-key-store.js";
-import type { DesktopPopSigner } from "../main/desktop-pop.js";
-import type { DesktopPopUnavailableReporter } from "../main/desktop-pop-sign-utils.js";
-import { gatewayLog } from "../main/gateway-logger.js";
-import type { JobStore } from "../main/job-store.js";
-import { verifyChallenge } from "../main/local-auth-verifier.js";
-import type { LocalSessionStore } from "../main/local-session-store.js";
-import type { LoopCompletedHook } from "../main/loop-finalizer.js";
-import type { LoopSchedulerContext } from "../main/loop-scheduler-context.js";
-import type { LoopTokenStore } from "../main/loop-token-store.js";
-import type { RetrySpawnDeps } from "../main/spawn-retry.js";
+import type { DesktopPopSigner } from "../main/auth/desktop-pop.js";
+import type { DesktopPopUnavailableReporter } from "../main/auth/desktop-pop-sign-utils.js";
+import { verifyChallenge } from "../main/auth/local-auth-verifier.js";
+import type { LocalSessionStore } from "../main/auth/local-session-store.js";
+import type { JobStore } from "../main/jobs/job-store.js";
+import { gatewayLog } from "../main/logging/gateway-logger.js";
+import type { LoopCompletedHook } from "../main/loop/loop-finalizer.js";
+import type { LoopSchedulerContext } from "../main/loop/loop-scheduler-context.js";
+import type { LoopTokenStore } from "../main/loop/loop-token-store.js";
+import type { ApiKeyProvenance } from "../main/settings/api-key-store.js";
+import type { RetrySpawnDeps } from "../main/util/spawn-retry.js";
 import type {
   ComputeTargetCapabilities,
   HealthResponse,
 } from "../shared/contracts.js";
-import { isLoopbackIPv4 } from "../shared/network-utils.js";
+import { isOriginAllowed } from "./gateway-cors-policy.js";
 import { OperationDispatcher } from "./operation-dispatcher.js";
-import { registerBinaryPathsRoutes } from "./operations/binary-paths.js";
+import type { BinaryPathKey, BinaryPaths } from "./operations/binary-paths.js";
 import {
   ClaudeProvider,
   CodexProvider,
@@ -33,15 +33,15 @@ import { registerGitBranchWorktreeRoutes } from "./operations/git-branch-worktre
 import { registerGitBranchesRoutes } from "./operations/git-branches.js";
 import { registerGitDiffRoutes } from "./operations/git-diff.js";
 import { registerGitLocalChangesRoutes } from "./operations/git-local-changes.js";
-import {
-  type BranchPrIdentityResolver,
-  registerGitPrRoutes,
-} from "./operations/git-pr.js";
+import { registerGitPrRoutes } from "./operations/git-pr.js";
 import { registerGitRepoPathRoutes } from "./operations/git-repo-path.js";
 import { registerGitWorktreeRoutes } from "./operations/git-worktree.js";
-import { registerHealthCheckRoutes } from "./operations/health-check.js";
 import { registerLearningsRoutes } from "./operations/learnings.js";
 import { configureMcpDetectionCwdResolver } from "./operations/mcp-detection.js";
+import {
+  type MemberPackInstaller,
+  registerMemberPackInstallRoutes,
+} from "./operations/member-pack-install.js";
 import { registerMetadataRoutes } from "./operations/metadata-routes.js";
 import { registerReposConfigRoutes } from "./operations/repos-config.js";
 import { registerRunViewerChatRoutes } from "./operations/run-viewer-chat.js";
@@ -64,6 +64,7 @@ import { registerSymphonySessionRoutes } from "./operations/symphony-sessions.js
 import { registerSymphonyStatusRoutes } from "./operations/symphony-status.js";
 import { registerSymphonyUploadRoutes } from "./operations/symphony-upload.js";
 import { SymphonyDirNotConfiguredError } from "./operations/symphony-utils.js";
+import { registerSystemCheckRoutes } from "./operations/system-check-routes.js";
 import { registerTerminalChatRoutes } from "./operations/terminal-chat.js";
 import { registerTicketChatRoutes } from "./operations/ticket-chat.js";
 import { registerUpdateAndRestartRoutes } from "./operations/update-and-restart.js";
@@ -110,39 +111,25 @@ export type GatewayRouterOptions = {
   handleSecurityUpgrade?: (
     payload: DesktopSecurityUpgradePayload
   ) => Promise<DesktopSecurityUpgradeResult> | DesktopSecurityUpgradeResult;
-  getBinaryPaths?: () => {
-    claude?: string;
-    gh?: string;
-    codex?: string;
-    cursor?: string;
-    opencode?: string;
-    python3?: string;
-    git?: string;
-  };
+  getBinaryPaths?: () => BinaryPaths;
   applyBinaryPathPatch?: (
-    patch: Partial<
-      Record<
-        "claude" | "gh" | "codex" | "cursor" | "opencode" | "python3" | "git",
-        string | null
-      >
-    >
-  ) => {
-    claude?: string;
-    gh?: string;
-    codex?: string;
-    cursor?: string;
-    opencode?: string;
-    python3?: string;
-    git?: string;
-  };
+    patch: Partial<Record<BinaryPathKey, string | null>>
+  ) => BinaryPaths;
   checkForUpdate?: () => Promise<{
     updateAvailable: boolean;
     version?: string;
   }>;
   applyUpdate?: () => Promise<void>;
   isUpdateAndRestartEnabled?: () => boolean;
-  enableLegacyGithubDataRoutes?: boolean;
-  resolveBranchPrIdentity?: BranchPrIdentityResolver;
+  /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
+  isPackagedBuild?: () => boolean;
+  /**
+   * Starts a vetted catalog-pack install (FEA-4082). When absent — an older
+   * build wired before member self-service installs existed — the pack-install
+   * gateway route is not registered and the router answers 501 for it, which
+   * the cloud maps to a graceful `failed` dispatch state.
+   */
+  installPack?: MemberPackInstaller;
 };
 
 export type GatewayActivityEvent = {
@@ -292,12 +279,7 @@ export class GatewayRouter {
     );
     registerGitPrRoutes(
       this.operationDispatcher,
-      this.options.getAllowedDirectories,
-      this.options.resolveBranchPrIdentity,
-      {
-        enableGithubDataRoutes:
-          this.options.enableLegacyGithubDataRoutes ?? true,
-      }
+      this.options.getAllowedDirectories
     );
     registerGitRepoPathRoutes(this.operationDispatcher, getSymphonyDir);
     registerGitWorktreeRoutes(
@@ -306,21 +288,14 @@ export class GatewayRouter {
       this.options.getAllowedDirectories,
       getSymphonyDir
     );
-    registerHealthCheckRoutes(
-      this.operationDispatcher,
-      this.processManager,
+    registerSystemCheckRoutes(this.operationDispatcher, {
+      processManager: this.processManager,
       getSymphonyDir,
-      undefined,
-      this.options.getBinaryPaths,
-      () => this.options.version
-    );
-    if (this.options.getBinaryPaths && this.options.applyBinaryPathPatch) {
-      registerBinaryPathsRoutes(
-        this.operationDispatcher,
-        this.options.getBinaryPaths,
-        this.options.applyBinaryPathPatch
-      );
-    }
+      getBinaryPaths: this.options.getBinaryPaths,
+      applyBinaryPathPatch: this.options.applyBinaryPathPatch,
+      getAppVersion: () => this.options.version,
+      isPackagedBuild: this.options.isPackagedBuild,
+    });
     registerLearningsRoutes(
       this.operationDispatcher,
       this.options.getAllowedDirectories,
@@ -470,6 +445,12 @@ export class GatewayRouter {
       getComputeTargetId: this.options.getComputeTargetId,
       handleSecurityUpgrade: this.options.handleSecurityUpgrade,
     });
+    if (this.options.installPack) {
+      registerMemberPackInstallRoutes(
+        this.operationDispatcher,
+        this.options.installPack
+      );
+    }
   }
 
   async handle(
@@ -688,24 +669,12 @@ export class GatewayRouter {
   }
 
   private isOriginAllowed(origin: string | null | undefined): boolean {
-    if (!origin) {
-      return true;
-    }
-    if (origin === "null") {
-      return false;
-    }
     const webAppOrigin =
       this.options.getWebAppOrigin?.() ?? this.options.webAppOrigin;
-    if (sameOrigin(origin, webAppOrigin)) {
-      return true;
-    }
-    if (this.options.prodOriginsOnly) {
-      return false;
-    }
-    if (isLoopbackOrigin(origin)) {
-      return true;
-    }
-    return false;
+    return isOriginAllowed(origin, {
+      webAppOrigin,
+      prodOriginsOnly: this.options.prodOriginsOnly ?? false,
+    });
   }
 
   private isAuthorizedGatewayRequest(
@@ -1227,14 +1196,6 @@ function safeEqualToken(left: string, right: string): boolean {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function sameOrigin(left: string, right: string): boolean {
-  try {
-    return new URL(left).origin === new URL(right).origin;
-  } catch {
-    return false;
-  }
-}
-
 function isLoopbackAddress(address: string | undefined | null): boolean {
   if (!address) {
     return false;
@@ -1245,20 +1206,4 @@ function isLoopbackAddress(address: string | undefined | null): boolean {
     address === "::1" ||
     address === "::ffff:127.0.0.1"
   );
-}
-
-function isLoopbackOrigin(originValue: string): boolean {
-  try {
-    const parsed = new URL(originValue);
-    const h = parsed.hostname;
-    return (
-      h === "localhost" ||
-      h === "::1" ||
-      h === "[::1]" ||
-      isLoopbackIPv4(h) ||
-      h.endsWith(".localhost")
-    );
-  } catch {
-    return false;
-  }
 }

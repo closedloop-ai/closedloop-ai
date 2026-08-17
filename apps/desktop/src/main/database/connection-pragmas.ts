@@ -4,7 +4,7 @@
  * PRAGMA tuning.
  *
  * Every libSQL connection the desktop store opens — the boot-time migration
- * writer (raw `@libsql/client`, see {@link file:./migration-executor.ts}) AND each
+ * writer (raw `@libsql/client`, see {@link file:./migration/migration-executor.ts}) AND each
  * Prisma writer/reader connection (via the libSQL driver adapter, see
  * {@link file:./prisma-client.ts}) — applies the SAME ordered PRAGMA sequence so
  * the WAL concurrency model, busy-timeout, and read tuning are identical no
@@ -107,15 +107,67 @@ export function connectionPragmaStatements(role: ConnectionRole): string[] {
   return statements;
 }
 
-// The throttled TRUNCATE checkpoint interval. wal_autocheckpoint (above) runs
-// PASSIVE checkpoints that fold pages back into the main db but never shrink the
-// WAL file itself, so under a sustained backfill the WAL — and the OS page cache
-// / RSS backing it — can still stay large. A periodic TRUNCATE checkpoint
-// reclaims the WAL file down to zero once readers release their snapshots,
-// bounding RSS over the whole backfill. Throttled so it never runs more than
-// once per interval (cheap, best-effort).
+// The throttled TRUNCATE checkpoint interval — the PRIMARY floor of the cadence.
+// wal_autocheckpoint (above) runs PASSIVE checkpoints that fold pages back into
+// the main db but never shrink the WAL file itself, so under a sustained backfill
+// the WAL — and the OS page cache / RSS backing it — can still stay large. A
+// periodic TRUNCATE checkpoint reclaims the WAL file down to zero once readers
+// release their snapshots, bounding RSS over the whole backfill. `maybeTruncateWal`
+// will NOT fire a TRUNCATE more than once per this interval — this is the hard
+// upper bound on the reclaim rate. The pre-ISS-4723 cadence already had exactly
+// this time throttle; ISS-4819 keeps it as the primary floor so the cadence can
+// only reduce (never increase) how often a TRUNCATE runs.
 export const WAL_TRUNCATE_INTERVAL_MS = 5000;
 export const WAL_TRUNCATE_CHECKPOINT_SQL = "PRAGMA wal_checkpoint(TRUNCATE)";
+
+// ISS-4819: minimum settled writes accumulated before a *timer-eligible* TRUNCATE
+// actually fires. This is an AND term ON TOP OF the time floor, never an OR: once
+// WAL_TRUNCATE_INTERVAL_MS has elapsed, the TRUNCATE fires only if at least this
+// many writes have settled since the last one — otherwise the reclaim is HELD for
+// the next interval. A pure 5s timer reclaims the WAL every 5s even during a
+// near-idle tail where the WAL is a few frames and reclaiming it buys almost
+// nothing; gating that behind a write floor drops those low-value TRUNCATEs.
+// Because it can only SUPPRESS a timer-eligible fire (never add one), the cadence
+// provably fires ≤ the base 5s rate on every workload. On a busy backfill the
+// floor is trivially met inside each 5s window, so the reclaim rate is unchanged
+// from the base there; the runaway-WAL safety is owned by WAL_TRUNCATE_FRAME_CEILING
+// below, not by this counter, so holding a low-write interval can never let the
+// WAL grow unbounded.
+export const WAL_TRUNCATE_WRITE_COUNT = 64;
+
+// ISS-4723 / ISS-4819: WAL-size ceiling (in frames) — the load-bearing memory
+// bound of the cadence and the ONLY reason a TRUNCATE ever runs off the write
+// floor. When the time floor has elapsed but the write floor is short (so the
+// cadence is about to HOLD the reclaim), `maybeTruncateWal` reads the current WAL
+// depth; if it is more than this many frames the TRUNCATE fires anyway, so holding
+// a low-write interval can never let the WAL run away. 16384 frames ≈ 64 MiB at
+// the 4 KiB default page size, aligned to JOURNAL_SIZE_LIMIT_BYTES (67_108_864) so
+// the ceiling and the post-checkpoint truncate floor agree on the same high-water
+// mark.
+export const WAL_TRUNCATE_FRAME_CEILING = 16_384;
+
+// ISS-4819: the WAL depth is read from the SIZE OF THE `-wal` SIDECAR FILE, not
+// from a `PRAGMA wal_checkpoint(PASSIVE)`. The PASSIVE pragma does report the log
+// frame count, but reading it PERFORMS A CHECKPOINT — so using it as the
+// hold-vs-force signal made a held interval cost a PASSIVE checkpoint, and an
+// interval that held and then force-fired cost a PASSIVE **plus** a TRUNCATE: two
+// checkpoint operations where the base 5s throttle did one. That inverts the whole
+// point of this cadence. An `fs.stat` of the sidecar is a pure size read — zero
+// SQLite work, no lock, no page walk — so the hold-vs-force decision is free and
+// the cadence provably performs AT MOST ONE checkpoint operation (the TRUNCATE
+// itself) per interval, never more than the base.
+//
+// WAL file layout (SQLite file format §4.1): a 32-byte file header followed by N
+// frames, each a 24-byte frame header plus one database page. `page_size` is read
+// once from the store (see SQLITE_PAGE_SIZE_SQL) rather than assumed, so the
+// byte→frame conversion is exact for any page size.
+export const WAL_FILE_HEADER_BYTES = 32;
+export const WAL_FRAME_HEADER_BYTES = 24;
+export const SQLITE_PAGE_SIZE_SQL = "PRAGMA page_size";
+// SQLite's default page size, and the size this store actually uses (nothing here
+// sets `page_size`). Used only as the fallback when the one-time `PRAGMA page_size`
+// read is unavailable, so the ceiling still has a sane basis.
+export const SQLITE_DEFAULT_PAGE_SIZE_BYTES = 4096;
 
 // The reader pool size. Each reader connection in WAL mode holds its own
 // committed snapshot for the duration of an in-flight read. While the long

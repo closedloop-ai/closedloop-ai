@@ -1,12 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { DESKTOP_POP_HEADER_NAMES } from "@repo/api/src/types/api-key";
 import { failure } from "@repo/api/src/types/common";
+import { API_KEY_SCOPES_UNRESOLVABLE_CODE } from "@repo/api/src/utils/api-key-scope-resolution";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiKeysService } from "@/app/api-keys/service";
 import { usersService } from "@/app/users/service";
 import { env } from "@/env";
+import { ApiKeyVerificationStatus } from "@/lib/auth/api-key-verification";
 import { getDesktopManagedPopRequestFailure } from "@/lib/auth/desktop-managed-pop";
 import {
   errorResponse,
@@ -47,12 +49,22 @@ export async function POST(request: Request) {
   }
 
   try {
-    const context = await apiKeysService.verifyKeyWithMetadata(body.key, {
+    const outcome = await apiKeysService.verifyKeyOutcome(body.key, {
       updateLastUsedAt: false,
     });
-    if (!context) {
-      return unauthorizedResponse();
+    if (outcome.status !== ApiKeyVerificationStatus.Ok) {
+      // ISS-4905: keep the refusal reason machine-readable. Both branches are
+      // a 401, but "the stored scope set is unresolvable" tells the caller to
+      // reissue the key, where a bare 401 sends it to revoke credentials that
+      // are not the problem. The `code` is additive — a client that ignores it
+      // still sees the same 401 it saw before.
+      return unauthorizedResponse(
+        outcome.status === ApiKeyVerificationStatus.UnresolvableScopes
+          ? { code: API_KEY_SCOPES_UNRESOLVABLE_CODE }
+          : undefined
+      );
     }
+    const { context } = outcome;
 
     const user = await usersService.findById(
       context.userId,

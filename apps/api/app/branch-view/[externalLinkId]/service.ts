@@ -21,7 +21,6 @@ import type {
 import {
   BRANCH_VIEW_BACKGROUND_STALE_MS,
   BRANCH_VIEW_IN_FLIGHT_STALE_MS,
-  BRANCH_VIEW_PROVIDER_RETRY_FALLBACK_SECONDS,
   BranchViewCommentAction,
   BranchViewFileCacheSyncErrorCode,
   BranchViewLoadErrorCode,
@@ -32,16 +31,12 @@ import {
   BranchViewSyncPresentationState,
   BranchViewSyncScope,
   BranchViewSyncThrottleReason,
-  ChecksStatus,
   CommentKind,
-  FileChangeStatus,
   GitHubCommentThreadKind,
   PrCommentAuthorKind,
   ReviewDecision,
 } from "@repo/api/src/types/branch-view";
 import type { JsonObject } from "@repo/api/src/types/common";
-import { GitHubPRState } from "@repo/api/src/types/github";
-import { GitHubFetchTrigger } from "@repo/api/src/types/github-read-model";
 import {
   Result,
   type Result as ServiceResult,
@@ -52,7 +47,6 @@ import type { User } from "@repo/api/src/types/user";
 import {
   ArtifactSubtype,
   ArtifactType,
-  GitHubInstallationStatus,
   GitHubLegacyCommentState,
   ThreadSource,
   ThreadStatus,
@@ -64,28 +58,18 @@ import {
   listPullRequestIssueCommentsWithProviderResult,
   listPullRequestReviewCommentsWithProviderResult,
   listPullRequestReviewsWithProviderResult,
-  queryStatusCheckRollupWithProviderResult,
 } from "@repo/github";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import {
   markBranchSyncCompleted,
-  markBranchSyncFailed,
   markBranchSyncProviderRateLimited,
   parseBranchSyncStatus,
   startBranchSync,
 } from "@/app/branches/branch-sync-status";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
-import type {
-  ExternalGitHubAuthorSource,
-  ExternalGitHubUser,
-  ResolvedExternalGitHubAuthor,
-} from "@/app/comments/external-authors";
-import {
-  normalizeExternalGitHubAuthor,
-  normalizeGitHubLogin,
-  resolveExternalGitHubAuthorInTransaction,
-} from "@/app/comments/external-authors";
+import { createExternalGitHubAuthorResolutionCache } from "@/app/comments/external-author-resolution-cache";
+import { normalizeGitHubLogin } from "@/app/comments/external-authors";
 import { normalizeGitHubDiffSide } from "@/app/comments/github-diff-side";
 import { getGitHubWriteIdentityStatus } from "@/app/comments/github-identity";
 import {
@@ -93,26 +77,19 @@ import {
   upsertGitHubIssueCommentThread,
   upsertGitHubReviewCommentThread,
 } from "@/app/comments/github-projection";
+import { githubService } from "@/app/integrations/github/service";
 import {
-  githubService,
   RepositoryArtifactRelinkReason,
   type RepositoryArtifactRelinkResult,
   RepositoryArtifactRelinkStatus,
-} from "@/app/integrations/github/service";
+} from "@/app/integrations/github/service/repository-relink-telemetry";
 import type { AuthContext } from "@/lib/auth/with-auth";
-import {
-  persistBranchStatusChecksFromRollup,
-  projectBranchStatusChecks,
-} from "@/lib/branch-status-checks";
+import { projectBranchStatusChecks } from "@/lib/branch-status-checks";
+import { acquireInstallationClient } from "@/lib/github/installation-client";
 import {
   gitHubFetchProvenanceData,
-  githubAppGraphqlFetchProvenance,
   githubAppRestFetchProvenance,
 } from "@/lib/github-fetch-provenance";
-import {
-  type PrLifecycleRefreshResult,
-  refreshPullRequestLifecycle,
-} from "@/lib/pr-lifecycle-refresh";
 import {
   getPrReadRepairStatus,
   isPrReadRepairEligible,
@@ -137,74 +114,29 @@ import {
   BranchViewGithubIdentityStatus,
   canPerformBranchViewCommentAction,
 } from "./comments/permissions";
-
-/**
- * Map GitHub file status string to our FileChangeStatus.
- */
-function mapFileStatus(status: string): FileChangeStatus {
-  switch (status) {
-    case "added":
-      return FileChangeStatus.Added;
-    case "removed":
-      return FileChangeStatus.Removed;
-    case "renamed":
-      return FileChangeStatus.Renamed;
-    case "copied":
-      return FileChangeStatus.Copied;
-    default:
-      return FileChangeStatus.Modified;
-  }
-}
-
-/**
- * Map DB PRReviewCommentState to the ChecksStatus/ReviewDecision API contract.
- * Prisma enum values match the const object values we define in branch-view.ts.
- */
-function mapChecksStatus(dbValue: string | null): ChecksStatus | null {
-  if (!dbValue) {
-    return null;
-  }
-  const mapping: Record<string, ChecksStatus> = {
-    UNKNOWN: ChecksStatus.Unknown,
-    PENDING: ChecksStatus.Pending,
-    PASSING: ChecksStatus.Passing,
-    FAILING: ChecksStatus.Failing,
-  };
-  return mapping[dbValue] ?? null;
-}
-
-function mapReviewDecision(
-  dbValue: string | null | undefined
-): ReviewDecision | null {
-  if (!dbValue) {
-    return null;
-  }
-  const mapping: Record<string, ReviewDecision> = {
-    APPROVED: ReviewDecision.Approved,
-    CHANGES_REQUESTED: ReviewDecision.ChangesRequested,
-    COMMENTED: ReviewDecision.Commented,
-    DISMISSED: ReviewDecision.Dismissed,
-  };
-  return mapping[dbValue] ?? null;
-}
-
-function mapPrState(dbValue: string | null | undefined): GitHubPRState {
-  switch (dbValue) {
-    case GitHubPRState.Open:
-    case GitHubPRState.Merged:
-    case GitHubPRState.Closed:
-      return dbValue;
-    default:
-      log.warn("[branch-view] Invalid PR state, defaulting to OPEN", {
-        prState: dbValue,
-      });
-      return GitHubPRState.Open;
-  }
-}
-
-function isoOrNull(date: Date | null): string | null {
-  return date ? date.toISOString() : null;
-}
+import { buildUnavailablePrContext } from "./service/fallback-pr-context";
+import {
+  compareUnifiedThreadRows,
+  getBranchViewSyncOutcomeHttpStatus,
+  getBranchViewSyncOutcomeMessage,
+  isoOrNull,
+  mapChecksStatus,
+  mapFileStatus,
+  mapPrState,
+  mapReviewDecision,
+} from "./service/projection-helpers";
+import {
+  handleFileCacheFailure,
+  persistLifecycleFailure,
+  refreshLifecycleAndChecks,
+} from "./service/provider-refresh";
+import {
+  type BranchViewProviderThrottle,
+  maxProviderThrottle,
+  providerThrottleFromRetry,
+  type SyncResult,
+  toProviderThrottleResult,
+} from "./service/sync-results";
 
 /** Review states we include in fallback/backfill. */
 const VALID_REVIEW_STATES = new Set<string>([
@@ -344,7 +276,7 @@ export async function resolveBranchViewMissingContextFailure(
       return linkNotFoundFailure();
     }
     if (!artifact.branch) {
-      const ctx = buildUnavailablePrContext(artifact, organizationId);
+      const ctx = buildUnavailablePrContext(artifact);
       return branchViewErrFailure({
         code: BranchViewLoadErrorCode.PullRequestUnavailable,
         message: "Branch view pull request is unavailable",
@@ -360,7 +292,7 @@ export async function resolveBranchViewMissingContextFailure(
       return linkNotFoundFailure();
     }
 
-    const ctx = buildUnavailablePrContext(artifact, organizationId);
+    const ctx = buildUnavailablePrContext(artifact);
     return branchViewErrFailure({
       code: BranchViewLoadErrorCode.PullRequestUnavailable,
       message: "Branch view pull request is unavailable",
@@ -542,255 +474,6 @@ function matchesCanonicalGitHubPullRequestUrl(
 
 function isSafeGitHubPathSegment(value: string): boolean {
   return value.length > 0 && !UNSAFE_PATH_SEGMENT_PATTERN.test(value);
-}
-
-type BranchArtifactFallbackRow = {
-  id: string;
-  organizationId: string;
-  projectId: string | null;
-  name: string;
-  status: string;
-  externalUrl: string | null;
-  createdBy: { githubUsername: string | null } | null;
-  branch: {
-    artifactId: string;
-    // Null for desktop-produced branches in non-App repos (PRD-510 D2/FR8).
-    repositoryId: string | null;
-    branchName: string;
-    baseBranch: string | null;
-    baseBranchSource: string | null;
-    headSha: string | null;
-    headShaSource: string | null;
-    headShaObservedAt: Date | null;
-    lastPushBeforeSha: string | null;
-    currentPullRequestDetailId: string | null;
-    checksStatus: string | null;
-    checksDetailHeadSha: string | null;
-    checksDetailTotalCount: number;
-    checksDetailTruncated: boolean;
-    checksDetailProviderState: string | null;
-    checksDetailUnavailableReason: string | null;
-    checksDetailUpdatedAt: Date | null;
-    fileCacheStatus: string;
-    fileCacheHeadSha: string | null;
-    fileCacheFileCount: number;
-    fileCachePatchBytes: number;
-    fileCacheUpdatedAt: Date | null;
-    syncStatus: string;
-    lastSyncStartedAt: Date | null;
-    lastSyncCompletedAt: Date | null;
-    lastSyncErrorCode: string | null;
-    lastSyncErrorMessage: string | null;
-    currentPullRequestDetail: {
-      id: string;
-      // Nullable for desktop-produced PRs in non-App repos (FEA-2732).
-      repositoryId: string | null;
-      githubId: string | null;
-      number: number;
-      title: string | null;
-      htmlUrl: string | null;
-      prState: string;
-      isDraft: boolean;
-      reviewDecision: string | null;
-      lastVerifiedAt?: Date | null;
-      lastRefreshAttemptAt?: Date | null;
-    } | null;
-    // Null for non-App branches: no installation-repo relation exists.
-    repository: {
-      fullName: string;
-      installation: {
-        installationId: string;
-        organizationId: string | null;
-        status: string;
-      };
-    } | null;
-  } | null;
-};
-
-function buildUnavailablePrContext(
-  artifact: BranchArtifactFallbackRow,
-  organizationId: string
-): PrContext {
-  const branch = artifact.branch;
-  if (!branch) {
-    return {
-      externalLink: branchViewExternalLink(artifact),
-      prMetadata: null,
-      branch: null,
-      gitHubPullRequest: null,
-      repositoryId: null,
-      installationId: "",
-      owner: "",
-      repo: "",
-      pullNumber: null,
-    };
-  }
-  // Non-App branch (PRD-510 D2/FR8): no installation-repo, so there is no
-  // owner/repo/installation identity to build a GitHub-backed context from.
-  if (!branch.repository) {
-    return {
-      externalLink: branchViewExternalLink(artifact),
-      prMetadata: null,
-      branch: toPrContextBranch(branch, false),
-      gitHubPullRequest: null,
-      repositoryId: branch.repositoryId,
-      installationId: "",
-      owner: "",
-      repo: "",
-      pullNumber: null,
-    };
-  }
-  if (
-    branch.repository.installation.organizationId !== organizationId ||
-    branch.repository.installation.status !== GitHubInstallationStatus.ACTIVE
-  ) {
-    const repoIdentity = parseBranchViewRepositoryFullName(
-      branch.repository.fullName
-    );
-    return repoIdentity
-      ? buildPrContextFromFallbackArtifact(artifact, repoIdentity)
-      : {
-          externalLink: branchViewExternalLink(artifact),
-          prMetadata: null,
-          branch: toPrContextBranch(branch, false),
-          gitHubPullRequest: null,
-          repositoryId: branch.repositoryId,
-          installationId: branch.repository.installation.installationId,
-          owner: "",
-          repo: "",
-          pullNumber: null,
-        };
-  }
-
-  const repoIdentity = parseBranchViewRepositoryFullName(
-    branch.repository.fullName
-  );
-  if (!repoIdentity) {
-    return {
-      externalLink: branchViewExternalLink(artifact),
-      prMetadata: null,
-      branch: toPrContextBranch(branch, false),
-      gitHubPullRequest: null,
-      repositoryId: branch.repositoryId,
-      installationId: branch.repository.installation.installationId,
-      owner: "",
-      repo: "",
-      pullNumber: null,
-    };
-  }
-
-  return buildPrContextFromFallbackArtifact(artifact, repoIdentity);
-}
-
-function buildPrContextFromFallbackArtifact(
-  artifact: BranchArtifactFallbackRow,
-  repoIdentity: { owner: string; repo: string }
-): PrContext {
-  const branch = artifact.branch;
-  const currentPr = branch?.currentPullRequestDetail ?? null;
-  return {
-    externalLink: branchViewExternalLink(artifact),
-    prMetadata: currentPr
-      ? {
-          number: currentPr.number,
-          githubId: currentPr.githubId,
-          headBranch: branch?.branchName ?? "",
-          baseBranch: branch?.baseBranch ?? "",
-          state: currentPr.prState,
-        }
-      : null,
-    branch: branch ? toPrContextBranch(branch, Boolean(currentPr)) : null,
-    gitHubPullRequest:
-      branch && currentPr
-        ? {
-            id: currentPr.id,
-            repositoryId: currentPr.repositoryId,
-            documentId: null,
-            githubId: currentPr.githubId,
-            headSha: branch.headSha,
-            number: currentPr.number,
-            title: currentPr.title,
-            htmlUrl: currentPr.htmlUrl,
-            baseBranch: branch.baseBranch ?? "",
-            headBranch: branch.branchName,
-            state: currentPr.prState,
-            isDraft: currentPr.isDraft,
-            checksStatus: branch.checksStatus,
-            reviewDecision: currentPr.reviewDecision,
-            lastVerifiedAt: currentPr.lastVerifiedAt ?? null,
-            lastRefreshAttemptAt: currentPr.lastRefreshAttemptAt ?? null,
-          }
-        : null,
-    repositoryId: branch?.repositoryId ?? null,
-    installationId: branch?.repository?.installation.installationId ?? "",
-    owner: repoIdentity.owner,
-    repo: repoIdentity.repo,
-    pullNumber: currentPr?.number ?? null,
-  };
-}
-
-function branchViewExternalLink(artifact: BranchArtifactFallbackRow) {
-  return {
-    id: artifact.id,
-    title: artifact.name,
-    externalUrl: artifact.externalUrl ?? "",
-    status: artifact.status,
-    metadata: null,
-    projectId: artifact.projectId,
-    organizationId: artifact.organizationId,
-    createdBy: artifact.createdBy,
-  };
-}
-
-function toPrContextBranch(
-  branch: NonNullable<BranchArtifactFallbackRow["branch"]>,
-  hasValidCurrentPr: boolean
-): NonNullable<PrContext["branch"]> {
-  return {
-    artifactId: branch.artifactId,
-    repositoryId: branch.repositoryId,
-    branchName: branch.branchName,
-    baseBranch: branch.baseBranch,
-    baseBranchSource: branch.baseBranchSource,
-    headSha: branch.headSha,
-    headShaSource: branch.headShaSource,
-    headShaObservedAt: branch.headShaObservedAt,
-    lastPushBeforeSha: branch.lastPushBeforeSha,
-    currentPullRequestDetailId: hasValidCurrentPr
-      ? branch.currentPullRequestDetailId
-      : null,
-    checksStatus: branch.checksStatus,
-    checksDetailHeadSha: branch.checksDetailHeadSha,
-    checksDetailTotalCount: branch.checksDetailTotalCount,
-    checksDetailTruncated: branch.checksDetailTruncated,
-    checksDetailProviderState: branch.checksDetailProviderState,
-    checksDetailUnavailableReason: branch.checksDetailUnavailableReason,
-    checksDetailUpdatedAt: branch.checksDetailUpdatedAt,
-    statusChecks: [],
-    fileCacheStatus: branch.fileCacheStatus,
-    fileCacheHeadSha: branch.fileCacheHeadSha,
-    fileCacheFileCount: branch.fileCacheFileCount,
-    fileCachePatchBytes: branch.fileCachePatchBytes,
-    fileCacheUpdatedAt: branch.fileCacheUpdatedAt,
-    syncStatus: branch.syncStatus,
-    lastSyncStartedAt: branch.lastSyncStartedAt,
-    lastSyncCompletedAt: branch.lastSyncCompletedAt,
-    lastSyncErrorCode: branch.lastSyncErrorCode,
-    lastSyncErrorMessage: branch.lastSyncErrorMessage,
-    ...(branch.currentPullRequestDetail && !hasValidCurrentPr
-      ? { invalidCurrentPullRequestRelation: true }
-      : {}),
-  };
-}
-
-function parseBranchViewRepositoryFullName(
-  fullName: string
-): { owner: string; repo: string } | null {
-  const [owner, repo, ...extra] = fullName.split("/");
-  if (!(owner && repo) || extra.length > 0) {
-    return null;
-  }
-  return { owner, repo };
 }
 
 /**
@@ -1416,51 +1099,6 @@ function classifyBranchSyncOutcomeSource(
   return BranchViewSyncOutcomeSource.BranchSync;
 }
 
-function getBranchViewSyncOutcomeHttpStatus(
-  code: string | null
-): BranchViewSyncOutcome["httpStatus"] {
-  switch (code) {
-    case BranchViewSyncErrorCode.SyncThrottled:
-      return 429;
-    case BranchViewSyncErrorCode.CurrentPullRequestStale:
-    case BranchViewSyncErrorCode.PrLifecycleGuardFailed:
-      return 409;
-    case BranchViewSyncErrorCode.PrLifecycleUnavailable:
-      return 502;
-    case BranchViewSyncErrorCode.FileCacheRefreshFailed:
-    case BranchViewFileCacheSyncErrorCode.CompareFailed:
-      return 500;
-    case BranchViewSyncErrorCode.PrSyncFailed:
-      return null;
-    case BranchViewFileCacheSyncErrorCode.MissingCompareRefs:
-      return 400;
-    default:
-      return null;
-  }
-}
-
-function getBranchViewSyncOutcomeMessage(code: string | null): string | null {
-  switch (code) {
-    case BranchViewSyncErrorCode.SyncThrottled:
-      return "Rate limited. Try again later.";
-    case BranchViewSyncErrorCode.CurrentPullRequestStale:
-    case BranchViewSyncErrorCode.PrLifecycleGuardFailed:
-      return "Refreshing PR status. Showing last-known data.";
-    case BranchViewSyncErrorCode.PrLifecycleUnavailable:
-      return "Could not reach GitHub. Showing last-known PR status.";
-    case BranchViewSyncErrorCode.FileCacheRefreshFailed:
-      return "Could not refresh file changes. Showing last-known files when available.";
-    case BranchViewSyncErrorCode.PrSyncFailed:
-      return "Could not sync PR comments from GitHub.";
-    case BranchViewFileCacheSyncErrorCode.MissingCompareRefs:
-      return "File comparison is unavailable for this branch.";
-    case BranchViewFileCacheSyncErrorCode.CompareFailed:
-      return "Could not refresh file changes from GitHub.";
-    default:
-      return code ? "Sync did not complete. Showing last-known data." : null;
-  }
-}
-
 type BranchViewPrLifecycleRepairDecision = {
   status: NonNullable<BranchViewData["prLifecycleRepair"]>["status"];
   input: PrReadRepairInput | null;
@@ -1796,64 +1434,6 @@ function applyUnifiedCommentCapabilities(
   return comment;
 }
 
-type UnifiedThreadRow = {
-  id: string;
-  createdAt: Date;
-  githubProjection: {
-    path: string | null;
-    line: number | null;
-  } | null;
-};
-
-function compareUnifiedThreadRows(a: UnifiedThreadRow, b: UnifiedThreadRow) {
-  const pathComparison = compareNullableStringsLast(
-    a.githubProjection?.path ?? null,
-    b.githubProjection?.path ?? null
-  );
-  if (pathComparison !== 0) {
-    return pathComparison;
-  }
-
-  const lineComparison = compareNullableNumbersLast(
-    a.githubProjection?.line ?? null,
-    b.githubProjection?.line ?? null
-  );
-  if (lineComparison !== 0) {
-    return lineComparison;
-  }
-
-  const createdAtComparison = a.createdAt.getTime() - b.createdAt.getTime();
-  return createdAtComparison === 0
-    ? a.id.localeCompare(b.id)
-    : createdAtComparison;
-}
-
-function compareNullableStringsLast(a: string | null, b: string | null) {
-  if (a === b) {
-    return 0;
-  }
-  if (a === null) {
-    return 1;
-  }
-  if (b === null) {
-    return -1;
-  }
-  return a.localeCompare(b);
-}
-
-function compareNullableNumbersLast(a: number | null, b: number | null) {
-  if (a === b) {
-    return 0;
-  }
-  if (a === null) {
-    return 1;
-  }
-  if (b === null) {
-    return -1;
-  }
-  return a - b;
-}
-
 async function loadUnifiedCommentAuthors(
   organizationId: string,
   authorIds: string[]
@@ -2046,63 +1626,7 @@ async function upsertBackfillReviews(
 
 // --- Sync (user-initiated read-repair) ---
 
-export type SyncResult =
-  | { synced: true; error: null; scope: BranchViewSyncScope }
-  | {
-      synced: false;
-      error: string;
-      code: BranchViewSyncErrorCode;
-      httpStatus: number;
-      details?: JsonObject;
-      scope: BranchViewSyncScope;
-    }
-  | {
-      synced: false;
-      error: null;
-      retryAfterSeconds: number;
-      throttleReason: BranchViewSyncThrottleReason;
-      scope: BranchViewSyncScope;
-    };
-
-type BranchViewSyncFailure = Extract<SyncResult, { error: string }>;
-type BranchViewProviderThrottle = {
-  retryAfterSeconds: number;
-};
-
-function providerThrottleFromRetry(
-  retryAfterSeconds: number | null | undefined
-): BranchViewProviderThrottle {
-  return {
-    retryAfterSeconds:
-      retryAfterSeconds ?? BRANCH_VIEW_PROVIDER_RETRY_FALLBACK_SECONDS,
-  };
-}
-
-function toProviderThrottleResult(
-  scope: BranchViewSyncScope,
-  throttle: BranchViewProviderThrottle
-): SyncResult {
-  return {
-    synced: false,
-    error: null,
-    retryAfterSeconds: throttle.retryAfterSeconds,
-    throttleReason: BranchViewSyncThrottleReason.ProviderRateLimit,
-    scope,
-  };
-}
-
-function maxProviderThrottle(
-  throttles: BranchViewProviderThrottle[]
-): BranchViewProviderThrottle | null {
-  if (throttles.length === 0) {
-    return null;
-  }
-  return {
-    retryAfterSeconds: Math.max(
-      ...throttles.map((throttle) => throttle.retryAfterSeconds)
-    ),
-  };
-}
+export type { SyncResult } from "./service/sync-results";
 
 export function buildStaleCommentDeleteWhere(
   pullRequestId: string,
@@ -2169,26 +1693,48 @@ export async function syncCommentsAndReviews(
     };
   }
 
-  const [apiInline, apiGeneral, apiRevs] = await Promise.all([
-    listPullRequestReviewCommentsWithProviderResult(
+  // One installation client for all three reads (PLN-1525: resolve once per
+  // operation, thread down). A failed acquisition stands in for every read so
+  // comment sync degrades through the same provider-failure handling below
+  // instead of bubbling a route 500.
+  const acquired = await acquireInstallationClient(installationId);
+  if (acquired.status !== GitHubProviderResultStatus.Success) {
+    log.warn("[branch-view/sync] Installation client mint failed", {
       installationId,
       owner,
       repo,
-      pullNumber
-    ),
-    listPullRequestIssueCommentsWithProviderResult(
-      installationId,
-      owner,
-      repo,
-      pullNumber
-    ),
-    listPullRequestReviewsWithProviderResult(
-      installationId,
-      owner,
-      repo,
-      pullNumber
-    ),
-  ]);
+      pullNumber,
+      status: acquired.status,
+    });
+  }
+  const commentReads: [
+    Awaited<ReturnType<typeof listPullRequestReviewCommentsWithProviderResult>>,
+    Awaited<ReturnType<typeof listPullRequestIssueCommentsWithProviderResult>>,
+    Awaited<ReturnType<typeof listPullRequestReviewsWithProviderResult>>,
+  ] =
+    acquired.status === GitHubProviderResultStatus.Success
+      ? await Promise.all([
+          listPullRequestReviewCommentsWithProviderResult(
+            acquired.value,
+            owner,
+            repo,
+            pullNumber
+          ),
+          listPullRequestIssueCommentsWithProviderResult(
+            acquired.value,
+            owner,
+            repo,
+            pullNumber
+          ),
+          listPullRequestReviewsWithProviderResult(
+            acquired.value,
+            owner,
+            repo,
+            pullNumber
+          ),
+        ])
+      : [acquired, acquired, acquired];
+  const [apiInline, apiGeneral, apiRevs] = commentReads;
 
   const commentsProviderThrottle = maxProviderThrottle(
     [apiInline, apiGeneral, apiRevs]
@@ -2285,33 +1831,10 @@ async function upsertUnifiedGitHubComments(
     throw new Error("Unified GitHub comment sync requires current branch PR");
   }
 
-  // Authors repeat heavily across a PR's comments, and resolving each one issues
-  // several sequential queries. Memoize resolution within this transaction keyed
-  // by the normalized provider identity so a given author is resolved once.
-  // Ghost authors (no GitHub id/node_id) get a per-comment identity derived from
-  // the comment's source, so they are intentionally not cached.
-  const authorCache = new Map<string, ResolvedExternalGitHubAuthor>();
-  const resolveAuthorCached = async (
-    author: ExternalGitHubUser | null,
-    source: ExternalGitHubAuthorSource
-  ): Promise<ResolvedExternalGitHubAuthor> => {
-    const identity = normalizeExternalGitHubAuthor(author, source);
-    if (!identity.isGhost) {
-      const cached = authorCache.get(identity.providerUserId);
-      if (cached) {
-        return cached;
-      }
-    }
-    const resolved = await resolveExternalGitHubAuthorInTransaction(tx, {
-      organizationId: ctx.externalLink.organizationId,
-      author,
-      source,
-    });
-    if (!identity.isGhost) {
-      authorCache.set(identity.providerUserId, resolved);
-    }
-    return resolved;
-  };
+  const resolveAuthorCached = createExternalGitHubAuthorResolutionCache(
+    tx,
+    ctx.externalLink.organizationId
+  );
 
   for (const comment of apiGeneralComments) {
     const author = await resolveAuthorCached(comment.user, {
@@ -2578,35 +2101,8 @@ export async function syncBranchViewDataWithRequest(
     };
   }
 
-  const providerThrottles: BranchViewProviderThrottle[] = [];
-  const lifecycleResult = await refreshPullRequestLifecycle({
-    organizationId: ctx.externalLink.organizationId,
-    installationId: ctx.installationId,
-    owner: ctx.owner,
-    repo: ctx.repo,
-    pullNumber: ctx.pullNumber,
-    branchArtifactId: ctx.branch.artifactId,
-    pullRequestDetailId: ctx.gitHubPullRequest?.id ?? null,
-    repositoryId:
-      ctx.gitHubPullRequest?.repositoryId ?? ctx.repositoryId ?? null,
-    requireCurrentRelation: Boolean(ctx.gitHubPullRequest),
-  });
-  if (lifecycleResult.status === GitHubProviderResultStatus.ProviderRateLimit) {
-    providerThrottles.push(
-      providerThrottleFromRetry(lifecycleResult.retryAfterSeconds)
-    );
-  }
-
-  const lifecycleFailure = toLifecycleSyncFailure(lifecycleResult);
-  if (!lifecycleFailure) {
-    const checksThrottle = await refreshBranchChecksStatus(
-      ctx,
-      lifecycleResult.status === "refreshed" ? lifecycleResult.headSha : null
-    );
-    if (checksThrottle) {
-      providerThrottles.push(checksThrottle);
-    }
-  }
+  const { lifecycleFailure, throttles } = await refreshLifecycleAndChecks(ctx);
+  const providerThrottles: BranchViewProviderThrottle[] = [...throttles];
 
   const fileCacheResult = await refreshBranchFileChangeCache(
     ctx.branch.artifactId,
@@ -2661,127 +2157,6 @@ export async function syncBranchViewDataWithRequest(
     startedAt,
   });
   return { synced: true, error: null, scope: BranchViewSyncScope.Branch };
-}
-
-async function refreshBranchChecksStatus(
-  ctx: PrContext,
-  headShaOverride: string | null = null
-): Promise<BranchViewProviderThrottle | null> {
-  const branch = ctx.branch;
-  const headSha = headShaOverride ?? branch?.headSha;
-  if (!(branch && headSha)) {
-    return null;
-  }
-
-  const rollupResult = await queryStatusCheckRollupWithProviderResult(
-    ctx.installationId,
-    ctx.owner,
-    ctx.repo,
-    headSha
-  );
-  if (rollupResult.status === GitHubProviderResultStatus.ProviderRateLimit) {
-    return providerThrottleFromRetry(rollupResult.retryAfterSeconds);
-  }
-  if (rollupResult.status !== GitHubProviderResultStatus.Success) {
-    return null;
-  }
-
-  const persistResult = await withDb.tx((tx) =>
-    persistBranchStatusChecksFromRollup(tx, {
-      branchArtifactId: branch.artifactId,
-      organizationId: ctx.externalLink.organizationId,
-      headSha,
-      rollup: rollupResult.value,
-      fetchProvenance: githubAppGraphqlFetchProvenance({
-        trigger: GitHubFetchTrigger.SurfaceOpen,
-      }),
-    })
-  );
-  if (persistResult.status === "skipped") {
-    log.warn("[branch-view/sync] Skipped stale checksStatus update", {
-      externalLinkId: ctx.externalLink.id,
-      branchArtifactId: branch.artifactId,
-      headSha,
-      reason: persistResult.reason,
-    });
-  }
-  return null;
-}
-
-function toLifecycleSyncFailure(
-  result: PrLifecycleRefreshResult
-): BranchViewSyncFailure | null {
-  if (
-    result.status !== GitHubProviderResultStatus.ProviderUnavailable &&
-    result.status !== "guarded_write_failed"
-  ) {
-    return null;
-  }
-  return {
-    synced: false,
-    error: result.message,
-    code: result.code,
-    httpStatus: result.httpStatus,
-    details: result.details,
-    scope: BranchViewSyncScope.Branch,
-  };
-}
-
-async function handleFileCacheFailure({
-  ctx,
-  error,
-  lifecycleFailure,
-  startedAt,
-}: {
-  ctx: PrContext;
-  error: unknown;
-  lifecycleFailure: BranchViewSyncFailure | null;
-  startedAt: Date;
-}): Promise<BranchViewSyncFailure | SyncResult> {
-  if (lifecycleFailure) {
-    await persistLifecycleFailure(ctx, lifecycleFailure, startedAt);
-    log.warn("[branch-view/sync] File cache and lifecycle failed", {
-      externalLinkId: ctx.externalLink.id,
-      branchArtifactId: ctx.branch?.artifactId,
-      status: error,
-      lifecycleCode: lifecycleFailure.code,
-    });
-    return lifecycleFailure;
-  }
-  await markBranchSyncFailed({
-    organizationId: ctx.externalLink.organizationId,
-    branchArtifactId: ctx.branch!.artifactId,
-    code: BranchViewSyncErrorCode.FileCacheRefreshFailed,
-    message: "Failed to refresh branch file cache",
-    completedAt: new Date(),
-    startedAt,
-  });
-  return {
-    synced: false,
-    error: "Failed to refresh branch file cache",
-    code: BranchViewSyncErrorCode.FileCacheRefreshFailed,
-    httpStatus: 500,
-    details: { reason: BranchViewSyncFailureReason.FileCacheRefreshFailed },
-    scope: BranchViewSyncScope.Branch,
-  };
-}
-
-async function persistLifecycleFailure(
-  ctx: PrContext,
-  failure: BranchViewSyncFailure,
-  startedAt: Date
-): Promise<void> {
-  if (!ctx.branch) {
-    return;
-  }
-  await markBranchSyncFailed({
-    organizationId: ctx.externalLink.organizationId,
-    branchArtifactId: ctx.branch.artifactId,
-    code: failure.code,
-    message: failure.error,
-    completedAt: new Date(),
-    startedAt,
-  });
 }
 
 // --- Context resolvers ---

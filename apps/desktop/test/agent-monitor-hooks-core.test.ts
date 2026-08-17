@@ -31,16 +31,16 @@ import {
   isClaudeEntry,
   makeClaudeHookEntry,
   uninstallAgentMonitorHooks,
-} from "../src/main/agent-monitor-hooks-core.js";
-import { getCodexConfigPath } from "../src/main/codex-home-paths.js";
+} from "../src/main/agent-monitor/agent-monitor-hooks-core.js";
 import {
   buildManagedOtelBlock,
   type CodexOtelFileSystem,
-} from "../src/main/codex-otel-config-core.js";
+} from "../src/main/telemetry/codex-otel-config-core.js";
 import {
   DEFAULT_OTLP_RECEIVER_HOST,
   type OtlpReceiverState,
-} from "../src/main/otlp-receiver-state.js";
+} from "../src/main/telemetry/otlp-receiver-state.js";
+import { getCodexConfigPath } from "../src/main/util/codex-home-paths.js";
 import {
   type AgentMonitorHooksWarning,
   AgentMonitorHooksWarningCode,
@@ -425,14 +425,65 @@ test("syncAgentMonitorHooksOnBoot logs Codex warnings without throwing", () => {
   assert.equal(existsSync(getCodexConfigPath()), false);
 });
 
+// FEA-3729: kill switch off gates the Claude live hook path — the master toggle
+// reports disabled (so the collection mode resolves to "watcher"), enabling is
+// inert, and boot self-heals any previously-installed entries.
+test("FEA-3729: kill switch off reports disabled even when the user opted in", () => {
+  const context = makeLifecycle({
+    initialEnabled: true,
+    isHookPathEnabled: () => false,
+  });
+
+  assert.equal(context.lifecycle.isAgentMonitorHooksEnabled(), false);
+  // The persisted intent is left untouched so flipping the switch back on
+  // restores the user's configuration.
+  assert.equal(context.getEnabled(), true);
+});
+
+test("FEA-3729: kill switch off makes enabling inert (no install, no persist)", () => {
+  const context = makeLifecycle({ isHookPathEnabled: () => false });
+
+  const result = context.lifecycle.setAgentMonitorHooksEnabled(true);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.enabled, false);
+  assert.equal(context.getEnabled(), false);
+  assert.equal(context.loggedWarnings.length, 0);
+  assert.equal(existsSync(context.claudeFile), false);
+});
+
+test("FEA-3729: boot uninstalls stale entries when the kill switch is off", () => {
+  // Simulate a prior build that installed hooks while the flag was persisted on.
+  const seed = makeLifecycle({ receiverState: receiver });
+  seed.lifecycle.setAgentMonitorHooksEnabled(true);
+  const seeded = readJson(seed.claudeFile) as {
+    hooks: Record<string, unknown[]>;
+  };
+  for (const hookType of HOOK_TYPES) {
+    assert.equal(seeded.hooks[hookType].length, 1);
+  }
+
+  const context = makeLifecycle({
+    initialEnabled: true,
+    isHookPathEnabled: () => false,
+  });
+  context.lifecycle.syncAgentMonitorHooksOnBoot();
+
+  const after = readJson(seed.claudeFile) as { hooks?: unknown };
+  assert.equal(after.hooks, undefined);
+  assert.equal(context.bootErrors.length, 0);
+});
+
 function makeLifecycle({
   codexFs,
   initialEnabled = false,
   receiverState,
+  isHookPathEnabled,
 }: {
   codexFs?: CodexOtelFileSystem;
   initialEnabled?: boolean;
   receiverState?: OtlpReceiverState;
+  isHookPathEnabled?: () => boolean;
 } = {}) {
   let enabled = initialEnabled;
   const loggedWarnings: AgentMonitorHooksWarning[] = [];
@@ -465,6 +516,7 @@ function makeLifecycle({
     onWarning: (warning) => loggedWarnings.push(warning),
     onError: (message) => errors.push(message),
     onBootRepairError: (message) => bootErrors.push(message),
+    isHookPathEnabled,
   });
 
   return {

@@ -1,0 +1,39 @@
+---
+title: Search & Discovery
+description: 'Find projects and documents across your organization'
+---
+
+Closedloop provides a global, free-text search across your organization's
+projects and artifacts, plus tag-scoped discovery.
+
+## Free-text search
+
+Search matches:
+
+- **Documents** — by title, slug, type, and tag.
+- **Projects** — by name, slug, and description.
+
+```bash
+curl "https://api.closedloop.ai/search?q=onboarding" \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+The response returns matching `documents` and `projects`. Each document result
+includes its title, slug, type, status, and the name of its parent project.
+
+## Search by tag
+
+Scope discovery to a specific tag to find every artifact carrying it:
+
+```bash
+curl "https://api.closedloop.ai/search?tagId=TAG_ID" \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+When you search by tag, the response also echoes the `tagId` and `tagName`.
+
+## Search via MCP
+
+The MCP server exposes a `search` tool that runs the same free-text search across
+projects and documents, so an AI agent can find work by natural-language query.
+See the [MCP Search reference](../mcp/search).

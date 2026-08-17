@@ -21,7 +21,7 @@ import path from "node:path";
 import { createClient } from "@libsql/client";
 import { expect, test } from "@playwright/test";
 import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
-import { AGENT_DB_FILENAME } from "./helpers/seed-branches-db";
+import { AGENT_DB_FILENAME } from "./helpers/desktop-seed-core";
 
 const SEEDED_SESSION = {
   branchName: "feat/desktop-attribution-compat-e2e",
@@ -31,7 +31,10 @@ const SEEDED_SESSION = {
   name: "Desktop attribution compatibility session",
   prNumber: 2384,
   repoFullName: "closedloop-ai/symphony-alpha",
-  tokenTotal: "1,650",
+  // FEA-3937: the shared summary bar abbreviates token counts with
+  // `formatTokenCount` ("1.65k"), matching every other token display in the
+  // product, instead of the old inline card's raw `.toLocaleString()` grouping.
+  tokenTotal: "1.65k",
 } as const;
 
 test.describe("Desktop local attribution compatibility", () => {
@@ -82,19 +85,45 @@ test.describe("Desktop local attribution compatibility", () => {
           has: sessionLink,
         });
         await expect(sessionRow).toBeVisible({ timeout: 30_000 });
+        // FEA-3937: the shared `SessionsSummaryCards` composite labels this card
+        // "Sessions" (was "Total Sessions" on the old desktop inline bar). Anchor
+        // on the exact card-description label so the substring "Sessions" can't
+        // also catch a sibling card whose copy mentions "sessions".
         await expect(
           page
             .locator('[data-slot="card"]')
-            .filter({ hasText: "Total Sessions" })
+            .filter({
+              has: page
+                .locator('[data-slot="card-description"]')
+                .getByText("Sessions", { exact: true }),
+            })
             .locator('[data-slot="card-title"]')
         ).toHaveText("1", { timeout: 30_000 });
         await expect(
           page
             .locator('[data-slot="card"]')
-            .filter({ hasText: "Total Tokens" })
+            .filter({
+              has: page
+                .locator('[data-slot="card-description"]')
+                .getByText("Total Tokens", { exact: true }),
+            })
             .locator('[data-slot="card-title"]')
         ).toHaveText(SEEDED_SESSION.tokenTotal, { timeout: 30_000 });
         await expect(sessionRow.getByText(SEEDED_SESSION.cost)).toBeVisible();
+
+        // ISS-5315 made PR one of `SESSIONS_DEFAULT_HIDDEN_COLUMN_IDS`, so the
+        // PR chip is no longer in the default view — the column is one View-menu
+        // switch away, exactly as a user reaches it. The claim under test is
+        // unchanged (the seeded local session still attributes its PR number and
+        // merge state with no PR/branch usage arrays), so the spec drives the
+        // column back on rather than dropping the assertion.
+        await page
+          .getByRole("button", { name: "View" })
+          .locator("visible=true")
+          .first()
+          .click();
+        await page.getByRole("switch", { exact: true, name: "PR" }).click();
+        await page.keyboard.press("Escape");
         await expect(
           sessionRow.getByText(`#${SEEDED_SESSION.prNumber} Merged`)
         ).toBeVisible();
@@ -114,17 +143,13 @@ test.describe("Desktop local attribution compatibility", () => {
           page.getByRole("heading", {
             exact: true,
             level: 1,
-            name: "Agent Monitoring",
+            name: "Insights",
           })
         ).toBeVisible({ timeout: 30_000 });
         await page.getByRole("button", { name: "Load insights" }).click();
-        await expect(
-          page.getByRole("heading", {
-            exact: true,
-            level: 2,
-            name: "Recent session activity",
-          })
-        ).toBeVisible({ timeout: 30_000 });
+        // FEA-3989: the loaded bounded view no longer carries a "Recent session
+        // activity" card heading; the seeded session link appearing is the
+        // populated-load signal.
         await expect(
           page.locator("a:visible", { hasText: SEEDED_SESSION.name })
         ).toBeVisible({ timeout: 30_000 });
@@ -161,6 +186,9 @@ const REQUIRED_AGENT_SESSION_TABLES = [
 const REQUIRED_AGENT_SESSION_COLUMNS = {
   sessions: ["last_activity_at"],
 } as const;
+const AGENT_SCHEMA_POLL_INTERVAL_MS = 250;
+const SQLITE_BUSY_ERROR = "SQLITE_BUSY";
+const SQLITE_LOCKED_MESSAGE = "database is locked";
 
 async function waitForAgentSessionsSchema(
   userDataDir: string,
@@ -171,6 +199,7 @@ async function waitForAgentSessionsSchema(
     url: `file:${agentDashboardDbPath(userDataDir)}`,
   });
   try {
+    await applyDesktopBusyTimeout(client);
     await waitForTables(client, REQUIRED_AGENT_SESSION_TABLES, timeoutMs);
     await waitForColumns(
       client,
@@ -354,11 +383,20 @@ async function waitForTables(
   const placeholders = tables.map(() => "?").join(", ");
 
   for (;;) {
-    const result = await client.execute({
-      args: [...tables],
-      sql: `SELECT name FROM sqlite_master
-            WHERE type = 'table' AND name IN (${placeholders})`,
-    });
+    let result: Awaited<ReturnType<typeof client.execute>>;
+    try {
+      result = await client.execute({
+        args: [...tables],
+        sql: `SELECT name FROM sqlite_master
+              WHERE type = 'table' AND name IN (${placeholders})`,
+      });
+    } catch (error) {
+      if (!isSqliteBusyError(error) || Date.now() > deadline) {
+        throw error;
+      }
+      await sleep(AGENT_SCHEMA_POLL_INTERVAL_MS);
+      continue;
+    }
     if (result.rows.length === tables.length) {
       return;
     }
@@ -369,7 +407,7 @@ async function waitForTables(
         `agent sessions DB schema did not appear within ${timeoutMs}ms (found: ${found})`
       );
     }
-    await sleep(250);
+    await sleep(AGENT_SCHEMA_POLL_INTERVAL_MS);
   }
 }
 
@@ -382,7 +420,16 @@ async function waitForColumns(
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
-    const result = await client.execute(`PRAGMA table_info(${table})`);
+    let result: Awaited<ReturnType<typeof client.execute>>;
+    try {
+      result = await client.execute(`PRAGMA table_info(${table})`);
+    } catch (error) {
+      if (!isSqliteBusyError(error) || Date.now() > deadline) {
+        throw error;
+      }
+      await sleep(AGENT_SCHEMA_POLL_INTERVAL_MS);
+      continue;
+    }
     const foundColumns = new Set(result.rows.map((row) => String(row.name)));
     if (columns.every((column) => foundColumns.has(column))) {
       return;
@@ -394,12 +441,24 @@ async function waitForColumns(
         })`
       );
     }
-    await sleep(250);
+    await sleep(AGENT_SCHEMA_POLL_INTERVAL_MS);
   }
+}
+
+async function applyDesktopBusyTimeout(client: LibsqlClient): Promise<void> {
+  await client.execute("PRAGMA busy_timeout=15000");
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isSqliteBusyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes(SQLITE_BUSY_ERROR) ||
+    message.includes(SQLITE_LOCKED_MESSAGE)
+  );
 }
 
 function agentDashboardDbPath(userDataDir: string): string {

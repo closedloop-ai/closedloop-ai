@@ -13,6 +13,7 @@ import {
   useUpdateCustomField,
 } from "@repo/app/custom-fields/hooks/use-custom-fields";
 import { Button } from "@repo/design-system/components/ui/button";
+import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -87,7 +88,7 @@ function getSubmitLabel(isPending: boolean, isEditMode: boolean): string {
   if (isPending) {
     return isEditMode ? "Saving..." : "Creating...";
   }
-  return isEditMode ? "Save Changes" : "Create Field";
+  return isEditMode ? "Save changes" : "Create field";
 }
 
 export function CreateCustomFieldDialog({
@@ -183,7 +184,7 @@ export function CreateCustomFieldDialog({
     }
   };
 
-  const title = isEditMode ? "Edit Custom Field" : "Create Custom Field";
+  const title = isEditMode ? "Edit custom field" : "Create custom field";
   const submitLabel = getSubmitLabel(isPending, isEditMode);
 
   return (
@@ -316,20 +317,19 @@ function EntityTypeSelector({
       name="entityTypes"
       render={({ field: formField }) => (
         <FormItem>
-          <FormLabel>Applies To</FormLabel>
-          <div className="flex flex-col gap-2">
+          <FormLabel>Applies to</FormLabel>
+          <div className="flex flex-col gap-3">
             {Object.values(CustomFieldEntityType).map((entityType) => {
               const checked = (formField.value ?? []).includes(entityType);
+              const checkboxId = `entity-type-${entityType}`;
               return (
-                <div
-                  className="flex items-center gap-2 text-sm"
-                  key={entityType}
-                >
-                  <Switch
+                <div className="flex items-center gap-2" key={entityType}>
+                  <Checkbox
                     checked={checked}
+                    id={checkboxId}
                     onCheckedChange={(on) => {
                       const current = formField.value ?? [];
-                      if (on) {
+                      if (on === true) {
                         formField.onChange([...current, entityType]);
                       } else {
                         formField.onChange(
@@ -338,7 +338,9 @@ function EntityTypeSelector({
                       }
                     }}
                   />
-                  {ENTITY_TYPE_LABELS[entityType]}
+                  <Label className="font-normal" htmlFor={checkboxId}>
+                    {ENTITY_TYPE_LABELS[entityType]}
+                  </Label>
                 </div>
               );
             })}
@@ -354,54 +356,44 @@ function EntityTypeSelector({
 // Display configuration sub-component
 // ---------------------------------------------------------------------------
 
+const DISPLAY_TOGGLES = [
+  {
+    name: "showInTable",
+    id: "display-show-in-table",
+    label: "Show in table views",
+  },
+  { name: "isSearchable", id: "display-searchable", label: "Searchable" },
+  { name: "isSortable", id: "display-sortable", label: "Sortable" },
+] as const;
+
 function DisplayConfigSection({
   control,
 }: {
   control: ReturnType<typeof useForm<FormValues>>["control"];
 }) {
   return (
-    <div className="space-y-3">
-      <Label>Display Options</Label>
-      <FormField
-        control={control}
-        name="showInTable"
-        render={({ field: formField }) => (
-          <div className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={formField.value}
-              onCheckedChange={formField.onChange}
-            />
-            Show in table views
-          </div>
-        )}
-      />
-      <FormField
-        control={control}
-        name="isSearchable"
-        render={({ field: formField }) => (
-          <div className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={formField.value}
-              onCheckedChange={formField.onChange}
-            />
-            Searchable
-          </div>
-        )}
-      />
-      <FormField
-        control={control}
-        name="isSortable"
-        render={({ field: formField }) => (
-          <div className="flex items-center gap-2 text-sm">
-            <Switch
-              checked={formField.value}
-              onCheckedChange={formField.onChange}
-            />
-            Sortable
-          </div>
-        )}
-      />
-    </div>
+    <fieldset className="space-y-3">
+      <legend className="font-medium text-sm">Display options</legend>
+      {DISPLAY_TOGGLES.map((toggle) => (
+        <FormField
+          control={control}
+          key={toggle.id}
+          name={toggle.name}
+          render={({ field: formField }) => (
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={Boolean(formField.value)}
+                id={toggle.id}
+                onCheckedChange={formField.onChange}
+              />
+              <Label className="font-normal" htmlFor={toggle.id}>
+                {toggle.label}
+              </Label>
+            </div>
+          )}
+        />
+      ))}
+    </fieldset>
   );
 }
 

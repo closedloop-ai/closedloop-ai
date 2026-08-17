@@ -11,6 +11,11 @@ import {
   getTargetSecurity,
   requiresDesktopUpdateAction,
 } from "@repo/app/compute/components/desktop-security";
+import {
+  isRepairControlVisible,
+  SystemCheckRepairButton,
+  SystemCheckRepairPanel,
+} from "@repo/app/compute/components/system-check-repair";
 import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
 import { useUser } from "@repo/auth/client";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -23,7 +28,7 @@ import {
 } from "@repo/design-system/components/ui/card";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Link } from "@repo/navigation/link";
-import { useIsFetching, useQuery } from "@tanstack/react-query";
+import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyRound, Laptop, Loader2, ShieldAlert, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SystemCheckResults } from "@/components/system-check/system-check-results";
@@ -44,14 +49,16 @@ import {
   COMPUTE_TARGETS_QUERY_OPTIONS,
   DESKTOP_SETUP_URL,
 } from "@/lib/engineer/constants";
-import type { CheckResult } from "@/lib/engineer/queries/health-check";
+import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import {
   getHealthCheckTargetKey,
   getRenderableHealthChecks,
   healthCheckOptions,
 } from "@/lib/engineer/queries/health-check";
 import { queryKeys } from "@/lib/engineer/queries/keys";
+import { getCheckOutcomeCounts } from "@/lib/system-check/check-outcome-counts";
 import { buildHealthCheckErrorResponse } from "@/lib/system-check/health-check-error-response";
+import { useSystemCheckRepair } from "@/lib/system-check/use-system-check-repair";
 import { SettingsActionPanel } from "./settings-action-panel";
 import { UpdateAndRestartButton } from "./update-and-restart-button";
 
@@ -81,10 +88,6 @@ function formatLastChecked(value: number): string {
   }).format(new Date(value));
 }
 
-function getFailureCount(checks: CheckResult[] | undefined): number {
-  return checks?.filter((check) => !check.passed).length ?? 0;
-}
-
 function ComputeTargetSystemCheckSection({
   expectedMcpUrl,
   isLatestVersionLoading,
@@ -96,6 +99,7 @@ function ComputeTargetSystemCheckSection({
   latestVersion: string | null;
   target: ComputeTarget;
 }) {
+  const queryClient = useQueryClient();
   const healthCheckTargetKey = getHealthCheckTargetKey({
     mode: EngineerRoutingMode.CloudRelay,
     computeTargetId: target.id,
@@ -125,14 +129,6 @@ function ComputeTargetSystemCheckSection({
   const isEligible = target.isOnline;
   const canRunHealthCheck = isEligible && !isLatestVersionLoading;
 
-  const handleRunCheck = async () => {
-    if (!canRunHealthCheck) {
-      return;
-    }
-
-    await refetchHealthCheck();
-  };
-
   const effectiveHealthCheckData = useMemo(
     () =>
       healthCheckError
@@ -144,26 +140,89 @@ function ComputeTargetSystemCheckSection({
     effectiveHealthCheckData,
     expectedMcpUrl
   );
-  const failureCount = getFailureCount(renderableChecks);
+  const { failureCount, warningCount } =
+    getCheckOutcomeCounts(renderableChecks);
   const hasHealthCheckResult = effectiveHealthCheckData !== undefined;
+
+  const handleRepaired = useCallback(
+    (result: HealthCheckResponse) => {
+      queryClient.setQueryData(healthCheckQueryKey, result);
+    },
+    [healthCheckQueryKey, queryClient]
+  );
+  // A target somebody else shared with you is theirs to heal — the relay rejects
+  // a repair against it, so do not offer the control either.
+  const repairState = useSystemCheckRepair({
+    // Renderable, not raw: the two synthesized MCP rows are repairable too, and
+    // the raw gateway array does not contain them (ISS-5435).
+    checks: renderableChecks,
+    expectedMcpUrl,
+    relayTargetId: target.id,
+    latestVersion,
+    isEligible: isEligible && !target.ownerName,
+    onRepaired: handleRepaired,
+  });
+  // Whether a Repair button will actually paint — `isOffered` alone is only this
+  // surface's willingness, and `SystemCheckRepairButton` still renders nothing
+  // on an old gateway or with nothing to fix. A repairable row defers its manual
+  // remediation to that button, so it must be the same question (ISS-5435).
+  const isRepairOffered =
+    repairState.isOffered && isRepairControlVisible(repairState);
+
+  const handleRunCheck = async () => {
+    if (!canRunHealthCheck) {
+      return;
+    }
+
+    await refetchHealthCheck();
+  };
 
   return (
     <DesignSystemComputeTargetSystemCheck
-      actionDisabled={!canRunHealthCheck || isHealthCheckFetching}
+      actionDisabled={
+        !canRunHealthCheck || isHealthCheckFetching || repairState.isRepairing
+      }
       checkedAtLabel={
         healthCheckData ? formatLastChecked(dataUpdatedAt) : undefined
       }
       content={
         effectiveHealthCheckData ? (
-          <SystemCheckResults checks={renderableChecks} />
+          <SystemCheckResults
+            checks={renderableChecks}
+            isRepairOffered={isRepairOffered}
+          />
         ) : undefined
       }
       failureCount={failureCount}
       hasResult={hasHealthCheckResult}
       isEligible={isEligible}
       isLoading={isHealthCheckFetching}
+      isRepairing={repairState.isRepairing}
       onAction={handleRunCheck}
+      repairAction={
+        repairState.isOffered ? (
+          <SystemCheckRepairButton
+            isCheckRunning={isHealthCheckFetching}
+            isRepairing={repairState.isRepairing}
+            isSupported={repairState.isSupported}
+            onRepair={repairState.repair}
+            repairableCount={repairState.repairableCount}
+            variant="secondary"
+          />
+        ) : null
+      }
+      repairPanel={
+        repairState.isOffered ? (
+          <SystemCheckRepairPanel
+            errorMessage={repairState.errorMessage}
+            isRepairing={repairState.isRepairing}
+            joinedInFlight={repairState.joinedInFlight}
+            steps={repairState.steps}
+          />
+        ) : null
+      }
       targetName={target.machineName}
+      warningCount={warningCount}
     />
   );
 }

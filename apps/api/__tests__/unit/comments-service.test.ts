@@ -22,7 +22,14 @@ vi.mock("@repo/collaboration/shared/room-utils", () => ({
     }
     return { organizationId: parts[0], slug: parts[2] };
   }),
-  generateDocumentRoomId: vi.fn(),
+  generateDocumentRoomId: vi.fn(
+    (organizationId: string, slug: string) =>
+      `${organizationId}:artifact:${slug}`
+  ),
+}));
+
+vi.mock("@repo/collaboration/server/webhook", () => ({
+  getLiveblocksApiClient: vi.fn(),
 }));
 
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
@@ -30,6 +37,7 @@ import type {
   CommentData,
   ThreadData,
 } from "@repo/collaboration/server/webhook";
+import { getLiveblocksApiClient } from "@repo/collaboration/server/webhook";
 import { parseArtifactRoomId } from "@repo/collaboration/shared/room-utils";
 import {
   commentsService,
@@ -684,6 +692,47 @@ describe("commentsService", () => {
       });
       expect(mockDb.commentThread.update).not.toHaveBeenCalled();
     });
+
+    it("repairs a missing resolvedById on an already-resolved native thread when the caller supplies one (FEA-3950)", async () => {
+      const resolvedAt = new Date("2025-06-01");
+      // Webhook-first resolve landed with no attribution and no resolver, then a
+      // native resolve arrives carrying the actual resolver. The attribution is
+      // absent (repairable), so the resolver is backfilled instead of no-op'd.
+      const mockDb = {
+        commentThread: {
+          findUnique: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: null,
+            metadata: {},
+          }),
+          update: vi.fn().mockResolvedValue({
+            id: "db-th-1",
+            status: ThreadStatus.Resolved,
+            resolvedAt,
+            resolvedById: "author-1",
+            metadata: {},
+          }),
+        },
+        $queryRaw: vi.fn().mockResolvedValue([]),
+      };
+      mockWithDbTx(mockDb);
+
+      const result = await commentsService.resolveThread(
+        ORG_ID,
+        THREAD_ID,
+        new Date("2025-06-02"),
+        { resolvedById: "author-1" }
+      );
+
+      expect(result?.kind).toBe("metadata_repair");
+      expect(mockDb.commentThread.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ resolvedById: "author-1" }),
+        })
+      );
+    });
   });
 
   describe("unresolveThread", () => {
@@ -818,6 +867,104 @@ describe("commentsService", () => {
         },
       });
       expect(mockDb.commentThread.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("syncDocumentThreadFromProvider (read-after-write fallback)", () => {
+    it("returns false without touching Liveblocks when the artifact/slug is unknown", async () => {
+      const mockDb = {
+        artifact: { findUnique: vi.fn().mockResolvedValue(null) },
+      };
+      mockWithDbCall(mockDb);
+
+      const synced = await commentsService.syncDocumentThreadFromProvider(
+        ORG_ID,
+        "artifact-1",
+        THREAD_ID
+      );
+
+      expect(synced).toBe(false);
+      expect(getLiveblocksApiClient).not.toHaveBeenCalled();
+    });
+
+    it("returns false when Liveblocks is not configured", async () => {
+      const mockDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ slug: "my-artifact" }),
+        },
+      };
+      mockWithDbCall(mockDb);
+      vi.mocked(getLiveblocksApiClient).mockReturnValue(null);
+
+      const synced = await commentsService.syncDocumentThreadFromProvider(
+        ORG_ID,
+        "artifact-1",
+        THREAD_ID
+      );
+
+      expect(synced).toBe(false);
+    });
+
+    it("fetches the thread from the provider and projects thread + comments", async () => {
+      const upsertThreadSpy = vi
+        .spyOn(commentsService, "upsertThreadFromLiveblocks")
+        .mockResolvedValue(null as never);
+      const upsertCommentSpy = vi
+        .spyOn(commentsService, "upsertCommentFromLiveblocks")
+        .mockResolvedValue(null as never);
+
+      const artifactDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ slug: "my-artifact" }),
+        },
+      };
+      mockWithDbCall(artifactDb);
+      mockWithDbTx(artifactDb);
+
+      const providerThread = makeThread({
+        comments: [makeComment({ id: "cm_1" }), makeComment({ id: "cm_2" })],
+      });
+      const getThread = vi.fn().mockResolvedValue(providerThread);
+      vi.mocked(getLiveblocksApiClient).mockReturnValue({
+        getThread,
+      } as never);
+
+      const synced = await commentsService.syncDocumentThreadFromProvider(
+        ORG_ID,
+        "artifact-1",
+        THREAD_ID
+      );
+
+      expect(synced).toBe(true);
+      expect(getThread).toHaveBeenCalledWith({
+        roomId: `${ORG_ID}:artifact:my-artifact`,
+        threadId: THREAD_ID,
+      });
+      expect(upsertThreadSpy).toHaveBeenCalledWith(ORG_ID, providerThread);
+      expect(upsertCommentSpy).toHaveBeenCalledTimes(2);
+      upsertThreadSpy.mockRestore();
+      upsertCommentSpy.mockRestore();
+    });
+
+    it("returns false (no throw) when the provider has no such thread", async () => {
+      const mockDb = {
+        artifact: {
+          findUnique: vi.fn().mockResolvedValue({ slug: "my-artifact" }),
+        },
+      };
+      mockWithDbCall(mockDb);
+      const getThread = vi.fn().mockRejectedValue(new Error("404 not found"));
+      vi.mocked(getLiveblocksApiClient).mockReturnValue({
+        getThread,
+      } as never);
+
+      const synced = await commentsService.syncDocumentThreadFromProvider(
+        ORG_ID,
+        "artifact-1",
+        THREAD_ID
+      );
+
+      expect(synced).toBe(false);
     });
   });
 });

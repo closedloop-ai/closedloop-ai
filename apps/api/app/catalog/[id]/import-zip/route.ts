@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { ImportPackZipResponse } from "@repo/api/src/types/distribution";
 import { isOrgAdmin } from "@/lib/auth/org-admin";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -10,10 +11,17 @@ import {
   payloadTooLargeResponse,
   successResponse,
 } from "@/lib/route-utils";
-import {
-  type ImportPackZipResult,
-  importPackZipComponents,
-} from "../../service";
+import { importPackZipComponents } from "../../service";
+
+/**
+ * This route downloads and parses a Pack zip and creates every child component
+ * before it responds, so it runs well past the platform default. The client
+ * pairs it with `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes); declaring the same
+ * ceiling here is what makes that deadline meaningful — without it the platform
+ * terminates the function first and the client surfaces a 504 long before its
+ * own deadline fires (PR #4321 review).
+ */
+export const maxDuration = 300;
 
 /**
  * POST /catalog/{id}/import-zip
@@ -24,7 +32,7 @@ import {
  * Returns { created, skipped, invalid }.
  */
 export const POST = withAnyAuth<
-  ImportPackZipResult,
+  ImportPackZipResponse,
   "/catalog/[id]/import-zip"
 >(async ({ user, clerkOrgId, clerkUserId }, _request, params) => {
   const adminCheck = await isOrgAdmin(clerkOrgId, clerkUserId);

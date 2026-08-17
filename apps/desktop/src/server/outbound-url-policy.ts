@@ -4,7 +4,7 @@ import type {
   OutboundNetworkDestinationClass,
   OutboundNetworkDiagnostics,
   OutboundNetworkSurface,
-} from "../main/telemetry-protocol.js";
+} from "../main/telemetry/telemetry-protocol.js";
 
 const S3_VIRTUAL_HOSTED_HOST_RE =
   /^[a-z0-9][a-z0-9.-]*\.s3\.[a-z0-9-]+\.amazonaws\.com$/;

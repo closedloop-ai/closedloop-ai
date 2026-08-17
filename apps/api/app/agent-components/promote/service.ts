@@ -94,7 +94,14 @@ function buildPromotedContent(
  * the Promote button for these kinds, but the route must not trust the client's
  * `agentComponentId` to reference a distributable kind.
  */
-const NON_PROMOTABLE_KINDS: ReadonlySet<string> = new Set(["tool", "config"]);
+// FEA-2642: `orchestration` (agent-runtime / harness tools) joins `tool`/`config`
+// as observable-only — promoting one would fabricate a CatalogItem for a runtime
+// primitive the desktop can neither install nor own.
+const NON_PROMOTABLE_KINDS: ReadonlySet<string> = new Set([
+  "tool",
+  "config",
+  "orchestration",
+]);
 
 /**
  * Result discriminator so the route can 404 when the component is missing (or
@@ -135,6 +142,11 @@ async function findPromotedItem(
           where: {
             mode: DistributionMode.AutoInstall,
             targetingType: DistributionTargetingType.All,
+            // ISS-5123: a WITHDRAWN distribution is not a live promotion. Every
+            // live read filters it out, so treating it as one here would report
+            // the component as auto-installing org-wide when it is offered to
+            // nobody. Excluding it lets `resolvePromotion` self-heal instead.
+            withdrawnAt: null,
           },
           select: { id: true },
           orderBy: { createdAt: "asc" },
@@ -157,9 +169,11 @@ async function findPromotedItem(
 /**
  * Resolve an existing promotion to a response. If the item still has its
  * org-wide AutoInstall/All Distribution, return it as-is; if that distribution
- * was removed/retargeted out of band, self-heal by recreating it on the
- * existing item (promote's contract is "this component auto-installs org-wide")
- * rather than creating a duplicate item or surfacing an error.
+ * was removed/retargeted/withdrawn out of band, self-heal by recreating it on
+ * the existing item (promote's contract is "this component auto-installs
+ * org-wide") rather than creating a duplicate item or surfacing an error.
+ * Re-promoting is therefore how a withdrawn best-of-breed component is put back
+ * on offer (ISS-5123).
  */
 async function resolvePromotion(
   promoted: PromotedItem,
@@ -189,6 +203,11 @@ async function resolvePromotion(
         catalogItemId: promoted.catalogItemId,
         mode: DistributionMode.AutoInstall,
         targetingType: DistributionTargetingType.All,
+        // ISS-5123: a withdrawn distribution is exactly the "removed out of
+        // band" case this self-heal exists for, so it must not satisfy the
+        // re-check. Without this, re-promoting a withdrawn component returns the
+        // dead distribution's id and the pack silently stays un-distributed.
+        withdrawnAt: null,
       },
       select: { id: true },
       orderBy: { createdAt: "asc" },

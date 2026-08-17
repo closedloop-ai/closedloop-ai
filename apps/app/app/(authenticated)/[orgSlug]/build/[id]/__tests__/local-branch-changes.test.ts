@@ -1,3 +1,4 @@
+import { FileChangeStatus } from "@repo/api/src/types/branch-view";
 import {
   COMMAND_SIGNING_CAPABILITY_KEY,
   type ComputeTarget,
@@ -13,6 +14,8 @@ import {
   fetchBranchLocalDiff,
   fetchBranchWorktree,
 } from "../local-branch-changes";
+
+const LOCAL_CHANGES_URL_PATTERN = /^\/api\/gateway\/git\/local-changes\?/;
 
 const mockFetch = vi.hoisted(() => vi.fn());
 const mockSignDesktopCommand = vi.hoisted(() => vi.fn());
@@ -304,5 +307,228 @@ describe("Branch View local CloudRelay helpers", () => {
         message: "Update widget",
       })
     ).rejects.toThrow("invalid_local_commit_response");
+  });
+
+  it("resolves worktree paths from a successful gateway response", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi
+        .fn()
+        .mockResolvedValue({ path: "/repo/worktree", repoPath: "/repo" }),
+    });
+
+    await expect(
+      fetchBranchWorktree({
+        headBranch: "feature",
+        prNumber: 42,
+        repoFullName: "acme/widget",
+      })
+    ).resolves.toEqual({ path: "/repo/worktree", repoPath: "/repo" });
+  });
+
+  it("falls back to null worktree fields when the gateway returns non-string values", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ path: 123, repoPath: null }),
+    });
+
+    await expect(
+      fetchBranchWorktree({
+        headBranch: "feature",
+        prNumber: 42,
+        repoFullName: "acme/widget",
+      })
+    ).resolves.toEqual({ path: null, repoPath: null });
+  });
+
+  it("throws for worktree failures other than a missing worktree", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: vi.fn().mockResolvedValue("{}"),
+    });
+
+    await expect(
+      fetchBranchWorktree({
+        headBranch: "feature",
+        prNumber: 42,
+        repoFullName: "acme/widget",
+      })
+    ).rejects.toThrow("Failed to resolve branch worktree");
+  });
+
+  it("maps every desktop local file status, including an unrecognized one, to the branch view file schema", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          files: [
+            { path: "a.ts", status: "added" },
+            { additions: 5, deletions: 3, path: "b.ts", status: "removed" },
+            {
+              path: "c.ts",
+              previousPath: "c-old.ts",
+              status: "renamed",
+            },
+            { path: "d.ts", status: "copied" },
+            { path: "e.ts", status: "modified" },
+            { path: "f.ts", status: "totally_unrecognized_by_this_client" },
+          ],
+        })
+      ),
+    });
+
+    await expect(fetchBranchLocalChanges(makeIdentity())).resolves.toEqual([
+      {
+        additions: 0,
+        deletions: 0,
+        patch: null,
+        path: "a.ts",
+        previousPath: null,
+        status: FileChangeStatus.Added,
+      },
+      {
+        additions: 5,
+        deletions: 3,
+        patch: null,
+        path: "b.ts",
+        previousPath: null,
+        status: FileChangeStatus.Removed,
+      },
+      {
+        additions: 0,
+        deletions: 0,
+        patch: null,
+        path: "c.ts",
+        previousPath: "c-old.ts",
+        status: FileChangeStatus.Renamed,
+      },
+      {
+        additions: 0,
+        deletions: 0,
+        patch: null,
+        path: "d.ts",
+        previousPath: null,
+        status: FileChangeStatus.Copied,
+      },
+      {
+        additions: 0,
+        deletions: 0,
+        patch: null,
+        path: "e.ts",
+        previousPath: null,
+        status: FileChangeStatus.Modified,
+      },
+      {
+        additions: 0,
+        deletions: 0,
+        patch: null,
+        path: "f.ts",
+        previousPath: null,
+        status: FileChangeStatus.Modified,
+      },
+    ]);
+  });
+
+  it("rejects malformed local-changes file entries before returning typed data", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: vi
+        .fn()
+        .mockResolvedValue(JSON.stringify({ files: [{ status: "added" }] })),
+    });
+
+    await expect(fetchBranchLocalChanges(makeIdentity())).rejects.toThrow(
+      "invalid_local_changes_response"
+    );
+  });
+
+  it("throws for local diff failures surfaced by the gateway", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: vi.fn().mockResolvedValue("{}"),
+    });
+
+    await expect(
+      fetchBranchLocalDiff({
+        ...makeIdentity(),
+        path: "src/app.ts",
+        previousPath: null,
+      })
+    ).rejects.toThrow("local_changes_failed");
+  });
+
+  it("throws for commit-push failures surfaced by the gateway", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: vi.fn().mockResolvedValue("{}"),
+    });
+
+    await expect(
+      commitAndPushBranchLocalChanges({
+        ...makeIdentity(),
+        message: "Update widget",
+      })
+    ).rejects.toThrow("local_changes_failed");
+  });
+
+  it("uses the desktop gateway base and skips compute-target signing for LocalElectron routing", async () => {
+    await fetchBranchLocalChanges({
+      ...makeIdentity(),
+      routing: {
+        computeTargetId: "target-1",
+        mode: EngineerRoutingMode.LocalElectron,
+      },
+    });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringMatching(LOCAL_CHANGES_URL_PATTERN),
+      expect.anything()
+    );
+    expect(mockSignDesktopCommand).not.toHaveBeenCalled();
+    expect(commandSigningHeaderValues(lastFetchHeaders())).toEqual([
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(lastFetchHeaders().get("x-compute-target")).toBeNull();
+  });
+
+  it("treats an empty local-changes response body as an empty file list", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      text: vi.fn().mockResolvedValue(""),
+    });
+
+    await expect(fetchBranchLocalChanges(makeIdentity())).resolves.toEqual([]);
+  });
+
+  it("falls back to the default error code when the gateway error body is not a JSON object", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: vi.fn().mockResolvedValue('"plain string error"'),
+    });
+
+    await expect(fetchBranchLocalChanges(makeIdentity())).rejects.toThrow(
+      "local_changes_failed"
+    );
+  });
+
+  it("prefers a structured error code returned by the gateway body", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 422,
+      text: vi
+        .fn()
+        .mockResolvedValue(JSON.stringify({ code: "repo_path_not_found" })),
+    });
+
+    await expect(fetchBranchLocalChanges(makeIdentity())).rejects.toThrow(
+      "repo_path_not_found"
+    );
   });
 });

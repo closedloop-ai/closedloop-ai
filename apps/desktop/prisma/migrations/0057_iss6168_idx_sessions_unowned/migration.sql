@@ -1,0 +1,31 @@
+-- ISS-6168: make the boot-time owner claim's steady state free.
+--
+-- `claimUnownedSessionIdentity` runs on every `openSqliteAgentDatabase` and asks
+-- one question first: are there any sessions with no owner left to claim? Every
+-- existing index over `user_id` is partial on the OPPOSITE predicate
+-- (`idx_sessions_user_id ... WHERE user_id IS NOT NULL`), so both that probe and
+-- the UPDATE it guards had to full-scan `sessions` — on a corpus this store is
+-- documented to hold in the thousands, on every launch, forever, long after the
+-- one-time repair is done.
+--
+-- Partial on the claim predicate, which is the whole point: the index holds one
+-- entry per UNOWNED session, so on a signed-in install it drains to EMPTY the
+-- first time the claim runs and the probe becomes an empty index scan instead of
+-- a table scan. Same shape and same reasoning as `idx_sessions_data_revision_pending`
+-- (migration 0051), which is partial on the import-pending sentinel so it is
+-- empty on a healthy install.
+--
+-- The predicate is BOTH identity columns NULL, matching
+-- `UNOWNED_SESSION_PREDICATE` in `session-owner-identity.ts` exactly: a row that
+-- already knows its organization is not claimable (claiming it would overwrite
+-- that org with the signed-in one, or with NULL), so it must not be in the index
+-- the probe reads either.
+--
+-- Keyed on `id` alone: both indexed columns are constant (NULL) across every row
+-- the index can hold, so they would add nothing to the key, and `id` makes the
+-- index cover the probe outright.
+--
+-- Write cost is one narrow entry per session INSERT that lands without an owner,
+-- deleted when that row is claimed. A signed-in install writes the owner inline
+-- (the fix this migration accompanies), so it inserts no entry at all.
+CREATE INDEX IF NOT EXISTS "idx_sessions_unowned" ON "sessions"("id") WHERE user_id IS NULL AND organization_id IS NULL;

@@ -7,10 +7,36 @@ const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
 const GITHUB_OIDC_JWKS_URL = new URL(
   "https://token.actions.githubusercontent.com/.well-known/jwks"
 );
-const GITHUB_OIDC_AUDIENCE = "closedloop-preview-schema-cleanup";
 const GITHUB_OIDC_REPOSITORY = "closedloop-ai/symphony-alpha";
-const GITHUB_OIDC_WORKFLOW_REF_PREFIX =
-  "closedloop-ai/symphony-alpha/.github/workflows/cleanup-preview-schemas.yml@";
+
+/** `job_workflow_ref` is `<repo>/<workflow path>@<ref>` — pin everything but the ref. */
+function workflowRefPrefix(workflowFile: string): string {
+  return `${GITHUB_OIDC_REPOSITORY}/.github/workflows/${workflowFile}@`;
+}
+
+/**
+ * The callers allowed to authenticate with a GitHub OIDC token, each pinned to
+ * its OWN audience and its OWN workflow file. Keeping them separate is the point
+ * of the mechanism: a token minted for the cleanup sweep cannot be replayed
+ * against the ensure endpoint, and neither can be minted by a third workflow.
+ *
+ * ISS-5984 added `PreviewSchemaEnsure` and converged `/preview-schemas/ensure`
+ * onto this scheme; see that route's header for why, over the internal secret
+ * ISS-5983 shipped.
+ */
+export const GitHubOidcCaller = {
+  PreviewSchemaCleanup: {
+    audience: "closedloop-preview-schema-cleanup",
+    workflowRefPrefix: workflowRefPrefix("cleanup-preview-schemas.yml"),
+  },
+  PreviewSchemaEnsure: {
+    audience: "closedloop-preview-schema-ensure",
+    workflowRefPrefix: workflowRefPrefix("staging-integration-tests.yml"),
+  },
+} as const;
+
+export type GitHubOidcCallerConfig =
+  (typeof GitHubOidcCaller)[keyof typeof GitHubOidcCaller];
 
 const defaultJwks = createRemoteJWKSet(GITHUB_OIDC_JWKS_URL);
 
@@ -22,6 +48,8 @@ const githubOidcClaimsSchema = z.object({
 
 type ValidateGitHubOidcTokenOptions = {
   jwks?: JWTVerifyGetKey;
+  /** Defaults to the cleanup sweep, the caller this module shipped for. */
+  caller?: GitHubOidcCallerConfig;
 };
 
 function extractBearerToken(request: Request): string | null {
@@ -32,10 +60,13 @@ function extractBearerToken(request: Request): string | null {
   return token || null;
 }
 
-function hasExpectedAudience(audience: string | string[]): boolean {
+function hasExpectedAudience(
+  audience: string | string[],
+  expected: string
+): boolean {
   return Array.isArray(audience)
-    ? audience.includes(GITHUB_OIDC_AUDIENCE)
-    : audience === GITHUB_OIDC_AUDIENCE;
+    ? audience.includes(expected)
+    : audience === expected;
 }
 
 function forbiddenClaimResponse(
@@ -52,13 +83,12 @@ function forbiddenClaimResponse(
 /**
  * Validates a GitHub OIDC `Authorization: Bearer <token>` header.
  *
- * Verifies the JWT signature against GitHub's JWKS endpoint (RS256),
- * then enforces claim constraints specific to the preview-schema cleanup
- * workflow:
+ * Verifies the JWT signature against GitHub's JWKS endpoint (RS256), then
+ * enforces claim constraints specific to ONE caller from `GitHubOidcCaller`:
  * - `iss`: must be the GitHub OIDC issuer
- * - `aud`: must be `closedloop-preview-schema-cleanup`
+ * - `aud`: must be that caller's audience
  * - `repository`: must be `closedloop-ai/symphony-alpha`
- * - `job_workflow_ref`: must start with the cleanup workflow file path prefix
+ * - `job_workflow_ref`: must start with that caller's workflow file path prefix
  *
  * Returns `null` when the request is authorized and the route should proceed.
  * Returns a `Response` to short-circuit on failure:
@@ -71,6 +101,7 @@ export const validateGitHubOidcToken = async (
   request: Request,
   opts?: ValidateGitHubOidcTokenOptions
 ): Promise<Response | null> => {
+  const caller = opts?.caller ?? GitHubOidcCaller.PreviewSchemaCleanup;
   const token = extractBearerToken(request);
   if (!token) {
     return new Response("Unauthorized", { status: 401 });
@@ -105,7 +136,7 @@ export const validateGitHubOidcToken = async (
     return new Response("Unauthorized", { status: 401 });
   }
 
-  if (!hasExpectedAudience(claims.aud)) {
+  if (!hasExpectedAudience(claims.aud, caller.audience)) {
     return forbiddenClaimResponse("aud", claims.aud);
   }
 
@@ -113,7 +144,7 @@ export const validateGitHubOidcToken = async (
     return forbiddenClaimResponse("repository", claims.repository);
   }
 
-  if (!claims.job_workflow_ref.startsWith(GITHUB_OIDC_WORKFLOW_REF_PREFIX)) {
+  if (!claims.job_workflow_ref.startsWith(caller.workflowRefPrefix)) {
     return forbiddenClaimResponse("job_workflow_ref", claims.job_workflow_ref);
   }
 

@@ -134,7 +134,12 @@ export function createDesktopNavigation(
         store.getSearchSnapshot
       ),
     useOrgPathBuilder: () => identityOrgPath,
-    Link: createHrefLink(guardedActions),
+    // Render the anchor's href hash-prefixed so modifier/middle/right-click —
+    // which bypass the click handler and defer to the browser — resolve as a
+    // same-document hash the hash-store adapter adopts, instead of a bare
+    // `file:///agents/…` document nav the Electron guard blocks (FEA-4018).
+    // The click handler still navigates the internal path (guardedActions).
+    Link: createHrefLink(guardedActions, toDesktopHashHref),
   };
 
   return {
@@ -160,6 +165,18 @@ const identityOrgPath: OrgPathBuilder = (orgRelativePath) => orgRelativePath;
  */
 function handleUnmappedHref(_href: string): void {
   // Intentionally empty (AC-021.6). No client-side logging per repo policy.
+}
+
+/**
+ * Maps an internal org-relative navigation path to the browser-safe href the
+ * anchor renders. The desktop renderer persists its location as `location.hash`
+ * ("#/agents/foo"), so a modifier/middle/right-click that defers to the browser
+ * must target that hash form — a bare "/agents/foo" would be a `file://`
+ * document nav the Electron guard blocks (FEA-4018). Already-hash hrefs pass
+ * through unchanged.
+ */
+function toDesktopHashHref(href: string): string {
+  return href.startsWith("#") ? href : `#${href}`;
 }
 
 function createWindowHashHost(): DesktopHashHost {

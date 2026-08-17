@@ -1,5 +1,9 @@
 import type { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import type {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
 import type { Attributes, AttributeValue } from "@opentelemetry/api";
 
 export const RENDERER_OTEL_EXPORT_CHANNEL = "desktop:otel:export";
@@ -54,12 +58,22 @@ export type DesktopOtelInstrumentationScope = {
   version?: string;
 };
 
+export type DesktopOtelSpanStatus = {
+  code: SpanStatusCode;
+  message?: string;
+};
+
 export type DesktopOtelBufferedRecord = {
   signal: DesktopOtelSignal;
   resourceAttributes: Attributes;
   droppedRecordsCount: number;
   instrumentationScope?: DesktopOtelInstrumentationScope;
   timestampUnixNano?: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  kind?: SpanKind;
+  status?: DesktopOtelSpanStatus;
   name?: string;
   body?: unknown;
   value?: unknown;
@@ -84,6 +98,11 @@ export type RendererOtelGenericBridgeRecord = {
   signal: DesktopOtelSignal;
   instrumentationScope?: DesktopOtelInstrumentationScope;
   timestampUnixNano?: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  kind?: SpanKind;
+  status?: DesktopOtelSpanStatus;
   name?: string;
   value?: AttributeValue;
   attributes?: RendererOtelGenericAttributes;
@@ -93,12 +112,19 @@ export type RendererOtelGenericBridgeRecord = {
 };
 
 export type RendererOtelExceptionBridgeRecord = {
-  signal: typeof DesktopOtelSignal.Log;
+  signal: typeof DesktopOtelSignal.Log | typeof DesktopOtelSignal.Trace;
   instrumentationScope?: DesktopOtelInstrumentationScope;
   timestampUnixNano?: string;
+  traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
+  kind?: SpanKind;
+  status?: DesktopOtelSpanStatus;
   name: "exception";
   attributes: RendererOtelExceptionAttributes;
   droppedAttributesCount?: number;
+  droppedEventsCount?: number;
+  droppedLinksCount?: number;
 };
 
 export type RendererOtelBridgeRecord =

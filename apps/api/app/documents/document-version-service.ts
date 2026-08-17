@@ -1,7 +1,28 @@
 import type { DocumentDetail } from "@repo/api/src/types/document";
-import type { DocumentVersion } from "@repo/api/src/types/document-version";
+import {
+  CreateDocumentVersionErrorCode,
+  type CreateDocumentVersionErrorCode as CreateDocumentVersionErrorCodeType,
+  type CreateDocumentVersionInlineImageInput,
+  type CreatedDocumentVersionInlineImage,
+  type DocumentVersion,
+  MAX_DOCUMENT_VERSION_INLINE_EXPANDED_CONTENT_CHARS,
+} from "@repo/api/src/types/document-version";
+import {
+  Result,
+  type Result as ServiceResult,
+} from "@repo/api/src/types/result";
 import { ArtifactType, withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
+import {
+  buildCreatedInlineImage,
+  cleanupCreatedInlineImages,
+  createInlineImageAttachmentSafely,
+  replaceInlineImagePlaceholders,
+  validateInlineImagesBeforeSideEffects,
+} from "./document-inline-image-helpers";
+import { indexDocumentProjection } from "./document-service";
 import { documentIncludeWithUser, toDocument } from "./document-utils";
+import type { CreateInlineImageAttachmentError } from "./inline-image-attachment-contract";
 import { sanitizeAndLog } from "./sanitize-content";
 
 /**
@@ -119,7 +140,7 @@ export const documentVersionService = {
       const nextVersion = updatedDetail.latestVersion;
       const sanitizedContent = sanitizeAndLog(content, documentId);
 
-      return tx.documentVersion.create({
+      const version = await tx.documentVersion.create({
         data: {
           documentId,
           version: nextVersion,
@@ -127,6 +148,24 @@ export const documentVersionService = {
           createdById: userId,
         },
       });
+
+      // FEA-1626 (wongk review): a content save writes DocumentDetail and
+      // DocumentVersion, both of which hang off the artifact — so without this
+      // the PARENT `Artifact.updatedAt` never moves, and a two-year-old document
+      // edited this morning still reads as two years stale. That is wrong on its
+      // own terms (the column claims to be the artifact's last-modified time),
+      // and it is what makes `recencyDays` — which windows on `updatedAt` —
+      // safe: an artifact someone is actively working can no longer age out from
+      // under them. Inside the same transaction as the version insert so the
+      // timestamp and the version can never disagree. Set explicitly rather than
+      // leaning on Prisma's `@updatedAt`, which needs a real field change to fire.
+      await tx.artifact.update({
+        where: { id: documentId },
+        data: { updatedAt: new Date() },
+        select: { id: true },
+      });
+
+      return version;
     });
   },
 
@@ -136,13 +175,13 @@ export const documentVersionService = {
    * — `versions/route.ts` POST. Returns `null` when the document is missing,
    * not a DOCUMENT artifact, or version creation failed.
    */
-  createNewVersion(
+  async createNewVersion(
     id: string,
     organizationId: string,
     userId: string | null,
     content: string
   ): Promise<DocumentDetail | null> {
-    return withDb.tx(async (tx) => {
+    const detail = await withDb.tx(async (tx) => {
       const newVersion = await documentVersionService.createVersion(
         id,
         organizationId,
@@ -164,5 +203,162 @@ export const documentVersionService = {
         version: newVersion,
       };
     });
+
+    // FEA-3863 / Phase-2: content edits go through this save path, so refresh
+    // the searchable body here the same way create/metadata-update do —
+    // otherwise the search projection body would go stale forever after any
+    // content-only save. Best-effort, post-commit, fail-open; pass the
+    // just-persisted (sanitized) version content so the index reflects the edit
+    // without a follow-up read. Runs outside the transaction so the projection
+    // upsert never widens the interactive-transaction window.
+    if (detail) {
+      indexDocumentProjection(detail, detail.latestVersionContent);
+    }
+    return detail;
+  },
+
+  /**
+   * Create inline image attachments and a document version as one compound
+   * operation. Newly-created attachments are rolled back if a later image or
+   * version step fails.
+   */
+  async createNewVersionWithInlineImages(
+    id: string,
+    organizationId: string,
+    userId: string,
+    content: string,
+    inlineImages: CreateDocumentVersionInlineImageInput[]
+  ): Promise<CreateDocumentVersionWithInlineImagesResult> {
+    const placeholderValidation = validateInlineImagesBeforeSideEffects(
+      content,
+      inlineImages,
+      {
+        DuplicateInlineImagePlaceholder:
+          CreateDocumentVersionErrorCode.DuplicateInlineImagePlaceholder,
+        ExpandedContentTooLarge:
+          CreateDocumentVersionErrorCode.ExpandedContentTooLarge,
+        MissingInlineImagePlaceholder:
+          CreateDocumentVersionErrorCode.MissingInlineImagePlaceholder,
+        OverlappingInlineImagePlaceholder:
+          CreateDocumentVersionErrorCode.OverlappingInlineImagePlaceholder,
+      },
+      MAX_DOCUMENT_VERSION_INLINE_EXPANDED_CONTENT_CHARS
+    );
+    if (!placeholderValidation.ok) {
+      return Result.err(placeholderValidation.error);
+    }
+
+    const createdImages: CreatedDocumentVersionInlineImage[] = [];
+    for (const inlineImage of inlineImages) {
+      const imageResult = await createInlineImageAttachmentSafely({
+        documentId: id,
+        failureReason: CreateDocumentVersionErrorCode.InlineImageCreationFailed,
+        inlineImage,
+        logScope: "[document-version-service]",
+        organizationId,
+        userId,
+      });
+      if (!imageResult.ok) {
+        const cleanup = await cleanupCreatedInlineImages({
+          createdImages,
+          documentId: id,
+          logScope: "[document-version-service]",
+          organizationId,
+          reason: CreateDocumentVersionErrorCode.InlineImageCreationFailed,
+          userId,
+        });
+        return Result.err({
+          cleanupFailed: cleanup.failedCount > 0,
+          cleanupFailedCount: cleanup.failedCount,
+          code: CreateDocumentVersionErrorCode.InlineImageCreationFailed,
+          inlineImageError: imageResult.error,
+          placeholder: inlineImage.placeholder,
+        });
+      }
+
+      createdImages.push(
+        buildCreatedInlineImage(imageResult.value, inlineImage)
+      );
+    }
+
+    const versionContent = replaceInlineImagePlaceholders(
+      content,
+      createdImages
+    );
+
+    try {
+      const document = await documentVersionService.createNewVersion(
+        id,
+        organizationId,
+        userId,
+        versionContent
+      );
+      if (!document) {
+        const cleanup = await cleanupCreatedInlineImages({
+          createdImages,
+          documentId: id,
+          logScope: "[document-version-service]",
+          organizationId,
+          reason: CreateDocumentVersionErrorCode.DocumentNotFound,
+          userId,
+        });
+        return Result.err({
+          cleanupFailed: cleanup.failedCount > 0,
+          cleanupFailedCount: cleanup.failedCount,
+          code: CreateDocumentVersionErrorCode.DocumentNotFound,
+        });
+      }
+      return Result.ok({
+        document,
+        inlineImages: createdImages,
+        versionContent,
+      });
+    } catch (error) {
+      const cleanup = await cleanupCreatedInlineImages({
+        createdImages,
+        documentId: id,
+        logScope: "[document-version-service]",
+        organizationId,
+        reason: CreateDocumentVersionErrorCode.VersionCreationFailed,
+        userId,
+      });
+      log.error("[document-version-service] Inline image version failed", {
+        cleanupFailedCount: cleanup.failedCount,
+        documentId: id,
+        error: getSafeVersionErrorMessage(error),
+        organizationId,
+        reason: CreateDocumentVersionErrorCode.VersionCreationFailed,
+      });
+      return Result.err({
+        cleanupFailed: cleanup.failedCount > 0,
+        cleanupFailedCount: cleanup.failedCount,
+        code: CreateDocumentVersionErrorCode.VersionCreationFailed,
+      });
+    }
   },
 };
+
+export type CreateDocumentVersionError = {
+  code: CreateDocumentVersionErrorCodeType;
+  placeholder?: string;
+  inlineImageError?: CreateInlineImageAttachmentError;
+  cleanupFailed?: boolean;
+  cleanupFailedCount?: number;
+  estimatedContentChars?: number;
+  maxContentChars?: number;
+  requestBodyBytes?: number;
+  maxBytes?: number;
+};
+
+type CreateDocumentVersionWithInlineImagesResult = ServiceResult<
+  {
+    document: DocumentDetail;
+    versionContent: string;
+    inlineImages: CreatedDocumentVersionInlineImage[];
+  },
+  CreateDocumentVersionError
+>;
+
+function getSafeVersionErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

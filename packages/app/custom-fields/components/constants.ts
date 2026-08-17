@@ -6,8 +6,8 @@ import {
 export const FIELD_TYPE_LABELS: Record<CustomFieldType, string> = {
   [CustomFieldType.Text]: "Text",
   [CustomFieldType.Number]: "Number",
-  [CustomFieldType.Enum]: "Single Select",
-  [CustomFieldType.MultiEnum]: "Multi Select",
+  [CustomFieldType.Enum]: "Single select",
+  [CustomFieldType.MultiEnum]: "Multi select",
   [CustomFieldType.Date]: "Date",
   [CustomFieldType.People]: "People",
 };

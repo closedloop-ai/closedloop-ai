@@ -12,6 +12,14 @@ type UseInlineEditModeConfig = {
    * focus is deferred until the editor becomes available.
    */
   editor?: TiptapEditor | null;
+  /**
+   * Seed `isEditing` to `true` on first mount so the surface opens straight into
+   * edit mode with the cursor placed (ISS-4382). Used by the org-level Document
+   * (DOC) editor when landing on an empty latest version, whose entire job is
+   * the blank page — a PRD lands read-only because it has generated content to
+   * click into. `readOnly` still wins, so a historical version stays read-only.
+   */
+  initialEditing?: boolean;
 };
 
 /**
@@ -27,8 +35,9 @@ type UseInlineEditModeConfig = {
 export function useInlineEditMode({
   readOnly,
   editor,
+  initialEditing = false,
 }: UseInlineEditModeConfig) {
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(initialEditing);
   const pendingFocusPosRef = useRef<number | null>(null);
   const hasFocusedRef = useRef(false);
 

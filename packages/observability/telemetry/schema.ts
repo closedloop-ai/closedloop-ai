@@ -70,6 +70,26 @@ export const TelemetryCategory = {
   StoreIntegrityFailurePersistent: "store.integrity.failure_persistent",
   StoreIntegrityRecovered: "store.integrity.recovered",
   StoreIntegrityHealthy: "store.integrity.healthy",
+  // ISS-5387 — a desktop→cloud sync lane completed work while its DURABLE
+  // cursor did not move. Reads and uploads keep succeeding; only persistence is
+  // dead, so nothing else in the lane reports a failure (ISS-5347 ran this way
+  // for three days behind 1,713 successful-looking log lines). Emitted at
+  // `error` severity by the burn-down reporter, rate-limited per lane.
+  SyncDurableCursorStalled: "sync.durable_cursor.stalled",
+  // ISS-5715 — the desktop db-host utility process exited while consumers were
+  // still attached and nobody had asked it to stop. It takes ingestion (the
+  // collectors, transcript sync) and the Sessions read path down together, and
+  // only the read half is visible to a user, so ingestion can stop for the life
+  // of the process behind a single log line. Emitted at `error` severity by the
+  // db-host supervisor on the restart branch only — an intentional shutdown
+  // exit is expected and stays off this channel.
+  //
+  // `severity` here is a queryable FIELD, not a log level: the api handler logs
+  // every desktop telemetry event at `log.info`. Alerting on this category
+  // therefore needs a `datadog_monitor` in `cl-tofu-aws-live` querying
+  // `service:cl-api env:prod @category:desktop.db_host.exited_unexpectedly`,
+  // exactly as the token-cost pricing-miss monitors do. Not yet landed.
+  DbHostExitedUnexpectedly: "desktop.db_host.exited_unexpectedly",
 } as const;
 
 export type TelemetryCategory =
@@ -430,6 +450,65 @@ export type LoopPerfEventDiagnostics = z.infer<
 // (back-compat, AC-001). Unknown sibling fields under `lifecycle` survive
 // parsing and reach Datadog via `.passthrough()` (AC-003).
 
+/**
+ * FEA-1999 / ISS-4818 — the desktop store-integrity probe's sub-check names, as
+ * a const object so producers and this wire schema cannot drift. The desktop
+ * mirror is `StoreIntegrityCheckName` in
+ * `apps/desktop/src/main/telemetry/telemetry-protocol.ts`; a value only the
+ * producer knows about is rejected by `desktopTelemetryEventSchema`, which drops
+ * the WHOLE event as `telemetry.validation_failed` rather than the one field —
+ * so a new check MUST be added here in the same change.
+ */
+export const StoreIntegrityCheckName = {
+  QuickCheck: "quick_check",
+  IndexPresence: "index_presence",
+  TokenParity: "token_parity",
+  WalFrameProbe: "wal_frame_probe",
+  /** ISS-4976: stored per-invocation telemetry that is impossible, not absent. */
+  InvocationTelemetry: "invocation_telemetry",
+  /** ISS-5102: bounded `PRAGMA foreign_key_check` + the FK-less orphan shape. */
+  ForeignKeyCheck: "foreign_key_check",
+  /** ISS-5838: persisted repository-default authority integrity. */
+  RepositoryDefaultAuthority: "repository_default_authority",
+} as const;
+
+export type StoreIntegrityCheckName =
+  (typeof StoreIntegrityCheckName)[keyof typeof StoreIntegrityCheckName];
+
+/** The bounded issue classifications that ride the same event. */
+export const StoreIntegrityIssueCategory = {
+  MissingIndexEntry: "missing_index_entry",
+  WrongIndexEntryCount: "wrong_index_entry_count",
+  NonUniqueIndexEntry: "non_unique_index_entry",
+  MalformedStructure: "malformed_structure",
+  Constraint: "constraint",
+  MissingIndex: "missing_index",
+  TokenStoreDivergence: "token_store_divergence",
+  /** ISS-5342: a token total the parity read cannot legitimately produce. */
+  TokenTotalOutOfRange: "token_total_out_of_range",
+  WalProbeFailure: "wal_probe_failure",
+  InvocationTelemetryOutOfRange: "invocation_telemetry_out_of_range",
+  /** ISS-5102: `foreign_key_check` reported dangling FK rows in a child table. */
+  ForeignKeyViolation: "foreign_key_violation",
+  /** ISS-5102: orphaned rows on an FK-less reference (the ISS-5098 shape). */
+  OrphanedRow: "orphaned_row",
+  MalformedRepositoryDefaultAuthority: "malformed_repository_default_authority",
+  RepositoryDefaultAuthorityWriteFailure:
+    "repository_default_authority_write_failure",
+  Other: "other",
+} as const;
+
+export type StoreIntegrityIssueCategory =
+  (typeof StoreIntegrityIssueCategory)[keyof typeof StoreIntegrityIssueCategory];
+
+const STORE_INTEGRITY_CHECK_NAMES = Object.values(StoreIntegrityCheckName);
+
+const STORE_INTEGRITY_CHECK_NAME = z.enum(STORE_INTEGRITY_CHECK_NAMES);
+
+const STORE_INTEGRITY_ISSUE_CATEGORY = z.enum(
+  Object.values(StoreIntegrityIssueCategory)
+);
+
 export const lifecycleDiagnosticsSchema = z
   .object({ command: z.string().optional() })
   .passthrough();
@@ -531,25 +610,22 @@ const desktopTelemetryDiagnosticsSchema = z.object({
     .object({
       healthy: z.boolean(),
       durationMs: z.number().int().nonnegative(),
+      // ISS-5444 — the cap is the ENUM'S CARDINALITY, not a hand-tuned literal.
+      // The probe appends each check name at most once per run, so a run can
+      // never report more names than exist; deriving the bound means adding a
+      // check moves the cap with it. A literal that fell behind would fail the
+      // array, and this schema drops the WHOLE event as
+      // `telemetry.validation_failed` rather than truncating the list.
       checksRun: z
-        .array(z.enum(["quick_check", "index_presence", "token_parity"]))
-        .max(8),
+        .array(STORE_INTEGRITY_CHECK_NAME)
+        .max(STORE_INTEGRITY_CHECK_NAMES.length),
       issueCount: z.number().int().nonnegative(),
       issues: z
         .array(
           z
             .object({
-              check: z.enum(["quick_check", "index_presence", "token_parity"]),
-              category: z.enum([
-                "missing_index_entry",
-                "wrong_index_entry_count",
-                "non_unique_index_entry",
-                "malformed_structure",
-                "constraint",
-                "missing_index",
-                "token_store_divergence",
-                "other",
-              ]),
+              check: STORE_INTEGRITY_CHECK_NAME,
+              category: STORE_INTEGRITY_ISSUE_CATEGORY,
               object: z.string().max(128).optional(),
               objectType: z.enum(["index", "table", "unknown"]).optional(),
             })
@@ -570,6 +646,23 @@ const desktopTelemetryDiagnosticsSchema = z.object({
       authFilesExist: z.boolean(),
       envSnapshot: z.record(z.string(), z.string()),
     })
+    .optional(),
+  // ISS-5715 — an unexpected desktop db-host exit. Counters and an exit code
+  // only; no paths, SQL or row content, so nothing here can carry user data.
+  // `exitCode` is deliberately nullable AND untrusted: Electron reports 0 on the
+  // utility-process `exit` event whenever the mojo pipe disconnects before the
+  // platform termination status is available (electron/electron#42283), so a
+  // crash and a clean stop are indistinguishable from it. The event's existence
+  // — not its code — is the signal.
+  dbHostExit: z
+    .object({
+      exitCode: z.number().int().nullable(),
+      crashesInWindow: z.number().int().nonnegative(),
+      backoffMs: z.number().int().nonnegative(),
+      rejectedOps: z.number().int().nonnegative(),
+      restartAlreadyInFlight: z.boolean(),
+    })
+    .strip()
     .optional(),
 });
 

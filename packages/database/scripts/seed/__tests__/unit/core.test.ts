@@ -166,11 +166,17 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
     }
   });
 
-  it("creates DOCUMENT artifacts covering every ArtifactSubtype value", async () => {
+  it("creates DOCUMENT artifacts covering every persisted ArtifactSubtype value", async () => {
     const { prisma, p } = buildReadyMock();
     await seedCoreEntities(prisma as any, baselineContext);
 
-    const allSubtypes = Object.values(ArtifactSubtype);
+    // ArtifactSubtype.ISSUE is the FEA-3956 canonical input alias for the
+    // persisted `FEATURE` subtype. It never persists
+    // (normalizeArtifactSubtype maps it back to FEATURE), so core.ts does not
+    // seed an ISSUE-subtyped artifact — the FEATURE artifacts already cover it.
+    const persistedSubtypes = Object.values(ArtifactSubtype).filter(
+      (s) => s !== ArtifactSubtype.ISSUE
+    );
     const documentCalls = (
       p.artifact.upsert.mock.calls as AnyDelegate[]
     ).filter(
@@ -181,7 +187,7 @@ describe("seedCoreEntities — Artifacts (TS-U.5)", () => {
     );
     const seededSubtypeSet = new Set(seededSubtypes);
 
-    for (const subtype of allSubtypes) {
+    for (const subtype of persistedSubtypes) {
       expect(seededSubtypeSet.has(subtype)).toBe(true);
     }
   });

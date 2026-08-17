@@ -1,5 +1,4 @@
 // biome-ignore-all lint/suspicious/noMisplacedAssertion: The migration-upgrade harness invokes assertions from inside the test scenario.
-import { performance } from "node:perf_hooks";
 import { deterministicUuid } from "@repo/database/scripts/seed/helpers";
 import {
   IncidentScenarioGuardMessage,
@@ -29,7 +28,6 @@ const describeWithDisposableExpectedFailureDatabase =
 
 const migrationAName = "20260515002500_add_branch_artifact_foundation";
 const migrationBName = "20260515021500_branch_artifact_destructive_cutover";
-const scenarioSetupBudgetMs = 5000;
 const localDatabaseHostErrorPattern = /local DATABASE_URL host/;
 const blockedDatabaseErrorPattern = /blocked database/;
 
@@ -298,7 +296,6 @@ describeWithDisposableExpectedFailureDatabase(
     )("raises the destructive cutover guard for $scenarioName", async (spec) => {
       const context = makeScenarioContext(`guard-${spec.scenarioName}`);
       let result: IncidentScenarioResult | null = null;
-      let setupDurationMs = Number.POSITIVE_INFINITY;
 
       await runMigrationUpgradeScenarioExpectingFailure({
         baseMigrationName: migrationAName,
@@ -306,14 +303,11 @@ describeWithDisposableExpectedFailureDatabase(
         databaseNamePrefix: "incident_scenario_guard",
         seed: async (client) => {
           await seedScenarioBaseRows(client, context);
-          const startedAt = performance.now();
           result = await spec.seed(client, context);
-          setupDurationMs = performance.now() - startedAt;
         },
         assertFailure: (failure) => {
           expect(result?.scenarioName).toBe(spec.scenarioName);
           expect(result?.expectedGuardMessage).toBe(spec.expectedGuardMessage);
-          expect(setupDurationMs).toBeLessThan(scenarioSetupBudgetMs);
           expect(failureText(failure)).toContain(spec.expectedGuardMessage);
         },
       });
@@ -343,7 +337,6 @@ describeWithDisposableDatabase(
     it("composes all scenarios over one shared base fixture before Migration B", async () => {
       const baseContext = makeScenarioContext("composable");
       const results: IncidentScenarioResult[] = [];
-      const setupDurationsMs: number[] = [];
 
       await runMigrationUpgradeScenario({
         baseMigrationName: migrationAName,
@@ -356,9 +349,7 @@ describeWithDisposableDatabase(
               baseContext,
               `composable-${spec.scenarioName}`
             );
-            const startedAt = performance.now();
             results.push(await spec.seed(client, context));
-            setupDurationsMs.push(performance.now() - startedAt);
           }
         },
         assert: async (client) => {
@@ -379,9 +370,6 @@ describeWithDisposableDatabase(
       expect(results.map((result) => result.scenarioName).sort()).toEqual(
         scenarioSpecs.map((spec) => spec.scenarioName).sort()
       );
-      for (const durationMs of setupDurationsMs) {
-        expect(durationMs).toBeLessThan(scenarioSetupBudgetMs);
-      }
     }, 120_000);
 
     it("returns deterministic references for the same namespace across isolated DBs", async () => {

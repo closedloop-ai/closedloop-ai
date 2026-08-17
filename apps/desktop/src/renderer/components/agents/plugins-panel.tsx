@@ -20,23 +20,31 @@
  * (`getPackAnalytics`, main → cloud) overlay the Team-usage + Performance tabs.
  */
 
-import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
-import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import type { Harness } from "@repo/app/agents/lib/session-types";
 import type { InstallPending } from "@repo/app/packs/components/install-controls";
+import {
+  type MemberTargetsInstall,
+  memberInstallCellKey,
+} from "@repo/app/packs/components/member-targets-block";
 import { PacksWorkspace } from "@repo/app/packs/components/packs-workspace";
-import type { PackView } from "@repo/app/packs/lib/pack-view";
+import { PacksWorkspaceSkeleton } from "@repo/app/packs/components/packs-workspace-skeleton";
+import { deriveContentInstallStates } from "@repo/app/packs/lib/content-install-state";
+import { MemberInstallDispatchTone } from "@repo/app/packs/lib/member-install-dispatch-copy";
+import { LOCAL_MACHINE_TARGET_ID } from "@repo/app/packs/lib/member-targets";
+import { PackContentKind, type PackView } from "@repo/app/packs/lib/pack-view";
 import {
   createPacksContext,
   PacksMode,
 } from "@repo/app/packs/lib/packs-context";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { PACK_EXTENDED_CONTENT_KINDS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { Badge } from "@closedloop-ai/design-system/components/ui/badge";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   CatalogContentItem,
   CatalogEntry,
+  InstalledPackDetail,
   InstallRunRecord,
 } from "../../../shared/agent-db-contract";
 import {
@@ -138,24 +146,32 @@ function useRunHistory(refreshKey: number): InstallRunRecord[] {
 }
 
 export function PluginsPanel() {
-  const showExtended = useFeatureFlagEnabled(
-    PACK_EXTENDED_CONTENT_KINDS_FEATURE_FLAG_KEY
-  );
   const context = useMemo(
     () =>
       createPacksContext(PacksMode.DesktopTeam, {
-        showExtendedContentKinds: showExtended,
         // No org-wide activity feed on desktop; team-usage + performance come
         // from the per-pack analytics fetched on select.
         showActivity: false,
       }),
-    [showExtended]
+    []
   );
 
   const { packViews, entriesById, installedById, state, reload } =
     useCatalogData();
   const [pending, setPending] = useState<InstallPending | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // ISS-5125: which harness the last INSTALL was attempted for. `pending` is
+  // cleared in the mutation's `finally`, so without this the surviving `error`
+  // has no cell to attach to and the per-machine block would either drop the
+  // failure or, worse, pin it to an arbitrary harness row.
+  // Also records that the last mutation WAS an install: `error` is shared by
+  // install/update/uninstall, so without this an "Could not uninstall plugin."
+  // would render as an install outcome pinned to whichever harness was last
+  // installed. Cleared on pack selection so a failure never leaks onto another
+  // pack's rows.
+  const [lastInstallHarness, setLastInstallHarness] = useState<Harness | null>(
+    null
+  );
   const [historyKey, setHistoryKey] = useState(0);
   const runs = useRunHistory(historyKey);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -165,6 +181,28 @@ export function PluginsPanel() {
   const [analyticsById, setAnalyticsById] = useState<
     Map<string, PackAnalyticsResponse>
   >(new Map());
+  // Per-component install truth for THIS machine (FEA-4071). `getPackDetail`
+  // returns the installed skills/components the machine actually reports on
+  // disk; the detail pack derives each Contents-tab component's install state
+  // from these names. A pack that isn't installed has no detail row, mapped to
+  // `null` so every component reads honestly "not installed" here.
+  const [detailById, setDetailById] = useState<
+    Map<string, InstalledPackDetail | null>
+  >(new Map());
+
+  // Fetch (and cache) the machine's per-component install truth for a pack.
+  // Used on select and again after a mutation, so the Contents tab reflects the
+  // freshly installed/uninstalled component set rather than a stale snapshot.
+  const fetchPackDetail = useCallback((packId: string) => {
+    window.desktopApi?.db
+      ?.getPackDetail?.(packId)
+      ?.then((detail) => {
+        setDetailById((prev) => new Map(prev).set(packId, detail));
+      })
+      ?.catch(() => {
+        // Per-component state is best-effort; contents still render.
+      });
+  }, []);
 
   const runMutation = useCallback(
     async (packId: string, harness: Harness, action: MutationAction) => {
@@ -174,12 +212,28 @@ export function PluginsPanel() {
       }
       setPending({ harness, action });
       setError(null);
+      // Set on install, CLEARED on update/uninstall — so it always answers "was
+      // the last mutation an install, and on which harness?". Leaving a stale
+      // harness here is what would let a failed uninstall render as an install
+      // outcome on the row of some earlier install.
+      setLastInstallHarness(action === "install" ? harness : null);
       try {
         // Update is an idempotent re-install of the vetted install command.
-        if (action === "uninstall") {
-          await api.catalogUninstall(packId, harness);
-        } else {
-          await api.catalogInstall(packId, harness);
+        const result =
+          action === "uninstall"
+            ? await api.catalogUninstall(packId, harness)
+            : await api.catalogInstall(packId, harness);
+        // A REJECTED promise is not the only way this fails. The vetted catalog
+        // IPC RESOLVES `{ started: false, error }` for an ordinary preflight
+        // refusal — no install command for the harness, an unsupported target —
+        // and only throws for a broken bridge. Reading just the `catch` treated
+        // every one of those refusals as a started install: the spinner cleared,
+        // no error was set, and the member-install cell (ISS-5125) showed
+        // neither a failure nor a Retry, so the member was left believing an
+        // install ran that never began. `AgentDetailView` already reads
+        // `started` for exactly this reason; this panel now agrees with it.
+        if (result && !result.started) {
+          setError(result.error?.message ?? `Could not ${action} plugin.`);
         }
       } catch (err: unknown) {
         setError(
@@ -189,9 +243,18 @@ export function PluginsPanel() {
         setPending(null);
         setHistoryKey((k) => k + 1);
         reload();
+        // The mutation changed which of the pack's components are on disk, so
+        // this pack's cached per-component install truth (`detailById`) is now
+        // stale. Refetch it in place so an open Contents tab reflects the new
+        // Installed / Not-installed states instead of the pre-mutation snapshot
+        // until the panel remounts (Codex P1). `fetchPackDetail` overwrites the
+        // cache entry, so a later re-select also sees the refreshed detail. The
+        // bundled contents list itself is unchanged by an install/uninstall, so
+        // `contentsById` is intentionally left as-is (no flicker).
+        fetchPackDetail(packId);
       }
     },
-    [reload]
+    [reload, fetchPackDetail]
   );
 
   const resolveHarness = useCallback(
@@ -205,9 +268,76 @@ export function PluginsPanel() {
     [entriesById]
   );
 
+  // ISS-5125: the member per-machine block's ACT half on DESKTOP. The block's
+  // desktop cells are the synthetic local machine (`LOCAL_MACHINE_TARGET_ID`),
+  // so the dispatch is this panel's existing vetted local catalog install — not
+  // the cloud member-install route, which addresses a REMOTE registered node
+  // this surface has no id for. Same shared flag key as web
+  // (`member-self-service-install`), read through the desktop feature-flag port,
+  // so the affordance cannot appear on one surface while hidden on the other.
+  const memberInstallEnabled = useFeatureFlagEnabledOptional(
+    MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY
+  );
+
+  const memberTargetsInstall = useMemo<MemberTargetsInstall | null>(() => {
+    if (!memberInstallEnabled) {
+      return null;
+    }
+    return {
+      // `runMutation` owns its own error handling (it sets `error` in a catch
+      // and always clears `pending` in a finally), so its promise is returned
+      // rather than awaited — the block's feedback comes from that state, not
+      // from this call site. Same shape as the header install control below.
+      onInstall: ({ harness }) =>
+        selectedId
+          ? runMutation(selectedId, harness as Harness, "install")
+          : undefined,
+      // Only an INSTALL owns a cell's pending state. An update/uninstall driven
+      // from the detail header is a different action on the same pack, and
+      // showing its spinner on this block's Install button would claim an
+      // install that is not running. At most one local mutation runs at a time
+      // here, so this set holds 0 or 1 key.
+      pendingCellKeys:
+        pending?.action === "install"
+          ? [memberInstallCellKey(LOCAL_MACHINE_TARGET_ID, pending.harness)]
+          : [],
+      // The local install path reports a message, not a wire dispatch state, so
+      // the outcome is built directly rather than mapped through a
+      // `MemberPackInstallDispatchState` this surface never receives. A local
+      // failure is provably terminal — nothing was queued anywhere — so it is
+      // retryable, unlike the cloud path's ambiguous `Pending`.
+      dispatchByCellKey:
+        error && pending === null && lastInstallHarness
+          ? {
+              [memberInstallCellKey(
+                LOCAL_MACHINE_TARGET_ID,
+                lastInstallHarness
+              )]: {
+                message: error,
+                tone: MemberInstallDispatchTone.Danger,
+                retryable: true,
+              },
+            }
+          : undefined,
+    };
+  }, [
+    memberInstallEnabled,
+    selectedId,
+    runMutation,
+    pending,
+    error,
+    lastInstallHarness,
+  ]);
+
   const handleSelect = useCallback(
     (packId: string | null) => {
       setSelectedId(packId);
+      // The per-machine block's outcome is keyed by (machine × harness) only,
+      // and the local machine row is the same row for every pack — so a failure
+      // left over from the previous pack would render against the newly
+      // selected one. Clear it with the selection that made it stale.
+      setError(null);
+      setLastInstallHarness(null);
       if (!packId) {
         return;
       }
@@ -239,8 +369,16 @@ export function PluginsPanel() {
             // Overlay is best-effort; the pack still renders without it.
           });
       }
+      // Per-component install state for this machine (FEA-4071): the installed
+      // component/skill set for the pack, so the Contents tab can mark each
+      // component installed / not installed on this machine. Best-effort — an
+      // error or missing detail leaves the contents without a per-component
+      // indicator (honest absence, never a fabricated "not installed").
+      if (!detailById.has(packId)) {
+        fetchPackDetail(packId);
+      }
     },
-    [contentsById, analyticsById]
+    [contentsById, analyticsById, detailById, fetchPackDetail]
   );
 
   const detailPack = useMemo<PackView | null>(() => {
@@ -258,20 +396,32 @@ export function PluginsPanel() {
       installed,
       contentsById.get(selectedId) ?? null
     );
+    const withContentStates = applyContentInstallStates(
+      base,
+      selectedId,
+      detailById
+    );
     const analytics = analyticsById.get(selectedId);
     if (!analytics) {
-      return base;
+      return withContentStates;
     }
     const { performance, teamUsage } = packAnalyticsToBlocks(analytics);
-    return { ...base, performance, teamUsage };
-  }, [selectedId, entriesById, installedById, contentsById, analyticsById]);
+    return { ...withContentStates, performance, teamUsage };
+  }, [
+    selectedId,
+    entriesById,
+    installedById,
+    contentsById,
+    analyticsById,
+    detailById,
+  ]);
 
   if (state === "loading" || state === "idle") {
+    // Same wrapper as the ready branch below so the skeleton sits where the
+    // loaded workspace does; the skeleton ships its own testid.
     return (
-      <div className="flex flex-col gap-2 p-4" data-testid="plugins-loading">
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-10 w-full" />
+      <div className="min-h-0 flex-1">
+        <PacksWorkspaceSkeleton />
       </div>
     );
   }
@@ -298,6 +448,8 @@ export function PluginsPanel() {
         footerSlot={<RunHistoryList runs={runs} />}
         installError={error}
         installPending={pending}
+        memberTargetsDescription="Whether this pack is installed on this machine, per harness."
+        memberTargetsInstall={memberTargetsInstall}
         onInstall={(packId, harness) =>
           runMutation(packId, resolveHarness(packId, harness), "install")
         }
@@ -352,4 +504,45 @@ function RunStatusBadge({ exitCode }: { exitCode: number | null }) {
     return <Badge variant="secondary">Success</Badge>;
   }
   return <Badge variant="destructive">Failed ({exitCode})</Badge>;
+}
+
+/**
+ * Overlay per-component install state (FEA-4071) onto a detail `PackView`'s
+ * Contents from this machine's installed-component truth.
+ *
+ * The machine's truth is `getPackDetail(packId)`: its `skills[]` are the
+ * components actually installed on disk for the pack (by name). The map value
+ * distinguishes three cases so the derivation stays honest:
+ *  - `undefined` (key absent) — the detail read hasn't resolved yet → UNKNOWN,
+ *    so contents render with no per-component indicator rather than a premature
+ *    "not installed".
+ *  - `null` — the read resolved but the pack has no installed detail row (not
+ *    installed on this machine) → KNOWN, `packInstalled: false`, so every
+ *    component reads an explicit "not installed".
+ *  - a detail — KNOWN, its `skills[].name` are the installed component set.
+ *
+ * `getPackDetail` only enumerates installed SKILLS (`skills[]`), so the installed
+ * set can only speak to skill-kind entries. We scope the derivation to
+ * `PackContentKind.Skill` via `resolvableKinds`; a pack's `command`/`agent`/etc.
+ * entries stay UNKNOWN (no per-component indicator) rather than being derived from
+ * — and mislabelled against — an inventory that never listed them.
+ */
+function applyContentInstallStates(
+  pack: PackView,
+  packId: string,
+  detailById: Map<string, InstalledPackDetail | null>
+): PackView {
+  if (!detailById.has(packId)) {
+    return pack;
+  }
+  const detail = detailById.get(packId) ?? null;
+  const contents = deriveContentInstallStates(pack.contents, {
+    known: true,
+    installedComponentNames: (detail?.skills ?? [])
+      .map((skill) => skill.name)
+      .filter((name): name is string => Boolean(name)),
+    packInstalled: detail !== null,
+    resolvableKinds: [PackContentKind.Skill],
+  });
+  return { ...pack, contents };
 }

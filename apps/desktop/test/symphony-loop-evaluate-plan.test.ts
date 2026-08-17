@@ -125,7 +125,7 @@ describe("EVALUATE_PLAN validation", () => {
     );
 
     await eventSrv.waitForEvent(
-      (b: { type: string }) => b.type === "completed" || b.type === "error",
+      (b) => b.type === "completed" || b.type === "error",
       15_000
     );
   });

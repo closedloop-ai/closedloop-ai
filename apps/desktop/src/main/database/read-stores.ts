@@ -10,12 +10,11 @@ import type {
   SessionRow,
   SessionWithAgents,
 } from "../../shared/agent-db-contract.js";
+import { DATA_REVISION } from "../collectors/engine/data-revision.js";
 import type {
   TokenUsageCounts,
   TokenUsageRow,
-} from "../agent-dashboard-db-types.js";
-import { resolveTokenUsageCostUsd } from "../agent-session-sync-service.js";
-import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+} from "../dashboard/agent-dashboard-db-types.js";
 import { CodexOtelTokenUsageSource } from "../otel/codex-otel-contract.js";
 import {
   DEFAULT_SESSION_PAGE_LIMIT,
@@ -29,16 +28,15 @@ import {
   normalizeTokenUsageCounts,
   tokenCountValue,
 } from "./db-helpers.js";
-import type { SqliteTokenUsageRow } from "./db-row-types.js";
 import type { Prisma } from "./generated/client.js";
 import type { DesktopPrisma } from "./prisma-client.js";
 import { countSqliteSessions } from "./session-count.js";
 import {
   detailRowsToList,
-  groupRowsBySessionId,
   sessionDetailsCtes,
   toTokenUsageRow,
 } from "./session-detail-mappers.js";
+import { attachEstimatedCosts } from "./session-estimated-costs.js";
 
 // Explicit column projection for session list/detail reads. Lists ONLY the
 // columns `toSessionRow` (and `detailRowsToList`) actually consume, so the
@@ -91,30 +89,63 @@ const SESSION_ROW_SELECT = {
   organizationId: true,
 } satisfies Prisma.SessionSelect;
 
-// The session store runs on the single DesktopPrisma client. The plain reads
-// (getById/getAll/getActive) are typed delegates. The DETAIL reads
-// (getDetailsById/getActiveWithDetails/getHistoricalWithDetails/getPage) stay on
-// raw `$queryRawUnsafe` BY DESIGN — sessionDetailsCtes() folds the per-session
-// COUNT(agents)/COUNT(events)/SUM(tokens) into the row in ONE server-side
-// aggregate-join. That is both un-typeable (events/token_usage have no session
-// relation; total_tokens is a SUM, not a relation `_count`) and the performant
-// choice: replacing it with per-table groupBy reads marshalled into a JS join is
-// a real regression. getPage's `q` search additionally needs `LIKE … ESCAPE`
-// (Prisma `contains` does not escape `%`/`_`, verified against libSQL).
-// attachEstimatedCosts uses two id-scoped findMany typed delegates. The raw
-// `selectRowsByIds`/`selectTokenUsageRows` helpers serve the tx-coupled
-// sync/importer/analytics paths.
+// The plain reads (getById/getAll/getActive) are typed delegates. The DETAIL
+// reads (getDetailsById/getActiveWithDetails/getHistoricalWithDetails/getPage)
+// stay on raw `$queryRawUnsafe` BY DESIGN — sessionDetailsCtes() folds the
+// per-session COUNT(agents)/COUNT(events)/SUM(tokens) into the row in ONE
+// server-side aggregate-join. That is both un-typeable (events/token_usage have
+// no session relation; total_tokens is a SUM, not a relation `_count`) and the
+// performant choice: replacing it with per-table groupBy reads marshalled into a
+// JS join is a real regression. getPage's `q` search additionally needs
+// `LIKE … ESCAPE` (Prisma `contains` does not escape `%`/`_`, verified against
+// libSQL). The raw `selectRowsByIds`/`selectTokenUsageRows` helpers serve the
+// tx-coupled sync/importer/analytics paths.
+//
+// ISS-6199 (following ISS-5938 for the Insights/dashboard reads): every read in
+// this module that serves a renderer read channel dispatches through
+// `prisma.read` onto the READER POOL, one dispatch per aggregate, so it no
+// longer self-serializes on the PRIMARY connection or contends with first-launch
+// backfill and live-import writes. Raw SQL is fully available there —
+// `DesktopPrismaReader` re-exposes `$queryRaw`/`$queryRawUnsafe` — so "this SQL
+// must stay raw" was never a reason for it to stay on the writer. Exactly two
+// reads deliberately STAY on `prisma.client`, and the seam is pinned in both
+// directions by `test/session-read-stores-reader-pool.test.ts`:
+//   - `handleSessionMutation`'s own status read, issued right after a committed
+//     write to decide historical-cache invalidation — a genuine read-your-writes
+//     read that must see the writer's own snapshot. It reads the status directly
+//     rather than through `getById` so that requirement stays where it belongs:
+//     `getById` also serves the `desktop:db:get-session` renderer channel, which
+//     has no such requirement and would otherwise keep the contention this
+//     change removes.
+//   - the events `getCountByType` model-delegate `groupBy`. FEA-2211 (see
+//     session-count.ts) documents that a Prisma AGGREGATE delegate returns 0 on
+//     the `query_only` reader connections in PACKAGED builds while behaving
+//     correctly in the clean test env, so moving it to the pool would pass every
+//     test and zero the renderer in production. The documented quirk is specific
+//     to AGGREGATE delegates, and row-returning `findMany` reads are already used
+//     on the pool by five sibling stores — but that is precedent, not a proof:
+//     `dashboard-queries.ts` deliberately keeps its take-10 `findMany` on the
+//     writer too, folded into the same bucket as its aggregates rather than
+//     separated from them. Move a row read to the pool on that precedent
+//     knowingly; there is no test that can catch the packaged-build behavior.
 export function createSqliteSessionStore(prisma: DesktopPrisma) {
   let historicalDetailsCache: SessionWithAgents[] | null = null;
+  // Bumped by every invalidation. `getHistoricalWithDetails` awaits three pooled
+  // reads, and the invalidation that clears the cache is detached from them (the
+  // db-host worker does not await `handleSessionMutation`), so the generation is
+  // what tells an in-flight read that its rows were retired while it ran.
+  let historicalDetailsGeneration = 0;
 
   return {
     async getById(id: string): Promise<SessionRow | undefined> {
-      return (
-        (await prisma.client.session.findUnique({
+      const rows = await prisma.read((reader) =>
+        reader.session.findMany({
           where: { id },
           select: SESSION_ROW_SELECT,
-        })) ?? undefined
+          take: 1,
+        })
       );
+      return rows[0];
     },
     /**
      * Total number of rows in `sessions`. Runs on the reader pool (NOT the
@@ -129,29 +160,34 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
       return prisma.read((reader) => countSqliteSessions(reader));
     },
     async getAll(): Promise<SessionRow[]> {
-      return await prisma.client.session.findMany({
-        select: SESSION_ROW_SELECT,
-        orderBy: { startedAt: "desc" },
-      });
+      return await prisma.read((reader) =>
+        reader.session.findMany({
+          select: SESSION_ROW_SELECT,
+          orderBy: { startedAt: "desc" },
+        })
+      );
     },
     async getActive(): Promise<SessionRow[]> {
-      return await prisma.client.session.findMany({
-        where: { status: { notIn: Array.from(TERMINAL_STATUS_SET) } },
-        select: SESSION_ROW_SELECT,
-        orderBy: { startedAt: "desc" },
-      });
+      return await prisma.read((reader) =>
+        reader.session.findMany({
+          where: { status: { notIn: Array.from(TERMINAL_STATUS_SET) } },
+          select: SESSION_ROW_SELECT,
+          orderBy: { startedAt: "desc" },
+        })
+      );
     },
     async getDetailsById(id: string): Promise<SessionWithAgents | undefined> {
       // Single server-side aggregate-join (sessionDetailsCtes): per-session
       // COUNT(agents) / COUNT(events) / SUM(tokens) LEFT-JOINed to the row in ONE
-      // query. Stays raw on the one client deliberately — Prisma can't express it
-      // typed (events/token_usage have no session relation; total_tokens is a SUM,
-      // not a relation `_count`), and, more importantly, it is far cheaper than
-      // fetching every session's per-table aggregate and joining in JS.
-      const rows = await prisma.client.$queryRawUnsafe<
-        Record<string, unknown>[]
-      >(
-        `${sessionDetailsCtes()}
+      // query. Stays RAW deliberately — Prisma can't express it typed
+      // (events/token_usage have no session relation; total_tokens is a SUM, not
+      // a relation `_count`), and, more importantly, it is far cheaper than
+      // fetching every session's per-table aggregate and joining in JS. Raw and
+      // pooled are independent choices: the reader facade re-exposes
+      // `$queryRawUnsafe`, so this runs on the pool (ISS-6199).
+      const rows = await prisma.read((reader) =>
+        reader.$queryRawUnsafe<Record<string, unknown>[]>(
+          `${sessionDetailsCtes()}
         SELECT
           ${SESSION_DETAIL_SELECT_COLUMNS},
           COALESCE(ac.agent_count, 0) as agent_count,
@@ -163,16 +199,18 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         LEFT JOIN token_totals tt ON tt.session_id = s.id
         WHERE s.id = $1
       `,
-        id
+          id
+        )
       );
       const sessions = detailRowsToList(rows);
       await attachEstimatedCosts(prisma, sessions);
       return sessions[0];
     },
     async getActiveWithDetails(): Promise<SessionWithAgents[]> {
-      const rows = await prisma.client.$queryRawUnsafe<
-        Record<string, unknown>[]
-      >(`${sessionDetailsCtes()}
+      const rows = await prisma.read((reader) =>
+        reader.$queryRawUnsafe<
+          Record<string, unknown>[]
+        >(`${sessionDetailsCtes()}
         SELECT
           ${SESSION_DETAIL_SELECT_COLUMNS},
           COALESCE(ac.agent_count, 0) as agent_count,
@@ -184,7 +222,8 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         LEFT JOIN token_totals tt ON tt.session_id = s.id
         WHERE s.status NOT IN ${TERMINAL_STATUSES}
         ORDER BY s.started_at DESC
-      `);
+      `)
+      );
       const sessions = detailRowsToList(rows);
       await attachEstimatedCosts(prisma, sessions);
       return sessions;
@@ -193,9 +232,11 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
       if (historicalDetailsCache) {
         return historicalDetailsCache;
       }
-      const rows = await prisma.client.$queryRawUnsafe<
-        Record<string, unknown>[]
-      >(`${sessionDetailsCtes()}
+      const generation = historicalDetailsGeneration;
+      const rows = await prisma.read((reader) =>
+        reader.$queryRawUnsafe<
+          Record<string, unknown>[]
+        >(`${sessionDetailsCtes()}
         SELECT
           ${SESSION_DETAIL_SELECT_COLUMNS},
           COALESCE(ac.agent_count, 0) as agent_count,
@@ -207,10 +248,19 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         LEFT JOIN token_totals tt ON tt.session_id = s.id
         WHERE s.status IN ${TERMINAL_STATUSES}
         ORDER BY s.started_at DESC
-      `);
-      historicalDetailsCache = detailRowsToList(rows);
-      await attachEstimatedCosts(prisma, historicalDetailsCache);
-      return historicalDetailsCache;
+      `)
+      );
+      const sessions = detailRowsToList(rows);
+      await attachEstimatedCosts(prisma, sessions);
+      // Publish only if nothing invalidated while those reads were in flight:
+      // these rows come from a snapshot taken before that mutation committed, so
+      // caching them would re-serve known-stale data until the next mutation.
+      // The caller still gets the rows it read — returning the memo field here
+      // would hand back `null` from a method typed to return an array.
+      if (historicalDetailsGeneration === generation) {
+        historicalDetailsCache = sessions;
+      }
+      return sessions;
     },
     async getAllWithDetails(): Promise<SessionWithAgents[]> {
       return [
@@ -220,19 +270,22 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
     },
     async getPage(request?: SessionPageRequest): Promise<SessionPage> {
       // Same single aggregate-join as the other detail reads, with the dynamic
-      // status/search WHERE + LIMIT/OFFSET. Raw on the one client: the per-session
-      // COUNT/SUM join is cheaper than per-table groupBy + JS, and the `q` search
-      // needs `LIKE … ESCAPE` (Prisma `contains` does not escape `%`/`_`).
+      // status/search WHERE + LIMIT/OFFSET. Raw: the per-session COUNT/SUM join
+      // is cheaper than per-table groupBy + JS, and the `q` search needs
+      // `LIKE … ESCAPE` (Prisma `contains` does not escape `%`/`_`).
       const { limit, offset, status, q } = coercePageRequest(request);
       const { whereSql, params } = pageWhereClause(status, q);
-      // SSOT count helper (FEA-2211) — same writer connection, SQL, and
-      // `Number(... ?? 0)` coercion as the inline query it replaces, shared with
-      // the IPC perf `session_count` dimension so the two never diverge.
-      const total = await countSqliteSessions(prisma.client, whereSql, params);
-      const rows = await prisma.client.$queryRawUnsafe<
-        Record<string, unknown>[]
-      >(
-        `${sessionDetailsCtes()}
+      // SSOT count helper (FEA-2211) — same SQL and `Number(... ?? 0)` coercion
+      // as the inline query it replaced, shared with the IPC perf `session_count`
+      // dimension so the two never diverge. Its own contract puts it on the
+      // reader pool (ISS-6199), which is also where the `session_count` dimension
+      // and the sync-source cursor page already call it from.
+      const total = await prisma.read((reader) =>
+        countSqliteSessions(reader, whereSql, params)
+      );
+      const rows = await prisma.read((reader) =>
+        reader.$queryRawUnsafe<Record<string, unknown>[]>(
+          `${sessionDetailsCtes()}
         SELECT
           ${SESSION_DETAIL_SELECT_COLUMNS},
           COALESCE(ac.agent_count, 0) as agent_count,
@@ -246,9 +299,10 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
         ORDER BY s.started_at DESC, s.id DESC
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}
       `,
-        ...params,
-        limit,
-        offset
+          ...params,
+          limit,
+          offset
+        )
       );
       const sessions = detailRowsToList(rows);
       // FEA-1459 Fix 10: Compute estimated cost per session from token_usage.
@@ -272,11 +326,23 @@ export function createSqliteSessionStore(prisma: DesktopPrisma) {
     },
     invalidateHistoricalDetails(): void {
       historicalDetailsCache = null;
+      historicalDetailsGeneration += 1;
     },
     async handleSessionMutation(sessionId: string): Promise<void> {
-      const session = await this.getById(sessionId);
+      // The ONE read-your-writes read in this store: it runs immediately after
+      // the write that emitted this mutation, so it must see the writer's own
+      // snapshot rather than a pooled one (ISS-6199 — see the module note). Only
+      // the status decides the invalidation, so it reads just that column instead
+      // of routing through the now-pooled `getById`.
+      const session = await prisma.client.session.findUnique({
+        where: { id: sessionId },
+        select: { status: true },
+      });
       if (!session || TERMINAL_STATUS_SET.has(session.status)) {
-        historicalDetailsCache = null;
+        // Delegate rather than re-clear inline: a second copy of the memo/
+        // generation pair is a copy that can lose the generation bump while the
+        // tests that drive `invalidateHistoricalDetails` directly stay green.
+        this.invalidateHistoricalDetails();
       }
     },
   };
@@ -367,28 +433,34 @@ const AGENT_ROW_SELECT = {
   metadata: true,
 } satisfies Prisma.AgentSelect;
 
-// Both agent reads run on typed Prisma delegates. getBySessionWithChildren
-// builds its parent/child tree in memory from parentAgentId.
+// Both agent reads run on typed Prisma delegates, dispatched onto the reader
+// pool (ISS-6199 — see the module note on createSqliteSessionStore).
+// getBySessionWithChildren builds its parent/child tree in memory from
+// parentAgentId.
 export function createSqliteAgentStore(
   prisma: DesktopPrisma,
   eventStore: ReturnType<typeof createSqliteEventStore>
 ) {
   return {
     async getBySession(sessionId: string): Promise<AgentRow[]> {
-      return await prisma.client.agent.findMany({
-        where: { sessionId },
-        select: AGENT_ROW_SELECT,
-        orderBy: { startedAt: "asc" },
-      });
+      return await prisma.read((reader) =>
+        reader.agent.findMany({
+          where: { sessionId },
+          select: AGENT_ROW_SELECT,
+          orderBy: { startedAt: "asc" },
+        })
+      );
     },
     async getBySessionWithChildren(
       sessionId: string
     ): Promise<AgentHierarchyNode[]> {
-      const allAgents = await prisma.client.agent.findMany({
-        where: { sessionId },
-        select: AGENT_ROW_SELECT,
-        orderBy: { startedAt: "asc" },
-      });
+      const allAgents = await prisma.read((reader) =>
+        reader.agent.findMany({
+          where: { sessionId },
+          select: AGENT_ROW_SELECT,
+          orderBy: { startedAt: "asc" },
+        })
+      );
       const eventsByAgent = new Map<string, AgentHierarchyNode["events"]>();
       for (const e of await eventStore.getBySession(sessionId)) {
         if (!e.agentId) {
@@ -448,71 +520,79 @@ const EVENT_ROW_SELECT = {
 // The events store is read-only, so all five reads run on typed Prisma
 // delegates. `events.session_id` has no FK/relation to `sessions` (events may
 // arrive before their session row — see the Event model in schema.prisma), so
-// the two session-name reads cannot use a relation `include`; they resolve the
-// name with a separate typed query + an in-memory map, matching LEFT JOIN
-// semantics (name is null when the session row is absent).
+// the two session-name reads cannot use a relation `include`; both resolve the
+// name through `sessionNamesById` below, matching LEFT JOIN semantics (name is
+// null when the session row is absent).
 export function createSqliteEventStore(prisma: DesktopPrisma) {
   return {
     async getBySession(sessionId: string): Promise<EventRow[]> {
-      return await prisma.client.event.findMany({
-        where: { sessionId },
-        select: EVENT_ROW_SELECT,
-        orderBy: { createdAt: "asc" },
-      });
+      return await prisma.read((reader) =>
+        reader.event.findMany({
+          where: { sessionId },
+          select: EVENT_ROW_SELECT,
+          orderBy: { createdAt: "asc" },
+        })
+      );
     },
     async getBySessionAndAgent(
       sessionId: string,
       agentId: string
     ): Promise<EventRow[]> {
-      return await prisma.client.event.findMany({
-        where: { sessionId, agentId },
-        select: EVENT_ROW_SELECT,
-        orderBy: { createdAt: "asc" },
-      });
+      return await prisma.read((reader) =>
+        reader.event.findMany({
+          where: { sessionId, agentId },
+          select: EVENT_ROW_SELECT,
+          orderBy: { createdAt: "asc" },
+        })
+      );
     },
     async getAll(): Promise<EventWithSession[]> {
-      const rows = await prisma.client.event.findMany({
-        select: EVENT_ROW_SELECT,
-        orderBy: { createdAt: "desc" },
-        take: 200,
-      });
-      const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
-      const sessionRows =
-        sessionIds.length === 0
-          ? []
-          : await prisma.client.session.findMany({
-              where: { id: { in: sessionIds } },
-              select: { id: true, name: true },
-            });
-      const nameById = new Map(
-        sessionRows.map((row) => [row.id, row.name ?? null])
+      const rows = await prisma.read((reader) =>
+        reader.event.findMany({
+          select: EVENT_ROW_SELECT,
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        })
       );
+      const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
+      // Dependent on `rows`, so it stays a second dispatch rather than joining
+      // the one above under a Promise.all.
+      const nameById = await sessionNamesById(prisma, sessionIds);
       return rows.map((row) => ({
         ...row,
         sessionName: nameById.get(row.sessionId) ?? null,
       }));
     },
     async getWithSession(sessionId: string): Promise<EventWithSession[]> {
-      const rows = await prisma.client.event.findMany({
-        where: { sessionId },
-        select: EVENT_ROW_SELECT,
-        orderBy: { createdAt: "asc" },
-      });
+      const rows = await prisma.read((reader) =>
+        reader.event.findMany({
+          where: { sessionId },
+          select: EVENT_ROW_SELECT,
+          orderBy: { createdAt: "asc" },
+        })
+      );
       // No events -> no rows to decorate; skip the session-name lookup, keeping
       // the empty case a single query (mirrors the guard in getAll()).
       if (rows.length === 0) {
         return [];
       }
-      const sessionRow = await prisma.client.session.findUnique({
-        where: { id: sessionId },
-        select: { name: true },
-      });
-      const sessionName = sessionRow?.name ?? null;
+      const sessionName =
+        (await sessionNamesById(prisma, [sessionId])).get(sessionId) ?? null;
       return rows.map((row) => ({ ...row, sessionName }));
     },
     async getCountByType(): Promise<EventCountByType[]> {
       // event_type is NOT NULL, so _count.eventType per group equals COUNT(*),
       // and ordering by it reproduces the raw `ORDER BY count DESC`.
+      //
+      // ISS-6199: this is the one read in the events store that must STAY on
+      // `prisma.client`. It is a model-delegate AGGREGATE, and FEA-2211 (see
+      // session-count.ts) documents that such an aggregate returns 0 on the
+      // `query_only` reader connections in PACKAGED builds while returning the
+      // true value in the clean test env — so moving it to the pool would pass
+      // every test and zero the renderer's event-type breakdown in production.
+      // Same rule dashboard-queries.ts records for its own `groupBy`/`count`
+      // reads. Route it through the pool only by rewriting it as raw
+      // `COUNT(*) … GROUP BY`, which is the proven-safe shape there.
       const grouped = await prisma.client.event.groupBy({
         by: ["eventType"],
         _count: { eventType: true },
@@ -526,8 +606,35 @@ export function createSqliteEventStore(prisma: DesktopPrisma) {
   };
 }
 
-// Both methods run on the single Prisma client. `getBySession` is a typed
-// delegate; `replace` uses a hand-written `INSERT ... ON CONFLICT DO UPDATE` as
+/**
+ * Resolve `sessions.name` for `ids` on the reader pool, as an id → name map. No
+ * entry means the session row is absent, which both callers read as a null name
+ * (the LEFT JOIN semantics the missing FK/relation forces them to hand-roll).
+ *
+ * `findMany` even for the single-id caller, deliberately: it is the only
+ * row-read delegate with reader-pool precedent in this store layer, and
+ * FEA-2211's caveat (see `session-count.ts`) makes an unprecedented delegate on
+ * a `query_only` connection a risk whose failure mode is silent and
+ * packaged-build-only — here, every `sessionName` quietly becoming null.
+ */
+async function sessionNamesById(
+  prisma: DesktopPrisma,
+  ids: readonly string[]
+): Promise<Map<string, string | null>> {
+  if (ids.length === 0) {
+    return new Map();
+  }
+  const rows = await prisma.read((reader) =>
+    reader.session.findMany({
+      where: { id: { in: [...ids] } },
+      select: { id: true, name: true },
+    })
+  );
+  return new Map(rows.map((row) => [row.id, row.name ?? null]));
+}
+
+// `getBySession` is a typed delegate on the reader pool (ISS-6199); `replace`
+// runs on the writer and uses a hand-written `INSERT ... ON CONFLICT DO UPDATE` as
 // RAW `$executeRawUnsafe` (not expressible via Prisma `upsert`: the update branch
 // accumulates baselines `baseline_x = token_usage.x + EXCLUDED.x`, heals
 // `created_at` downward via `MIN(...)`, and carries a conflict-target
@@ -632,14 +739,17 @@ export function createSqliteTokenUsageStore(prisma: DesktopPrisma) {
             raw_input, raw_output, raw_cache_read, raw_cache_write,
             baseline_input, baseline_output, baseline_cache_read, baseline_cache_write,
             usage_source, revision_id,
-            created_at, updated_at, inferred
+            created_at, updated_at, inferred,
+            cache_write_5m_tokens, cache_write_1h_tokens
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16)
+          VALUES ($1, $2, $3, $4, $5, $6, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $16, $17, $18)
           ON CONFLICT (session_id, model) DO UPDATE SET
             input_tokens = EXCLUDED.input_tokens,
             output_tokens = EXCLUDED.output_tokens,
             cache_read_tokens = EXCLUDED.cache_read_tokens,
             cache_write_tokens = EXCLUDED.cache_write_tokens,
+            cache_write_5m_tokens = EXCLUDED.cache_write_5m_tokens,
+            cache_write_1h_tokens = EXCLUDED.cache_write_1h_tokens,
             raw_input = EXCLUDED.raw_input,
             raw_output = EXCLUDED.raw_output,
             raw_cache_read = EXCLUDED.raw_cache_read,
@@ -671,7 +781,16 @@ export function createSqliteTokenUsageStore(prisma: DesktopPrisma) {
           now,
           CodexOtelTokenUsageSource.OtelLogPayload,
           // FEA-2085: stamp guessed Codex attributions (SQLite boolean → 0/1).
-          counts.inferred ? 1 : 0
+          counts.inferred ? 1 : 0,
+          // FEA-3419: TTL subdivision — plain overwrite like the four counters
+          // (every caller re-derives full totals from the whole transcript, so
+          // the latest derivation is authoritative, including NULL = absent).
+          // Baselines deliberately carry NO TTL: compaction-rolled tokens have
+          // no per-request data and price at the default rate (unclassified).
+          storageCounts.cacheWriteTtl
+            ? storageCounts.cacheWriteTtl.fiveM
+            : null,
+          storageCounts.cacheWriteTtl ? storageCounts.cacheWriteTtl.oneH : null
         );
       };
       // Join the caller's importer / lifecycle / sync transaction when given one;
@@ -683,20 +802,25 @@ export function createSqliteTokenUsageStore(prisma: DesktopPrisma) {
       await prisma.write((client) => client.$transaction((itx) => run(itx)));
     },
     async getBySession(sessionId: string): Promise<TokenUsageRow[]> {
-      const rows = await prisma.client.tokenUsage.findMany({
-        where: { sessionId },
-        select: {
-          sessionId: true,
-          model: true,
-          inputTokens: true,
-          outputTokens: true,
-          cacheReadTokens: true,
-          cacheWriteTokens: true,
-          createdAt: true,
-          costUsdEstimated: true,
-        },
-        orderBy: { model: "asc" },
-      });
+      const rows = await prisma.read((reader) =>
+        reader.tokenUsage.findMany({
+          where: { sessionId },
+          select: {
+            sessionId: true,
+            model: true,
+            inputTokens: true,
+            outputTokens: true,
+            cacheReadTokens: true,
+            cacheWriteTokens: true,
+            // FEA-3419: TTL subdivision for the local session-detail surface.
+            cacheWrite5mTokens: true,
+            cacheWrite1hTokens: true,
+            createdAt: true,
+            costUsdEstimated: true,
+          },
+          orderBy: { model: "asc" },
+        })
+      );
       // The token columns are BIGINT, so Prisma returns them as `bigint`;
       // toTokenUsageRow routes through readStorageTokenCount, which accepts
       // bigint and coerces to a JS-safe number (and preserves the shared cost
@@ -709,95 +833,12 @@ export function createSqliteTokenUsageStore(prisma: DesktopPrisma) {
           output_tokens: row.outputTokens,
           cache_read_tokens: row.cacheReadTokens,
           cache_write_tokens: row.cacheWriteTokens,
+          cache_write_5m_tokens: row.cacheWrite5mTokens,
+          cache_write_1h_tokens: row.cacheWrite1hTokens,
           created_at: row.createdAt,
           cost_usd_estimated: row.costUsdEstimated,
         })
       );
     },
   };
-}
-
-async function attachEstimatedCosts(
-  prisma: DesktopPrisma,
-  sessions: SessionWithAgents[]
-): Promise<void> {
-  if (sessions.length === 0) {
-    return;
-  }
-  const ids = sessions.map((s) => s.id);
-  // Typed reads on the single client: the per-session authoritative cost and the
-  // token rows the cost-resolution helpers fold over. `tokenUsage.findMany` is the
-  // typed form of the old selectTokenUsageRows; its BigInt columns map to the
-  // snake_case SqliteTokenUsageRow shape and token()-coerce below.
-  const costRows = await prisma.client.session.findMany({
-    where: { id: { in: ids } },
-    select: { id: true, costUsdEstimated: true },
-  });
-  const costBySession = new Map(
-    costRows
-      .filter((row) => row.costUsdEstimated != null)
-      .map((row) => [row.id, Number(row.costUsdEstimated)])
-  );
-  const tokenRows = await prisma.client.tokenUsage.findMany({
-    where: { sessionId: { in: ids } },
-    select: {
-      sessionId: true,
-      model: true,
-      inputTokens: true,
-      outputTokens: true,
-      cacheReadTokens: true,
-      cacheWriteTokens: true,
-      createdAt: true,
-      costUsdEstimated: true,
-    },
-    orderBy: [{ sessionId: "asc" }, { model: "asc" }],
-  });
-  const tokenRowsBySessionId = groupRowsBySessionId(
-    tokenRows.map((r) => ({
-      session_id: r.sessionId,
-      model: r.model,
-      input_tokens: r.inputTokens,
-      output_tokens: r.outputTokens,
-      cache_read_tokens: r.cacheReadTokens,
-      cache_write_tokens: r.cacheWriteTokens,
-      created_at: r.createdAt,
-      cost_usd_estimated: r.costUsdEstimated,
-    }))
-  );
-  for (const session of sessions) {
-    const estimatedCostUsd =
-      costBySession.get(session.id) ??
-      sumResolvedTokenUsageCosts(tokenRowsBySessionId.get(session.id) ?? []);
-    if (estimatedCostUsd !== undefined) {
-      session.estimatedCostUsd = estimatedCostUsd;
-    }
-  }
-}
-
-function sumResolvedTokenUsageCosts(
-  tokenRows: readonly SqliteTokenUsageRow[]
-): number | undefined {
-  let total = 0;
-  let hasCost = false;
-  for (const tokenRow of tokenRows) {
-    const estimatedCostUsd = resolveTokenUsageCostUsd({
-      ...tokenRow,
-      input_tokens: tokenCountValue(tokenRow.input_tokens, "cost.input"),
-      output_tokens: tokenCountValue(tokenRow.output_tokens, "cost.output"),
-      cache_read_tokens: tokenCountValue(
-        tokenRow.cache_read_tokens,
-        "cost.cache_read"
-      ),
-      cache_write_tokens: tokenCountValue(
-        tokenRow.cache_write_tokens,
-        "cost.cache_write"
-      ),
-    });
-    if (estimatedCostUsd === undefined) {
-      continue;
-    }
-    total += estimatedCostUsd;
-    hasCost = true;
-  }
-  return hasCost ? total : undefined;
 }

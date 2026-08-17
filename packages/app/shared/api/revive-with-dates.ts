@@ -1,53 +1,25 @@
-export function reviveWithDates(_key: string, value: unknown): unknown {
-  if (typeof value === "string") {
+import { isDateRevivalKey } from "./date-revival-keys";
+import { stringOnlyDateKeysForPath } from "./endpoint-date-revival";
+
+/**
+ * `JSON.parse` reviver for API responses.
+ *
+ * Converts an ISO-8601 string to a `Date` ONLY under a key that a type an API
+ * route serializes declares as a `Date` (ISS-5771). Before that gate this keyed
+ * off value shape alone, so every response field typed `string` but carrying an
+ * ISO timestamp — and every user-authored string that happened to look like one
+ * — became a `Date` at runtime while `tsc` still saw a `string`. See
+ * `date-revival-keys.ts` for what qualifies as a response contract, and for why
+ * a key allowlist is the only sound axis available to a JSON reviver.
+ */
+export function reviveWithDates(key: string, value: unknown): unknown {
+  if (typeof value === "string" && isDateRevivalKey(key)) {
     const result = RegEx.isoDate.exec(value);
     if (result) {
       return new Date(value);
     }
   }
   return value;
-}
-
-/**
- * Convert ISO date strings to Date objects in an already-parsed value.
- * Applies the same ISO 8601 regex as reviveWithDates (RegEx.isoDate below)
- * but walks an already-parsed object graph instead of acting as a
- * JSON.parse reviver, avoiding the overhead of re-serialization and
- * re-parsing.
- *
- * @param obj - The parsed object/value to process for date conversion
- * @returns The same object with ISO date strings converted to Date objects
- */
-export function reviveDatesInParsedData(obj: unknown): unknown {
-  if (typeof obj === "string") {
-    const result = RegEx.isoDate.exec(obj);
-    if (result) {
-      return new Date(obj);
-    }
-    return obj;
-  }
-
-  if (Array.isArray(obj)) {
-    return obj.map(reviveDatesInParsedData);
-  }
-
-  // Return Date objects as-is to avoid corruption
-  if (obj instanceof Date) {
-    return obj;
-  }
-
-  if (obj && typeof obj === "object" && obj !== null) {
-    const result: Record<string, unknown> = {};
-    // Use Object.keys() to only iterate over own enumerable properties
-    for (const key of Object.keys(obj)) {
-      result[key] = reviveDatesInParsedData(
-        (obj as Record<string, unknown>)[key]
-      );
-    }
-    return result;
-  }
-
-  return obj;
 }
 
 const RegEx = {
@@ -77,3 +49,25 @@ const RegEx = {
   isoDate:
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)(?:Z|(\+|-)([\d|:]*))?$/,
 };
+
+/**
+ * A `JSON.parse` reviver scoped to the endpoint the body came from (ISS-6208).
+ *
+ * The key allowlist answers "does SOME response contract declare this key a
+ * `Date`?", which is a repo-wide answer to a per-endpoint question: half those
+ * keys are declared `string` on other contracts and were being converted against
+ * them. Knowing the requested path lets the reviver drop a key that THIS
+ * endpoint declares only as a `string`. Anything the table does not describe
+ * keeps the unscoped behavior, so an unmatched path costs a fix, never a
+ * regression.
+ */
+export function createDateReviver(
+  requestPath: string
+): (key: string, value: unknown) => unknown {
+  const stringOnlyKeys = stringOnlyDateKeysForPath(requestPath);
+  if (stringOnlyKeys.size === 0) {
+    return reviveWithDates;
+  }
+  return (key: string, value: unknown): unknown =>
+    stringOnlyKeys.has(key) ? value : reviveWithDates(key, value);
+}

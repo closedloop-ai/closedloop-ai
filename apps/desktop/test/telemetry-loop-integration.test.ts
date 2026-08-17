@@ -21,15 +21,17 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { Observability } from "../src/main/observability.js";
-import { TELEMETRY_MAX_FIELD_BYTES } from "../src/main/telemetry-protocol.js";
-import type { EnrichedTelemetryEvent } from "../src/main/telemetry-service.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import { TELEMETRY_MAX_FIELD_BYTES } from "../src/main/telemetry/telemetry-protocol.js";
+import type { EnrichedTelemetryEvent } from "../src/main/telemetry/telemetry-service.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
+  _setKnownBinaryLocationsForResolverTest,
   resetShellPathCache,
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import { writeFakeClaudeScript } from "./helpers/fake-harness-artifacts.js";
 
 // Use unique high ports to avoid EADDRINUSE with other test files that use PORT_PROBE_ORDER (19432-19435)
 const TELEM_TEST_PORTS = [29_432, 29_433, 29_434, 29_435] as const;
@@ -55,6 +57,8 @@ afterEach(async () => {
     process.env.PATH = originalPath;
   }
   resetShellPathCache();
+  // Never leak a known-location resolver override into the next test.
+  _setKnownBinaryLocationsForResolverTest(null);
 
   if (originalHome === undefined) {
     delete process.env.HOME;
@@ -177,11 +181,7 @@ async function createFakeClaudeBin(
   exitCode: number
 ): Promise<void> {
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    `#!/bin/sh\nexit ${exitCode}\n`,
-    { mode: 0o755 }
-  );
+  await writeFakeClaudeScript(fakeBin, `#!/bin/sh\nexit ${exitCode}\n`);
 }
 
 function getClaudeBinaryPath(fakeBin: string): () => { claude: string } {
@@ -399,6 +399,12 @@ test("telemetry: preflight.binary_not_found emitted when claude is absent from P
   const emptyBin = path.join(tmpDir, "empty-bin");
   await fs.mkdir(emptyBin, { recursive: true });
   process.env.PATH = emptyBin;
+  // ISS-5114: PATH alone does not make claude absent — the known-location tier
+  // (FEA-3742) probes absolute paths such as /opt/homebrew/bin/claude directly.
+  // On a machine with claude installed the resolver found it, the preflight
+  // never emitted preflight.binary_not_found, and this test burned its full 20s
+  // wait before failing. Pin the tier empty so the precondition is the test's.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
   setShellPathForTest();
 
   const mock = await startMockApiServer();

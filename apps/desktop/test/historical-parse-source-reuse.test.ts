@@ -130,9 +130,16 @@ describe("historical parse source worker-collector reuse", () => {
 
     try {
       for (const source of sources) {
-        const sessions = await parseHistoricalSource(Harness.Codex, source);
+        const parsed = await parseHistoricalSource(Harness.Codex, source);
         // Every fixture rollout is a root session, so it parses to exactly one.
-        assert.equal(sessions.length, 1, `parsed ${path.basename(source)}`);
+        assert.equal(
+          parsed.sessions.length,
+          1,
+          `parsed ${path.basename(source)}`
+        );
+        // ISS-5266: a Codex parse carries no side-report — the field is OMITTED,
+        // not sent as an empty object, so old readers see an absent key.
+        assert.equal(parsed.withheldOpencodeSubagents, undefined);
       }
       assert.equal(
         built,

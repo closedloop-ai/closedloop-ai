@@ -1,7 +1,9 @@
 import {
   type TranscriptCompleteResponse,
+  TranscriptUploadStatus,
   transcriptCompleteRequestSchema,
 } from "@repo/api/src/types/desktop-transcripts";
+import { transcriptSearchIndexService } from "@/app/search/transcript-search-indexer";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { parseBody, successResponse } from "@/lib/route-utils";
 import { transcriptSyncService } from "../service";
@@ -38,6 +40,18 @@ export const POST = withAnyAuth<
   });
 
   if (result.ok) {
+    // FEA-3930: on a verified upload, best-effort index the transcript CONTENT
+    // into unified search — gated on the org's `searchIncludeTranscripts` and
+    // scoped to the MAIN file inside the indexer. Fail-open via `waitUntil`; a
+    // projection failure never affects the completed upload.
+    if (result.value.status === TranscriptUploadStatus.Uploaded) {
+      transcriptSearchIndexService.indexAfterCommit({
+        organizationId: user.organizationId,
+        computeTargetId: body.computeTargetId,
+        externalSessionId: body.externalSessionId,
+        fileKey: body.fileKey,
+      });
+    }
     return successResponse(result.value);
   }
   return transcriptErrorResponse(result.error);

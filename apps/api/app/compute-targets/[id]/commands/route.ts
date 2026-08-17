@@ -31,13 +31,16 @@ import {
   browserKeyRevocationReservedResponse,
   isReservedBrowserKeyRevocationCommand,
 } from "@/lib/browser-key-revocation-command";
-import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
 import {
   COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR,
-  CommandSigningEligibilityStatus,
-  isComputeTargetSigningEligible,
+  CommandSigningRequirementStatus,
+  resolveCommandSigningRequirement,
 } from "@/lib/compute-target-signing-eligibility";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
+import {
+  healthCheckRepairNotOwnedResponse,
+  isHealthCheckRepairCommand,
+} from "@/lib/health-check-repair-command";
 import {
   errorResponse,
   notFoundResponse,
@@ -163,22 +166,11 @@ async function resolveCommandSigningContext(input: {
   requesterClerkUserId?: string | null;
   targetOwnerClerkUserId?: string | null;
 }): Promise<CommandSigningContext> {
-  if (!hasDesktopCommandSigningEnforcement(input.capabilities)) {
-    return {
-      effectiveCommandSigning: false,
-      eligibilityUnknown: false,
-    };
-  }
-  const eligibility = await isComputeTargetSigningEligible({
-    organizationId: input.organizationId,
-    userId: input.targetUserId,
-    clerkUserId:
-      input.targetUserId === input.requesterUserId
-        ? (input.requesterClerkUserId ?? undefined)
-        : (input.targetOwnerClerkUserId ?? undefined),
-    gatewayId: input.targetGatewayId,
-  });
-  if (eligibility.status === CommandSigningEligibilityStatus.Unknown) {
+  const requirement = await resolveCommandSigningRequirement(input);
+  // This route's Unknown policy: proceed UNSIGNED but surface the warning to the
+  // client (the browser can still choose to sign). The member-pack dispatcher
+  // fails closed on Unknown instead — same shared requirement, different action.
+  if (requirement.status === CommandSigningRequirementStatus.Unknown) {
     return {
       effectiveCommandSigning: false,
       eligibilityUnknown: true,
@@ -186,7 +178,7 @@ async function resolveCommandSigningContext(input: {
   }
   return {
     effectiveCommandSigning:
-      eligibility.status === CommandSigningEligibilityStatus.Eligible,
+      requirement.status === CommandSigningRequirementStatus.Required,
     eligibilityUnknown: false,
   };
 }
@@ -388,6 +380,16 @@ async function prepareCommandDispatch(input: {
   const routeInput = body as CreateDesktopCommandInput;
   if (isReservedBrowserKeyRevocationCommand(routeInput)) {
     return { ok: false, response: browserKeyRevocationReservedResponse() };
+  }
+
+  // `findAccessibleById` above deliberately includes org-shared targets, and the
+  // validator accepts any /api/gateway/* path, so Repair needs its own owner
+  // check here — the app's relay forwarder only refuses it for UX (ISS-5389).
+  if (
+    isHealthCheckRepairCommand(routeInput) &&
+    target.userId !== input.user.id
+  ) {
+    return { ok: false, response: healthCheckRepairNotOwnedResponse() };
   }
 
   const signatureFields = extractSignatureFields(routeInput);

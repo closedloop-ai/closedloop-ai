@@ -7,7 +7,7 @@ import {
   getFakeUpdateFeedUrl,
   isFakeUpdateFeedActive,
   isPackagedUpdateFlowActive,
-} from "../src/main/fake-update-feed.js";
+} from "../src/main/update/fake-update-feed.js";
 
 describe("fake-update-feed seam (FEA-2099)", () => {
   test("getFakeUpdateFeedUrl trims and treats empty as unset", () => {

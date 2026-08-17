@@ -238,11 +238,108 @@ enum ArtifactType {
 
 // Narrower classification for DOCUMENT-typed artifacts (carries values that
 // used to live on the legacy DocumentType enum). Null for PRs and deployments.
+//
+// FEA-3956 (PRD-560 Phase 3): `ISSUE` is the canonical value for the Feature →
+// Issue rename, ADDED here (additive, non-destructive) so the column accepts it
+// from a skewed newer client. Per PRD-560 decision 2 existing rows are NOT
+// migrated — they stay stored as `FEATURE`, and the API/wire boundary maps the
+// canonical `ISSUE` input back to the persisted `FEATURE` in code
+// (`normalizeArtifactSubtype`). `FEATURE` remains a permanent compat alias;
+// removing it is Phase 4 (FEA-3957) and needs explicit human approval.
 enum ArtifactSubtype {
   PRD
   IMPLEMENTATION_PLAN
   TEMPLATE
   FEATURE
+  DOC
+  ISSUE
+}
+
+// =============================================================================
+// ROUTINES (FEA-4365 / PRD-566)
+// =============================================================================
+// Cloud/web-side persistence for scheduled Routines and their run history, so
+// Web and cross-machine surfaces have an org/team-scoped source of truth that
+// the desktop SQLite store (unreachable from cloud) can sync up to. The shapes
+// below are a SUPERSET mapping of the desktop crewd `ScheduledTask`/`RunRecord`
+// model (packages/crewd/src/model.ts) and are faithful to the frozen Routines
+// prototype (apps/prototypes/app/p/routines/mock.ts). Sibling FEA-4349 owns the
+// `@repo/app/routines` domain model; when that lands, the string enums here map
+// 1:1 to its const objects (see the RoutineProvider/RoutineStatus/etc. below).
+
+// Harness/provider that drives a routine. Superset of the prototype's
+// RoutineProvider (claude/codex); `opencode` is included to reconcile with the
+// crewd HarnessName enum so a desktop-origin routine on any crewd harness can
+// sync up without a lossy mapping.
+enum RoutineProvider {
+  CLAUDE
+  CODEX
+  OPENCODE
+}
+
+// Where a routine executes when it fires. Mirrors the prototype's RunsOn.
+enum RoutineRunsOn {
+  LOCAL
+  CLOUD
+}
+
+// How a routine came to exist: built by hand in the UI, or discovered already
+// configured on a teammate's dev machine and reported up centrally. Mirrors the
+// prototype's RoutineOrigin.
+enum RoutineOrigin {
+  CREATED
+  DISCOVERED
+}
+
+// Lifecycle status of a routine. Mirrors the prototype's RoutineStatus.
+enum RoutineStatus {
+  ACTIVE
+  PAUSED
+  DRAFT
+}
+
+// The kind of recurrence the schedule expresses. Mirrors the prototype's
+// ScheduleKind; `scheduleDetail`/`cron` carry the concrete timing.
+enum RoutineScheduleKind {
+  MANUAL
+  HOURLY
+  DAILY
+  WEEKDAYS
+  WEEKLY
+  CUSTOM
+}
+
+// When to notify on a run. Mirrors the prototype's NotifyMode.
+enum RoutineNotifyMode {
+  ALL_RUNS
+  FAILED_RUNS_ONLY
+}
+
+// Codex-only "Runs in" choice (continue an existing chat vs start a fresh one).
+// Mirrors the prototype's RunsIn; null for Claude/opencode routines.
+enum RoutineRunsIn {
+  NEW_CHAT
+  EXISTING_CHAT
+}
+
+// Outcome of a single routine run. Superset of the prototype's implicit run
+// states and the crewd RunStatus enum, so a desktop RunRecord maps 1:1.
+enum RoutineRunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  SKIPPED
+  TIMEOUT
+  CANCELED
+}
+
+// The kind of a component a routine run invoked, so a run can drill down into
+// the Agents & Skills inventory. Mirrors the prototype's ComponentKind.
+enum RoutineComponentKind {
+  SUBAGENT
+  COMMAND
+  SKILL
 }
 
 // =============================================================================
@@ -275,6 +372,23 @@ model Organization {
   claudeApiKeyLastFour  String?   @map("claude_api_key_last_four")
   claudeApiKeySetAt     DateTime? @map("claude_api_key_set_at")
   settings              Json      @default("{}") // settings.computeMode deprecated -- use User.preferredComputeMode instead
+  // Privacy gate for unified search over AI session transcript CONTENT (FEA-3930,
+  // parent FEA-3800). Default false: transcript text (which can carry source,
+  // secrets, and prompts) is NOT indexed into `search_document` or returned by the
+  // FTS query unless an org admin opts in. Both the write-time indexer and the
+  // query path check this flag, so flipping it off stops new indexing and hides
+  // any `agent_session` rows left from when it was on.
+  searchIncludeTranscripts Boolean @default(false) @map("search_include_transcripts")
+  // FEA-4169: server-owned ORG POLICY gating whether local desktop session data
+  // (session metadata + transcripts) may sync to the cloud at all. This is the
+  // OUTER gate ABOVE per-device sync consent (PRD-542/FEA-4103) — when false, NO
+  // session data egresses from any of the org's desktops regardless of the tier a
+  // user picked locally. Default false (privacy-safe): an org must be explicitly
+  // enabled before any session data leaves the machine. Enabled for the internal
+  // Closedloop org by data migration. Surfaced to the desktop through
+  // `GET /desktop/identity`; older desktops that don't read it degrade to the
+  // prior device-consent behavior (the field is additive/optional on the wire).
+  sessionSyncPolicyEnabled Boolean @default(false) @map("session_sync_policy_enabled")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
@@ -298,18 +412,30 @@ model Organization {
   repoBootstrapConfigs      RepoBootstrapConfig[]
   userPublicKeys            UserPublicKey[]
   agentComponents           AgentComponent[]
+  agentComponentVersions    AgentComponentVersion[]
+  definitionVersions        DefinitionVersion[]
+  sourceOccurrences         SourceOccurrence[]
   catalogItems              CatalogItem[]
   distributions             Distribution[]
   publicRepositories        PublicRepository[]
   externalCommentAuthors    ExternalCommentAuthor[]
   githubUserConnections     GitHubUserConnection[]
+  githubAccessCapabilities  GitHubAccessCapability[]
+  githubRepoSyncStates      GitHubRepoSyncState[]
   tags                      Tag[]
   linearSubtasks            LinearSubtask[]
   desktopSessions           DesktopSession[]
   githubDirtyScopeNudges    GitHubDirtyScopeNudge[]
   branchDetails             BranchDetail[]
+  branchActivityAtoms       BranchActivityAtom[]
   pullRequestDetails        PullRequestDetail[]
+  repositoryDefaultObservationReceipts RepositoryDefaultObservationReceipt[]
   commitDetails             CommitDetail[]
+  auditEntries              AuditEntry[]
+  auditOutboxEntries        AuditOutbox[]
+  routines                  Routine[]
+  routineRuns               RoutineRun[]
+  deploymentEvents          DeploymentEvent[]
 
   @@map("organizations")
 }
@@ -367,7 +493,10 @@ model User {
   createdCatalogItems         CatalogItem[]                       @relation("CatalogItemCreatedBy")
   changedCatalogItemVersions  CatalogItemVersion[]                @relation("CatalogItemVersionChangedBy")
   createdDistributions        Distribution[]                      @relation("DistributionCreatedBy")
+  withdrawnDistributions      Distribution[]                      @relation("DistributionWithdrawnBy")
   distributionTargetStatuses  DistributionTargetStatus[]          @relation("DistributionTargetStatusUser")
+  definitionVersionEdits      DefinitionVersionEditor[]           @relation("DefinitionVersionEditor")
+  ownedRoutines               Routine[]                           @relation("RoutineOwner")
 
   @@unique([organizationId, email])
   @@unique([clerkId, organizationId])
@@ -403,7 +532,18 @@ model ComputeTarget {
   capabilities           Json      @default("{}")
   supportedOperations    Json      @default("[]") @map("supported_operations")
   lastSeenAt             DateTime  @default(now()) @map("last_seen_at")
+  // ISS-4678: the LANDED-DATA watermark. Advances ONLY when session rows
+  // actually persisted, so an accepted empty / all-foreign-chunk batch leaves it
+  // alone. Read as "last INGEST" — not "last successful sync" (ISS-4828).
   lastAgentSessionSyncAt DateTime? @map("last_agent_session_sync_at")
+  // ISS-4827: the ATTEMPT watermark. Stamped on EVERY accepted session batch,
+  // including the zero-row batches `lastAgentSessionSyncAt` deliberately
+  // ignores. Together the pair separates a desktop that is reaching the cloud
+  // but whose data is not landing (attempt fresh, ingest stale => STALLED) from
+  // one that is merely open and idle (both stale => QUIET). `lastSeenAt` cannot
+  // do this: it is refreshed by registration/heartbeat/online check-ins on a
+  // ~30-90s cadence with no ingest attempt behind it.
+  lastAgentSessionSyncAttemptAt DateTime? @map("last_agent_session_sync_attempt_at")
   isOnline               Boolean   @default(false) @map("is_online")
   isSharedWithOrg        Boolean   @default(false) @map("is_shared_with_org")
   // FEA-2923 (Gap A): marks a synthetic per-org "cloud" compute target that
@@ -432,6 +572,7 @@ model ComputeTarget {
   githubDirtyScopeNudges              GitHubDirtyScopeNudge[]
   healthCheck                         ComputeTargetHealthCheck?
   agentComponents                     AgentComponent[]
+  sourceOccurrences                   SourceOccurrence[]
   distributionTargetStatuses          DistributionTargetStatus[]
   distributionTargetingEntries        DistributionTargetingEntry[]
 
@@ -444,6 +585,18 @@ model ComputeTarget {
   @@index([organizationId, userId, gatewayId])
   @@index([userId, isOnline])
   @@index([organizationId, isSharedWithOrg])
+  // NOTE (ISS-4543): two PARTIAL indexes on (organizationId,
+  // lastAgentSessionSyncAt) and (organizationId), each scoped by
+  // is_cloud_sentinel + a last_agent_session_sync_at IS [NOT] NULL predicate,
+  // back the /cron/sample-session-ingestion-health scan. Prisma cannot express
+  // partial indexes, so they are maintained via raw migration and are NOT
+  // declared as @@index here (a full @@index would not match, causing drift).
+  // See migration: 20260731130000_iss4543_compute_target_ingestion_health_scan_index
+  // NOTE (ISS-4832): a third PARTIAL index on (organizationId, lastSeenAt)
+  // INCLUDE (lastAgentSessionSyncAttemptAt) WHERE is_cloud_sentinel = false
+  // backs the same cron's per-org presence/attempt scan (`loadPresenceByOrg`).
+  // Also raw-migration-maintained for the same partial-index reason.
+  // See migration: 20260802190000_iss4832_compute_target_heartbeat_group_index
   @@map("compute_targets")
 }
 
@@ -490,6 +643,12 @@ model SessionDetail {
   // plan, from the desktop's billing_mode column). Opaque string; the usage
   // cost split classifies it for DESKTOP_SYNC sessions that have no source Loop.
   billingMode        String?       @map("billing_mode")
+  // ISS-4586: whether the desktop run ended on an unrecovered error (the
+  // desktop's `ends_with_error` flag, synced additively). The stale-session
+  // reaper reads it to declare an orphaned still-active session ERROR vs INACTIVE
+  // without re-deriving from events. Nullable: absent for pre-ISS-4586 rows and
+  // for older desktop builds that don't sync it (treated as not-error → INACTIVE).
+  endsWithError      Boolean?      @map("ends_with_error")
   cwd                String?
   repositoryFullName String?       @map("repository_full_name")
   worktreePath       String?       @map("worktree_path")
@@ -552,25 +711,62 @@ model SessionDetail {
   errorCount         Int           @default(0) @map("error_count")
   metadata           Json?
   agents             Json          @default("[]")
+  // FEA-3928: raw, UNBOUNDED additive frustration signal computed by the desktop
+  // (frustration words + shouting + pleading punctuation + nearby errors +
+  // steering/corrections/loopbacks/throttles). Stored raw — NOT a pre-normalized
+  // 0–100 score — because the 0..max→0..100 normalization is done at Insights
+  // aggregation time against the org population's observed max, which drifts as
+  // more sessions land. frustrationScoreVersion records the scorer version that
+  // produced the value. Both nullable, no default: an existing/unscored row is
+  // NULL ("not computed").
+  frustrationRaw          Int?      @map("frustration_raw")
+  frustrationScoreVersion Int?      @map("frustration_score_version")
   dataRevision       Int?          @map("data_revision")
+  // FEA-3474 (PRD-536 D3): staged identity of an in-progress chunked-apply
+  // sequence, recorded by the FIRST chunk's delete-replace and cleared when the
+  // matching LAST chunk commits the revision. Makes the chunked apply atomic and
+  // all-or-nothing:
+  //   - pendingChunkRevision — the dataRevision chunk 0 started rebuilding. The
+  //     last chunk commits dataRevision ONLY when its own revision equals this
+  //     marker (the same sequence chunk 0 opened), so a stale/out-of-order chunk
+  //     from a DIFFERENT revision can never satisfy the commit and leave a
+  //     half-session masquerading as a complete revision.
+  //   - pendingChunkTotal — that sequence's chunk count (`chunk.total`).
+  //   - pendingChunkReceived — the highest CONTIGUOUS chunk index seen + 1 (how
+  //     many leading chunks arrived), so a dropped interior chunk keeps this
+  //     below total and the last chunk cannot commit over a gap.
+  // All three are NULL when no chunked sequence is mid-apply (the steady state
+  // and every unchunked session).
+  pendingChunkRevision Int?        @map("pending_chunk_revision")
+  pendingChunkTotal    Int?        @map("pending_chunk_total")
+  pendingChunkReceived Int?        @map("pending_chunk_received")
   lastSyncedAt       DateTime      @default(now()) @map("last_synced_at")
   createdAt          DateTime      @default(now()) @map("created_at")
   updatedAt          DateTime      @updatedAt @map("updated_at")
 
-  artifact           Artifact                         @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  user               User?                            @relation(fields: [userId], references: [id], onDelete: SetNull)
-  computeTarget      ComputeTarget                    @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
-  tokenUsageByModel  AgentSessionTokenUsage[]
-  events             AgentSessionEvent[]
-  tokenEvents        AgentSessionTokenEvent[]
-  usageRollup        AgentSessionUsageRollup?
-  sessionTranscripts SessionTranscript[]
-  componentUsages    AgentComponentSessionUsage[]
+  artifact              Artifact                             @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  user                  User?                                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  computeTarget         ComputeTarget                        @relation(fields: [computeTargetId], references: [id], onDelete: Restrict)
+  tokenUsageByModel     AgentSessionTokenUsage[]
+  events                AgentSessionEvent[]
+  tokenEvents           AgentSessionTokenEvent[]
+  usageRollup           AgentSessionUsageRollup?
+  sessionTranscripts    SessionTranscript[]
+  componentUsages       AgentComponentSessionUsage[]
+  invocationGenerations AgentComponentInvocationGeneration[]
+  activitySegmentRows   AgentSessionActivitySegment[]
 
   @@unique([computeTargetId, externalSessionId])
   @@index([sessionStartedAt])
   @@index([userId, sessionStartedAt])
   @@index([harness, sessionStartedAt])
+  // FEA-4303: the Sessions Model filter adds `WHERE model IN (...)` to the
+  // session-list query (see query-builder.ts), combined with the
+  // session_started_at sort/window. Mirrors the equality-facet shape of
+  // @@index([harness, sessionStartedAt]) so the planner drives from the model
+  // predicate with the start-date range on the same index instead of a
+  // sequential scan as session_detail grows.
+  @@index([model, sessionStartedAt], map: "session_detail_model_started_at_idx")
   @@index([computeTargetId, sessionUpdatedAt])
   @@index([computeTargetId, lastActivityAt])
   @@index([lastActivityAt])
@@ -583,6 +779,27 @@ model SessionDetail {
   // facet index. autonomy is nullable ("unknown" tier = IS NULL). (FEA-2504)
   @@index([autonomy])
   @@index([estimatedCost])
+  // FEA-3638 (insights perf, Tier-1): the org-scope session / cost / runtime / tool
+  // aggregations join session_detail → artifacts (for the org predicate) and window
+  // on session_started_at. Today only @@index([sessionStartedAt]) (org-blind) and
+  // @@index([userId, sessionStartedAt]) (me-scope) exist, so the org-scope planner
+  // scans the whole time window across ALL orgs then filters by org post-join. This
+  // additive composite lets the planner drive from the org's artifacts (artifact_id
+  // is the PK) with the session_started_at range on the same index, serving the
+  // session→artifact two-hop that also underlies the agent token-usage aggregates.
+  // Additive / no-result-change; direction to be confirmed by EXPLAIN on a seeded DB.
+  @@index([artifactId, sessionStartedAt])
+  // FEA-1718 back-link: `source_loop_id` is the ONLY column recording which Loop
+  // a session came from, and every reverse read of that lineage — "which session
+  // materialized loop X" — had no index at all, so each lookup sequentially
+  // scanned session_detail. The one-time `Loop.session_artifact_id` backfill
+  // groups the whole table by this column, and the loops-list read path resolves
+  // it per page (up to 1000 loops), so the scan cost is paid repeatedly rather
+  // than once. Single-column (not composite with a date) because every reader is
+  // an equality lookup on the loop id, matching the repositoryFullName facet
+  // shape above. Nullable: a desktop-only session carries NULL and is simply not
+  // in the index's useful population.
+  @@index([sourceLoopId], map: "session_detail_source_loop_id_idx")
   @@map("session_detail")
 }
 
@@ -607,8 +824,17 @@ model SessionTranscript {
   // `main` for the session transcript, `subagent:{fileId}` for sidechain files.
   fileKey                String    @map("file_key")
   objectStorageKey       String    @map("object_storage_key")
-  // pending | uploading | uploaded | failed
+  // pending | uploading | uploaded | failed | skipped
+  // `skipped` (FEA-3476) is a terminal, non-retryable state: the desktop
+  // deterministically will not upload this file (e.g. it exceeds the local size
+  // cap). The read path derives `failedPermanent` from it (vs the retryable
+  // `failed` -> `failedTransient`), so a never-coming transcript stops showing
+  // as "syncing". The reason lives on `permanentFailureReason`.
   uploadStatus           String    @default("pending") @map("upload_status")
+  // FEA-3476: why a `skipped` row is permanently absent (e.g. `too_large`).
+  // Null for every non-`skipped` row. Free-text TEXT matching the
+  // `TranscriptSkipReason` contract enum in @repo/api.
+  permanentFailureReason String?   @map("permanent_failure_reason")
   // Archive identity (client-computed sha256); set once verified on complete.
   rawSha256              String?   @map("raw_sha256")
   // S3-verified full-object CRC64NVME checksum; set on complete.
@@ -637,8 +863,19 @@ model SessionTranscript {
 
   // Session identity (matches SessionDetail) plus the per-file discriminator.
   @@unique([computeTargetId, externalSessionId, fileKey])
-  @@index([organizationId])
+  // NOTE: the standalone @@index([organizationId]) was dropped in
+  // 20260722000001_prd536_g7_drop_redundant_org_index — the PRD-536 G7 composite
+  // below leads with organizationId, so any org-only-prefixed query is served by
+  // the composite's leading column, making a separate single-column org index
+  // redundant write/storage overhead on this hot table.
   @@index([sessionDetailId])
+  // PRD-536 G7: the transcript identity read (transcript-read-service /
+  // agent-sessions service, via `sessionTranscriptIdentityWhere`) filters on
+  // (organizationId, computeTargetId, externalSessionId) and orders by fileKey.
+  // The unique key leads with computeTargetId, so it can't org-prefix this read
+  // and large orgs scan. This composite leads with organizationId and co-locates
+  // the full predicate + sort so the read is index-served.
+  @@index([organizationId, computeTargetId, externalSessionId, fileKey])
   @@map("session_transcript")
 }
 
@@ -671,6 +908,11 @@ model AgentSessionTokenUsage {
   outputTokens     BigInt   @default(0) @map("output_tokens")
   cacheReadTokens  BigInt   @default(0) @map("cache_read_tokens")
   cacheWriteTokens BigInt   @default(0) @map("cache_write_tokens")
+  /// FEA-3419: cache-write TTL subdivision (5-minute vs 1-hour ephemeral
+  /// writes). NULL = the desktop never reported a breakdown (legacy sessions,
+  /// non-Claude harnesses, pre-TTL builds); explicit 0 = reported zero.
+  cacheWrite5mTokens BigInt? @map("cache_write_5m_tokens")
+  cacheWrite1hTokens BigInt? @map("cache_write_1h_tokens")
   estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(14, 6)
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
@@ -684,11 +926,10 @@ model AgentSessionTokenUsage {
 
 /// FEA-2730 (PRD-510 FR4 G1): raw per-event token usage synced from the
 /// desktop's keep-all `token_events` log (retention/rollup deferred, Q3).
-/// Append-only and idempotent: the desktop source table has no primary key, so
-/// `externalEventId` is a content hash the desktop synthesizes per row (mirrors
-/// the SessionActivitySegment.id precedent), and the
-/// `@@unique([agentSessionId, externalEventId])` + createMany(skipDuplicates)
-/// makes re-sync a no-op.
+/// Append-only and idempotent: `externalEventId` is the provider-neutral stable
+/// transport identity. The unique constraint is the replay boundary; immutable
+/// content collisions fail closed while mutable provenance/cost enrichment may
+/// advance on a fresh replay.
 ///
 /// D4 (PRD-510) decision — this table is JOIN-REACHED, so it carries NO
 /// `organizationId` and no org-wide index. Org isolation is enforced through the
@@ -712,7 +953,12 @@ model AgentSessionTokenEvent {
   outputTokens     BigInt   @default(0) @map("output_tokens")
   cacheReadTokens  BigInt   @default(0) @map("cache_read_tokens")
   cacheWriteTokens BigInt   @default(0) @map("cache_write_tokens")
-  estimatedCost    Decimal  @default(0) @map("estimated_cost") @db.Decimal(14, 6)
+  estimatedCost    Decimal? @map("estimated_cost") @db.Decimal(14, 6)
+  sourceIdentity   Json?    @map("source_identity")
+  costCompleteness String?  @map("cost_completeness")
+  costCompletenessReason String? @map("cost_completeness_reason")
+  subscriptionEquivalentCost Decimal? @map("subscription_equivalent_cost") @db.Decimal(14, 6)
+  apiEstimatedCost Decimal? @map("api_estimated_cost") @db.Decimal(14, 6)
   eventCreatedAt   DateTime @map("event_created_at")
   createdAt        DateTime @default(now()) @map("created_at")
 
@@ -721,6 +967,45 @@ model AgentSessionTokenEvent {
   @@unique([agentSessionId, externalEventId])
   @@index([agentSessionId, eventCreatedAt])
   @@map("agent_session_token_events")
+}
+
+/// FEA-3568 (PLN-1398 T2): the desktop-local activity-segment tiling
+/// (`session_lis`, FEA-2267) replicated to the cloud so the web /
+/// authenticated-parity surfaces (FEA-2275 / FEA-2276) can read per-activity
+/// attribution. Rows are stored VERBATIM — the cloud NEVER re-classifies
+/// (PLN-1398 design decision 4). Ingestion is replace-all per session inside the
+/// session upsert transaction (design decision 3), so no reader ever sees a
+/// mixed-version tiling; `classifierVersion` rides per row as the re-derivation
+/// key.
+///
+/// No `organizationId`: this table is JOIN-REACHED — org isolation is enforced
+/// through the `session → artifact.organizationId` relation, exactly as its
+/// sibling `AgentSessionTokenEvent` (D4 precedent). Every cloud read enters
+/// through a SessionDetail join. `start_ms`/`end_ms` are absolute epoch-ms and so
+/// are `BigInt` (int8) — epoch-ms overflows int4. The unique
+/// `[agentSessionId, startMs]` is the natural key under a complete,
+/// non-overlapping tiling; the `[agentSessionId]` index covers the per-session
+/// read and the replace-all delete.
+model AgentSessionActivitySegment {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  agentSessionId    String   @map("agent_session_id") @db.Uuid
+  phase             String
+  startMs           BigInt   @map("start_ms")
+  endMs             BigInt   @map("end_ms")
+  confidence        Float
+  /// Ranked evidence-layer names ("declared"/"structural"); empty for `idle` and
+  /// evidence-free `other` spans. Layer names only — no prose on this lane.
+  evidenceLayers    Json     @map("evidence_layers")
+  classifierVersion Int      @map("classifier_version")
+  workItemRef       String?  @map("work_item_ref")
+  subagentId        String?  @map("subagent_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  session SessionDetail @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+
+  @@unique([agentSessionId, startMs])
+  @@index([agentSessionId])
+  @@map("agent_session_activity_segments")
 }
 
 /// FEA-2730 (PRD-510 FR4 G10): the desktop's one-row-per-session usage rollup
@@ -879,6 +1164,10 @@ model DesktopSession {
   @@index([userId])
   @@index([organizationId])
   @@index([expiresAt])
+  // Supports findActiveDeviceSession (PRD-532 PR-K): newest live session for a
+  // given user/org/gateway. Leading equality columns userId/organizationId/
+  // gatewayId; revokedAt narrows to non-revoked rows.
+  @@index([userId, organizationId, gatewayId, revokedAt])
   @@map("desktop_sessions")
 }
 
@@ -903,23 +1192,22 @@ model DesktopRefreshToken {
 }
 
 model Project {
-  id                  String        @id @default(uuid(7)) @db.Uuid
-  organizationId      String        @map("organization_id") @db.Uuid
-  name                String
-  description         String?
-  priority            Priority      @default(MEDIUM)
-  status              ProjectStatus @default(NOT_STARTED)
-  assigneeId          String?       @map("assignee_id") @db.Uuid
-  createdById         String        @map("created_by_id") @db.Uuid
-  slug                String?
-  targetDate          DateTime?     @map("target_date")
-  codebaseSummary     String?       @map("codebase_summary")
-  lastIndexedAt       DateTime?     @map("last_indexed_at")
-  settings            Json          @default("{}")
-  sortOrder           Int?          @map("sort_order")
-  isTemplatesSentinel Boolean       @default(false) @map("is_templates_sentinel")
-  createdAt           DateTime      @default(now()) @map("created_at")
-  updatedAt           DateTime      @updatedAt @map("updated_at")
+  id              String        @id @default(uuid(7)) @db.Uuid
+  organizationId  String        @map("organization_id") @db.Uuid
+  name            String
+  description     String?
+  priority        Priority      @default(MEDIUM)
+  status          ProjectStatus @default(NOT_STARTED)
+  assigneeId      String?       @map("assignee_id") @db.Uuid
+  createdById     String        @map("created_by_id") @db.Uuid
+  slug            String?
+  targetDate      DateTime?     @map("target_date")
+  codebaseSummary String?       @map("codebase_summary")
+  lastIndexedAt   DateTime?     @map("last_indexed_at")
+  settings        Json          @default("{}")
+  sortOrder       Int?          @map("sort_order")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
   // Relations
   organization Organization      @relation(fields: [organizationId], references: [id])
@@ -933,7 +1221,6 @@ model Project {
   @@unique([organizationId, slug])
   @@index([assigneeId])
   @@index([createdById])
-  @@index([organizationId, isTemplatesSentinel])
   @@map("projects")
 }
 
@@ -954,6 +1241,7 @@ model Team {
   members      TeamMember[]
   projects     ProjectTeam[]
   repositories TeamRepository[]
+  routines     Routine[]
 
   @@unique([organizationId, slug])
   @@map("teams")
@@ -1080,12 +1368,29 @@ model DocumentVersion {
 model Artifact {
   id             String           @id @default(uuid(7)) @db.Uuid
   organizationId String           @map("organization_id") @db.Uuid
-  // Nullable so machine-generated SESSION artifacts captured outside any project
-  // can exist unparented. The project requirement for DOCUMENT/BRANCH/DEPLOYMENT
-  // is enforced at the service layer (apps/api), not the column.
+  // Nullable for EVERY artifact type — there is no storage-level project
+  // requirement (FEA-1749). Whether a given type is *creatable* without a
+  // project is decided by the entry points (route validators, the UI, the MCP
+  // schemas), not by storage. In practice today only SESSIONs, desktop-captured
+  // BRANCHes, and TEMPLATEs are unparented, because the document create paths
+  // still require a project.
+  //
+  // A CHECK ("type" = 'SESSION' OR "project_id" IS NOT NULL) used to enforce the
+  // old invariant here. It was dropped in
+  // 20260715210000_allow_unparented_artifacts_and_retire_templates_sentinel.
+  // Note that Prisma does not model CHECK constraints, so a constraint on this
+  // table would NOT be visible in this file — check the raw migrations before
+  // assuming the column is unconstrained.
   projectId      String?          @map("project_id") @db.Uuid
   type           ArtifactType
   subtype        ArtifactSubtype?
+  /// ISS-4532: denormalized mirror of document_detail.template_for_type so the
+  /// "one template per (org, type)" invariant is a single-table partial unique
+  /// index (restores the index dropped in 20260212212450). Set only for
+  /// TEMPLATE artifacts, by the single writer ensureDefaultTemplates.
+  /// NOTE: the partial unique index artifacts_org_template_for_type_key is
+  /// maintained via raw migration — Prisma cannot express partial unique indexes.
+  templateForType ArtifactSubtype? @map("template_for_type")
   name           String
   slug           String?
   assigneeId     String?          @map("assignee_id") @db.Uuid
@@ -1122,6 +1427,7 @@ model Artifact {
   targetLinks               ArtifactLink[]                     @relation("ArtifactLinkTarget")
   ratings                   ArtifactRating[]
   evaluations               ArtifactEvaluation[]
+  activityEvents            ArtifactActivityEvent[]
   commentThreads            CommentThread[]
   fileAttachments           FileAttachment[]
   loops                     Loop[]
@@ -1135,6 +1441,20 @@ model Artifact {
   @@index([organizationId, projectId, sortOrder])
   @@index([organizationId, type, status])
   @@index([organizationId, assigneeId])
+  // My Tasks assigned-artifact paging (FEA-4373): the bounded list filters on
+  // (organizationId, assigneeId) and orders by (createdAt desc, id desc). The
+  // filter-only index above can't serve the sort, so offset paging over a large
+  // assigned set would scan+sort the whole set; this composite covers the full
+  // predicate + order so paging stays index-ordered.
+  @@index([organizationId, assigneeId, createdAt(sort: Desc), id(sort: Desc)], map: "artifacts_org_assignee_created_id_idx")
+  // My Tasks recency window (FEA-1626): the bounded list can additionally filter
+  // on `updatedAt >= cutoff`. The composite above gets Postgres to the right rows
+  // by org+assignee, but `updated_at` is not in it, so every one of those rows is
+  // then rechecked — the same full scan of the assigned set the window exists to
+  // avoid, just with the filter applied after the scan instead of before
+  // (thadeusb review). Leading with the window column lets the range scan stop
+  // early on a power user's multi-year history.
+  @@index([organizationId, assigneeId, updatedAt(sort: Desc)], map: "artifacts_org_assignee_updated_idx")
   @@index([organizationId, createdById])
   @@map("artifacts")
 }
@@ -1180,12 +1500,14 @@ model BranchDetail {
   headSha                       String?      @map("head_sha")
   headShaSource                 String?      @map("head_sha_source")
   headShaObservedAt             DateTime?    @map("head_sha_observed_at")
-  // Genuine-activity timestamp for the branch: monotonic GREATEST() of real
-  // git/GitHub events — a pushed commit (headShaObservedAt), PR open/merge/close,
-  // and PR review submission. Deliberately NOT bumped by CI check runs, file/
-  // checks cache refreshes, sync bookkeeping, or session activity. Default sort
-  // for the Branches list. Nullable for pre-backfill rows; readers fall back to
-  // the Artifact createdAt.
+  // Genuine-activity timestamp for the branch: monotonic GREATEST() of canonical
+  // provider events with trustworthy occurrence time — PR open/merge/close,
+  // review/comment activity, completed CI checks, and deployment statuses.
+  // Push receipt/head observation alone is not an occurrence timestamp. File or
+  // checks-cache refreshes and sync bookkeeping never bump it; attributable
+  // monitored-Session source events do.
+  // Default sort for the Branches list. Nullable for pre-backfill rows; readers
+  // fall back to the Artifact createdAt.
   lastActivityAt                DateTime?    @map("last_activity_at")
   lastPushBeforeSha             String?      @map("last_push_before_sha")
   // Explicit set-once push state (PRD-510 FR2, mirroring FEA-2531 Phase C).
@@ -1238,11 +1560,14 @@ model BranchDetail {
   fileChanges              BranchFileChange[]
   statusChecks             BranchStatusCheck[]
   githubCommentProjections GitHubCommentThreadProjection[]
+  activityAtoms            BranchActivityAtom[]
 
   // PRD-510 D2 branch identity: one row per (org, normalized repo full name,
   // branch name) — uniform across producers, independent of App installation.
   // Explicit map: the default name exceeds Postgres's 63-char identifier limit.
   @@unique([organizationId, repositoryFullName, branchName], map: "branch_detail_org_repo_full_name_branch_key")
+  // Composite ownership target for organization-scoped activity evidence.
+  @@unique([organizationId, artifactId], map: "branch_detail_org_artifact_key")
   // FR12 display predicate: org-scoped scans filtering on push evidence.
   @@index([organizationId, firstPushedAt], map: "branch_detail_org_first_pushed_at_idx")
   @@index([repositoryId, headSha])
@@ -1255,6 +1580,31 @@ model BranchDetail {
   @@index([checkRunRetryState, checkRunRetryNextAt], map: "branch_detail_check_run_retry_due_idx")
   @@index([repositoryId, checkRunRetryHeadSha], map: "branch_detail_check_run_retry_repo_head_idx")
   @@map("branch_detail")
+}
+
+// ISS-6058: immutable provenance-bearing activity observations. Producers keep
+// exact source identity and occurrence/completion time here while continuing to
+// advance BranchDetail.lastActivityAt for deployment-skew compatibility.
+model BranchActivityAtom {
+  id                   String   @id @default(uuid(7)) @db.Uuid
+  version              Int
+  organizationId       String   @map("organization_id") @db.Uuid
+  branchArtifactId     String   @map("branch_artifact_id") @db.Uuid
+  source               String   @db.VarChar(128)
+  sourceEventId        String   @map("source_event_id") @db.VarChar(512)
+  occurredAt           DateTime @map("occurred_at")
+  attributionKind      String   @map("attribution_kind") @db.VarChar(32)
+  pullRequestDetailId  String?  @map("pull_request_detail_id") @db.Uuid
+  completeness         String   @db.VarChar(32)
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "branch_activity_atoms_organization_fkey")
+  branch            BranchDetail       @relation(fields: [organizationId, branchArtifactId], references: [organizationId, artifactId], onDelete: Cascade, map: "branch_activity_atoms_branch_fkey")
+  pullRequestDetail PullRequestDetail? @relation(fields: [organizationId, pullRequestDetailId], references: [organizationId, id], onDelete: Cascade, map: "branch_activity_atoms_pull_request_fkey")
+
+  @@unique([organizationId, branchArtifactId, source, sourceEventId], map: "branch_activity_atoms_dedupe_key")
+  @@index([organizationId, branchArtifactId, occurredAt(sort: Desc), source, sourceEventId], map: "branch_activity_atoms_latest_idx")
+  @@map("branch_activity_atoms")
 }
 
 // Bounded current-head GitHub status/check context projection for Branch View.
@@ -1322,9 +1672,58 @@ model PullRequestDetail {
   changedFiles           Int?            @map("changed_files")
   reviewDecision         ReviewDecision? @map("review_decision")
   isCurrent              Boolean         @default(false) @map("is_current")
+  // FEA-3552: the GitHub PR `created_at` — when the PR was actually raised. The
+  // branch/PR timeline's "PR opened" lifecycle dot anchors here (distinct from the
+  // "PR merged" dot at `mergedAt`). Additive & nullable: it fills forward from the
+  // webhook/fetch/desktop-sync producers as PRs are (re)projected; historical rows
+  // written before this column stay null (no opened dot) rather than being
+  // fabricated from another timestamp. Replaces the FEA-3457 `openedAt: null`
+  // cloud deferral so cloud reaches desktop's opened+merged parity.
+  githubCreatedAt        DateTime?       @map("github_created_at")
+  // PLN-1535 M1: the GitHub PR `updated_at` — the reconciler's recency boundary.
+  // It fetches PRs UPDATED_AT DESC (bounded pages) and refreshes those newer than
+  // the repo's stored watermark, then advances the watermark; reopened PRs bump
+  // updatedAt so terminal gating needs no special case. Additive & nullable:
+  // fills forward from the webhook/fetch producers; historical rows stay null.
+  githubUpdatedAt        DateTime?       @map("github_updated_at")
   closedAt               DateTime?       @map("closed_at")
   mergedAt               DateTime?       @map("merged_at")
   mergeCommitSha         String?         @map("merge_commit_sha")
+  // PLN-1535 M1: the PR head commit oid (GraphQL `headRefOid`). Additive &
+  // nullable; completes the projection contract the reconciler writes. Distinct
+  // from BranchDetail.headSha (the branch ref head) — this is the PR's head at
+  // last projection.
+  headRefOid             String?         @map("head_ref_oid")
+  // ISS-6541: provider-reported PR head ref name. Nullable and
+  // omission-preserving so legacy or provenance-poorer projections fail closed
+  // instead of inferring publication from the owning Branch row.
+  headRefName            String?         @map("head_ref_name")
+  // ISS-5826: provider-authoritative snapshot of the PR head repository. This
+  // stays independent from repositoryId/repositoryFullName above, which identify
+  // the base/event repository. Every field is nullable for legacy and
+  // version-skewed producers; missing evidence must never imply the base repo.
+  headRepositoryGithubId                       String?   @map("head_repository_github_id")
+  headRepositoryFullName                       String?   @map("head_repository_full_name")
+  headRepositoryDefaultBranchName              String?   @map("head_repository_default_branch_name")
+  headRepositoryDefaultBranchAvailability      String?   @map("head_repository_default_branch_availability") @db.VarChar(32)
+  headRepositoryDefaultBranchCompleteness      String?   @map("head_repository_default_branch_completeness") @db.VarChar(32)
+  headRepositoryDefaultBranchReason            String?   @map("head_repository_default_branch_reason") @db.VarChar(64)
+  headRepositoryDefaultBranchSource            String?   @map("head_repository_default_branch_source") @db.VarChar(64)
+  headRepositoryDefaultBranchMechanism         String?   @map("head_repository_default_branch_mechanism") @db.VarChar(32)
+  headRepositoryDefaultBranchTrigger           String?   @map("head_repository_default_branch_trigger") @db.VarChar(32)
+  headRepositoryDefaultBranchCredentialType    String?   @map("head_repository_default_branch_credential_type") @db.VarChar(32)
+  headRepositoryDefaultBranchCredentialOwnerId String?   @map("head_repository_default_branch_credential_owner_id") @db.Uuid
+  headRepositoryDefaultBranchObservationKey    String?   @map("head_repository_default_branch_observation_key")
+  headRepositoryDefaultBranchObservedAt        DateTime? @map("head_repository_default_branch_observed_at")
+  headRepositoryDefaultBranchEventAt           DateTime? @map("head_repository_default_branch_event_at")
+  // PLN-1535 M3: the PR author's GitHub login (webhook `pull_request.user.login`
+  // / read-model `author.login`). Additive & nullable so the Postgres-served PR
+  // list can render the real author instead of the live path's "unknown"
+  // fallback. Omission-preserving on update (a provenance-poorer projection that
+  // lacks it never nulls a stored value); historical rows stay null until a
+  // producer refreshes them, and the read coalesces null → "unknown" to match
+  // the live contract's own fallback.
+  authorLogin            String?         @map("author_login")
   lastVerifiedAt         DateTime?       @map("last_verified_at")
   lastRefreshAttemptAt   DateTime?       @map("last_refresh_attempt_at")
   fetchCredentialType    String?         @map("fetch_credential_type") @db.VarChar(32)
@@ -1333,6 +1732,17 @@ model PullRequestDetail {
   fetchTrigger           String?         @map("fetch_trigger") @db.VarChar(32)
   fetchObservedAt        DateTime?       @map("fetch_observed_at")
   fetchResultReason      String?         @map("fetch_result_reason") @db.VarChar(64)
+  // FEA-3874 (parent FEA-3801, PLN-1457 S2): provider-neutrality discriminator.
+  // Additive dual-read column — every existing GitHub-produced row is backfilled
+  // to 'github'. The GitHub-specific columns above (githubId, prState, etc.) are
+  // unchanged and remain the live read/write path in this slice; `provider` only
+  // records which VCS host produced the row so later slices can branch on it.
+  // `providerDetail` carries the provider-specific fields that do not have a
+  // dedicated column (typed per-provider via the ChangeRequestProviderDetail
+  // contract in @repo/api). Freeform text/JSON so the vocabulary grows without a
+  // migration per provider; validated in the service layer, not by Prisma.
+  provider               String          @default("github") @db.VarChar(32)
+  providerDetail         Json?           @map("provider_detail")
 
   artifact                       Artifact?                       @relation(fields: [artifactId], references: [id], onDelete: SetNull)
   branchArtifact                 Artifact                        @relation("BranchPullRequests", fields: [branchArtifactId], references: [id], onDelete: Cascade)
@@ -1340,14 +1750,43 @@ model PullRequestDetail {
   organization                   Organization                    @relation(fields: [organizationId], references: [id])
   reviews                        GitHubPRReview[]
   githubCommentThreadProjections GitHubCommentThreadProjection[]
+  activityAtoms                   BranchActivityAtom[]
   currentForBranches             BranchDetail[]                  @relation("CurrentBranchPullRequest")
 
   // App-repo identity (webhook/backfill producers). Repo-less desktop rows have a
   // null repositoryId, so this index never constrains them (NULLs are distinct).
   @@unique([repositoryId, number])
   @@unique([id, branchArtifactId], map: "pull_request_detail_id_branch_artifact_id_key")
+  // Immutable organization-scoped FK target for historical activity evidence.
+  // Branch association is validated when an atom is written but is deliberately
+  // absent here so a later PR relink cannot move already-recorded evidence.
+  @@unique([organizationId, id], map: "pull_request_detail_org_id_key")
   @@index([branchArtifactId, isCurrent])
   @@index([organizationId])
+  // FEA-3638 (insights perf, Tier-1): the dashboard delivery endpoint's dominant
+  // query (fetchMergedPrs) plus its exact counts (countMergedPrsInRange /
+  // countMergedPrs / the PR _min(mergedAt) in earliestRecord) all filter
+  // prState = MERGED + a mergedAt window; today served only by @@index([organizationId])
+  // + a scan/sort of the org's whole merged history for the date window (called out
+  // as a tracked-but-missing index in service.ts). This additive composite serves
+  // that filter/sort shape. CAVEAT: these queries scope the org via the JOINED
+  // branch Artifact (`branchArtifact: artifactScope(ctx)` → artifacts.organization_id),
+  // NOT this row's denormalized organization_id, so the planner may not lead with
+  // this index's organizationId column for those queries — the effective PR-side
+  // working set there is (pr_state, merged_at). The leading organizationId still
+  // benefits any query that DOES filter the denormalized column directly (mirrors
+  // the existing @@index([organizationId])), and is additive/no-result-change
+  // either way. Final column choice is an EXPLAIN follow-up on a seeded DB.
+  @@index([organizationId, prState, mergedAt])
+  // NOTE: pull_request_detail_org_lower_head_repo_full_name_idx is a PARTIAL
+  // EXPRESSION index on (organization_id, lower(head_repository_full_name))
+  // WHERE head_repository_full_name IS NOT NULL (ISS-6452, migration
+  // 20260815120000). It serves the session-ingest authority read in
+  // apps/api/app/agent-sessions/service/artifact-links/shared.ts, whose
+  // `LOWER(head_repository_full_name) IN (…)` predicate no plain btree can
+  // match. Prisma's DSL can express neither an expression nor a partial index,
+  // so it lives only in that migration.
+  //
   // NOTE: pull_request_detail_org_repo_full_name_number_key is a PARTIAL unique
   // index on (organization_id, repository_full_name, number) WHERE repository_id
   // IS NULL — the producer-independent identity for desktop-produced non-App PRs
@@ -1455,6 +1894,11 @@ model DeploymentDetail {
   transient           Boolean?
   production          Boolean?
   branchArtifactId    String?  @map("branch_artifact_id") @db.Uuid
+  // FEA-3874 (PLN-1457 S2): additive provider discriminator + typed
+  // provider-specific detail. GitHub rows backfill to 'github'; the
+  // githubStatusUrl/githubDeploymentUrl columns above are unchanged.
+  provider            String   @default("github") @db.VarChar(32)
+  providerDetail      Json?    @map("provider_detail")
 
   artifact       Artifact  @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   branchArtifact Artifact? @relation("DeploymentOfBranch", fields: [branchArtifactId], references: [id], onDelete: SetNull)
@@ -1464,17 +1908,105 @@ model DeploymentDetail {
   @@map("deployment_detail")
 }
 
+/// ISS-4975: append-only deployment-event history. One immutable row per
+/// provider status transition, INCLUDING failures — the ingest path used to drop
+/// everything except `success`, and `recordDeployment` overwrites the
+/// current-state row on re-deploy, so neither change-failure rate, MTTR, nor
+/// deployment frequency had a usable source. This table is additive: the
+/// `DEPLOYMENT` artifact + `DeploymentDetail` row above is untouched and remains
+/// the system of record for "what is deployed right now".
+///
+/// Rows are NEVER updated or deleted by the ingest path — a redelivered webhook
+/// is an `ON CONFLICT DO NOTHING` no-op on the unique dedupe identity below.
+///
+/// DEDUPE IDENTITY. `(organizationId, source, externalEventId)` — all three
+/// non-nullable. `externalEventId` is the provider's status-transition id, which
+/// is unique per transition; `source` keeps two event streams from colliding on a
+/// raw numeric id. `externalDeploymentId` (also non-nullable) groups every
+/// transition of one deployment, so DORA counts collapse per deployment rather
+/// than per event. Nullable fields such as `environmentUrl` or `sha` are
+/// deliberately NOT part of the identity: a failed deployment usually carries no
+/// environment URL at all.
+///
+/// NO FOREIGN KEYS except the tenant boundary. `projectId`, `repositoryId`, and
+/// `branchArtifactId` are plain id columns on purpose: an append-only history
+/// must not be silently rewritten (`SET NULL`) or destroyed (`CASCADE`) when the
+/// mutable current-state records it describes are deleted, tombstoned, or
+/// reparented. `organizationId` keeps its FK so tenant deletion still removes
+/// tenant data. The current-state DEPLOYMENT artifact for a preview deploy is
+/// reachable from `environmentUrl`, which is the key `recordDeployment` upserts
+/// on, so no artifact id is duplicated here.
+model DeploymentEvent {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  organizationId String  @map("organization_id") @db.Uuid
+  /// Null for repo-level deploys that have no branch artifact to inherit a
+  /// project from (production deploys of the default branch are the common
+  /// case). Group by `repositoryId` for complete coverage.
+  projectId      String? @map("project_id") @db.Uuid
+  /// `GitHubInstallationRepository.id` when `source` is `github`.
+  repositoryId   String? @map("repository_id") @db.Uuid
+  /// The branch artifact the deployment ref resolved to, when one exists. Null
+  /// for deploys of a ref with no tracked branch artifact — production deploys of
+  /// the default branch, most often.
+  branchArtifactId String? @map("branch_artifact_id") @db.Uuid
+
+  /// `DeploymentEventSource` contract in @repo/api.
+  source               String @db.VarChar(32)
+  externalDeploymentId String @map("external_deployment_id") @db.VarChar(200)
+  externalEventId      String @map("external_event_id") @db.VarChar(200)
+
+  /// Normalized `DeploymentEventState` contract in @repo/api. An unrecognized
+  /// provider state degrades to `UNKNOWN` and is still recorded.
+  state         String @db.VarChar(32)
+  /// The raw provider state exactly as delivered, so a state we did not know how
+  /// to normalize can be reclassified later without re-ingesting.
+  providerState String @map("provider_state") @db.VarChar(64)
+
+  environment         String?
+  ref                 String?
+  sha                 String?
+  environmentUrl      String?  @map("environment_url")
+  githubStatusUrl     String?  @map("github_status_url")
+  githubDeploymentUrl String?  @map("github_deployment_url")
+  production          Boolean?
+  transient           Boolean?
+
+  /// When the provider says the transition happened — the ordering key for every
+  /// DORA window, MTTR interval, and lead-time endpoint. Distinct from
+  /// `createdAt`, which is when we ingested it.
+  occurredAt          DateTime  @map("occurred_at")
+  /// When the deployment itself was created, when the payload reports it.
+  deploymentCreatedAt DateTime? @map("deployment_created_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  /// The only index: the ingest write's ON CONFLICT DO NOTHING target. Read
+  /// indexes are deliberately absent until the DORA queries (ISS-4465) define
+  /// the predicates they actually filter and order on — this PR ships no reader.
+  @@unique([organizationId, source, externalEventId], map: "deployment_events_org_source_event_key")
+  @@map("deployment_events")
+}
+
 // Replacement for polymorphic `EntityLink` with real FKs. Rows for
 // DOCUMENT↔DOCUMENT links are backfilled in 2A; PR/Deployment links are
 // added in 2B. Legacy `entity_links` table continues to coexist until 2F.
 model ArtifactLink {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  organizationId String   @map("organization_id") @db.Uuid
-  sourceId       String   @map("source_id") @db.Uuid
-  targetId       String   @map("target_id") @db.Uuid
-  linkType       LinkType @map("link_type")
-  metadata       Json?
-  createdAt      DateTime @default(now()) @map("created_at")
+  id                            String    @id @default(uuid(7)) @db.Uuid
+  organizationId                String    @map("organization_id") @db.Uuid
+  sourceId                      String    @map("source_id") @db.Uuid
+  targetId                      String    @map("target_id") @db.Uuid
+  linkType                      LinkType  @map("link_type")
+  // Additive branch participation projection for SESSION→BRANCH links. Nullable
+  // so legacy links continue to resolve through metadata fallback while new
+  // readers can filter/project wrote vs reviewed without parsing JSON at render
+  // time. Values are the BranchParticipationKind contract in @repo/api.
+  branchParticipation           String?   @map("branch_participation") @db.VarChar(32)
+  branchParticipationMethod     String?   @map("branch_participation_method") @db.VarChar(200)
+  branchParticipationObservedAt DateTime? @map("branch_participation_observed_at")
+  metadata                      Json?
+  createdAt                     DateTime  @default(now()) @map("created_at")
 
   source Artifact @relation("ArtifactLinkSource", fields: [sourceId], references: [id], onDelete: Cascade)
   target Artifact @relation("ArtifactLinkTarget", fields: [targetId], references: [id], onDelete: Cascade)
@@ -1482,7 +2014,49 @@ model ArtifactLink {
   @@unique([sourceId, targetId, linkType])
   @@index([organizationId, sourceId, linkType])
   @@index([organizationId, targetId, linkType])
+  @@index([organizationId, sourceId, linkType, branchParticipation], map: "artifact_links_org_source_link_participation_idx")
+  @@index([organizationId, targetId, linkType, branchParticipation], map: "artifact_links_org_target_link_participation_idx")
   @@map("artifact_links")
+}
+
+// Append-only activity log for artifacts (FEA-3859 / FEA-3535 Slice 1). One row
+// per captured mutation on an artifact — status changes, field edits,
+// assignment/approver changes, and creation — recorded so the activity feed
+// (delivered in later slices) has a persisted trail. `Artifact.status` and the
+// other mutable columns keep no history on their own; this table is that
+// history.
+//
+// SHIPS DARK: this slice adds the store + write/list services only. Nothing on
+// the PUT /documents write path emits rows yet (that is Slice 2), and there is
+// no read endpoint (Slice 3) or UI (Slice 4+).
+//
+// `actorType` / `action` are freeform strings validated by const-object enums
+// in the service layer (`ArtifactActivityActorType` / `ArtifactActivityAction`
+// in @repo/api), mirroring the freeform-status precedent on `Artifact.status`
+// (:1176) — Prisma enums are intentionally avoided so the vocabulary can grow
+// additively without a schema migration per value.
+//
+// `before` / `after` carry the field-scoped snapshot for the change (e.g. the
+// old and new status, or the old and new assignee id). Both are nullable: a
+// `creation` event has no `before`, and a cleared field has a null `after`.
+model ArtifactActivityEvent {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  artifactId     String   @map("artifact_id") @db.Uuid
+  actorType      String   @map("actor_type")
+  actorId        String?  @map("actor_id")
+  action         String
+  before         Json?
+  after          Json?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  artifact Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  // Serves the org-scoped, per-artifact, time-ordered list read
+  // (`listActivityEvents`): filter on (organization_id, artifact_id), order by
+  // created_at. The trailing created_at column also carries the keyset sort.
+  @@index([organizationId, artifactId, createdAt])
+  @@map("artifact_activity_events")
 }
 
 model ArtifactEvaluation {
@@ -1588,6 +2162,28 @@ model FileAttachment {
   createdAt   DateTime @default(now()) @map("created_at")
   createdById String   @map("created_by_id") @db.Uuid
 
+  // Storage-reconcile bookkeeping, owned exclusively by
+  // `attachmentRowReconcileService` (the DB-row-side orphan sweep). Never read
+  // or written by the upload/download/list paths and never mapped into an API
+  // response.
+  //
+  // `reconciledAt` is when the sweep last DETERMINED this row's S3 object state,
+  // and it doubles as the sweep's work queue: candidates are taken
+  // least-recently-reconciled first, so successive nightly runs walk the whole
+  // table instead of rescanning the same prefix forever. It defaults to `now()`
+  // rather than a past sentinel so the column stays plain NOT NULL with a
+  // Prisma-expressible default; the only cost is that rows already present at
+  // migration time share one timestamp and are swept in an arbitrary but stable
+  // order over the first few runs.
+  //
+  // `reconcileAbsent` records whether that determination was "object absent". A
+  // row is deletable only when a PREVIOUS run recorded absence here AND the
+  // current run observes absence again — two independent observations, so a
+  // presigned PUT that was still transferring when the first HeadObject ran is
+  // seen to have landed by the second.
+  reconciledAt    DateTime @default(now()) @map("reconciled_at")
+  reconcileAbsent Boolean  @default(false) @map("reconcile_absent")
+
   // Relations
   artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: Cascade)
 
@@ -1597,6 +2193,15 @@ model FileAttachment {
   // lookup, run once per list page over the whole table. Without it that lookup
   // is a seq-scan that grows unbounded with the table.
   @@index([bucket, key])
+  // Serves both phases of the DB-row-side sweep, which partition the table on
+  // `reconcileAbsent`: the confirm phase reads
+  // `(bucket, reconcileAbsent = true, reconciledAt < runStart)` and the
+  // discovery phase reads `(bucket, reconcileAbsent = false, reconciledAt <
+  // runStart)`, both ordered by `reconciledAt` — so this one index answers each
+  // as an ordered range scan with no sort. `createdAt` stays a heap filter
+  // rather than a key column: it excludes only rows inside the 900s upload
+  // window, so it removes almost nothing and would not narrow the scan.
+  @@index([bucket, reconcileAbsent, reconciledAt])
   @@map("file_attachments")
 }
 
@@ -1671,6 +2276,12 @@ model CommentThread {
   @@index([organizationId, artifactId, status])
   @@index([organizationId, roomId])
   @@index([organizationId, status, updatedAt])
+  // FEA-3550: covering index for the org-scoped aggregate `GET /trace-comments`
+  // list, which filters native threads by (organizationId, source, status?) and
+  // orders by createdAt. Leads with organizationId + source so the planner scans
+  // only this org's native threads instead of the whole table as comment volume
+  // grows, and carries status + createdAt for the status filter and desc sort.
+  @@index([organizationId, source, status, createdAt])
   @@index([createdById])
   @@map("comment_threads")
 }
@@ -1789,6 +2400,11 @@ model ExternalCommentAuthor {
   lastSeenAt              DateTime                @default(now()) @map("last_seen_at")
   createdAt               DateTime                @default(now()) @map("created_at")
   updatedAt               DateTime                @updatedAt @map("updated_at")
+  // FEA-3874 (PLN-1457 S2): typed provider-specific detail for comment authors.
+  // The `provider` column above is already the discriminator (ExternalCommentProvider,
+  // GITHUB-only today); this adds the neutral providerDetail JSON alongside it so
+  // later providers can stash host-specific author fields without a column each.
+  providerDetail          Json?                   @map("provider_detail")
 
   organization             Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1956,6 +2572,116 @@ model Loop {
   @@map("loops")
 }
 
+// Unified-search full-text projection (FEA-3857 / parent FEA-3800, PLN-1456
+// Slice 1). ADDITIVE / SHIPS DARK — no read or write path yet: rows are written
+// only by the one-shot backfill (scripts/backfill-search-documents.ts); the
+// write-time indexing hooks (Slice 2) and the `GET /search` FTS query (Slice 3)
+// land later. One row denormalizes a searchable entity (Phase-1 corpus:
+// Document/Feature Artifacts, Projects, Loops) into title/body plus the
+// visibility keys a later per-hit re-authorization needs.
+//
+// The `tsv` full-text column is a Postgres GENERATED column
+// (`to_tsvector('english', title || ' ' || body)`) that Prisma's schema DSL
+// cannot express, so it is modeled as `Unsupported("tsvector")?` and OWNED by
+// the raw migration (20260722010000). The GIN index on `tsv` likewise cannot be
+// declared here (Prisma will not index an `Unsupported` column); it lives only
+// in the CONCURRENTLY migration (20260722010001). The btree + unique indexes
+// below ARE Prisma-managed by name, but built CONCURRENTLY in that same file to
+// avoid a write-blocking lock — the CREATE TABLE migration deliberately omits
+// their DDL (see each migration's header).
+model SearchDocument {
+  id             String @id @default(uuid(7)) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  // Discriminator — `SearchEntityType` const-object enum in
+  // packages/api/src/types/search.ts (Phase-1 members: document|project|loop).
+  entityType String @map("entity_type")
+  // The source row's primary key (Artifact.id / Project.id / Loop.id).
+  entityId   String @map("entity_id") @db.Uuid
+
+  title String  @db.Text
+  body  String? @db.Text
+
+  // Visibility keys the later per-hit re-authorization filters on. `projectId`
+  // is the source entity's owning project (null for unparented entities);
+  // `assigneeId` mirrors the source assignee where one exists. Neither is a FK —
+  // the projection is a denormalized mirror, not a relational child, so a
+  // deleted source never dangles a constraint here (the backfill/reconcile
+  // owns removal).
+  projectId  String? @map("project_id") @db.Uuid
+  assigneeId String? @map("assignee_id") @db.Uuid
+
+  // Structured-filter columns (FEA-3930). The source entity's own lifecycle
+  // status and priority, mirrored as plain TEXT so the `:status`/`:priority`
+  // query-language filters resolve without joining back to the source table.
+  // Deliberately NOT bound to a DB enum: the `status` column carries whichever
+  // vocabulary the source uses (FeatureStatus / DocumentStatus / ProjectStatus /
+  // LoopStatus) as its raw string. Null where the source has no such field
+  // (a loop has no priority). `priority` is compared by the ordinal in
+  // packages/api/src/types/search-query.ts (LOW < MEDIUM < HIGH < URGENT).
+  status   String? @map("status")
+  priority String? @map("priority")
+
+  // Route-building fields (Phase-2 navigation slice, parent FEA-3800). Nullable
+  // and additive — the web app deep-links documents by TYPE + SLUG
+  // (`/prds|/features/<slug>`) and projects team-scoped
+  // (`/teams/<teamId>/projects/<projectId>`), so a raw entity UUID alone cannot
+  // build a routable link. `slug` is the source entity's URL handle;
+  // `entitySubtype` is the document `type` (PRD/IMPLEMENTATION_PLAN/FEATURE) for
+  // documents (null for projects/loops); `teamId` is a project's owning team
+  // (null for documents/loops). All three are best-effort mirrors backfilled and
+  // kept fresh by the write hooks; a hit missing them degrades to a non-link row.
+  slug          String? @db.Text
+  entitySubtype String? @map("entity_subtype") @db.Text
+  teamId        String? @map("team_id") @db.Uuid
+
+  // Route ANCHOR (FEA-3930 comment/PR/branch corpus slice). Nullable & additive.
+  // For hits whose navigation target is a DIFFERENT entity than `entityId`, this
+  // carries that target's id: a `pull_request` row routes to its owning branch
+  // (anchor = branch artifact id); a `comment` row routes to the artifact it is
+  // anchored on (anchor = that artifact's id, with the anchor artifact's TYPE
+  // carried in `entitySubtype` so the route helper picks session vs branch).
+  // Null for document/project/loop/session/branch rows, which route off
+  // `entityId`. Not part of the generated `tsv` vector or any index.
+  anchorEntityId String? @map("anchor_entity_id") @db.Uuid
+
+  // Mirror of the source entity's own updatedAt (NOT this row's write time), so
+  // recency ranking and since/until windows reflect the entity, not the
+  // projection refresh.
+  updatedAt DateTime @map("updated_at")
+
+  // GENERATED ALWAYS ... STORED column — the Postgres full-text vector, OWNED by
+  // the raw migration (20260722010000) and never written by the client. Prisma's
+  // DSL has no `GENERATED` syntax, so it is modeled as `Unsupported("tsvector")`
+  // with `@default(dbgenerated(...))` carrying the EXACT expression Postgres
+  // stores it as (regconfig-cast, COALESCE-guarded). That default string is what
+  // Prisma introspects the generated column back to, so `prisma migrate dev`
+  // sees no change and reports no drift on this column.
+  tsv Unsupported("tsvector")? @default(dbgenerated("to_tsvector('english'::regconfig, ((COALESCE(title, ''::text) || ' '::text) || COALESCE(body, ''::text)))"))
+
+  // Idempotent upsert key for the backfill and the Slice-2 write hooks.
+  @@unique([organizationId, entityType, entityId])
+  // Serves the org-scoped, type-faceted, recency-ordered candidate scan the
+  // Slice-3 query leads with before the GIN full-text match refines it.
+  @@index([organizationId, entityType, updatedAt])
+  // GIN full-text index on the generated `tsv` column (the Slice-3
+  // `tsv @@ websearch_to_tsquery(...)` match). Declared so Prisma tracks it by
+  // name and does not try to drop it as an unknown DB index; built CONCURRENTLY
+  // in migration 20260722010001 rather than by Prisma's plain-index DDL.
+  @@index([tsv], type: Gin, map: "search_document_tsv_gin_idx")
+  // FEA-3930 exact ID/slug lookup (search-fts-service.ts#runExactLookupQuery).
+  // The UUID branch (`organization_id = ? AND entity_id = ?`) is served by this
+  // Prisma-managed btree, built CONCURRENTLY in migration 20260724010000.
+  @@index([organizationId, entityId], map: "search_document_organization_id_entity_id_idx")
+  // The slug branch (`organization_id = ? AND lower(slug) = ?`) is served by an
+  // UNMANAGED partial EXPRESSION index `search_document_org_lower_slug_idx`
+  // (`(organization_id, lower(slug)) WHERE slug IS NOT NULL`). Prisma's DSL
+  // cannot declare a functional index, so it lives only in migration
+  // 20260724010000 and is noted here so its absence from the schema is
+  // intentional, not drift.
+  @@map("search_document")
+}
+
 model LoopEvent {
   id             String   @id @default(uuid(7)) @db.Uuid
   loopId         String   @map("loop_id") @db.Uuid
@@ -2087,6 +2813,16 @@ model GitHubInstallation {
   // value to determine which new installation to claim, so a user-controlled
   // body cannot redirect the claim to an attacker's installation.
   pendingNewInstallationId String?                  @map("pending_new_installation_id")
+  // FEA-3874 (parent FEA-3801, PLN-1457 S2/S3): provider-neutrality discriminator
+  // on the auth/connection record. Existing rows backfill to 'github'. The
+  // GitHub-specific columns (installationId, accountId, status, ...) are unchanged
+  // and remain the live install/suspend/uninstall/claim write path in this slice.
+  // The read-only `VcsConnection` projection (Slice 3) is derived from this row in
+  // @repo/api; there is NO new physical connection table and NO dual-write here —
+  // `provider`/`providerDetail` are the only additions, recording the host and any
+  // provider-specific auth fields (typed via VcsConnectionProviderDetail).
+  provider                 String                   @default("github") @db.VarChar(32)
+  providerDetail           Json?                    @map("provider_detail")
 
   // Relations
   organization Organization?                  @relation(fields: [organizationId], references: [id])
@@ -2108,6 +2844,21 @@ model GitHubInstallationRepository {
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
   lastPushedAt   DateTime? @map("last_pushed_at")
+  // ISS-5826: nullable/no-default authority group. Historical rows remain null;
+  // consumers normalize that state conservatively rather than fabricating a
+  // repository default or rewriting existing data.
+  defaultBranchName              String?   @map("default_branch_name")
+  defaultBranchAvailability      String?   @map("default_branch_availability") @db.VarChar(32)
+  defaultBranchCompleteness      String?   @map("default_branch_completeness") @db.VarChar(32)
+  defaultBranchReason            String?   @map("default_branch_reason") @db.VarChar(64)
+  defaultBranchSource            String?   @map("default_branch_source") @db.VarChar(64)
+  defaultBranchMechanism         String?   @map("default_branch_mechanism") @db.VarChar(32)
+  defaultBranchTrigger           String?   @map("default_branch_trigger") @db.VarChar(32)
+  defaultBranchCredentialType    String?   @map("default_branch_credential_type") @db.VarChar(32)
+  defaultBranchCredentialOwnerId String?   @map("default_branch_credential_owner_id") @db.Uuid
+  defaultBranchObservationKey    String?   @map("default_branch_observation_key")
+  defaultBranchObservedAt        DateTime? @map("default_branch_observed_at")
+  defaultBranchEventAt           DateTime? @map("default_branch_event_at")
   // Soft-tombstone marker set when a repo disappears from the installation
   // during a disconnect/reinstall window (PLN-634). Tombstoned rows are
   // filtered from active-pool reads (getRepositories, etc.) but remain
@@ -2123,6 +2874,14 @@ model GitHubInstallationRepository {
   dirtyScopeNudges   GitHubDirtyScopeNudge[]
 
   @@unique([installationId, githubRepoId])
+  // NOTE: github_installation_repositories_inst_lower_full_name_idx is a PARTIAL
+  // EXPRESSION index on (installation_id, lower(full_name)) WHERE removed_at IS
+  // NULL (ISS-6452, migration 20260815120000), for the session-ingest authority
+  // read in apps/api/app/agent-sessions/service/artifact-links/shared.ts. That
+  // query does not filter installation_id directly — it arrives from the joined
+  // installation, which is one row per org because organizationId is unique on
+  // GitHubInstallation. Prisma's DSL can express neither an expression nor a
+  // partial index, so it lives only in that migration.
   @@map("github_installation_repositories")
 }
 
@@ -2147,17 +2906,145 @@ model GitHubUserConnection {
   scopes                String[]  @default([])
   revokedAt             DateTime? @map("revoked_at")
   lastUsedAt            DateTime? @map("last_used_at")
+  // PLN-1525: observed GET /rate_limit core.limit for this token — a property
+  // of (user x app), not of any target, which is why it lives here and not on
+  // the capability row.
+  rateLimitTier         Int?      @map("rate_limit_tier")
+  // PLN-1525 v3 sync-lane pool state (PLN-1535 D9). Budget is a property of
+  // the token, so it lives on the connection. Updated at reconciler-tick
+  // frequency from observed GraphQL `rateLimit` responses; `remaining` is the
+  // user's GLOBAL bucket (shared with their own gh CLI/apps), so reserve
+  // floors computed from it yield automatically to the user's own workload.
+  observedLimit         Int?      @map("observed_limit")
+  observedRemaining     Int?      @map("observed_remaining")
+  observedResetAt       DateTime? @map("observed_reset_at")
+  // Our own spend (sum of observed `cost`) within the current observed rate
+  // window; resets when `observedResetAt` advances to a new window.
+  windowSpend           Int       @default(0) @map("window_spend")
+  backoffUntil          DateTime? @map("backoff_until")
+  // GitHubSyncHealthState contract const (healthy | backoff | unhealthy).
+  // String, not a Prisma enum — new states must not need a migration.
+  healthState           String    @default("healthy") @map("health_state")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  capabilities GitHubAccessCapability[]
 
   @@unique([organizationId, userId])
   @@unique([organizationId, githubUserId])
   @@index([organizationId, normalizedLogin])
   @@index([revokedAt])
   @@map("github_user_connections")
+}
+
+/// PLN-1525: cached per-(connection x target) GitHub access verdict. Hangs off
+/// the connection so disconnect cascades are free invalidation and the 401
+/// handler (set `revokedAt` + delete capabilities) is one transaction on one
+/// aggregate. `not_connected` needs no row — absence of the parent is the
+/// answer. `organizationId` is denormalized so queries can scope by org
+/// directly, per the service org-scoping rule.
+model GitHubAccessCapability {
+  id                     String   @id @default(uuid(7)) @db.Uuid
+  organizationId         String   @map("organization_id") @db.Uuid
+  githubUserConnectionId String   @map("github_user_connection_id") @db.Uuid
+
+  targetOwner            String   @map("target_owner")
+  normalizedTargetOwner  String   @map("normalized_target_owner")
+  // Verdict granularity matches probe granularity (both lanes): non-null =
+  // repo-level verdict for a repo-bearing target; NULL = owner-level verdict,
+  // written only for owner-only (repo-less) interactive targets. Normalized
+  // (lowercased) — see normalizeGitHubName.
+  targetRepo             String?  @map("target_repo")
+
+  // GitHubCredentialKind contract const; String, not a Prisma enum, so new
+  // kinds/reasons never need a migration.
+  credentialKind         String   @map("credential_kind")
+  // GitHubAccessDenialReason contract const; NULL = positive verdict.
+  denialReason           String?  @map("denial_reason")
+  installationId         String?  @map("installation_id")
+
+  checkedAt              DateTime @map("checked_at")
+  expiresAt              DateTime @map("expires_at")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connection   GitHubUserConnection @relation(fields: [githubUserConnectionId], references: [id], onDelete: Cascade)
+
+  // NOTE: row identity is enforced by TWO partial unique indexes maintained in
+  // migration SQL (Prisma cannot express partial uniques): one on
+  // (github_user_connection_id, normalized_target_owner) WHERE target_repo IS
+  // NULL, one on (github_user_connection_id, normalized_target_owner,
+  // target_repo) WHERE target_repo IS NOT NULL. A plain @@unique over the
+  // nullable column would NOT enforce owner-level uniqueness (Postgres treats
+  // NULLs as distinct). Writes go through the capability-store helper's
+  // create-catch-P2002-update path, not Prisma `upsert`.
+  @@index([githubUserConnectionId])
+  @@index([organizationId])
+  @@index([normalizedTargetOwner])
+  @@index([expiresAt])
+  @@map("github_access_capabilities")
+}
+
+/// PLN-1535 M1: per-(org x repo) sync-state for the cloud PR-projection
+/// reconciler. `tier` decides fill strategy + cadence (installed = webhook-fed,
+/// slow gap-repair only; user_token = server-side pull, ~15m for active repos;
+/// unsyncable = nobody connected, CTA only). `watermark` is the recency boundary
+/// the sweep advances; `cursor` resumes a truncated backlog drain across ticks so
+/// a large first sweep catches up fully without stranding older PRs. Repo
+/// identity is normalized
+/// `owner/name` (normalizeRepoFullName) — uniform with
+/// PullRequestDetail.repositoryFullName and the sync-read pool target — because
+/// tier is evaluated PER REPO, not per org (one org can hold all three tiers at
+/// once as installation `repositorySelection` subsets and user tokens see
+/// different slices).
+model GitHubRepoSyncState {
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  organizationId          String    @map("organization_id") @db.Uuid
+  // Normalized owner/name — the producer-independent repo identity.
+  repositoryFullName      String    @map("repository_full_name")
+  // GitHubRepoSyncTier contract const (installed | user_token | unsyncable);
+  // String, not a Prisma enum, so a new tier never needs a migration (mirrors
+  // GitHubUserConnection.healthState).
+  tier                    String    @default("unsyncable")
+  // Recency boundary: the greatest GitHub PR `updated_at` the reconciler has
+  // refreshed. It fetches UPDATED_AT DESC (bounded pages) and post-filters to
+  // rows newer than this, then advances it — it is NOT pushed into the query as
+  // an early-stop.
+  watermark               DateTime?
+  // Continuation cursor for an in-progress backlog drain: on a truncated read the
+  // reconciler stores GitHub's nextCursor here and resumes from it (fetching
+  // older PRs, refreshing every fetched row) on the following ticks until the
+  // history is exhausted. Null between sweeps.
+  cursor                  String?
+  lastSweptAt             DateTime? @map("last_swept_at")
+  // When `tier` was last classified (installation coverage / connected-user set
+  // can change out from under a stale tier).
+  lastTierEvaluatedAt     DateTime? @map("last_tier_evaluated_at")
+  // Consecutive failed sweeps; drives exponential back-off, reset on success.
+  consecutiveFailureCount Int       @default(0) @map("consecutive_failure_count")
+  nextRetryAt             DateTime? @map("next_retry_at")
+  // GitHubRepoSyncDeferralReason contract const when the last tick could not
+  // proceed (e.g. `budget` = the tier-2 pool was all-floored). Null = not
+  // deferred. Surfaced by the coverage stat as `deferred: budget`, kept distinct
+  // from a tier-3 unsyncable gap.
+  deferredReason          String?   @map("deferred_reason")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, repositoryFullName])
+  // No secondary index on (tier, last_swept_at): the due query filters
+  // `tier <> unsyncable` (a leading-column inequality) and orders by
+  // last_swept_at NULLS FIRST, which a (tier, last_swept_at) btree cannot serve
+  // as an ordered stream anyway — Postgres sorts regardless. At this table's
+  // scale a small scan+sort is free; a partial index on last_swept_at WHERE the
+  // tier is syncable is the scale-time follow-up (Prisma can't express it, so it
+  // would be raw-migration SQL).
+  @@map("github_repo_sync_state")
 }
 
 model PublicRepository {
@@ -2168,6 +3055,20 @@ model PublicRepository {
   owner          String
   name           String
   htmlUrl        String   @map("html_url")
+  // ISS-5826: bounded standalone Repository REST authority snapshot. The group
+  // is optional so pre-migration rows and older producers remain readable.
+  defaultBranchName              String?   @map("default_branch_name")
+  defaultBranchAvailability      String?   @map("default_branch_availability") @db.VarChar(32)
+  defaultBranchCompleteness      String?   @map("default_branch_completeness") @db.VarChar(32)
+  defaultBranchReason            String?   @map("default_branch_reason") @db.VarChar(64)
+  defaultBranchSource            String?   @map("default_branch_source") @db.VarChar(64)
+  defaultBranchMechanism         String?   @map("default_branch_mechanism") @db.VarChar(32)
+  defaultBranchTrigger           String?   @map("default_branch_trigger") @db.VarChar(32)
+  defaultBranchCredentialType    String?   @map("default_branch_credential_type") @db.VarChar(32)
+  defaultBranchCredentialOwnerId String?   @map("default_branch_credential_owner_id") @db.Uuid
+  defaultBranchObservationKey    String?   @map("default_branch_observation_key")
+  defaultBranchObservedAt        DateTime? @map("default_branch_observed_at")
+  defaultBranchEventAt           DateTime? @map("default_branch_event_at")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
 
@@ -2175,7 +3076,33 @@ model PublicRepository {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, githubRepoId])
+  // NOTE: public_repositories_org_lower_full_name_idx is an EXPRESSION index on
+  // (organization_id, lower(full_name)) (ISS-6452, migration 20260815120000),
+  // for the session-ingest authority read in
+  // apps/api/app/agent-sessions/service/artifact-links/shared.ts. Prisma's DSL
+  // cannot express a functional index, so it lives only in that migration.
   @@map("public_repositories")
+}
+
+// ISS-5826: durable replay receipts for repository-default webhook observations.
+// The source-scoped unique key is inserted in the same transaction as the
+// authority mutation, so replaying an older delivery after a newer one remains
+// a no-op. targetKind/targetId intentionally form a polymorphic app-owned target;
+// there is no cross-target foreign key or speculative secondary index.
+model RepositoryDefaultObservationReceipt {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  targetKind     String   @map("target_kind") @db.VarChar(64)
+  targetId       String   @map("target_id")
+  source         String   @db.VarChar(64)
+  observationKey String   @map("observation_key")
+  observedAt     DateTime @map("observed_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade, map: "repo_default_observation_receipt_org_fkey")
+
+  @@unique([organizationId, targetKind, targetId, source, observationKey], map: "repo_default_observation_receipt_dedupe_key")
+  @@map("repository_default_observation_receipts")
 }
 
 model GitHubPRReview {
@@ -2276,13 +3203,12 @@ model OAuthRateLimit {
 
 model OAuthAuthorizationCode {
   id                  String    @id @default(uuid(7)) @db.Uuid
-  // FEA-2775 EXPAND phase: `code` (plaintext) and `code_fingerprint` (SHA-256)
-  // coexist so the independently-deployed MCP server can roll without a skew
-  // outage. Both are nullable during the transition — old MCP sets `code`, new
-  // MCP sets `codeFingerprint`. A follow-up CONTRACT migration drops `code` and
-  // makes `codeFingerprint` required once the new MCP image is fully rolled out.
-  code                String?   @unique
-  codeFingerprint     String?   @unique @map("code_fingerprint")
+  // FEA-3275 CONTRACT phase, completing FEA-2775's expand/contract pair: the
+  // plaintext `code` column is gone and the SHA-256 fingerprint is now the only
+  // way a row is addressed, so a DB read (backup, replica, or SQL injection
+  // elsewhere) cannot surface a usable authorization code. Mirrors
+  // oauth_refresh_tokens.token_fingerprint and desktop_authorization_codes.code_hash.
+  codeFingerprint     String    @unique @map("code_fingerprint")
   encryptedApiKey     String    @map("encrypted_api_key")
   keyId               String    @map("key_id")
   userId              String    @map("user_id") @db.Uuid
@@ -2670,42 +3596,182 @@ model TagLoop {
 // Two independent representations — never conflate. See reconciled-decisions.md.
 // =============================================================================
 
+/// F1 (FEA-3290 / PRD-527) — the typed provenance of a DefinitionVersion: the
+/// kind of place an exact definition was observed. `repository` (owner/repo ·
+/// path · commit), `local` (device · path), or `pack` (membership carrying that
+/// exact version). Never collapsed into a singular parent; never merged on a
+/// shared name. Determines which evidence columns on SourceOccurrence are
+/// populated (repo* / local* / packId).
+enum SourceOccurrenceType {
+  repository
+  local
+  pack
+  // FEA-3982 (Slice 1 / concern D): provenance kinds beyond the FEA-3290 trio.
+  // `static_file` = a checked-in loose definition file that is not a repo scan
+  // (e.g. a distributed standalone `.md`); `distributed` = pushed via a
+  // distribution rather than installed from a pack; `builtin_claude` /
+  // `builtin_codex` = shipped inside the harness binary, not authored locally.
+  // Additive/skew-safe: existing rows keep their values, and a reader that does
+  // not know a new value degrades it to `local` (see the type mirror). Member
+  // names are already the exact SQL literals, so no `@map` is needed.
+  static_file
+  distributed
+  builtin_claude
+  builtin_codex
+
+  @@map("source_occurrence_type")
+}
+
+/// F1 (FEA-3290) — whether a source occurrence's definition body was readable
+/// at capture. `inaccessible` (permission-denied) is deliberately DISTINCT from
+/// a deleted/absent occurrence (AC-5): last-known-good is preserved, and an
+/// inaccessible private body is never conflated with "missing".
+enum SourceAccessState {
+  accessible
+  inaccessible
+
+  @@map("source_access_state")
+}
+
+/// F1 (FEA-3290) — the honest resolution state of an inventory component
+/// (AC-7 / AC-020). `unresolved` gates name-only / label-minted rows out of
+/// "configured component"; `inaccessible` (permission-denied) is DISTINCT from
+/// `missing` (deleted/absent). Legacy rows default to `unresolved`. NOTE: the
+/// derivation logic that TRANSITIONS a row between these states is Slice 4 —
+/// this slice only introduces the column + the `unresolved` default.
+enum ComponentResolvedState {
+  resolved
+  unresolved
+  inaccessible
+  missing
+
+  @@map("component_resolved_state")
+}
+
 /// Inventory / Existence registry — one deduped row per distinct component
 /// per compute target. Org-visible via org ↔ computeTarget join; org-scoped
 /// reads filter through computeTarget.organizationId. Populated by event-driven
 /// discovery (upsert-on-observe), synced desktop→api.
 model AgentComponent {
-  id                  String    @id @default(uuid(7)) @db.Uuid
-  organizationId      String    @map("organization_id") @db.Uuid
-  computeTargetId     String    @map("compute_target_id") @db.Uuid
-  componentKind       String    @map("component_kind")
-  externalComponentId String    @map("external_component_id")
+  id                  String                 @id @default(uuid(7)) @db.Uuid
+  organizationId      String                 @map("organization_id") @db.Uuid
+  computeTargetId     String                 @map("compute_target_id") @db.Uuid
+  componentKind       String                 @map("component_kind")
+  externalComponentId String                 @map("external_component_id")
   harness             String?
   name                String?
-  componentKey        String?   @map("component_key")
+  componentKey        String?                @map("component_key")
   version             String?
   description         String?
-  sourceUrl           String?   @map("source_url")
-  installPath         String?   @map("install_path")
-  packId              String?   @map("pack_id")
+  sourceUrl           String?                @map("source_url")
+  installPath         String?                @map("install_path")
+  packId              String?                @map("pack_id")
   scope               String?
-  projectPath         String?   @map("project_path")
+  projectPath         String?                @map("project_path")
   metadata            Json?
-  firstSeenAt         DateTime? @map("first_seen_at")
-  lastSeenAt          DateTime? @map("last_seen_at")
-  uninstalledAt       DateTime? @map("uninstalled_at")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime  @updatedAt @map("updated_at")
+  // F1 (FEA-3290 / AC-7 / AC-020): honest resolution state. Legacy + label-minted
+  // rows default to `unresolved`; the derivation that promotes to `resolved` /
+  // flags `inaccessible` vs `missing` lands in Slice 4. This slice adds the
+  // column + default only (no writer/derivation).
+  resolvedState       ComponentResolvedState @default(unresolved) @map("resolved_state")
+  // Definition file text + its sha256 (FEA-2923 content pipeline). Synced from
+  // desktop, deduped by hash; backs the detail Prompt panel and (later) the
+  // content-hash version history. Nullable: event-driven components with no
+  // discoverable definition file carry null.
+  content             String?                @db.Text
+  contentHash         String?                @map("content_hash")
+  // ISS-5029: true when the desktop packer dropped retained revisions of this
+  // identity at its per-family entry cap or per-component variant byte budget,
+  // so `agent_component_versions` holds a KNOWN-partial history for it. Written
+  // on every sync from the marker the packer sets where the cap binds; a desktop
+  // that predates the marker omits it and the writer stores false ("no evidence
+  // of truncation" — today's behaviour). NOT NULL with a false default so no
+  // existing row becomes nullable or has to be backfilled.
+  variantsTruncated   Boolean                @default(false) @map("variants_truncated")
+  // ISS-5029 (wongk, #4391): WHICH cap bound — `family_cap` (the packer's
+  // per-family candidate/entry cap, which only binds when the family holds more
+  // revisions than one sync can carry) or `byte_budget` (which can bind at two
+  // revisions and bounds nothing). The detail read can only PROVE the cloud is
+  // missing a revision from the former, so the two must not be stored as one
+  // undifferentiated boolean. Nullable: null means "truncated, reason unknown"
+  // or "not truncated", and both read as no proof. Stored verbatim so a reason a
+  // newer desktop introduces survives until this side learns it.
+  variantsTruncatedReason String?            @map("variants_truncated_reason")
+  firstSeenAt         DateTime?              @map("first_seen_at")
+  lastSeenAt          DateTime?              @map("last_seen_at")
+  uninstalledAt       DateTime?              @map("uninstalled_at")
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
 
-  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  computeTarget ComputeTarget @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
+  organization  Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  computeTarget ComputeTarget                @relation(fields: [computeTargetId], references: [id], onDelete: Cascade)
   sessionUsages AgentComponentSessionUsage[]
+  invocations   AgentComponentInvocation[]
 
   // Primary dedup key: one row per (device, kind, external component id).
   @@unique([computeTargetId, componentKind, externalComponentId])
   @@index([organizationId, componentKind])
   @@index([organizationId])
+  // FEA-4335: content-hash detail routing resolves the inventory identity by
+  // (org, kind, content_hash) (`resolveInventoryContentIdentity` + the detail
+  // inventory read), so index that path instead of scanning the whole same-kind
+  // slice for the hash. Explicit name (Prisma's default exceeds Postgres's 63-char
+  // identifier limit).
+  @@index([organizationId, componentKind, contentHash], map: "agent_components_org_kind_content_hash_idx")
+  // ISS-6104: the plugin child-inventory join (`loadChildInventoryJoin`,
+  // apps/api/app/agent-components/plugin-child-usage.ts) filters
+  // `organization_id = ? AND pack_id IN (…)`, which nothing here covered — it
+  // walked the whole org partition to return zero. `getPackAnalytics`
+  // (apps/api/app/agent-components/pack-analytics-service.ts) reads the scalar
+  // form of the same predicate and is served by it too. Both are covered by an UNMANAGED
+  // PARTIAL index `agent_components_org_pack_id_idx`
+  // (`(organization_id, pack_id) WHERE pack_id IS NOT NULL`), built
+  // CONCURRENTLY in migration 20260812120000. Prisma's DSL cannot declare a
+  // partial index, so it lives only in that migration and is noted here so its
+  // absence from the schema is intentional, not drift. Partial because every
+  // child row's `pack_id` is NULL today (see ISS-6094), which keeps the index
+  // near-empty and off the component-sync write path until linkage lands; the
+  // migration carries the measured before/after plans.
   @@map("agent_components")
+}
+
+/// FEA-2923 content-hash version history (org-scoped mirror of the desktop
+/// `agent_component_versions`). One row per distinct definition revision, keyed
+/// by (org, component, source, content_hash) — NOT the invoking owner. Synced
+/// from desktop deduped by hash; backs the detail Prompt panel's version
+/// selector. The current revision is the one whose contentHash matches the live
+/// AgentComponent row.
+model AgentComponentVersion {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+  componentKind       String    @map("component_kind")
+  componentKey        String    @map("component_key")
+  source              String    @default("")
+  contentHash         String    @map("content_hash")
+  content             String    @db.Text
+  format              String?
+  // F1 link (FEA-3290): the exact DefinitionVersion this coarse content-hash
+  // revision maps to. Nullable (backfilled in Slice 5; no writer here). SetNull
+  // so a purged version never orphans the coarse row.
+  definitionVersionId String?   @map("definition_version_id") @db.Uuid
+  firstSeenAt         DateTime? @map("first_seen_at")
+  lastSeenAt          DateTime? @map("last_seen_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  definitionVersion DefinitionVersion? @relation(fields: [definitionVersionId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, componentKind, componentKey, source, contentHash])
+  @@index([organizationId, componentKind, componentKey])
+  @@index([definitionVersionId])
+  // FEA-4335: content-hash detail/trend routing resolves the name-level identity
+  // by (org, kind, content_hash) (`resolveContentHashIdentity`'s coarse fallback),
+  // which the leading (org, kind, componentKey) index cannot serve without the
+  // key. Index the coarse-hash lookup path directly. Explicit name (Prisma's
+  // default exceeds Postgres's 63-char identifier limit).
+  @@index([organizationId, componentKind, contentHash], map: "agent_component_versions_org_kind_content_hash_idx")
+  @@map("agent_component_versions")
 }
 
 /// Usage / Invocation stats — per session × component key. No organizationId:
@@ -2713,10 +3779,10 @@ model AgentComponent {
 /// (D4 decision, same precedent as AgentSessionTokenEvent). Independent from
 /// AgentComponent existence: either can exist without the other.
 model AgentComponentSessionUsage {
-  id               String    @id @default(uuid(7)) @db.Uuid
-  agentSessionId   String    @map("agent_session_id") @db.Uuid
-  componentKind    String    @map("component_kind")
-  componentKey     String    @map("component_key")
+  id                   String    @id @default(uuid(7)) @db.Uuid
+  agentSessionId       String    @map("agent_session_id") @db.Uuid
+  componentKind        String    @map("component_kind")
+  componentKey         String    @map("component_key")
   // FEA-2990: the git branch this usage bucket ran on, from per-event
   // `events.git_branch` on the desktop. Empty string '' is the "no per-event
   // branch" sentinel (Codex, legacy pre-column events, non-tool kinds); those
@@ -2724,23 +3790,40 @@ model AgentComponentSessionUsage {
   // natural key so a session that switched branches mid-run persists one row
   // per (component, branch). Defaulted to '' so older desktop builds that omit
   // the field upsert into the single session-level bucket exactly as before.
-  gitBranch        String    @default("") @map("git_branch")
+  gitBranch            String    @default("") @map("git_branch")
   // Nullable: usage can be recorded before the inventory row exists (e.g. built-in
   // tools), or inventory sync may not have run yet.
-  agentComponentId String?   @map("agent_component_id") @db.Uuid
-  harness          String?
-  invocationCount  Int       @default(0) @map("invocation_count")
-  errorCount       Int       @default(0) @map("error_count")
-  firstInvokedAt   DateTime? @map("first_invoked_at")
-  lastInvokedAt    DateTime? @map("last_invoked_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  agentComponentId     String?   @map("agent_component_id") @db.Uuid
+  harness              String?
+  invocationCount      Int       @default(0) @map("invocation_count")
+  errorCount           Int       @default(0) @map("error_count")
+  // FEA-2923: the component's content hash when this usage was recorded
+  // (hash-at-invocation), synced from desktop. Null when unknown.
+  componentVersionHash String?   @map("component_version_hash")
+  // F1 link (FEA-3290): the exact DefinitionVersion the session ran against
+  // (hash-at-invocation resolved to a fingerprint). Nullable (backfilled in
+  // Slice 5; no writer here). SetNull so a purged version never orphans usage.
+  definitionVersionId  String?   @map("definition_version_id") @db.Uuid
+  // FEA-3981 (PLN-1488) NOTE: per-model/token/cost telemetry lives on the
+  // per-INVOCATION grain (AgentComponentInvocation), NOT here. This table is
+  // keyed on (session, kind, key, git_branch), so a subagent that ran under
+  // BOTH opus and sonnet in one session/branch collapses into ONE row — a
+  // scalar `model` here cannot represent "mixed". The component-level rollup
+  // (tokens/cost sum, model SET) is DERIVED by aggregating the invocation rows
+  // (Slice D read), so mixed-model stays representable. See the invocation
+  // model below for the additive telemetry columns.
+  firstInvokedAt       DateTime? @map("first_invoked_at")
+  lastInvokedAt        DateTime? @map("last_invoked_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
-  session         SessionDetail   @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
-  agentComponent  AgentComponent? @relation(fields: [agentComponentId], references: [id], onDelete: SetNull)
+  session           SessionDetail      @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade)
+  agentComponent    AgentComponent?    @relation(fields: [agentComponentId], references: [id], onDelete: SetNull)
+  definitionVersion DefinitionVersion? @relation(fields: [definitionVersionId], references: [id], onDelete: SetNull)
 
   @@unique([agentSessionId, componentKind, componentKey, gitBranch], map: "idx_acsu_session_kind_key_branch")
   @@index([agentComponentId])
+  @@index([definitionVersionId])
   @@index([agentSessionId, componentKind])
   // FEA-3160: the Agents-workspace time window filters usage on
   // `last_invoked_at >= startDate`. The nested `sessionUsages` read scopes by
@@ -2751,6 +3834,189 @@ model AgentComponentSessionUsage {
   // (component_kind, last_invoked_at) serves those without a full scan.
   @@index([componentKind, lastInvokedAt])
   @@map("agent_component_session_usage")
+}
+
+// =============================================================================
+// F1 DEFINITION SOURCE + VERSION REGISTRY (FEA-3290 / PRD-527)
+// The registry of *what each component is* (provenance-FREE exact version
+// identity) and *everywhere its exact definition has been seen* (typed source
+// occurrences). PD4: identity, provenance, membership, install, usage are
+// SEPARATE contracts. PD5: fingerprint = normalized content + kind; EXCLUDES
+// provenance. This slice (Slice 2 of 6) delivers the SCHEMA + migration ONLY —
+// writers (Slice 3), resolution derivation (Slice 4), backfill (Slice 5), and
+// read surface (Slice 6) are separate PRs and are NOT in this migration.
+//
+// OQ1 divergence (Mike-approved): a NEW `DefinitionVersion` table keyed on
+// Slice-1's provenance-free `definitionHash` + `normalizerContractVersion`,
+// rather than extending the legacy `AgentComponentVersion` (whose natural key
+// conflates version-identity with where-observed via `source`, and which has no
+// contract-version column). `AgentComponentVersion` is kept intact and gains a
+// nullable link column instead. See the PR body for the full rationale.
+// =============================================================================
+
+/// F1 exact-definition version registry (FEA-3290 / PRD-527). One row per
+/// distinct provenance-FREE fingerprint (`definitionHash`, Slice-1 contract) per
+/// org — the authoritative "which exact version" identity (fact-2), as opposed
+/// to the coarse `componentUuid` (fact-1) and the legacy raw-sha256
+/// `AgentComponentVersion` (FEA-2923). `definitionHash` is produced ONLY by
+/// `computeDefinitionHash` in `@repo/api/src/definition-fingerprint` (Slice 1);
+/// never recomputed here. `normalizerContractVersion` is stored so a stored hash
+/// is never reinterpreted under a later rule set (a bump yields a new hash
+/// space, so it can never collide within the same hash → NOT in the unique key).
+model DefinitionVersion {
+  id                        String   @id @default(uuid(7)) @db.Uuid
+  organizationId            String   @map("organization_id") @db.Uuid
+  /// The component kind this version's bytes were fingerprinted under. Kind is
+  /// already folded into `definitionHash`, so this is denormalized for
+  /// filtering/reads, NOT part of the uniqueness key.
+  componentKind             String   @map("component_kind")
+  /// Slice-1 provenance-free SHA-256 fingerprint (64 lowercase hex). Version id.
+  definitionHash            String   @map("definition_hash")
+  /// NORMALIZER_CONTRACT_VERSION under which `definitionHash` was produced.
+  normalizerContractVersion Int      @map("normalizer_contract_version")
+  /// Exact definition text this version fingerprints (the Prompt-panel content).
+  content                   String   @db.Text
+  /// Source format (md, json, yml, …) at first observation; null when unknown.
+  format                    String?
+  firstSeenAt               DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt                DateTime @default(now()) @map("last_seen_at")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  organization         Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sourceOccurrences    SourceOccurrence[]
+  componentVersions    AgentComponentVersion[]
+  sessionUsages        AgentComponentSessionUsage[]
+  invocations          AgentComponentInvocation[]
+  catalogItemVersions  CatalogItemVersion[]
+  editors              DefinitionVersionEditor[]
+
+  /// One row per exact fingerprint per org. `definitionHash` alone is exact
+  /// within an org (kind folded in); no componentUuid in the key by design.
+  @@unique([organizationId, definitionHash])
+  @@index([organizationId, componentKind])
+  @@map("definition_versions")
+}
+
+/// FEA-3982 (Mike-approved edit-lineage capture) — WHO created or edited a given
+/// exact `DefinitionVersion` fingerprint. `DefinitionVersion` intentionally has
+/// no author column (identity is provenance-free bytes); this join table records
+/// the multi-editor lineage that backs the future "Collaborators (authors)"
+/// column (discoverer + everyone who authored/edited that exact hash). One row
+/// per (version, user); the earliest `firstEditedAt` across an org's version rows
+/// is the discoverer, later distinct users are additional editors.
+///
+/// A "version edit" is observing/synced/authoring the exact bytes: because the
+/// fingerprint is provenance-free, two users who independently produce the SAME
+/// bytes are BOTH authors of that one version (collaboration on identical
+/// content), while a byte-different edit produces a NEW `DefinitionVersion` with
+/// its own lineage. Org-scoped through the parent version; `role` distinguishes
+/// the first observer (`discoverer`) from later `editor`s for display without a
+/// second scan.
+model DefinitionVersionEditor {
+  id                  String                        @id @default(uuid(7)) @db.Uuid
+  definitionVersionId String                        @map("definition_version_id") @db.Uuid
+  userId              String                        @map("user_id") @db.Uuid
+  /// Reserved: always `editor` today. No writer sets `discoverer` — the
+  /// discoverer (first observer of this hash in the org) is DERIVED at read time
+  /// as `min(firstEditedAt)`, so `role` is not populated with `discoverer` yet.
+  /// Kept as a column so a future writer can distinguish the two without a
+  /// schema change; the `discoverer` enum value exists for that forward use.
+  role                DefinitionVersionEditorRole   @default(editor)
+  firstEditedAt       DateTime                      @default(now()) @map("first_edited_at")
+  lastEditedAt        DateTime                      @default(now()) @map("last_edited_at")
+  createdAt           DateTime                      @default(now()) @map("created_at")
+  updatedAt           DateTime                      @updatedAt @map("updated_at")
+
+  definitionVersion DefinitionVersion @relation(fields: [definitionVersionId], references: [id], onDelete: Cascade)
+  user              User              @relation("DefinitionVersionEditor", fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One lineage row per (version, user); a re-observation bumps `lastEditedAt`.
+  @@unique([definitionVersionId, userId])
+  @@index([userId])
+  @@map("definition_version_editors")
+}
+
+/// FEA-3982 — a version editor's role. `discoverer` = the first user observed to
+/// carry this exact hash in the org (the original author from the read surface's
+/// point of view); `editor` = any later distinct user who authored/observed the
+/// same bytes. Additive/skew-safe.
+enum DefinitionVersionEditorRole {
+  discoverer
+  editor
+
+  @@map("definition_version_editor_role")
+}
+
+/// F1 provenance join (FEA-3290): "this exact DefinitionVersion was observed at
+/// this source/device/path at this time." Many occurrences per version. Never
+/// affects version identity — provenance is deliberately EXCLUDED from
+/// `definitionHash` (PD5). Typed by `occurrenceType`: `repository` populates the
+/// repo* columns, `local` the local* columns, `pack` the packId — the other
+/// evidence columns stay null for that type. Org-scoped; compute target nullable
+/// (SetNull) because a version can be observed from non-device sources (repo
+/// scan, pack) or after a target is deleted.
+model SourceOccurrence {
+  id                  String               @id @default(uuid(7)) @db.Uuid
+  organizationId      String               @map("organization_id") @db.Uuid
+  definitionVersionId String               @map("definition_version_id") @db.Uuid
+  occurrenceType      SourceOccurrenceType @map("occurrence_type")
+  /// Whether the body was readable at capture (AC-5). `inaccessible`
+  /// (permission-denied) is distinct from a deleted/absent occurrence.
+  accessState         SourceAccessState    @default(accessible) @map("access_state")
+
+  // --- repository evidence (occurrenceType = repository) ---
+  /// `owner/repo` full name.
+  repoFullName String? @map("repo_full_name")
+  /// Path to the definition within the repo.
+  repoPath     String? @map("repo_path")
+  /// Commit sha the definition was observed at.
+  repoCommit   String? @map("repo_commit")
+
+  // --- local evidence (occurrenceType = local) ---
+  /// The compute target the occurrence was observed on, when known.
+  computeTargetId String? @map("compute_target_id") @db.Uuid
+  /// Filesystem path the definition was read from on that target.
+  localPath       String? @map("local_path")
+
+  // --- pack evidence (occurrenceType = pack) ---
+  /// The pack whose membership carries this exact version (F4 boundary; a plain
+  /// nullable id here, no FK — pack identity/lifecycle is owned by F4).
+  packId String? @map("pack_id")
+
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  organization      Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  definitionVersion DefinitionVersion          @relation(fields: [definitionVersionId], references: [id], onDelete: Cascade)
+  computeTarget     ComputeTarget?             @relation(fields: [computeTargetId], references: [id], onDelete: SetNull)
+  invocations       AgentComponentInvocation[]
+
+  /// One row per distinct provenance an exact version was seen at, so an
+  /// idempotent rescan upserts rather than duplicates (AC-6). The evidence
+  /// natural-key participants (repoFullName/repoPath/repoCommit,
+  /// computeTargetId/localPath, packId) are coalesced to '' by the writer
+  /// (Slice 3) before hitting this key. CAVEAT (documented in the migration):
+  /// Postgres treats NULL as DISTINCT in a unique index, so two rows with NULL
+  /// key parts would NOT collide — the writer therefore never passes NULL into
+  /// the key participants (coalesces to '' / drives NULL-target dedupe through
+  /// the application upsert). Provenance is descriptive, not identity-bearing,
+  /// so a residual duplicate never corrupts version identity.
+  // NOTE: A partial unique index `idx_source_occurrence_null_target_key` on
+  // (definition_version_id, occurrence_type, repo_full_name, repo_path,
+  // repo_commit, local_path, pack_id) WHERE compute_target_id IS NULL is
+  // maintained via raw migration (FEA-3909). It gives the null-target family
+  // (a `pack` occurrence; a future repo scan) a NULL-safe unique key so the
+  // writer can do an atomic INSERT … ON CONFLICT instead of a racy find-then-
+  // create — the full index above cannot arbitrate because Postgres treats NULL
+  // compute_target_id as DISTINCT. Prisma cannot express partial indexes; do NOT
+  // drop it. See: https://github.com/prisma/prisma/issues/29289
+  @@unique([definitionVersionId, occurrenceType, repoFullName, repoPath, repoCommit, computeTargetId, localPath, packId], map: "idx_source_occurrence_natural_key")
+  @@index([organizationId, definitionVersionId])
+  @@index([computeTargetId])
+  @@map("source_occurrences")
 }
 
 // =============================================================================
@@ -2771,30 +4037,30 @@ model AgentComponentSessionUsage {
 /// crafted migration on top so the full-unique index is dropped in favor of
 /// the filtered one. See migration: add_agent_component_and_catalog_distribution.
 model CatalogItem {
-  id             String    @id @default(uuid(7)) @db.Uuid
+  id                     String   @id @default(uuid(7)) @db.Uuid
   // Nullable for global/curated scope items (organizationId IS NULL).
-  organizationId String?   @map("organization_id") @db.Uuid
-  targetKind     String    @map("target_kind") // plugin|skill|command|agent|hook|mcp
-  source         String    // org_custom|curated|marketplace
-  scope          String    // org|global
-  name           String
-  description    String?
-  version        String    @default("1.0.0")
-  sortOrder      Int       @default(0) @map("sort_order")
+  organizationId         String?  @map("organization_id") @db.Uuid
+  targetKind             String   @map("target_kind") // plugin|skill|command|agent|hook|mcp
+  source                 String // org_custom|curated|marketplace
+  scope                  String // org|global
+  name                   String
+  description            String?
+  version                String   @default("1.0.0")
+  sortOrder              Int      @default(0) @map("sort_order")
   // S3 asset keys (written after upload confirmation in T-15.3)
-  zipAssetBucket  String?  @map("zip_asset_bucket")
-  zipAssetKey     String?  @map("zip_asset_key")
-  logoAssetBucket String?  @map("logo_asset_bucket")
-  logoAssetKey    String?  @map("logo_asset_key")
-  filesAssetKey   String?  @map("files_asset_key")
-  enabled        Boolean   @default(true)
-  archived       Boolean   @default(false)
+  zipAssetBucket         String?  @map("zip_asset_bucket")
+  zipAssetKey            String?  @map("zip_asset_key")
+  logoAssetBucket        String?  @map("logo_asset_bucket")
+  logoAssetKey           String?  @map("logo_asset_key")
+  filesAssetKey          String?  @map("files_asset_key")
+  enabled                Boolean  @default(true)
+  archived               Boolean  @default(false)
   // Coaching Packs sub-slice (T-22.1): coaching items carry signals[] payload
   // and are excluded from the generic plugin ranking/leaderboard.
-  coaching       Boolean   @default(false)
-  coachingConfig Json?     @map("coaching_config")
+  coaching               Boolean  @default(false)
+  coachingConfig         Json?    @map("coaching_config")
   // Legacy Agent supersede (T-21.1) — migration traceability
-  legacyAgentId  String?   @map("legacy_agent_id") @db.Uuid
+  legacyAgentId          String?  @map("legacy_agent_id") @db.Uuid
   // FEA-3050 promote idempotency: the discovered AgentComponent this item was
   // promoted from (best-of-breed promote, FEA-2923 §J). Bare traceability
   // column (mirrors legacyAgentId/sourceLoopId — no relation). A hand-written
@@ -2803,36 +4069,36 @@ model CatalogItem {
   // duplicate org-wide AutoInstall distributions; the pre-existing catalog_items
   // partial unique indexes only cover target_kind='agent' rows. Prisma cannot
   // express partial indexes, so the index lives in the migration, not here.
-  sourceAgentComponentId String? @map("source_agent_component_id") @db.Uuid
+  sourceAgentComponentId String?  @map("source_agent_component_id") @db.Uuid
   // Preserved for Agent bootstrap idempotency (T-21.1); mirrors Agent.sourceRepo/role
-  sourceRepo     String?   @map("source_repo")
-  role           String?
+  sourceRepo             String?  @map("source_repo")
+  role                   String?
   // Stable, org-scoped-unique context-pack slug for targetKind='agent' items,
   // disambiguated with -2/-3 suffixes at ingest (mirrors the superseded
   // Agent.slug). Persisted so same-role agents from different sourceRepos keep
   // distinct harness file names (`.claude/agents/{slug}.md`) instead of
   // colliding on a role-derived slug recomputed on read (FEA-2923).
-  agentSlug      String?   @map("agent_slug")
-  sourceLoopId   String?   @map("source_loop_id")
+  agentSlug              String?  @map("agent_slug")
+  sourceLoopId           String?  @map("source_loop_id")
   // Pack authoring (component container): a Pack is a top-level CatalogItem
   // (parentPackId IS NULL) that holds N child component CatalogItems
   // (skill/command/agent/hook/plugin/mcp). Cascade so archiving/deleting a Pack
   // removes its authored components. Null for standalone items + legacy rows.
-  parentPackId   String?   @map("parent_pack_id") @db.Uuid
+  parentPackId           String?  @map("parent_pack_id") @db.Uuid
   // Content-addressed component identity: uuidv5(source + owner + normalized
   // content). Stable across author/import origin; the dedup + cloud-analytics
   // join key. Null for asset-only items and the Pack container itself.
-  componentUuid  String?   @map("component_uuid") @db.Uuid
-  createdById    String?   @map("created_by_id") @db.Uuid
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  componentUuid          String?  @map("component_uuid") @db.Uuid
+  createdById            String?  @map("created_by_id") @db.Uuid
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
 
-  organization   Organization?       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdBy      User?               @relation("CatalogItemCreatedBy", fields: [createdById], references: [id])
-  parentPack     CatalogItem?        @relation("PackComponents", fields: [parentPackId], references: [id], onDelete: Cascade)
-  components     CatalogItem[]       @relation("PackComponents")
-  versions       CatalogItemVersion[]
-  distributions  Distribution[]
+  organization  Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy     User?                @relation("CatalogItemCreatedBy", fields: [createdById], references: [id])
+  parentPack    CatalogItem?         @relation("PackComponents", fields: [parentPackId], references: [id], onDelete: Cascade)
+  components    CatalogItem[]        @relation("PackComponents")
+  versions      CatalogItemVersion[]
+  distributions Distribution[]
 
   @@index([organizationId, archived])
   @@index([source, scope])
@@ -2853,32 +4119,54 @@ model CatalogItemVersion {
   content       String?  @db.Text
   changeNote    String?  @map("change_note")
   changedById   String?  @map("changed_by_id") @db.Uuid
+  // F1 link (FEA-3909 / PRD-527 F4): the exact provenance-free DefinitionVersion
+  // this version's stored `content` fingerprints to (via `computeDefinitionHash`
+  // → `registerDefinitionVersion`, the SSOT). This is the row that actually
+  // carries a pack member's definition body, so the catalog→registry link lives
+  // here rather than on the child CatalogItem. Nullable: asset-only versions and
+  // legacy rows with no stored body stay NULL (conservative — no invented
+  // version, PD5). SetNull so a purged version never orphans the catalog row.
+  // The provenance-tainted `CatalogItem.componentUuid` is preserved alongside as
+  // a compatibility identity; readers prefer this link when present.
+  definitionVersionId String? @map("definition_version_id") @db.Uuid
   createdAt     DateTime @default(now()) @map("created_at")
 
   catalogItem CatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
   changedBy   User?       @relation("CatalogItemVersionChangedBy", fields: [changedById], references: [id])
+  definitionVersion DefinitionVersion? @relation(fields: [definitionVersionId], references: [id], onDelete: SetNull)
 
   @@unique([catalogItemId, version])
   @@index([catalogItemId])
+  @@index([definitionVersionId])
   @@map("catalog_item_versions")
 }
 
 /// A distribution assignment: a CatalogItem pushed to a targeting set with
 /// a mode (auto_install = no user action; opt_in = user accepts). Org-scoped.
 model Distribution {
-  id             String    @id @default(uuid(7)) @db.Uuid
-  organizationId String    @map("organization_id") @db.Uuid
-  catalogItemId  String    @map("catalog_item_id") @db.Uuid
-  mode           String    // auto_install|opt_in
-  targetingType  String    @map("targeting_type") // all|specific
-  desiredEnabled Boolean   @default(true) @map("desired_enabled")
-  createdById    String?   @map("created_by_id") @db.Uuid
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  catalogItemId  String   @map("catalog_item_id") @db.Uuid
+  mode           String // auto_install|opt_in
+  targetingType  String   @map("targeting_type") // all|specific
+  desiredEnabled Boolean  @default(true) @map("desired_enabled")
+  createdById    String?  @map("created_by_id") @db.Uuid
+  /// ISS-5123: when non-null, the distribution has been WITHDRAWN — the org no
+  /// longer offers this pack, so it is excluded from every "live distribution"
+  /// read (`listForOrg`, `getAssignedForTarget`). Deliberately a soft-delete
+  /// rather than a row delete: `DistributionTargetStatus` cascades on delete, so
+  /// a hard delete would destroy the record of what was installed on whose
+  /// machine — precisely the history an admin needs AFTER withdrawing, since
+  /// already-installed copies are left in place and keep working.
+  withdrawnAt    DateTime? @map("withdrawn_at")
+  withdrawnById  String?   @map("withdrawn_by_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
-  organization     Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  catalogItem      CatalogItem                @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
-  createdBy        User?                      @relation("DistributionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  organization     Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  catalogItem      CatalogItem                  @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  createdBy        User?                        @relation("DistributionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  withdrawnBy      User?                        @relation("DistributionWithdrawnBy", fields: [withdrawnById], references: [id], onDelete: SetNull)
   targetStatuses   DistributionTargetStatus[]
   targetingEntries DistributionTargetingEntry[]
 
@@ -2896,7 +4184,7 @@ model DistributionTargetStatus {
   computeTargetId   String?   @map("compute_target_id") @db.Uuid
   // Nullable; populated for user-scoped opt-in tracking.
   userId            String?   @map("user_id") @db.Uuid
-  status            String    // pending|installed|enabled|failed|opted_in|declined
+  status            String // pending|installed|enabled|failed|opted_in|declined
   installedVersion  String?   @map("installed_version")
   // Links to an audit trail row (e.g. pack_install_runs) when available.
   installRunId      String?   @map("install_run_id")
@@ -2941,4 +4229,442 @@ model DistributionTargetingEntry {
   @@index([distributionId])
   @@index([computeTargetId])
   @@map("distribution_targeting_entries")
+}
+
+/// Immutable, staged cloud copy of one complete Desktop invocation projection.
+/// A generation is visible to readers only after every part has arrived, its
+/// complete-set hash has been validated, and `activeAt` has been set while
+/// holding the owning SessionDetail lock. Organization scope is inherited from
+/// SessionDetail -> Artifact.organizationId; it is deliberately not duplicated.
+model AgentComponentInvocationGeneration {
+  id                   String    @id @default(uuid(7)) @db.Uuid
+  agentSessionId       String    @map("agent_session_id") @db.Uuid
+  externalGenerationId String    @map("external_generation_id")
+  sourceUpdatedAt      DateTime  @map("source_updated_at")
+  dataRevision         Int       @map("data_revision")
+  sourceSequence       Int       @map("source_sequence")
+  expectedPartCount    Int       @map("expected_part_count")
+  activeAt             DateTime? @map("active_at")
+  completedAt          DateTime? @map("completed_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  session     SessionDetail                  @relation(fields: [agentSessionId], references: [artifactId], onDelete: Cascade, map: "fk_acig_session")
+  parts       AgentComponentInvocationPart[]
+  invocations AgentComponentInvocation[]
+
+  @@unique([agentSessionId, externalGenerationId, sourceUpdatedAt, dataRevision, sourceSequence], map: "idx_acig_session_external_generation_freshness")
+  @@index([agentSessionId, activeAt], map: "idx_acig_session_active")
+  @@index([agentSessionId, sourceUpdatedAt, dataRevision, sourceSequence], map: "idx_acig_session_source_freshness")
+  // NOTE: exactly one completed generation may be active for a session. Prisma
+  // cannot express a partial unique index, so the migration maintains
+  // idx_acig_one_active_per_session on agent_session_id WHERE active_at IS NOT NULL.
+  @@map("agent_component_invocation_generations")
+}
+
+/// Durable, immutable receipt for a byte-bounded generation part. The ingest
+/// service compares the hash, item count, and payload bytes on retry before it
+/// accepts any staged items, so a conflicting retry cannot rewrite history.
+model AgentComponentInvocationPart {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  generationId String   @map("generation_id") @db.Uuid
+  partIndex    Int      @map("part_index")
+  partHash     String   @map("part_hash")
+  itemCount    Int      @map("item_count")
+  payloadBytes Int      @map("payload_bytes")
+  receivedAt   DateTime @default(now()) @map("received_at")
+
+  generation  AgentComponentInvocationGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade, map: "fk_acip_generation")
+  invocations AgentComponentInvocation[]
+
+  @@unique([generationId, partIndex], map: "idx_acip_generation_part")
+  @@map("agent_component_invocation_parts")
+}
+
+/// One immutable component invocation staged inside a complete generation.
+/// Resolution links are nullable because evidence may be missing, unmatched,
+/// or ambiguous. Non-versionable tool/MCP/orchestration rows intentionally keep
+/// all three links and definitionHash null.
+model AgentComponentInvocation {
+  id                         String    @id @default(uuid(7)) @db.Uuid
+  generationId               String    @map("generation_id") @db.Uuid
+  partId                     String    @map("part_id") @db.Uuid
+  externalInvocationId       String    @map("external_invocation_id")
+  sourceSessionId            String    @map("source_session_id")
+  childSessionId             String?   @map("child_session_id")
+  parentExternalInvocationId String?   @map("parent_external_invocation_id")
+  externalAgentId            String?   @map("external_agent_id")
+  componentKind              String    @map("component_kind")
+  componentKey               String    @map("component_key")
+  rawName                    String?   @map("raw_name")
+  normalizedName             String?   @map("normalized_name")
+  relationship               String
+  invokedAt                  DateTime? @map("invoked_at")
+  sequence                   Int
+  anchor                     Json
+  providerInvocationId       String?   @map("provider_invocation_id")
+  attributionStatus          String    @map("attribution_status")
+  evidenceClass              String    @map("evidence_class")
+  definitionHash             String?   @map("definition_hash")
+  normalizerContractVersion  Int?      @map("normalizer_contract_version")
+  definitionContent          String?   @map("definition_content") @db.Text
+  definitionFormat           String?   @map("definition_format")
+  sourcePath                 String?   @map("source_path")
+  sourceModifiedAt           DateTime? @map("source_modified_at")
+  capturedAt                 DateTime? @map("captured_at")
+  repositoryFullName         String?   @map("repository_full_name")
+  repositoryCommit           String?   @map("repository_commit")
+  packId                     String?   @map("pack_id")
+  branchName                 String?   @map("branch_name")
+  agentComponentId           String?   @map("agent_component_id") @db.Uuid
+  definitionVersionId        String?   @map("definition_version_id") @db.Uuid
+  sourceOccurrenceId         String?   @map("source_occurrence_id") @db.Uuid
+  // FEA-3981 (PLN-1488) per-component telemetry — additive, all nullable with
+  // NO default so legacy rows stay NULL = "not computed". Capture (desktop),
+  // sync, read, and UI land in later slices; Slice A only adds the columns.
+  // These live at the per-INVOCATION grain (one row per invocation) so a
+  // subagent that runs under multiple models yields one row per model turn —
+  // "mixed-model" is naturally represented as distinct rows. The component-level
+  // rollup (AgentComponentSessionUsage) DERIVES its totals and its model SET by
+  // aggregating these rows, rather than storing a lossy scalar.
+  //
+  // (a) REAL per-SUBAGENT token/model/cost: a subagent invocation carries the
+  //     model it ran and that turn's usage; other kinds leave them NULL.
+  //     Triggered downstream cost stays session-level (not fabricated here).
+  model                      String?
+  inputTokens                BigInt?   @map("input_tokens")
+  outputTokens               BigInt?   @map("output_tokens")
+  cacheReadTokens            BigInt?   @map("cache_read_tokens")
+  cacheWriteTokens           BigInt?   @map("cache_write_tokens")
+  estimatedCost              Decimal?  @map("estimated_cost") @db.Decimal(14, 6)
+  // (b) Per-component result-FOOTPRINT tokens — the deterministic "tokens this
+  //     component injected into context" metric, computed for ALL kinds:
+  //     tool/MCP = tool_result output, skill = SKILL.md body + pulled content,
+  //     command = expanded template, hook = stdout.
+  footprintTokens            BigInt?   @map("footprint_tokens")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+
+  generation        AgentComponentInvocationGeneration @relation(fields: [generationId], references: [id], onDelete: Cascade, map: "fk_aci_generation")
+  part              AgentComponentInvocationPart       @relation(fields: [partId], references: [id], onDelete: Cascade, map: "fk_aci_part")
+  agentComponent    AgentComponent?                    @relation(fields: [agentComponentId], references: [id], onDelete: SetNull, map: "fk_aci_component")
+  definitionVersion DefinitionVersion?                 @relation(fields: [definitionVersionId], references: [id], onDelete: SetNull, map: "fk_aci_definition_version")
+  sourceOccurrence  SourceOccurrence?                  @relation(fields: [sourceOccurrenceId], references: [id], onDelete: SetNull, map: "fk_aci_source_occurrence")
+
+  @@unique([generationId, externalInvocationId], map: "idx_aci_generation_external_invocation")
+  @@index([generationId, sequence], map: "idx_aci_generation_sequence")
+  @@index([agentComponentId, invokedAt], map: "idx_aci_component_invoked_at")
+  @@index([agentComponentId, branchName, invokedAt], map: "idx_aci_component_branch_invoked_at")
+  @@index([definitionVersionId, invokedAt], map: "idx_aci_definition_version_invoked_at")
+  @@index([attributionStatus, invokedAt], map: "idx_aci_status_invoked_at")
+  @@map("agent_component_invocations")
+}
+
+// =============================================================================
+// AUDIT LEDGER (FEA-3856 / FEA-3799 Phase 1)
+// =============================================================================
+
+/// Tamper-evident, append-only audit ledger. Each organization owns an
+/// independent hash chain: rows are keyed by `(organizationId, seq)` with a
+/// gap-free monotonic `seq`, and each row's `hash` is derived from its own
+/// fields plus the previous row's `hash` (`prevHash`), so mutating any historic
+/// row breaks every downstream link (see `auditLedgerService.verifyChain`).
+///
+/// Append-only is enforced at the DB layer by a `BEFORE UPDATE OR DELETE`
+/// trigger that RAISEs (see the migration) — Prisma cannot express a trigger, so
+/// the guard lives in hand-edited migration SQL. `actorType`/`actorId` are free
+/// columns (no FK) so a `system` or future signed `agent` actor does not depend
+/// on the Phase-2 per-agent key table. Ships dark in Slice 1a: no service emits
+/// rows yet.
+model AuditEntry {
+  organizationId String   @map("organization_id") @db.Uuid
+  seq            BigInt
+  hash           String   @db.Char(64)
+  prevHash       String   @map("prev_hash") @db.Char(64)
+  action         String
+  actorType      String   @map("actor_type")
+  actorId        String?  @map("actor_id") @db.Uuid
+  objectType     String   @map("object_type")
+  objectId       String   @map("object_id")
+  detail         Json
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, seq])
+  // No @@index([organizationId, seq]) — the composite PK above already provides
+  // that index; a separate one would be redundant (extra write + storage cost).
+  @@index([organizationId, objectType, objectId])
+  @@map("audit_entries")
+}
+
+/// Durable outbox for pending audit-ledger emissions (FEA-3862 Slice 1c).
+///
+/// Emit points write a row here — best-effort, never blocking or failing the
+/// originating request — instead of appending to `audit_entries` inline. The
+/// `drain-audit-outbox` cron claims pending rows per organization and calls
+/// `auditLedgerService.append`, which takes the per-org single-writer advisory
+/// lock so `seq` stays gap-free. Decoupling emission from append is what keeps
+/// a ledger hiccup off the user's hot path: a failed outbox insert is swallowed
+/// and logged; a failed append leaves the row pending — with a bumped
+/// `attempts`/`lastError` — for the next drain, until it reaches the drain's
+/// dead-letter cap.
+///
+/// Rows are deleted once appended (the ledger is the durable record); a row is
+/// retried only up to the drain's max-attempts cap, after which it is parked as
+/// a dead-letter — excluded from every future drain batch, its `attempts` and
+/// `lastError` kept for an operator dead-letter view. So this table holds the
+/// small pending/failed backlog plus any parked poison rows; the drain query
+/// filters on `attempts` and orders by `createdAt`, and `@@index([attempts,
+/// createdAt])` serves it so the growing parked set never bloats a drain pass.
+model AuditOutbox {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  action         String
+  actorType      String   @map("actor_type")
+  actorId        String?  @map("actor_id") @db.Uuid
+  objectType     String   @map("object_type")
+  objectId       String   @map("object_id")
+  detail         Json
+  /// Number of failed drain attempts; a poison row that keeps throwing climbs to
+  /// the drain's max-attempts cap and is then parked (excluded from the drain
+  /// batch) rather than blocking newer rows.
+  attempts       Int      @default(0)
+  lastError      String?  @map("last_error")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt])
+  /// Serves the drain's pending scan: WHERE attempts < cap ORDER BY created_at.
+  /// Leading `attempts` range-excludes parked rows (attempts >= cap) so the
+  /// dead-letter set never enters the scan/sort.
+  @@index([attempts, createdAt])
+  @@map("audit_outbox")
+}
+
+// =============================================================================
+// ROUTINES (FEA-4365 / PRD-566)
+// =============================================================================
+
+/// A scheduled Routine: an org/team-scoped, provider-driven recurring agent job.
+///
+/// Cloud-side source of truth backing the Web Routines surface and cross-machine
+/// features. A routine is either CREATED in the UI or DISCOVERED already
+/// configured on a teammate's dev machine and reported up (`origin`,
+/// `hostMachine`). This model is a SUPERSET of the desktop crewd `ScheduledTask`
+/// (packages/crewd/src/model.ts): its `id`/`cron`/`enabled`/`timezone` map to
+/// crewd's fields so a desktop-origin routine syncs up without loss, while the
+/// prototype's provider-capability fields (`connectorIds`, `autoFixPullRequests`,
+/// `permissionMode`, `reasoningEffort`, `worktree`) carry the New-Routine config.
+///
+/// Provider-conditional fields degrade to null when the provider doesn't support
+/// them (e.g. `permissionMode`/`worktree` are Claude-only; `reasoningEffort`/
+/// `runsIn`/`project` are Codex-only), mirroring the prototype's
+/// `providerCapabilities` gating. This keeps old/new clients skew-safe: a field a
+/// provider can't emit is simply absent.
+model Routine {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  organizationId String  @map("organization_id") @db.Uuid
+  /// Team-scoping. Nullable so an org-level routine (not yet assigned to a team)
+  /// is still representable; queries scope on organizationId and optionally teamId.
+  teamId         String? @map("team_id") @db.Uuid
+
+  /// Desktop-source identity: the crewd `ScheduledTask.id` (an ARBITRARY string
+  /// such as `task-1`, NOT a UUID) this routine was synced up from. The cloud PK
+  /// (`id`) is a distinct identity and never accepts a desktop id. Sync upserts
+  /// key on `[organizationId, sourceId]` — org-scoped so one tenant can never
+  /// address or clobber another's row — while CREATED routines leave it null
+  /// (Postgres treats NULLs as distinct, so many null-sourced routines coexist).
+  sourceId String? @map("source_id")
+
+  name        String
+  description String @default("")
+  /// Free-text agent instructions the routine runs with (crewd `prompt`).
+  instructions String @default("")
+
+  /// Owning/assignee user (nullable for a discovered routine whose owner isn't a
+  /// resolvable platform user, or an org-level routine with no assignee yet).
+  ownerId String? @map("owner_id") @db.Uuid
+  /// Human-readable owner label as reported (esp. for DISCOVERED routines where
+  /// no platform user maps). Additive/optional; prefer `ownerId` when present.
+  ownerName String? @map("owner_name")
+
+  provider RoutineProvider
+  /// Provider model id (e.g. "opus-4-8", "gpt-5-6-sol"); free-text so a new
+  /// harness model doesn't require a schema change.
+  modelId  String        @map("model_id")
+  runsOn   RoutineRunsOn @default(LOCAL) @map("runs_on")
+  origin   RoutineOrigin @default(CREATED)
+  status   RoutineStatus @default(DRAFT)
+
+  // ── Schedule ──
+  scheduleKind   RoutineScheduleKind @default(MANUAL) @map("schedule_kind")
+  /// Human/display timing string from the prototype (e.g. "Runs weekdays at 9:00
+  /// AM CDT"). Advisory display copy, not the machine timing.
+  scheduleDetail String              @default("") @map("schedule_detail")
+  /// 5-field cron for machine scheduling (crewd `cron`); null for MANUAL routines.
+  cron           String?             @map("cron")
+  /// IANA tz for cron evaluation; empty = host local time (crewd `timezone`).
+  timezone       String              @default("") @map("timezone")
+  /// UI enable toggle mirrored from crewd; a paused/disabled routine never fires.
+  enabled        Boolean             @default(true)
+  notifyMode     RoutineNotifyMode   @default(ALL_RUNS) @map("notify_mode")
+
+  // ── Context / target ──
+  /// "folder" providers (Claude): a local path or repo string. Null for Codex.
+  folderOrRepo String?        @map("folder_or_repo")
+  /// "project" providers (Codex): a named workspace. Null for Claude.
+  project      String?
+  /// Codex-only new-vs-existing chat continuity. Null for Claude/opencode.
+  runsIn       RoutineRunsIn? @map("runs_in")
+  /// For DISCOVERED routines: which teammate machine reported this routine up.
+  hostMachine  String?        @map("host_machine")
+
+  // ── Provider-capability config (nullable/defaulted per provider gating) ──
+  /// Connector integration ids (Claude-only). Empty array for Codex/opencode.
+  connectorIds        String[] @default([]) @map("connector_ids")
+  autoFixPullRequests Boolean  @default(false) @map("auto_fix_pull_requests")
+  /// Claude permission mode label; null for Codex/opencode (no such control).
+  permissionMode      String?  @map("permission_mode")
+  /// Codex reasoning-effort label; null for Claude/opencode (no such control).
+  reasoningEffort     String?  @map("reasoning_effort")
+  /// Claude worktree toggle; false for providers without the control.
+  worktree            Boolean  @default(false)
+
+  // ── Lossless crewd ScheduledTask carry-through (FEA-4365 superset) ──
+  // These preserve the desktop crewd task fields that have no first-class column
+  // above, so a ScheduledTask can round-trip through the cloud store without
+  // dropping execution semantics or the fallback/cascade trail. All are
+  // additive/optional and default to crewd's own defaults, so an older desktop
+  // build that omits them degrades safely (version-skew safe both directions).
+  /// crewd capability-broker route (`local-cascade`/`claude-routine`/…). Null =
+  /// unset; an unknown literal from a newer build is normalized on the desktop
+  /// side (`normalizeTaskRoute`) before it is persisted here.
+  route         String?  @map("route")
+  /// crewd per-task cascade order — the ordered (harness, model?) fallback trail.
+  /// JSON array of CascadeStep; empty = fall back to the global default cascade.
+  harnessCascade Json    @default("[]") @map("harness_cascade")
+  /// crewd catch-up toggle: run once on next tick if a scheduled fire was missed.
+  catchUp       Boolean  @default(true) @map("catch_up")
+  /// crewd `recurring`/`durable` scheduling flags carried verbatim.
+  recurring     Boolean  @default(true)
+  durable       Boolean  @default(true)
+  /// crewd orchestration kind (`review`/`apply`/`custom`/…) and, for review
+  /// passes, the character/pass id. Free-text so a new crewd pass needs no
+  /// schema change. Null for routines with no crewd pass semantics.
+  passKind      String?  @map("pass_kind")
+  pass          String?
+  /// crewd owning crew subdir (e.g. "mikeangstadt"); empty when not crew-owned.
+  crew          String   @default("")
+  /// crewd open extension bag — never load-bearing for scheduling, preserved so a
+  /// newer desktop build's task metadata survives a cloud round-trip.
+  meta          Json     @default("{}")
+
+  // ── Bookkeeping (maintained as runs complete) ──
+  /// Next computed fire time; advisory, recomputed as the scheduler ticks.
+  nextRunAt        DateTime?         @map("next_run_at")
+  /// When this routine last actually fired.
+  lastRunAt        DateTime?         @map("last_run_at")
+  /// id of the most recent RoutineRun, for the UI to link to.
+  lastRunId        String?           @map("last_run_id") @db.Uuid
+  /// Cached outcome of the most recent run, for list badges without a join.
+  lastStatus       RoutineRunStatus? @map("last_status")
+  /// External session id the last run opened (prototype `lastRunSessionId`).
+  lastRunSessionId String?           @map("last_run_session_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  team         Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  owner        User?        @relation("RoutineOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  runs         RoutineRun[]
+
+  /// Org-scoped desktop-source identity: the sync-up upsert conflict target, so a
+  /// desktop `ScheduledTask.id` resolves to exactly one row PER ORG. NULLs are
+  /// distinct in Postgres, so CREATED (null-sourced) routines never collide here.
+  @@unique([organizationId, sourceId], map: "routines_organization_id_source_id_key")
+  /// Serves the primary org-scoped list (optionally further filtered by team),
+  /// newest-first.
+  @@index([organizationId, updatedAt])
+  @@index([organizationId, teamId, updatedAt])
+  @@index([organizationId, status])
+  @@map("routines")
+}
+
+/// One run of a Routine — the history the UI lists, org/team-scoped.
+///
+/// Maps 1:1 to the desktop crewd `RunRecord`: `status`/`startedAt`/`finishedAt`/
+/// `harnessUsed`/`summary`/`error` are the same surface, plus the model actually
+/// used and the invoked-component/session links the prototype's run trace drills
+/// into. Run history is BOUNDED per routine — the service caps retention and
+/// sweeps the oldest rows (see routines-service) so a hot routine's history can't
+/// grow without limit.
+model RoutineRun {
+  id             String @id @default(uuid(7)) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  routineId      String @map("routine_id") @db.Uuid
+
+  /// Desktop-source identity: the crewd `RunRecord.id` (ARBITRARY string, not a
+  /// UUID) this run was synced up from. The cloud PK (`id`) is distinct. Sync
+  /// keys on `[organizationId, sourceRunId]` so re-delivering the same completed
+  /// run UPDATES the existing row (idempotent) — and a RUNNING row can transition
+  /// to its terminal state — instead of inserting a duplicate. Null for
+  /// cloud-native runs (NULLs are distinct in Postgres).
+  sourceRunId String? @map("source_run_id")
+  /// crewd `RunRecord.taskName` snapshot for the UI row (denormalized display).
+  taskName    String? @map("task_name")
+
+  status     RoutineRunStatus @default(PENDING)
+  startedAt  DateTime         @default(now()) @map("started_at")
+  finishedAt DateTime?        @map("finished_at")
+
+  /// Provider/harness that actually produced the result (crewd `harnessUsed`).
+  provider RoutineProvider?
+  /// Model id the run actually drove with.
+  modelId  String?          @map("model_id")
+
+  /// One-line human summary for the UI row (crewd `summary`).
+  summary String  @default("")
+  /// Failure message when the run did not succeed (crewd `error`).
+  error   String?
+  /// Path/URL to the full run log, if any (crewd `logPath`).
+  logPath String? @map("log_path")
+
+  /// External session id this run opened (links to the Sessions surface).
+  sessionId  String?  @map("session_id")
+  /// All external session ids this run touched (prototype `sessionIds`).
+  sessionIds String[] @default([]) @map("session_ids")
+
+  /// What this run invoked — subagents/commands/skills — as recorded from the
+  /// run trace. JSON array of { id, name, kind, cataloged }; shape mirrors the
+  /// prototype's InvokedComponent so the UI can drill into the Agents catalog.
+  invokedComponents Json @default("[]") @map("invoked_components")
+
+  /// crewd `RunRecord.attempts` — every harness tried, in order, the visible
+  /// cascade/fallback trail. JSON array of CascadeAttempt; empty for a
+  /// single-attempt or cloud-native run. Preserved so a desktop run round-trips
+  /// through the cloud store without dropping which harnesses were attempted.
+  attempts Json @default("[]")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Relations
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  routine      Routine      @relation(fields: [routineId], references: [id], onDelete: Cascade)
+
+  /// Org-scoped desktop-source identity: the run sync-up upsert conflict target,
+  /// so re-delivering a crewd `RunRecord.id` is idempotent per org. NULLs are
+  /// distinct, so cloud-native (null-sourced) runs never collide here.
+  @@unique([organizationId, sourceRunId], map: "routine_runs_organization_id_source_run_id_key")
+  /// Serves the per-routine, newest-first history list AND the retention sweep
+  /// (which orders a routine's runs by recency to find the rows past the cap).
+  @@index([routineId, startedAt])
+  /// Org-scoped recent-runs view across all routines.
+  @@index([organizationId, startedAt])
+  @@map("routine_runs")
 }

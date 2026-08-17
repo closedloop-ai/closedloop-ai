@@ -10,8 +10,9 @@ import { buildCorrelationId, notifySlack } from "@/lib/slack-notifier";
  *
  * Deletes S3 objects that have no backing row (ORPHANED_OBJECT) — these leak
  * when `deleteAttachment` commits the row delete but the best-effort S3 delete
- * throws, stranding the object in the bucket forever. Objects still within the
- * presigned-upload window are skipped so in-flight uploads are never disturbed.
+ * throws, or when inline image storage succeeds but DB persistence is known not
+ * to have produced a row. Objects still within the presigned-upload window are
+ * skipped so in-flight uploads are never disturbed.
  *
  * Protected by CRON_SECRET bearer token — must be set in environment and
  * passed via `Authorization: Bearer <secret>` header (e.g., Vercel Cron).

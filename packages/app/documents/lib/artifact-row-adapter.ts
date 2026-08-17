@@ -1,12 +1,18 @@
-import { ArtifactSubtype, ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  type ArtifactLinkEndpoint,
+  ArtifactSubtype,
+  ArtifactType,
+} from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactStatus,
+  type Document,
   DocumentStatus,
   DocumentType,
   type DocumentWithProject,
-  FeatureStatus,
+  IssueStatus,
   isActiveGenerationStatus,
+  SnapshotSource,
 } from "@repo/api/src/types/document";
 import type {
   DetailedArtifact,
@@ -46,27 +52,67 @@ const SUBTYPE_TO_DOCUMENT_TYPE: Record<ArtifactSubtype, DocumentType> = {
   [ArtifactSubtype.ImplementationPlan]: DocumentType.ImplementationPlan,
   [ArtifactSubtype.Feature]: DocumentType.Feature,
   [ArtifactSubtype.Template]: DocumentType.Template,
+  [ArtifactSubtype.Doc]: DocumentType.Doc,
 };
 
 const documentStatusSchema = z.enum(DocumentStatus);
-const featureStatusSchema = z.enum(FeatureStatus);
+const issueStatusSchema = z.enum(IssueStatus);
 
 /**
  * Parse a free-form `status` string against the vocabulary for its subtype
- * (PRD-495). Features use FeatureStatus (fallback BACKLOG); every other
- * Document subtype uses DocumentStatus (fallback DRAFT). The fallback is the
- * defensive guard for an out-of-contract string in the unconstrained column.
+ * (PRD-495). Issues (subtype = FEATURE) use IssueStatus (fallback BACKLOG);
+ * every other Document subtype uses DocumentStatus (fallback DRAFT). The
+ * fallback is the defensive guard for an out-of-contract string in the
+ * unconstrained column.
  */
 function parseStatusForSubtype(
   subtype: ArtifactSubtype,
   rawStatus: string
 ): ArtifactStatus {
   if (subtype === ArtifactSubtype.Feature) {
-    const parsed = featureStatusSchema.safeParse(rawStatus);
-    return parsed.success ? parsed.data : FeatureStatus.Backlog;
+    const parsed = issueStatusSchema.safeParse(rawStatus);
+    return parsed.success ? parsed.data : IssueStatus.Backlog;
   }
   const parsed = documentStatusSchema.safeParse(rawStatus);
   return parsed.success ? parsed.data : DocumentStatus.Draft;
+}
+
+/**
+ * Adapt an `ArtifactLinkEndpoint` (the minimal artifact projection returned by
+ * `/artifact-links/resolved`) to the legacy `Document` shape that `ArtifactRow`
+ * still expects. The endpoint omits fields `ArtifactRow` doesn't use for
+ * navigation (assignee object, approver, repository snapshot, …) so this lossy
+ * adapter fills them with empty defaults. `subtype`/`status` are mapped through
+ * the same SSOT (`SUBTYPE_TO_DOCUMENT_TYPE`, `parseStatusForSubtype`) used for
+ * tree artifacts. A null subtype defaults to Feature to satisfy the shape.
+ */
+export function endpointToDocument(endpoint: ArtifactLinkEndpoint): Document {
+  const subtype = endpoint.subtype ?? ArtifactSubtype.Feature;
+  return {
+    id: endpoint.id,
+    organizationId: endpoint.organizationId,
+    projectId: endpoint.projectId,
+    type: SUBTYPE_TO_DOCUMENT_TYPE[subtype],
+    title: endpoint.name,
+    slug: endpoint.slug ?? "",
+    fileName: null,
+    status: parseStatusForSubtype(subtype, endpoint.status),
+    priority: endpoint.priority ?? Priority.Medium,
+    latestVersion: 1,
+    createdById: endpoint.createdById ?? "",
+    assigneeId: endpoint.assigneeId,
+    assignee: null,
+    approverId: null,
+    approver: null,
+    // The endpoint projection from artifact-link lineage doesn't carry the
+    // immutable repository snapshot — surface an empty `source: 'none'`
+    // snapshot so the navigation-only adapter still satisfies the type.
+    repositorySnapshot: { repositories: [], source: SnapshotSource.None },
+    templateForType: null,
+    sortOrder: endpoint.sortOrder,
+    createdAt: endpoint.createdAt,
+    updatedAt: endpoint.updatedAt,
+  };
 }
 
 /**

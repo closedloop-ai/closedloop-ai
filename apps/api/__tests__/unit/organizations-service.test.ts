@@ -17,6 +17,7 @@ const MOCK_ORG = {
   name: "Test Org",
   slug: "test-org",
   active: true,
+  searchIncludeTranscripts: false,
   settings: {},
   createdAt: new Date(),
   updatedAt: new Date(),

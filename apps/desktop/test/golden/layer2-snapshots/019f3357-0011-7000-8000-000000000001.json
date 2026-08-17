@@ -1,0 +1,241 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": "USD",
+      "cost_source": "genai_prices_v1",
+      "cost_usd_estimated": 0.0099,
+      "cwd": "<HOME>/project",
+      "data_revision": 78,
+      "ended_at": "2026-07-24T10:00:05.000Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "codex",
+      "id": "019f3357-0011-7000-8000-000000000001",
+      "last_activity_at": "2026-07-24T10:00:03.500Z",
+      "metadata": {
+        "sha256": "f3bef4118e32425833c026abdad82d853cb46fbc4a242e5e399231b9b5d7b728",
+        "chars": 884
+      },
+      "model": "gpt-5.5",
+      "name": "project",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-07-24T10:00:00.000Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-07-24T11:00:05.000Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-07-24T10:00:05.000Z",
+      "id": "019f3357-0011-7000-8000-000000000001-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "started_at": "2026-07-24T10:00:00.000Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-07-24T11:00:05.000Z"
+    }
+  ],
+  "events": [
+    {
+      "agent_id": "019f3357-0011-7000-8000-000000000001-main",
+      "created_at": "2026-07-24T10:00:03.000Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "33f26bc9-5ff6-4899-969e-ad46dffc7984",
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "summary": null,
+      "tool_name": null
+    },
+    {
+      "agent_id": "019f3357-0011-7000-8000-000000000001-main",
+      "created_at": "2026-07-24T10:00:03.000Z",
+      "data": null,
+      "event_type": "TurnDuration",
+      "git_branch": null,
+      "id": "23fef776-3b37-424b-bc4d-9e8456c867bd",
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "summary": "1600",
+      "tool_name": null
+    },
+    {
+      "agent_id": "019f3357-0011-7000-8000-000000000001-main",
+      "created_at": "2026-07-24T10:00:03.500Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "9d35110c-a564-4f67-84c8-1ced3ac75175",
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "summary": null,
+      "tool_name": null
+    }
+  ],
+  "token_usage": [
+    {
+      "baseline_cache_read": 0,
+      "baseline_cache_write": 0,
+      "baseline_input": 0,
+      "baseline_output": 0,
+      "cache_read_tokens": 800,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-24T10:00:04.000Z",
+      "cost_source": "genai_prices_v1",
+      "cost_usd_estimated": 0.0099,
+      "created_at": "2026-07-24T10:00:04.000Z",
+      "inferred": false,
+      "input_tokens": 700,
+      "model": "gpt-5.5",
+      "output_tokens": 200,
+      "raw_cache_read": 800,
+      "raw_cache_write": 0,
+      "raw_input": 700,
+      "raw_output": 200,
+      "revision_id": 78,
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "updated_at": "2026-07-24T11:00:05.000Z",
+      "usage_source": "jsonl_parser"
+    }
+  ],
+  "token_events": [
+    {
+      "cache_creation_cost_usd_estimated": 0,
+      "cache_read_cost_usd_estimated": 0.0004000000000000002,
+      "cache_read_tokens": 800,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-24T10:00:04.000Z",
+      "cost_source": "genai_prices_v1",
+      "cost_summary": "{\"completeness\":\"partial\",\"reason\":\"legacy_record\",\"subtotalUsd\":0.0099,\"lanes\":[{\"basis\":\"api_estimated\",\"subtotalUsd\":0.0099}]}",
+      "cost_usd_estimated": 0.0099,
+      "created_at": "2026-07-24T10:00:04.000Z",
+      "input_cost_usd_estimated": 0.0035,
+      "input_tokens": 700,
+      "model": "gpt-5.5",
+      "output_cost_usd_estimated": 0.006,
+      "output_tokens": 200,
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "source_identity": "{\"availability\":\"unavailable\",\"reason\":\"legacy_record\"}",
+      "transport_id": "token-event-e6a641f51ae11c3663eb5c48432d1e52409224b3b26a2a214a5d0dacd0f400e6"
+    }
+  ],
+  "session_analytics": [
+    {
+      "agent_turns": 1,
+      "cache_read_tokens": 800,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0.0099,
+      "event_count": 3,
+      "harness": "codex",
+      "human_turns": 1,
+      "input_tokens": 700,
+      "is_human": 0,
+      "output_tokens": 200,
+      "runtime_ms": 5000,
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "started_at": "2026-07-24T10:00:00.000Z",
+      "started_day": "2026-07-24",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-07-24T11:00:05.000Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [
+    {
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "ts": "2026-07-24T10:00:01.200Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    },
+    {
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "ts": "2026-07-24T10:00:04.000Z",
+      "turn_count": 1,
+      "turn_kind": "agent"
+    }
+  ],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1784887205001,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "1af296f6bcc3e117",
+      "observed_at": "2026-07-24T11:00:05.000Z",
+      "phase": "other",
+      "session_id": "019f3357-0011-7000-8000-000000000001",
+      "start_ms": 1784887200000,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [],
+  "artifacts": [],
+  "pull_requests": [],
+  "agent_component_invocations": [],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-07-24T11:00:05.000Z",
+      "data_revision": 78,
+      "external_generation_id": "20fd06400a65c383ac9b2f86edeb717b4dd7d338c7c840480e21850390229f6f",
+      "external_session_id": "019f3357-0011-7000-8000-000000000001",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "7e04c125a67598b11a9513cb104ce9e4df48f3f59ca59fea019accbdc80dd955",
+      "part_index": 0,
+      "payload": {
+        "sha256": "bef9fe28ff46962d183ea13e744b40a262601b9fd0fa7abe5f8af333a38b8be3",
+        "chars": 369
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-07-24T11:00:05.000Z",
+      "status": "pending",
+      "updated_at": "2026-07-24T11:00:05.000Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "20fd06400a65c383ac9b2f86edeb717b4dd7d338c7c840480e21850390229f6f",
+      "external_session_id": "019f3357-0011-7000-8000-000000000001",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-07-24T11:00:05.000Z"
+    },
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-07-24T11:00:05.000Z"
+    }
+  ],
+  "agent_component_session_usage": [],
+  "agent_components": [],
+  "agent_component_versions": []
+}

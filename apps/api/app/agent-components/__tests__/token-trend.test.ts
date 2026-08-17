@@ -15,7 +15,7 @@
  *   - time-bucketing: sessions on different days remain as distinct data points
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mock @repo/database BEFORE importing the service under test
@@ -43,6 +43,7 @@ const SESSION_3 = "session-trend-cccc";
 
 const MODEL_CLAUDE = "claude-opus-4-5";
 const MODEL_SONNET = "claude-sonnet-4-6";
+const PINNED_NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
 
 // ---------------------------------------------------------------------------
 // Fixture builders
@@ -156,6 +157,7 @@ describe("analyticsService.fetchTokenTrend", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => vi.useRealTimers());
   describe("slug parsing", () => {
     it("returns null when slug has no '::' separator (invalid format)", async () => {
       installDb([]);
@@ -201,7 +203,14 @@ describe("analyticsService.fetchTokenTrend", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             componentKind: "command",
-            componentKey: "code-review",
+            // FEA-3757: case-insensitive componentKey match (raw stored keys can
+            // be mixed-case while the slug key is lowercased). FEA-4335: the key
+            // predicate is now OR-wrapped over the full name set (`keys`) so a
+            // content-hash key installed under several names matches all of them;
+            // a legacy name-level slug resolves to a single-element OR.
+            OR: [
+              { componentKey: { equals: "code-review", mode: "insensitive" } },
+            ],
           }),
         })
       );
@@ -664,7 +673,67 @@ describe("analyticsService.fetchTokenTrend", () => {
       );
     });
 
-    it("omits date filter when neither since nor until is provided", async () => {
+    it("FEA-3590: defaults a bounded lookback lower bound when neither since nor until is provided", async () => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      mocks.withDb.mockImplementation(
+        (
+          cb: (db: {
+            agentComponentSessionUsage: { findMany: typeof findMany };
+          }) => unknown
+        ) => cb({ agentComponentSessionUsage: { findMany } })
+      );
+
+      // Pinned so the lower bound is exact, not a ±1s window.
+      vi.useFakeTimers();
+      vi.setSystemTime(PINNED_NOW_MS);
+      await analyticsService.fetchTokenTrend(ORG, "command::build", {});
+
+      const [call] = findMany.mock.calls;
+      const startedAt = (
+        call?.[0] as {
+          where?: {
+            session?: { sessionStartedAt?: { gte?: Date; lte?: Date } };
+          };
+        }
+      )?.where?.session?.sessionStartedAt;
+
+      // A default ~90-day lower bound stops a param-less request over a hot
+      // component from materializing the whole usage corpus.
+      expect(startedAt?.gte).toBeInstanceOf(Date);
+      const lookbackMs = 90 * 24 * 60 * 60 * 1000;
+      expect((startedAt?.gte as Date).getTime()).toBe(
+        PINNED_NOW_MS - lookbackMs
+      );
+      // No upper bound is forced when the caller supplies neither param.
+      expect(startedAt?.lte).toBeUndefined();
+    });
+
+    it("FEA-3590: honors an explicit since verbatim without applying the default lookback", async () => {
+      const findMany = vi.fn().mockResolvedValue([]);
+      mocks.withDb.mockImplementation(
+        (
+          cb: (db: {
+            agentComponentSessionUsage: { findMany: typeof findMany };
+          }) => unknown
+        ) => cb({ agentComponentSessionUsage: { findMany } })
+      );
+
+      await analyticsService.fetchTokenTrend(ORG, "command::build", {
+        since: "2026-01-01T00:00:00Z",
+      });
+
+      const [call] = findMany.mock.calls;
+      const startedAt = (
+        call?.[0] as {
+          where?: { session?: { sessionStartedAt?: { gte?: Date } } };
+        }
+      )?.where?.session?.sessionStartedAt;
+      expect((startedAt?.gte as Date).toISOString()).toBe(
+        "2026-01-01T00:00:00.000Z"
+      );
+    });
+
+    it("FEA-3590: bounds the read with a deterministic order and row cap", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
       mocks.withDb.mockImplementation(
         (
@@ -676,10 +745,12 @@ describe("analyticsService.fetchTokenTrend", () => {
 
       await analyticsService.fetchTokenTrend(ORG, "command::build", {});
 
-      const [call] = findMany.mock.calls;
-      const where = (call?.[0] as { where?: { session?: unknown } })?.where
-        ?.session;
-      expect(where).not.toHaveProperty("sessionStartedAt");
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 20_000,
+          orderBy: [{ session: { sessionStartedAt: "desc" } }, { id: "asc" }],
+        })
+      );
     });
   });
 
@@ -738,6 +809,67 @@ describe("analyticsService.fetchTokenTrend", () => {
     });
   });
 
+  describe("FEA-3757: case-insensitive componentKey match (zero-token attribution bug)", () => {
+    it("matches a typed subagent slug case-insensitively so a mixed-case stored key still attributes tokens", async () => {
+      // The stored componentKey preserves the raw subagent_type ('Explore'), but
+      // the slug key is lowercased ('explore'). Pre-fix the exact match found no
+      // rows and the agent page showed ZERO tokens. The query must match
+      // case-insensitively.
+      const findMany = vi.fn().mockResolvedValue([
+        makeUsageRow({
+          agentSessionId: SESSION_1,
+          // Mixed-case as stored on the usage row.
+          componentKey: "Explore",
+          invocationCount: 3,
+          session: makeSession({
+            artifactId: SESSION_1,
+            sessionStartedAt: new Date("2026-06-01T10:00:00Z"),
+            organizationId: ORG,
+            tokenUsageByModel: [
+              makeTokenUsage({
+                model: MODEL_CLAUDE,
+                inputTokens: 5000,
+                outputTokens: 2000,
+              }),
+            ],
+            runtimeMs: 1000,
+          }),
+        }),
+      ]);
+      mocks.withDb.mockImplementation(
+        (
+          cb: (db: {
+            agentComponentSessionUsage: { findMany: typeof findMany };
+          }) => unknown
+        ) => cb({ agentComponentSessionUsage: { findMany } })
+      );
+
+      const result = await analyticsService.fetchTokenTrend(
+        ORG,
+        // Lowercased slug key, as encodeComponentSlug produces.
+        "subagent::explore",
+        {}
+      );
+
+      // The Prisma where must be case-insensitive so the mixed-case row matches.
+      expect(findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            componentKind: "subagent",
+            // FEA-4335: OR-wrapped over the name set; a legacy name-level slug
+            // resolves to a single-element OR (same case-insensitive match).
+            OR: [{ componentKey: { equals: "explore", mode: "insensitive" } }],
+          }),
+        })
+      );
+      // Non-zero token usage is attributed to subagent::explore (not empty).
+      expect(result?.points).toHaveLength(1);
+      expect(result?.points[0]?.inputTokens).toBe(5000);
+      expect(result?.points[0]?.outputTokens).toBe(2000);
+      expect(result?.points[0]?.componentInvocations).toBe(3);
+    });
+  });
+
   describe("FEA-3052: subagent rollup parity with the listing", () => {
     it("broadens the Prisma where for the rolled-up general-purpose subagent slug", async () => {
       const findMany = vi.fn().mockResolvedValue([]);
@@ -793,7 +925,15 @@ describe("analyticsService.fetchTokenTrend", () => {
         expect.objectContaining({
           where: expect.objectContaining({
             componentKind: "subagent",
-            componentKey: "code-reviewer",
+            // FEA-3757: typed (non-rolled-up) subagent slugs also match
+            // case-insensitively so a mixed-case stored subagent_type resolves.
+            // FEA-4335: OR-wrapped over the name set (single-element for a legacy
+            // name-level slug).
+            OR: [
+              {
+                componentKey: { equals: "code-reviewer", mode: "insensitive" },
+              },
+            ],
           }),
         })
       );

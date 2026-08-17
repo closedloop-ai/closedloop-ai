@@ -1,6 +1,8 @@
 import {
   type AgentComponent,
   AgentComponentKind,
+  AgentComponentSortDir,
+  AgentComponentSortKey,
   AgentMetricMode,
   Harness,
   SourceType,
@@ -9,28 +11,26 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import { KIND_META, KIND_ORDER } from "../../../lib/component-meta";
-import { AgentsTabbedList } from "../agents-tabbed-list";
+import { AgentsTabbedList, defaultKindState } from "../agents-tabbed-list";
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-// Anchored, escaped label matcher for a tab's accessible name. The plural
-// labels are not substring-disjoint ("Tools" ⊂ "MCP tools", FEA-3048), so a
-// bare `/Tools/i` substring regex matches two tabs. Anchoring on the start of
-// the accessible name resolves the "Tools" tab unambiguously.
+// Anchored, escaped label matcher for a tab's accessible name. A tab's
+// accessible name is `${plural}${optionalCount}` (e.g. "Agents5"), so a bare
+// substring regex can over-match when one plural is a prefix of another.
+// Anchoring on the START of the accessible name resolves each tab unambiguously
+// (a trailing \b would fail on the letter→digit boundary of the count suffix).
 function tabNameRegExp(label: string): RegExp {
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Anchor at the START of the accessible name only. The tab's accessible name
-  // is `${plural}${optionalCount}` (e.g. "Agents5", "MCP tools2"), so a
-  // trailing \b would fail on the letter→digit run; anchoring on start is
-  // enough to keep "Tools" from also matching "MCP tools".
   return new RegExp(`^${escaped}`, "i");
 }
 
 function makeComponent(overrides: Partial<AgentComponent>): AgentComponent {
   return {
     id: overrides.id ?? "uuid-default",
+    slug: overrides.slug ?? overrides.id ?? "subagent::uuid-default",
     name: overrides.name ?? "Default Component",
     kind: overrides.kind ?? AgentComponentKind.Subagent,
     sourceType: SourceType.Repo,
@@ -38,9 +38,8 @@ function makeComponent(overrides: Partial<AgentComponent>): AgentComponent {
     harness: Harness.Claude,
     invocations: 10,
     sessions: 3,
-    klocPerDollar: 2.5,
+    locPerDollar: 2.5,
     trend: [],
-    owner: "alice",
     collaborators: [],
     computeTargetIds: [],
     firstSeenAt: "2026-01-01T00:00:00.000Z",
@@ -88,7 +87,7 @@ describe("AgentsTabbedList", () => {
       <AppCoreStoryProviders>
         <AgentsTabbedList
           items={MULTI_KIND_ITEMS}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -111,7 +110,7 @@ describe("AgentsTabbedList", () => {
       <AppCoreStoryProviders>
         <AgentsTabbedList
           items={MULTI_KIND_ITEMS}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -133,7 +132,7 @@ describe("AgentsTabbedList", () => {
             makeComponent({ id: "sub-1", kind: AgentComponentKind.Subagent }),
             makeComponent({ id: "sub-2", kind: AgentComponentKind.Subagent }),
           ]}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -153,7 +152,7 @@ describe("AgentsTabbedList", () => {
               kind: AgentComponentKind.Hook,
             }),
           ]}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -179,7 +178,7 @@ describe("AgentsTabbedList", () => {
               kind: AgentComponentKind.Subagent,
             }),
           ]}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -202,7 +201,7 @@ describe("AgentsTabbedList", () => {
               kind: AgentComponentKind.Subagent,
             }),
           ]}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -215,7 +214,7 @@ describe("AgentsTabbedList", () => {
       <AppCoreStoryProviders>
         <AgentsTabbedList
           items={[]}
-          metricMode={AgentMetricMode.KlocPerDollar}
+          metricMode={AgentMetricMode.LocPerDollar}
         />
       </AppCoreStoryProviders>
     );
@@ -228,5 +227,52 @@ describe("AgentsTabbedList", () => {
         })
       ).toBeInTheDocument();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3255: defaultKindState default sort per kind
+// ---------------------------------------------------------------------------
+
+describe("defaultKindState", () => {
+  // FEA-4052: only kinds with a reliable, VISIBLE KLOC/$ column open sorted by
+  // that metric, highest-first (Metric/Desc). Only `subagent` qualifies today —
+  // skill/command are session-level, not component-level, so they are excluded
+  // (wongk, PR #3720) and hide the metric column, defaulting to Name/Asc.
+  const LOC_PER_DOLLAR_VERIFIABLE_KINDS: AgentComponentKind[] = [
+    AgentComponentKind.Subagent,
+  ];
+
+  // Every other kind hides the metric column, so it falls back to Name/Asc —
+  // including skill/command (excluded until session partitioning),
+  // observed-but-non-verifiable kinds (Workflow/Mcp/Plugin), and config/tool.
+  const NON_VERIFIABLE_KINDS: AgentComponentKind[] = [
+    AgentComponentKind.Skill,
+    AgentComponentKind.Command,
+    AgentComponentKind.Workflow,
+    AgentComponentKind.Mcp,
+    AgentComponentKind.Plugin,
+    AgentComponentKind.Hook,
+    AgentComponentKind.Config,
+    AgentComponentKind.Tool,
+    AgentComponentKind.Orchestration,
+  ];
+
+  it.each(
+    LOC_PER_DOLLAR_VERIFIABLE_KINDS
+  )("defaults verifiable kind %s to Metric/Desc", (kind) => {
+    expect(defaultKindState(kind)).toEqual({
+      sortKey: AgentComponentSortKey.Metric,
+      sortDir: AgentComponentSortDir.Desc,
+    });
+  });
+
+  it.each(
+    NON_VERIFIABLE_KINDS
+  )("defaults non-verifiable kind %s to Name/Asc", (kind) => {
+    expect(defaultKindState(kind)).toEqual({
+      sortKey: AgentComponentSortKey.Name,
+      sortDir: AgentComponentSortDir.Asc,
+    });
   });
 });

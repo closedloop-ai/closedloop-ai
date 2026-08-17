@@ -1,0 +1,19 @@
+-- ISS-6031: cover the retention sweep's undelivered-delivery probe.
+--
+-- `sweepExpiredSessions` now asks, for each chunk of past-window session ids,
+-- which of them still hold a `pending` row in the outbox — i.e. data the cloud
+-- has never received, which must not be purged. That question is deliberately
+-- NOT scoped to a source key (the key changes with the signed-in cloud identity,
+-- and a row owed under the previous key is still owed), so it binds
+-- `external_session_id` and `status` only.
+--
+-- Both existing access paths lead with `source_key` — the composite primary key
+-- `(source_key, external_session_id)` and `idx_agent_session_sync_outbox_ready`
+-- `(source_key, status, next_attempt_at)` — and SQLite cannot use either when
+-- the leading column is unbound. Without this index the probe is a full table
+-- scan, run once per 899-id chunk, INSIDE the retention purge's interactive
+-- write transaction: the same 120s-bounded, WAL-checkpoint-blocking transaction
+-- whose corpus-sized first-boot case ISS-5492 added the chunk loop to survive.
+-- An install that has been offline long enough to have a past-window backlog is
+-- exactly the install whose outbox is large, so the two worst cases coincide.
+CREATE INDEX IF NOT EXISTS "idx_agent_session_sync_outbox_session_status" ON "agent_session_sync_outbox"("external_session_id", "status");

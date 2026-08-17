@@ -2,15 +2,6 @@
 // These are explicitly defined to keep packages/api independent of database
 
 /**
- * Request body for submitting or updating a pull request rating (PUT).
- * Score and comment are required; comment must be non-empty after trimming.
- */
-export type SubmitPullRequestRatingRequest = {
-  score: number;
-  comment: string;
-};
-
-/**
  * Individual pull request rating representation.
  * Used in responses for both GET and PUT endpoints.
  * Note: Unlike DocumentRating, pull request ratings do not include documentVersion

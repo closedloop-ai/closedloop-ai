@@ -1,3 +1,5 @@
+"use client";
+
 import { AgentCard } from "@repo/app/agents/components/agent-card";
 import { EventGroupRow } from "@repo/app/agents/components/events/event-group-row";
 import type {
@@ -20,17 +22,44 @@ import {
   TableRow,
 } from "@repo/design-system/components/ui/table";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import { cn } from "@repo/design-system/lib/utils";
+import {
   AlertCircleIcon,
   BotIcon,
   HistoryIcon,
   TerminalSquareIcon,
   WrenchIcon,
 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+
+/**
+ * ISS-5366: the caption under a Subagents MetricCard with no count.
+ *
+ * Worded to match `SubagentTypesBody`'s unavailable line — both describe the
+ * same missing agent rows, and two different sentences for one cause reads as
+ * two different problems. No "yet": the cause can be a producer that will never
+ * report them, and "yet" promises data that is on its way.
+ */
+const SUBAGENT_COUNT_UNAVAILABLE_DETAIL = "Not available for this session";
 
 export type SessionSummaryMetric = {
   label: string;
-  value: string;
+  /**
+   * ISS-4979 (#4291 review): nullable, and passed to `MetricCard` unchanged.
+   * `MetricCard` derives its own no-data state from a nullish `value` and
+   * renders the muted "No data" glyph; a builder that coerces the absence to an
+   * em-dash STRING defeats that path and prints the rule character in the bold
+   * 2xl value slot, which FEA-4236 exists to prevent. Absence belongs in the
+   * type, not in a placeholder string. Pair with a `detail` caption that says
+   * why the value is missing.
+   */
+  value: string | null;
   detail?: string;
+  info?: { what: string; how?: string };
 };
 
 export type SessionMetadataField = {
@@ -111,12 +140,87 @@ export function SessionSummaryMetrics({ metrics }: SessionSummaryMetricsProps) {
       {metrics.map((metric) => (
         <MetricCard
           detail={metric.detail}
+          info={metric.info}
           key={metric.label}
           label={metric.label}
           value={metric.value}
         />
       ))}
     </div>
+  );
+}
+
+/**
+ * FEA-3644: a metadata value that never spills outside its column. Long,
+ * unbroken values (working directories, branch names, paths) truncate with an
+ * ellipsis and surface the full value on hover/focus via the shared tooltip,
+ * matching the sessions table's branch/repo chip pattern.
+ *
+ * The tooltip is opt-in per value: only genuinely clipped text becomes a
+ * focusable button with a tooltip. Short values that fit (owner, harness, ids)
+ * render as a plain span so a keyboard user doesn't tab through a button on
+ * every field and a screen reader doesn't announce "button" on a value that
+ * repeats text already fully visible.
+ */
+function MetadataValue({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const [isTruncated, setIsTruncated] = useState(false);
+
+  // Measure after layout and on resize: a value is clipped when its rendered
+  // content is wider than the column track it occupies. `value` is a dependency
+  // so a new string re-measures (its width, and thus whether it overflows, can
+  // differ from the previous render).
+  useEffect(() => {
+    const element = textRef.current;
+    if (!element) {
+      return;
+    }
+    const measure = () => {
+      // Reading textContent ties the measurement to the current `value`.
+      const clipped = element.scrollWidth > element.clientWidth;
+      setIsTruncated(clipped && element.textContent === value);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [value]);
+
+  const text = (
+    <span
+      className={cn(
+        "block min-w-0 truncate",
+        // Only clipped values are focusable, so only they carry a focus ring —
+        // matches the interactive chip's focus-visible treatment.
+        isTruncated &&
+          "rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        className
+      )}
+      ref={textRef}
+      tabIndex={isTruncated ? 0 : undefined}
+    >
+      {value}
+    </span>
+  );
+
+  if (!isTruncated) {
+    return text;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{text}</TooltipTrigger>
+      <TooltipContent className="max-w-xs break-words">{value}</TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -132,34 +236,25 @@ export function SessionMetadataPanel({
     >
       <div className="grid gap-3 md:grid-cols-2">
         {metadata.map((item) => (
-          <div key={item.label}>
+          <div className="min-w-0" key={item.label}>
             <div className="text-muted-foreground">{item.label}</div>
-            <div className="font-medium">{item.value}</div>
+            <MetadataValue className="font-medium" value={item.value} />
           </div>
         ))}
       </div>
       {details.length > 0 ? (
         <div className="space-y-2 border-t pt-3">
           {details.map((item) => (
-            <div key={item.label}>
-              <span className="text-muted-foreground">{item.label}:</span>{" "}
-              {item.value}
+            <div className="flex min-w-0 gap-1" key={item.label}>
+              <span className="shrink-0 text-muted-foreground">
+                {item.label}:
+              </span>{" "}
+              <MetadataValue value={item.value} />
             </div>
           ))}
         </div>
       ) : null}
     </Section>
-  );
-}
-
-export function SessionAttributionPanel({ value }: { value?: string | null }) {
-  return (
-    <JsonPanel
-      description="Structured attribution received from the local desktop sync."
-      emptyMessage="No attribution data was captured for this session."
-      title="Attribution"
-      value={value}
-    />
   );
 }
 
@@ -400,16 +495,34 @@ export function SessionOverviewSection({ stats }: SessionOverviewSectionProps) {
             label="Tool calls"
             value={stats.toolCalls.toLocaleString()}
           />
+          {/* ISS-5366: a null count is UNKNOWN, not zero. Passed through
+              nullish so `MetricCard` renders its own muted no-data slot, with a
+              caption naming the cause — the same treatment the Duration card
+              beside it already uses, and the same vocabulary the "Subagent
+              types" box below uses for the identical gap. Before this, the two
+              panels disagreed: a confident "0" here against "aren't available
+              for this session" there. */}
           <MetricCard
+            detail={
+              stats.subagents === null
+                ? SUBAGENT_COUNT_UNAVAILABLE_DETAIL
+                : undefined
+            }
             label="Subagents"
-            value={stats.subagents.toLocaleString()}
+            value={
+              stats.subagents === null ? null : stats.subagents.toLocaleString()
+            }
           />
           <MetricCard
             label="Compactions"
             value={stats.compactions.toLocaleString()}
           />
           <MetricCard label="Errors" value={stats.errors.toLocaleString()} />
-          <MetricCard label="Duration" value={stats.durationLabel} />
+          <MetricCard
+            detail={stats.durationDetail}
+            label="Duration"
+            value={stats.durationLabel}
+          />
         </div>
 
         <div className="grid gap-4 lg:grid-cols-3">
@@ -435,23 +548,10 @@ export function SessionOverviewSection({ stats }: SessionOverviewSectionProps) {
           </div>
 
           <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
+            {/* The h4 renders in EVERY state so the section never drops out of
+                the document outline when a session has no subagents. */}
             <h4 className="font-medium text-sm">Subagent types</h4>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {stats.subagentTypes.length ? (
-                stats.subagentTypes.map((entry) => (
-                  <Chip
-                    key={entry.label}
-                    variant={entry.isCompaction ? "warning" : "outline"}
-                  >
-                    {entry.label} {entry.count}
-                  </Chip>
-                ))
-              ) : (
-                <p className="text-muted-foreground text-sm">
-                  No subagent activity.
-                </p>
-              )}
-            </div>
+            <SubagentTypesBody stats={stats} />
           </div>
 
           <div className="rounded-xl border border-border/80 bg-muted/10 p-4">
@@ -531,5 +631,66 @@ export function JsonPanel({
         />
       )}
     </Section>
+  );
+}
+
+/**
+ * ISS-4677: three DISTINCT states for the Overview "Subagent types" tally, so
+ * the panel cannot say "No subagent activity." about data that never arrived.
+ *
+ *  - agent rows unavailable → say so, and offer no count;
+ *  - rows arrived, no subagents → a real, knowable zero;
+ *  - otherwise → the busiest-first, capped tally, which now EXCLUDES the
+ *    session's own main agent and therefore reconciles with the Subagents
+ *    metric above (it previously counted the root row under a "main" label,
+ *    rendering "1" for a session that ran no subagents at all).
+ */
+function SubagentTypesBody({ stats }: { stats: SessionOverviewStats }) {
+  // Optional + additive: a producer that predates the flag omits it, and the
+  // pre-ISS-4677 assumption was "available". One vocabulary across all three
+  // states — the heading's, "subagent types" — so the box does not call the same
+  // thing three names. No "yet": the cause can be a desktop build that will
+  // never report it, and "yet" promises data that is on its way.
+  if (stats.subagentTypesAvailable === false) {
+    return (
+      <p className="mt-3 text-muted-foreground text-sm">
+        Subagent types aren&apos;t available for this session.
+      </p>
+    );
+  }
+  if (stats.subagentTypes.length === 0) {
+    return (
+      <p className="mt-3 text-muted-foreground text-sm">
+        This session ran no subagents.
+      </p>
+    );
+  }
+  const omittedTypes = stats.subagentTypesOmitted ?? 0;
+  const omittedAgents = stats.subagentTypesOmittedAgentCount ?? 0;
+  return (
+    <>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {stats.subagentTypes.map((entry) => (
+          <Chip
+            key={entry.label}
+            variant={entry.isCompaction ? "warning" : "outline"}
+          >
+            {entry.label} {entry.count}
+          </Chip>
+        ))}
+      </div>
+      {/* The list is a capped shortlist, so it is stated as a plain muted line
+          BELOW the chips rather than as another chip: a meta-count wearing the
+          same shape as the real types reads as one of them, and its number would
+          be parsed in the same unit as the agent counts beside it. Both numbers
+          are named, because the reader needs the agent count to reconcile the
+          visible chips against the Subagents metric above. */}
+      {omittedTypes > 0 ? (
+        <p className="mt-2 text-muted-foreground text-xs">
+          {omittedTypes} more {omittedTypes === 1 ? "type" : "types"} not shown
+          ({omittedAgents} {omittedAgents === 1 ? "subagent" : "subagents"})
+        </p>
+      ) : null}
+    </>
   );
 }

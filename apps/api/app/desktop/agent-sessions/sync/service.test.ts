@@ -66,7 +66,7 @@ describe("desktopAgentSessionsSyncService", () => {
       userId: "user-1",
     });
 
-    expect(result).toEqual({ ok: false, error: Status.Forbidden });
+    expect(result).toEqual({ ok: false, error: { reason: Status.Forbidden } });
     expect(handleDesktopAgentSessionsEvent).not.toHaveBeenCalled();
   });
 
@@ -86,7 +86,100 @@ describe("desktopAgentSessionsSyncService", () => {
 
     expect(result).toEqual({
       ok: false,
-      error: DesktopAgentSessionsAckReason.RateLimited,
+      error: { reason: DesktopAgentSessionsAckReason.RateLimited },
     });
+  });
+
+  // Goal stage 2: the handler's request-gated per-session ack echo must reach
+  // the success response value — it is what the desktop keys its atomic
+  // outbox clear on.
+  it("passes the handler's acceptedSessionIds through the success value", async () => {
+    vi.mocked(handleDesktopAgentSessionsEvent).mockResolvedValueOnce({
+      accepted: true,
+      acceptedSessionIds: ["sess-1", "sess-2"],
+    });
+
+    const result = await desktopAgentSessionsSyncService.sync({
+      clerkUserId: "clerk-user-1",
+      computeTargetId: "target-1",
+      organizationId: "org-1",
+      rawBody: {},
+      userId: "user-1",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: { synced: true, acceptedSessionIds: ["sess-1", "sess-2"] },
+    });
+  });
+
+  // Version skew: a handler ack with no echo (the batch did not opt in) must
+  // OMIT the key — installed desktops `.strict()`-parse the success response,
+  // so an unrequested extra field would reject a successful sync.
+  it("omits acceptedSessionIds entirely when the handler sent none", async () => {
+    const result = await desktopAgentSessionsSyncService.sync({
+      clerkUserId: "clerk-user-1",
+      computeTargetId: "target-1",
+      organizationId: "org-1",
+      rawBody: {},
+      userId: "user-1",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected an accepted sync");
+    }
+    expect(result.value).toEqual({ synced: true });
+    expect(Object.hasOwn(result.value, "acceptedSessionIds")).toBe(false);
+  });
+
+  // ISS-5090: an opaque `validation_failed` gave operators nothing to act on.
+  // The handler's stable field/path summary must survive to the route so the
+  // 400 can carry it back to the desktop.
+  it("carries the handler's validation detail through the failure channel", async () => {
+    vi.mocked(handleDesktopAgentSessionsEvent).mockResolvedValueOnce({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      detail: "session_count_mismatch",
+    });
+
+    const result = await desktopAgentSessionsSyncService.sync({
+      clerkUserId: "clerk-user-1",
+      computeTargetId: "target-1",
+      organizationId: "org-1",
+      rawBody: {},
+      userId: "user-1",
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+        detail: "session_count_mismatch",
+      },
+    });
+  });
+
+  // Version skew: an ack with no detail must OMIT the key, never serialize an
+  // explicit `undefined`/`null` the failure contract does not declare.
+  it("omits detail entirely when the handler sent none", async () => {
+    vi.mocked(handleDesktopAgentSessionsEvent).mockResolvedValueOnce({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.ValidationFailed,
+    });
+
+    const result = await desktopAgentSessionsSyncService.sync({
+      clerkUserId: "clerk-user-1",
+      computeTargetId: "target-1",
+      organizationId: "org-1",
+      rawBody: {},
+      userId: "user-1",
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      throw new Error("expected a rejected sync");
+    }
+    expect(Object.hasOwn(result.error, "detail")).toBe(false);
   });
 });

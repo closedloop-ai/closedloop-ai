@@ -4,6 +4,7 @@ import {
   INSIGHTS_SECTION_OPTIONS,
   type InsightsSection,
 } from "@repo/api/src/types/insights";
+import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Dialog,
@@ -22,13 +23,15 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import { Switch } from "@repo/design-system/components/ui/switch";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useFeatureFlagEnabledOptional } from "../../shared/feature-flags/use-feature-flag-enabled";
 import type { DashboardTileSettings } from "../hooks/use-dashboard-pins";
 import { SECTION_META } from "../lib/section-meta";
 import type { InsightsTileAvailability } from "../lib/tile-availability";
 import {
   getSectionTiles,
   getTile,
+  isTileEnabled,
   type TileDescriptor,
   TileKind,
   type TileKind as TileKindType,
@@ -93,12 +96,27 @@ export function MetricPicker({
   githubConnectHref?: string;
   onConnectGitHub?: () => void | Promise<void>;
 }) {
+  // ISS-4463: a flag-gated tile is not offered in the add list when its flag is
+  // off, so the picker can never advertise a metric the grid would refuse to
+  // render. Reading the one gated key directly keeps the hook call count stable.
+  const spendOutcomeEnabled = useFeatureFlagEnabledOptional(
+    INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
+  );
+  const isFlagEnabled = useCallback(
+    (key: string) =>
+      key === INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY
+        ? spendOutcomeEnabled
+        : false,
+    [spendOutcomeEnabled]
+  );
   const tiles = useMemo(
     () =>
       INSIGHTS_SECTION_OPTIONS.filter((section) =>
         availableSections.includes(section)
-      ).flatMap((section) => getSectionTiles(section)),
-    [availableSections]
+      )
+        .flatMap((section) => getSectionTiles(section))
+        .filter((tile) => isTileEnabled(tile, isFlagEnabled)),
+    [availableSections, isFlagEnabled]
   );
   const editingTile = editingTileId ? getTile(editingTileId) : undefined;
   const metricOptions = useMemo(() => buildMetricOptions(tiles), [tiles]);
@@ -333,7 +351,14 @@ export function MetricPicker({
               <div
                 className={selectedTile.kind === TileKind.Kpi ? "h-36" : "h-64"}
               >
-                <div className="group h-full">
+                {/* FEA-4264 (wongk review): key the preview by the selected
+                    tile id so switching the picked metric remounts the chart.
+                    The interactive-legend hidden-series state lives in
+                    ChartContainer; without this key React reuses the same
+                    instance across a chart-identity change, so a series hidden
+                    in one metric's preview would carry over and hide an
+                    unrelated same-named bucket in the next. */}
+                <div className="group h-full" key={selectedTile.id}>
                   <InsightsTile
                     availability={getTileAvailability?.(selectedTile)}
                     comparisonLabel={

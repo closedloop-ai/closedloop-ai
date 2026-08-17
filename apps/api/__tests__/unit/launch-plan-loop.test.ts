@@ -29,6 +29,7 @@ vi.mock("@/lib/loops/loop-orchestrator", () => ({
 
 import { resolveLoopContext } from "@/app/documents/[id]/run-loop/run-loop-helpers";
 import { loopsService } from "@/app/loops/service";
+import { MissingAnthropicApiKeyError } from "@/lib/loops/anthropic-api-key-error";
 import { resolveComputeTargetWithPreferences } from "@/lib/loops/compute-target-resolver";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
 import { DispatchError } from "@/lib/loops/loop-desktop";
@@ -106,6 +107,26 @@ describe("launchPlanLoop", () => {
 
   it("keeps unknown non-dispatch errors mapped as launch_failed", async () => {
     vi.mocked(launchLoop).mockRejectedValue(new Error("unexpected failure"));
+
+    const result = await launchPlanLoop(baseOptions);
+
+    expect(result).toEqual({ ok: false, error: "launch_failed" });
+  });
+
+  it("maps a missing Anthropic key to its own code, not launch_failed", async () => {
+    // A Cloud launch with no key must not inherit launch_failed's copy, which
+    // blames a disconnected desktop app that is not involved at all.
+    vi.mocked(launchLoop).mockRejectedValue(new MissingAnthropicApiKeyError());
+
+    const result = await launchPlanLoop(baseOptions);
+
+    expect(result).toEqual({ ok: false, error: "missing_anthropic_api_key" });
+  });
+
+  it("does not misclassify a same-message generic error as the missing-key code", async () => {
+    vi.mocked(launchLoop).mockRejectedValue(
+      new Error("No Anthropic API key configured.")
+    );
 
     const result = await launchPlanLoop(baseOptions);
 

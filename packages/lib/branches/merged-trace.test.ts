@@ -1,8 +1,5 @@
-import type {
-  ToolItem,
-  TurnActor,
-  TurnItem,
-} from "@repo/api/src/types/agent-session";
+import type { TurnActor, TurnItem } from "@repo/api/src/types/agent-session";
+import type { ToolItem } from "@repo/api/src/types/agent-session-tool-call";
 import { describe, expect, it } from "vitest";
 import {
   buildMergedTrace,
@@ -106,6 +103,9 @@ describe("parseSubagentCostUsd", () => {
 });
 
 describe("buildMergedTrace", () => {
+  // PRD-522 R3.2 mutation-sanity guard: every session contributes exactly one
+  // sessionstart to the merged trace, chronologically. Dropping a session (kind)
+  // from the k-way merge fails this ordering/attribution assertion.
   it("synthesizes one sessionstart per session and k-way merges by timestamp", () => {
     const prompt: TurnItem = {
       type: "prompt",

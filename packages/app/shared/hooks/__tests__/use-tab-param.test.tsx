@@ -28,6 +28,27 @@ function renderTabParam(initialPath: string) {
   return { nav, ...view };
 }
 
+// FEA-4137: a legacy tab value maps to a canonical tab via `tabAliases`.
+const ALIASED_VALID_TABS = ["overview", "issues"] as const;
+type AliasedTab = (typeof ALIASED_VALID_TABS)[number];
+
+function renderAliasedTabParam(initialPath: string) {
+  const nav = createMemoryNavigation({ initialPath });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+  );
+  const view = renderHook(
+    () =>
+      useTabParam<AliasedTab>({
+        defaultTab: "overview",
+        validTabs: ALIASED_VALID_TABS,
+        tabAliases: { features: "issues" },
+      }),
+    { wrapper }
+  );
+  return { nav, ...view };
+}
+
 function queryOf(href: string): URLSearchParams {
   const queryStart = href.indexOf("?");
   return new URLSearchParams(
@@ -77,6 +98,27 @@ describe("useTabParam (navigation port)", () => {
     const params = queryOf(nav.getCurrentHref());
     expect(params.get("tab")).toBeNull();
     expect(params.get("filter")).toBe("open");
+    expect(result.current.activeTab).toBe("overview");
+  });
+
+  // FEA-4137: a legacy `?tab=features` deep-link must resolve to the canonical
+  // `issues` tab so old project-page links (breadcrumbs, bookmarks) keep working
+  // after the Feature → Issue rename.
+  test("resolves a legacy alias param to its canonical tab", () => {
+    const { result } = renderAliasedTabParam("/project?tab=features");
+
+    expect(result.current.activeTab).toBe("issues");
+  });
+
+  test("a canonical alias-target value still resolves directly", () => {
+    const { result } = renderAliasedTabParam("/project?tab=issues");
+
+    expect(result.current.activeTab).toBe("issues");
+  });
+
+  test("an unknown value with aliases configured still falls back to default", () => {
+    const { result } = renderAliasedTabParam("/project?tab=bogus");
+
     expect(result.current.activeTab).toBe("overview");
   });
 });

@@ -1,29 +1,48 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  AGENT_SESSION_SYNC_SCHEMA_VERSION,
+  DesktopAgentSessionsAckReason,
+  MAX_SYNCED_ACTIVITY_SEGMENTS,
+} from "@repo/api/src/types/agent-session";
+import {
+  ArtifactRefMethod,
+  ArtifactRefTargetKind,
+  MAX_SYNCED_ARTIFACT_REFS,
+  SessionPrRelationType,
+} from "@repo/api/src/types/session-artifact-link";
+import {
   SESSION_TRACE_SOURCE_LIMITS as DERIVATION_SOURCE_LIMITS,
   SessionPrLifecycleStatus,
   SessionTraceCorrectionKind,
   SessionTracePhaseSourceType,
   SessionTraceThrottleSourceType,
-} from "@repo/api/src/session-trace/derivation";
-import {
-  AGENT_SESSION_SYNC_SCHEMA_VERSION,
-  AgentSessionSyncMode,
-  DesktopAgentSessionsAckReason,
-} from "@repo/api/src/types/agent-session";
-import {
-  ArtifactRefMethod,
-  ArtifactRefTargetKind,
-  SessionPrRelationType,
-} from "@repo/api/src/types/session-artifact-link";
+} from "@repo/lib/session-trace/derivation";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TokenEventTransportIdentityCollisionError } from "../desktop-agent-sessions-errors";
 import {
   DesktopAgentSessionsRateLimiter,
   handleDesktopAgentSessionsEvent,
 } from "../desktop-agent-sessions-handler";
 import { parseDesktopAgentSessionsPayload } from "../desktop-agent-sessions-schema";
+import {
+  desktopAgentSessionsHandlerContext as baseContext,
+  upsertBatchMock,
+  validDesktopAgentSessionsPayload as validPayload,
+} from "./desktop-agent-sessions-handler-fixtures";
+
+// ISS-5090: the ingest ack now carries an optional, value-free field/path
+// `detail` so the desktop can log WHY a payload was rejected. Built here so the
+// expected shape (including its ABSENCE for a detail-less rejection) is stated
+// once instead of re-spelled at every assertion.
+function validationFailedAck(detail?: string) {
+  return {
+    accepted: false,
+    reason: DesktopAgentSessionsAckReason.ValidationFailed,
+    ...(detail ? { detail } : {}),
+  };
+}
 
 const { mockEmitTelemetryMetric, mockLog } = vi.hoisted(() => ({
   mockEmitTelemetryMetric: vi.fn(),
@@ -42,53 +61,6 @@ vi.mock("@repo/observability/log", () => ({
 vi.mock("@repo/observability/telemetry/metrics", () => ({
   emitTelemetryMetric: mockEmitTelemetryMetric,
 }));
-
-const baseContext = {
-  organizationId: "org-1",
-  userId: "user-1",
-  clerkUserId: "clerk-user-1",
-  targetId: "target-1",
-  gatewaySessionId: "session-1",
-};
-
-const validPayload = {
-  schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-  batchId: "7bf9fe88-9a77-471d-a0ce-2b14a7fd5f4a",
-  syncMode: AgentSessionSyncMode.Incremental,
-  sessionCount: 1,
-  sessions: [
-    {
-      externalSessionId: "sess-1",
-      name: "Session One",
-      status: "active",
-      harness: "claude",
-      cwd: "/tmp/worktree",
-      model: "claude-sonnet-4",
-      startedAt: "2026-05-20T17:00:00.000Z",
-      updatedAt: "2026-05-20T17:05:00.000Z",
-      metadata: { source: "desktop" },
-      attribution: {
-        repositoryFullName: "closedloop-ai/symphony-alpha",
-        worktreePath: null,
-        sourceArtifactId: "artifact-1",
-        sourceLoopId: null,
-        baseBranch: null,
-      },
-      agents: [],
-      events: [],
-      tokenUsageByModel: [
-        {
-          model: "claude-sonnet-4",
-          inputTokens: 100,
-          outputTokens: 25,
-          cacheReadTokens: 10,
-          cacheWriteTokens: 5,
-          estimatedCostUsd: 0.01,
-        },
-      ],
-    },
-  ],
-};
 
 beforeEach(() => {
   mockEmitTelemetryMetric.mockReset();
@@ -109,20 +81,19 @@ describe("handleDesktopAgentSessionsEvent", () => {
         baseContext,
         {
           isFeatureEnabled: async () => true,
-          upsertBatch: vi.fn(),
+          isOrgPolicyEnabled: async () => true,
+          upsertBatch: upsertBatchMock(),
         }
       )
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
+    ).resolves.toEqual(validationFailedAck("session_count_mismatch"));
   });
 
   it("returns feature_disabled when server sync support is off", async () => {
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
         isFeatureEnabled: async () => false,
-        upsertBatch: vi.fn(),
+        isOrgPolicyEnabled: async () => true,
+        upsertBatch: upsertBatchMock(),
       })
     ).resolves.toEqual({
       accepted: false,
@@ -130,12 +101,47 @@ describe("handleDesktopAgentSessionsEvent", () => {
     });
   });
 
+  it("FEA-4169: denies ingest when the org session-sync policy is OFF, without persisting", async () => {
+    const upsertBatch = upsertBatchMock();
+    // The org policy gate runs BEFORE the per-user feature flag: even with the
+    // feature flag ON, a policy-off org must be rejected and never persisted.
+    await expect(
+      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
+        isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => false,
+        upsertBatch,
+      })
+    ).resolves.toEqual({
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
+    });
+    expect(upsertBatch).not.toHaveBeenCalled();
+    // Telemetry reason stays in lockstep with the ack reason.
+    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: "agent_sessions.sync.failed",
+        reason: DesktopAgentSessionsAckReason.FeatureDisabled,
+      })
+    );
+  });
+
+  it("FEA-4169: passes the authenticated org id to the org-policy gate", async () => {
+    const isOrgPolicyEnabled = vi.fn(async () => true);
+    await handleDesktopAgentSessionsEvent(validPayload, baseContext, {
+      isFeatureEnabled: async () => true,
+      isOrgPolicyEnabled,
+      upsertBatch: upsertBatchMock(),
+    });
+    expect(isOrgPolicyEnabled).toHaveBeenCalledWith(baseContext.organizationId);
+  });
+
   it("upserts accepted batches", async () => {
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
 
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -152,8 +158,43 @@ describe("handleDesktopAgentSessionsEvent", () => {
     expect(mockEmitTelemetryMetric).not.toHaveBeenCalled();
   });
 
+  it("upserts cache-write TTL provenance from the parsed wire payload", async () => {
+    const upsertBatch = upsertBatchMock();
+    const payload = {
+      ...validPayload,
+      sessions: [
+        {
+          ...validPayload.sessions[0],
+          tokenUsageByModel: [
+            {
+              ...validPayload.sessions[0].tokenUsageByModel[0],
+              cacheWriteTokens: 5,
+              cacheWrite5mTokens: 3,
+              cacheWrite1hTokens: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    await expect(
+      handleDesktopAgentSessionsEvent(payload, baseContext, {
+        isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
+        upsertBatch,
+      })
+    ).resolves.toEqual({ accepted: true });
+
+    expect(
+      upsertBatch.mock.calls[0]?.[1].sessions[0].tokenUsageByModel[0]
+    ).toMatchObject({
+      cacheWrite5mTokens: 3,
+      cacheWrite1hTokens: 2,
+    });
+  });
+
   it("upserts the parsed session-sync contract without desktop-local identity or trace-comment result fields", async () => {
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
     const payloadWithIgnoredFields = {
       ...validPayload,
       sessions: [
@@ -169,6 +210,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
     await expect(
       handleDesktopAgentSessionsEvent(payloadWithIgnoredFields, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -186,6 +228,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
         { ...baseContext, relaySocketId: "relay-1" },
         {
           isFeatureEnabled: async () => true,
+          isOrgPolicyEnabled: async () => true,
           upsertBatch: () => Promise.reject(new Error("db down")),
         }
       )
@@ -213,14 +256,34 @@ describe("handleDesktopAgentSessionsEvent", () => {
     );
   });
 
+  it("returns validation_failed for a deterministic token transport collision", async () => {
+    await expect(
+      handleDesktopAgentSessionsEvent(validPayload, baseContext, {
+        isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
+        upsertBatch: () =>
+          Promise.reject(new TokenEventTransportIdentityCollisionError()),
+      })
+    ).resolves.toEqual(validationFailedAck());
+
+    expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metric: "agent_sessions.sync.failed",
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      })
+    );
+    expect(mockLog.error).not.toHaveBeenCalled();
+  });
+
   it("rate limits overly chatty targets", async () => {
     const rateLimiter = new DesktopAgentSessionsRateLimiter();
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
 
     for (let index = 0; index < 120; index += 1) {
       await expect(
         handleDesktopAgentSessionsEvent(validPayload, baseContext, {
           isFeatureEnabled: async () => true,
+          isOrgPolicyEnabled: async () => true,
           upsertBatch,
           rateLimiter,
           now: () => 0,
@@ -231,6 +294,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
     await expect(
       handleDesktopAgentSessionsEvent(validPayload, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
         rateLimiter,
         now: () => 0,
@@ -242,7 +306,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
   });
 
   it("FEA-2258: sanitizes NUL and lone surrogates before handing the batch to persistence", async () => {
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
     const nul = String.fromCharCode(0);
     const loneHigh = String.fromCharCode(0xd8_3d);
     const replacement = String.fromCharCode(0xff_fd);
@@ -277,6 +341,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
     await expect(
       handleDesktopAgentSessionsEvent(dirtyPayload, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
     ).resolves.toEqual({ accepted: true });
@@ -293,7 +358,7 @@ describe("handleDesktopAgentSessionsEvent", () => {
   });
 
   it("FEA-2258: rejects a session whose required id collapses to empty after NUL stripping", async () => {
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
     const payload = {
       ...validPayload,
       sessions: [
@@ -309,17 +374,15 @@ describe("handleDesktopAgentSessionsEvent", () => {
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
+    ).resolves.toEqual(validationFailedAck("session_invalid"));
     expect(upsertBatch).not.toHaveBeenCalled();
   });
 
   it("FEA-2258: rejects a pathologically deep payload before persistence", async () => {
-    const upsertBatch = vi.fn();
+    const upsertBatch = upsertBatchMock();
     let deepData: unknown = 0;
     for (let i = 0; i < 300; i += 1) {
       deepData = { n: deepData };
@@ -347,12 +410,10 @@ describe("handleDesktopAgentSessionsEvent", () => {
     await expect(
       handleDesktopAgentSessionsEvent(payload, baseContext, {
         isFeatureEnabled: async () => true,
+        isOrgPolicyEnabled: async () => true,
         upsertBatch,
       })
-    ).resolves.toEqual({
-      accepted: false,
-      reason: DesktopAgentSessionsAckReason.ValidationFailed,
-    });
+    ).resolves.toEqual(validationFailedAck("payload_nested_too_deeply"));
     expect(upsertBatch).not.toHaveBeenCalled();
   });
 });
@@ -477,6 +538,155 @@ describe("parseDesktopAgentSessionsPayload — sanitized-key collisions (FEA-269
   });
 });
 
+describe("parseDesktopAgentSessionsPayload — activitySegmentRows (FEA-3568)", () => {
+  const segment = {
+    phase: "implement",
+    startMs: 1000,
+    endMs: 2000,
+    confidence: 0.82,
+    evidenceLayers: ["declared", "structural"],
+    version: 4,
+    workItemRef: "FEA-3568",
+    subagentId: null,
+  };
+  const withSegments = (rows: unknown[]) => ({
+    ...validPayload,
+    sessions: [{ ...validPayload.sessions[0], activitySegmentRows: rows }],
+  });
+
+  it("accepts and round-trips a valid tiling, including idle/other with empty evidence", () => {
+    const result = parseDesktopAgentSessionsPayload(
+      withSegments([
+        segment,
+        {
+          phase: "idle",
+          startMs: 2000,
+          endMs: 3000,
+          confidence: 1,
+          evidenceLayers: [],
+          version: 4,
+        },
+      ])
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const rows = result.payload.sessions[0].activitySegmentRows;
+      expect(rows).toHaveLength(2);
+      expect(rows?.[0]?.phase).toBe("implement");
+      expect(rows?.[0]?.evidenceLayers).toEqual(["declared", "structural"]);
+      expect(rows?.[0]?.workItemRef).toBe("FEA-3568");
+      // an omitted subagentId normalizes to null (nullable-trimmed convention)
+      expect(rows?.[1]?.subagentId ?? null).toBeNull();
+      expect(rows?.[1]?.evidenceLayers).toEqual([]);
+    }
+  });
+
+  it("accepts a session without the field (older desktop build — backward compat)", () => {
+    expect(parseDesktopAgentSessionsPayload(validPayload).ok).toBe(true);
+  });
+
+  it("rejects a zero-width or inverted span (startMs must be < endMs)", () => {
+    expect(
+      parseDesktopAgentSessionsPayload(
+        withSegments([{ ...segment, startMs: 2000, endMs: 2000 }])
+      ).ok
+    ).toBe(false);
+    expect(
+      parseDesktopAgentSessionsPayload(
+        withSegments([{ ...segment, startMs: 3000, endMs: 2000 }])
+      ).ok
+    ).toBe(false);
+  });
+
+  it("rejects confidence outside [0, 1]", () => {
+    expect(
+      parseDesktopAgentSessionsPayload(
+        withSegments([{ ...segment, confidence: 1.5 }])
+      ).ok
+    ).toBe(false);
+    expect(
+      parseDesktopAgentSessionsPayload(
+        withSegments([{ ...segment, confidence: -0.1 }])
+      ).ok
+    ).toBe(false);
+  });
+
+  it("rejects a tiling past the MAX_SYNCED_ACTIVITY_SEGMENTS cap", () => {
+    const overflow = Array.from(
+      { length: MAX_SYNCED_ACTIVITY_SEGMENTS + 1 },
+      (_unused, index) => ({
+        ...segment,
+        startMs: index * 10,
+        endMs: index * 10 + 5,
+      })
+    );
+    expect(parseDesktopAgentSessionsPayload(withSegments(overflow)).ok).toBe(
+      false
+    );
+  });
+
+  // FEA-3779: the raised cap must cover observed p95+ so a real ~1051-segment
+  // session syncs its FULL tiling instead of being truncated to the first 500.
+  // A 1051-row tiling would have been rejected outright at the old cap of 500;
+  // it must now round-trip untruncated.
+  const OBSERVED_LARGE_SESSION_SEGMENTS = 1051;
+  it("accepts a real large-session tiling (1051 segments) that the old cap of 500 truncated", () => {
+    expect(MAX_SYNCED_ACTIVITY_SEGMENTS).toBeGreaterThan(
+      OBSERVED_LARGE_SESSION_SEGMENTS
+    );
+    const largeTiling = Array.from(
+      { length: OBSERVED_LARGE_SESSION_SEGMENTS },
+      (_unused, index) => ({
+        ...segment,
+        startMs: index * 10,
+        endMs: index * 10 + 5,
+      })
+    );
+    const result = parseDesktopAgentSessionsPayload(withSegments(largeTiling));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // full tiling preserved — no truncation to 500
+      expect(result.payload.sessions[0].activitySegmentRows).toHaveLength(
+        OBSERVED_LARGE_SESSION_SEGMENTS
+      );
+    }
+  });
+
+  it("round-trips the activitySegmentRowsTruncated partial flag", () => {
+    const result = parseDesktopAgentSessionsPayload({
+      ...validPayload,
+      sessions: [
+        {
+          ...validPayload.sessions[0],
+          activitySegmentRows: [segment],
+          activitySegmentRowsTruncated: true,
+        },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.sessions[0].activitySegmentRowsTruncated).toBe(
+        true
+      );
+    }
+  });
+
+  it("drops unknown keys on a segment row (forward compat) without failing the payload", () => {
+    const result = parseDesktopAgentSessionsPayload(
+      withSegments([{ ...segment, unknownFutureField: "ignore me" }])
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const row = result.payload.sessions[0].activitySegmentRows?.[0] as Record<
+        string,
+        unknown
+      >;
+      expect(row.unknownFutureField).toBeUndefined();
+      expect(row.phase).toBe("implement");
+    }
+  });
+});
+
 describe("parseDesktopAgentSessionsPayload — deviceTimeZone (FEA-1459)", () => {
   it("accepts payload with deviceTimeZone set", () => {
     const payload = {
@@ -590,6 +800,87 @@ describe("parseDesktopAgentSessionsPayload — deviceTimeZone (FEA-1459)", () =>
     };
     const result = parseDesktopAgentSessionsPayload(payload);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe("parseDesktopAgentSessionsPayload — cache-write TTL provenance (FEA-3419)", () => {
+  it("preserves a reported TTL split across the runtime ingress boundary", () => {
+    const payload = {
+      ...validPayload,
+      sessions: [
+        {
+          ...validPayload.sessions[0],
+          tokenUsageByModel: [
+            {
+              ...validPayload.sessions[0].tokenUsageByModel[0],
+              cacheWriteTokens: 5,
+              cacheWrite5mTokens: 3,
+              cacheWrite1hTokens: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = parseDesktopAgentSessionsPayload(payload);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.sessions[0].tokenUsageByModel[0]).toMatchObject({
+        cacheWrite5mTokens: 3,
+        cacheWrite1hTokens: 2,
+      });
+    }
+  });
+
+  it("keeps older-client omission backward compatible", () => {
+    const result = parseDesktopAgentSessionsPayload(validPayload);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(
+        result.payload.sessions[0].tokenUsageByModel[0].cacheWrite5mTokens
+      ).toBeUndefined();
+      expect(
+        result.payload.sessions[0].tokenUsageByModel[0].cacheWrite1hTokens
+      ).toBeUndefined();
+    }
+  });
+
+  it("rejects a partial or over-total TTL split", () => {
+    const partial = {
+      ...validPayload,
+      sessions: [
+        {
+          ...validPayload.sessions[0],
+          tokenUsageByModel: [
+            {
+              ...validPayload.sessions[0].tokenUsageByModel[0],
+              cacheWrite1hTokens: 2,
+            },
+          ],
+        },
+      ],
+    };
+    const overTotal = {
+      ...validPayload,
+      sessions: [
+        {
+          ...validPayload.sessions[0],
+          tokenUsageByModel: [
+            {
+              ...validPayload.sessions[0].tokenUsageByModel[0],
+              cacheWriteTokens: 5,
+              cacheWrite5mTokens: 4,
+              cacheWrite1hTokens: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(parseDesktopAgentSessionsPayload(partial).ok).toBe(false);
+    expect(parseDesktopAgentSessionsPayload(overTotal).ok).toBe(false);
   });
 });
 
@@ -780,18 +1071,47 @@ describe("parseDesktopAgentSessionsPayload — artifactRefs and prRefs (FEA-1684
     }
   });
 
+  // ISS-4448+4449: the RAW-array cap is now MAX_SYNCED_ARTIFACT_REFS (500),
+  // raised from 100. An array over the cap still rejects even when padded with
+  // unknown kinds — the raw length is bounded before unknown-kind entries are
+  // dropped, so a client can't smuggle an oversized array past `.max()`.
   it("rejects an oversized raw artifactRefs array even when padded with unknown kinds (FEA-2729)", () => {
-    const oversized = Array.from({ length: 101 }, () => ({
-      kind: "some_future_kind",
-      repositoryFullName: "acme/web",
-      sha: "abc",
-    }));
+    const oversized = Array.from(
+      { length: MAX_SYNCED_ARTIFACT_REFS + 1 },
+      () => ({
+        kind: "some_future_kind",
+        repositoryFullName: "acme/web",
+        sha: "abc",
+      })
+    );
     const payload = {
       ...validPayload,
       sessions: [{ ...validPayload.sessions[0], artifactRefs: oversized }],
     };
     const result = parseDesktopAgentSessionsPayload(payload);
     expect(result.ok).toBe(false);
+  });
+
+  // ISS-4448+4449: an array AT the raised cap (500) must be accepted. This is the
+  // boundary the cap raise exists to admit — a payload the old 100-cap rejected.
+  it("accepts an artifactRefs array at the raised cap (ISS-4448+4449)", () => {
+    const atCap = Array.from({ length: MAX_SYNCED_ARTIFACT_REFS }, () => ({
+      kind: ArtifactRefTargetKind.ClosedloopArtifact,
+      slug: "FEA-1234",
+      isPrimary: false,
+      method: ArtifactRefMethod.McpToolCall,
+    }));
+    const payload = {
+      ...validPayload,
+      sessions: [{ ...validPayload.sessions[0], artifactRefs: atCap }],
+    };
+    const result = parseDesktopAgentSessionsPayload(payload);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.payload.sessions[0].artifactRefs).toHaveLength(
+        MAX_SYNCED_ARTIFACT_REFS
+      );
+    }
   });
 
   it("rejects invalid prRefs relationType before persistence", () => {

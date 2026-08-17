@@ -1,20 +1,21 @@
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { StatusMetadataSection } from "@repo/design-system/components/ui/status-metadata-section";
+import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import type { Meta, StoryObj } from "@storybook/react";
 
-const users = [
+// `User` requires `name` — `UserSelectPopover` renders it and derives the avatar
+// fallback from it via `getInitials(value.name)`. This fixture previously carried
+// `firstName`/`lastName` instead, which crashed both stories on mount and was
+// invisible because nothing typechecked or executed this file.
+const users: User[] = [
   {
     id: "user-1",
-    firstName: "Mike",
-    lastName: "Angstadt",
-    avatarUrl: null,
+    name: "Mike Angstadt",
     email: "mike@closedloop.ai",
   },
   {
     id: "user-2",
-    firstName: "Annie",
-    lastName: "Case",
-    avatarUrl: null,
+    name: "Annie Case",
     email: "annie@closedloop.ai",
   },
 ];

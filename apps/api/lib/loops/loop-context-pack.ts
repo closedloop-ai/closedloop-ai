@@ -6,22 +6,19 @@
  * artifacts to include.
  */
 
+import { DocumentType } from "@repo/api/src/types/document";
+import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
+import { LoopCommand } from "@repo/api/src/types/loop";
 import type {
   CodeEvaluationContext,
   ContextPackAgent,
   ContextPackAttachment,
   ContextPackRepoConfig,
 } from "@closedloop-ai/loops-api/context-pack";
-import { isFeatureFlagEnabledForDistinctId } from "@repo/analytics/feature-flags";
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
-import type { ArtifactType } from "@repo/api/src/types/artifact";
-import { DocumentType } from "@repo/api/src/types/document";
-import type { AdditionalRepoRefWithToken } from "@repo/api/src/types/loop";
-import { LoopCommand } from "@repo/api/src/types/loop";
-import { withDb } from "@repo/database";
-import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import type { LimitFunction } from "p-limit";
 import { listAgentsForContextPack } from "@/app/catalog/service";
+import { commentsService } from "@/app/comments/service";
 import {
   ATTACHMENT_SIGNED_URL_MAX_FILES,
   attachmentsService,
@@ -31,38 +28,25 @@ import { documentService } from "@/app/documents/document-service";
 import { documentVersionService } from "@/app/documents/document-version-service";
 import { loopsService } from "@/app/loops/service";
 import { documentTemplatesService } from "@/app/templates/service";
+import { createDbFanoutLimiter, mapWithDbConcurrency } from "@/lib/db-fanout";
+import { renderArtifactCommentRollup } from "./artifact-comment-rollup";
 import { getCommandHandler } from "./loop-commands";
+import { fetchLinkedEvergreenDocs } from "./loop-context-pack-evergreen-docs";
+import type { LoopForContextPack } from "./loop-context-pack-types";
 import { type ContextPack, downloadMetadata } from "./loop-state";
 import {
   shouldWrapLoopArtifactContent,
+  wrapUntrustedDiscussionRollup,
   wrapUntrustedLoopArtifactContent,
 } from "./untrusted-loop-input";
 import { extractUploadedPlanRaw } from "./uploaded-plan-artifacts";
 
 // ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type LoopForContextPack = {
-  id: string;
-  userId: string;
-  command: LoopCommand;
-  prompt: string | null;
-  documentId: string | null;
-  documentVersion: number | null;
-  parentLoopId: string | null;
-  repo: { fullName: string; branch: string } | null;
-  metadata?: Record<string, unknown> | null;
-  contextRefs: Array<{
-    sourceId: string;
-    sourceType?: ArtifactType;
-    include: "full" | "summary";
-  }> | null;
-};
-
-// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+// `LoopForContextPack` lives in ./loop-context-pack-types so sibling enrichment
+// modules can consume it without importing this assembly module (avoiding a
+// cycle). Consumers import the type from there directly.
 
 type ParentLoopForContextPack = Awaited<
   ReturnType<typeof loopsService.findById>
@@ -153,6 +137,82 @@ function logDesktopExecuteRawPlanDecision({
   });
 }
 
+/**
+ * Fetch an artifact's comment threads (org-scoped, permission follows the
+ * artifact) and render them into the shared "## Discussion & Decisions"
+ * appendix (FEA-4096). Returns an empty string when the artifact has no threads
+ * or the fetch fails — comment rollup is additive context, so a failure here
+ * must never block the loop from launching with the artifact body.
+ */
+async function fetchArtifactCommentRollup(
+  artifactId: string,
+  organizationId: string,
+  loopId: string
+): Promise<string> {
+  try {
+    const threads = await commentsService.findThreadsByDocument(
+      organizationId,
+      artifactId
+    );
+    return renderArtifactCommentRollup(threads);
+  } catch (error) {
+    log.warn("[loop-context-pack] Failed to fetch artifact comment rollup", {
+      loopId,
+      artifactId,
+      error,
+    });
+    return "";
+  }
+}
+
+/**
+ * Compose the final artifact `content` string for the context pack: the raw
+ * body, then the rolled-up comment discussion appendix (FEA-4096) when present.
+ * SSOT for every artifact-injection path below.
+ *
+ * Trust boundaries (wongk review, FEA-4096): PRD/Feature bodies are wrapped by
+ * `shouldWrapLoopArtifactContent`, and the rollup folds inside that wrapper so
+ * reviewer comments are treated as data. For every OTHER artifact type the body
+ * is not wrapped, so the rollup carries its own untrusted boundary via
+ * `wrapUntrustedDiscussionRollup` — comment threads are user-writable and must
+ * never reach the agent as trusted instructions regardless of artifact type.
+ *
+ * Raw-plan alignment (`hasRawPlan`, codex + wongk review): for a Desktop EXECUTE
+ * implementation plan the context pack also ships `raw.content` (the uploaded
+ * plan body), and Desktop compares `raw.content === content` byte-for-byte to
+ * decide whether to restore structured plan state; a mismatch deletes plan.json
+ * and falls back to the imported-plan-compat path. Appending the rollup to
+ * `content` would break that alignment, so when a raw plan is attached the
+ * discussion is dropped from `content` here — the plan body and its structured
+ * state stay authoritative, and the plan-author's own PRD/Feature already
+ * carried its discussion into planning.
+ */
+function composeArtifactContent(input: {
+  rawContent: string;
+  rollup: string;
+  artifactType: string;
+  title: string | null;
+  hasRawPlan?: boolean;
+}): string {
+  if (shouldWrapLoopArtifactContent(input.artifactType)) {
+    const bodyWithRollup = input.rollup
+      ? `${input.rawContent}\n\n${input.rollup}`
+      : input.rawContent;
+    return wrapUntrustedLoopArtifactContent(bodyWithRollup, {
+      artifactType: input.artifactType,
+      title: input.title,
+    });
+  }
+
+  // Unwrapped body types. Drop the rollup entirely when it would desync the
+  // raw-plan alignment Desktop EXECUTE depends on; otherwise append it inside
+  // its own untrusted boundary.
+  if (input.hasRawPlan || !input.rollup) {
+    return input.rawContent;
+  }
+  return `${input.rawContent}\n\n${wrapUntrustedDiscussionRollup(input.rollup)}`;
+}
+
 async function fetchPrimaryArtifact(
   loop: LoopForContextPack,
   organizationId: string,
@@ -207,17 +267,24 @@ async function fetchPrimaryArtifact(
     rawPlan,
   });
 
+  const rollup = await fetchArtifactCommentRollup(
+    artifact.id,
+    organizationId,
+    loop.id
+  );
+
   return [
     {
       id: artifact.id,
       type: String(artifact.type),
       title: artifact.title,
-      content: shouldWrapLoopArtifactContent(String(artifact.type))
-        ? wrapUntrustedLoopArtifactContent(artifactContent, {
-            artifactType: String(artifact.type),
-            title: artifact.title,
-          })
-        : artifactContent,
+      content: composeArtifactContent({
+        rawContent: artifactContent,
+        rollup,
+        artifactType: String(artifact.type),
+        title: artifact.title,
+        hasRawPlan: rawPlan !== undefined,
+      }),
       ...(rawPlan ? { raw: rawPlan } : {}),
     },
   ];
@@ -225,7 +292,8 @@ async function fetchPrimaryArtifact(
 
 async function fetchContextRefArtifacts(
   loop: LoopForContextPack,
-  organizationId: string
+  organizationId: string,
+  limiter?: LimitFunction
 ): Promise<ContextPack["artifacts"]> {
   if (!loop.contextRefs || loop.contextRefs.length === 0) {
     return [];
@@ -236,8 +304,14 @@ async function fetchContextRefArtifacts(
     (ref) => ref.sourceId !== loop.documentId
   );
 
-  const results = await Promise.all(
-    refs.map((ref) => fetchArtifactRef(ref, organizationId, loop.id))
+  // `contextRefs` is caller-supplied and uncapped on rows persisted before
+  // MAX_CONTEXT_REFS, and each ref costs two pooled reads, so bound the fan-out
+  // (FEA-3299). `limiter` is shared with the attachment fan-out over the same
+  // array — see buildContextPackInMemory.
+  const results = await mapWithDbConcurrency(
+    refs,
+    (ref) => fetchArtifactRef(ref, organizationId, loop.id),
+    limiter
   );
 
   return results.filter((item): item is NonNullable<typeof item> =>
@@ -267,16 +341,26 @@ async function fetchArtifactRef(
   const selectedContent =
     ref.include === "summary" ? truncateForSummary(content) : content;
 
+  // Roll up the referenced artifact's comment threads too — a PRD injected as a
+  // context ref for PRD->plan generation carries the same reviewer decisions the
+  // primary path surfaces. Summarized refs still get the rollup: it is the
+  // decisions, not the prose, that the summary would otherwise drop.
+  const rollup = await fetchArtifactCommentRollup(
+    artifact.id,
+    organizationId,
+    loopId
+  );
+
   return {
     id: artifact.id,
     type: String(artifact.type),
     title: artifact.title,
-    content: shouldWrapLoopArtifactContent(String(artifact.type))
-      ? wrapUntrustedLoopArtifactContent(selectedContent, {
-          artifactType: String(artifact.type),
-          title: artifact.title,
-        })
-      : selectedContent,
+    content: composeArtifactContent({
+      rawContent: selectedContent,
+      rollup,
+      artifactType: String(artifact.type),
+      title: artifact.title,
+    }),
   };
 }
 
@@ -521,7 +605,8 @@ const ATTACHMENT_MAX_FILES = ATTACHMENT_SIGNED_URL_MAX_FILES;
  */
 export async function fetchAttachmentsForContextPack(
   loop: LoopForContextPack,
-  organizationId: string
+  organizationId: string,
+  limiter?: LimitFunction
 ): Promise<ContextPackAttachment[]> {
   // Path 1: primary artifact attachments
   let primaryAttachments: ContextPackAttachment[] = [];
@@ -551,7 +636,8 @@ export async function fetchAttachmentsForContextPack(
   const contextRefAttachments = await collectContextRefAttachments(
     loop.contextRefs ?? [],
     organizationId,
-    loop.id
+    loop.id,
+    limiter
   );
 
   // Deduplicate — primary artifact entries written first (take precedence)
@@ -571,15 +657,22 @@ export async function fetchAttachmentsForContextPack(
 async function collectContextRefAttachments(
   contextRefs: NonNullable<LoopForContextPack["contextRefs"]>,
   organizationId: string,
-  loopId: string
+  loopId: string,
+  limiter?: LimitFunction
 ): Promise<ContextPackAttachment[]> {
-  // Fetch each context ref's attachments concurrently rather than serially.
-  // Each ref stays isolated: a failure logs a warning and contributes no
-  // attachments (preserving the previous per-ref resilience), and Promise.all
-  // keeps results in contextRefs order so the downstream dedup/limit logic is
-  // unchanged.
-  const perRefAttachments = await Promise.all(
-    contextRefs.map(async (ref) => {
+  // Fetch each context ref's attachments with bounded concurrency rather than
+  // serially. Each ref stays isolated: a failure logs a warning and contributes
+  // no attachments (preserving the previous per-ref resilience — the catch is
+  // inside the mapper, so the bounded helper's fail-fast semantics never see
+  // it), and results stay in contextRefs order so the downstream dedup/limit
+  // logic is unchanged.
+  //
+  // The fan-out is bounded because `contextRefs` is caller-supplied and each ref
+  // costs a pooled read (FEA-3299). `limiter` is shared with the artifact
+  // fan-out over this same array — see buildContextPackInMemory.
+  const perRefAttachments = await mapWithDbConcurrency(
+    contextRefs,
+    async (ref) => {
       try {
         return await attachmentsService.listWithSignedUrlsByDocument(
           ref.sourceId,
@@ -597,7 +690,8 @@ async function collectContextRefAttachments(
         );
         return [] as ContextPackAttachment[];
       }
-    })
+    },
+    limiter
   );
   return perRefAttachments.flat();
 }
@@ -665,40 +759,7 @@ function emptyAgentData(): {
   return { agents: [], repoConfigs: [] };
 }
 
-async function isAgentsEnabledForUser(userId: string): Promise<boolean> {
-  try {
-    const user = await withDb((db) =>
-      db.user.findUnique({
-        where: { id: userId },
-        select: { clerkId: true },
-      })
-    );
-    const distinctIds = [
-      ...new Set(
-        [user?.clerkId, userId].filter((v): v is string => Boolean(v))
-      ),
-    ];
-    for (const distinctId of distinctIds) {
-      if (
-        (await isFeatureFlagEnabledForDistinctId(
-          AGENTS_FEATURE_FLAG_KEY,
-          distinctId
-        )) === true
-      ) {
-        return true;
-      }
-    }
-    return false;
-  } catch (error) {
-    log.warn("[loop-context-pack] agents feature flag check failed", {
-      userId,
-      error: parseError(error),
-    });
-    return false;
-  }
-}
-
-async function fetchAgentsForContextPack(
+function fetchAgentsForContextPack(
   loop: LoopForContextPack,
   organizationId: string,
   additionalRepos?: AdditionalRepoRefWithToken[]
@@ -706,10 +767,6 @@ async function fetchAgentsForContextPack(
   agents: ContextPackAgent[];
   repoConfigs: ContextPackRepoConfig[];
 }> {
-  if (!(await isAgentsEnabledForUser(loop.userId))) {
-    return emptyAgentData();
-  }
-
   const repoFullNames: string[] = [];
   if (loop.repo?.fullName) {
     repoFullNames.push(loop.repo.fullName);
@@ -744,9 +801,18 @@ export async function buildContextPackInMemory(
   const parentLoop = loop.parentLoopId
     ? await loopsService.findById(loop.parentLoopId, organizationId)
     : null;
+
+  // Two of the branches below fan out over the SAME caller-supplied
+  // `loop.contextRefs` array and run concurrently, so they must share one
+  // concurrency budget: separate limiters would each admit
+  // DB_FANOUT_MAX_CONCURRENCY and peak at twice the intended bound for a single
+  // launch. Bounds compose by addition, not by maximum (FEA-3299).
+  const contextRefLimiter = createDbFanoutLimiter();
+
   const [
     primaryArtifacts,
     refArtifacts,
+    linkedEvergreenDocs,
     templateArtifacts,
     priorLoopSummaries,
     userContext,
@@ -755,11 +821,16 @@ export async function buildContextPackInMemory(
     codeEvaluationContext,
   ] = await Promise.all([
     fetchPrimaryArtifact(loop, organizationId, parentLoop),
-    fetchContextRefArtifacts(loop, organizationId),
+    fetchContextRefArtifacts(loop, organizationId, contextRefLimiter),
+    fetchLinkedEvergreenDocs(loop, organizationId, contextRefLimiter),
     fetchTemplateForCommand(loop, organizationId),
     fetchParentLoopSummary(loop, parentLoop),
     fetchUserContext(loop),
-    fetchAttachmentsForContextPack(loop, organizationId).catch((error) => {
+    fetchAttachmentsForContextPack(
+      loop,
+      organizationId,
+      contextRefLimiter
+    ).catch((error) => {
       log.warn("[loop-context-pack] Failed to fetch attachments", {
         loopId: loop.id,
         error,
@@ -778,18 +849,32 @@ export async function buildContextPackInMemory(
     buildCodeEvaluationContext(loop, organizationId, parentLoop),
   ]);
 
-  // Template first (structural blueprint), then context refs (Feature/PRD), then primary artifact
+  // Template first (structural blueprint), then context refs (Feature/PRD),
+  // then primary artifact. Linked evergreen Documents (FEA-3951) are DELIBERATELY
+  // NOT added to `artifacts`: that field is flattened onto the Desktop wire body
+  // (`LoopRequestBody.artifacts`), whose schema types each entry as
+  // `z.enum(LoopArtifactType)` (PRD / IMPLEMENTATION_PLAN / FEATURE only). A
+  // `DOC`-typed entry there would fail validation and silently drop the whole
+  // artifacts array on the current Desktop PLAN/EXECUTE paths (wongk review). The
+  // evergreen docs travel via `supportingArtifacts` below, whose schema admits
+  // any `type` string and which both the S3 (ECS) and Desktop materializers
+  // already consume; unknown extra entries degrade gracefully on old builds.
   const artifacts = [
     ...templateArtifacts,
     ...refArtifacts,
     ...primaryArtifacts,
   ];
 
+  // Both context refs and referenced evergreen Documents are supporting
+  // material (as opposed to the primary artifact under work).
+  const supportingArtifacts = [...refArtifacts, ...linkedEvergreenDocs];
+
   return {
     command: loop.command,
     prompt: loop.prompt ?? undefined,
     artifacts,
-    supportingArtifacts: refArtifacts.length > 0 ? refArtifacts : undefined,
+    supportingArtifacts:
+      supportingArtifacts.length > 0 ? supportingArtifacts : undefined,
     codeEvaluationContext,
     repoInfo: loop.repo ?? undefined,
     priorLoopSummaries:

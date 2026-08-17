@@ -1,17 +1,18 @@
 "use client";
 
-import type {
-  BranchPageDetail,
-  MergedTraceItem,
-} from "@repo/api/src/types/branch";
+import type { BranchPageDetail } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { cn } from "@repo/design-system/lib/utils";
+import { Link } from "@repo/navigation/link";
 import { RotateCwIcon, ShieldCheckIcon, SparklesIcon } from "lucide-react";
 import { memo, useMemo } from "react";
 import {
+  actorForSession,
   type BranchActorColorDomain,
+  BranchActorTurnSide,
   buildActorColorDomain,
   deriveActorsFromSessions,
 } from "../lib/branch-actor-domain";
@@ -46,6 +47,16 @@ export type BranchPrSessionSwimlaneProps = {
   range?: TimeRange | null;
   activeTimestamp?: string | null;
   onScrubTimestamp?: (t: string) => void;
+  /**
+   * FEA-4257: build the org-relative session-detail href for a lane's session so
+   * the lane identity navigates to that session (the branch→session seam).
+   * Receives the lane's `sessionId` (the session artifact id — the same value
+   * the Sessions table's `getSessionHref` keys on). The web and desktop shells
+   * inject their own path shape. Omitted → the lane label stays plain text; the
+   * burst segments remain scrub-only regardless, so the timeline scrub is never
+   * broken.
+   */
+  getSessionHref?: (sessionId: string) => string;
   isLoading?: boolean;
   className?: string;
 };
@@ -76,24 +87,14 @@ type SwimlaneLane = {
   activeMs: number;
 };
 
-/** A session's actor: its captured `sessionstart` name, else harness, else null. */
-function resolveLaneActor(
-  capturedName: string | null,
-  harness: string
-): string | null {
-  if (capturedName != null && capturedName !== "") {
-    return capturedName;
-  }
-  return harness === "" ? null : harness;
-}
-
 function buildLanes(
   detail: BranchPageDetail,
   domain: BranchActorColorDomain
 ): { lanes: SwimlaneLane[]; axis: TimeRange | null } {
+  const actorBySession = new Map<string, string | null>();
   const startActorBySession = new Map<
     string,
-    { name: string | null; ci: boolean; isResumed: boolean }
+    { ci: boolean; isResumed: boolean }
   >();
   const itemsBySession = new Map<string, MergedTraceItem[]>();
   for (const item of detail.mergedTrace) {
@@ -101,8 +102,8 @@ function buildLanes(
     list.push(item);
     itemsBySession.set(item.sessionId, list);
     if (item.type === "sessionstart") {
+      actorBySession.set(item.sessionId, item.actor.name);
       startActorBySession.set(item.sessionId, {
-        name: item.actor.name,
         ci: item.actor.ci === true,
         isResumed: item.actor.isResumed === true,
       });
@@ -114,7 +115,7 @@ function buildLanes(
   );
   const lanes = sessions.map((session): SwimlaneLane => {
     const meta = startActorBySession.get(session.sessionId);
-    const actor = resolveLaneActor(meta?.name ?? null, session.harness);
+    const actor = actorForSession(session, actorBySession);
     const bursts: LaneBurst[] = computeBurstSpans({
       startedAt: session.startedAt,
       endedAt: session.endedAt,
@@ -135,7 +136,7 @@ function buildLanes(
       sessionId: session.sessionId,
       label: domain.labelFor(actor),
       sub: session.name ?? session.slug ?? session.harness,
-      color: domain.colorFor(actor),
+      color: domain.colorForTurn(actor, BranchActorTurnSide.Agent),
       isCi: session.harness === "ci" || meta?.ci === true,
       isResumed:
         meta?.isResumed === true || bursts.some((burst) => burst.isResumption),
@@ -165,6 +166,7 @@ export const BranchPrSessionSwimlane = memo(function BranchPrSessionSwimlane({
   range,
   activeTimestamp,
   onScrubTimestamp,
+  getSessionHref,
   isLoading = false,
   className,
 }: BranchPrSessionSwimlaneProps) {
@@ -211,6 +213,7 @@ export const BranchPrSessionSwimlane = memo(function BranchPrSessionSwimlane({
           lane={lane}
           onScrubTimestamp={onScrubTimestamp}
           playheadPercent={playheadPercent}
+          sessionHref={getSessionHref?.(lane.sessionId) ?? null}
         />
       ))}
     </section>
@@ -222,11 +225,14 @@ function SwimlaneRow({
   axis,
   playheadPercent,
   onScrubTimestamp,
+  sessionHref,
 }: {
   lane: SwimlaneLane;
   axis: TimeRange | null;
   playheadPercent: number | null;
   onScrubTimestamp?: (t: string) => void;
+  /** FEA-4257: org-relative session-detail href for this lane, or null (non-link). */
+  sessionHref?: string | null;
 }) {
   // The lane's static content (its extent band + active-burst buttons) depends
   // only on the lane and the shared axis — never on the playhead. Memoize it so
@@ -280,21 +286,41 @@ function SwimlaneRow({
     );
   }, [lane, axis, onScrubTimestamp]);
 
+  // FEA-4257: the whole identity cluster — the actor icon, the actor name, and
+  // the session sub-label — is the single navigation target, so the hit area is
+  // the whole labelled unit (not one 12px word) and the link's accessible name
+  // is exactly its visible text ("<name> <sub>"), with no `aria-label` to drift
+  // from what's shown (a link named after text it doesn't contain is a
+  // label-in-name failure). The CI tag and the "resumed" pill are lane metadata,
+  // not identity, so they sit outside the link. No href → a plain, non-link
+  // cluster.
+  const identity = (
+    <>
+      <span
+        className="bq-aico"
+        style={{ color: lane.color, borderColor: lane.color }}
+      >
+        {lane.isCi ? (
+          <ShieldCheckIcon aria-hidden size={11} />
+        ) : (
+          <SparklesIcon aria-hidden size={11} />
+        )}
+      </span>
+      <span className="bq-lane-name">{lane.label}</span>
+      {lane.sub ? <span className="bq-lane-sub">{lane.sub}</span> : null}
+    </>
+  );
+
   return (
     <div className="bq-lane">
       <div className="bq-lane-id">
-        <span
-          className="bq-aico"
-          style={{ color: lane.color, borderColor: lane.color }}
-        >
-          {lane.isCi ? (
-            <ShieldCheckIcon aria-hidden size={11} />
-          ) : (
-            <SparklesIcon aria-hidden size={11} />
-          )}
-        </span>
-        <span className="bq-lane-name">{lane.label}</span>
-        {lane.sub ? <span className="bq-lane-sub">{lane.sub}</span> : null}
+        {sessionHref ? (
+          <Link className="bq-lane-link hover:underline" href={sessionHref}>
+            {identity}
+          </Link>
+        ) : (
+          identity
+        )}
         {lane.isCi ? <span className="bq-lane-tag">CI</span> : null}
         {lane.isResumed ? (
           <span className="bq-lane-resumed">

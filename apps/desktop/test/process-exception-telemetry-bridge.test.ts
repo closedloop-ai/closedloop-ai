@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
-import type { DesktopOtelRuntime } from "../src/main/app-otel-runtime.js";
-import { createProcessExceptionTelemetryBridge } from "../src/main/process-exception-telemetry-bridge.js";
+import type { DesktopOtelRuntime } from "../src/main/telemetry/app-otel-runtime.js";
+import { createProcessExceptionTelemetryBridge } from "../src/main/telemetry/process-exception-telemetry-bridge.js";
 import { RendererOtelExportFailureReason } from "../src/shared/renderer-otel-bridge-constants.js";
 
 test("process exception bridge is best-effort before runtime binding and emits main after binding", () => {
@@ -72,6 +72,8 @@ function createStubRuntime(
     emitAppExceptionEvent,
     emitIpcPerfEvent: () => {},
     emitSyncBatchEvent: () => {},
+    emitImportHealthEvent: () => {},
+    flush: async () => {},
     shutdown: async () => {},
     getBufferedRecords: () => [],
     resetBuffer: () => {},

@@ -6,6 +6,7 @@ import {
   type KeylessTelemetrySessionAck,
 } from "@closedloop-ai/shared-platform/keyless-telemetry";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveCollectorOrigin } from "../keyless-otlp-ingress";
 import {
   connectClient,
   delay,
@@ -41,6 +42,31 @@ afterEach(async () => {
     await h.close();
   }
 });
+
+/**
+ * Bounded poll for an eventual condition, with an explicit timeout.
+ *
+ * A fixed `delay(n)` would be a wall-clock race: too short and the assertion
+ * flakes under load, too long and the suite pays for it every run. This polls
+ * until the condition holds and throws a named error if it never does, so the
+ * failure says what did not happen rather than surfacing as a bare assertion
+ * mismatch.
+ */
+async function waitUntil(
+  predicate: () => boolean,
+  description: string,
+  timeoutMs = 5000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for ${description}`
+      );
+    }
+    await delay(5);
+  }
+}
 
 function exportEnvelope(
   sessionId: string,
@@ -358,6 +384,147 @@ describe("keyless telemetry ingress — session lifecycle / capacity", () => {
     expect(ninth.accepted).toBe(false);
     if (!ninth.accepted) {
       expect(ninth.reason).toBe("at_capacity");
+    }
+  });
+
+  it("frees per-socket capacity by pruning swept ownedSessions entries on the next handshake", async () => {
+    // Fill the 8-session per-socket cap, then let the sweep expire all sessions.
+    // The per-socket ownedSessions Set still holds all 8 IDs. When the next
+    // handshake fires the pruning loop (L511 arm0), each stale ID is removed and
+    // capacity is freed — allowing a fresh session to be created.
+    const h = await harness({ sessionTtlMs: 30, sweepIntervalMs: 25 });
+    const c = await client(h.url);
+
+    for (let i = 0; i < 8; i++) {
+      await openSession(c, `install-${i}`);
+    }
+
+    // Wait for the sweep to expire all 8 sessions from the global sessions map.
+    await waitUntil(
+      () => h.handle.activeSessions() === 0,
+      "the sweep to expire all 8 sessions"
+    );
+    expect(h.handle.activeSessions()).toBe(0);
+
+    // A fresh handshake triggers the pruning loop: ownedSessions is cleared,
+    // then the new session is accepted (capacity is no longer blocked).
+    const freshId = await openSession(c, "install-fresh");
+    expect(freshId).toBeTruthy();
+  });
+});
+
+describe("keyless telemetry ingress — IP rate limit on export", () => {
+  it("rate-limits an export via the IP limiter after the handshake exhausts the per-IP quota", async () => {
+    // ipRateLimitPerMinute: 1 → the handshake uses the one allowed slot.
+    // The subsequent export call hits the IP rate limit (L561 arm0).
+    const h = await harness({ ipRateLimitPerMinute: 1 });
+    const c = await client(h.url);
+    const sessionId = await openSession(c);
+
+    const result = await c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      exportEnvelope(sessionId)
+    );
+
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.reason).toBe("rate_limited");
+    }
+    // No records forwarded to the collector when the IP limit fires.
+    expect(h.records).toHaveLength(0);
+  });
+});
+
+describe("keyless telemetry ingress — export without ack callback", () => {
+  it("processes the export and forwards to the collector when the client sends no ack callback", async () => {
+    // emitNoAck fires the export event without an ack callback, so the server
+    // receives callback=undefined. ack(undefined, response) is a no-op (L337 arm1).
+    // The export still reaches the collector because handleExport runs regardless.
+    const h = await harness();
+    const c = await client(h.url);
+    const sessionId = await openSession(c);
+
+    c.emitNoAck(KEYLESS_TELEMETRY_EXPORT_EVENT, exportEnvelope(sessionId));
+
+    // Allow the async export path to complete.
+    await waitUntil(
+      () => h.records.length === 1,
+      "the no-ack export to reach the collector"
+    );
+
+    expect(h.records).toHaveLength(1);
+    expect(h.records[0].path).toBe("/v1/traces");
+  });
+});
+
+describe("keyless telemetry ingress — export with no sessionId", () => {
+  it("rejects an export whose sessionId field is not a string (extractSessionId returns null)", async () => {
+    // A non-string sessionId fails the Zod safeParse (L178 arm1 = safeParse false).
+    // extractSessionId returns null → !sessionId is true (L566 arm0) → invalid_request.
+    const h = await harness();
+    const c = await client(h.url);
+    await openSession(c);
+
+    const ack = await c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      exportEnvelope("valid-but-unused", { sessionId: 42 })
+    );
+
+    expect(ack.accepted).toBe(false);
+    if (!ack.accepted) {
+      expect(ack.reason).toBe("invalid_request");
+    }
+    expect(h.records).toHaveLength(0);
+  });
+});
+
+describe("keyless telemetry ingress — proxyToCollector non-Error rejection", () => {
+  it("maps a non-Error fetchImpl rejection to collector_unavailable", async () => {
+    // When the fetchImpl throws a non-Error (e.g. a plain string), the catch
+    // branch that reads error.name falls to the undefined path (L292 arm1).
+    // The function still returns { accepted: false, reason: "collector_unavailable" }.
+    const h = await harness({
+      fetchImpl: () => Promise.reject("non-error-string-rejection"),
+    });
+    const c = await client(h.url);
+    const sessionId = await openSession(c);
+
+    const result = await c.emit<KeylessTelemetryExportAck>(
+      KEYLESS_TELEMETRY_EXPORT_EVENT,
+      exportEnvelope(sessionId)
+    );
+
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.reason).toBe("collector_unavailable");
+    }
+  });
+});
+
+describe("resolveCollectorOrigin — isPrivateOrLoopbackHost branch coverage", () => {
+  it("blocks a malformed IPv4 with an octet above 255 in production mode", () => {
+    // octets.some(o => o > 255) → true (L209 arm0) → isPrivateOrLoopbackHost returns true
+    // → resolveCollectorOrigin rejects the URL → { ok: false }
+    const result = resolveCollectorOrigin({
+      collectorUrl: "http://256.0.0.1:4317/",
+      isProduction: true,
+      allowPrivateCollector: false,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("allows a public IPv4 that is not private or link-local in production mode", () => {
+    // 8.8.8.8 passes all private/loopback checks; the link-local check
+    // (a===169 && b===254) is false (L222 arm1) → isPrivateOrLoopbackHost returns false
+    // → resolveCollectorOrigin permits the URL in production.
+    const result = resolveCollectorOrigin({
+      collectorUrl: "http://8.8.8.8:4317/",
+      isProduction: true,
+      allowPrivateCollector: false,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.origin).toBe("http://8.8.8.8:4317");
     }
   });
 });

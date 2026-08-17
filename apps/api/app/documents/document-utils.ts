@@ -1,4 +1,7 @@
-import { ArtifactType } from "@repo/api/src/types/artifact";
+import {
+  ArtifactType,
+  normalizeArtifactSubtype,
+} from "@repo/api/src/types/artifact";
 import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactRepositorySnapshot,
@@ -57,7 +60,11 @@ export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
     id: artifact.id,
     organizationId: artifact.organizationId,
     projectId: artifact.projectId,
-    type: artifact.subtype!,
+    // FEA-3956: normalize the persisted subtype to the canonical DocumentType.
+    // Rows never store the canonical `ISSUE` (map-in-code, PRD-560 dec. 2), but
+    // the generated Prisma enum now includes it; mapping keeps a skewed value
+    // resolving to `FEATURE` instead of leaking `ISSUE` into the wire contract.
+    type: normalizeArtifactSubtype(artifact.subtype!),
     title: artifact.name,
     slug: artifact.slug!,
     fileName: detail?.fileName ?? null,
@@ -68,11 +75,13 @@ export function toDocument(artifact: ArtifactWithDocumentDetail): Document {
     createdBy: artifact.createdBy ?? null,
     assigneeId: artifact.assigneeId,
     assignee: artifact.assignee,
+    dueDate: artifact.dueDate,
     approverId: detail?.approverId ?? null,
     approver: detail?.approver ?? null,
-    tokenUsage: null,
     repositorySnapshot,
-    templateForType: detail?.templateForType ?? null,
+    templateForType: detail?.templateForType
+      ? normalizeArtifactSubtype(detail.templateForType)
+      : null,
     sortOrder: artifact.sortOrder,
     createdAt: artifact.createdAt,
     updatedAt: artifact.updatedAt,
@@ -96,6 +105,7 @@ export type DocumentPayloadInput = {
   // Artifact columns — nullable in schema.
   priority?: PrismaPriority | null;
   assigneeId?: string | null;
+  dueDate?: Date | null;
   sortOrder?: number | null;
   // DocumentDetail columns.
   fileName?: string | null;

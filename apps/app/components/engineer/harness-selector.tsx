@@ -75,7 +75,14 @@ export function HarnessSelector({
 
 /**
  * Derives which harnesses are available from a health check snapshot result.
- * Returns an empty array when the snapshot is null or has no mcpServers data.
+ *
+ * Returns an empty array only when the snapshot itself is absent. Availability
+ * follows `deriveAvailableHarnesses`: the CLI check row decides, and the MCP
+ * server is consulted only as a FALLBACK when the snapshot carries no CLI row
+ * for that harness at all (ISS-5687 — reading `mcpServers` alone is what
+ * produced "No AI harness available" on a machine with two green CLIs; letting
+ * it OVERRIDE a failing CLI row would be the same mistake pointed the other
+ * way, offering a harness the snapshot already proved cannot launch).
  */
 export function deriveAvailableHarnessesFromSnapshot(
   snapshot: ComputeTargetHealthCheckSnapshot | null | undefined

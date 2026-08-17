@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 
 const consoleCallPattern = /(?<![\w$.])console\.([A-Za-z_$][\w$]*)/g;
-const gatewayLoggerPath = path.normalize("src/main/gateway-logger.ts");
+const gatewayLoggerPath = path.normalize("src/main/logging/gateway-logger.ts");
 const allowedGatewayLoggerConsoleMembers = new Set(["error", "warn", "log"]);
 
 function collectSourceFiles(dir: string): string[] {

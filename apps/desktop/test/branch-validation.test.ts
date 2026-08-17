@@ -2,10 +2,6 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import { isValidBranchName } from "../src/main/enrichment/branch-validation.js";
-import {
-  defaultBranchSqlList,
-  isDefaultBranchName,
-} from "../src/main/enrichment/default-branch-names.js";
 
 describe("isValidBranchName", () => {
   describe("valid branch names", () => {
@@ -127,36 +123,5 @@ describe("isValidBranchName", () => {
         assert.equal(isValidBranchName(name), true);
       });
     }
-  });
-});
-
-describe("isDefaultBranchName (FEA-2260)", () => {
-  const defaults = ["main", "master", "develop", "HEAD"];
-  for (const name of defaults) {
-    test(`'${name}' is a default branch`, () => {
-      assert.equal(isDefaultBranchName(name), true);
-    });
-  }
-
-  const nonDefaults = [
-    "feat/fea-2260",
-    "fix/bug",
-    "release/v1",
-    "Main",
-    "MAIN",
-    "trunk",
-  ];
-  for (const name of nonDefaults) {
-    test(`'${name}' is NOT a default branch`, () => {
-      assert.equal(isDefaultBranchName(name), false);
-    });
-  }
-
-  test("defaultBranchSqlList returns quoted SQL list", () => {
-    const list = defaultBranchSqlList();
-    assert.ok(list.includes("'main'"));
-    assert.ok(list.includes("'master'"));
-    assert.ok(list.includes("'develop'"));
-    assert.ok(list.includes("'HEAD'"));
   });
 });

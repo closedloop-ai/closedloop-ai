@@ -1,16 +1,10 @@
 "use client";
 
-import type {
-  DocumentStatus,
-  FeatureStatus,
-} from "@repo/api/src/types/document";
-import {
-  DocumentType,
-  FeatureStatus as FeatureStatusValue,
-} from "@repo/api/src/types/document";
+import type { DocumentStatus } from "@repo/api/src/types/document";
+import { DocumentType, IssueStatus } from "@repo/api/src/types/document";
 import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
 import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import {
   GroupByMode,
   type GroupSectionDescriptor,
@@ -29,19 +23,17 @@ const DOCUMENT_TYPES = new Set<string>([
 export function sectionIcon(descriptor: GroupSectionDescriptor): ReactNode {
   if (descriptor.mode === GroupByMode.Status && descriptor.status) {
     const { status, artifactType } = descriptor;
-    // Render the icon for the group's artifact type — Documents and Features
+    // Render the icon for the group's artifact type — Documents and Issues
     // diverge on IN_REVIEW (PRD-495). IN_REVIEW is shared, so render the same
-    // canonical Feature form used by ArtifactStatusIcon instead of depending on
+    // canonical Issue form used by ArtifactStatusIcon instead of depending on
     // whichever artifact type was encountered first in the group. Fall back to
     // the status-dispatched icon for branch/session groups (whose statuses
-    // aren't Document/Feature values).
-    if (status === FeatureStatusValue.InReview) {
-      return (
-        <FeatureStatusIcon size={16} status={FeatureStatusValue.InReview} />
-      );
+    // aren't Document/Issue values).
+    if (status === IssueStatus.InReview) {
+      return <IssueStatusIcon size={16} status={IssueStatus.InReview} />;
     }
     if (artifactType === DocumentType.Feature) {
-      return <FeatureStatusIcon size={16} status={status as FeatureStatus} />;
+      return <IssueStatusIcon size={16} status={status as IssueStatus} />;
     }
     if (artifactType && DOCUMENT_TYPES.has(artifactType)) {
       return <DocumentStatusIcon size={16} status={status as DocumentStatus} />;

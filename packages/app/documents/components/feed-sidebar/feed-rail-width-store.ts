@@ -1,5 +1,6 @@
 "use client";
 
+import { clamp } from "@repo/api/src/utils/math";
 import { useCallback, useState } from "react";
 import type { FeedArtifactType } from "./types";
 
@@ -14,8 +15,9 @@ function storageKey(
   return `feed-rail-width:${organizationId}:${artifactType}`;
 }
 
-function clamp(value: number): number {
-  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, value));
+/** Pin a candidate width to the persisted rail's fixed `[MIN, MAX]` range. */
+function clampWidth(value: number): number {
+  return clamp(value, MIN_WIDTH, MAX_WIDTH);
 }
 
 function readWidth(key: string): number {
@@ -31,7 +33,7 @@ function readWidth(key: string): number {
     if (!Number.isFinite(parsed)) {
       return DEFAULT_WIDTH;
     }
-    return clamp(parsed);
+    return clampWidth(parsed);
   } catch {
     return DEFAULT_WIDTH;
   }
@@ -61,7 +63,7 @@ export function useFeedRailWidth(
 
   const setWidthWrapper = useCallback(
     (next: number) => {
-      const clamped = clamp(next);
+      const clamped = clampWidth(next);
       setWidth(clamped);
       writeWidth(key, clamped);
     },

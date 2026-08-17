@@ -1,16 +1,24 @@
 /**
  * Unit tests for judgesAnalyticsService.getJudgeScores.
  *
- * Tests concurrence default (no human ratings → avgUserRating = judgeScore, delta = 0),
- * average computation, delta, sort order, coverage, and pagination.
+ * After FEA-2742 the paginated judge-score query, delta ranking, coverage
+ * totals and LIMIT/OFFSET are pushed into a single `$queryRaw`. These tests
+ * therefore mock the raw-query results (page rows carrying windowed totals, and
+ * the fallback totals query) and assert the service maps them faithfully.
  */
 import { DocumentType } from "@repo/api/src/types/document";
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+    join: (values: unknown[]) => ({ join: values }),
+  },
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
@@ -25,6 +33,7 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+import { withDb } from "@repo/database";
 import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 
 // ---------------------------------------------------------------------------
@@ -33,42 +42,70 @@ import { judgesAnalyticsService } from "@/app/judges-analytics/service";
 
 const ORG_ID = "org-test";
 
-function makeJudgeScoreRow(
+type PageRow = {
+  judgeScoreId: string;
+  metricName: string;
+  documentId: string;
+  subtype: string;
+  documentTitle: string;
+  documentSlug: string | null;
+  judgeScore: number;
+  avgUserRating: number;
+  userRatingCount: number;
+  delta: number;
+  evaluatedAt: Date;
+  totalRows: number;
+  ratedRows: number;
+};
+
+/**
+ * Build a page row from a small spec, computing avgUserRating/delta/counts the
+ * same way the SQL does (concurrence default, delta = |avg - score|).
+ */
+function makePageRow(
   id: string,
   score: number,
-  humanScores: number[] = []
-) {
+  humanScores: number[],
+  totals: { totalRows: number; ratedRows: number }
+): PageRow {
+  const userRatingCount = humanScores.length;
+  const avgUserRating =
+    userRatingCount > 0
+      ? humanScores.reduce((a, b) => a + b, 0) / userRatingCount
+      : score;
+  const delta = userRatingCount > 0 ? Math.abs(avgUserRating - score) : 0;
   return {
-    id: `js-${id}`,
-    score,
+    judgeScoreId: `js-${id}`,
     metricName: "clarity",
-    createdAt: new Date("2026-01-15T00:00:00Z"),
-    evaluation: {
-      // Service now uses evaluation.artifactId after the cutover
-      artifactId: id,
-    },
-    judgeHumanScores: humanScores.map((s) => ({ score: s })),
-  };
-}
-
-function makeArtifactRow(id: string) {
-  return {
-    id,
-    // Artifact rows use `subtype` (not `type`) for document classification
+    documentId: id,
     subtype: DocumentType.ImplementationPlan,
-    name: `Artifact ${id}`,
-    slug: id,
+    documentTitle: `Artifact ${id}`,
+    documentSlug: id,
+    judgeScore: score,
+    avgUserRating,
+    userRatingCount,
+    delta,
+    evaluatedAt: new Date("2026-01-15T00:00:00Z"),
+    totalRows: totals.totalRows,
+    ratedRows: totals.ratedRows,
   };
 }
 
+/**
+ * Wire `withDb` so that `prompt.findMany` resolves the judge prompt(s) and
+ * `$queryRaw` returns `pageRows` then `totalsRows` (the fallback totals query
+ * is only hit when the page is empty).
+ */
 function mockDb(
   promptNames: string[],
-  judgeScores: ReturnType<typeof makeJudgeScoreRow>[],
+  pageRows: PageRow[],
+  totalsRows: { totalRows: number; ratedRows: number }[] = [],
   metricExistsInOrg = true
 ) {
-  const artifactIds = [
-    ...new Set(judgeScores.map((js) => js.evaluation.artifactId)),
-  ];
+  const queryRaw = vi
+    .fn()
+    .mockResolvedValueOnce(pageRows)
+    .mockResolvedValueOnce(totalsRows);
   const db = {
     prompt: {
       findMany: vi
@@ -79,15 +116,14 @@ function mockDb(
             : []
         ),
     },
-    judgeScore: {
-      findMany: vi.fn().mockResolvedValue(judgeScores),
-    },
-    artifact: {
-      findMany: vi.fn().mockResolvedValue(artifactIds.map(makeArtifactRow)),
-    },
+    $queryRaw: queryRaw,
   };
-  mockWithDbCall(db);
-  return db;
+  vi.mocked(withDb).mockImplementation((callback) =>
+    Promise.resolve(
+      callback(db as unknown as Parameters<Parameters<typeof withDb>[0]>[0])
+    )
+  );
+  return { db, queryRaw };
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +136,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
   });
 
   it("returns null when metricName does not exist in organization", async () => {
-    mockDb([], [], false);
+    mockDb([], [], [], false);
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -114,7 +150,7 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
   });
 
   it("returns empty response when prompt matches but no judge scores exist", async () => {
-    mockDb(["clarity_judge"], []);
+    mockDb(["clarity_judge"], [], [{ totalRows: 0, ratedRows: 0 }]);
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -134,7 +170,10 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
   });
 
   it("applies concurrence default when no human ratings (avgUserRating = judgeScore, delta = 0)", async () => {
-    mockDb(["clarity_judge"], [makeJudgeScoreRow("a1", 0.85)]);
+    mockDb(
+      ["clarity_judge"],
+      [makePageRow("a1", 0.85, [], { totalRows: 1, ratedRows: 0 })]
+    );
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -154,8 +193,11 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("computes average and delta when a single human rating exists", async () => {
-    mockDb(["clarity_judge"], [makeJudgeScoreRow("a1", 0.8, [0.5])]);
+  it("maps average and delta when a single human rating exists", async () => {
+    mockDb(
+      ["clarity_judge"],
+      [makePageRow("a1", 0.8, [0.5], { totalRows: 1, ratedRows: 1 })]
+    );
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -170,8 +212,11 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     expect(result?.rows[0].delta).toBeCloseTo(0.3); // |0.5 - 0.8|
   });
 
-  it("computes mean correctly across multiple human ratings", async () => {
-    mockDb(["clarity_judge"], [makeJudgeScoreRow("a1", 0.9, [0.6, 0.4, 0.8])]);
+  it("maps mean correctly across multiple human ratings", async () => {
+    mockDb(
+      ["clarity_judge"],
+      [makePageRow("a1", 0.9, [0.6, 0.4, 0.8], { totalRows: 1, ratedRows: 1 })]
+    );
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -186,14 +231,16 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     expect(result?.rows[0].delta).toBeCloseTo(0.3); // |0.6 - 0.9|
   });
 
-  it("sorts rows: delta DESC then judgeScore DESC (delta=0 rows last)", async () => {
+  it("preserves the DB delta-DESC / judgeScore-DESC ordering of page rows", async () => {
+    // The SQL emits rows already ordered; the service must not re-sort them.
+    const totals = { totalRows: 4, ratedRows: 2 };
     mockDb(
       ["clarity_judge"],
       [
-        makeJudgeScoreRow("unrated-hi", 0.9), // delta=0
-        makeJudgeScoreRow("high-delta", 0.8, [0.2]), // delta=0.6
-        makeJudgeScoreRow("low-delta", 0.7, [0.5]), // delta=0.2
-        makeJudgeScoreRow("unrated-lo", 0.6), // delta=0
+        makePageRow("high-delta", 0.8, [0.2], totals), // delta=0.6
+        makePageRow("low-delta", 0.7, [0.5], totals), // delta=0.2
+        makePageRow("unrated-hi", 0.9, [], totals), // delta=0
+        makePageRow("unrated-lo", 0.6, [], totals), // delta=0
       ]
     );
 
@@ -206,7 +253,6 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     );
 
     const ids = result?.rows.map((r) => r.documentId);
-    // high-delta (0.6) first, low-delta (0.2) second, then unrated by judgeScore DESC
     expect(ids).toEqual([
       "high-delta",
       "low-delta",
@@ -215,14 +261,15 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     ]);
   });
 
-  it("computes coverage percentage: ratedDocuments / totalDocuments * 100", async () => {
+  it("derives coverage percentage from the windowed totals", async () => {
+    const totals = { totalRows: 4, ratedRows: 2 };
     mockDb(
       ["clarity_judge"],
       [
-        makeJudgeScoreRow("a1", 0.8, [0.7]), // rated
-        makeJudgeScoreRow("a2", 0.7, [0.9]), // rated
-        makeJudgeScoreRow("a3", 0.9, []), // unrated
-        makeJudgeScoreRow("a4", 0.6, []), // unrated
+        makePageRow("a1", 0.8, [0.7], totals),
+        makePageRow("a2", 0.7, [0.9], totals),
+        makePageRow("a3", 0.9, [], totals),
+        makePageRow("a4", 0.6, [], totals),
       ]
     );
 
@@ -240,9 +287,10 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
   });
 
   it("returns 0 coverage when all artifacts are unrated", async () => {
+    const totals = { totalRows: 2, ratedRows: 0 };
     mockDb(
       ["clarity_judge"],
-      [makeJudgeScoreRow("a1", 0.8), makeJudgeScoreRow("a2", 0.7)]
+      [makePageRow("a1", 0.8, [], totals), makePageRow("a2", 0.7, [], totals)]
     );
 
     const result = await judgesAnalyticsService.getJudgeScores(
@@ -257,10 +305,12 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     expect(result?.coveragePct).toBe(0);
   });
 
-  it("paginates to the correct page slice", async () => {
+  it("reports pagination metadata from the windowed totalRows", async () => {
+    // page 2 of pageSize 2 over a 5-row population.
+    const totals = { totalRows: 5, ratedRows: 0 };
     mockDb(
       ["clarity_judge"],
-      ["a1", "a2", "a3", "a4", "a5"].map((id) => makeJudgeScoreRow(id, 0.5))
+      [makePageRow("a3", 0.5, [], totals), makePageRow("a4", 0.5, [], totals)]
     );
 
     const page2 = await judgesAnalyticsService.getJudgeScores(
@@ -280,39 +330,35 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("includes evaluatedAt ISO string from createdAt", async () => {
+  it("uses the totals fallback query when the requested page is empty", async () => {
+    // Out-of-range page → empty page rows, totals come from the fallback query.
+    mockDb(["clarity_judge"], [], [{ totalRows: 5, ratedRows: 3 }]);
+
+    const result = await judgesAnalyticsService.getJudgeScores(
+      ORG_ID,
+      "clarity",
+      EvaluationReportType.Plan,
+      99,
+      2
+    );
+
+    expect(result?.rows).toEqual([]);
+    expect(result?.totalDocuments).toBe(5);
+    expect(result?.ratedDocuments).toBe(3);
+    expect(result?.coveragePct).toBe(60);
+    expect(result?.pagination).toEqual({
+      page: 99,
+      pageSize: 2,
+      totalRows: 5,
+      totalPages: 3,
+    });
+  });
+
+  it("includes evaluatedAt ISO string from the row createdAt", async () => {
     const evaluatedAt = new Date("2026-03-01T12:00:00.000Z");
-    const db = {
-      prompt: {
-        findMany: vi
-          .fn()
-          .mockResolvedValue([{ id: "prompt-clarity", name: "clarity_judge" }]),
-      },
-      judgeScore: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "js-1",
-            score: 0.7,
-            createdAt: evaluatedAt,
-            evaluation: {
-              artifactId: "a1",
-            },
-            judgeHumanScores: [],
-          },
-        ]),
-      },
-      artifact: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "a1",
-            subtype: DocumentType.ImplementationPlan,
-            name: "A1",
-            slug: "a1",
-          },
-        ]),
-      },
-    };
-    mockWithDbCall(db);
+    const row = makePageRow("a1", 0.7, [], { totalRows: 1, ratedRows: 0 });
+    row.evaluatedAt = evaluatedAt;
+    mockDb(["clarity_judge"], [row]);
 
     const result = await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
@@ -329,48 +375,44 @@ describe("judgesAnalyticsService.getJudgeScores", () => {
     });
   });
 
-  it("filters judge scores by resolved prompt IDs", async () => {
-    const db = {
-      prompt: {
-        findMany: vi.fn().mockResolvedValue([
-          {
-            id: "prompt-1",
-            name: "clarity_judge",
-            version: 2,
-            content: "v2",
-            createdAt: new Date("2026-01-11T00:00:00.000Z"),
+  it("passes the resolved prompt IDs and LIMIT/OFFSET into the page query", async () => {
+    const { queryRaw } = mockDb(
+      ["clarity_judge"],
+      [],
+      [{ totalRows: 0, ratedRows: 0 }]
+    );
+    // Two versions of the same normalized judge name resolve to two promptIds.
+    vi.mocked(withDb).mockImplementation((callback) =>
+      Promise.resolve(
+        callback({
+          prompt: {
+            findMany: vi.fn().mockResolvedValue([
+              { id: "prompt-1", name: "clarity_judge" },
+              { id: "prompt-2", name: "clarity_judge" },
+            ]),
           },
-          {
-            id: "prompt-2",
-            name: "clarity_judge",
-            version: 1,
-            content: "v1",
-            createdAt: new Date("2026-01-10T00:00:00.000Z"),
-          },
-        ]),
-      },
-      judgeScore: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-      artifact: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-    };
-    mockWithDbCall(db);
+          $queryRaw: queryRaw,
+        } as unknown as Parameters<Parameters<typeof withDb>[0]>[0])
+      )
+    );
 
     await judgesAnalyticsService.getJudgeScores(
       ORG_ID,
       "clarity",
       EvaluationReportType.Plan,
-      1,
-      20
+      2,
+      10
     );
 
-    const judgeScoreFindManyCall = db.judgeScore.findMany.mock.calls[0][0];
-
-    expect(judgeScoreFindManyCall.where.promptId).toEqual({
-      in: ["prompt-1", "prompt-2"],
-    });
-    expect(judgeScoreFindManyCall.where.metricName).toBeUndefined();
+    // The first $queryRaw call is the page query; its interpolated values carry
+    // the promptId list, the org, the reportType, and LIMIT/OFFSET.
+    const pageCall = queryRaw.mock.calls[0][0] as { values: unknown[] };
+    const flatValues = JSON.stringify(pageCall.values);
+    expect(flatValues).toContain("prompt-1");
+    expect(flatValues).toContain("prompt-2");
+    expect(pageCall.values).toContain(ORG_ID);
+    expect(pageCall.values).toContain(EvaluationReportType.Plan);
+    expect(pageCall.values).toContain(10); // LIMIT
+    expect(pageCall.values).toContain(10); // OFFSET = (2-1)*10
   });
 });

@@ -1,4 +1,4 @@
-import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document";
+import { DocumentStatus, IssueStatus } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
   compareSlugValues,
@@ -39,10 +39,10 @@ describe("compareStatusValues", () => {
 
     it("interleaves Feature statuses: TRIAGE leads, before IN_REVIEW", () => {
       expect(
-        compareStatusValues(FeatureStatus.Triage, DocumentStatus.InReview)
+        compareStatusValues(IssueStatus.Triage, DocumentStatus.InReview)
       ).toBeLessThan(0);
       expect(
-        compareStatusValues(FeatureStatus.Done, FeatureStatus.Backlog)
+        compareStatusValues(IssueStatus.Done, IssueStatus.Backlog)
       ).toBeGreaterThan(0);
     });
 
@@ -51,8 +51,8 @@ describe("compareStatusValues", () => {
       // within STATUS_DISPLAY_ORDER, TRIAGE precedes DONE.
       expect(
         compareStatusValues(
-          FeatureStatus.Triage,
-          FeatureStatus.Done,
+          IssueStatus.Triage,
+          IssueStatus.Done,
           STATUS_DISPLAY_ORDER
         )
       ).toBeLessThan(0);

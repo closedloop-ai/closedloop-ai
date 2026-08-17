@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
-import { InvalidTokenCountError } from "../src/main/token-counts.js";
+import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   CODEX_UUID,
@@ -73,16 +73,23 @@ test("Codex: input excludes cached tokens (Fix 3)", async () => {
   const parsed = await parseRolloutFile(filePath);
   assert.ok(parsed);
 
-  // input = 1200 - 400 = 800 (non-cached)
+  // input = 1200 - 400 = 800 (non-cached); output = 300 (reasoning 50 is a subset)
   assert.deepEqual(parsed.tokensByModel["gpt-5.5"], {
     input: 800,
-    output: 350,
+    output: 300,
     cacheRead: 400,
     cacheWrite: 0,
   });
 });
 
-test("Codex parser rejects unsafe token counters instead of rounding them", async () => {
+test("Codex parser drops an unsafe token counter snapshot without aborting the parse", async () => {
+  // Robustness (PR #3006): a non-Claude (gpt-*) rollout can carry a
+  // fractional / JS-unsafe token counter. That used to throw
+  // `InvalidTokenCountError` and blank the WHOLE transcript. The parser now
+  // drops only that one snapshot's usage and still renders the conversation —
+  // the same graceful degradation it applies to a malformed line. With no
+  // subsequent good snapshot the model carries no attributed tokens rather than
+  // corrupt (rounded) ones.
   const filePath = writeRollout(
     `rollout-2026-05-18T10-02-00-${CODEX_UUID}.jsonl`,
     [
@@ -115,7 +122,12 @@ test("Codex parser rejects unsafe token counters instead of rounding them", asyn
     ]
   );
 
-  await assert.rejects(() => parseRolloutFile(filePath));
+  const parsed = await parseRolloutFile(filePath);
+  assert.ok(parsed);
+  // The conversation still rendered; the bad snapshot contributed no tokens
+  // (never rounded into an attribution total).
+  assert.equal(parsed.userMessages, 1);
+  assert.equal(parsed.tokensByModel["gpt-5.5"], undefined);
 });
 
 test("Codex parser keeps canonical zero values ahead of unsafe legacy aliases", async () => {
@@ -173,7 +185,12 @@ test("Codex parser keeps canonical zero values ahead of unsafe legacy aliases", 
   });
 });
 
-test("Codex parser rejects derived token sums above the safe IPC contract", async () => {
+test("Codex parser drops a snapshot whose derived token sum overflows the safe IPC contract", async () => {
+  // Robustness (PR #3006): a derived sum that exceeds the safe-integer contract
+  // (output + reasoning here overflows `Number.MAX_SAFE_INTEGER`) trips the same
+  // `InvalidTokenCountError` guard. The parser drops that snapshot's usage
+  // instead of aborting the whole rollout; with no good snapshot after it, the
+  // model carries no attributed tokens.
   const filePath = writeRollout(
     `rollout-2026-05-18T10-02-45-${CODEX_UUID}.jsonl`,
     [
@@ -196,8 +213,7 @@ test("Codex parser rejects derived token sums above the safe IPC contract", asyn
             total_token_usage: {
               input_tokens: 1,
               cached_input_tokens: 0,
-              output_tokens: Number.MAX_SAFE_INTEGER,
-              reasoning_output_tokens: 1,
+              output_tokens: Number.MAX_SAFE_INTEGER + 1,
             },
           },
           turn_context: { model: "gpt-5.5" },
@@ -206,10 +222,9 @@ test("Codex parser rejects derived token sums above the safe IPC contract", asyn
     ]
   );
 
-  await assert.rejects(
-    () => parseRolloutFile(filePath),
-    InvalidTokenCountError
-  );
+  const parsed = await parseRolloutFile(filePath);
+  assert.ok(parsed);
+  assert.equal(parsed.tokensByModel["gpt-5.5"], undefined);
 });
 
 test("Codex parser rejects unsafe counters from workflow journals", async () => {
@@ -401,13 +416,117 @@ test("Codex: delta math across multiple token_count events", async () => {
 
   // Second record: nonCached = (2500-800)-(1000-200) = 1700-800 = 900
   assert.equal(parsed.tokenSeries[1].input, 900);
-  assert.equal(parsed.tokenSeries[1].output, 220); // (300+20)-(100+0)
+  assert.equal(parsed.tokenSeries[1].output, 200); // 300-100 (reasoning is a subset)
   assert.equal(parsed.tokenSeries[1].cacheRead, 600); // 800-200
 
   // tokensByModel = sum of tokenSeries deltas (FEA-2343).
   assert.equal(parsed.tokensByModel["gpt-5.5"]?.input, 1700); // 800+900
-  assert.equal(parsed.tokensByModel["gpt-5.5"]?.output, 320); // 100+220
+  assert.equal(parsed.tokensByModel["gpt-5.5"]?.output, 300); // 100+200
   assert.equal(parsed.tokensByModel["gpt-5.5"]?.cacheRead, 800); // 200+600
+});
+
+test("Codex: model change mid-run splits tokens per-model, no collapse (FEA-2342)", async () => {
+  // Regression for FEA-2342: a Codex session whose turn_context.model changes
+  // mid-run must attribute each turn's delta to the model that was active for
+  // that turn. token_count carries a session-wide CUMULATIVE total with no
+  // per-model split, so the old cumulative-snapshot rollup folded the entire
+  // total onto the last model. FEA-2343 fixed the mechanism by summing per-turn
+  // tokenSeries deltas keyed on entry.model; this locks in the multi-model case.
+  const filePath = writeRollout(
+    `rollout-2026-05-18T10-07-00-${CODEX_UUID}.jsonl`,
+    [
+      {
+        timestamp: "2026-05-18T10:07:00.000Z",
+        type: "session_meta",
+        payload: { id: CODEX_UUID, cwd: "/test" },
+      },
+      // Turn 1 runs on gpt-5.4-mini.
+      {
+        timestamp: "2026-05-18T10:07:01.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.4-mini" },
+      },
+      {
+        timestamp: "2026-05-18T10:07:02.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "q1" },
+      },
+      {
+        timestamp: "2026-05-18T10:07:06.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              cached_input_tokens: 200,
+              output_tokens: 100,
+              reasoning_output_tokens: 0,
+            },
+          },
+          turn_context: { model: "gpt-5.4-mini" },
+        },
+      },
+      // Turn 2 switches to gpt-5.5; cumulative totals keep growing.
+      {
+        timestamp: "2026-05-18T10:08:01.000Z",
+        type: "turn_context",
+        payload: { model: "gpt-5.5" },
+      },
+      {
+        timestamp: "2026-05-18T10:08:02.000Z",
+        type: "event_msg",
+        payload: { type: "user_message", message: "q2" },
+      },
+      {
+        timestamp: "2026-05-18T10:08:06.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 2500,
+              cached_input_tokens: 800,
+              output_tokens: 300,
+              reasoning_output_tokens: 20,
+            },
+          },
+          turn_context: { model: "gpt-5.5" },
+        },
+      },
+    ]
+  );
+
+  const parsed = await parseRolloutFile(filePath);
+  assert.ok(parsed);
+
+  // Each turn's delta is attributed to the model active for that turn.
+  assert.deepEqual(parsed.tokensByModel["gpt-5.4-mini"], {
+    input: 800, // 1000-200 (delta from 0)
+    output: 100,
+    cacheRead: 200,
+    cacheWrite: 0,
+  });
+  assert.deepEqual(parsed.tokensByModel["gpt-5.5"], {
+    input: 900, // (2500-800)-(1000-200) = 1700-800
+    // 300-100. reasoning_output_tokens is a SUBSET of output_tokens (already
+    // counted in it), not additive, so it is not added again (FEA-3126).
+    output: 200,
+    cacheRead: 600, // 800-200
+    cacheWrite: 0,
+  });
+
+  // Regression guard: the earlier model is NOT collapsed onto the final model.
+  // The pre-FEA-2343 rollup folded the whole cumulative total onto acc.model
+  // (gpt-5.5), leaving no gpt-5.4-mini key and double-attributing its tokens.
+  assert.equal(Object.keys(parsed.tokensByModel).length, 2);
+
+  // Session input total is conserved across the split (800 + 900 == 1700).
+  const totalInput = Object.values(parsed.tokensByModel).reduce(
+    (sum, m) => sum + m.input,
+    0
+  );
+  assert.equal(totalInput, 1700);
 });
 
 test("Codex: reset case (totals DROP mid-session) clamped at 0, no negatives", async () => {
@@ -689,7 +808,10 @@ test("Codex: 20+ records spanning >5s — NOT skipped (genuine session)", async 
 
   const parsed = await parseRolloutFile(filePath);
   assert.ok(parsed);
-  assert.ok(parsed.assistantMessages >= 20);
+  // FEA-3125: assistantMessages counts token_count events (billable round-trips),
+  // not response_item messages. This fixture has no token_count events.
+  assert.equal(parsed.assistantMessages, 0);
+  assert.ok(parsed.messages.length >= 20);
 });
 
 test("Codex: codex-auto-review never becomes session model (Fix 9)", async () => {

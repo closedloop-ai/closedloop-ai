@@ -1,0 +1,346 @@
+{
+  "sessions": [
+    {
+      "awaiting_input_since": null,
+      "billing_mode": "metered_api",
+      "correction_sources": null,
+      "cost_currency": "USD",
+      "cost_source": "genai_prices_v1",
+      "cost_usd_estimated": 0.08786300000000001,
+      "cwd": "<HOME>/Source",
+      "data_revision": 78,
+      "ended_at": "2026-07-27T15:11:54.233Z",
+      "ends_with_error": 0,
+      "frustration_raw": null,
+      "frustration_score_version": null,
+      "harness": "codex",
+      "id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "last_activity_at": "2026-07-27T15:11:54.020Z",
+      "metadata": {
+        "sha256": "1d610d2a82f4fc91cc14b81f1e9a36ab49e78e40a91c2058fa52ff2f7b2d612c",
+        "chars": 9755
+      },
+      "model": "gpt-5.5",
+      "name": "Source",
+      "organization_id": null,
+      "repo_full_name": null,
+      "started_at": "2026-07-27T15:11:36.509Z",
+      "status": "inactive",
+      "throttle_sources": null,
+      "trace_phase_sources": null,
+      "updated_at": "2026-07-27T16:11:54.233Z",
+      "user_id": null
+    }
+  ],
+  "agents": [
+    {
+      "awaiting_input_since": null,
+      "current_tool": null,
+      "ended_at": "2026-07-27T15:11:54.233Z",
+      "id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "metadata": null,
+      "name": "main",
+      "parent_agent_id": null,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "started_at": "2026-07-27T15:11:36.509Z",
+      "status": "completed",
+      "subagent_type": null,
+      "task": null,
+      "type": "main",
+      "updated_at": "2026-07-27T16:11:54.233Z"
+    }
+  ],
+  "events": [
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:36.519Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "89399058-00a3-46a0-b360-3b5cca32dfe5",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": null,
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:38.185Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "cf1db68f-9456-4130-b9fd-a213f4de717a",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": null,
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:38.185Z",
+      "data": null,
+      "event_type": "TurnDuration",
+      "git_branch": null,
+      "id": "a3197cb9-8d2e-4599-9849-79bcc1d474fb",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": "1415",
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:48.608Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "6372b420-c800-42eb-b0eb-d85c0863234c",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": null,
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:54.015Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "b5d58daf-613a-4eb5-abea-197eb0692fd4",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": null,
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:54.015Z",
+      "data": null,
+      "event_type": "TurnDuration",
+      "git_branch": null,
+      "id": "dc9925e7-3d6d-47df-a7bd-cbbbff606997",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": "5250",
+      "tool_name": null
+    },
+    {
+      "agent_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0-main",
+      "created_at": "2026-07-27T15:11:54.020Z",
+      "data": null,
+      "event_type": "Stop",
+      "git_branch": null,
+      "id": "0922498f-d78f-4561-98ea-a2e13f89974f",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "summary": null,
+      "tool_name": null
+    }
+  ],
+  "token_usage": [
+    {
+      "baseline_cache_read": 0,
+      "baseline_cache_write": 0,
+      "baseline_input": 0,
+      "baseline_output": 0,
+      "cache_read_tokens": 4480,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-27T15:11:38.221Z",
+      "cost_source": "genai_prices_v1",
+      "cost_usd_estimated": 0.009245999999999999,
+      "created_at": "2026-07-27T15:11:38.221Z",
+      "inferred": false,
+      "input_tokens": 11700,
+      "model": "gpt-5.4-mini",
+      "output_tokens": 30,
+      "raw_cache_read": 4480,
+      "raw_cache_write": 0,
+      "raw_input": 11700,
+      "raw_output": 30,
+      "revision_id": 78,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "updated_at": "2026-07-27T16:11:54.233Z",
+      "usage_source": "jsonl_parser"
+    },
+    {
+      "baseline_cache_read": 0,
+      "baseline_cache_write": 0,
+      "baseline_input": 0,
+      "baseline_output": 0,
+      "cache_read_tokens": 5504,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-27T15:11:38.221Z",
+      "cost_source": "genai_prices_v1",
+      "cost_usd_estimated": 0.078617,
+      "created_at": "2026-07-27T15:11:38.221Z",
+      "inferred": false,
+      "input_tokens": 15125,
+      "model": "gpt-5.5",
+      "output_tokens": 8,
+      "raw_cache_read": 5504,
+      "raw_cache_write": 0,
+      "raw_input": 15125,
+      "raw_output": 8,
+      "revision_id": 78,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "updated_at": "2026-07-27T16:11:54.233Z",
+      "usage_source": "jsonl_parser"
+    }
+  ],
+  "token_events": [
+    {
+      "cache_creation_cost_usd_estimated": 0,
+      "cache_read_cost_usd_estimated": 0.0003359999999999995,
+      "cache_read_tokens": 4480,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-27T15:11:38.221Z",
+      "cost_source": "genai_prices_v1",
+      "cost_summary": "{\"completeness\":\"partial\",\"reason\":\"legacy_record\",\"subtotalUsd\":0.009245999999999999,\"lanes\":[{\"basis\":\"api_estimated\",\"subtotalUsd\":0.009245999999999999}]}",
+      "cost_usd_estimated": 0.009245999999999999,
+      "created_at": "2026-07-27T15:11:38.221Z",
+      "input_cost_usd_estimated": 0.008775,
+      "input_tokens": 11700,
+      "model": "gpt-5.4-mini",
+      "output_cost_usd_estimated": 0.000135,
+      "output_tokens": 30,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "source_identity": "{\"availability\":\"unavailable\",\"reason\":\"legacy_record\"}",
+      "transport_id": "token-event-8428f43f0e535359acc6db66f07adc90b4c950c2659aab64359485dac8f14b03"
+    },
+    {
+      "cache_creation_cost_usd_estimated": 0,
+      "cache_read_cost_usd_estimated": 0.0027520000000000044,
+      "cache_read_tokens": 5504,
+      "cache_write_1h_tokens": null,
+      "cache_write_5m_tokens": null,
+      "cache_write_tokens": 0,
+      "cost_currency": "USD",
+      "cost_observed_at": "2026-07-27T15:11:54.053Z",
+      "cost_source": "genai_prices_v1",
+      "cost_summary": "{\"completeness\":\"partial\",\"reason\":\"legacy_record\",\"subtotalUsd\":0.078617,\"lanes\":[{\"basis\":\"api_estimated\",\"subtotalUsd\":0.078617}]}",
+      "cost_usd_estimated": 0.078617,
+      "created_at": "2026-07-27T15:11:54.053Z",
+      "input_cost_usd_estimated": 0.075625,
+      "input_tokens": 15125,
+      "model": "gpt-5.5",
+      "output_cost_usd_estimated": 0.00024,
+      "output_tokens": 8,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "source_identity": "{\"availability\":\"unavailable\",\"reason\":\"legacy_record\"}",
+      "transport_id": "token-event-6749f7eceb0a8abc381429699ad68c656c12fc137ae95d1915ddfd9773bb949d"
+    }
+  ],
+  "session_analytics": [
+    {
+      "agent_turns": 2,
+      "cache_read_tokens": 9984,
+      "cache_write_tokens": 0,
+      "error_events": 0,
+      "est_cost": 0.08786300000000001,
+      "event_count": 7,
+      "harness": "codex",
+      "human_turns": 2,
+      "input_tokens": 26825,
+      "is_human": 1,
+      "output_tokens": 38,
+      "runtime_ms": 17723,
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "started_at": "2026-07-27T15:11:36.509Z",
+      "started_day": "2026-07-27",
+      "status": "inactive",
+      "tool_invocations": 0,
+      "updated_at": "2026-07-27T16:11:54.233Z"
+    }
+  ],
+  "session_tool_analytics": [],
+  "session_turn_bucket": [
+    {
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "ts": "2026-07-27T15:11:36.770Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    },
+    {
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "ts": "2026-07-27T15:11:38.221Z",
+      "turn_count": 1,
+      "turn_kind": "agent"
+    },
+    {
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "ts": "2026-07-27T15:11:48.765Z",
+      "turn_count": 1,
+      "turn_kind": "human"
+    },
+    {
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "ts": "2026-07-27T15:11:54.053Z",
+      "turn_count": 1,
+      "turn_kind": "agent"
+    }
+  ],
+  "session_activity_segments": [
+    {
+      "confidence": 0,
+      "end_ms": 1785165114234,
+      "evidence_layers": [
+        "structural"
+      ],
+      "id": "2cb7d47c418c3ee6",
+      "observed_at": "2026-07-27T16:11:54.233Z",
+      "phase": "other",
+      "session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "start_ms": 1785165096509,
+      "subagent_id": null,
+      "version": 16,
+      "work_item_ref": null
+    }
+  ],
+  "session_artifact_links": [],
+  "artifacts": [],
+  "pull_requests": [],
+  "agent_component_invocations": [],
+  "agent_component_invocation_sync_outbox": [
+    {
+      "attempt_count": 0,
+      "created_at": "2026-07-27T16:11:54.233Z",
+      "data_revision": 78,
+      "external_generation_id": "72e9a33e84391846b3fd9f7999e176af421934fb002c262c8e2b9569c59307ca",
+      "external_session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "last_error": null,
+      "next_attempt_at": null,
+      "part_count": 1,
+      "part_hash": "c4bae417995520159900cb7a0b5bbc4efba91b306f3230ba218e9f5f188affc0",
+      "part_index": 0,
+      "payload": {
+        "sha256": "e7c275528b23916c5f01dbc988b3a855c8da43c5ad0870ba5e9ad592de7dfb04",
+        "chars": 369
+      },
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "source_updated_at": "2026-07-27T16:11:54.233Z",
+      "status": "pending",
+      "updated_at": "2026-07-27T16:11:54.233Z"
+    }
+  ],
+  "agent_component_invocation_sync_cursors": [
+    {
+      "external_generation_id": "72e9a33e84391846b3fd9f7999e176af421934fb002c262c8e2b9569c59307ca",
+      "external_session_id": "019fa421-8d5f-72d0-b9ef-7823ea1170b0",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 0,
+      "updated_at": "2026-07-27T16:11:54.233Z"
+    },
+    {
+      "external_generation_id": "__invocation_sync_state__",
+      "external_session_id": "__invocation_sync_state__",
+      "source_key": "agent_component_invocations",
+      "source_sequence": 1,
+      "updated_at": "2026-07-27T16:11:54.233Z"
+    }
+  ],
+  "agent_component_session_usage": [],
+  "agent_components": [],
+  "agent_component_versions": []
+}

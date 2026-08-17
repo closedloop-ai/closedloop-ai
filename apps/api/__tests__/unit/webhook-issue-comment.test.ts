@@ -48,7 +48,19 @@ vi.mock("@/app/comments/github-projection", () => ({
   upsertGitHubIssueCommentThread: mockUpsertGitHubIssueCommentThread,
 }));
 
+vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
+  GitHubBranchActivityEventName: { IssueComment: "issue_comment" },
+  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
+    status: "persisted",
+    persistenceStatus: "inserted",
+  }),
+}));
+
 import { GitHubProjectionNoWriteError } from "@/app/comments/github-projection";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handleIssueComment } from "@/app/webhooks/github/handlers/issue-comment-handler";
 import {
   createRepository,
@@ -57,6 +69,8 @@ import {
 import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 let mockTx: any;
+const mockPersistGitHubBranchActivity =
+  persistGitHubBranchActivity as ReturnType<typeof vi.fn>;
 
 describe("handleIssueComment", () => {
   beforeEach(() => {
@@ -107,6 +121,7 @@ describe("handleIssueComment", () => {
 
     expect(response.status).toBe(200);
     expect(mockTx.gitHubInstallation.findMany).not.toHaveBeenCalled();
+    expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
   });
 
   it("returns 400 for missing installation before database reads or writes", async () => {
@@ -162,7 +177,10 @@ describe("handleIssueComment", () => {
       }),
     });
 
-    await handleIssueComment(event);
+    await handleIssueComment(event, {
+      deliveryId: "issue-comment-delivery-1",
+      observedAt: new Date("2026-08-12T14:00:00.000Z"),
+    });
 
     expect(mockUpsertGitHubIssueCommentThread).toHaveBeenCalledWith(
       mockTx,
@@ -180,6 +198,16 @@ describe("handleIssueComment", () => {
         }),
       })
     );
+    expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+      eventName: GitHubBranchActivityEventName.IssueComment,
+      deliveryId: "issue-comment-delivery-1",
+      payload: event,
+      attribution: {
+        organizationId: "org-uuid-123",
+        branchArtifactId: "branch-artifact-1",
+        pullRequestDetailId: "pr-detail-1",
+      },
+    });
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
@@ -203,6 +231,35 @@ describe("handleIssueComment", () => {
       })
     );
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("records activity but skips projection for a non-current associated PR", async () => {
+    const prDetail = makePrDetailRow({
+      id: "pr-detail-older",
+      artifactId: "legacy-pr-artifact",
+      branchArtifactId: "branch-artifact-1",
+      currentPullRequestDetailId: "pr-detail-current",
+      workstreamId: "branch-workstream",
+    });
+    mockOwnerResolutionSuccess(prDetail);
+    const event = makeIssueCommentEvent();
+
+    await handleIssueComment(event, {
+      deliveryId: "issue-comment-older-associated-pr",
+      observedAt: new Date("2026-08-12T14:00:00.000Z"),
+    });
+
+    expect(mockUpsertGitHubIssueCommentThread).not.toHaveBeenCalled();
+    expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+      eventName: GitHubBranchActivityEventName.IssueComment,
+      deliveryId: "issue-comment-older-associated-pr",
+      payload: event,
+      attribution: {
+        organizationId: "org-uuid-123",
+        branchArtifactId: "branch-artifact-1",
+        pullRequestDetailId: "pr-detail-older",
+      },
+    });
   });
 
   it("dedupes duplicate created PR issue comment deliveries via the upsert helper", async () => {

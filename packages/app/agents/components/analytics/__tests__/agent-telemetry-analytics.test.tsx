@@ -3,7 +3,7 @@ import {
   SESSION_PR_PURPOSE_LABELS,
   SessionPrPurpose,
 } from "@repo/api/src/types/session-artifact-link";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
 import {
@@ -130,6 +130,9 @@ describe("AgentTelemetryAnalytics", () => {
       <AppCoreStoryProviders
         apiRoutes={monitoringRoutes(AgentSessionViewerScope.Organization, [], {
           usageCosts: {
+            // FEA-3986 invariant fixture: total is the subscription-INCLUSIVE
+            // grand total, EQUAL to api + sub (2 === 1.25 + 0.75). Asserted
+            // end-to-end below via the rendered Cost card.
             apiEstimatedCost: 1.25,
             subscriptionEstimatedCost: 0.75,
             totalEstimatedCost: 2,
@@ -152,15 +155,26 @@ describe("AgentTelemetryAnalytics", () => {
           element.textContent.includes("Sub: $0.75")
       )
     );
+    const costDetail = costSplitElements.find((element) =>
+      element.className
+        .toString()
+        .includes("flex items-center gap-1 text-muted-foreground")
+    );
+    expect(costDetail).toBeDefined();
+
+    // FEA-3986 user-visible invariant, end-to-end: the org Analytics "Cost" card
+    // renders the subscription-INCLUSIVE total ($2) as its HEADLINE and the
+    // API/Sub split ($1.25 / $0.75) as its detail — so the rendered headline
+    // equals api + sub by construction. A regression that rendered the metered
+    // `apiEstimatedCost` ($1 whole) as the headline (the divergence shafty023
+    // flagged) would fail here even though the detail line stays green.
+    const costCard = costDetail?.closest('[data-slot="card"]');
+    expect(costCard).not.toBeNull();
+    expect(within(costCard as HTMLElement).getByText("$2")).toBeInTheDocument();
+    // The metered-only figure ($1) must NOT be the headline.
     expect(
-      costSplitElements.some((element) =>
-        Boolean(
-          element.className
-            .toString()
-            .includes("flex items-center gap-1 text-muted-foreground")
-        )
-      )
-    ).toBe(true);
+      within(costCard as HTMLElement).queryByText("$1")
+    ).not.toBeInTheDocument();
   });
 
   it("preserves selected team and project filters when metadata queries fail", async () => {

@@ -17,6 +17,15 @@ export type CodexRolloutLinkage = {
   sourcePath: string;
 };
 
+/**
+ * FEA-2928: The effective parent for graph traversal — a subagent's
+ * `parentThreadId` or, for fork/resume rollouts, the `forkedFromId`.
+ * `parentThreadId` takes precedence when both are set.
+ */
+export function effectiveParentId(linkage: CodexRolloutLinkage): string | null {
+  return linkage.parentThreadId ?? linkage.forkedFromId;
+}
+
 /** Read bounded Codex rollout metadata without parsing the full transcript. */
 export function readCodexRolloutLinkage(
   sourcePath: string
@@ -75,14 +84,15 @@ export function buildCodexChildrenById(
 ): Map<string, CodexRolloutLinkage[]> {
   const childrenById = new Map<string, CodexRolloutLinkage[]>();
   for (const linkage of byId.values()) {
-    if (!linkage.parentThreadId) {
+    const parentId = effectiveParentId(linkage);
+    if (!parentId) {
       continue;
     }
-    const siblings = childrenById.get(linkage.parentThreadId);
+    const siblings = childrenById.get(parentId);
     if (siblings) {
       siblings.push(linkage);
     } else {
-      childrenById.set(linkage.parentThreadId, [linkage]);
+      childrenById.set(parentId, [linkage]);
     }
   }
   return childrenById;
@@ -125,10 +135,11 @@ export function findCodexParentSource(
   byId = mapCodexRolloutsById(sources),
   childLinkage: CodexRolloutLinkage = readCodexRolloutLinkage(childPath)
 ): string | null {
-  if (!childLinkage.parentThreadId) {
+  const parentId = effectiveParentId(childLinkage);
+  if (!parentId) {
     return null;
   }
-  const parent = byId.get(childLinkage.parentThreadId);
+  const parent = byId.get(parentId);
   return parent?.sourcePath ?? null;
 }
 
@@ -143,13 +154,15 @@ export function walkCodexRootLinkage(
 ): CodexRolloutLinkage {
   let current = start;
   const seen = new Set<string>([current.rolloutId]);
-  while (current.parentThreadId) {
-    const parent = byId.get(current.parentThreadId);
+  let parentId = effectiveParentId(current);
+  while (parentId) {
+    const parent = byId.get(parentId);
     if (!parent || seen.has(parent.rolloutId)) {
       break;
     }
     seen.add(parent.rolloutId);
     current = parent;
+    parentId = effectiveParentId(current);
   }
   return current;
 }

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OrganizationCommandPublicKey } from "../src/main/authorized-public-keys-client.js";
+import type { OrganizationCommandPublicKey } from "../src/main/command-signing/authorized-public-keys-client.js";
 import {
   COMMAND_KEY_RECONCILIATION_INTERVAL_MS,
   CommandKeyReconciler,
-} from "../src/main/command-key-reconciler.js";
-import type { OrganizationCommandKeyClassification } from "../src/main/command-key-target-context.js";
+} from "../src/main/command-signing/command-key-reconciler.js";
+import type { OrganizationCommandKeyClassification } from "../src/main/command-signing/command-key-target-context.js";
 
 test("CommandKeyReconciler full mode prunes from relevant public-key fingerprints", async () => {
   const logs: string[] = [];

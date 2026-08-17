@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fetchOrganizationCommandKeys } from "../src/main/authorized-public-keys-client.js";
+import { fetchOrganizationCommandKeys } from "../src/main/command-signing/authorized-public-keys-client.js";
 import { BROWSER_KEY_TARGET_ACCESS } from "../src/shared/contracts.js";
 
 const TARGET_ID = "11111111-1111-4111-8111-111111111111";

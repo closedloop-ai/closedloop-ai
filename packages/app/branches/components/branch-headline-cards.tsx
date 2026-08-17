@@ -2,132 +2,177 @@
 
 import type {
   BranchAnalytics,
-  BranchKpi,
   BranchPageDetail,
 } from "@repo/api/src/types/branch";
-import { BranchKpiState } from "@repo/api/src/types/branch";
+import {
+  BranchMetricAvailability,
+  type BranchMetricResult,
+} from "@repo/api/src/types/branch-metrics";
+import { formatBranchLeadTimeMs } from "@repo/app/branches/lib/format-branch-lead-time-ms";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
-import { formatCost, formatNumber } from "@repo/app/shared/lib/format-utils";
+import {
+  formatCost,
+  formatLocPerDollar,
+  formatNumber,
+} from "@repo/app/shared/lib/format-utils";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import {
-  leadTimeWaterfallSegments,
-  locPerDollar,
-} from "../lib/branch-derivations";
-import {
-  type PreferredBranchLoc,
-  resolveNetLoc,
-} from "../lib/live-overlays/use-preferred-branch-loc";
+import type { PreferredBranchLoc } from "../lib/preferred-branch-loc";
 
-/**
- * Headline stat cards (Epic D / D6): Value per $ and Lead time. Both read SINGLE
- * computations — Value per $ via A3's `locPerDollar`, Lead time via the D5
- * `leadTimeWaterfallSegments.totalMs`.
- *
- * Value per $ uses the net LOC resolved by `usePreferredBranchLoc` (passed in as
- * `loc`): the connected PR's live totals are authoritative and preferred over
- * enrichment-derived counts. When `loc` is absent it falls back to the
- * enrichment columns on `detail` (legacy/pure-render path). When neither is
- * available, Value per $ shows "—" rather than 0.
- *
- * 30-day baselines/deltas come from `BranchAnalytics` (`BranchKpi.baseline30d` +
- * `deltaPct`). On the desktop detail surface analytics is not wired in v1 (and
- * REST analytics is deferred), so `analytics` is usually undefined → the cards
- * render their primary value with the baseline explicitly labeled unavailable
- * and NO delta chip and NO "Sample" badge (no fabricated comparison).
- */
 export type BranchHeadlineCardsProps = {
   detail: BranchPageDetail;
+  /** Retained for compatibility while callers migrate to canonical detail metrics. */
   analytics?: BranchAnalytics;
-  /** PR-preferred LOC from `usePreferredBranchLoc`; omit to use `detail` columns. */
+  /** Retained because Branch LOC is resolved once at the page boundary. */
   loc?: PreferredBranchLoc;
 };
 
-const DELTA_LABEL = "vs. prior 30 days";
-
-export function BranchHeadlineCards({
-  detail,
-  analytics,
-  loc,
-}: BranchHeadlineCardsProps) {
-  const netLoc = resolveNetLoc(loc, detail);
-  const valuePerDollar = locPerDollar({
-    netLoc,
-    totalCostUsd: detail.estimatedCostUsd,
-  });
-  const lead = leadTimeWaterfallSegments(detail);
-
-  const locLabel = loc?.source === "github" ? "net LOC (from PR)" : "net LOC";
-  const valueDetail =
-    netLoc == null
-      ? "Net LOC unavailable"
-      : `${formatNumber(netLoc)} ${locLabel} · ${detail.estimatedCostUsd == null ? "—" : formatCost(detail.estimatedCostUsd)}`;
+/** The exact three approved Branch outcome cards, in their fixed hierarchy. */
+export function BranchHeadlineCards({ detail }: BranchHeadlineCardsProps) {
+  const metrics = detail.canonicalMetrics;
+  const locPerDollar = metricPresentation(
+    metrics?.locPerDollar,
+    formatLocPerDollar
+  );
+  const leadTime = metricPresentation(
+    metrics?.leadTimeMs,
+    formatBranchLeadTimeMs
+  );
+  const abandonment = metricPresentation(
+    metrics?.abandonmentTimeMs,
+    formatDurationMs
+  );
+  const locDetail = supportingDetail(locPerDollar, locEvidenceDetail(detail));
 
   return (
     <div className="bq-statcards">
-      <BaselineMetricCard
-        baseline={analytics?.locPerDollar}
-        detailCaption={valueDetail}
+      <MetricCard
+        detail={locDetail}
         info={{
-          what: "Net lines of code delivered per dollar spent.",
-          how: "Net LOC ÷ estimated cost. Prefers the connected PR's live LOC.",
+          what: "Gross lines changed in the selected pull request per dollar spent on this branch.",
+          how: "Selected pull request additions plus deletions divided by lifetime Build, Review, and Rework cost.",
         }}
-        label="Value per $"
-        value={
-          valuePerDollar == null
-            ? "—"
-            : `${formatNumber(valuePerDollar, true)} LOC/$`
-        }
+        label="LOC per $"
+        unitLabel="LOC/$"
+        value={locPerDollar.value}
+        valueUnavailable={locPerDollar.unavailable}
+        valueUnavailableLabel={locPerDollar.unavailableLabel}
       />
-      <BaselineMetricCard
-        baseline={analytics?.leadTimeForChangeMs}
-        detailCaption="First session → merge"
+      <MetricCard
+        detail={supportingDetail(leadTime, "First code pushed → merge")}
         info={{
-          what: "Wall-clock from the first contributing session to merge.",
-          how: "Anchored on the first session, not branch creation.",
+          what: "Wall-clock time from the selected pull request cycle's first qualifying code push until merge.",
+          how: "Merged cycles only. Open, draft, and closed-unmerged cycles are not applicable.",
         }}
         label="Lead time for change"
-        value={
-          lead.mergeUnknown ? "In progress" : formatDurationMs(lead.totalMs)
-        }
+        value={leadTime.value}
+        valueUnavailable={leadTime.unavailable}
+        valueUnavailableLabel={leadTime.unavailableLabel}
+      />
+      <MetricCard
+        detail={supportingDetail(
+          abandonment,
+          "First code pushed → close without merge"
+        )}
+        info={{
+          what: "Wall-clock time spent on the selected pull request cycle before it closed without merging.",
+          how: "Closed-unmerged cycles only. Merged, open, and draft cycles are not applicable.",
+        }}
+        label="Abandonment Duration"
+        value={abandonment.value}
+        valueUnavailable={abandonment.unavailable}
+        valueUnavailableLabel={abandonment.unavailableLabel}
       />
     </div>
   );
 }
 
-/**
- * A `MetricCard` that renders a 30-day delta chip ONLY when the KPI carries a
- * real baseline; otherwise it labels the baseline unavailable (no fabricated
- * delta, no Sample badge).
- */
-function BaselineMetricCard({
-  label,
-  value,
-  detailCaption,
-  info,
-  baseline,
-}: {
-  label: string;
-  value: string;
-  detailCaption: string;
-  info: { what: string; how: string };
-  baseline: BranchKpi | undefined;
-}) {
-  const hasBaseline =
-    baseline != null &&
-    baseline.state === BranchKpiState.Available &&
-    baseline.baseline30d != null &&
-    baseline.deltaPct != null;
+function locEvidenceDetail(detail: BranchPageDetail): string | null {
+  const selected = detail.selectedPullRequest;
+  const totalCost = detail.canonicalMetrics?.totalCostUsd;
+  if (
+    !selected ||
+    selected.additions === null ||
+    selected.deletions === null ||
+    !totalCost ||
+    totalCost.value === null ||
+    (totalCost.state !== BranchMetricAvailability.Complete &&
+      totalCost.state !== BranchMetricAvailability.Partial)
+  ) {
+    return null;
+  }
+  const lines = selected.additions + selected.deletions;
+  return `${formatNumber(lines)} lines changed · ${formatCost(totalCost.value)}${
+    totalCost.state === BranchMetricAvailability.Partial ? "*" : ""
+  }`;
+}
 
-  return (
-    <MetricCard
-      delta={hasBaseline ? (baseline?.deltaPct ?? undefined) : undefined}
-      deltaLabel={hasBaseline ? DELTA_LABEL : undefined}
-      detail={
-        hasBaseline ? detailCaption : `${detailCaption} · baseline unavailable`
-      }
-      info={info}
-      label={label}
-      value={value}
-    />
-  );
+function supportingDetail(
+  presentation: ReturnType<typeof metricPresentation>,
+  caption: string | null
+): string | null {
+  if (presentation.unavailable) {
+    return presentation.detail;
+  }
+  if (presentation.detail && caption) {
+    return `${caption} · ${presentation.detail}`;
+  }
+  return presentation.detail ?? caption;
+}
+
+function metricPresentation(
+  result: BranchMetricResult<number> | undefined,
+  format: (value: number) => string
+): {
+  detail: string | null;
+  unavailable: boolean;
+  unavailableLabel: string;
+  value: string | null;
+} {
+  if (!result || result.state === BranchMetricAvailability.Unavailable) {
+    return {
+      detail: "Evidence is unavailable.",
+      unavailable: true,
+      unavailableLabel: "Unavailable",
+      value: null,
+    };
+  }
+  if (result.state === BranchMetricAvailability.NotApplicable) {
+    return {
+      detail: "Not applicable to the selected pull request's latest cycle.",
+      unavailable: true,
+      unavailableLabel: "N/A",
+      value: null,
+    };
+  }
+  if (result.state === BranchMetricAvailability.NoData) {
+    return {
+      detail: "No qualifying data.",
+      unavailable: true,
+      unavailableLabel: "No data",
+      value: null,
+    };
+  }
+  if (result.value === null) {
+    return {
+      detail: "Evidence is unavailable.",
+      unavailable: true,
+      unavailableLabel: "Unavailable",
+      value: null,
+    };
+  }
+  const formatted = format(result.value);
+  if (result.state === BranchMetricAvailability.Partial) {
+    return {
+      detail: `${result.disclosure} Values marked * use incomplete evidence.`,
+      unavailable: false,
+      unavailableLabel: "No data",
+      value: `${formatted}*`,
+    };
+  }
+  return {
+    detail: null,
+    unavailable: false,
+    unavailableLabel: "No data",
+    value: formatted,
+  };
 }

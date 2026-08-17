@@ -18,12 +18,12 @@ import type {
   DistributionStatusReport,
 } from "@repo/api/src/types/distribution";
 import { z } from "zod";
+import { gatewayLog } from "../logging/gateway-logger.js";
 import {
   type SessionFetchOptions,
   unwrapApiEnvelope,
-} from "../api-response-utils.js";
-import { fetchJsonAndParse } from "../fetch-json-and-parse.js";
-import { gatewayLog } from "../gateway-logger.js";
+} from "../util/api-response-utils.js";
+import { fetchJsonAndParse } from "../util/fetch-json-and-parse.js";
 
 // ---------------------------------------------------------------------------
 // Zod schemas for response parsing

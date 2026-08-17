@@ -164,8 +164,10 @@ class CodexObservabilityAdapter implements HarnessObservabilityAdapter {
     // deltas without double counting.
     const curInput = asNumber(usage.input_tokens);
     const curCacheRead = asNumber(usage.cached_input_tokens);
-    const curOutput =
-      asNumber(usage.output_tokens) + asNumber(usage.reasoning_output_tokens);
+    // reasoning_output_tokens is a SUBSET of output_tokens in Codex/OpenAI usage
+    // payloads (FEA-3126, DATA_REVISION 21), so it must NOT be added — doing so
+    // double-counts reasoning and inflates output relative to the rollout parser.
+    const curOutput = asNumber(usage.output_tokens);
 
     const deltaInput = Math.max(0, curInput - this.prevUsage.input);
     const deltaCacheRead = Math.max(0, curCacheRead - this.prevUsage.cacheRead);

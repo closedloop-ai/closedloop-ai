@@ -38,6 +38,17 @@ export type ActiveRunsPanelProps = {
   items: AgentSessionListItem[];
   isLoading: boolean;
   getSessionHref: (item: ActiveRunView) => string;
+  /**
+   * FREEZES the panel: pins the clock to this instant AND stops the 10s tick, so
+   * elapsed timers and the stall classification hold still (ISS-5286). Named for
+   * the freeze rather than for the value, because the two are inseparable here
+   * and a caller reaching for "just give it a stable baseline" would otherwise
+   * silently kill the liveness that is this panel's entire job.
+   *
+   * For stories and tests. Omit in production — the panel then reads the real
+   * clock and ticks, which is how a stall surfaces without new data arriving.
+   */
+  pinnedNowMs?: number;
 };
 
 /**
@@ -54,14 +65,23 @@ export function ActiveRunsPanel({
   items,
   isLoading,
   getSessionHref,
+  pinnedNowMs,
 }: ActiveRunsPanelProps) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [tickedNowMs, setTickedNowMs] = useState(() => Date.now());
 
   useEffect(() => {
-    const interval = setInterval(() => setNowMs(Date.now()), TICK_INTERVAL_MS);
+    if (pinnedNowMs !== undefined) {
+      // Pinned clock: starting the interval would overwrite it on the first tick.
+      return;
+    }
+    const interval = setInterval(
+      () => setTickedNowMs(Date.now()),
+      TICK_INTERVAL_MS
+    );
     return () => clearInterval(interval);
-  }, []);
+  }, [pinnedNowMs]);
 
+  const nowMs = pinnedNowMs ?? tickedNowMs;
   const runs = deriveActiveRuns(items, nowMs);
   const stalledCount = runs.filter((run) => run.isStalled).length;
 
@@ -74,10 +94,7 @@ export function ActiveRunsPanel({
               <ActivityIcon className="h-4 w-4" />
               Active runs
             </CardTitle>
-            <CardDescription>
-              Sessions running right now — current phase, live token burn, and
-              stall detection.
-            </CardDescription>
+            <CardDescription>Sessions running right now.</CardDescription>
           </div>
           {runs.length > 0 ? (
             <div className="flex items-center gap-2">

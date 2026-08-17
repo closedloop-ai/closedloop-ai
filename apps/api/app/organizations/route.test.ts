@@ -55,6 +55,7 @@ const BASE_ORGANIZATION = {
   createdAt: new Date("2026-01-01T00:00:00Z"),
   id: ORG_ID,
   name: "Acme",
+  searchIncludeTranscripts: false,
   settings: {},
   slug: "acme",
   updatedAt: new Date("2026-01-01T00:00:00Z"),

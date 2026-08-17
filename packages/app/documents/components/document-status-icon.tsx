@@ -3,6 +3,7 @@
 import { DocumentStatus } from "@repo/api/src/types/document";
 import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import {
+  EMPTY_RING_TRACK_COLOR,
   FilledStatusCircle,
   StatusRing,
 } from "@repo/design-system/components/ui/status-icon-primitives";
@@ -13,11 +14,6 @@ interface DocumentStatusIconProps extends React.SVGAttributes<SVGSVGElement> {
   status: DocumentStatus;
   /** Icon size in pixels (default 16). */
   size?: 16 | 20;
-  /**
-   * Show the spinning arc while an AI generation run is active. Applies to the
-   * non-terminal ring states; ignored for the filled terminal state (Obsolete).
-   */
-  thinking?: boolean;
 }
 
 /**
@@ -32,12 +28,11 @@ interface DocumentStatusIconProps extends React.SVGAttributes<SVGSVGElement> {
  * - Executed → filled green circle with ✓ (matches Feature "Done")
  * - Obsolete → filled circle with ✕
  *
- * Features use the disjoint {@link import("./feature-status-icon").FeatureStatusIcon}.
+ * Features use the disjoint {@link import("./issue-status-icon").IssueStatusIcon}.
  */
 export function DocumentStatusIcon({
   status,
   size = 16,
-  thinking = false,
   ...props
 }: DocumentStatusIconProps) {
   const label = DOCUMENT_STATUS_LABELS[status] ?? "Status";
@@ -51,7 +46,7 @@ export function DocumentStatusIcon({
           label={label}
           percentage={0}
           size={size}
-          thinking={thinking}
+          trackColor={EMPTY_RING_TRACK_COLOR}
           {...props}
         />
       );
@@ -62,7 +57,6 @@ export function DocumentStatusIcon({
           label={label}
           percentage={48.5}
           size={size}
-          thinking={thinking}
           {...props}
         />
       );
@@ -83,7 +77,6 @@ export function DocumentStatusIcon({
           label={label}
           percentage={100}
           size={size}
-          thinking={thinking}
           {...props}
         />
       );

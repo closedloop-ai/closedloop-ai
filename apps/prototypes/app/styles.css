@@ -1,0 +1,15 @@
+@import "tailwindcss";
+@import "@repo/design-system/styles/globals.css";
+
+/* Sandbox layout tokens. Additive: these only publish new utilities into
+   Tailwind's namespaces, so no design-system token or utility is redefined. */
+@theme {
+  /* The centered reading column the branch and session detail surfaces share,
+     published as `max-w-content`. It sits between Tailwind's `max-w-4xl`
+     (896px) and `max-w-5xl` (1024px), so there is no built-in token for it;
+     naming it keeps the sticky header and the scrolling body it pins to from
+     drifting apart, and matches the measure the shipped branch detail page
+     uses (packages/app/branches/components/branch-detail-page.tsx). Kept in
+     px, not rem, so this stays an exact extraction of the value it replaces. */
+  --container-content: 1000px;
+}

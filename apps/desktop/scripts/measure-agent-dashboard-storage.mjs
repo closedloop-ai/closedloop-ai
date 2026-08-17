@@ -1,21 +1,45 @@
 #!/usr/bin/env node
+// @ts-check
 /**
- * Measure Agent Dashboard SQLite storage without creating missing DB files.
+ * Measure Agent Dashboard storage without creating missing DB files.
  *
- * The first-party Agent Dashboard DB lives at
- * `<userData>/agent-dashboard.pgdata`. Missing directories are reported as
- * absent and are never opened.
+ * The first-party Agent Dashboard store lives at
+ * `<userData>/agent-dashboard.pgdata`. A missing directory is reported as
+ * absent and is never opened or created.
+ *
+ * ISS-5303 reduced this to a shell. The parsing, the recursive walk and the
+ * absent-directory branch live in `measure-agent-dashboard-storage-lib.mjs`,
+ * and the platform-default userData directory now comes from the canonical
+ * `defaultSourceUserDataDir` in `perf-prepare-dataset.mjs` — the same helper
+ * the perf-qa dataset prep resolves a real profile with, so the two can no
+ * longer disagree about where Electron puts this app's data.
+ *
+ * That reuse is a deliberate behaviour FIX on Linux: the local copy this file
+ * used to carry always returned `~/.config/Closedloop`, while the canonical
+ * helper honours `XDG_CONFIG_HOME` the way Electron itself does. On an operator
+ * who exports `XDG_CONFIG_HOME`, the old code measured a directory the app has
+ * never written to and reported a confident `exists: false`. darwin and win32
+ * semantics are unchanged (`~/Library/Application Support/Closedloop`, and
+ * `%APPDATA%` falling back to `~/AppData/Roaming`).
+ *
+ * Usage:
+ *   node scripts/measure-agent-dashboard-storage.mjs [--user-data <dir>]
  */
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { homedir, platform } from "node:os";
+
 import path from "node:path";
+import {
+  AGENT_DASHBOARD_STORAGE_DIRNAME,
+  AGENT_DASHBOARD_STORAGE_MODE,
+  measureExistingDirectory,
+  parseUserDataArg,
+} from "./measure-agent-dashboard-storage-lib.mjs";
+import { defaultSourceUserDataDir } from "./perf-prepare-dataset.mjs";
 
-const APP_NAME = "Closedloop";
-
-const userDataPath = parseUserDataArg(process.argv) ?? defaultUserDataPath();
+const userDataPath =
+  parseUserDataArg(process.argv) ?? defaultSourceUserDataDir();
 const target = {
-  mode: "sqlite",
-  path: path.join(userDataPath, "agent-dashboard.pgdata"),
+  mode: AGENT_DASHBOARD_STORAGE_MODE,
+  path: path.join(userDataPath, AGENT_DASHBOARD_STORAGE_DIRNAME),
 };
 
 console.log(
@@ -25,69 +49,3 @@ console.log(
     2
   )
 );
-
-function parseUserDataArg(argv) {
-  const index = argv.indexOf("--user-data");
-  if (index < 0) {
-    return null;
-  }
-  const value = argv[index + 1];
-  if (!value) {
-    throw new Error("--user-data requires a path value");
-  }
-  return path.resolve(value);
-}
-
-function defaultUserDataPath() {
-  switch (platform()) {
-    case "darwin":
-      return path.join(homedir(), "Library", "Application Support", APP_NAME);
-    case "win32":
-      return path.join(
-        process.env.APPDATA || path.join(homedir(), "AppData", "Roaming"),
-        APP_NAME
-      );
-    default:
-      return path.join(homedir(), ".config", APP_NAME);
-  }
-}
-
-function measureExistingDirectory(target) {
-  if (!existsSync(target.path)) {
-    return {
-      mode: target.mode,
-      path: target.path,
-      exists: false,
-      bytes: 0,
-      files: 0,
-      directories: 0,
-    };
-  }
-
-  const measured = measurePath(target.path);
-  return {
-    mode: target.mode,
-    path: target.path,
-    exists: true,
-    ...measured,
-  };
-}
-
-function measurePath(targetPath) {
-  const stat = statSync(targetPath);
-  if (!stat.isDirectory()) {
-    return { bytes: stat.size, files: 1, directories: 0 };
-  }
-
-  let bytes = 0;
-  let files = 0;
-  let directories = 1;
-  for (const entry of readdirSync(targetPath, { withFileTypes: true })) {
-    const child = path.join(targetPath, entry.name);
-    const measured = measurePath(child);
-    bytes += measured.bytes;
-    files += measured.files;
-    directories += measured.directories;
-  }
-  return { bytes, files, directories };
-}

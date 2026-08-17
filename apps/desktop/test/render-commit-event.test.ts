@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SpanKind } from "@closedloop-ai/telemetry-contract/span";
 import {
   buildRenderCommitBridgeRecord,
   clampCount,
@@ -43,7 +44,6 @@ test("buildRenderCommitBridgeRecord maps fields onto the four-key envelope", () 
     baseMs: 14.55,
   });
 
-  assert.equal(record.signal, DesktopOtelSignal.Log);
   assert.equal(record.name, "desktop.renderer.render_commit.sessions_list");
   assert.deepEqual(record.attributes, {
     [RendererOtelAllowedAttributeKey.Values]: [8.3, 14.6],
@@ -51,6 +51,32 @@ test("buildRenderCommitBridgeRecord maps fields onto the four-key envelope", () 
     [RendererOtelAllowedAttributeKey.Mode]: "paginate",
     [RendererOtelAllowedAttributeKey.Status]: "update",
   });
+});
+
+test("a renderer-path render commit trace record keeps complete identity and envelope", () => {
+  const record = buildRenderCommitBridgeRecord({
+    view: RendererRenderView.SessionsList,
+    phase: RendererRenderPhase.Mount,
+    cause: RendererRenderCause.Mount,
+    itemCount: 25,
+    actualMs: 8.27,
+    baseMs: 14.55,
+  });
+  const traceRecord = {
+    ...record,
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "2222222222222222",
+    kind: SpanKind.Internal,
+  };
+
+  const parsed = parseRendererOtelBridgePayload({ records: [traceRecord] });
+
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) {
+    return;
+  }
+  assert.deepEqual(parsed.payload.records[0], traceRecord);
 });
 
 test("renderCommitEventName carries the view as a stable name suffix", () => {
@@ -99,5 +125,38 @@ test("every cause renders a sanitizer-safe record (no null-drop for any cause)",
     });
     const parsed = parseRendererOtelBridgePayload({ records: [record] });
     assert.equal(parsed.ok, true, `cause ${cause} must survive the sanitizer`);
+  }
+});
+
+test("render commit trace mutations fail closed for wrong keys and unsafe values", () => {
+  const record = buildRenderCommitBridgeRecord({
+    view: RendererRenderView.SessionsList,
+    phase: RendererRenderPhase.Update,
+    cause: RendererRenderCause.Filter,
+    itemCount: 25,
+    actualMs: 9.99,
+    baseMs: 11.1,
+  });
+  const baseTraceRecord = {
+    ...record,
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "2222222222222222",
+    kind: SpanKind.Internal,
+  };
+
+  for (const attributes of [
+    { ...record.attributes, "renderer.customer_segment": "enterprise" },
+    {
+      ...record.attributes,
+      [RendererOtelAllowedAttributeKey.Status]: "/Users/example/project",
+    },
+  ]) {
+    assert.equal(
+      parseRendererOtelBridgePayload({
+        records: [{ ...baseTraceRecord, attributes }],
+      }).ok,
+      false
+    );
   }
 });

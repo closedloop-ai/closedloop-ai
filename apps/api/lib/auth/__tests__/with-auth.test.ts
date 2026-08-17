@@ -1,3 +1,7 @@
+import {
+  AuthErrorCode,
+  ORG_UNVERIFIABLE_MESSAGE,
+} from "@repo/api/src/types/auth-error";
 import { ORG_IDENTITY_HEADER } from "@repo/api/src/types/headers";
 import type { User } from "@repo/api/src/types/user";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,10 +18,6 @@ vi.mock("@repo/observability/log", () => ({
     warn: vi.fn(),
     flush: vi.fn().mockResolvedValue(undefined),
   },
-}));
-
-vi.mock("@repo/observability/error", () => ({
-  parseError: (e: unknown) => String(e),
 }));
 
 vi.mock("@vercel/functions", () => ({
@@ -194,6 +194,47 @@ describe("withAuth", () => {
     );
 
     expect(response.status).toBe(403);
+    // The BODY carries the contract, not just the status. The web boundary
+    // stopped latching on a bare 403 (ISS-5095), so this code is the only thing
+    // that still raises the recovery card for an org that could not be
+    // confirmed. Asserting the status alone would leave every consumer test
+    // green while production silently degraded to the 403 the client ignores.
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      code: AuthErrorCode.OrgForbidden,
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(findOrCreateUser).not.toHaveBeenCalled();
+  });
+
+  it("returns a retryable 503 — not a 403 — when the org cannot be verified", async () => {
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+
+    vi.mocked(auth).mockResolvedValue({
+      userId: CLERK_USER_ID,
+      orgId: SESSION_CLERK_ORG_ID,
+      orgRole: SESSION_ORG_ROLE,
+    } as Awaited<ReturnType<typeof auth>>);
+    vi.mocked(resolveOrgHeader).mockResolvedValue({
+      kind: "unverifiable",
+    });
+
+    const wrapped = withAuth(handler as never);
+    const response = await wrapped(
+      createRequest({ [ORG_IDENTITY_HEADER]: HEADER_CLERK_ORG_ID }),
+      createRouteContext()
+    );
+
+    // ISS-5118: an identity-provider outage is an availability failure. It must
+    // not present as an authorization decision, and the copy must not send the
+    // user to re-authenticate for something re-authenticating cannot fix.
+    expect(response.status).toBe(503);
+    expect(response.status).not.toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      success: false,
+      error: ORG_UNVERIFIABLE_MESSAGE,
+      code: AuthErrorCode.OrgUnverifiable,
+    });
     expect(handler).not.toHaveBeenCalled();
     expect(findOrCreateUser).not.toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-refresh.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-refresh.ts
  *
  * Covers:
  *   - refreshLoopToken: successful HTTP refresh flow (stores meta, returns success)
@@ -22,8 +22,8 @@ import {
   refreshLoopToken,
   refreshLoopTokenSingleflight,
   withTokenRefreshRetry,
-} from "../src/main/loop-refresh.js";
-import type { LoopTokenStore } from "../src/main/loop-token-store.js";
+} from "../src/main/loop/loop-refresh.js";
+import type { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
 import type { LoopHttpResult } from "../src/server/operations/loop-http.js";
 import {
   createTestLoopTokenStore,

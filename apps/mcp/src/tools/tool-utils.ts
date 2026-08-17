@@ -1,28 +1,36 @@
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { JsonObject } from "@repo/api/src/types/common.js";
-import { getRoutePrefixForType } from "@repo/api/src/types/document.js";
+import {
+  buildScopedDocumentPath,
+  getRoutePrefixForType,
+} from "@repo/api/src/types/document.js";
 import { resolveFriendlyError } from "@repo/api/src/types/friendly-error.js";
+import { TAG_COLORS, type TagSummary } from "@repo/api/src/types/tag.js";
+import { z } from "zod";
 import { McpApiError } from "../api-error.js";
 
-type ToolResult = {
-  content: (
-    | { type: "text"; text: string }
-    | { type: "image"; data: string; mimeType: string }
-  )[];
-  isError?: boolean;
-};
+type ToolResult = CallToolResult;
 
 export const DEFAULT_PAGE_LIMIT = 25;
 export const MAX_PAGE_LIMIT = 100;
 export const DOCUMENT_DOC_HELP =
-  "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Templates exist but are internal and not exposed to end users.";
+  "User-facing documents are PRDs (PRD-*), implementation plans (PLN-*), and issues (ISS-*; legacy FEA-* slugs still resolve). Templates exist but are internal and not exposed to end users.";
 export const ARTIFACT_LINK_SLUG_HELP =
-  "User-facing slugs are supported for documents (PRD-7, PLN-4, FEA-42); other artifacts (pull requests, deployments) require UUIDs.";
+  "User-facing slugs are supported for documents (PRD-7, PLN-4, ISS-42; legacy FEA-42 still resolves); other artifacts (pull requests, deployments) require UUIDs.";
 export const ARTIFACT_LINK_TYPE_HELP =
   "Link types: PRODUCES — directional lineage where the source artifact produces/derives the target (e.g. a PRD PRODUCES a feature; a feature PRODUCES the implementation plan written from it). PRODUCES is the only type that establishes parent→child lineage and drives the project tree and loop roll-ups. BLOCKS — the source blocks the target (the target cannot proceed until the source is done); directional, but not lineage. RELATES_TO — a non-hierarchical association between peers; direction carries no special meaning.";
 export const ARTIFACT_LINK_DIRECTION_HELP =
-  "Links are directional: source → target. The source is the upstream/producing artifact (the parent for PRODUCES); the target is the downstream/produced artifact (the child for PRODUCES). Example: you fetched feature FEA-42 and authored plan PLN-12 from it → link with sourceId=FEA-42, targetId=PLN-12, linkType=PRODUCES.";
+  "Links are directional: source → target. The source is the upstream/producing artifact (the parent for PRODUCES); the target is the downstream/produced artifact (the child for PRODUCES). Example: you fetched issue ISS-42 and authored plan PLN-12 from it → link with sourceId=ISS-42, targetId=PLN-12, linkType=PRODUCES.";
 export const PARENT_ARTIFACT_METADATA_HELP =
   "`parentArtifact` is a selected direct-parent convenience projection from artifact-link lineage, useful for grouping or stack-ranking. It is null when no qualifying direct parent exists. Use `list-artifact-links` for complete lineage traversal.";
+
+const tagSummarySchema: z.ZodType<TagSummary> = z.object({
+  id: z.string(),
+  name: z.string(),
+  color: z.enum(TAG_COLORS),
+});
+
+const tagSummaryArrayInputSchema = z.array(z.unknown());
 
 export function withErrorHandling(
   fn: () => Promise<ToolResult>
@@ -127,6 +135,22 @@ export function pickDefined(
 
 export function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export function readTagSummaries(value: unknown): TagSummary[] {
+  const parsedInput = tagSummaryArrayInputSchema.safeParse(value);
+  if (!parsedInput.success) {
+    return [];
+  }
+
+  const tags: TagSummary[] = [];
+  for (const item of parsedInput.data) {
+    const parsedTag = tagSummarySchema.safeParse(item);
+    if (parsedTag.success) {
+      tags.push(parsedTag.data);
+    }
+  }
+  return tags;
 }
 
 export type ParentArtifactProjectionInput = {
@@ -335,46 +359,61 @@ export const WEBAPP_URL =
 
 const DOCUMENT_FALLBACK_PREFIX = "documents";
 
-let sessionOrgSlug: string | null = null;
-
-export function setSessionOrgSlug(slug: string): void {
-  sessionOrgSlug = slug;
-}
-
-function withOrgPrefix(path: string): string {
-  return sessionOrgSlug
-    ? `${WEBAPP_URL}/${sessionOrgSlug}${path}`
-    : `${WEBAPP_URL}${path}`;
-}
-
 /**
- * Build a full webapp URL for a document, using the document type to resolve
- * the correct route prefix (e.g. `/acme/features/FEA-42`, `/acme/prds/PRD-7`).
+ * Per-session webapp URL builder. The org slug is read through a getter per
+ * URL — never from module state, and never frozen for the session's lifetime.
+ * `apps/mcp` is ONE process serving every org, so a module-level slug is
+ * cross-tenant state: whichever session initialized last would stamp its org's
+ * slug into every other tenant's `webUrl` (ISS-6570). The getter also lets the
+ * owner expire a binding it can no longer vouch for (org slugs are editable and
+ * a released slug can be claimed by another org — see `session-urls.ts`). A null
+ * slug degrades to org-less URLs, which the app proxy redirects to the caller's
+ * own org.
  */
-export function buildDocumentUrl(slug: string, documentType: string): string {
-  const prefix =
-    getRoutePrefixForType(documentType) ?? DOCUMENT_FALLBACK_PREFIX;
-  return withOrgPrefix(`/${prefix}/${encodePathSegment(slug)}`);
-}
+export type McpUrlBuilder = {
+  withOrgPrefix(path: string): string;
+  buildDocumentUrlFromRecord(row: Record<string, unknown>): string | null;
+  buildLoopUrl(loopId: string): string;
+};
 
-/**
- * Extract slug and type from a document record and build the webapp URL.
- * Returns null when slug or type are missing.
- */
-export function buildDocumentUrlFromRecord(
-  row: Record<string, unknown>
-): string | null {
-  const slug = readString(row.slug);
-  const docType = readString(row.type);
-  if (!(slug && docType)) {
-    return null;
-  }
-  return buildDocumentUrl(slug, docType);
-}
+export function createUrlBuilder(
+  getOrgSlug: () => string | null
+): McpUrlBuilder {
+  // FEA-4137: Issues route under `/issues/`; legacy `/features/*` links still
+  // resolve via a 302 redirect, and `FEA-42` remains an accepted slug alias.
+  const buildDocumentUrl = (slug: string, documentType: string): string => {
+    const prefix =
+      getRoutePrefixForType(documentType) ?? DOCUMENT_FALLBACK_PREFIX;
+    return `${WEBAPP_URL}${buildScopedDocumentPath(
+      prefix,
+      encodePathSegment(slug),
+      getOrgSlug()
+    )}`;
+  };
 
-/**
- * Build a full webapp URL for a loop (e.g. `/acme/loops/{id}`).
- */
-export function buildLoopUrl(loopId: string): string {
-  return withOrgPrefix(`/loops/${encodePathSegment(loopId)}`);
+  return {
+    // Raw prefixing for pre-resolved route paths (unified search). Entity URLs
+    // below go through the canonical `buildScopedDocumentPath` instead.
+    withOrgPrefix(path: string): string {
+      const orgSlug = getOrgSlug();
+      return orgSlug
+        ? `${WEBAPP_URL}/${orgSlug}${path}`
+        : `${WEBAPP_URL}${path}`;
+    },
+    buildDocumentUrlFromRecord(row: Record<string, unknown>): string | null {
+      const slug = readString(row.slug);
+      const docType = readString(row.type);
+      if (!(slug && docType)) {
+        return null;
+      }
+      return buildDocumentUrl(slug, docType);
+    },
+    buildLoopUrl(loopId: string): string {
+      return `${WEBAPP_URL}${buildScopedDocumentPath(
+        "loops",
+        encodePathSegment(loopId),
+        getOrgSlug()
+      )}`;
+    },
+  };
 }

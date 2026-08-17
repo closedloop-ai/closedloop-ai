@@ -6,8 +6,9 @@ import {
   type SystemCheckResultsRemediationClick,
   type SystemCheckResultsRemediationView,
 } from "@repo/app/compute/components/system-check-results";
-import { type ReactNode, useCallback } from "react";
+import { type ReactNode, useCallback, useMemo } from "react";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
+import { deferRepairableRemediation } from "@/lib/system-check/repairable-remediation";
 
 type SystemCheckResultsProps = {
   checks?: CheckResult[];
@@ -17,6 +18,13 @@ type SystemCheckResultsProps = {
   afterRequired?: ReactNode;
   pluginAutoUpdateEnabled?: boolean;
   targetKind?: "local" | "owned_relay" | "shared_relay";
+  /**
+   * Whether a Repair button is actually painting on this surface — NOT merely
+   * whether the rows say they are repairable. A repairable row defers its
+   * manual remediation to that button; with no button on screen it must keep
+   * saying how to fix the failure by hand.
+   */
+  isRepairOffered?: boolean;
 };
 
 export function SystemCheckResults({
@@ -27,8 +35,13 @@ export function SystemCheckResults({
   afterRequired,
   pluginAutoUpdateEnabled = false,
   targetKind = "local",
+  isRepairOffered = false,
 }: Readonly<SystemCheckResultsProps>) {
   const analytics = useAnalytics();
+  const displayChecks = useMemo(
+    () => deferRepairableRemediation(checks, isRepairOffered),
+    [checks, isRepairOffered]
+  );
 
   const handleStructuredRemediationViewed = useCallback(
     (payload: SystemCheckResultsRemediationView) => {
@@ -58,7 +71,7 @@ export function SystemCheckResults({
   return (
     <SharedSystemCheckResults
       afterRequired={afterRequired}
-      checks={checks}
+      checks={displayChecks}
       className={className}
       isLoading={isLoading}
       onStructuredRemediationLinkClick={handleStructuredRemediationLinkClick}

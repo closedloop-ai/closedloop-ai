@@ -4,6 +4,15 @@ type Segment = {
   key: string;
   label: string;
   value: number;
+  /**
+   * The value as the caller wants it READ — "412 h", "$84", "1,204 runs".
+   *
+   * `value` stays the raw number because the bar geometry is computed from it,
+   * but a bare number in the legend is unitless: "412" under a panel about
+   * hours and "84" under one about dollars look like the same kind of thing.
+   * Optional, so existing callers whose values are plain counts are unchanged.
+   */
+  formattedValue?: string;
   colorClassName: string;
   textClassName?: string;
 };
@@ -35,7 +44,7 @@ export function SegmentedBar({
               )}
               key={segment.key}
               style={{ width: `${pct}%` }}
-              title={`${segment.label}: ${segment.value.toLocaleString()} (${pct.toFixed(1)}%)`}
+              title={`${segment.label}: ${segment.formattedValue ?? segment.value.toLocaleString()} (${pct.toFixed(1)}%)`}
             />
           );
         })}
@@ -60,7 +69,7 @@ export function SegmentedBar({
                   segment.textClassName
                 )}
               >
-                {segment.value.toLocaleString()}
+                {segment.formattedValue ?? segment.value.toLocaleString()}
                 {pct > 0 ? (
                   <span className="ml-1 text-[10px] text-muted-foreground">
                     {pct >= 1 ? Math.round(pct) : pct.toFixed(1)}%

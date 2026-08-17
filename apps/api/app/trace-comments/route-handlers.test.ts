@@ -1,5 +1,6 @@
 import {
   type TraceComment,
+  TraceCommentSurface,
   TraceCommentTargetType,
 } from "@repo/api/src/types/comment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +33,9 @@ import {
 } from "../../__tests__/utils/auth-helpers";
 import {
   createTraceCommentsDeleteHandler,
+  createTraceCommentsGetHandler,
   createTraceCommentsPatchHandler,
+  createTraceCommentsPostHandler,
   createTraceCommentsReplyPostHandler,
   getComputeTargetId,
 } from "./route-handlers";
@@ -42,10 +45,185 @@ const BRANCH_ID = "branch-1";
 const COMMENT_ID = "comment-1";
 
 const sampleComment = { id: COMMENT_ID } as TraceComment;
+const traceAnchor = {
+  traceId: "trace-1",
+  turnId: "turn-1",
+  row: 0,
+  selectedText: "selected",
+  sourceText: "selected text",
+  startOffset: 0,
+  endOffset: 8,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockAuthContext = createTestAuthContext();
+});
+
+describe("Branch collection surface", () => {
+  const getHandler = createTraceCommentsGetHandler(
+    TraceCommentTargetType.Branch
+  );
+  const postHandler = createTraceCommentsPostHandler(
+    TraceCommentTargetType.Branch
+  );
+
+  it("defaults an omitted Branch surface to Branch detail", async () => {
+    vi.mocked(traceCommentsService.list).mockResolvedValue([]);
+    const response = await getHandler(
+      createMockRequest({
+        url: "http://localhost:3002/api/branches/branch-1/trace-comments",
+      }),
+      createMockRouteContext({ id: BRANCH_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(traceCommentsService.list).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: undefined })
+    );
+  });
+
+  it("passes Branch timeline to exact reads and creates", async () => {
+    vi.mocked(traceCommentsService.list).mockResolvedValue([]);
+    vi.mocked(traceCommentsService.create).mockResolvedValue(sampleComment);
+    const query = `surface=${TraceCommentSurface.BranchTimeline}`;
+    const getResponse = await getHandler(
+      createMockRequest({
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments?${query}`,
+      }),
+      createMockRouteContext({ id: BRANCH_ID })
+    );
+    const postResponse = await postHandler(
+      createMockRequest({
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments?${query}`,
+        method: "POST",
+        body: { anchor: traceAnchor, body: "Timeline note" },
+      }),
+      createMockRouteContext({ id: BRANCH_ID })
+    );
+
+    expect(getResponse.status).toBe(200);
+    expect(postResponse.status).toBe(200);
+    expect(traceCommentsService.list).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: TraceCommentSurface.BranchTimeline })
+    );
+    expect(traceCommentsService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ surface: TraceCommentSurface.BranchTimeline })
+    );
+  });
+
+  it("rejects a Session surface on the Branch collection", async () => {
+    const response = await getHandler(
+      createMockRequest({
+        url: `http://localhost:3002/api/branches/branch-1/trace-comments?surface=${TraceCommentSurface.SessionDetail}`,
+      }),
+      createMockRouteContext({ id: BRANCH_ID })
+    );
+
+    expect(response.status).toBe(400);
+    expect(traceCommentsService.list).not.toHaveBeenCalled();
+  });
+});
+
+describe("Branch mutation surface", () => {
+  const patchHandler = createTraceCommentsPatchHandler(
+    TraceCommentTargetType.Branch
+  );
+  const replyHandler = createTraceCommentsReplyPostHandler(
+    TraceCommentTargetType.Branch
+  );
+  const deleteHandler = createTraceCommentsDeleteHandler(
+    TraceCommentTargetType.Branch
+  );
+
+  it("passes Branch timeline to update, reply, and delete", async () => {
+    vi.mocked(traceCommentsService.update).mockResolvedValue({
+      ok: true,
+      value: sampleComment,
+    });
+    vi.mocked(traceCommentsService.reply).mockResolvedValue({
+      ok: true,
+      value: sampleComment,
+    });
+    vi.mocked(traceCommentsService.delete).mockResolvedValue({
+      ok: true,
+      value: { deleted: true },
+    });
+    const query = `surface=${TraceCommentSurface.BranchTimeline}`;
+    const context = createMockRouteContext({
+      id: BRANCH_ID,
+      commentId: COMMENT_ID,
+    });
+
+    await patchHandler(
+      createMockRequest({
+        url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}?${query}`,
+        method: "PATCH",
+        body: { body: "edited" },
+      }),
+      context
+    );
+    await replyHandler(
+      createMockRequest({
+        url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}/replies?${query}`,
+        method: "POST",
+        body: { body: "reply" },
+      }),
+      context
+    );
+    await deleteHandler(
+      createMockRequest({
+        url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}?${query}`,
+        method: "DELETE",
+      }),
+      context
+    );
+
+    const expected = expect.objectContaining({
+      surface: TraceCommentSurface.BranchTimeline,
+    });
+    expect(traceCommentsService.update).toHaveBeenCalledWith(expected);
+    expect(traceCommentsService.reply).toHaveBeenCalledWith(expected);
+    expect(traceCommentsService.delete).toHaveBeenCalledWith(expected);
+  });
+
+  it("rejects invalid Branch mutation surfaces before service calls", async () => {
+    const query = `surface=${TraceCommentSurface.SessionDetail}`;
+    const context = createMockRouteContext({
+      id: BRANCH_ID,
+      commentId: COMMENT_ID,
+    });
+    const responses = await Promise.all([
+      patchHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}?${query}`,
+          method: "PATCH",
+          body: { body: "edited" },
+        }),
+        context
+      ),
+      replyHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}/replies?${query}`,
+          method: "POST",
+          body: { body: "reply" },
+        }),
+        context
+      ),
+      deleteHandler(
+        createMockRequest({
+          url: `http://localhost/branches/${BRANCH_ID}/trace-comments/${COMMENT_ID}?${query}`,
+          method: "DELETE",
+        }),
+        context
+      ),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 400, 400]);
+    expect(traceCommentsService.update).not.toHaveBeenCalled();
+    expect(traceCommentsService.reply).not.toHaveBeenCalled();
+    expect(traceCommentsService.delete).not.toHaveBeenCalled();
+  });
 });
 
 // Access gating (traceCommentAccessError) is covered in route-handlers.access.test.ts.

@@ -15,9 +15,34 @@ function Harness({ overflowY = "auto" }: { overflowY?: "auto" | "hidden" }) {
   );
 }
 
+// Horizontal-axis variant. `showTopFade`/`showBottomFade` map to the left/right
+// edges of a horizontally scrolling track (the My Tasks filter-category row).
+function HorizontalHarness({
+  overflowX = "auto",
+}: {
+  overflowX?: "auto" | "hidden";
+}) {
+  const { ref, showTopFade, showBottomFade } = useScrollFade("horizontal");
+  return (
+    <div data-testid="scroll" ref={ref} style={{ overflowX }}>
+      <span data-testid="left">{String(showTopFade)}</span>
+      <span data-testid="right">{String(showBottomFade)}</span>
+    </div>
+  );
+}
+
 function setScrollMetrics(
   element: HTMLElement,
   metrics: { scrollTop: number; scrollHeight: number; clientHeight: number }
+) {
+  for (const [key, value] of Object.entries(metrics)) {
+    Object.defineProperty(element, key, { configurable: true, value });
+  }
+}
+
+function setHorizontalScrollMetrics(
+  element: HTMLElement,
+  metrics: { scrollLeft: number; scrollWidth: number; clientWidth: number }
 ) {
   for (const [key, value] of Object.entries(metrics)) {
     Object.defineProperty(element, key, { configurable: true, value });
@@ -124,5 +149,47 @@ describe("useScrollFade", () => {
 
     expect(getByTestId("top").textContent).toBe("false");
     expect(getByTestId("bottom").textContent).toBe("false");
+  });
+
+  test("horizontal: shows only the right fade when scrolled to the start of an overflowing track", () => {
+    const { getByTestId } = render(<HorizontalHarness />);
+    const element = getByTestId("scroll");
+    setHorizontalScrollMetrics(element, {
+      scrollLeft: 0,
+      scrollWidth: 500,
+      clientWidth: 200,
+    });
+    fireScroll(element);
+
+    expect(getByTestId("left").textContent).toBe("false");
+    expect(getByTestId("right").textContent).toBe("true");
+  });
+
+  test("horizontal: shows the left fade and clears the right fade at the end of the track", () => {
+    const { getByTestId } = render(<HorizontalHarness />);
+    const element = getByTestId("scroll");
+    setHorizontalScrollMetrics(element, {
+      scrollLeft: 300,
+      scrollWidth: 500,
+      clientWidth: 200,
+    });
+    fireScroll(element);
+
+    expect(getByTestId("left").textContent).toBe("true");
+    expect(getByTestId("right").textContent).toBe("false");
+  });
+
+  test("horizontal: shows no fades when overflowX is clipped even though content exceeds the track", () => {
+    const { getByTestId } = render(<HorizontalHarness overflowX="hidden" />);
+    const element = getByTestId("scroll");
+    setHorizontalScrollMetrics(element, {
+      scrollLeft: 0,
+      scrollWidth: 500,
+      clientWidth: 200,
+    });
+    fireScroll(element);
+
+    expect(getByTestId("left").textContent).toBe("false");
+    expect(getByTestId("right").textContent).toBe("false");
   });
 });

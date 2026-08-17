@@ -4,12 +4,17 @@ import type {
 } from "@repo/api/src/types/loop";
 import { log } from "@repo/observability/log";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
+import { buildMissingAnthropicApiKeyResponse } from "@/lib/loops/cloud-anthropic-key-preflight";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { isExplicitComputeSelectionRequired } from "@/lib/loops/explicit-compute-selection";
-import { launchLoop } from "@/lib/loops/loop-orchestrator";
+import {
+  dispatchAndClassify,
+  dispatchFailureResponse,
+  dispatchTargetKindFor,
+} from "@/lib/loops/loop-dispatch-utils";
 import {
   parseBody,
-  scheduleLogFlushAfter,
+  scheduleLogFlush,
   successResponse,
 } from "@/lib/route-utils";
 import { handleLoopServiceError } from "../../loop-error-responses";
@@ -75,6 +80,24 @@ export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
         }
       }
 
+      // Cloud only, and deliberately ahead of `loopsService.resume`. Resume
+      // reaches Cloud two ways — no target requested and the parent had none,
+      // or the parent's target is no longer accessible and the block above fell
+      // back — and `loopsService.resume` persists `computeTargetId ?? null`, so
+      // an unresolved target really does mean an ECS child that needs a key.
+      // The awaited dispatch below would report the missing key either way; the
+      // reason this runs first is the side effect the sibling run-loop
+      // pre-flight documents: without it every retry inserts another child loop
+      // purely to cancel it a moment later.
+      const missingKeyResponse = await buildMissingAnthropicApiKeyResponse({
+        resolvedComputeTargetId,
+        userId: user.id,
+        organizationId: user.organizationId,
+      });
+      if (missingKeyResponse) {
+        return missingKeyResponse;
+      }
+
       const result = await loopsService.resume(
         id,
         user.organizationId,
@@ -83,20 +106,25 @@ export const POST = withAnyAuth<ResumeLoopRouteResponse, "/loops/[id]/resume">(
         resolvedComputeTargetId
       );
 
-      // Launch the resumed loop asynchronously. scheduleLogFlushAfter() keeps
-      // the serverless function alive via waitUntil until launchLoop() settles,
-      // then flushes — so launchLoop()'s own log entries are included.
-      const launchPromise = launchLoop(
+      // ISS-5708: await the dispatch. Resuming used to answer 200 the moment
+      // the Loop row existed, so a resume whose command never reached the
+      // desktop read as success — the same false-success this ticket fixed on
+      // the initial-launch route, reachable through a second door.
+      const dispatchResult = await dispatchAndClassify(
         result.loopId,
-        user.organizationId
-      ).catch((error) => {
-        log.error("[resume] Failed to launch resumed loop", {
-          loopId: result.loopId,
-          parentLoopId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
-      scheduleLogFlushAfter(launchPromise);
+        user.organizationId,
+        "resume",
+        { computeTargetId: resolvedComputeTargetId, parentLoopId: id }
+      );
+      scheduleLogFlush();
+      if (!dispatchResult.ok) {
+        // Resume falls back to cloud when the parent's target is no longer
+        // accessible, so this genuinely varies per request.
+        return dispatchFailureResponse(
+          dispatchResult.error,
+          dispatchTargetKindFor(resolvedComputeTargetId)
+        );
+      }
 
       return successResponse(result);
     } catch (error) {

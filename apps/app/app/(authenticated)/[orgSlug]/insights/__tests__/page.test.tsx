@@ -1,11 +1,19 @@
 import { INSIGHTS_FEATURE_FLAG_KEY } from "@repo/api/src/types/insights";
+import { LABS_NAV_SECTION_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import InsightsRoutePage from "../page";
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
-  FeatureFlagged: ({
+// FEA-4228: the Insights ROUTE now gates on `FeatureFlagRouteGate` (flag OFF ⇒
+// notFound() ⇒ the in-shell "Page not found" recovery state) rather than
+// `FeatureFlagged` with a blank `fallback={null}`. The flag-off/notFound and
+// still-resolving branches are covered directly in
+// `components/__tests__/feature-flag-route-gate.test.tsx`; this route test
+// exercises the flag-ON pass-through, so stub the gate to render its children
+// and keep the `data-feature-flag` anchor the wrapper-placement assertion reads.
+vi.mock("@/components/feature-flag-route-gate", () => ({
+  FeatureFlagRouteGate: ({
     children,
     flag,
   }: {
@@ -64,5 +72,19 @@ describe("org insights page route", () => {
     expect(
       screen.getByText("Insights QA target").closest("[data-feature-flag]")
     ).toHaveAttribute("data-feature-flag", INSIGHTS_FEATURE_FLAG_KEY);
+  });
+
+  // ISS-5037: Insights is a Labs destination, so the Labs CONTAINER gate wraps
+  // the existing per-surface gate rather than replacing it — BOTH must be on.
+  it("nests the Insights gate inside the Labs container route gate", () => {
+    render(<InsightsRoutePage />);
+
+    const insightsGate = screen
+      .getByText("Insights QA target")
+      .closest("[data-feature-flag]");
+    expect(insightsGate?.parentElement).toHaveAttribute(
+      "data-feature-flag",
+      LABS_NAV_SECTION_FEATURE_FLAG_KEY
+    );
   });
 });

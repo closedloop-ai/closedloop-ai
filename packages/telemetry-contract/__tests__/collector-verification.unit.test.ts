@@ -40,17 +40,22 @@ const TAIL_SAMPLING_ERROR = /tail_sampling/;
 type SpanShape = {
   traceId: string;
   spanId: string;
+  parentSpanId?: string;
+  name?: string;
   startTimeUnixNano: string;
   endTimeUnixNano: string;
   status: { code: number };
   attributes: Array<{ key: string; value: Record<string, unknown> }>;
 };
 
-const spanOf = (payload: OtlpTracePayload): SpanShape => {
+const spansOf = (payload: OtlpTracePayload): SpanShape[] => {
   const rs = payload.resourceSpans[0] as Record<string, unknown>;
   const ss = (rs.scopeSpans as Record<string, unknown>[])[0];
-  return (ss.spans as SpanShape[])[0];
+  return ss.spans as SpanShape[];
 };
+
+const spanOf = (payload: OtlpTracePayload): SpanShape =>
+  spansOf(payload)[0] as SpanShape;
 
 const attr = (
   span: SpanShape,
@@ -67,21 +72,25 @@ const durationMs = (span: SpanShape): number =>
   );
 
 describe("synthetic OTLP trace builder", () => {
-  const { payloads, manifest, totalSent } = buildScenarioTraces(COUNTS, {
-    baseTimeUnixNano: 1_700_000_000_000_000_000n,
-  });
+  const { payloads, payloadDelaysMs, manifest, totalSent } =
+    buildScenarioTraces(COUNTS, {
+      baseTimeUnixNano: 1_700_000_000_000_000_000n,
+    });
 
   const bySc = (s: Scenario): SpanShape[] =>
-    payloads.map(spanOf).filter((span) => scenarioOf(span) === s);
+    payloads.flatMap(spansOf).filter((span) => scenarioOf(span) === s);
 
   it("emits one trace per requested scenario count", () => {
-    expect(payloads).toHaveLength(
+    expect(totalSent).toBe(
       COUNTS.errors + COUNTS.serverErrors + COUNTS.slow + COUNTS.baseline
     );
-    expect(totalSent).toBe(payloads.length);
+    expect(payloads).toHaveLength(totalSent + COUNTS.slow);
+    expect(payloadDelaysMs).toHaveLength(payloads.length);
     expect(bySc(Scenario.Error)).toHaveLength(COUNTS.errors);
     expect(bySc(Scenario.ServerError)).toHaveLength(COUNTS.serverErrors);
-    expect(bySc(Scenario.Slow)).toHaveLength(COUNTS.slow);
+    expect(new Set(bySc(Scenario.Slow).map((span) => span.traceId)).size).toBe(
+      COUNTS.slow
+    );
     expect(bySc(Scenario.Baseline)).toHaveLength(COUNTS.baseline);
   });
 
@@ -107,12 +116,45 @@ describe("synthetic OTLP trace builder", () => {
     }
   });
 
-  it("shapes the slow scenario above the SSOT latency threshold", () => {
-    for (const span of bySc(Scenario.Slow)) {
-      expect(durationMs(span)).toBeGreaterThan(
+  it("shapes the slow scenario as an ipc child exported before its cl-desktop root", () => {
+    for (const [index, payload] of payloads.entries()) {
+      const child = spanOf(payload as OtlpTracePayload);
+      if (scenarioOf(child) !== Scenario.Slow || child.name !== "ipc.list") {
+        continue;
+      }
+      const rootIndex = payloads.findIndex((candidate) => {
+        const span = spanOf(candidate as OtlpTracePayload);
+        return span.traceId === child.traceId && span.name === "cl-desktop";
+      });
+      const root = spanOf(payloads[rootIndex] as OtlpTracePayload);
+
+      expect(child.name).toBe("ipc.list");
+      expect(root.name).toBe("cl-desktop");
+      expect(child.traceId).toBe(root.traceId);
+      expect(child.parentSpanId).toBe(root.spanId);
+      expect(rootIndex).toBeGreaterThan(index);
+      expect(payloadDelaysMs[index]).toBe(0);
+      expect(durationMs(child)).toBeLessThan(
         CollectorTailSamplingPolicy.slowLatencyThresholdMs
       );
+      expect(durationMs(root)).toBe(
+        (CollectorTailSamplingPolicy.decisionWaitSeconds + 1) * 1000
+      );
+      expect(
+        attr(child, CollectorTailSamplingPolicy.slowLatencyAttributeKey)
+      ).toEqual({
+        intValue: String(CollectorTailSamplingPolicy.slowLatencyMaxMs),
+      });
+      expect(
+        attr(root, CollectorTailSamplingPolicy.slowLatencyAttributeKey)
+      ).toBeUndefined();
     }
+    expect(
+      payloadDelaysMs.filter(
+        (delay) =>
+          delay === (CollectorTailSamplingPolicy.decisionWaitSeconds + 1) * 1000
+      )
+    ).toHaveLength(1);
   });
 
   it("shapes baseline traces as fast, status-unset, no 5xx", () => {
@@ -128,9 +170,9 @@ describe("synthetic OTLP trace builder", () => {
   });
 
   it("assigns distinct, high-entropy hex ids to every trace", () => {
-    const spans = payloads.map(spanOf);
+    const spans = payloads.flatMap(spansOf);
     const traceIds = spans.map((s) => s.traceId);
-    expect(new Set(traceIds).size).toBe(traceIds.length);
+    expect(new Set(traceIds).size).toBe(totalSent);
     expect(new Set(spans.map((s) => s.spanId)).size).toBe(spans.length);
     for (const id of traceIds) {
       expect(id).toMatch(HEX_TRACE_ID);
@@ -259,7 +301,11 @@ describe("decision metrics parser", () => {
 });
 
 describe("exported scenario counter", () => {
-  const line = (scenario: string, traceId: string): string =>
+  const line = (
+    scenario: string,
+    traceId: string,
+    name = `synthetic-${scenario}`
+  ): string =>
     JSON.stringify({
       resourceSpans: [
         {
@@ -268,6 +314,7 @@ describe("exported scenario counter", () => {
               spans: [
                 {
                   traceId,
+                  name,
                   attributes: [
                     {
                       key: SCENARIO_ATTRIBUTE_KEY,
@@ -282,9 +329,10 @@ describe("exported scenario counter", () => {
       ],
     });
 
-  it("counts retained spans per scenario across newline-delimited batches", () => {
+  it("counts retained traces per scenario across newline-delimited batches", () => {
     const content = [
       line("error", "aa"),
+      line("error", "bb"),
       line("error", "bb"),
       line("baseline", "cc"),
       "",
@@ -293,6 +341,20 @@ describe("exported scenario counter", () => {
     const counts = parseExportedScenarioCounts(content);
     expect(counts.get(Scenario.Error)).toBe(2);
     expect(counts.get(Scenario.Baseline)).toBe(1);
+  });
+
+  it("counts slow traces only when ipc child and cl-desktop root are both retained", () => {
+    const content = [
+      line("slow", "complete", "ipc.list"),
+      line("slow", "complete", "cl-desktop"),
+      line("slow", "child-only", "ipc.list"),
+      line("slow", "root-only", "cl-desktop"),
+      line("slow", "extra-span", "ipc.list"),
+      line("slow", "extra-span", "cl-desktop"),
+      line("slow", "extra-span", "synthetic-slow"),
+    ].join("\n");
+    const counts = parseExportedScenarioCounts(content);
+    expect(counts.get(Scenario.Slow)).toBe(1);
   });
 
   it("returns an empty map for empty content", () => {

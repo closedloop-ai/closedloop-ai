@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-404-gate.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-404-gate.ts
  *
  * Covers:
  *   - marking an endpoint disabled
@@ -16,7 +16,7 @@ import {
   isEndpointDisabled,
   markEndpointDisabled,
   resetAllGates,
-} from "../src/main/loop-404-gate.js";
+} from "../src/main/loop/loop-404-gate.js";
 
 afterEach(() => {
   // Restore clean in-memory state between tests so each test is independent.

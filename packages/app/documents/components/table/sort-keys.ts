@@ -16,6 +16,10 @@ export const SortKey = {
   Title: "title",
   Type: "type",
   DueDate: "dueDate",
+  // Matches DocumentColumn.Updated ("updated") so the sortable Updated header
+  // resolves to a real comparator (ITEM_SORT_CONFIGS.updated) instead of
+  // persisting sortBy=updated with no comparator and leaving rows in API order.
+  Updated: "updated",
   Assignee: "assignee",
   Priority: "priority",
   Score: "score",

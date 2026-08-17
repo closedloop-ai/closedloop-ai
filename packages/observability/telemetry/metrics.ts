@@ -76,6 +76,55 @@ type ProtocolBaseMetric = {
 export type ProtocolMetric = ConnectionStateCountMetric | ProtocolBaseMetric;
 
 // ---------------------------------------------------------------------------
+// DbPoolMetric — pg connection-pool health metrics (FEA-3300)
+// ---------------------------------------------------------------------------
+
+/**
+ * Structurally mirrors `PoolTelemetrySample` in `@repo/database`. The two are
+ * intentionally not a shared type: `@repo/database` must stay free of any
+ * `@repo/observability` import (apps/mcp packages it through a narrow Docker
+ * context), so the pool emits through an injected sink and `apps/api` adapts
+ * the sample to this shape.
+ *
+ * The duplication cannot drift silently: the sink adapter in
+ * `apps/api/instrumentation.ts` only type-checks while a `PoolTelemetrySample`
+ * can be widened into a `DbPoolMetric`, so adding a metric on one side and not
+ * the other is a compile error at the wiring site, not a runtime surprise.
+ *
+ * `origin` is **required and must be set by the caller**, matching
+ * `QueueMetric`/`ProtocolMetric`. It is not safe to rely on `buildEntry()` here:
+ * that only enriches the agentless HTTP intake payload, while `writeConsole()`
+ * emits `{...meta, message, level}` to stdout — so on the Vercel Log Drain path
+ * `@origin` comes **solely from this payload**. Omitting it would make
+ * `db_pool_*` the one metric family invisible to an `@origin` predicate on that
+ * path.
+ *
+ * `poolMax`/`waitingCount`/`inUse`/`idle`/`total` ride as log attributes for
+ * diagnosis; they are deliberately NOT metric tags.
+ */
+export type DbPoolMetric = {
+  metric:
+    | "db_pool_acquire_wait"
+    | "db_pool_acquire_timeout"
+    | "db_pool_checkout_duration"
+    | "db_pool_wait_queue_depth"
+    | "db_pool_in_use"
+    | "db_pool_idle"
+    | "db_pool_total";
+  origin: Origin;
+  /** Gauge/measurement (ms for durations). Mutually exclusive with `count`. */
+  value?: number;
+  /** Additive counter; always 1. Mutually exclusive with `value`. */
+  count?: number;
+  poolMax: number;
+  waitingCount: number;
+  inUse: number;
+  idle: number;
+  total: number;
+  timestamp?: string;
+};
+
+// ---------------------------------------------------------------------------
 // Emitters
 // ---------------------------------------------------------------------------
 
@@ -107,5 +156,9 @@ export function emitQueueMetric(metric: QueueMetric): void {
 }
 
 export function emitProtocolMetric(metric: ProtocolMetric): void {
+  emitTelemetryMetric(metric);
+}
+
+export function emitDbPoolMetric(metric: DbPoolMetric): void {
   emitTelemetryMetric(metric);
 }

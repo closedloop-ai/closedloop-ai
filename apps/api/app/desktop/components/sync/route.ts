@@ -3,7 +3,7 @@ import { failure } from "@repo/api/src/types/common";
 import { Status } from "@repo/api/src/types/result";
 import { NextResponse } from "next/server";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
-import { desktopAgentComponentsPayloadSchema } from "@/lib/desktop-agent-sessions-schema";
+import { parseDesktopAgentComponentsPayload } from "@/lib/desktop-agent-components-parse";
 import {
   badRequestResponse,
   errorResponse,
@@ -46,8 +46,11 @@ export const POST = withAnyAuth<
     return response;
   }
 
-  const parsed = desktopAgentComponentsPayloadSchema.safeParse(rawBody);
-  if (!parsed.success) {
+  // Sanitizes NULs / lone surrogates for Postgres BEFORE validating — a
+  // NUL-bearing definition body would otherwise pass the schema and then 500 on
+  // the `text` write, leaving the desktop cursor retrying the same poison batch.
+  const parsed = parseDesktopAgentComponentsPayload(rawBody);
+  if (!parsed.ok) {
     return badRequestResponse("Invalid component sync payload");
   }
 
@@ -56,7 +59,7 @@ export const POST = withAnyAuth<
       clerkUserId,
       computeTargetId,
       organizationId: user.organizationId,
-      payload: parsed.data,
+      payload: parsed.payload,
       userId: user.id,
     });
 

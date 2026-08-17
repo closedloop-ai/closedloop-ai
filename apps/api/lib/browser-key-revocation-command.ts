@@ -1,4 +1,7 @@
-import { isDesktopApiPath } from "@repo/api/src/desktop-api-namespace";
+import {
+  isDesktopApiPath,
+  toDesktopApiPathname,
+} from "@repo/api/src/desktop-api-namespace";
 import {
   type ApiResult,
   failure,
@@ -38,20 +41,12 @@ const RESERVED_BROWSER_KEY_PATHS = new Set<string>([
   BROWSER_KEY_APPROVAL_REQUEST_PATH,
 ]);
 
-function toPathname(path: string): string {
-  try {
-    return new URL(path, "http://desktop.local").pathname;
-  } catch {
-    return path.split("?")[0] ?? path;
-  }
-}
-
 /**
  * Matches reserved browser-key internal paths in the current Desktop API
  * namespace. Public command entry points must reject these paths.
  */
 export function isReservedBrowserKeyRevocationPath(path: string): boolean {
-  const pathname = toPathname(path);
+  const pathname = toDesktopApiPathname(path);
   return isDesktopApiPath(pathname) && RESERVED_BROWSER_KEY_PATHS.has(pathname);
 }
 

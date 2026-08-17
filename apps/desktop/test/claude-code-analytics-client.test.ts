@@ -1,6 +1,6 @@
 /**
  * @file claude-code-analytics-client.test.ts
- * @description Unit tests for src/main/claude-code-analytics-client.ts (FEA-1436),
+ * @description Unit tests for src/main/cost/claude-code-analytics-client.ts (FEA-1436),
  * the read-only client for Anthropic's Claude Code Analytics report.
  *
  * Reviewed invariants:
@@ -22,7 +22,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ClaudeCodeAnalyticsClient } from "../src/main/claude-code-analytics-client.js";
+import { ClaudeCodeAnalyticsClient } from "../src/main/cost/claude-code-analytics-client.js";
 import { makeFetch } from "./helpers/admin-fetch.js";
 
 /** A single-day page with one user actor and one api actor, two models. */

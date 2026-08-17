@@ -9,8 +9,8 @@ import {
   DocumentStatus,
   DocumentType,
   type DocumentWithProject,
-  FEATURE_STATUS_OPTIONS,
   fallbackStatusForSubtype,
+  ISSUE_STATUS_OPTIONS,
 } from "@repo/api/src/types/document";
 import type { AdditionalRepoRef } from "@repo/api/src/types/loop";
 import {
@@ -80,12 +80,13 @@ import {
   UploadIcon,
 } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { GeneratePrdTargetSelector } from "@/app/(authenticated)/[orgSlug]/documents/components/generate-prd-target-selector";
 import { JobRepositoriesSection } from "@/app/(authenticated)/components/job-repositories-section";
-import { LoopDispatchTargetSelector } from "@/components/engineer/LoopDispatchTargetSelector";
 import { useGeneratePrdLaunch } from "@/hooks/queries/use-document-generation";
 import {
   PreLoopCommand,
   type PreLoopExecutionContext,
+  resolvePreLoopComputeTargetId,
 } from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 
@@ -122,8 +123,12 @@ export function CreateDocumentModal({
   // Project selection (when projectId prop is not provided)
   const showProjectSelector = !projectId;
   const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
-  const { data: teamProjects = [], isLoading: isLoadingProjects } =
-    useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
+  const {
+    data: teamProjects = [],
+    isLoading: isLoadingProjects,
+    isError: isProjectsError,
+    refetch: refetchProjects,
+  } = useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
 
   const [title, setTitle] = useState("");
   const [fileName, setFileName] = useState("");
@@ -398,7 +403,12 @@ export function CreateDocumentModal({
         {
           additionalRepos: pending.additionalRepos,
           artifact: pending.artifact,
-          computeTargetId: context.computeTargetId ?? computeTargetId,
+          // `??` would turn the gate's explicit `null` — its "run this on
+          // Cloud" verdict — back into the target we just failed to reach.
+          computeTargetId: resolvePreLoopComputeTargetId(
+            context,
+            computeTargetId
+          ),
         },
         {
           onSuccess: (result) => {
@@ -485,28 +495,32 @@ export function CreateDocumentModal({
               >
                 Project<span className="text-destructive">*</span>
               </Label>
-              <Select
-                disabled={isLoadingProjects}
-                onValueChange={handleProjectChange}
-                value={selectedProjectId}
-              >
-                <SelectTrigger id="artifact-project">
-                  <SelectValue
-                    placeholder={
-                      isLoadingProjects
-                        ? "Loading projects..."
-                        : "Select a project..."
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {teamProjects.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      {p.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {isProjectsError ? (
+                <ProjectSelectorError onRetry={() => refetchProjects()} />
+              ) : (
+                <Select
+                  disabled={isLoadingProjects}
+                  onValueChange={handleProjectChange}
+                  value={selectedProjectId}
+                >
+                  <SelectTrigger id="artifact-project">
+                    <SelectValue
+                      placeholder={
+                        isLoadingProjects
+                          ? "Loading projects..."
+                          : "Select a project..."
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teamProjects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           ) : null}
 
@@ -605,7 +619,7 @@ export function CreateDocumentModal({
               </SelectTrigger>
               <SelectContent>
                 {(documentType === DocumentType.Feature
-                  ? FEATURE_STATUS_OPTIONS
+                  ? ISSUE_STATUS_OPTIONS
                   : DOCUMENT_STATUS_OPTIONS
                 ).map((statusOption) => (
                   <SelectItem key={statusOption} value={statusOption}>
@@ -644,30 +658,6 @@ export function CreateDocumentModal({
         />
       </DialogContent>
     </Dialog>
-  );
-}
-
-function GeneratePrdTargetSelector({
-  onSelect,
-  state,
-}: Readonly<{
-  onSelect: (targetId: string) => void;
-  state: GeneratePrdMultiTargetState | null;
-}>) {
-  if (!state) {
-    return null;
-  }
-
-  return (
-    <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/30 p-3">
-      <p className="text-muted-foreground text-sm">
-        Select a compute target to start generation.
-      </p>
-      <LoopDispatchTargetSelector
-        availableTargets={state.availableTargets}
-        onSelect={onSelect}
-      />
-    </div>
   );
 }
 
@@ -710,13 +700,11 @@ function ContextSourceCombobox({
         align="start"
         className="w-[--radix-popover-trigger-width] p-0"
       >
-        <Command label="Search PRDs and features">
-          <CommandInput placeholder="Search PRDs and features..." />
+        <Command label="Search PRDs and issues">
+          <CommandInput placeholder="Search PRDs and issues..." />
           <CommandList>
             <CommandEmpty>
-              {loading
-                ? "Loading…"
-                : "No PRDs or features in this project yet."}
+              {loading ? "Loading…" : "No PRDs or issues in this project yet."}
             </CommandEmpty>
             <CommandGroup>
               {sources.map((source) => (
@@ -756,7 +744,7 @@ function ContextSourceTriggerLabel({
   }
   return (
     <span className="text-muted-foreground">
-      {loading ? "Loading…" : "Select a PRD or feature…"}
+      {loading ? "Loading…" : "Select a PRD or issue…"}
     </span>
   );
 }
@@ -1056,4 +1044,23 @@ function buildModalCreateInput(args: {
     ...(sourceId ? { sourceId } : {}),
     ...(repositorySelection ? { repositorySelection } : {}),
   };
+}
+
+/**
+ * Recoverable error state for the in-modal project selector. When the
+ * team-projects request fails, the selector would otherwise render empty with
+ * no explanation and no way forward, dead-ending creation. This surfaces the
+ * failure and offers a retry so the selector can repopulate.
+ */
+function ProjectSelectorError({ onRetry }: Readonly<{ onRetry: () => void }>) {
+  return (
+    <Alert variant="error">
+      <AlertDescription className="flex items-center justify-between gap-2">
+        <span>Couldn't load projects.</span>
+        <Button onClick={onRetry} size="sm" type="button" variant="outline">
+          Retry
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
 }

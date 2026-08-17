@@ -8,6 +8,18 @@ import {
 import { withDb } from "@repo/database";
 import { z } from "zod";
 
+/**
+ * Direct download of the latest universal .dmg.
+ *
+ * Deliberately the PUBLIC mirror, not `closedloop-ai/symphony-alpha`: this link
+ * is handed to a brand-new user who has no reason to have access to the private
+ * repo, where the same URL 404s. Both repos carry the rolling `desktop-latest`
+ * tag with an unversioned asset name, so the URL always resolves to the newest
+ * build without a release-time edit here.
+ */
+export const DESKTOP_LATEST_DMG_URL =
+  "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-latest/Closedloop-universal.dmg";
+
 const DEFAULT_ONBOARDING_STATE: OnboardingState = {
   wizardCompletedAt: null,
   wizardCompletedBy: null,
@@ -54,7 +66,10 @@ function mergeOnboardingState(
  * computes checklist completion from actual DB data.
  */
 export const onboardingService = {
-  async getStatus(organizationId: string): Promise<OnboardingStatus> {
+  async getStatus(
+    organizationId: string,
+    userId: string
+  ): Promise<OnboardingStatus> {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
@@ -72,6 +87,7 @@ export const onboardingService = {
     const [
       teamCount,
       projectCount,
+      desktopComputeTarget,
       githubInstallation,
       googleIntegration,
       userCount,
@@ -79,7 +95,25 @@ export const onboardingService = {
       withDb((db) => db.team.count({ where: { organizationId } })),
       withDb((db) =>
         db.project.count({
-          where: { organizationId, isTemplatesSentinel: false },
+          where: { organizationId },
+        })
+      ),
+      // A real desktop install registers a compute target. The synthetic
+      // per-org "cloud" target owns cloud-authored agent components and has no
+      // device behind it, so counting it would tick this item for an org that
+      // has never installed anything.
+      //
+      // Scoped to the CALLER, unlike every other row here. The rest describe
+      // the workspace — it has a team, a GitHub installation, more than one
+      // member — and are true for everyone once they are true for anyone. This
+      // one asks the reader to install an app on their own machine, and it is
+      // the only surface in the product still pointing at the download, so an
+      // org-wide check would hand a pre-ticked row and no link to every teammate
+      // who joined after the first install.
+      withDb((db) =>
+        db.computeTarget.findFirst({
+          where: { organizationId, userId, isCloudSentinel: false },
+          select: { id: true },
         })
       ),
       withDb((db) =>
@@ -113,11 +147,26 @@ export const onboardingService = {
         completed: teamCount > 0,
         href: "/settings",
       },
+      // No href: projects are created at /teams/<teamId>/projects, and there is
+      // no org-level projects route to send someone to without a team id this
+      // service does not have. A row whose job is "here is the next thing to do"
+      // is worse for pointing at a page that cannot do it than for pointing
+      // nowhere. (Moot in practice — the checklist only renders once the wizard
+      // is complete, which requires a project, so this row is always ticked.)
       {
         id: ChecklistItemId.CreateProject,
         label: "Create a project",
         description: "Start your first project within a team",
         completed: projectCount > 0,
+      },
+      {
+        id: ChecklistItemId.DownloadDesktop,
+        label: "Download the desktop app",
+        description:
+          "Install Closedloop Desktop to analyze your agent sessions",
+        completed: desktopComputeTarget !== null,
+        href: DESKTOP_LATEST_DMG_URL,
+        external: true,
       },
       {
         id: ChecklistItemId.ConnectGitHub,
@@ -184,10 +233,13 @@ export const onboardingService = {
       })
     );
 
-    return onboardingService.getStatus(organizationId);
+    return onboardingService.getStatus(organizationId, userId);
   },
 
-  async dismissChecklist(organizationId: string): Promise<OnboardingStatus> {
+  async dismissChecklist(
+    organizationId: string,
+    userId: string
+  ): Promise<OnboardingStatus> {
     const org = await withDb((db) =>
       db.organization.findUnique({
         where: { id: organizationId },
@@ -207,6 +259,6 @@ export const onboardingService = {
       })
     );
 
-    return onboardingService.getStatus(organizationId);
+    return onboardingService.getStatus(organizationId, userId);
   },
 };

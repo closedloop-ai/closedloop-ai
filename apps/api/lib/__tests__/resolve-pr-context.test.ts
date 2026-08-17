@@ -388,7 +388,13 @@ describe("resolvePrContext", () => {
     expect(result).toBeNull();
   });
 
-  it("ignores a current PR detail that does not belong to the branch repository", async () => {
+  it("keeps a current PR detail that names this branch but a different repository", async () => {
+    // The App-reinstall shape: `GitHubInstallationRepository` is unique on
+    // (installationId, githubRepoId), so a reinstall mints a new surrogate id for
+    // the same GitHub repo, and only the branch half is rewritten onto it —
+    // `upsertCurrentPullRequestDetail` keys the PR on the reinstall-stable
+    // `githubId` and omits `repositoryId` from its update. The row still names
+    // this branch, so it IS this branch's PR.
     mockArtifactFindFirst.mockResolvedValue(
       makeBranchArtifactRow({
         currentPullRequestDetail: { repositoryId: "foreign-repo" },
@@ -398,11 +404,13 @@ describe("resolvePrContext", () => {
     const result = await resolvePrContext("branch-1", "org-1");
 
     expect(result).toMatchObject({
-      branch: { currentPullRequestDetailId: null },
-      gitHubPullRequest: null,
-      prMetadata: null,
+      branch: { currentPullRequestDetailId: "pr-detail-1" },
+      gitHubPullRequest: { number: 42, repositoryId: "foreign-repo" },
+      prMetadata: { number: 42 },
+      pullNumber: 42,
       repositoryId: "repo-1",
     });
+    expect(result?.branch?.invalidCurrentPullRequestRelation).toBeUndefined();
   });
 
   it("ignores a current PR detail that does not belong to the branch artifact", async () => {

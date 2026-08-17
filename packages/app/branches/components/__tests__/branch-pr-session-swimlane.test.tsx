@@ -1,15 +1,31 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   makeBranchDetail,
   makeBranchSession,
 } from "../../__tests__/branch-fixtures";
-import { buildActorColorDomain } from "../../lib/branch-actor-domain";
+import {
+  BranchActorTurnSide,
+  buildActorColorDomain,
+} from "../../lib/branch-actor-domain";
 import { BranchPrSessionSwimlane } from "../branch-pr-session-swimlane";
 
+function withNav(node: ReactNode): ReactNode {
+  return (
+    <NavigationProvider adapter={createMemoryNavigation().adapter}>
+      {node}
+    </NavigationProvider>
+  );
+}
+
 const NO_SESSIONS_RE = /no sessions linked/i;
+const ALICE_LANE_RE = /alice/i;
+const CI_LANE_RE = /ci/i;
 
 function say(sessionId: string, t: string): MergedTraceItem {
   return {
@@ -103,7 +119,9 @@ describe("BranchPrSessionSwimlane (E4)", () => {
     );
     const [aliceLane] = lanes(container);
     const seg = aliceLane?.querySelector<HTMLElement>(".bq-lane-seg");
-    expect(seg?.style.background).toBe(domain.colorFor("alice"));
+    expect(seg?.getAttribute("style")).toContain(
+      `background: ${domain.colorForTurn("alice", BranchActorTurnSide.Agent)}`
+    );
   });
 
   it("renders the empty state with no sessions", () => {
@@ -141,6 +159,52 @@ describe("BranchPrSessionSwimlane (E4)", () => {
       />
     );
     expect(container.querySelector(".bq-lane-playhead")).not.toBeNull();
+    const seg = container.querySelector<HTMLElement>(".bq-lane-seg");
+    await userEvent.click(seg as HTMLElement);
+    expect(onScrubTimestamp).toHaveBeenCalled();
+  });
+
+  it("navigates each lane to its session detail via getSessionHref (FEA-4257)", () => {
+    const { container } = render(
+      withNav(
+        <BranchPrSessionSwimlane
+          detail={detail()}
+          getSessionHref={(sessionId) => `/acme/sessions/${sessionId}`}
+        />
+      )
+    );
+    // The whole identity cluster (icon + name + sub) is one anchor, whose
+    // accessible name is its visible text (no aria-label), so the link resolves
+    // by the lane's visible name and contains the `.bq-lane-name` span.
+    const aliceLink = screen.getByRole("link", { name: ALICE_LANE_RE });
+    const ciLink = screen.getByRole("link", { name: CI_LANE_RE });
+    expect(aliceLink).toHaveAttribute("href", "/acme/sessions/s1");
+    expect(ciLink).toHaveAttribute("href", "/acme/sessions/s2");
+    expect(aliceLink.querySelector(".bq-lane-name")?.textContent).toBe("alice");
+    // Both anchors are the identity cluster, never a bare one-word name anchor.
+    expect(container.querySelectorAll("a.bq-lane-link")).toHaveLength(2);
+  });
+
+  it("renders lane labels as non-links when no getSessionHref is supplied", () => {
+    const { container } = render(
+      withNav(<BranchPrSessionSwimlane detail={detail()} />)
+    );
+    expect(container.querySelector(".bq-lane-name")).not.toBeNull();
+    expect(container.querySelector("a")).toBeNull();
+  });
+
+  it("keeps the burst scrub working when lane links are present (FEA-4257)", async () => {
+    const onScrubTimestamp = vi.fn();
+    const { container } = render(
+      withNav(
+        <BranchPrSessionSwimlane
+          activeTimestamp="2026-06-10T10:30:00.000Z"
+          detail={detail()}
+          getSessionHref={(sessionId) => `/acme/sessions/${sessionId}`}
+          onScrubTimestamp={onScrubTimestamp}
+        />
+      )
+    );
     const seg = container.querySelector<HTMLElement>(".bq-lane-seg");
     await userEvent.click(seg as HTMLElement);
     expect(onScrubTimestamp).toHaveBeenCalled();

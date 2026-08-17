@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import {
   appendFileSync,
   existsSync,
-  type FSWatcher,
   mkdtempSync,
   rmSync,
   symlinkSync,
@@ -13,37 +12,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, mock, test } from "node:test";
 import { createCatchupCache } from "../src/main/collectors/engine/catchup-cache.js";
-import {
-  CollectorManager,
-  sourcePathsForWatcherEvents,
-} from "../src/main/collectors/engine/collector-manager.js";
+import { CollectorManager } from "../src/main/collectors/engine/collector-manager.js";
 import type { HistoricalParseRunner } from "../src/main/collectors/engine/historical-parse-runner.js";
-import { HistoricalParseWorkerLimits } from "../src/main/collectors/engine/historical-parse-worker-protocol.js";
+import { HistoricalParseWorkerLimits } from "../src/main/collectors/engine/historical-parse-worker-limits.js";
 import { isImportableCollectorSource } from "../src/main/collectors/engine/source-admission.js";
-import { createHarnessWatcher } from "../src/main/collectors/engine/watcher.js";
-import { createOpencodeCollector } from "../src/main/collectors/opencode/opencode-collector.js";
 import type {
   HarnessCollector,
   NormalizedSession,
 } from "../src/main/collectors/types.js";
-import { InvalidTokenCountError } from "../src/main/token-counts.js";
+import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { parseIngest } from "../src/renderer/hooks/use-ingest-progress.js";
 import { deferred } from "./deferred.js";
 import {
-  makeSession as baseSession,
-  fakeCollector,
-} from "./normalized-session-test-utils.js";
+  makeSession,
+  waitUntil,
+} from "./helpers/collector-manager-fixtures.js";
+import { fakeCollector } from "./normalized-session-test-utils.js";
 
 afterEach(() => {
   mock.timers.reset();
 });
-
-// First-pass backfill console lines (hoisted to satisfy Biome useTopLevelRegex).
-const BACKFILL_ANNOUNCE_RE =
-  /session backfill \[codex\]: importing 60 source file\(s\)/;
-const BACKFILL_COMPLETE_RE =
-  /session backfill \[codex\] first pass complete: 60 source file\(s\) in \d+s/;
-const BACKFILL_LINE_RE = /session backfill/;
 
 test("first-party CollectorManager imports every injected harness, including OpenCode batch ingestion", async () => {
   const dir = mkdtempSync(join(tmpdir(), "collector-manager-ingest-"));
@@ -87,6 +75,72 @@ test("first-party CollectorManager imports every injected harness, including Ope
         { sessionId: "codex-session", harness: "codex" },
         { sessionId: "opencode-session", harness: "opencode" },
       ]
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ISS-4476: a poison session in a batch source does not skip the later sessions or wedge the source", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-manager-batch-poison-"));
+  const opencodeSentinel = join(dir, "opencode");
+  const imported: string[] = [];
+  const markedSources: string[] = [];
+  try {
+    // A single batch: true source (OpenCode) yields THREE sessions; the middle
+    // one fails to import (the ISS-4476 mis-owned-collision fail-closed, or any
+    // other per-session throw surfaced as ImportResult.failed). Pre-fix the loop
+    // `break`ed on the first failure, so `poison-2` skipped `good-3` entirely and
+    // — because the batch source is only marked seen when every session imported
+    // — the whole batch was retried on every sweep, wedging the backfill.
+    const manager = new CollectorManager({
+      importer: {
+        importSession: async (session) => {
+          if (session.sessionId === "poison-2") {
+            return { skipped: true, reactivated: false, failed: true };
+          }
+          imported.push(session.sessionId);
+          return { skipped: false, reactivated: false };
+        },
+      },
+      detectBillingMode: () => "metered_api",
+      stateDir: dir,
+      emit: () => {},
+      getCollectionMode: () => "watcher",
+      collectors: [
+        {
+          ...fakeCollector("opencode", {
+            sources: [opencodeSentinel],
+            sessions: [
+              makeSession("good-1"),
+              makeSession("poison-2"),
+              makeSession("good-3"),
+            ],
+            batch: true,
+          }),
+          // A batch source is only marked seen when EVERY session imported, so a
+          // poison session must leave the source unmarked for a retry.
+          markSourceImported: (source: string) => {
+            markedSources.push(source);
+          },
+        } as HarnessCollector,
+      ],
+    });
+
+    manager.start();
+    // `good-3` must import despite `poison-2` failing earlier in the same source.
+    await waitUntil(() => imported.includes("good-3"));
+    manager.stop();
+
+    assert.deepEqual(
+      imported.sort(),
+      ["good-1", "good-3"],
+      "both healthy sessions import; only the poison session is skipped"
+    );
+    assert.deepEqual(
+      markedSources,
+      [],
+      "a source with a failed session is left unmarked so it is retried, never permanently lost"
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -145,7 +199,9 @@ test("first-party CollectorManager uses historical parser runner for bulk import
     const runner: HistoricalParseRunner = {
       parseSource: async (harness, parsedSource) => {
         runnerCalls.push({ harness, source: parsedSource });
-        return [makeSession("worker-session")];
+        // ISS-5266: the runner resolves with the parse RESULT. This fake carries
+        // no side-report, which is the shape every non-OpenCode parse returns.
+        return { sessions: [makeSession("worker-session")] };
       },
       stop: () => {
         stopCalls++;
@@ -444,23 +500,27 @@ test("first-party CollectorManager can delay historical imports without dropping
   }
 });
 
-test("first-party CollectorManager logs first-pass backfill announce + completion for a large source backlog", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "collector-manager-backfill-log-"));
+test("first-party CollectorManager boot-import watchdog surfaces timedOut (NOT complete) when a harness import wedges (never hangs the splash)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-manager-wedged-import-"));
   try {
     mock.timers.enable({ apis: ["setTimeout"] });
-    // Above INGEST_LOG_MIN_SOURCES (50) so the first pass announces + completes.
-    const sourceCount = 60;
-    const sources: string[] = [];
-    for (let i = 0; i < sourceCount; i++) {
-      const source = join(dir, `codex-${i}.jsonl`);
-      writeFileSync(source, "{}\n");
-      sources.push(source);
-    }
-    const logs: string[] = [];
-    let resolveBootComplete: (() => void) | undefined;
-    const bootComplete = new Promise<void>((resolve) => {
-      resolveBootComplete = resolve;
+    let bootCompleteCount = 0;
+    let bootTimeoutCount = 0;
+    let resolveBootTimeout: (() => void) | undefined;
+    const bootTimeout = new Promise<void>((resolve) => {
+      resolveBootTimeout = resolve;
     });
+    // Explicit completion signals so the test proves both imports actually ran
+    // before it ticks the watchdog: the codex import must complete, and the
+    // wedged claude parse must have been entered. Waiting on event-loop turns
+    // alone would pass even if neither deferred import ever fired (the watchdog
+    // is armed synchronously in start()).
+    const codexImported = deferred<void>();
+    const claudeParseStarted = deferred<void>();
+    const codexSource = join(dir, "codex.jsonl");
+    const claudeSource = join(dir, "claude.jsonl");
+    writeFileSync(codexSource, "{}\n");
+    writeFileSync(claudeSource, "{}\n");
 
     const manager = new CollectorManager({
       importer: {
@@ -469,12 +529,21 @@ test("first-party CollectorManager logs first-pass backfill announce + completio
       detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
-      getCollectionMode: () => "watcher",
+      getCollectionMode: () => "disabled",
       cooperativeDelay: noopCooperativeDelay,
-      historicalImportDelayMs: 25,
       catchupPollMs: null,
-      log: (message) => logs.push(message),
-      onBootImportComplete: () => resolveBootComplete?.(),
+      // Small watchdog so the wedged-harness path times out deterministically
+      // under fake timers instead of the 30-minute production default.
+      bootImportWatchdogMs: 5000,
+      // FEA-4156: the watchdog must NOT declare completion — completion triggers
+      // post-boot maintenance, which would re-queue onto the wedged host.
+      onBootImportComplete: () => {
+        bootCompleteCount++;
+      },
+      onBootImportTimeout: () => {
+        bootTimeoutCount++;
+        resolveBootTimeout?.();
+      },
       collectors: [
         {
           key: "codex",
@@ -482,47 +551,83 @@ test("first-party CollectorManager logs first-pass backfill announce + completio
           allowUnscopedSourceAdmission: true,
           watchRoots: () => [],
           watchMatch: () => true,
-          listSources: () => sources,
-          parse: async (source) => [makeSession(`session-${source}`)],
+          listSources: () => [codexSource],
+          parse: async () => {
+            codexImported.resolve();
+            return [makeSession("codex-session")];
+          },
+        },
+        {
+          key: "claude",
+          cacheName: "claude",
+          allowUnscopedSourceAdmission: true,
+          watchRoots: () => [],
+          watchMatch: () => true,
+          listSources: () => [claudeSource],
+          // The wedged Claude import: its parse promise never settles, so this
+          // harness's first-import promise stays pending forever. Without the
+          // watchdog `Promise.allSettled` never resolves and the splash hangs.
+          parse: () => {
+            claudeParseStarted.resolve();
+            return new Promise<NormalizedSession[]>(() => undefined);
+          },
         },
       ],
     });
 
     manager.start();
+    // Await the two completion signals declared above before ticking the timer.
+    await Promise.all([codexImported.promise, claudeParseStarted.promise]);
+    // Let the codex import's post-parse write settle so its first-import promise
+    // resolves before we assert the aggregate is still pending on claude.
     await new Promise((resolve) => setImmediate(resolve));
-    mock.timers.tick(25);
-    await bootComplete;
-    manager.stop();
 
-    assert.ok(
-      logs.some((m) => BACKFILL_ANNOUNCE_RE.test(m)),
-      `expected a backfill announce line; got: ${logs.join(" | ")}`
+    // The wedged Claude harness keeps boot completion pending on its own.
+    assert.equal(bootCompleteCount, 0);
+    assert.equal(bootTimeoutCount, 0);
+    assert.equal(
+      manager.getIngestProgress().complete,
+      false,
+      "completion stays pending while a harness import is wedged"
     );
-    assert.ok(
-      logs.some((m) => BACKFILL_COMPLETE_RE.test(m)),
-      `expected a backfill completion line; got: ${logs.join(" | ")}`
+    assert.equal(manager.getIngestProgress().timedOut, false);
+
+    // The bounded watchdog fires and surfaces the degraded timedOut signal so the
+    // splash can resolve — but it does NOT declare completion (which would run
+    // post-boot maintenance against the still-wedged import boundary).
+    mock.timers.tick(5000);
+    await bootTimeout;
+    assert.equal(bootTimeoutCount, 1);
+    assert.equal(
+      bootCompleteCount,
+      0,
+      "the watchdog must never fire onBootImportComplete (no maintenance on a wedged import)"
     );
+    assert.equal(
+      manager.getIngestProgress().complete,
+      false,
+      "complete stays reserved for imports that actually settled"
+    );
+    assert.equal(
+      manager.getIngestProgress().timedOut,
+      true,
+      "the watchdog surfaces the degraded timedOut signal so the splash never hangs"
+    );
+
+    manager.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("first-party CollectorManager stays quiet for a small first-pass backlog", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "collector-manager-backfill-quiet-"));
+test("first-party CollectorManager boot-import watchdog re-arms while paused instead of timing out (a deliberate pause is not a wedge)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "collector-manager-paused-import-"));
   try {
     mock.timers.enable({ apis: ["setTimeout"] });
-    // Below INGEST_LOG_MIN_SOURCES (50): an everyday catch-up must not log.
-    const sources: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      const source = join(dir, `codex-${i}.jsonl`);
-      writeFileSync(source, "{}\n");
-      sources.push(source);
-    }
-    const logs: string[] = [];
-    let resolveBootComplete: (() => void) | undefined;
-    const bootComplete = new Promise<void>((resolve) => {
-      resolveBootComplete = resolve;
-    });
+    let bootTimeoutCount = 0;
+    const claudeParseStarted = deferred<void>();
+    const claudeSource = join(dir, "claude.jsonl");
+    writeFileSync(claudeSource, "{}\n");
 
     const manager = new CollectorManager({
       importer: {
@@ -531,35 +636,62 @@ test("first-party CollectorManager stays quiet for a small first-pass backlog", 
       detectBillingMode: () => "metered_api",
       stateDir: dir,
       emit: () => {},
-      getCollectionMode: () => "watcher",
+      getCollectionMode: () => "disabled",
       cooperativeDelay: noopCooperativeDelay,
-      historicalImportDelayMs: 25,
       catchupPollMs: null,
-      log: (message) => logs.push(message),
-      onBootImportComplete: () => resolveBootComplete?.(),
+      bootImportWatchdogMs: 5000,
+      onBootImportTimeout: () => {
+        bootTimeoutCount++;
+      },
       collectors: [
         {
-          key: "codex",
-          cacheName: "codex",
+          key: "claude",
+          cacheName: "claude",
           allowUnscopedSourceAdmission: true,
           watchRoots: () => [],
           watchMatch: () => true,
-          listSources: () => sources,
-          parse: async (source) => [makeSession(`session-${source}`)],
+          listSources: () => [claudeSource],
+          // Never settles, so the boot import stays pending — the watchdog would
+          // fire were the import not intentionally paused.
+          parse: () => {
+            claudeParseStarted.resolve();
+            return new Promise<NormalizedSession[]>(() => undefined);
+          },
         },
       ],
     });
 
     manager.start();
-    await new Promise((resolve) => setImmediate(resolve));
-    mock.timers.tick(25);
-    await bootComplete;
-    manager.stop();
+    // Wait for the wedged parse to actually be entered before pausing, so the
+    // test proves the import is genuinely in-flight (not merely that four
+    // event-loop turns elapsed) when the pause makes the watchdog re-arm.
+    await claudeParseStarted.promise;
+    // The user pauses the backfill: an intentional pause, not a wedge.
+    manager.pauseImport();
 
-    assert.ok(
-      !logs.some((m) => BACKFILL_LINE_RE.test(m)),
-      `expected no backfill log lines for a small backlog; got: ${logs.join(" | ")}`
+    // The window elapses. Because the import is paused, the watchdog re-arms
+    // rather than declaring a timeout.
+    mock.timers.tick(5000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      bootTimeoutCount,
+      0,
+      "a paused import must not be treated as a wedged one"
     );
+    assert.equal(manager.getIngestProgress().timedOut, false);
+
+    // After resume, the re-armed watchdog fires on the still-wedged import.
+    manager.resumeImport();
+    mock.timers.tick(5000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      bootTimeoutCount,
+      1,
+      "once resumed, the re-armed watchdog times out the genuinely wedged import"
+    );
+    assert.equal(manager.getIngestProgress().timedOut, true);
+
+    manager.stop();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -576,10 +708,7 @@ test("first-party CollectorManager pauses the historical import loop until resum
     }
     let imported = 0;
     const managerRef: { current?: CollectorManager } = {};
-    let resolveBootComplete: (() => void) | undefined;
-    const bootComplete = new Promise<void>((resolve) => {
-      resolveBootComplete = resolve;
-    });
+    const bootComplete = deferred();
     const firstImported = deferred();
 
     const manager = new CollectorManager({
@@ -600,7 +729,7 @@ test("first-party CollectorManager pauses the historical import loop until resum
       emit: () => {},
       getCollectionMode: () => "disabled",
       cooperativeDelay: noopCooperativeDelay,
-      onBootImportComplete: () => resolveBootComplete?.(),
+      onBootImportComplete: () => bootComplete.resolve(),
       collectors: [
         {
           key: "codex",
@@ -619,29 +748,38 @@ test("first-party CollectorManager pauses the historical import loop until resum
     await firstImported.promise;
     // Extra turns to prove the loop does NOT advance past the pause gate.
     await settleAsyncTurns(10);
-    assert.equal(
-      imported,
-      1,
-      "import halts at the pause gate after one source"
-    );
+    assert.equal(imported, 1, "halts at the pause gate after one source");
     assert.equal(manager.isImportPaused(), true);
     assert.deepEqual(manager.getIngestProgress(), {
       byHarness: [{ harness: "codex", total: 3, processed: 1 }],
       total: 3,
       processed: 1,
       preparing: false,
+      // ISS-5281: parked mid-flight, so the pass has NOT drained.
+      drained: false,
+      // Parked on the gate, not merely the pause REQUEST asserted above.
+      importParked: true,
       complete: false,
+      timedOut: false,
+      quarantinedByStage: { import: 0, parse: 0 },
+      quarantinedCount: 0,
     });
 
     manager.resumeImport();
-    await bootComplete;
+    await bootComplete.promise;
     assert.equal(imported, 3, "the remaining sources import after resume");
     assert.deepEqual(manager.getIngestProgress(), {
       byHarness: [{ harness: "codex", total: 3, processed: 3 }],
       total: 3,
       processed: 3,
       preparing: false,
+      // ISS-5281: ran to completion, nothing left retryable.
+      drained: true,
+      importParked: false,
       complete: true,
+      timedOut: false,
+      quarantinedByStage: { import: 0, parse: 0 },
+      quarantinedCount: 0,
     });
     manager.stop();
   } finally {
@@ -805,6 +943,7 @@ test("first-party CollectorManager getIngestProgress satisfies the renderer pars
     assert.equal(parsed.processed, progress.processed);
     assert.equal(parsed.preparing, progress.preparing);
     assert.equal(parsed.complete, progress.complete);
+    assert.equal(parsed.timedOut, progress.timedOut);
     assert.deepEqual(parsed.byHarness, progress.byHarness);
     manager.stop();
   } finally {
@@ -1176,252 +1315,6 @@ test("first-party source admission requires explicit unscoped collector opt-in",
   }
 });
 
-test("first-party HarnessWatcher drains live events queued during historical import", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "harness-watcher-queued-events-"));
-  try {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    let emitWatcherEvent: ((filename: string) => void) | undefined;
-    let resolveHistoricalStarted: (() => void) | undefined;
-    let resolveHistorical: (() => void) | undefined;
-    const historicalStarted = new Promise<void>((resolve) => {
-      resolveHistoricalStarted = resolve;
-    });
-    const releaseHistorical = new Promise<void>((resolve) => {
-      resolveHistorical = resolve;
-    });
-    const eventImports: string[][] = [];
-    const watcher = createHarnessWatcher({
-      roots: () => [dir],
-      match: (filename) => filename.endsWith(".jsonl"),
-      watchDirectory: (_root, listener) => {
-        emitWatcherEvent = (filename) => listener("change", filename);
-        return fakeFsWatcher();
-      },
-      runImport: async (events) => {
-        if (events === null) {
-          resolveHistoricalStarted?.();
-          await releaseHistorical;
-          return;
-        }
-        eventImports.push(events.map((event) => event.filename));
-      },
-    });
-
-    const firstImport = watcher.start();
-    await historicalStarted;
-    emitWatcherEvent?.("live.jsonl");
-    mock.timers.tick(600);
-    resolveHistorical?.();
-    await firstImport;
-    assert.equal(
-      eventImports.some((events) =>
-        events.some((filename) => filename.endsWith("live.jsonl"))
-      ),
-      true
-    );
-    watcher.stop();
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("first-party HarnessWatcher lets live events preempt resumable historical import", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "harness-watcher-preempt-live-"));
-  try {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    let emitWatcherEvent: ((filename: string) => void) | undefined;
-    let resolveHistoricalStarted: (() => void) | undefined;
-    let resolveLiveQueued: (() => void) | undefined;
-    const historicalStarted = new Promise<void>((resolve) => {
-      resolveHistoricalStarted = resolve;
-    });
-    const liveQueued = new Promise<void>((resolve) => {
-      resolveLiveQueued = resolve;
-    });
-    const imports: string[] = [];
-    let historicalRuns = 0;
-    const watcher = createHarnessWatcher({
-      roots: () => [dir],
-      match: (filename) => filename.endsWith(".jsonl"),
-      watchDirectory: (_root, listener) => {
-        emitWatcherEvent = (filename) => listener("change", filename);
-        return fakeFsWatcher();
-      },
-      runImport: async (events, controls) => {
-        if (events !== null) {
-          imports.push(`live:${events[0]?.filename}`);
-          return;
-        }
-        historicalRuns++;
-        imports.push(`historical:${historicalRuns}`);
-        if (historicalRuns === 1) {
-          resolveHistoricalStarted?.();
-          await liveQueued;
-          return {
-            completed: !controls?.shouldYieldToLiveEvents(),
-          };
-        }
-        return { completed: true };
-      },
-    });
-
-    const firstImport = watcher.start();
-    await historicalStarted;
-    emitWatcherEvent?.("live.jsonl");
-    mock.timers.tick(600);
-    resolveLiveQueued?.();
-    await firstImport;
-    watcher.stop();
-
-    assert.deepEqual(imports, [
-      "historical:1",
-      "live:live.jsonl",
-      "historical:2",
-    ]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("first-party HarnessWatcher settles delayed initial import when stopped before it fires", async () => {
-  let importCount = 0;
-  const watcher = createHarnessWatcher({
-    roots: () => [],
-    match: () => true,
-    runImport: async () => {
-      importCount++;
-    },
-    initialImportDelayMs: 10_000,
-  });
-
-  const firstImport = watcher.start();
-  watcher.stop();
-  await firstImport;
-
-  assert.equal(importCount, 0);
-});
-
-test("first-party HarnessWatcher coalesces excessive event bursts to a historical import", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "harness-watcher-event-burst-"));
-  try {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    let emitWatcherEvent: ((filename: string) => void) | undefined;
-    const imports: Array<"historical" | number> = [];
-    const watcher = createHarnessWatcher({
-      roots: () => [dir],
-      match: (filename) => filename.endsWith(".jsonl"),
-      runInitialImport: false,
-      catchupPollMs: null,
-      watchDirectory: (_root, listener) => {
-        emitWatcherEvent = (filename) => listener("change", filename);
-        return fakeFsWatcher();
-      },
-      runImport: async (events) => {
-        imports.push(events === null ? "historical" : events.length);
-      },
-    });
-
-    await watcher.start();
-    for (let index = 0; index < 1005; index++) {
-      emitWatcherEvent?.(`burst-${index}.jsonl`);
-    }
-    mock.timers.tick(600);
-    await new Promise((resolve) => setImmediate(resolve));
-    watcher.stop();
-
-    assert.deepEqual(imports, ["historical"]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("first-party watcher event mapping keeps imports scoped to contained regular files", () => {
-  const dir = mkdtempSync(join(tmpdir(), "collector-manager-event-scope-"));
-  const outsideDir = mkdtempSync(join(tmpdir(), "collector-manager-outside-"));
-  try {
-    const mapped = join(dir, "mapped.jsonl");
-    const outside = join(outsideDir, "outside.jsonl");
-    const linked = join(dir, "linked.jsonl");
-    const linkedParent = join(dir, "linked-parent");
-    const linkedParentTranscript = join(linkedParent, "outside.jsonl");
-    writeFileSync(mapped, "{}\n");
-    writeFileSync(outside, "{}\n");
-    symlinkSync(outside, linked);
-    symlinkSync(outsideDir, linkedParent);
-
-    const collector = fakeCollector("codex", {});
-    collector.sourcePathsForWatchEvent = () => [
-      mapped,
-      outside,
-      linked,
-      linkedParentTranscript,
-    ];
-
-    assert.deepEqual(
-      sourcePathsForWatcherEvents(collector, [
-        { root: dir, filename: "changed.jsonl" },
-      ]),
-      [mapped]
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-    rmSync(outsideDir, { recursive: true, force: true });
-  }
-});
-
-test("first-party OpenCode collector does not persist changed fingerprint after stale parse", () => {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-fingerprint-drift-"));
-  const previousOpenCodeDir = process.env.OPENCODE_DATA_DIR;
-  try {
-    process.env.OPENCODE_DATA_DIR = dir;
-    const dbPath = join(dir, "opencode.db");
-    const fingerprintPath = join(dir, "state", "opencode-fingerprint");
-    writeFileSync(dbPath, "original");
-    const collector = createOpencodeCollector({ fingerprintPath });
-    assert.deepEqual(collector.listSources(), [dbPath]);
-    const staleSnapshot = {
-      fingerprint: collector.sourceFingerprint?.(dbPath) ?? null,
-    };
-
-    appendFileSync(dbPath, "changed");
-    collector.markSourceImported?.(dbPath, staleSnapshot);
-
-    assert.deepEqual(collector.listSources(), [dbPath]);
-    collector.markSourceImported?.(dbPath, {
-      fingerprint: collector.sourceFingerprint?.(dbPath) ?? null,
-    });
-    assert.deepEqual(collector.listSources(), []);
-  } finally {
-    if (previousOpenCodeDir === undefined) {
-      Reflect.deleteProperty(process.env, "OPENCODE_DATA_DIR");
-    } else {
-      process.env.OPENCODE_DATA_DIR = previousOpenCodeDir;
-    }
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("first-party watcher event mapping rejects traversal-shaped default paths", () => {
-  const dir = mkdtempSync(join(tmpdir(), "collector-manager-traversal-"));
-  const outsideDir = mkdtempSync(
-    join(tmpdir(), "collector-manager-traversal-outside-")
-  );
-  try {
-    const outside = join(outsideDir, "outside.jsonl");
-    writeFileSync(outside, "{}\n");
-
-    assert.deepEqual(
-      sourcePathsForWatcherEvents(fakeCollector("codex", {}), [
-        { root: dir, filename: "../outside.jsonl" },
-      ]),
-      []
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-    rmSync(outsideDir, { recursive: true, force: true });
-  }
-});
-
 test("first-party catchup cache persists unchanged source fingerprints", () => {
   const dir = mkdtempSync(join(tmpdir(), "collector-manager-cache-"));
   try {
@@ -1594,40 +1487,6 @@ async function runBootImport(
   manager.start();
   await bootComplete;
   manager.stop();
-}
-
-function makeSession(
-  sessionId: string,
-  cwd = "/sandbox/project"
-): NormalizedSession {
-  return baseSession({
-    sessionId,
-    cwd,
-    model: "gpt-5",
-    startedAt: "2026-06-07T12:00:00.000Z",
-    endedAt: "2026-06-07T12:05:00.000Z",
-    userMessages: 1,
-    assistantMessages: 1,
-    entrypoint: "codex",
-  });
-}
-
-async function waitUntil(predicate: () => boolean): Promise<void> {
-  const startedAt = Date.now();
-  while (!predicate()) {
-    if (Date.now() - startedAt > 2000) {
-      throw new Error("timed out waiting for collector import");
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-function fakeFsWatcher(): FSWatcher {
-  const watcher = {
-    on: () => watcher,
-    close: () => {},
-  };
-  return watcher as unknown as FSWatcher;
 }
 
 async function noopCooperativeDelay(): Promise<void> {}

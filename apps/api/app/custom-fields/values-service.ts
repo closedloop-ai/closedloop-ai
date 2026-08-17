@@ -11,8 +11,8 @@ import {
   CustomFieldType,
 } from "@repo/api/src/types/custom-field";
 import type { BasicUser } from "@repo/api/src/types/user";
-import type { Prisma } from "@repo/database";
-import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
+import { ArtifactSubtype, ArtifactType, Prisma, withDb } from "@repo/database";
+import { getPrismaErrorCode } from "@/lib/db-utils";
 import { computeDisplayValue, validateValueType } from "./utils";
 
 /**
@@ -40,21 +40,22 @@ export class FieldNotFoundError extends Error {
 /**
  * Custom field values service - handles database operations for field settings and values.
  *
- * Settings methods (attach, detach, list) are implemented here.
- * Value read/write methods will be added in a subsequent task (T-3.3).
- *
  * No auth checks here — those belong in the route layer.
  */
 export const customFieldValuesService = {
   /**
    * Attach a custom field to an entity by creating a CustomFieldSetting.
    *
-   * For PROJECT entities, also cascades the setting to all direct child
-   * Workstreams and Features within the same transaction.
+   * For PROJECT entities, also cascades the setting to the project's
+   * feature-typed document artifacts within the same transaction.
    *
    * Verifies:
    * - The entity exists and belongs to the organization.
    * - The custom field belongs to the organization.
+   *
+   * Must be the outermost transaction: the cascade needs its own isolation
+   * level, and `withDb.tx` fails closed rather than join an ambient
+   * transaction whose level is already fixed at BEGIN.
    *
    * @throws EntityNotFoundError if the entity is not found.
    * @throws FieldNotFoundError if the field is not found in this org.
@@ -79,7 +80,7 @@ export const customFieldValuesService = {
       sortOrder: input.sortOrder ?? 0,
     };
 
-    const setting = await withDb.tx(async (tx) => {
+    const setting = await runAttachTransaction(async (tx) => {
       const created = await tx.customFieldSetting.create({
         data: settingData,
         include: SETTING_WITH_FIELD_INCLUDE,
@@ -235,15 +236,20 @@ export const customFieldValuesService = {
       rawValue
     );
 
+    const normalizedValue = normalizeIdListValue(field.fieldType, rawValue);
+
     const valuePayload = await buildValuePayload(
       field.fieldType,
       fieldId,
       organizationId,
-      rawValue
+      normalizedValue
     );
 
     const fieldWithOptions = toFieldWithOptions(field);
-    const displayValue = await computeDisplayValue(fieldWithOptions, rawValue);
+    const displayValue = await computeDisplayValue(
+      fieldWithOptions,
+      normalizedValue
+    );
 
     const upsertData = { ...valuePayload, displayValue };
 
@@ -482,7 +488,7 @@ async function validateMultiEnumOptions(
   fieldId: string,
   rawValue: string | number | string[]
 ): Promise<string[]> {
-  const optionIds = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
+  const optionIds = distinctIds(rawValue);
 
   const options = await withDb((db) =>
     db.customFieldEnumOption.findMany({
@@ -516,7 +522,7 @@ async function validatePeopleIds(
   organizationId: string,
   rawValue: string | number | string[]
 ): Promise<string[]> {
-  const userIds = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
+  const userIds = distinctIds(rawValue);
   const users = await withDb((db) =>
     db.user.findMany({
       where: { id: { in: userIds }, organizationId },
@@ -731,41 +737,184 @@ type CascadeInput = {
   input: AttachCustomFieldInput;
 };
 
+/**
+ * Bounds both halves of the cascade: one pass materializes at most this many
+ * child ids and writes exactly those as one `createMany`, so neither the id
+ * list nor the parameter count scales with project size. A CustomFieldSetting
+ * row binds the 7 columns built below plus at least the client-generated `id`
+ * (that column has no DB default), so this batch stays an order of magnitude
+ * under PostgreSQL's 65,535 parameter ceiling.
+ */
+export const CASCADE_CHILD_BATCH_SIZE = 1000;
+
+/**
+ * Interactive-transaction timeout for `attachField`.
+ *
+ * The cascade trades one unbounded `createMany` for a serial loop of
+ * `findMany` + `createMany` round-trips — 8+ of them on the same large projects
+ * (8000+ features) that were hitting the bind-parameter ceiling. The page
+ * PREDICATE is indexed (`Artifact @@index([organizationId, projectId, type])`),
+ * but the keyset `ORDER BY id` is not, so each page sorts the whole matching
+ * set rather than walking an ordered index — the per-page cost scales with the
+ * project, not with the page size. Prisma's 5s default would put exactly the
+ * tenants this fix targets back on a P2028 rollback, so raise the ceiling
+ * generously. An index on (organizationId, projectId, type, id) would make the
+ * loop linear and is the real fix for a project an order of magnitude larger.
+ */
+export const CASCADE_TX_TIMEOUT_MS = 30_000;
+
+/**
+ * Total attempts for the attach transaction, retried on a serialization
+ * failure. Two retries is enough for the contention this path actually sees —
+ * a colliding attach of the same field, not sustained write traffic.
+ */
+export const ATTACH_TX_MAX_ATTEMPTS = 3;
+
+/** Prisma's code for a write conflict or deadlock — a retryable rollback. */
+const PRISMA_WRITE_CONFLICT_CODE = "P2034";
+
+/**
+ * Runs the attach transaction on one snapshot, retrying a serialization
+ * failure on a fresh transaction.
+ *
+ * RepeatableRead is what keeps the cascade's keyset pages on one snapshot, but
+ * it also promotes the cascade's `createMany({ skipDuplicates })` — an
+ * `INSERT ... ON CONFLICT DO NOTHING` — from a silent skip to a 40001 abort.
+ * `DO NOTHING` is NOT exempt: PostgreSQL raises `could not serialize access due
+ * to concurrent update` when the conflicting tuple was committed by another
+ * transaction outside this snapshot, and Prisma surfaces it as `P2034`
+ * (verified against this repo's Postgres, delegate path included). That is
+ * reachable whenever the same field is attached to a project and to one of its
+ * child feature documents at once — a collision that was a silent no-op under
+ * READ COMMITTED. The transaction has fully rolled back by the time we see it,
+ * so re-running it is safe.
+ */
+async function runAttachTransaction<T>(
+  fn: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+  let attempt = 1;
+  for (;;) {
+    try {
+      return await withDb.tx(fn, {
+        // The cascade's keyset pages are separate statements, so under READ
+        // COMMITTED they do not agree on one child set: each page takes its
+        // own snapshot, and which children the cascade covers depends on how
+        // concurrent writes interleave with the paging. RepeatableRead makes
+        // every page read ONE snapshot, so the cascade covers exactly the
+        // children that existed when it began. That is a definition, not a
+        // widening — a child relinked in mid-cascade is outside this attach
+        // under either level, and nothing backfills it (this cascade and the
+        // direct attach above are the only writers of a setting row) — but it
+        // is a definition the caller can state, which the interleaving is not.
+        isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+        timeout: CASCADE_TX_TIMEOUT_MS,
+      });
+    } catch (error) {
+      const isRetryable =
+        getPrismaErrorCode(error) === PRISMA_WRITE_CONFLICT_CODE;
+      if (!isRetryable || attempt >= ATTACH_TX_MAX_ATTEMPTS) {
+        throw error;
+      }
+      attempt += 1;
+    }
+  }
+}
+
 async function cascadeProjectFieldToChildren(
   tx: Prisma.TransactionClient,
   { fieldId, organizationId, projectId, input }: CascadeInput
 ): Promise<void> {
-  // Features are feature-typed document artifacts — cascade only against
-  // the artifact table.
-  const childFeatureDocuments = await tx.artifact.findMany({
-    where: {
-      projectId,
-      organizationId,
-      type: ArtifactType.DOCUMENT,
-      subtype: ArtifactSubtype.FEATURE,
-    },
-    select: { id: true },
-  });
-
   const defaults = {
     customFieldId: fieldId,
     organizationId,
     isImportant: input.isImportant ?? false,
     isRequired: input.isRequired ?? false,
     sortOrder: input.sortOrder ?? 0,
+    entityType: CustomFieldEntityType.Document,
   };
 
-  const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] =
-    childFeatureDocuments.map((doc) => ({
-      ...defaults,
-      entityType: CustomFieldEntityType.Document,
-      entityId: doc.id,
-    }));
+  let cursorId: string | undefined;
+  for (;;) {
+    // Features are feature-typed document artifacts — cascade only against
+    // the artifact table.
+    const childFeatureDocuments = await tx.artifact.findMany({
+      where: {
+        projectId,
+        organizationId,
+        type: ArtifactType.DOCUMENT,
+        subtype: ArtifactSubtype.FEATURE,
+        // A keyset predicate rather than Prisma's `cursor`, which anchors on
+        // the row itself: a concurrent delete of the anchor between pages
+        // would return an empty page and silently truncate the cascade.
+        ...(cursorId ? { id: { gt: cursorId } } : {}),
+      },
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: CASCADE_CHILD_BATCH_SIZE,
+    });
 
-  if (childSettingsData.length > 0) {
+    if (childFeatureDocuments.length === 0) {
+      return;
+    }
+
+    const childSettingsData: Prisma.CustomFieldSettingCreateManyInput[] =
+      childFeatureDocuments.map((doc) => ({ ...defaults, entityId: doc.id }));
+
     await tx.customFieldSetting.createMany({
       data: childSettingsData,
       skipDuplicates: true,
     });
+
+    if (childFeatureDocuments.length < CASCADE_CHILD_BATCH_SIZE) {
+      return;
+    }
+    cursorId = childFeatureDocuments.at(-1)?.id;
+    // id is a non-null primary key on a non-empty page, so this is a safety
+    // net: a missing cursor would drop the `cursor` clause above and re-fetch
+    // page one forever.
+    if (!cursorId) {
+      return;
+    }
   }
+}
+
+/**
+ * Normalizes a multi-valued raw value into a list of distinct IDs.
+ *
+ * Deduplication is load-bearing, not cosmetic: the MULTI_ENUM and PEOPLE
+ * validators above decide "does every requested ID exist?" by comparing this
+ * length against the row count of an `id: { in: ... }` query, and Postgres
+ * returns one row per matching id regardless of how often the caller repeated
+ * it. Without this, a repeated id makes a valid request fail — and fail
+ * describing the wrong cause, since the set difference that builds the error
+ * message is empty.
+ */
+function distinctIds(rawValue: string | number | string[]): string[] {
+  const ids = Array.isArray(rawValue) ? rawValue : [String(rawValue)];
+  return [...new Set(ids)];
+}
+
+/**
+ * Collapses repeats in the ID-list field types before the write is built, so
+ * the stored ID columns and the computed displayValue derive from one list.
+ *
+ * MULTI_ENUM needs it: computeDisplayValue maps the raw value option by
+ * option, so a repeat would render twice beside a single stored ID. The
+ * PEOPLE arm is defensive only — its display path resolves names through an
+ * `id: { in: ... }` query that collapses repeats on its own.
+ */
+function normalizeIdListValue(
+  fieldType: string,
+  rawValue: string | number | string[] | null
+): string | number | string[] | null {
+  if (rawValue === null || rawValue === undefined) {
+    return rawValue;
+  }
+  if (
+    fieldType === CustomFieldType.MultiEnum ||
+    fieldType === CustomFieldType.People
+  ) {
+    return distinctIds(rawValue);
+  }
+  return rawValue;
 }

@@ -11,12 +11,12 @@ import type {
   SessionRow,
   SessionWithAgents,
 } from "../../shared/agent-db-contract.js";
-import type { TokenUsageRow } from "../agent-dashboard-db-types.js";
-import { resolveTokenUsageCostUsd } from "../agent-session-sync-service.js";
+import { resolveTokenUsageCostUsd } from "../agent-sync/agent-session-token-cost-resolution.js";
+import type { TokenUsageRow } from "../dashboard/agent-dashboard-db-types.js";
 import { tokenCountValue } from "./db-helpers.js";
 import type { DesktopPrismaReadClient } from "./prisma-client.js";
 
-function selectRowsByIds<T extends Record<string, unknown>>(
+export function selectRowsByIds<T extends Record<string, unknown>>(
   reader: DesktopPrismaReadClient,
   sql: string,
   ids: string[]
@@ -58,7 +58,7 @@ function sessionDetailsCtes(): string {
     token_totals AS (
       SELECT
         session_id,
-        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as total_tokens
+        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(baseline_input, 0) + COALESCE(output_tokens, 0) + COALESCE(baseline_output, 0)), 0) as total_tokens
       FROM token_usage
       GROUP BY session_id
     )
@@ -106,6 +106,24 @@ function toTokenUsageRow(raw: Record<string, unknown>): TokenUsageRow {
     raw.cache_write_tokens,
     "token_usage.cache_write_tokens"
   );
+  // FEA-3419: nullable TTL subdivision — NULL means the provider never reported
+  // a breakdown (absent), so it must NOT coerce to 0 (reported-zero is distinct).
+  const cacheWrite5mTokens =
+    raw.cache_write_5m_tokens === null ||
+    raw.cache_write_5m_tokens === undefined
+      ? null
+      : tokenCountValue(
+          raw.cache_write_5m_tokens,
+          "token_usage.cache_write_5m_tokens"
+        );
+  const cacheWrite1hTokens =
+    raw.cache_write_1h_tokens === null ||
+    raw.cache_write_1h_tokens === undefined
+      ? null
+      : tokenCountValue(
+          raw.cache_write_1h_tokens,
+          "token_usage.cache_write_1h_tokens"
+        );
   const estimatedCostUsd = resolveTokenUsageCostUsd({
     session_id: raw.session_id as string,
     model: raw.model as string,
@@ -113,6 +131,7 @@ function toTokenUsageRow(raw: Record<string, unknown>): TokenUsageRow {
     output_tokens: outputTokens,
     cache_read_tokens: cacheReadTokens,
     cache_write_tokens: cacheWriteTokens,
+    cache_write_1h_tokens: cacheWrite1hTokens,
     created_at: (raw.created_at as string) ?? null,
     cost_usd_estimated: (raw.cost_usd_estimated as number) ?? null,
   });
@@ -123,6 +142,8 @@ function toTokenUsageRow(raw: Record<string, unknown>): TokenUsageRow {
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    cacheWrite5mTokens,
+    cacheWrite1hTokens,
     ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
   };
 }
@@ -147,7 +168,6 @@ function detailRowsToList(
 export {
   detailRowsToList,
   groupRowsBySessionId,
-  selectRowsByIds,
   sessionDetailsCtes,
   toSessionRow,
   toTokenUsageRow,

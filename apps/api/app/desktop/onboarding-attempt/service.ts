@@ -6,6 +6,7 @@ import {
   DesktopProvisioningReadinessStatus,
 } from "@repo/api/src/types/electron";
 import { ApiKeySource, withDb } from "@repo/database";
+import { usableApiKeyWhere } from "@/lib/auth/usable-api-key-where";
 
 export const DESKTOP_ONBOARDING_ATTEMPT_TTL_MS = 60 * 60 * 1000;
 
@@ -61,8 +62,11 @@ function findReadyDesktopTarget(input: {
           ? { gatewayId: input.gatewayId }
           : { gatewayId: { not: null } }),
         source: ApiKeySource.DESKTOP_MANAGED,
-        revokedAt: null,
         boundPublicKey: { not: null },
+        // ISS-4905: only a key that could actually authenticate counts as
+        // protecting a gateway, so onboarding does not report a target ready
+        // behind a credential the verifier refuses.
+        ...usableApiKeyWhere(),
       },
       select: { gatewayId: true },
     });

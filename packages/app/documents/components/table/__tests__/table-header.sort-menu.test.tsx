@@ -25,7 +25,14 @@ vi.mock("@repo/design-system/components/ui/dropdown-menu", () => ({
   ),
 }));
 
-vi.mock("../document-row", () => ({
+// ISS-4761: spread the REAL module so `getDocumentTableColumnCount` keeps the
+// production arithmetic. A hand-copied `n + 2` stub would silently diverge from
+// it if the shared `grid-table-aria` base ever moved, and this test would keep
+// passing while the header numbered its trailing track differently than the rows.
+vi.mock("../document-row", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@repo/app/documents/components/table/document-row")
+  >()),
   getDocumentRowGridTemplateColumns: () => "1fr",
 }));
 

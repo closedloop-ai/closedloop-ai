@@ -98,7 +98,6 @@ function makeDocument(overrides?: Record<string, unknown>) {
     fileName: null,
     priority: Priority.Medium,
     createdById: "user-1",
-    tokenUsage: null,
     targetRepo: null,
     targetBranch: null,
     templateForType: null,

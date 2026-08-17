@@ -3,8 +3,8 @@ import type { LoopEventReceivedResponse } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
-  buildLoopUrl,
   encodePathSegment,
+  type McpUrlBuilder,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -14,7 +14,8 @@ import {
  */
 export function registerAddLoopEvent(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "add-loop-event",
@@ -60,7 +61,7 @@ export function registerAddLoopEvent(
         // proxy hands back a non-object body.
         const receipt: Partial<LoopEventReceivedResponse> =
           result && typeof result === "object" ? result : {};
-        const webUrl = buildLoopUrl(loopId);
+        const webUrl = urls.buildLoopUrl(loopId);
         return {
           content: [
             {

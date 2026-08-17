@@ -79,6 +79,7 @@ export function DocumentMetadataBar({
         value={metadata.priority}
       >
         <SelectTrigger
+          aria-label={`Priority: ${PRIORITY_LABELS[metadata.priority]}`}
           className="min-w-0 justify-start gap-1 *:last:hidden"
           size="sm"
         >

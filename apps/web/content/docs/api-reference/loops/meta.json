@@ -1,0 +1,12 @@
+{
+  "title": "Loops",
+  "pages": [
+    "listLoops",
+    "getLoop",
+    "createLoop",
+    "updateLoop",
+    "runDocumentLoop",
+    "cancelLoop",
+    "cancelLoopWriteScoped"
+  ]
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TelemetryAttribute } from "../src/attributes";
 import { syncPayload } from "../src/test-fixtures";
-import { SyncTelemetrySchema } from "../sync";
+import { SyncReason, SyncTelemetrySchema } from "../sync";
 
 describe("SyncTelemetrySchema", () => {
   it("accepts valid sync transport-health attributes", () => {
@@ -11,11 +11,23 @@ describe("SyncTelemetrySchema", () => {
         [TelemetryAttribute.SyncOutcome]: "dead_letter",
         [TelemetryAttribute.SyncPayloadBytes]: 512,
         [TelemetryAttribute.SyncLatencyMs]: 12.5,
+        [TelemetryAttribute.SyncReason]: "ack_timeout",
       })
     ).toMatchObject({
       [TelemetryAttribute.SyncEvent]: "batch",
       [TelemetryAttribute.SyncOutcome]: "dead_letter",
+      [TelemetryAttribute.SyncReason]: "ack_timeout",
     });
+  });
+
+  it("accepts every closed-enum sync.reason value (FEA-3426)", () => {
+    for (const reason of Object.values(SyncReason)) {
+      expect(
+        SyncTelemetrySchema.parse(
+          syncPayload({ [TelemetryAttribute.SyncReason]: reason })
+        )
+      ).toMatchObject({ [TelemetryAttribute.SyncReason]: reason });
+    }
   });
 
   it("accepts an empty payload because every sync attribute is optional", () => {
@@ -46,6 +58,7 @@ describe("SyncTelemetrySchema", () => {
       syncPayload({ [TelemetryAttribute.SyncLatencyMs]: -1 }),
       syncPayload({ [TelemetryAttribute.SyncLatencyMs]: Number.NaN }),
       syncPayload({ [TelemetryAttribute.SyncLatencyMs]: "12" }),
+      syncPayload({ [TelemetryAttribute.SyncReason]: "nope" }),
       syncPayload({ "sync.session_id": "session-123" }),
     ]) {
       expect(SyncTelemetrySchema.safeParse(payload).success).toBe(false);

@@ -51,6 +51,10 @@ export default defineConfig({
       // the generic `@repo` → `packages` mapping would drop the `/src` and fail.
       // Vite matches aliases in declaration order.
       ...sharedPlatformAliases,
+      "@repo/cost": path.resolve(
+        import.meta.dirname,
+        "../../packages/cost/src"
+      ),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../../packages/loops-api/src"

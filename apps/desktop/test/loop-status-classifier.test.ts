@@ -14,7 +14,7 @@ import {
   type ClassifierProvenanceContext,
   classifyLoopStatus,
   type LoopStatusDisposition,
-} from "../src/main/loop-status-classifier.js";
+} from "../src/main/loop/loop-status-classifier.js";
 
 type ClassifyCase = {
   label: string;

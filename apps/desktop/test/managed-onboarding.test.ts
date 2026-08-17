@@ -5,7 +5,7 @@ import {
   fetchTrustedDesktopConfig,
   parseTrustedDesktopConfig,
   withSingleManagedOnboardingRetry,
-} from "../src/main/managed-onboarding.js";
+} from "../src/main/onboarding/managed-onboarding.js";
 
 test("parseTrustedDesktopConfig accepts the exact trusted config contract", () => {
   const result = parseTrustedDesktopConfig({

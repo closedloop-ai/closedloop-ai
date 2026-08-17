@@ -165,9 +165,29 @@ describe("createDesktopNavigation", () => {
       </NavigationProvider>
     );
     const anchor = screen.getByRole("link", { name: "user" });
-    expect(anchor.getAttribute("href")).toBe("/users/123");
+    expect(anchor.getAttribute("href")).toBe("#/users/123");
     fireEvent.click(anchor);
     expect(navigation.getHref()).toBe("/dashboard");
+  });
+
+  it("renders port Link hrefs hash-prefixed so browser-deferred clicks stay in-app, while plain left-click navigates the internal path (FEA-4018)", () => {
+    const host = createFakeHashHost("#/dashboard");
+    const navigation = createDesktopNavigation(host);
+
+    render(
+      <NavigationProvider adapter={navigation.adapter}>
+        <Link href="/agents/my-agent">agent</Link>
+      </NavigationProvider>
+    );
+    const anchor = screen.getByRole("link", { name: "agent" });
+    // A modifier/middle/right-click defers to the browser: the rendered href
+    // is the hash form the desktop hash-store adapter resolves, not a bare
+    // `/agents/…` document nav the Electron guard blocks.
+    expect(anchor.getAttribute("href")).toBe("#/agents/my-agent");
+    // A plain left-click still navigates the internal path through the adapter.
+    fireEvent.click(anchor);
+    expect(navigation.getHref()).toBe("/agents/my-agent");
+    expect(host.getHash()).toBe("#/agents/my-agent");
   });
 
   it("rewrites an externally-set legacy hash to the canonical path form", () => {

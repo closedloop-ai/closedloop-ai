@@ -13,7 +13,7 @@ import type {
   Loop,
   LoopCommand,
 } from "@repo/api/src/types/loop";
-import type { LoopBranchMaterializationEnvelope } from "@repo/api/src/types/loop-body";
+import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import type { LoopCommandHandler } from "./loop-commands/loop-command-handler";
 import type { ContextPack } from "./loop-state";
 

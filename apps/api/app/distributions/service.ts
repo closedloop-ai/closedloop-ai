@@ -28,6 +28,38 @@ import { isOrgAdmin } from "@/lib/auth/org-admin";
 /** Presigned URL TTL for desktop asset downloads (15 minutes). */
 const ASSET_DOWNLOAD_URL_TTL_SECONDS = 15 * 60;
 
+/**
+ * Interactive-transaction sizing for the status-report batch write.
+ *
+ * Each report takes a blocking `pg_advisory_xact_lock` on its (distributionId,
+ * computeTargetId) key (FEA-2994) held until the whole batch commits, so under
+ * concurrent batches contending on the same target the serialized wait can
+ * exceed Prisma's 5s default interactive-transaction timeout and abort the whole
+ * batch with a P2028. The timeout must therefore sit above that 5s default.
+ *
+ * It is NOT a proven worst-case bound (FEA-4193 review, wongk): the route caps a
+ * batch at 100 reports (see the desktop status route's `.max(100)`), but total
+ * concurrent batch depth is unbounded here, so no fixed number bounds the tail
+ * under adversarial contention. Bounding concurrent depth needs admission
+ * control (a semaphore / queue) and is out of scope for this write.
+ *
+ * What we CAN bound honestly is how long one batch holds its locks: the desktop
+ * client aborts this request after 15s (`REQUEST_TIMEOUT_MS` in
+ * `apps/desktop/src/main/packs/distributions-client.ts`), so a server tx that
+ * runs past 15s only does wasted work and holds locks for a caller that is
+ * already gone. We therefore align the tx timeout to that 15s client deadline —
+ * 3x Prisma's 5s default (headroom for the capped batch's serialized lock
+ * waits) yet never outliving the request that asked for it. `maxWait` (5s) is
+ * the unrelated pool-acquire budget for starting the transaction.
+ */
+const STATUS_REPORT_TRANSACTION_MAX_WAIT_MS = 5000;
+/**
+ * Aligned to the desktop client's 15s request abort — see the block comment
+ * above. Do not raise past the client deadline without a matching change to
+ * `REQUEST_TIMEOUT_MS` in the desktop distributions client.
+ */
+const STATUS_REPORT_TRANSACTION_TIMEOUT_MS = 15_000;
+
 // ---------------------------------------------------------------------------
 // Private mappers
 // ---------------------------------------------------------------------------
@@ -101,6 +133,10 @@ function toDistributionDto(
     mode: string;
     targetingType: string;
     desiredEnabled: boolean;
+    // ISS-5123. Optional on the row type because the older selects that predate
+    // the column are still valid inputs to this mapper in tests/fixtures; an
+    // absent value maps to `null` (not withdrawn), never to a fabricated date.
+    withdrawnAt?: Date | null;
     createdAt: Date;
     updatedAt: Date;
     catalogItem: {
@@ -114,8 +150,9 @@ function toDistributionDto(
       computeTargetId: string | null;
       userId: string | null;
     }>;
-    // Omitted on the list path (see `distributionListSelect`); populated only on
-    // detail / assigned-target reads. Defaults to `[]` on the DTO when absent.
+    // Omitted on the list AND assigned-target paths (both use
+    // `distributionListSelect`, see FEA-4190); populated only on the
+    // single-distribution detail read. Defaults to `[]` on the DTO when absent.
     targetStatuses?: Array<{
       id: string;
       distributionId: string;
@@ -146,6 +183,7 @@ function toDistributionDto(
     targetingEntries: toTargetingEntries(row.targetingEntries),
     targetStatuses: (row.targetStatuses ?? []).map(toTargetStatusDto),
     assetDownloadUrl,
+    withdrawnAt: row.withdrawnAt ? row.withdrawnAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -194,6 +232,7 @@ const distributionSelect = {
   mode: true,
   targetingType: true,
   desiredEnabled: true,
+  withdrawnAt: true,
   createdAt: true,
   updatedAt: true,
   catalogItem: {
@@ -229,12 +268,14 @@ const distributionSelect = {
 } as const;
 
 /**
- * List-path select: same as `distributionSelect` but WITHOUT the potentially
- * unbounded per-device `targetStatuses` relation. The `GET /distributions` list
- * contract (and `DistributionDto` docs) omit `targetStatuses` — it is populated
- * only on the detail / assigned-target reads. Pushing the omission into the
- * query keeps the list payload bounded regardless of how many devices have
- * reported status for a distribution.
+ * List / assigned-target select: same as `distributionSelect` but WITHOUT the
+ * potentially unbounded per-device `targetStatuses` relation. Both the
+ * `GET /distributions` list and the desktop assigned-target read
+ * (`getAssignedForTarget`) use this select, and the `DistributionDto` docs omit
+ * `targetStatuses` — it is populated only on the single-distribution detail read
+ * (`getDetailForOrg`, via `distributionSelect`). Pushing the omission into the
+ * query keeps the payload bounded regardless of how many devices have reported
+ * status for a distribution.
  */
 const distributionListSelect = {
   id: true,
@@ -243,6 +284,7 @@ const distributionListSelect = {
   mode: true,
   targetingType: true,
   desiredEnabled: true,
+  withdrawnAt: true,
   createdAt: true,
   updatedAt: true,
   catalogItem: {
@@ -311,10 +353,26 @@ function resolveStatusTimestamps(
  * overlapping batches can never deadlock on a shared pair. It serializes only on
  * the shared key, so unrelated distributions proceed in parallel.
  *
+ * The upsert is freshness-aware (FEA-4193): a batch captures `now` once and
+ * writes it as `reported_at`, but advisory-lock contention can let an OLDER wide
+ * batch resume and reach a shared key *after* a NEWER batch already committed it.
+ * An unconditional `DO UPDATE` would then clobber the newer row's last-seen
+ * fields (status, installed_version, install_run_id, failure_reason, reported_at)
+ * with stale data. So each last-seen field is only taken from the incoming
+ * (EXCLUDED) row when `EXCLUDED.reported_at >= existing.reported_at`; otherwise
+ * the persisted value is kept. `reported_at` itself advances monotonically via
+ * `GREATEST(existing, EXCLUDED)`. Ties (equal `reported_at` — e.g. two reports
+ * minted in the same millisecond, or a duplicate id within a batch) resolve to
+ * the incoming row (`>=`), which is deterministic and idempotent for identical
+ * data. A stale batch that lost the race can no longer overwrite the newer
+ * committed value.
+ *
  * First-seen `installedAt`/`enabledAt` milestones are preserved via
- * `COALESCE(existing, EXCLUDED)`: the incoming report only supplies a timestamp
- * when the milestone is newly reached (see `resolveStatusTimestamps`), and any
- * already-recorded value on the existing row is kept untouched. The `id` PK is
+ * `COALESCE(existing, EXCLUDED)` and kept OUTSIDE the freshness gate: the
+ * incoming report only supplies a timestamp when the milestone is newly reached
+ * (see `resolveStatusTimestamps`), and once recorded the earliest value always
+ * wins regardless of arrival order, so a stale batch can still fill a milestone
+ * the newer batch never observed without ever rewriting one. The `id` PK is
  * minted in app code with `uuidv7()` — Prisma's client-side `@default(uuid(7))`
  * does not apply to raw SQL and the column has no DB default, and a raw
  * `gen_random_uuid()` (UUIDv4) would break the table's time-ordered ids.
@@ -372,11 +430,18 @@ async function upsertOneStatusReport(
     )
     ON CONFLICT (distribution_id, compute_target_id) WHERE compute_target_id IS NOT NULL
     DO UPDATE SET
-      status = EXCLUDED.status,
-      installed_version = EXCLUDED.installed_version,
-      install_run_id = EXCLUDED.install_run_id,
-      failure_reason = EXCLUDED.failure_reason,
-      reported_at = EXCLUDED.reported_at,
+      -- Freshness guard (FEA-4193): a stale batch that lost the advisory-lock
+      -- race must not clobber a newer committed row. Each last-seen field takes
+      -- the incoming (EXCLUDED) value only when this report is at least as recent
+      -- as the persisted row; on an exact reported_at tie the incoming row wins.
+      -- A NULL persisted reported_at (rows written by other paths carry no
+      -- freshness baseline) COALESCEs to the incoming value so the report is not
+      -- dropped. EXCLUDED.reported_at is always the batch now value (never NULL).
+      status = CASE WHEN EXCLUDED.reported_at >= COALESCE(distribution_target_status.reported_at, EXCLUDED.reported_at) THEN EXCLUDED.status ELSE distribution_target_status.status END,
+      installed_version = CASE WHEN EXCLUDED.reported_at >= COALESCE(distribution_target_status.reported_at, EXCLUDED.reported_at) THEN EXCLUDED.installed_version ELSE distribution_target_status.installed_version END,
+      install_run_id = CASE WHEN EXCLUDED.reported_at >= COALESCE(distribution_target_status.reported_at, EXCLUDED.reported_at) THEN EXCLUDED.install_run_id ELSE distribution_target_status.install_run_id END,
+      failure_reason = CASE WHEN EXCLUDED.reported_at >= COALESCE(distribution_target_status.reported_at, EXCLUDED.reported_at) THEN EXCLUDED.failure_reason ELSE distribution_target_status.failure_reason END,
+      reported_at = GREATEST(distribution_target_status.reported_at, EXCLUDED.reported_at),
       installed_at = COALESCE(distribution_target_status.installed_at, EXCLUDED.installed_at),
       enabled_at = COALESCE(distribution_target_status.enabled_at, EXCLUDED.enabled_at),
       updated_at = now()
@@ -389,13 +454,18 @@ async function upsertOneStatusReport(
 
 export const distributionsService = {
   /**
-   * List all non-archived distributions for an org (org-visible, no admin gate).
+   * List the org's LIVE distributions (org-visible, no admin gate).
    * Does not populate per-device `targetStatuses` (list view only).
+   *
+   * ISS-5123: excludes withdrawn distributions. This is what makes the admin
+   * Packs surface show a withdrawn pack as "Not distributed yet" again — and
+   * therefore what makes withdrawal reversible, since re-distributing is just
+   * creating a new distribution.
    */
   async listForOrg(organizationId: string): Promise<DistributionDto[]> {
     const rows = await withDb((db) =>
       db.distribution.findMany({
-        where: { organizationId },
+        where: { organizationId, withdrawnAt: null },
         orderBy: { createdAt: "desc" },
         select: distributionListSelect,
       })
@@ -502,9 +572,22 @@ export const distributionsService = {
       return Result.err(Status.Forbidden);
     }
 
+    // ISS-5123: a withdrawn distribution is not editable. Two admins can race —
+    // one withdraws while the other has the edit dialog open — and letting the
+    // late PATCH land would report success for a change no member will ever
+    // receive, because every live read filters the row out. Treating it as gone
+    // (404) is the only answer that does not lie about the roll-out state.
+    //
+    // This read resolves the CURRENT targeting type (needed to decide what the
+    // rebuild should write when the body omits it); it deliberately does NOT
+    // stand in for the liveness check. A separate read leaves a window in which
+    // a concurrent DELETE stamps `withdrawnAt` before the update lands, and a
+    // write keyed on `id` alone would then edit — and report 200 for — a
+    // distribution that is already gone. The `withdrawnAt: null` predicate
+    // therefore rides on the write itself, below.
     const existing = await withDb((db) =>
       db.distribution.findFirst({
-        where: { id: distributionId, organizationId },
+        where: { id: distributionId, organizationId, withdrawnAt: null },
         select: { id: true, targetingType: true },
       })
     );
@@ -518,24 +601,44 @@ export const distributionsService = {
       body.targetComputeTargetIds !== undefined ||
       body.targetUserIds !== undefined;
 
+    // `updateMany`, not `update`: it is the only form that carries the
+    // `withdrawnAt: null` predicate into the same statement as the write, so the
+    // affected-row count is an atomic answer to "was this still live when I
+    // wrote?" rather than a stale echo of the read above.
+    const liveDistribution = {
+      id: distributionId,
+      organizationId,
+      withdrawnAt: null,
+    };
+    const scalarEdits = {
+      ...(body.mode !== undefined && { mode: body.mode }),
+      ...(body.targetingType !== undefined && {
+        targetingType: body.targetingType,
+      }),
+      ...(body.desiredEnabled !== undefined && {
+        desiredEnabled: body.desiredEnabled,
+      }),
+    };
+
     if (needsEntryRebuild) {
-      await withDb.tx(async (tx) => {
-        await tx.distribution.update({
-          where: { id: distributionId },
-          data: {
-            ...(body.mode !== undefined && { mode: body.mode }),
-            ...(body.targetingType !== undefined && {
-              targetingType: body.targetingType,
-            }),
-            ...(body.desiredEnabled !== undefined && {
-              desiredEnabled: body.desiredEnabled,
-            }),
-          },
+      const rebuilt = await withDb.tx(async (tx) => {
+        const { count } = await tx.distribution.updateMany({
+          where: liveDistribution,
+          data: scalarEdits,
+        });
+        if (count === 0) {
+          // Withdrawn between the read and this write. Nothing has been written
+          // yet, and returning here keeps it that way: the targeting rebuild is
+          // skipped inside the same transaction, so a withdrawn row can never be
+          // left carrying entries rewritten by a PATCH that answers 404.
+          return false;
+        }
+        // Every rebuild starts from a clean slate; "all" simply stops here,
+        // which is what dropping its stale specific entries means.
+        await tx.distributionTargetingEntry.deleteMany({
+          where: { distributionId },
         });
         if (newTargetingType === DistributionTargetingType.Specific) {
-          await tx.distributionTargetingEntry.deleteMany({
-            where: { distributionId },
-          });
           const entries = [
             ...(body.targetComputeTargetIds ?? []).map((computeTargetId) => ({
               distributionId,
@@ -551,25 +654,22 @@ export const distributionsService = {
           if (entries.length > 0) {
             await tx.distributionTargetingEntry.createMany({ data: entries });
           }
-        } else {
-          // Switched to "all" — remove old specific entries
-          await tx.distributionTargetingEntry.deleteMany({
-            where: { distributionId },
-          });
         }
+        return true;
       });
+      if (!rebuilt) {
+        return Result.err(Status.NotFound);
+      }
     } else {
-      await withDb((db) =>
-        db.distribution.update({
-          where: { id: distributionId },
-          data: {
-            ...(body.mode !== undefined && { mode: body.mode }),
-            ...(body.desiredEnabled !== undefined && {
-              desiredEnabled: body.desiredEnabled,
-            }),
-          },
+      const { count } = await withDb((db) =>
+        db.distribution.updateMany({
+          where: liveDistribution,
+          data: scalarEdits,
         })
       );
+      if (count === 0) {
+        return Result.err(Status.NotFound);
+      }
     }
 
     const updated = await withDb((db) =>
@@ -582,6 +682,72 @@ export const distributionsService = {
       return Result.err(Status.Error);
     }
     return Result.ok(toDistributionDto(updated));
+  },
+
+  /**
+   * Withdraw a Distribution — stop offering this pack to the organization
+   * (ISS-5123). Admin-only, under the existing `Distribute` capability: the
+   * right to offer a pack org-wide and the right to stop offering it are the
+   * same authority, so this deliberately adds no new capability and widens
+   * nobody's permissions.
+   *
+   * ## What it does and does not do
+   *
+   * Withdrawal removes the OFFER. The distribution leaves `listForOrg` and the
+   * desktop `getAssignedForTarget` poll, so no member is offered it and no
+   * device auto-installs it again. Copies already installed on members' machines
+   * are deliberately left alone and keep working: the desktop reconcile is
+   * additive and never uninstalls a pack that disappears from its assignment
+   * list, so no remote-cleanup path is triggered here. In-flight installs also
+   * still settle — `upsertStatusReports` intentionally keeps accepting reports
+   * for a withdrawn distribution, so a device that fetched the assignment a
+   * moment before withdrawal records its real outcome instead of erroring.
+   *
+   * ## Idempotency
+   *
+   * The state change is a single conditional `updateMany` on `withdrawnAt: null`,
+   * so two concurrent withdrawals cannot both stamp the row and there is no
+   * read-then-write window. A second withdrawal — a double click, a retry, a
+   * second admin — matches zero rows and returns the already-withdrawn record as
+   * a success, because "the org no longer offers this pack" is exactly the state
+   * the caller asked for. It is a no-op, never an error and never a re-stamp
+   * that would rewrite who withdrew it and when.
+   *
+   * Returns `NotFound` only when no such distribution exists in this org at all.
+   */
+  async withdraw(
+    organizationId: string,
+    distributionId: string,
+    userId: string,
+    clerkOrgId: string,
+    clerkUserId: string
+  ): Promise<Result<DistributionDto, StatusCode>> {
+    const admin = await isOrgAdmin(clerkOrgId, clerkUserId);
+    if (!admin) {
+      return Result.err(Status.Forbidden);
+    }
+
+    await withDb((db) =>
+      db.distribution.updateMany({
+        where: { id: distributionId, organizationId, withdrawnAt: null },
+        data: { withdrawnAt: new Date(), withdrawnById: userId },
+      })
+    );
+
+    // Re-read unconditionally rather than branching on the update count: the
+    // already-withdrawn case and the just-withdrawn case must return the same
+    // shape, and a zero count alone cannot tell "already withdrawn" from
+    // "wrong org / no such id".
+    const row = await withDb((db) =>
+      db.distribution.findFirst({
+        where: { id: distributionId, organizationId },
+        select: distributionSelect,
+      })
+    );
+    if (!row) {
+      return Result.err(Status.NotFound);
+    }
+    return Result.ok(toDistributionDto(row));
   },
 
   // ---------------------------------------------------------------------------
@@ -598,6 +764,13 @@ export const distributionsService = {
    * For `auto_install` distributions with a zip asset, attaches a 15-minute
    * presigned S3 download URL. ComputeTarget ownership must be verified by the
    * route before calling this method.
+   *
+   * Uses `distributionListSelect` (no per-device `targetStatuses`): the desktop
+   * assignment poll discards that relation, so fetching every org device's
+   * install-status rows for each assigned distribution grows the payload
+   * O(devices) per distribution for no benefit. A future consumer that needs
+   * own-target status should scope to `where: { computeTargetId }` rather than
+   * re-adding the unbounded relation.
    */
   async getAssignedForTarget(
     organizationId: string,
@@ -608,6 +781,13 @@ export const distributionsService = {
       db.distribution.findMany({
         where: {
           organizationId,
+          // ISS-5123: a withdrawn distribution is no longer offered to the org,
+          // so it must leave this poll — this predicate IS "stop distributing".
+          // It only stops the OFFER: packs already installed from it are left
+          // alone (the desktop reconcile is additive and never uninstalls what
+          // disappears from this list), which is the withdrawal semantic the
+          // ticket asks for.
+          withdrawnAt: null,
           catalogItem: { archived: false, enabled: true },
           OR: [
             { targetingType: DistributionTargetingType.All },
@@ -622,7 +802,7 @@ export const distributionsService = {
           ],
         },
         select: {
-          ...distributionSelect,
+          ...distributionListSelect,
           catalogItem: {
             select: {
               id: true,
@@ -705,11 +885,17 @@ export const distributionsService = {
     const orderedReports = [...validReports].sort((a, b) =>
       a.distributionId.localeCompare(b.distributionId)
     );
-    await withDb.tx(async (tx) => {
-      for (const report of orderedReports) {
-        await upsertOneStatusReport(tx, report, computeTargetId, userId, now);
+    await withDb.tx(
+      async (tx) => {
+        for (const report of orderedReports) {
+          await upsertOneStatusReport(tx, report, computeTargetId, userId, now);
+        }
+      },
+      {
+        maxWait: STATUS_REPORT_TRANSACTION_MAX_WAIT_MS,
+        timeout: STATUS_REPORT_TRANSACTION_TIMEOUT_MS,
       }
-    });
+    );
 
     return Result.ok(validReports.length);
   },

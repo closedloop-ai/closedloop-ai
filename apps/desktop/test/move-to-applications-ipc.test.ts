@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { registerMoveToApplicationsIpcHandler } from "../src/main/move-to-applications-ipc.js";
+import { registerMoveToApplicationsIpcHandler } from "../src/main/ipc/move-to-applications-ipc.js";
 import { createDesktopApi } from "../src/main/preload-common.js";
 import { MOVE_TO_APPLICATIONS_IPC_CHANNEL } from "../src/shared/move-to-applications-ipc-channel.js";
 

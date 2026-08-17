@@ -1,0 +1,64 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The node-side suites live under `test/`, outside the main project's
+    // `src` rootDir. Emission is off, so this only widens the program.
+    "rootDir": ".",
+    "types": ["node"],
+    // The main project inherits `lib: ["ES2023"]` from node-next.json, but the
+    // Electron main process is not bare Node: it ships the WHATWG fetch/URL/
+    // stream globals, and these suites stub them (`RequestInfo`, `HeadersInit`,
+    // `Response#body`) or reach renderer modules that touch `window`. Declaring
+    // the real ambient environment is what makes the remaining diagnostics
+    // genuine type errors rather than missing-lib noise.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  // Everything under `test/` is covered BY DEFAULT so a new suite is guarded the
+  // day it is written. `test/e2e` is Playwright/renderer code with different lib
+  // and JSX needs and has its own project (tsconfig.e2e.json).
+  //
+  // `test/soak` (the Stage-0 sync soak harness) belongs HERE, not in the e2e
+  // project. It drives Playwright, so it was first routed to tsconfig.e2e.json
+  // by analogy with `test/e2e` — but the analogy does not hold twice over: the
+  // harness is a plain Node CLI with no JSX and no renderer imports, so it needs
+  // nothing the e2e project adds; and `typecheck-project-coverage.test.ts`
+  // requires the e2e project to include EXACTLY `test/e2e/**/*.ts` and this
+  // project's exclude list to stay within the ISS-5142 shrink-only baseline.
+  // Covering it by default here satisfies both.
+  "include": ["test/**/*.ts"],
+  "exclude": [
+    "test/e2e",
+    "test/app-menu-labs.test.ts",
+    "test/attribution-importer.test.ts",
+    "test/authorized-command-key-store.test.ts",
+    "test/billing-mode-read-path-parity.test.ts",
+    "test/boot-recovery.test.ts",
+    "test/cloud-command-executor.test.ts",
+    "test/command-key-notification-boundary.test.ts",
+    "test/command-key-reconciler.test.ts",
+    "test/component-invocations-command-key-identity.test.ts",
+    "test/component-invocations-materialization.test.ts",
+    "test/data-revision-rebuild.test.ts",
+    "test/desktop-cloud-github-nudge.test.ts",
+    "test/feature-flags-shared-ui.test.ts",
+    "test/gateway-auth.test.ts",
+    "test/gateway-dispatch-ipc.test.ts",
+    "test/import-revision-seal-orphan-heal.test.ts",
+    "test/ingest-orchestrator.test.ts",
+    "test/ipc-sender-gates.test.ts",
+    "test/keyboard-activation.test.ts",
+    "test/loop-http.test.ts",
+    "test/maintenance-write-txs.test.ts",
+    "test/model-pricing-sqlite.test.ts",
+    "test/required-plugin-installer-runtime-ready.test.ts",
+    "test/required-plugin-installer.test.ts",
+    "test/scheduled-tasks-ipc.test.ts",
+    "test/scheduler-service.test.ts",
+    "test/shared-agent-sessions-sort.test.ts",
+    "test/shared-branch-trace.test.ts",
+    "test/shared-trace-comments-store.test.ts",
+    "test/spawn-hardening.test.ts",
+    "test/tool-call-detail-import.test.ts",
+    "test/trace-comment-parent-session-cloud-post.test.ts"
+  ]
+}

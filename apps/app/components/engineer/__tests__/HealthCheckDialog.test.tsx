@@ -1,38 +1,34 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { CheckSeverity } from "@repo/api/src/types/compute-target";
 import { act, render, screen } from "@testing-library/react";
-import React from "react";
+import type React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createWrapper,
+  failingData,
+  RE_RECHECK_BUTTON,
+} from "./fixtures/health-check-dialog-fixtures";
 
 // EXIT_ANIMATION_MS matches the constant in the component
 const EXIT_ANIMATION_MS = 250;
 
+const RE_CONTINUE_BUTTON = /continue/i;
+const RE_CANCEL_BUTTON = /^cancel$/i;
+const RE_INSTALLER_URL =
+  /raw\.githubusercontent\.com\/closedloop-ai\/claude-plugins\/main\/install\.sh/;
+const RE_TARGET_LOCAL_GATEWAY = /Target: Local Gateway/i;
+const RE_TARGET_LOCALHOST = /Target: localhost/i;
+const RE_SESSION_CHECKBOX = /don't show this again until i close this tab/i;
+
 const mockQueryFn = vi.fn();
 const mockSystemCheckResults = vi.fn();
-const mockLatestElectronReleaseOptions = vi.hoisted(() => vi.fn());
-const mockLatestElectronReleaseResult = vi.hoisted(
-  (): {
-    value: {
-      data:
-        | {
-            downloadUrl: string;
-            releaseNotes: string;
-            version: string;
-          }
-        | undefined;
-      isLoading: boolean;
-    };
-  } => ({
-    value: {
-      data: {
-        downloadUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
-        releaseNotes: "",
-        version: "1.0.0",
-      },
-      isLoading: false,
-    },
-  })
+
+const mockUseFeatureFlagEnabled = vi.hoisted(() =>
+  vi.fn((_key: string) => false)
 );
+
+vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
+  useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
+}));
 
 vi.mock("@/lib/engineer/queries/health-check", async (importOriginal) => {
   const actual =
@@ -74,13 +70,6 @@ vi.mock("@/components/engineer/PathAutocomplete", () => ({
   ),
 }));
 
-vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
-  useLatestElectronRelease: (options: unknown) => {
-    mockLatestElectronReleaseOptions(options);
-    return mockLatestElectronReleaseResult.value;
-  },
-}));
-
 vi.mock("@/lib/engineer/queries/keys", () => ({
   queryKeys: {
     healthCheck: () => ["health-check"],
@@ -100,15 +89,8 @@ vi.mock("sonner", () => ({
 }));
 
 // Import after mocks are registered
-import {
-  HealthCheckDialog,
-  resetHealthCheckDialogVisibilityForTests,
-} from "../HealthCheckDialog";
+import { HealthCheckDialog } from "../HealthCheckDialog";
 
-const failingData = {
-  checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
-  allRequiredPassed: false,
-};
 const pluginFailureData = {
   checks: [
     {
@@ -125,101 +107,6 @@ const passingData = {
   allRequiredPassed: true,
 };
 
-beforeEach(() => {
-  mockLatestElectronReleaseResult.value = {
-    data: {
-      downloadUrl:
-        "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
-      releaseNotes: "",
-      version: "1.0.0",
-    },
-    isLoading: false,
-  };
-});
-
-function createTestQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: 0 },
-      mutations: { retry: false },
-    },
-  });
-}
-
-function createWrapper(queryClient = createTestQueryClient()) {
-  return function Wrapper({ children }: { children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    );
-  };
-}
-
-describe("Release gating", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
-    mockQueryFn.mockResolvedValue(failingData);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("waits for latest release data to settle before issuing the initial health check", async () => {
-    mockLatestElectronReleaseResult.value = {
-      data: undefined,
-      isLoading: true,
-    };
-
-    const Wrapper = createWrapper();
-    const { rerender } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    expect(mockLatestElectronReleaseOptions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        enabled: false,
-        staleTime: 300_000,
-      })
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(mockQueryFn).not.toHaveBeenCalled();
-    expect(mockLatestElectronReleaseOptions).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        enabled: true,
-        staleTime: 300_000,
-      })
-    );
-
-    mockLatestElectronReleaseResult.value = {
-      data: {
-        downloadUrl:
-          "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
-        releaseNotes: "",
-        version: "1.0.0",
-      },
-      isLoading: false,
-    };
-
-    rerender(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-    await act(async () => {});
-
-    expect(mockQueryFn).toHaveBeenCalledTimes(1);
-  });
-});
-
 describe("target kind classification", () => {
   it("classifies owned relay targets by ownership even when plugin auto-update is disabled", async () => {
     const Wrapper = createWrapper();
@@ -228,7 +115,7 @@ describe("target kind classification", () => {
         <HealthCheckDialog
           initialData={failingData}
           isOwnedTarget
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           pluginAutoUpdateEnabled={false}
           relayTargetId="target-1"
@@ -251,7 +138,7 @@ describe("target kind classification", () => {
         <HealthCheckDialog
           initialData={failingData}
           isOwnedTarget={false}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           pluginAutoUpdateEnabled={false}
           relayTargetId="target-1"
@@ -291,7 +178,7 @@ describe("plugin install guidance", () => {
               },
             ],
           }}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -302,9 +189,7 @@ describe("plugin install guidance", () => {
       vi.advanceTimersByTime(150);
     });
 
-    const installerCommand = screen.getByText(
-      /raw\.githubusercontent\.com\/closedloop-ai\/claude-plugins\/main\/install\.sh/
-    );
+    const installerCommand = screen.getByText(RE_INSTALLER_URL);
 
     expect(installerCommand).toBeInTheDocument();
     expect(installerCommand).toHaveTextContent(/mktemp/);
@@ -316,169 +201,15 @@ describe("plugin install guidance", () => {
       )
     ).not.toBeInTheDocument();
   });
-});
-
-describe("Dismissal behavior", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
-    mockQueryFn.mockResolvedValue(failingData);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("Escape key dismisses the dialog even with required failures", async () => {
-    const Wrapper = createWrapper();
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    // Flush mount effects (setMounted + useEffect for failure detection)
-    await act(async () => {});
-    // Fire the deferred setTimeout(0) that commits shownTargetKeys
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    // Give Radix time to register its keyboard listener
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    act(() => {
-      document.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: "Escape",
-          bubbles: true,
-          cancelable: true,
-        })
-      );
-    });
-
-    act(() => {
-      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
-    });
-
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("Click outside dismisses the dialog even with required failures", async () => {
-    const Wrapper = createWrapper();
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    act(() => {
-      document.dispatchEvent(
-        new PointerEvent("pointerdown", { bubbles: true, cancelable: true })
-      );
-    });
-
-    act(() => {
-      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
-    });
-
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  it("Continue button is always enabled and dismisses the dialog", async () => {
-    const Wrapper = createWrapper();
-    const { unmount } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    const continueButton = screen.getByRole("button", { name: /continue/i });
-    expect(continueButton).not.toBeDisabled();
-
-    act(() => {
-      continueButton.click();
-    });
-
-    act(() => {
-      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
-    });
-
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    unmount();
-    mockQueryFn.mockClear();
-
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-
-    expect(screen.queryByText("System Check")).toBeNull();
-    expect(mockQueryFn).not.toHaveBeenCalled();
-  });
-
-  it("runs one health-check request per Re-check click", async () => {
-    const Wrapper = createWrapper();
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    mockQueryFn.mockClear();
-    mockQueryFn.mockResolvedValueOnce(failingData);
-
-    act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
-    });
-    await act(async () => {});
-
-    expect(mockQueryFn).toHaveBeenCalledTimes(1);
-  });
 
   it("shows installer remediation for missing or disabled plugins", async () => {
+    vi.useFakeTimers();
     const Wrapper = createWrapper();
     render(
       <Wrapper>
         <HealthCheckDialog
           initialData={pluginFailureData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -505,6 +236,7 @@ describe("Dismissal behavior", () => {
   });
 
   it("shows installer remediation when any plugin check fails", async () => {
+    vi.useFakeTimers();
     const Wrapper = createWrapper();
     render(
       <Wrapper>
@@ -526,7 +258,7 @@ describe("Dismissal behavior", () => {
             ],
             allRequiredPassed: false,
           }}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -550,52 +282,86 @@ describe("Dismissal behavior", () => {
       })
     ).toBeInTheDocument();
   });
-});
 
-describe("MCP rendering", () => {
-  beforeEach(() => {
+  it("does not prescribe the installer when the plugin rows are merely blocked", async () => {
+    // ISS-5369: a stale Claude binary path leaves every plugin row `blocked`
+    // and still `passed: false` for older builds. The rows stopped asserting a
+    // fault; the panel must stop prescribing a command that cannot succeed.
     vi.useFakeTimers();
-    vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
-    mockQueryFn.mockResolvedValue({
-      checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
-      allRequiredPassed: false,
-      mcpServers: {
-        claude: {
-          available: true,
-          serverName: "my-claude-mcp",
-          matchedUrl: "https://example.com/mcp",
-          checkedAt: "2026-04-13T18:41:00.000Z",
-        },
-        codex: {
-          available: false,
-          serverName: "my-codex-mcp",
-          matchedUrl: "https://example.com/mcp",
-          checkedAt: "2026-04-13T18:41:00.000Z",
-        },
-      },
-    });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("passes Claude and Codex MCP rows into the rendered checks", async () => {
     const Wrapper = createWrapper();
     render(
       <Wrapper>
-        <HealthCheckDialog />
+        <HealthCheckDialog
+          initialData={{
+            checks: [
+              {
+                id: "claude-cli",
+                label: "Claude Code",
+                required: true,
+                passed: false,
+                severity: CheckSeverity.Error,
+                error: "Override path does not exist or is not executable",
+              },
+              {
+                id: "plugin-code",
+                label: "Symphony Plugin",
+                required: true,
+                passed: false,
+                severity: CheckSeverity.Blocked,
+                blockedBy: "claude-cli",
+                error: "Not checked, Claude CLI unavailable",
+              },
+            ],
+            allRequiredPassed: false,
+          }}
+          latestVersionOverride={null}
+          onCancel={vi.fn()}
+        />
       </Wrapper>
     );
 
     await act(async () => {});
     act(() => {
-      vi.advanceTimersByTime(1);
+      vi.advanceTimersByTime(240);
     });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
+
+    expect(screen.queryByText(RE_INSTALLER_URL)).toBeNull();
+  });
+});
+
+describe("MCP rendering", () => {
+  it("passes Claude and Codex MCP rows into the rendered checks", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={{
+            checks: [
+              { id: "cli", label: "CLI", required: true, passed: false },
+            ],
+            allRequiredPassed: false,
+            mcpServers: {
+              claude: {
+                available: true,
+                serverName: "my-claude-mcp",
+                matchedUrl: "https://example.com/mcp",
+                checkedAt: "2026-04-13T18:41:00.000Z",
+              },
+              codex: {
+                available: false,
+                serverName: "my-codex-mcp",
+                matchedUrl: "https://example.com/mcp",
+                checkedAt: "2026-04-13T18:41:00.000Z",
+              },
+            },
+          }}
+          latestVersionOverride={null}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
 
     const latestProps = mockSystemCheckResults.mock.calls.at(-1)?.[0] as
       | {
@@ -620,11 +386,10 @@ describe("MCP rendering", () => {
   });
 });
 
-describe("Show-once behavior", () => {
+describe("Blocking dialog behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
     mockQueryFn.mockResolvedValue(failingData);
   });
 
@@ -632,182 +397,13 @@ describe("Show-once behavior", () => {
     vi.useRealTimers();
   });
 
-  it("Does not open the dialog on a second mount after the first mount opened it", async () => {
+  it("renders initial data without issuing a health-check fetch", async () => {
     const Wrapper = createWrapper();
-    const { unmount } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    // Flush mount effects
-    await act(async () => {});
-    // First advance processes query result and triggers the failure-detection
-    // effect which schedules setTimeout(0) for the deferred flag write
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    // Second advance fires the deferred setTimeout(0), committing
-    // shownTargetKeys = true BEFORE unmount's cleanup can cancel it
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    unmount();
-
-    // Second mount — shownTargetKeys is now true
-    const Wrapper2 = createWrapper();
-    render(
-      <Wrapper2>
-        <HealthCheckDialog />
-      </Wrapper2>
-    );
-
-    await act(async () => {});
-
-    expect(screen.queryByText("System Check")).toBeNull();
-  });
-
-  it("After first failing mount sets shownTargetKeys, second mount does not issue another health-check query", async () => {
-    const Wrapper = createWrapper();
-    const { unmount } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    // First advance: processes query result, triggers failure-detection effect
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    // Second advance: fires deferred setTimeout(0) → shownTargetKeys = true
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    unmount();
-    mockQueryFn.mockClear();
-
-    // Second mount — query should be disabled (canOpenThisMount.current is false)
-    const Wrapper2 = createWrapper();
-    render(
-      <Wrapper2>
-        <HealthCheckDialog />
-      </Wrapper2>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(mockQueryFn).not.toHaveBeenCalled();
-  });
-
-  it("does not refetch on mount when a fresh passing result is already cached", async () => {
-    const queryClient = createTestQueryClient();
-    queryClient.setQueryData(["health-check"], passingData);
-    const Wrapper = createWrapper(queryClient);
-
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    expect(mockQueryFn).not.toHaveBeenCalled();
-    expect(screen.queryByText("System Check")).toBeNull();
-  });
-
-  it("StrictMode throwaway mount does not consume the one-shot flag, and stable mount does commit it", async () => {
-    // Step 1: Render in StrictMode — throwaway mount must NOT burn the flag
-    const Wrapper = createWrapper();
-    const { unmount } = render(
-      <React.StrictMode>
-        <Wrapper>
-          <HealthCheckDialog />
-        </Wrapper>
-      </React.StrictMode>
-    );
-
-    // Flush mount effects from both throwaway and stable mounts
-    await act(async () => {});
-    // First advance: processes query result, triggers failure-detection effect
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    // Second advance: fires the stable mount's deferred setTimeout(0) write
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-
-    // Stable mount should have opened the dialog
-    expect(screen.queryByText("System Check")).not.toBeNull();
-
-    unmount();
-
-    // Step 2: Do NOT call resetHealthCheckDialogVisibilityForTests —
-    // the stable mount must have committed shownTargetKeys = true.
-    const Wrapper2 = createWrapper();
-    render(
-      <Wrapper2>
-        <HealthCheckDialog />
-      </Wrapper2>
-    );
-
-    await act(async () => {});
-
-    // Second mount sees shownTargetKeys = true and returns null
-    expect(screen.queryByText("System Check")).toBeNull();
-  });
-});
-
-describe("Blocking pre-loop mode", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
-    mockQueryFn.mockResolvedValue(failingData);
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("bypasses ambient show-once suppression and renders initial data without fetching", async () => {
-    const Wrapper = createWrapper();
-    const { unmount } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    expect(screen.queryByText("System Check")).not.toBeNull();
-    unmount();
-    mockQueryFn.mockClear();
-
     render(
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -819,37 +415,13 @@ describe("Blocking pre-loop mode", () => {
     expect(mockQueryFn).not.toHaveBeenCalled();
   });
 
-  it("blocking mode still opens after the ambient dialog was continued", async () => {
+  it("does not render a session dismissal checkbox", async () => {
     const Wrapper = createWrapper();
-    const { unmount } = render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    act(() => {
-      screen.getByRole("button", { name: /continue/i }).click();
-    });
-    act(() => {
-      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
-    });
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    unmount();
-    mockQueryFn.mockClear();
-
     render(
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -857,16 +429,16 @@ describe("Blocking pre-loop mode", () => {
 
     await act(async () => {});
 
-    expect(screen.queryByText("System Check")).not.toBeNull();
-    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
-    expect(mockQueryFn).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("checkbox", { name: RE_SESSION_CHECKBOX })
+    ).not.toBeInTheDocument();
   });
 
-  it("renders blocking initial data supplied after the query is mounted", async () => {
+  it("renders initial data supplied after the query is mounted", async () => {
     const Wrapper = createWrapper();
     const { rerender } = render(
       <Wrapper>
-        <HealthCheckDialog mode="blocking-pre-loop" onCancel={vi.fn()} />
+        <HealthCheckDialog latestVersionOverride={null} onCancel={vi.fn()} />
       </Wrapper>
     );
 
@@ -880,7 +452,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -907,7 +479,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={onCancel}
         />
       </Wrapper>
@@ -927,14 +499,14 @@ describe("Blocking pre-loop mode", () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it("disables Continue in blocking mode", async () => {
+  it("routes the Cancel button through cancel and closes the dialog", async () => {
     const onCancel = vi.fn();
     const Wrapper = createWrapper();
     render(
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={onCancel}
         />
       </Wrapper>
@@ -942,8 +514,42 @@ describe("Blocking pre-loop mode", () => {
 
     await act(async () => {});
 
-    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
-    expect(onCancel).not.toHaveBeenCalled();
+    act(() => {
+      screen.getByRole("button", { name: RE_CANCEL_BUTTON }).click();
+    });
+
+    expect(onCancel).toHaveBeenCalledOnce();
+
+    act(() => {
+      vi.advanceTimersByTime(EXIT_ANIMATION_MS + 50);
+    });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers only Cancel and Re-check actions, no Continue affordance", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          latestVersionOverride={null}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(
+      screen.getByRole("button", { name: RE_CANCEL_BUTTON })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: RE_CONTINUE_BUTTON })
+    ).not.toBeInTheDocument();
   });
 
   it("labels localhost targets as Local Gateway", async () => {
@@ -952,7 +558,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           targetLabel="localhost"
         />
@@ -961,8 +567,35 @@ describe("Blocking pre-loop mode", () => {
 
     await act(async () => {});
 
-    expect(screen.getByText(/Target: Local Gateway/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Target: localhost/i)).not.toBeInTheDocument();
+    expect(screen.getByText(RE_TARGET_LOCAL_GATEWAY)).toBeInTheDocument();
+    expect(screen.queryByText(RE_TARGET_LOCALHOST)).not.toBeInTheDocument();
+  });
+
+  it("runs one health-check request per Re-check click", async () => {
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          latestVersionOverride={null}
+          onCancel={vi.fn()}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    expect(screen.queryByText("System Check")).not.toBeNull();
+
+    mockQueryFn.mockClear();
+    mockQueryFn.mockResolvedValueOnce(failingData);
+
+    act(() => {
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
+    });
+    await act(async () => {});
+
+    expect(mockQueryFn).toHaveBeenCalledTimes(1);
   });
 
   it("calls the resolved callback after a passing Re-check success delay", async () => {
@@ -973,7 +606,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           onResolvedAfterRecheck={onResolvedAfterRecheck}
         />
@@ -983,11 +616,69 @@ describe("Blocking pre-loop mode", () => {
     await act(async () => {});
 
     act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
     });
     await act(async () => {});
     act(() => {
       vi.advanceTimersByTime(120);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+
+    expect(onResolvedAfterRecheck).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * ISS-5811. The Re-check clears the real failure and leaves only a REQUIRED
+   * row the gateway could not determine. The pre-loop gate records zero
+   * blockers on that response, so the dialog must let go too — while it read its
+   * own `required && !passed`, it saw a failure the gate did not, the success
+   * screen never ran, and the pending command stayed stuck behind a dialog with
+   * nothing left to fix. `allRequiredPassed` stays FALSE in the fixture on
+   * purpose: this resolves off the row severities, not off that flag.
+   */
+  it("calls the resolved callback when Re-check leaves only undeterminable required rows", async () => {
+    const onResolvedAfterRecheck = vi.fn();
+    mockQueryFn.mockResolvedValueOnce({
+      checks: [
+        { id: "git", label: "Git", required: true, passed: true },
+        {
+          id: "plugin-code",
+          label: "Symphony Plugin",
+          required: true,
+          passed: false,
+          severity: CheckSeverity.Unknown,
+          error: "Could not verify enabled state",
+        },
+      ],
+      allRequiredPassed: false,
+    });
+    const Wrapper = createWrapper();
+    render(
+      <Wrapper>
+        <HealthCheckDialog
+          initialData={failingData}
+          latestVersionOverride={null}
+          onCancel={vi.fn()}
+          onResolvedAfterRecheck={onResolvedAfterRecheck}
+        />
+      </Wrapper>
+    );
+
+    await act(async () => {});
+
+    act(() => {
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
+    });
+    await act(async () => {});
+    act(() => {
+      vi.advanceTimersByTime(240);
     });
     await act(async () => {});
     act(() => {
@@ -1013,7 +704,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           onRecheckResult={onRecheckResult}
         />
@@ -1023,7 +714,7 @@ describe("Blocking pre-loop mode", () => {
     await act(async () => {});
 
     act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
     });
     await act(async () => {});
 
@@ -1039,7 +730,7 @@ describe("Blocking pre-loop mode", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           onRecheckUnavailable={onRecheckUnavailable}
         />
@@ -1055,7 +746,7 @@ describe("Blocking pre-loop mode", () => {
     });
 
     act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
     });
     await act(async () => {});
     act(() => {
@@ -1073,43 +764,10 @@ describe("Query error rendering", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
   });
 
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  it("opens the ambient dialog with a terminal error row when the initial health check times out", async () => {
-    mockQueryFn.mockRejectedValue(
-      new DOMException("The operation timed out.", "TimeoutError")
-    );
-    const Wrapper = createWrapper();
-
-    render(
-      <Wrapper>
-        <HealthCheckDialog />
-      </Wrapper>
-    );
-
-    await act(async () => {});
-    act(() => {
-      vi.advanceTimersByTime(1);
-    });
-    await act(async () => {});
-
-    expect(screen.queryByText("System Check")).not.toBeNull();
-    expect(mockSystemCheckResults.mock.calls.at(-1)?.[0]).toMatchObject({
-      isLoading: false,
-      checks: [
-        expect.objectContaining({
-          id: "health-check-request",
-          error: "System check timed out",
-          passed: false,
-          required: true,
-        }),
-      ],
-    });
   });
 
   it("shows the timeout error instead of stale passing data when Re-check fails", async () => {
@@ -1123,7 +781,7 @@ describe("Query error rendering", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={passingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
           onResolvedAfterRecheck={onResolvedAfterRecheck}
         />
@@ -1132,7 +790,7 @@ describe("Query error rendering", () => {
 
     await act(async () => {});
     act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
     });
     await act(async () => {});
     act(() => {
@@ -1158,7 +816,6 @@ describe("Checking indicator behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    resetHealthCheckDialogVisibilityForTests();
   });
 
   afterEach(() => {
@@ -1179,7 +836,7 @@ describe("Checking indicator behavior", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -1188,7 +845,7 @@ describe("Checking indicator behavior", () => {
     await act(async () => {});
 
     act(() => {
-      screen.getByRole("button", { name: /re-check/i }).click();
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON }).click();
     });
     await act(async () => {});
 
@@ -1198,7 +855,9 @@ describe("Checking indicator behavior", () => {
   it("spins the RefreshCw icon while a re-check is in flight with cached failures", async () => {
     const resolveRecheck = await renderAndClickRecheckWithPendingQuery();
 
-    const recheckButton = screen.getByRole("button", { name: /re-check/i });
+    const recheckButton = screen.getByRole("button", {
+      name: RE_RECHECK_BUTTON,
+    });
     const icon = recheckButton.querySelector("svg");
     expect(icon?.getAttribute("class")).toContain("animate-spin");
 
@@ -1215,7 +874,7 @@ describe("Checking indicator behavior", () => {
       <Wrapper>
         <HealthCheckDialog
           initialData={failingData}
-          mode="blocking-pre-loop"
+          latestVersionOverride={null}
           onCancel={vi.fn()}
         />
       </Wrapper>
@@ -1223,7 +882,9 @@ describe("Checking indicator behavior", () => {
 
     await act(async () => {});
 
-    const recheckButton = screen.getByRole("button", { name: /re-check/i });
+    const recheckButton = screen.getByRole("button", {
+      name: RE_RECHECK_BUTTON,
+    });
     const icon = recheckButton.querySelector("svg");
     expect(icon?.getAttribute("class")).not.toContain("animate-spin");
   });
@@ -1231,7 +892,9 @@ describe("Checking indicator behavior", () => {
   it("disables the Re-check button while a fetch is in flight", async () => {
     const resolveRecheck = await renderAndClickRecheckWithPendingQuery();
 
-    expect(screen.getByRole("button", { name: /re-check/i })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: RE_RECHECK_BUTTON })
+    ).toBeDisabled();
 
     await act(() => {
       resolveRecheck(failingData);

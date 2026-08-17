@@ -17,17 +17,12 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 
-vi.mock("../route-helpers", () => ({
-  getAgentSessionViewerScope: vi.fn(),
-}));
-
 vi.mock("../service", () => ({
   agentSessionsService: {
     findSessionDetail: vi.fn(),
   },
 }));
 
-import { getAgentSessionViewerScope } from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { GET } from "./route";
 
@@ -37,9 +32,6 @@ describe("GET /agent-sessions/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
-    vi.mocked(getAgentSessionViewerScope).mockResolvedValue({
-      monitoringEnabled: true,
-    });
     vi.mocked(agentSessionsService.findSessionDetail).mockResolvedValue(
       buildDetail()
     );
@@ -105,11 +97,12 @@ describe("GET /agent-sessions/[id]", () => {
     });
   });
 
-  it("blocks when monitoring is disabled", async () => {
-    vi.mocked(getAgentSessionViewerScope).mockResolvedValue({
-      monitoringEnabled: false,
-    });
-
+  // FEA-4155 (wongk review #3789): the session detail read is no longer gated on
+  // the winding-down `DESKTOP_AGENT_SESSION_SYNC` monitoring flag — the surface
+  // is always-on, so the detail must resolve for any in-org caller and never 403
+  // as the flag winds down. Org-scoping (`organizationId` in the service read)
+  // remains the boundary.
+  it("returns the detail without a monitoring-flag gate (FEA-4155)", async () => {
     const response = await GET(
       createMockRequest({
         url: `http://localhost:3002/agent-sessions/${SESSION_ID}`,
@@ -117,8 +110,11 @@ describe("GET /agent-sessions/[id]", () => {
       createMockRouteContext({ id: SESSION_ID })
     );
 
-    expect(response.status).toBe(403);
-    expect(agentSessionsService.findSessionDetail).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(agentSessionsService.findSessionDetail).toHaveBeenCalledWith({
+      id: SESSION_ID,
+      organizationId: "test-org-id",
+    });
   });
 
   it("maps missing sessions to not found", async () => {
@@ -183,6 +179,7 @@ function buildDetail(
     startedAt: new Date("2026-05-20T17:00:00.000Z"),
     updatedAt: new Date("2026-05-20T17:05:00.000Z"),
     lastActivityAt: new Date("2026-05-20T17:05:00.000Z"),
+    lastSyncedAt: new Date("2026-05-20T17:05:00.000Z"),
     endedAt: null,
     awaitingInputSince: null,
     inputTokens: 10,
@@ -203,6 +200,7 @@ function buildDetail(
       machineName: "Test Target",
       isOnline: true,
       lastSeenAt: new Date("2026-05-20T17:05:00.000Z"),
+      lastAgentSessionSyncAt: new Date("2026-05-20T17:05:00.000Z"),
     },
     project: null,
     metadata: null,

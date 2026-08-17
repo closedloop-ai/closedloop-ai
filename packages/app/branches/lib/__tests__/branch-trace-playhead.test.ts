@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import { describe, expect, it } from "vitest";
 import {
   buildTraceTimeIndex,

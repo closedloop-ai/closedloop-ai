@@ -1,9 +1,4 @@
 import { createHash } from "node:crypto";
-import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
-import type {
-  HeartbeatResult,
-  RunnerTokenIssue,
-} from "@closedloop-ai/loops-api/token-refresh";
 import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { HarnessType } from "@repo/api/src/types/compute-target";
@@ -41,20 +36,23 @@ import {
   issueLoopRunnerToken,
   type LoopRunnerTokenIssueResult,
 } from "@repo/auth/loop-runner-jwt";
-import {
-  type GitHubInstallationRepository,
-  GitHubInstallationStatus,
-  Prisma,
-  type Loop as PrismaLoop,
-  withDb,
-} from "@repo/database";
-import { verifyInstallationBranchExists } from "@repo/github";
+import { Prisma, type Loop as PrismaLoop, withDb } from "@repo/database";
+import { AdditionalRepoRefSchema } from "@closedloop-ai/loops-api/context-pack";
+import type {
+  HeartbeatResult,
+  RunnerTokenIssue,
+} from "@closedloop-ai/loops-api/token-refresh";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
 import { documentPullRequestService } from "@/app/documents/document-pull-request-service";
 import type { LoopRuntimeState } from "@/app/loops/types";
+import {
+  loopProjection,
+  searchIndexService,
+} from "@/app/search/search-index-service";
 import { mapTagRelations, TAG_RELATION_INCLUDE } from "@/app/tags/service";
 import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
+import { STALE_PENDING_THRESHOLD_MS } from "@/lib/loops/launch-budget";
 import {
   findNonTerminalBlockers,
   type LoopBlocker,
@@ -73,6 +71,8 @@ import {
   mapRefreshErrorCodeToReason,
   ReapReason,
 } from "@/lib/observability/loop-runner-metrics";
+import { displayUserName } from "@/lib/user-display-name";
+import { authorizeAdditionalRepos } from "./authorize-additional-repos";
 import {
   HEARTBEAT_RATE_LIMIT_WINDOW_MS,
   LOOP_ACTIVE_INDEX_NAME,
@@ -81,14 +81,12 @@ import {
   REVIVAL_MAX_PER_LOOP,
 } from "./loop-constants";
 import {
-  BranchNotFoundError,
   ConcurrentLoopLimitError,
   InvalidStatusTransitionError,
   LoopAlreadyActiveError,
   NestedManualLoopError,
   ReplayDetectedError,
   RepoNotInProjectPoolError,
-  UnauthorizedRepoError,
 } from "./loop-errors";
 import {
   IngestRunnerEventErrorCode,
@@ -198,13 +196,6 @@ const supportBundleEventDataSchema = z.object({
   keys: z.array(z.string().min(1)).min(1).max(2),
   files: z.array(supportBundleFileSchema).max(2).optional(),
 });
-
-/**
- * Age threshold beyond which a PENDING loop with no containerId is treated as
- * an orphan (silently-failed dispatch). Used by the reap step and by the
- * operationally-active lookup so the two stay in lockstep.
- */
-const STALE_PENDING_THRESHOLD_MS = 30_000;
 
 /** Camel-case field names emitted by Prisma's `error.meta.target` array. */
 const LOOP_ACTIVE_INDEX_TARGET_FIELDS = new Set([
@@ -1035,6 +1026,13 @@ export const loopsService = {
       blockedBy: blockedBy.map((blocker) => blocker.id),
     });
 
+    // FEA-3863: best-effort, post-commit, fail-open search projection upsert.
+    // A loop's searchable text (command title + prompt body) is immutable, so a
+    // single index at create suffices; later status updates don't change it. The
+    // status is captured at create (PENDING/BLOCKED/…) for the `:status` filter;
+    // the backfill reconciles the live status for later transitions (FEA-3930).
+    indexLoopProjection(loop.id, organizationId, userId, input, loop.status);
+
     return {
       loopId: loop.id,
       status: loop.status as LoopStatus,
@@ -1319,7 +1317,7 @@ export const loopsService = {
     status: LoopStatus,
     data?: Partial<{
       containerId: string;
-      startedAt: Date;
+      startedAt: Date | null;
       completedAt: Date;
       tokensInput: number;
       tokensOutput: number;
@@ -1440,9 +1438,9 @@ export const loopsService = {
       to: status,
     });
 
-    // If transitioning directly to a terminal state (e.g., from CLAIMED when
-    // "started" event was lost), backfill startedAt so the record is consistent.
-    if (TERMINAL_STATUSES.has(status) && !updateData.startedAt) {
+    // Backfill startedAt on a terminal transition (e.g. from CLAIMED when the
+    // "started" event was lost). Explicit null = never started, so skip (ISS-5711).
+    if (TERMINAL_STATUSES.has(status) && updateData.startedAt === undefined) {
       await withDb((db) =>
         db.loop.updateMany({
           where: { id, organizationId, startedAt: null },
@@ -2150,9 +2148,7 @@ export const loopsService = {
       const u = userMap.get(g.userId);
       return {
         userId: g.userId,
-        userName: u
-          ? [u.firstName, u.lastName].filter(Boolean).join(" ") || u.email
-          : "Unknown",
+        userName: u ? displayUserName(u) : "Unknown",
         userEmail: u?.email ?? "",
         userAvatarUrl: u?.avatarUrl ?? null,
         loopCount: g._count,
@@ -2773,112 +2769,6 @@ function _findPrimaryRepoPr(
   }
 
   return prs.find((pr) => pr.repoFullName === loop.repo?.fullName) ?? null;
-}
-
-/**
- * Verify the GitHub App installation has access to every repo in `additionalRepos`.
- * Performs a single batch query against GitHubInstallationRepository scoped to
- * the org's ACTIVE installation. Throws UnauthorizedRepoError if any repos are
- * not accessible. Returns the verified repository records on success.
- *
- * @param additionalRepos - List of repos to check (each with a fullName field)
- * @param organizationId - Organization ID used to scope the installation lookup
- */
-export async function authorizeAdditionalRepos(
-  additionalRepos: Array<{ fullName: string; branch: string }>,
-  organizationId: string
-): Promise<GitHubInstallationRepository[]> {
-  if (additionalRepos.length === 0) {
-    return [];
-  }
-
-  const fullNames = additionalRepos.map((r) => r.fullName);
-
-  log.info("authorizeAdditionalRepos: checking repos", {
-    count: additionalRepos.length,
-    repos: fullNames,
-    organizationId,
-  });
-
-  // Filter tombstoned rows (PLN-634) so dispatch never targets a repo that
-  // disappeared from the installation during a disconnect/reinstall window.
-  const authorizedRepos = await withDb((db) =>
-    db.gitHubInstallationRepository.findMany({
-      where: {
-        fullName: { in: fullNames },
-        removedAt: null,
-        installation: {
-          organizationId,
-          status: GitHubInstallationStatus.ACTIVE,
-        },
-      },
-      select: {
-        id: true,
-        fullName: true,
-        name: true,
-        owner: true,
-        private: true,
-        githubRepoId: true,
-        installationId: true,
-        lastPushedAt: true,
-        removedAt: true,
-        createdAt: true,
-        updatedAt: true,
-        installation: {
-          select: {
-            installationId: true,
-          },
-        },
-      },
-    })
-  );
-
-  const authorizedNames = new Set(authorizedRepos.map((r) => r.fullName));
-  const unauthorizedRepos = fullNames.filter((n) => !authorizedNames.has(n));
-
-  if (unauthorizedRepos.length > 0) {
-    log.warn("authorizeAdditionalRepos: unauthorized repos detected", {
-      unauthorizedRepos,
-      organizationId,
-    });
-    throw new UnauthorizedRepoError(unauthorizedRepos);
-  }
-
-  // Build a lookup map so we can find the branch for each authorized repo
-  const branchByFullName = new Map(
-    additionalRepos.map((r) => [r.fullName, r.branch])
-  );
-
-  await Promise.all(
-    authorizedRepos.map(async (repo) => {
-      const branch = branchByFullName.get(repo.fullName);
-      if (!branch) {
-        return;
-      }
-      const exists = await verifyInstallationBranchExists(
-        repo.installation.installationId,
-        repo.owner,
-        repo.name,
-        branch
-      );
-      if (!exists) {
-        log.warn("authorizeAdditionalRepos: branch not found", {
-          repo: repo.fullName,
-          branch,
-          organizationId,
-        });
-        throw new BranchNotFoundError(repo.fullName, branch);
-      }
-    })
-  );
-
-  log.info("authorizeAdditionalRepos: authorization succeeded", {
-    count: authorizedRepos.length,
-    repos: authorizedRepos.map((r) => r.fullName),
-    organizationId,
-  });
-
-  return authorizedRepos;
 }
 
 /**
@@ -3593,4 +3483,32 @@ export async function reviveTimedOutLoop(
     expiresAt: issued.expiresAt,
     jti: issued.tokenId,
   };
+}
+
+/**
+ * FEA-3863: best-effort, post-commit, fail-open upsert of a newly created loop
+ * into the `search_document` projection. Extracted from `loopsService.create`
+ * to keep that method under the cognitive-complexity budget. Never blocks or
+ * fails the create.
+ */
+function indexLoopProjection(
+  loopId: string,
+  organizationId: string,
+  userId: string,
+  input: CreateLoopRequest,
+  // The loop's status as its raw string (the projection stores it as TEXT for
+  // the `:status` filter); the created Loop's Prisma `status` satisfies this.
+  status: string
+): void {
+  searchIndexService.indexAfterCommit(
+    loopProjection({
+      id: loopId,
+      organizationId,
+      command: input.command,
+      prompt: input.prompt ?? null,
+      userId,
+      status,
+      updatedAt: new Date(),
+    })
+  );
 }

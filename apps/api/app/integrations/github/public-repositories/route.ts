@@ -15,7 +15,10 @@ import {
   parseBody,
   successResponse,
 } from "@/lib/route-utils";
-import { publicRepositoryService } from "./service";
+import {
+  AddPublicRepositoryErrorCode,
+  publicRepositoryService,
+} from "./service";
 
 const addPublicRepositoryValidator = z.object({
   url: z.string().min(1),
@@ -45,6 +48,7 @@ export const POST = withAnyAuth<
 
   const result = await publicRepositoryService.addPublicRepository(
     user.organizationId,
+    user.id,
     body.url
   );
 
@@ -73,6 +77,12 @@ export const POST = withAnyAuth<
 
   if (result.error === Status.Conflict) {
     return conflictResponse("Repository already added to this organization");
+  }
+
+  if (result.error === AddPublicRepositoryErrorCode.RepositoryNotPublic) {
+    return badRequestResponse(
+      "This repository is private. Only public repositories can be added."
+    );
   }
 
   return badRequestResponse("Invalid GitHub repository URL");

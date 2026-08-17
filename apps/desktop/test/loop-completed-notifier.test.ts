@@ -5,7 +5,7 @@ import {
   type LoopCompletedNotification,
   type LoopCompletedNotificationOptions,
   LoopCompletedNotifier,
-} from "../src/main/loop-completed-notifier.js";
+} from "../src/main/loop/loop-completed-notifier.js";
 
 test("LoopCompletedNotifier shows one notification on completion", () => {
   const notifications: FakeNotification[] = [];

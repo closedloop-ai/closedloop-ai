@@ -1,6 +1,7 @@
 import "server-only";
 
 import { getInstallationOctokit } from "@repo/github/installation-auth";
+import pLimit from "p-limit";
 import {
   classifyComponentPath,
   dedupeComponents,
@@ -10,6 +11,15 @@ import {
 
 /** Cap blob fetches so a huge repo can't fan out unbounded GitHub reads. */
 const MAX_COMPONENT_FILES = 300;
+
+/**
+ * Cap on in-flight blob fetches. Each candidate is an independent GitHub read,
+ * so we fan them out concurrently instead of paying N serial round-trips, but
+ * bound the concurrency to keep GitHub rate-limit pressure in check. Mirrors the
+ * `PR_READ_REPAIR_CONCURRENCY = 5` cap used for GitHub reads in
+ * apps/api/lib/pr-read-repair.ts.
+ */
+const BLOB_FETCH_CONCURRENCY = 5;
 
 const TRIM_SLASHES_RE = /^\/+|\/+$/g;
 
@@ -124,20 +134,52 @@ export async function fetchRepoComponents(
     );
   }
 
+  // Each candidate blob fetch is an independent GitHub round-trip, so fan them
+  // out concurrently (bounded by BLOB_FETCH_CONCURRENCY) rather than paying up
+  // to MAX_COMPONENT_FILES serial round-trips. `allSettled` (not `all`) so no
+  // fetch outlives this function: `all` would reject on the first failure while
+  // the queued and in-flight tasks kept running unawaited, which the
+  // fire-and-forget rule in apps/api/AGENTS.md forbids. The original loop's
+  // fail-fast behavior is kept explicitly instead: `aborted` stops any
+  // not-yet-started fetch, and the first rejection in candidate order is
+  // rethrown once every task has settled.
+  const limit = pLimit(BLOB_FETCH_CONCURRENCY);
+  let aborted = false;
+  const settled = await Promise.allSettled(
+    candidates.map((candidate) =>
+      limit(async () => {
+        if (aborted) {
+          return null;
+        }
+        try {
+          const blob = await octokit.git.getBlob({
+            owner,
+            repo,
+            file_sha: candidate.sha,
+          });
+          const content = Buffer.from(
+            blob.data.content,
+            (blob.data.encoding as BufferEncoding) ?? "base64"
+          ).toString("utf-8");
+          return classifyComponentPath(candidate.rel, () => content);
+        } catch (error) {
+          aborted = true;
+          throw error;
+        }
+      })
+    )
+  );
+
+  for (const result of settled) {
+    if (result.status === "rejected") {
+      throw result.reason;
+    }
+  }
+
   const components: ParsedComponent[] = [];
-  for (const candidate of candidates) {
-    const blob = await octokit.git.getBlob({
-      owner,
-      repo,
-      file_sha: candidate.sha,
-    });
-    const content = Buffer.from(
-      blob.data.content,
-      (blob.data.encoding as BufferEncoding) ?? "base64"
-    ).toString("utf-8");
-    const parsed = classifyComponentPath(candidate.rel, () => content);
-    if (parsed) {
-      components.push(...parsed);
+  for (const result of settled) {
+    if (result.status === "fulfilled" && result.value) {
+      components.push(...result.value);
     }
   }
 

@@ -1,17 +1,14 @@
 import {
-  kpi,
-  lifespanHistogram,
-  pctDelta,
-  ttmHistogram,
-} from "@closedloop-ai/loops-api/insights";
+  AGENT_FAILED_STATUS_TERMS,
+  AGENT_SUCCESS_STATUS_TERMS,
+} from "@repo/api/src/agent-session-status";
 import { ssotMergeRateFromCounts } from "@repo/api/src/insights/delivery-kpis/parity";
-import { BranchFileCacheStatus } from "@repo/api/src/types/artifact";
 import { GITHUB_PR_STATE_LABELS } from "@repo/api/src/types/github";
 import {
+  type AgentPipelineGraphData,
   type AgentsInsightsResponse,
   type CategoryBucket,
   type DeliveryInsightsResponse,
-  type DonutSlice,
   type InsightsGitHubProvenance,
   InsightsGitHubProvenanceState,
   type InsightsPeriod,
@@ -28,40 +25,58 @@ import {
 } from "@repo/api/src/types/insights";
 import { median } from "@repo/api/src/utils/math";
 import { labelize } from "@repo/api/src/utils/string";
+import { GitHubPRState, Prisma, ReviewDecision, withDb } from "@repo/database";
 import {
-  ChecksStatus,
-  GitHubPRState,
-  Prisma,
-  ReviewDecision,
-  withDb,
-} from "@repo/database";
+  COST_KPI_SUB,
+  comparableKpi,
+  kpi,
+  lifespanHistogram,
+  pctDelta,
+  ttmHistogram,
+} from "@closedloop-ai/loops-api/insights";
+import { log } from "@repo/observability/log";
+import { fetchAgentsSpendBreakdowns } from "@/app/insights/agents-spend";
+import {
+  fetchBranchesWithoutPrBuckets,
+  fetchCheckStatusBuckets,
+} from "@/app/insights/insights-branch-population";
+import { fetchActivityHeatmap } from "@/app/insights/lib/activity-heatmap";
+import { fetchReviewQueue } from "@/app/insights/review-backlog";
+import {
+  cacheTokens,
+  countedTokens,
+  type TokenTotals,
+  tokenDistributionBuckets,
+} from "@/app/insights/token-derivations";
 import { resolveGitHubDataConnectionStatus } from "@/app/integrations/github/data-connection-status";
-import { canonicalizeTimeZone, toLocalDateOnly } from "@/lib/date-only";
+import { frustrationSettingService } from "@/app/settings/frustration-setting-service";
+import { canonicalizeTimeZone } from "@/lib/date-only";
 import { toNumber } from "@/lib/prisma-number";
+import { displayUserName } from "@/lib/user-display-name";
+import {
+  eachDayKey,
+  makeDayKey,
+  runDailyBucketedQuery,
+} from "./lib/daily-buckets";
+import {
+  dedupeMergedPrsWithEarliestCreation,
+  distinctMergedPrCount,
+  mergedLocKpis,
+  mergedPrLoc,
+  mergedPrLocTotals,
+} from "./merged-pr-loc";
+import {
+  countClosedPrs,
+  countDistinctPriorMergedPrs,
+  countMergedPrsInRange,
+  fetchMergedPrs,
+  type MergedPrRow,
+} from "./merged-pr-queries";
 
 const MS_PER_DAY = 86_400_000;
 const MS_PER_SECOND = 1000;
 const TREND_LOOKBACK_DAYS = 90;
 const MAX_MODEL_SERIES = 6;
-
-// FEA-2878: the delivery view's merged-PR summary aggregates (median time-to-
-// merge, KLOC totals, and the repo/TTM/lifespan histograms) are computed
-// app-side over the materialized merged-PR rows. For the "all" period
-// (range.start = epoch) an unbounded fetch would pull every merged PR org-wide
-// — and then fan out into an `IN (branchArtifactId…)` line-totals group-by over
-// the same set. The scan is therefore capped to the most recent
-// MERGED_PR_SCAN_CAP rows (newest-first). The headline "Merged PRs" count and
-// its delta come from an exact DB count() (see countMergedPrsInRange), and the
-// state distribution (prByState) is sized from that same count, so both stay
-// precise for any org size. Every other delivery aggregate that reads these
-// rows — the median-TTM / KLOC / median-PR-size KPIs and the repo, TTM, and
-// lifespan histograms — is computed over the retained window, so it degrades
-// gracefully (biased toward the most recent activity) only once a single period
-// exceeds the cap. A `take`/cursor drop-in without the separate count() would
-// instead corrupt the count itself, which is why the two are split. The cap is
-// generous enough that realistic orgs are unaffected; a supporting
-// (organizationId, prState, mergedAt) index is tracked separately (Dexter).
-export const MERGED_PR_SCAN_CAP = 25_000;
 
 // Aggregation context resolved from the authenticated user + requested scope.
 export type InsightsScopeContext = {
@@ -86,41 +101,16 @@ type PeriodRange = {
   trendStart: Date;
 };
 
-type ArtifactScopeWhere = Prisma.ArtifactWhereInput;
+export type ArtifactScopeWhere = Prisma.ArtifactWhereInput;
 
-type MergedPrRow = {
-  mergedAt: Date | null;
-  // FEA-2732: nullable for desktop-produced PRs in non-App repos; the producer-
-  // independent repo identity is carried on `repositoryFullName` instead.
-  repositoryId: string | null;
-  repositoryFullName: string | null;
-  branchArtifactId: string;
-  repository: { name: string } | null;
-  branchArtifact: { createdAt: Date };
-};
-
-type ReviewRow = {
-  authorLogin: string;
-  state: ReviewDecision;
-  submittedAt: Date;
-  pullRequestDetail: { branchArtifact: { createdAt: Date } };
-};
-
-// DB-summed token columns for the KPI row + token-distribution donut, over the
-// selected period. Replaces materializing every token row to reduce in JS.
-type TokenTotals = {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-};
-
-// One DB-aggregated (day, model) spend bucket for the model-usage series
-// (FEA-2331: estimated spend in USD, date-bucketed in the requester's timezone).
+// One DB-aggregated (day, model) bucket for the model-usage series (FEA-2331:
+// estimated spend in USD; FEA-3497: total token volume — input + output + cache
+// read/write — for the $/# usage toggle), date-bucketed in the requester's tz.
 type ModelUsageDayRow = {
   day: string;
   model: string;
   cost: number;
+  tokens: number;
 };
 
 async function getDelivery(
@@ -131,7 +121,7 @@ async function getDelivery(
   const range = resolvePeriodRange(period, now);
   const [
     merged,
-    mergedCount,
+    mergedRowCount,
     priorMergedCount,
     closedCount,
     cost,
@@ -141,7 +131,7 @@ async function getDelivery(
   ] = await Promise.all([
     fetchMergedPrs(ctx, range.start, range.end),
     countMergedPrsInRange(ctx, range.start, range.end),
-    countMergedPrs(ctx, range.priorStart, range.start),
+    countDistinctPriorMergedPrs(ctx, range.priorStart, range.start),
     // FEA-3151: closed-without-merge count → SSOT DECIDED merge-rate denominator.
     // FEA-3208: counted by prState (desktop pr_state basis), null-safely windowed
     // on the branch artifact's createdAt — NOT gated on the nullable closedAt.
@@ -153,49 +143,57 @@ async function getDelivery(
   ]);
   const reportDelta = reportDeltaFor(range, earliest);
 
-  const ttms = merged
+  // PLN-1535 M4 / D1 + ISS-5411: one pull request can be projected by two rows
+  // (see `merged-pr-loc.ts` for why that pair exists and why no unique
+  // constraint forbids it), so every merged-PR figure below is taken over the
+  // DEDUPED population — not just the LOC-derived ones PLN-1535 originally
+  // covered. Deduping once here is what keeps the response reconciling with
+  // itself: the headline count, its delta, the state and repo splits, the daily
+  // trend, the KLOC sum, the median population, and the TTM/lifespan intervals
+  // all describe pull requests rather than rows.
+  const dedupedMerged = dedupeMergedPrsWithEarliestCreation(merged);
+  // The row count is exact and uncapped where the scan is capped, so the
+  // headline count corrects the count rather than replacing it with
+  // `dedupedMerged.length`.
+  const mergedCount = distinctMergedPrCount(mergedRowCount, merged);
+
+  // A duplicate row on a SECOND branch artifact carries that artifact's own
+  // createdAt, so before the dedupe one PR could contribute two DIFFERENT
+  // merge intervals to the median and to both histograms. The deduped winner
+  // carries its PR's EARLIEST branch creation (see
+  // dedupeMergedPrsWithEarliestCreation), so a winner projected after the
+  // merge cannot erase the valid interval a losing twin held.
+  const ttms = dedupedMerged
     .filter((pr) => pr.mergedAt)
     .map(
       (pr) =>
         (pr.mergedAt as Date).getTime() - pr.branchArtifact.createdAt.getTime()
     )
     .filter((ms) => ms >= 0);
-  const [
-    { lineTotalsByBranch, enrichedBranchIds },
-    branchesWithoutPr,
-    checkStatus,
-  ] = await Promise.all([
-    fetchMergedLineTotals(
-      ctx.organizationId,
-      merged.map((pr) => pr.branchArtifactId)
-    ),
-    fetchBranchesWithoutPrBuckets(ctx),
+  const [branchesWithoutPr, checkStatus] = await Promise.all([
+    // ISS-4634: both branch-population charts sit under the windowed "Last N
+    // days" section, so they take the SAME range every sibling delivery fetch
+    // takes. See insights-branch-population.ts (branchActivityWindow) for the
+    // population-vs-attribute split.
+    fetchBranchesWithoutPrBuckets(artifactScope(ctx), range.start, range.end),
     isOrgScope(ctx)
-      ? fetchCheckStatusBuckets(ctx.organizationId)
+      ? fetchCheckStatusBuckets(ctx.organizationId, range.start, range.end)
       : Promise.resolve(undefined),
   ]);
-  const lines = merged.map(
-    (pr) => lineTotalsByBranch.get(pr.branchArtifactId) ?? 0
+  // PLN-1535 M4 / D1: LOC comes from each PR's OWN projected diff stats, deduped
+  // by PR identity, not from the branch file cache — that keyed on the branch
+  // artifact, so every merged PR on a branch got the BRANCH's whole line total
+  // (a two-PR branch counted twice) and an un-enriched branch folded in as `0`.
+  // The dedupe happens once, above, over the population every merged-PR facet
+  // now shares (ISS-5411). Every KPI derived wholly from those totals — including
+  // the ISS-5412 unknown-KLOC gate and the ISS-5414 coverage captions — is built
+  // by `mergedLocKpis`, in the same module that owns the derivation.
+  const { kloc, mergedKloc, prsWithoutLoc, prsScanned, prSize } = mergedLocKpis(
+    mergedPrLocTotals(dedupedMerged)
   );
-  // KLOC (totalLines) sums over ALL merged PRs — an un-enriched PR folds in as 0,
-  // which is harmless for a sum and matches the desktop dashboard (FEA-2159).
-  const totalLines = lines.reduce((sum, n) => sum + n, 0);
-  // FEA-2988: the PR-size MEDIAN is taken over ENRICHED PRs only — PRs whose
-  // branch file cache is Fresh (GitHub compare succeeded). Folding un-enriched
-  // PRs (unknown size) in as 0 was dragging the median toward 0. Enrichment is
-  // keyed on the file cache STATUS, not on the presence of branchFileChange
-  // rows: a Fresh branch with zero changed files has a KNOWN size of 0 but no
-  // groupBy rows, so it must still count toward the median as 0 (defaulting via
-  // `?? 0`) rather than being dropped as if unknown.
-  // Mirrors the desktop fix (FEA-2868 `computeDelivery`, medians over
-  // `enrichedLocValues` only) and the delivery-KPI SSOT default
-  // (delivery-kpis/registry.ts PrSize `onlyEnriched: true`).
-  const enrichedLines = merged
-    .filter((pr) => enrichedBranchIds.has(pr.branchArtifactId))
-    .map((pr) => lineTotalsByBranch.get(pr.branchArtifactId) ?? 0);
 
   const kpis: KpiStat[] = [
-    kpi(
+    comparableKpi(
       "merged",
       "Merged PRs",
       mergedCount,
@@ -211,7 +209,7 @@ async function getDelivery(
     // semantics. Flagged `internal` (mirrors the delivery-kpis registry's
     // MergedCount entry): response-only, backs no tile, so it renders nothing on
     // its own.
-    kpi(
+    comparableKpi(
       "mergedCount",
       "Merged PRs",
       mergedCount,
@@ -226,25 +224,32 @@ async function getDelivery(
       median(ttms) ?? 0,
       KpiFormat.Duration,
       // FEA-2945: the interval computed above is mergedAt − branchArtifact.createdAt
-      // (branch-artifact creation → merge), NOT first-commit → merge. No first-commit
-      // timestamp is captured on this surface, so label it for what it actually measures.
-      "branch created → merged",
-      null
+      // (the PR's earliest branch-artifact creation → merge), NOT first-commit →
+      // merge. No first-commit timestamp is captured on this surface, so label
+      // it for what it actually measures.
+      "branch created → merged"
     ),
-    kpi(
-      "kloc",
-      "KLOC merged",
-      round(totalLines / 1000, 1),
-      KpiFormat.Number,
-      "thousand lines landed",
-      null
-    ),
-    kpi(
+    kloc,
+    mergedKloc,
+    prsWithoutLoc,
+    prsScanned,
+    // ISS-4994: caption owned by `COST_KPI_SUB`, which documents why this figure
+    // is named for its basis rather than called "spend".
+    //
+    // wongk review: the raw aggregate is sent, NOT `round(cost, 2)`. Rounding to
+    // cents here re-introduced the exact lie ISS-4919 fixes one layer down: a
+    // genuine $0.004 org total became numeric `0` before any formatter saw it,
+    // so the shared sub-floor bound could never fire and web rendered `$0` while
+    // desktop — which sends `totalCost` unrounded (`local-insights.ts`) — rendered
+    // the real figure. Display precision belongs to the formatter
+    // (`formatCurrencyTileValue`), not the producer; sending the raw total is also
+    // what makes the two producers agree on one number.
+    comparableKpi(
       "cost",
       "Cost",
-      round(cost, 2),
+      cost,
       KpiFormat.Currency,
-      "spend in range",
+      COST_KPI_SUB,
       reportDelta(cost, priorCost)
     ),
     kpi(
@@ -257,23 +262,16 @@ async function getDelivery(
       // identical to Desktop and Web (which render cloud). Was the captured-cohort
       // approximation merged / opened (FEA-3118 pinned the delta); now reconciled.
       // Null (renders "—") when there is no decided cohort, per the SSOT contract.
+      //
+      // ISS-5411: BOTH sides count distinct pull requests. Deduping only the
+      // merged side would divide pull requests by rows and understate the rate;
+      // leaving both on rows would print a percentage the "Merged PRs" tile
+      // beside it cannot reproduce.
       ssotMergeRateFromCounts(mergedCount, closedCount),
       KpiFormat.Percent,
-      "of decided PRs (merged + closed)",
-      null
+      "of decided PRs (merged + closed)"
     ),
-    kpi(
-      "pr-size",
-      "Median PR size",
-      // FEA-2923: no enriched merged PR in the window ⇒ no size to median ⇒
-      // emit `null` so the KPI renders `—` (formatKpiValue), not a misleading 0.
-      // `null` is JSON-serializable (unlike a non-finite number) and matches the
-      // `KpiStat.value: number | null` contract. Mirrors desktop `computeDelivery`.
-      enrichedLines.length > 0 ? (median(enrichedLines) ?? 0) : null,
-      KpiFormat.Number,
-      "lines changed",
-      null
-    ),
+    prSize,
   ];
 
   return {
@@ -292,15 +290,16 @@ async function getDelivery(
     ...(githubProvenance ? { githubProvenance } : {}),
     charts: {
       prTrend: bucketCountByDay(
-        merged.filter((pr) => pr.mergedAt).map((pr) => pr.mergedAt as Date),
+        dedupedMerged
+          .filter((pr) => pr.mergedAt)
+          .map((pr) => pr.mergedAt as Date),
         range.trendStart,
         range.end,
         { key: "merged", label: "Merged PRs" },
         ctx.timeZone
       ),
       klocTrend: bucketKlocByDay(
-        merged,
-        lineTotalsByBranch,
+        dedupedMerged,
         range.trendStart,
         range.end,
         ctx.timeZone
@@ -312,7 +311,9 @@ async function getDelivery(
       // case-insensitive key (see buildPrByRepoBuckets) keeps the two lanes for
       // one repo from fragmenting into "Foo-Bar" + "foo-bar", while preserving
       // the App's canonical casing as the display label.
-      prByRepo: bucketByLabelCounts(buildPrByRepoBuckets(merged)),
+      prByRepo: bucketByLabelCounts(
+        buildPrByRepoBuckets(dedupedMerged, merged)
+      ),
       meanTimeToMerge: ttmHistogram(ttms),
       prByState: mergedStateBuckets(mergedCount),
       branchLifespan: lifespanHistogram(ttms),
@@ -334,11 +335,11 @@ async function getUtilization(
     eventCount,
     eventVolume,
     eventsByType,
-    reviewQueue,
-    backlog,
-    reviews,
+    reviewQueueSnapshot,
+    reviewerLoad,
     userBreakdown,
     eventActivity,
+    activityHeatmap,
     earliest,
     githubProvenance,
   ] = await Promise.all([
@@ -354,24 +355,40 @@ async function getUtilization(
     countEvents(ctx, range.start, range.end),
     fetchEventVolume(ctx, range.trendStart, range.end, ctx.timeZone),
     fetchEventTypeBuckets(ctx, range.start, range.end),
-    fetchReviewQueueBuckets(ctx),
-    countReviewBacklog(ctx),
-    isOrgScope(ctx) ? fetchReviews(ctx, range.start, range.end) : [],
+    // The review-queue chart and the review-backlog KPI both read the non-merged
+    // PR-by-decision population, so one snapshot feeds both (no read-to-read skew;
+    // see fetchReviewQueue).
+    fetchReviewQueue(ctx),
+    isOrgScope(ctx) ? fetchReviewerLoad(ctx, range.start, range.end) : [],
     isOrgScope(ctx) ? fetchUserBreakdown(ctx, range.start, range.end) : [],
     // Daily session-start volume, date-bucketed in Postgres (mirrors
     // fetchEventVolume) so only one already-bucketed row per day crosses the
     // wire instead of every SessionDetail.
     fetchSessionActivity(ctx, range.trendStart, range.end),
+    // FEA-3684 / ISS-5408: hour×day Human/Agent turn-density heatmap. Human
+    // turns come from the synced `metadata.messages`; Agent turns are the
+    // BILLABLE ROUND-TRIPS in `agent_session_token_events` — the same unit the
+    // desktop's `session_turn_bucket` uses, which the cloud already receives.
+    // Follows the capped trend window, so cloud and desktop-Cloud-mode both
+    // render Event Activity from one source.
+    fetchActivityHeatmap(
+      sessionScopeSql(ctx),
+      ctx.timeZone,
+      range.trendStart,
+      range.end
+    ),
     earliestRecord(ctx),
     resolveGitHubProvenance(ctx),
   ]);
   const reportDelta = reportDeltaFor(range, earliest);
+  const reviewQueue = reviewQueueSnapshot.buckets;
+  const backlog = reviewQueueSnapshot.backlog;
 
   const currentSessionCount = sessionRollup.sessionCount;
   const runtimeMs = sessionRollup.runtimeMs;
 
   const kpis: KpiStat[] = [
-    kpi(
+    comparableKpi(
       "sessions",
       "Sessions",
       currentSessionCount,
@@ -384,25 +401,16 @@ async function getUtilization(
       "Agent runtime",
       runtimeMs,
       KpiFormat.Duration,
-      "hours of agent execution",
-      null
+      "hours of agent execution"
     ),
     kpi(
       "backlog",
       "Review backlog",
       backlog,
       KpiFormat.Number,
-      "open PRs awaiting review",
-      null
+      "open PRs awaiting review"
     ),
-    kpi(
-      "events",
-      "Events",
-      eventCount,
-      KpiFormat.Number,
-      "captured events",
-      null
-    ),
+    kpi("events", "Events", eventCount, KpiFormat.Number, "captured events"),
   ];
 
   return {
@@ -413,11 +421,12 @@ async function getUtilization(
     ...(githubProvenance ? { githubProvenance } : {}),
     charts: {
       eventActivity,
+      activityHeatmap,
       eventVolume,
       eventsByType,
       sessionsByStatus: sessionRollup.statusBuckets,
       ...(isOrgScope(ctx) ? { userBreakdown } : {}),
-      ...(isOrgScope(ctx) ? { reviewerLoad: reviewerRows(reviews) } : {}),
+      ...(isOrgScope(ctx) ? { reviewerLoad } : {}),
       reviewQueue,
     },
   };
@@ -431,19 +440,26 @@ async function getAgents(
   const range = resolvePeriodRange(period, now);
   const [
     tokenTotals,
-    modelBreakdown,
+    spendBreakdowns,
     modelUsage,
     agentBuckets,
     toolUsage,
     toolRuns,
     priorToolRuns,
     toolRunsOverTime,
+    agentPipeline,
+    frustrationEnabled,
     earliest,
   ] = await Promise.all([
     // Token analytics are summed/grouped in the DB (FEA-2876) rather than
     // materializing every agentSessionTokenUsage row and reducing in JS.
     fetchTokenTotals(ctx, range.start, range.end),
-    fetchModelBreakdown(ctx, range.start, range.end),
+    // ISS-4463: "Spend by model" and "Spend by session outcome" are two GROUPING
+    // SETS of ONE statement, so the sibling charts read one MVCC snapshot and a
+    // concurrent session sync cannot make them disagree inside one response
+    // (wongk, #4282). Fusing also keeps the outcome split off the critical path
+    // as an independent failure mode — it rides a scan this section already ran.
+    fetchAgentsSpendBreakdowns(sessionScopeSql(ctx), range.start, range.end),
     fetchModelUsageRows(ctx, range.trendStart, range.end, ctx.timeZone),
     // Agent status/type buckets are unnested and grouped in the DB (FEA-2955)
     // rather than materializing every session row and reducing the JSON in JS.
@@ -456,59 +472,66 @@ async function getAgents(
     // Daily tool-run totals are SUM'd per day in the DB (FEA-2956) rather than
     // materializing every session row and reducing in JS.
     fetchToolRunsByDay(ctx, range.trendStart, range.end),
+    // Aggregate agent-pipeline graph (FEA-3537): nodes by agent/subagent type,
+    // edges by parent→child hand-off, rolled up in the DB like the other charts.
+    fetchAgentPipelineGraph(ctx, range.start, range.end),
+    // FEA-4022: the org's frustration opt-in gate. Read once alongside the other
+    // facet queries; when off, the frustration trend is omitted below (empty
+    // state) regardless of any raw signal already persisted.
+    frustrationSettingService.isFrustrationEnabled(ctx.organizationId),
     earliestRecord(ctx),
   ]);
+  // FEA-4022: only aggregate the normalized frustration trend when the org opted
+  // in. Sequenced after the gate resolves so we never run the extra query for an
+  // opted-out org. Fail-open (T15): frustration is one widget among many on the
+  // all-or-nothing Agents response — if its extra aggregate query throws or
+  // times out it must NOT take down every other Agents widget with it. On
+  // failure the chart is omitted (empty state), never surfaced as a 500 for the
+  // whole page.
+  const frustrationTrend = frustrationEnabled
+    ? await fetchFrustrationTrendSafe(ctx, range.trendStart, range.end)
+    : undefined;
   const reportDelta = reportDeltaFor(range, earliest);
 
-  const totalTokens = tokenTotals.inputTokens + tokenTotals.outputTokens;
+  const totalTokens = countedTokens(tokenTotals);
   const totalInputTokens = tokenTotals.inputTokens;
   const totalOutputTokens = tokenTotals.outputTokens;
-  const totalCacheTokens =
-    tokenTotals.cacheReadTokens + tokenTotals.cacheWriteTokens;
+  const totalCacheTokens = cacheTokens(tokenTotals);
+  // ISS-4463: both spend charts come out of the one fused statement above.
+  const { modelBreakdown, spendByOutcome } = spendBreakdowns;
   const modelCount = modelBreakdown.length;
 
   const kpis: KpiStat[] = [
-    kpi(
-      "tokens",
-      "Tokens",
-      totalTokens,
-      KpiFormat.Tokens,
-      "consumed in range",
-      null
-    ),
+    kpi("tokens", "Tokens", totalTokens, KpiFormat.Tokens, "consumed in range"),
     kpi(
       "input-tokens",
       "Input tokens",
       totalInputTokens,
       KpiFormat.Tokens,
-      "prompt tokens",
-      null
+      "prompt tokens"
     ),
     kpi(
       "output-tokens",
       "Output tokens",
       totalOutputTokens,
       KpiFormat.Tokens,
-      "completion tokens",
-      null
+      "completion tokens"
     ),
     kpi(
       "cache-tokens",
       "Cache saved",
       totalCacheTokens,
       KpiFormat.Tokens,
-      "cache read/write tokens",
-      null
+      "cache read/write tokens"
     ),
     kpi(
       "models",
       "Models in use",
       modelCount,
       KpiFormat.Number,
-      "distinct models",
-      null
+      "distinct models"
     ),
-    kpi(
+    comparableKpi(
       "tool-runs",
       "Tool runs",
       toolRuns,
@@ -518,25 +541,34 @@ async function getAgents(
     ),
   ];
 
+  // Spend + token series share the same top-N models so the dashboard's $/#
+  // toggle only swaps y-values (FEA-3497). Enumerate the chart in the same zone
+  // the rows were bucketed in — normally `ctx.timeZone`, but UTC on the
+  // tzdata-skew fallback so point keys still line up with the row keys.
+  const modelSeries = modelUsageSeries(
+    modelUsage.rows,
+    modelBreakdown,
+    range.trendStart,
+    range.end,
+    modelUsage.bucketZone
+  );
+
   return {
     kpis,
     charts: {
-      modelUsageOverTime: modelUsageSeries(
-        modelUsage.rows,
-        modelBreakdown,
-        range.trendStart,
-        range.end,
-        // Enumerate the chart in the same zone the rows were bucketed in. This
-        // is `ctx.timeZone` normally but flips to UTC on the tzdata-skew
-        // fallback so point keys still line up with the UTC-bucketed row keys.
-        modelUsage.bucketZone
-      ),
+      modelUsageOverTime: modelSeries.spend,
+      modelTokensOverTime: modelSeries.tokens,
       modelBreakdown,
       tokenDistribution: tokenDistributionBuckets(tokenTotals),
       toolUsage,
       agentsByStatus: agentBuckets.byStatus,
       agentsByType: agentBuckets.byType,
       toolRunsOverTime,
+      agentPipeline,
+      spendByOutcome,
+      // FEA-4022: omitted when the org has not opted in OR no windowed session
+      // carries a raw signal — clients render a disabled/empty state.
+      ...(frustrationTrend ? { frustrationTrend } : {}),
     },
   };
 }
@@ -554,7 +586,7 @@ function isOrgScope(ctx: InsightsScopeContext): boolean {
 }
 
 /** Artifact-relation scope predicate (org-wide, or authored by the user). */
-function artifactScope(ctx: InsightsScopeContext): ArtifactScopeWhere {
+export function artifactScope(ctx: InsightsScopeContext): ArtifactScopeWhere {
   if (ctx.scope === InsightsScope.Me) {
     return { organizationId: ctx.organizationId, createdById: ctx.userId };
   }
@@ -613,7 +645,7 @@ function sessionScope(
  * WHERE condition over the `s` (session_detail) and `a` (artifacts) aliases the
  * caller joins. Keep the two scope predicates in lockstep.
  */
-function sessionScopeSql(ctx: InsightsScopeContext): Prisma.Sql {
+export function sessionScopeSql(ctx: InsightsScopeContext): Prisma.Sql {
   const org = Prisma.sql`a.organization_id = ${ctx.organizationId}::uuid`;
   if (ctx.scope === InsightsScope.Me) {
     return Prisma.sql`${org} AND s.user_id = ${ctx.userId}::uuid`;
@@ -632,287 +664,211 @@ function sessionScopeSql(ctx: InsightsScopeContext): Prisma.Sql {
 
 // ───────────────────────── queries ─────────────────────────
 
-/** Closed-interval [start, end] predicate for merged PRs. Shared by the row
- * scan and its exact count so the two never disagree at the window boundary. */
-function mergedPrWhere(
-  ctx: InsightsScopeContext,
-  start: Date,
-  end: Date
-): Prisma.PullRequestDetailWhereInput {
-  return {
-    branchArtifact: artifactScope(ctx),
-    prState: GitHubPRState.MERGED,
-    mergedAt: { gte: start, lte: end },
-  };
-}
-
-function fetchMergedPrs(
-  ctx: InsightsScopeContext,
-  start: Date,
-  end: Date
-): Promise<MergedPrRow[]> {
-  return withDb((db) =>
-    db.pullRequestDetail.findMany({
-      where: mergedPrWhere(ctx, start, end),
-      select: {
-        mergedAt: true,
-        repositoryId: true,
-        // FEA-2732: fallback repo identity for repo-less (non-App) merged PRs.
-        repositoryFullName: true,
-        branchArtifactId: true,
-        repository: { select: { name: true } },
-        branchArtifact: { select: { createdAt: true } },
-      },
-      // FEA-2878: bound the scan so the "all" period cannot materialize every
-      // merged PR org-wide. Newest-first so the retained window is the most
-      // recent — it covers the 90-day trend charts in full unless a single
-      // period's merged count exceeds the cap, and biases the capped
-      // distribution toward current activity. The headline "Merged PRs" count
-      // comes from countMergedPrsInRange, not this (possibly capped) row set.
-      orderBy: { mergedAt: "desc" },
-      take: MERGED_PR_SCAN_CAP,
-    })
-  );
-}
-
-/** FEA-2878: exact count of merged PRs in [start, end], matching
- * {@link mergedPrWhere} (and thus {@link fetchMergedPrs}) so the "Merged PRs"
- * KPI, its delta, and prByState stay precise even when the row scan is capped. */
-function countMergedPrsInRange(
-  ctx: InsightsScopeContext,
-  start: Date,
-  end: Date
-): Promise<number> {
-  return withDb((db) =>
-    db.pullRequestDetail.count({ where: mergedPrWhere(ctx, start, end) })
-  );
-}
-
-function countMergedPrs(
-  ctx: InsightsScopeContext,
-  start: Date | null,
-  end: Date
-): Promise<number> {
-  if (!start) {
-    return Promise.resolve(0);
-  }
-  return withDb((db) =>
-    db.pullRequestDetail.count({
-      where: {
-        branchArtifact: artifactScope(ctx),
-        prState: GitHubPRState.MERGED,
-        mergedAt: { gte: start, lt: end },
-      },
-    })
-  );
-}
-
-// FEA-3151: closed-WITHOUT-merge PRs → the DECIDED denominator's closed side.
-// Paired with countMergedPrsInRange, this forms the DECIDED denominator
-// merged + closed the shared MergeRate KPI divides by — so the cloud merge rate
-// equals the Desktop/Web value for the same corpus. (`prState CLOSED` is
-// closed-without-merge: a merged PR normalizes to prState MERGED, matching the
-// NormalizedPr `state`-authoritative disjointness the SSOT decidedPrs relies on.)
-//
-// FEA-3208: count CLOSED by `prState` (the desktop pr_state basis) BUT keep the
-// period window — window null-safely on the branch artifact's `createdAt`, NOT on
-// the nullable `closedAt`. `closedAt` is nullable (schema.prisma
-// PullRequestDetail:~1325) and PullRequestDetail carries no created/updated
-// timestamp of its own, so the previous `closedAt BETWEEN start AND end` window
-// silently DROPPED any genuinely-CLOSED PR whose closedAt was never populated
-// (e.g. `gh`/webhook enrichment that set pr_state CLOSED but not the timestamp).
-// That shrank the denominator and inflated the cloud merge rate above the true
-// value AND above Desktop/Web (e.g. 8/(8+2)=80% vs desktop 8/(8+4)=67%).
-//
-// The fix must NOT over-correct by dropping the window entirely — that would mix
-// an all-time closed denominator with the windowed `mergedAt` numerator
-// (countMergedPrsInRange) and skew the rate the other way. Instead we window on
-// `branchArtifact.createdAt`, the null-safe cloud analogue of the desktop SSOT's
-// `COALESCE(observed_at, created_at) BETWEEN $1 AND $2` window over the whole
-// captured PR population (local-insights.ts merge-rate query): Artifact.createdAt
-// is `@default(now())`, never null, so a genuinely-decided PR with a null
-// closedAt is RETAINED while an all-time-old closed PR observed outside the
-// period is EXCLUDED. `artifactScope(ctx)` keeps the count tenant-correct; the
-// merged side stays windowed on `mergedAt` (countMergedPrsInRange) and is
-// unchanged.
-function countClosedPrs(
-  ctx: InsightsScopeContext,
-  start: Date,
-  end: Date
-): Promise<number> {
-  return withDb((db) =>
-    db.pullRequestDetail.count({
-      where: {
-        branchArtifact: {
-          ...artifactScope(ctx),
-          createdAt: { gte: start, lte: end },
-        },
-        prState: GitHubPRState.CLOSED,
-      },
-    })
-  );
-}
-
-/**
- * Line totals per merged branch, plus the set of branches whose file cache is
- * Fresh (i.e. GitHub compare succeeded — "enriched").
- *
- * FEA-2988: enrichment is determined by `BranchDetail.fileCacheStatus === Fresh`,
- * NOT by the presence of `branchFileChange` rows. A Fresh branch with zero
- * changed files has a KNOWN size of 0 but produces no groupBy rows; it must
- * still be recognized as enriched so the PR-size median counts it as 0 instead
- * of dropping it as if its size were unknown.
- */
-async function fetchMergedLineTotals(
-  organizationId: string,
-  branchArtifactIds: string[]
-): Promise<{
-  lineTotalsByBranch: Map<string, number>;
-  enrichedBranchIds: Set<string>;
-}> {
-  if (branchArtifactIds.length === 0) {
-    return { lineTotalsByBranch: new Map(), enrichedBranchIds: new Set() };
-  }
-  const [grouped, enriched] = await withDb((db) =>
-    Promise.all([
-      db.branchFileChange.groupBy({
-        by: ["branchArtifactId"],
-        where: {
-          branchArtifactId: { in: branchArtifactIds },
-          branch: { artifact: { organizationId } },
-        },
-        _sum: { additions: true, deletions: true },
-      }),
-      db.branchDetail.findMany({
-        where: {
-          artifactId: { in: branchArtifactIds },
-          organizationId,
-          fileCacheStatus: BranchFileCacheStatus.Fresh,
-        },
-        select: { artifactId: true },
-      }),
-    ])
-  );
-  const lineTotalsByBranch = new Map(
-    grouped.map((row) => [
-      row.branchArtifactId,
-      (row._sum.additions ?? 0) + (row._sum.deletions ?? 0),
-    ])
-  );
-  const enrichedBranchIds = new Set(enriched.map((row) => row.artifactId));
-  return { lineTotalsByBranch, enrichedBranchIds };
-}
-
-function fetchCheckStatusBuckets(
-  organizationId: string
-): Promise<DonutSlice[]> {
-  return withDb((db) =>
-    db.branchDetail.groupBy({
-      by: ["checksStatus"],
-      where: { artifact: { organizationId } },
-      _count: { _all: true },
-    })
-  ).then((rows) =>
-    rows.map((row) => ({
-      key: row.checksStatus,
-      label: CHECK_STATUS_LABELS[row.checksStatus],
-      value: row._count._all,
-    }))
-  );
-}
-
-function fetchBranchesWithoutPrBuckets(
-  ctx: InsightsScopeContext
-): Promise<CategoryBucket[]> {
-  return withDb(async (db) => {
-    const artifact = artifactScope(ctx);
-    const [withPr, withoutPr] = await Promise.all([
-      db.branchDetail.count({
-        where: {
-          artifact,
-          currentPullRequestDetailId: { not: null },
-        },
-      }),
-      db.branchDetail.count({
-        where: {
-          artifact,
-          currentPullRequestDetailId: null,
-        },
-      }),
-    ]);
-    return [
-      { key: "has-pr", label: "Has a pull request", value: withPr },
-      { key: "no-pr", label: "No pull request", value: withoutPr },
-    ];
-  });
-}
-
 /**
  * The two agent charts (agentsByStatus / agentsByType) rolled up in the DB
  * (FEA-2955). Each session's `agents` JSON array is unnested and grouped by the
  * raw status/type in Postgres — mirroring desktop's two `agent.groupBy()` calls
  * — so only one already-counted row per distinct value crosses the wire, rather
  * than materializing every session row and reducing the JSON arrays in JS.
+ *
+ * FEA-3638 (Tier-2 round-trip collapse): both charts read the SAME unnest of the
+ * SAME session window, so they are rolled up in ONE DB round-trip — a single
+ * scan whose derived `status`/`type` bucket columns are aggregated with `GROUP BY
+ * GROUPING SETS` — instead of two separate `withDb` calls. That drops one
+ * concurrent connection off the agents endpoint's fan-out against the max:20
+ * Vercel pool (relieving the acquire-timeout queue-wait that surfaced as the
+ * dashboard hang). The per-element bucketing (the "unknown" fallback for a
+ * missing/blank/non-string value), the labelize + collision-merge, and the
+ * org/period scope predicate are all identical to the prior per-field query, so
+ * both charts are byte-for-byte unchanged.
  */
 async function fetchAgentBuckets(
   ctx: InsightsScopeContext,
   start: Date,
   end: Date
 ): Promise<{ byStatus: CategoryBucket[]; byType: CategoryBucket[] }> {
-  const [byStatus, byType] = await Promise.all([
-    fetchAgentFieldBuckets(ctx, start, end, "status"),
-    fetchAgentFieldBuckets(ctx, start, end, "type"),
-  ]);
-  return { byStatus, byType };
+  const rows = await withDb((db) =>
+    db.$queryRaw<{ field: "status" | "type"; bucket: string; n: number }[]>(
+      // One scan of the unnested agents; each element contributes a `status_bucket`
+      // and a `type_bucket` (the same "unknown" fallback as before). GROUPING SETS
+      // ((status_bucket), (type_bucket)) then rolls up each field independently in a
+      // single pass: a status-grouping row has type_bucket NULL and vice-versa, so
+      // GROUPING() tags which field the row belongs to and COALESCE picks the
+      // non-null bucket value. The derived bucket columns are never NULL (the CASE
+      // always yields a string), so the disambiguation is unambiguous.
+      Prisma.sql`
+        SELECT
+          CASE WHEN GROUPING(status_bucket) = 0 THEN 'status' ELSE 'type' END AS field,
+          COALESCE(status_bucket, type_bucket) AS bucket,
+          COUNT(*)::int AS n
+        FROM (
+          SELECT
+            CASE
+              WHEN jsonb_typeof(elem -> 'status') = 'string'
+                AND btrim(elem ->> 'status') <> ''
+              THEN elem ->> 'status'
+              ELSE 'unknown'
+            END AS status_bucket,
+            CASE
+              WHEN jsonb_typeof(elem -> 'type') = 'string'
+                AND btrim(elem ->> 'type') <> ''
+              THEN elem ->> 'type'
+              ELSE 'unknown'
+            END AS type_bucket
+          FROM session_detail s
+          JOIN artifacts a ON a.id = s.artifact_id
+          CROSS JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(s.agents) = 'array' THEN s.agents
+              ELSE '[]'::jsonb
+            END
+          ) AS elem
+          WHERE s.session_started_at >= ${start}
+            AND s.session_started_at <= ${end}
+            AND jsonb_typeof(elem) = 'object'
+            AND (${sessionScopeSql(ctx)})
+        ) unnested
+        GROUP BY GROUPING SETS ((status_bucket), (type_bucket))
+      `
+    )
+  );
+  const bucketsFor = (field: "status" | "type"): CategoryBucket[] =>
+    bucketByLabelCounts(
+      rows
+        .filter((row) => row.field === field)
+        .map((row) => ({ label: labelize(row.bucket), value: row.n }))
+    );
+  return { byStatus: bucketsFor("status"), byType: bucketsFor("type") };
 }
 
 /**
- * DB rollup of a single agent field (`status` or `type`). Only object array
- * elements contribute, and a missing/blank/non-string value collapses to
- * "unknown" — mirroring the prior in-JS reducer. Raw values are labelized and
- * merged in JS (labelize can map distinct raw values onto the same label), as in
- * {@link fetchSessionRollup}.
+ * The aggregate agent-pipeline graph (FEA-3537): nodes are agent/subagent types
+ * (run counts + success rate), edges are weighted parent→child hand-offs. Both
+ * are rolled up in the DB from the unnested `agents` JSON — mirroring
+ * {@link fetchAgentFieldBuckets} — and share the same scope/period predicate as
+ * every other agent chart. A blank/missing type collapses to "unknown" for both
+ * node and edge endpoints — so every edge source/target has a matching node —
+ * matching the desktop SQLite rollup.
  */
-async function fetchAgentFieldBuckets(
+async function fetchAgentPipelineGraph(
   ctx: InsightsScopeContext,
   start: Date,
-  end: Date,
-  field: "status" | "type"
-): Promise<CategoryBucket[]> {
-  const rows = await withDb((db) =>
-    db.$queryRaw<{ bucket: string; n: number }[]>(
-      // `bucket` (not `value`) deliberately: jsonb_array_elements' implicit
-      // output column is named `value`, and Postgres resolves an ambiguous
-      // GROUP BY name to that input column over the SELECT alias — which would
-      // group by the whole raw element and defeat the DB-side reduction.
-      Prisma.sql`
+  end: Date
+): Promise<AgentPipelineGraphData> {
+  // Status is matched with the shared success/failure term set as a single
+  // regex (alternation), so it survives harness-specific variants — consistent
+  // with the desktop rollup's LIKE-term approach.
+  const successPattern = AGENT_SUCCESS_STATUS_TERMS.join("|");
+  const failedPattern = AGENT_FAILED_STATUS_TERMS.join("|");
+  const [nodeRows, edgeRows] = await Promise.all([
+    withDb((db) =>
+      db.$queryRaw<
+        {
+          subagent_type: string;
+          total: number;
+          completed: number;
+          errors: number;
+          sessions: number;
+          avg_duration: number | null;
+        }[]
+      >(Prisma.sql`
         SELECT
-          CASE
-            WHEN jsonb_typeof(elem -> ${field}::text) = 'string'
-              AND btrim(elem ->> ${field}::text) <> ''
-            THEN elem ->> ${field}::text
-            ELSE 'unknown'
-          END AS bucket,
-          COUNT(*)::int AS n
+          COALESCE(
+            NULLIF(btrim(elem ->> 'subagentType'), ''),
+            NULLIF(btrim(elem ->> 'type'), ''),
+            'unknown'
+          ) AS subagent_type,
+          COUNT(*)::int AS total,
+          SUM(CASE WHEN lower(elem ->> 'status') ~ ${successPattern} THEN 1 ELSE 0 END)::int AS completed,
+          SUM(CASE WHEN lower(elem ->> 'status') ~ ${failedPattern} THEN 1 ELSE 0 END)::int AS errors,
+          COUNT(DISTINCT s.artifact_id)::int AS sessions,
+          AVG(
+            CASE
+              WHEN jsonb_typeof(elem -> 'startedAt') = 'string'
+                AND jsonb_typeof(elem -> 'endedAt') = 'string'
+              THEN EXTRACT(EPOCH FROM (
+                (elem ->> 'endedAt')::timestamptz - (elem ->> 'startedAt')::timestamptz
+              ))
+              ELSE NULL
+            END
+          ) AS avg_duration
         FROM session_detail s
         JOIN artifacts a ON a.id = s.artifact_id
         CROSS JOIN LATERAL jsonb_array_elements(
-          CASE
-            WHEN jsonb_typeof(s.agents) = 'array' THEN s.agents
-            ELSE '[]'::jsonb
-          END
+          CASE WHEN jsonb_typeof(s.agents) = 'array' THEN s.agents ELSE '[]'::jsonb END
         ) AS elem
         WHERE s.session_started_at >= ${start}
           AND s.session_started_at <= ${end}
           AND jsonb_typeof(elem) = 'object'
           AND (${sessionScopeSql(ctx)})
-        GROUP BY bucket
+        GROUP BY subagent_type
+        ORDER BY total DESC
+        LIMIT 50
+      `)
+    ),
+    withDb((db) =>
+      db.$queryRaw<{ source: string; target: string; weight: number }[]>(
+        // Self-join the session's agents array: a child (parentExternalAgentId
+        // set) maps to the parent whose externalAgentId matches, within the same
+        // session. Edge = parentType → childType, weighted by frequency.
+        Prisma.sql`
+        SELECT
+          COALESCE(
+            NULLIF(btrim(p ->> 'subagentType'), ''),
+            NULLIF(btrim(p ->> 'type'), ''),
+            'unknown'
+          ) AS source,
+          COALESCE(
+            NULLIF(btrim(c ->> 'subagentType'), ''),
+            NULLIF(btrim(c ->> 'type'), ''),
+            'unknown'
+          ) AS target,
+          COUNT(*)::int AS weight
+        FROM session_detail s
+        JOIN artifacts a ON a.id = s.artifact_id
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(s.agents) = 'array' THEN s.agents ELSE '[]'::jsonb END
+        ) AS c
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(s.agents) = 'array' THEN s.agents ELSE '[]'::jsonb END
+        ) AS p
+        WHERE s.session_started_at >= ${start}
+          AND s.session_started_at <= ${end}
+          AND jsonb_typeof(c) = 'object'
+          AND jsonb_typeof(p) = 'object'
+          AND btrim(COALESCE(c ->> 'parentExternalAgentId', '')) <> ''
+          AND (c ->> 'parentExternalAgentId') = (p ->> 'externalAgentId')
+          AND (${sessionScopeSql(ctx)})
+        GROUP BY source, target
+        ORDER BY weight DESC
+        LIMIT 50
       `
-    )
-  );
-  return bucketByLabelCounts(
-    rows.map((row) => ({ label: labelize(row.bucket), value: row.n }))
-  );
+      )
+    ),
+  ]);
+  const nodes = nodeRows.map((row) => {
+    const completed = toNumber(row.completed);
+    const errors = toNumber(row.errors);
+    const finished = completed + errors;
+    return {
+      subagentType: row.subagent_type,
+      total: toNumber(row.total),
+      completed,
+      errors,
+      sessions: toNumber(row.sessions),
+      // Match the desktop rollup: an unfinished type reads as 100% (no failures
+      // observed yet) rather than 0.
+      successRate: finished > 0 ? (completed / finished) * 100 : 100,
+      avgDuration: row.avg_duration == null ? null : toNumber(row.avg_duration),
+      trend: [],
+    };
+  });
+  const edges = edgeRows.map((row) => ({
+    source: row.source,
+    target: row.target,
+    weight: toNumber(row.weight),
+  }));
+  return { nodes, edges };
 }
 
 /**
@@ -1020,7 +976,7 @@ async function fetchUserBreakdown(
   );
   return rows.map((row) => ({
     key: row.userId,
-    label: displayName({
+    label: displayUserName({
       firstName: row.firstName,
       lastName: row.lastName,
       email: row.email,
@@ -1070,33 +1026,13 @@ async function fetchDailySessionSeries(
     );
   };
 
-  // `ctx.timeZone` is only validated against Node/ICU (isValidTimeZone), so a
-  // zone ICU accepts but the Postgres server's tzdata doesn't know (version
-  // skew) would make `AT TIME ZONE` raise and 500 the insights endpoint.
-  // Degrade to UTC bucketing instead — matching the validator's documented
-  // "unknown zone → UTC" contract and the JS `toLocalDateOnly` fallback — so
-  // the chart still renders. `bucketedZone` then labels the point enumeration
-  // in the SAME zone the DB actually bucketed in.
-  let rows: { day: string; n: number }[];
-  let bucketedZone = ctx.timeZone;
-  try {
-    rows = await runQuery(ctx.timeZone);
-  } catch (error) {
-    // A UTC query (no timezone param) can only fail for a real DB error, so
-    // don't swallow it behind a pointless retry.
-    if (!ctx.timeZone) {
-      throw error;
-    }
-    // Only degrade to UTC for timezone-specific Postgres errors (tzdata version
-    // skew). Genuine DB failures (connection, permissions, syntax) are rethrown
-    // so they propagate as real errors rather than being silently swallowed.
-    const msg = error instanceof Error ? error.message : String(error);
-    if (!msg.toLowerCase().includes("time zone")) {
-      throw error;
-    }
-    bucketedZone = undefined;
-    rows = await runQuery(undefined);
-  }
+  // Bucket in `ctx.timeZone`, degrading to UTC when the PG server's tzdata
+  // rejects it (see runDailyBucketedQuery). `bucketedZone` then labels the point
+  // enumeration in the SAME zone the DB actually bucketed in.
+  const { rows, bucketedZone } = await runDailyBucketedQuery(
+    ctx.timeZone,
+    runQuery
+  );
   const counts = new Map(rows.map((row) => [row.day, row.n]));
   const series: TimeSeriesSeries = {
     key: opts.seriesKey,
@@ -1120,6 +1056,146 @@ function fetchSessionActivity(
     seriesKey: "sessions",
     seriesLabel: "Sessions",
   });
+}
+
+type FrustrationDayRow = {
+  day: string;
+  // Sum + count of the SCOPED (Me/Team/Org) scored sessions in this day's
+  // bucket, so the per-day mean reflects the requested view. Null/0 when the
+  // scope contributed no scored session on a day the org population still did.
+  total: number;
+  sessions: number;
+  // The org population's MAX single-session raw within this day's bucket
+  // (UNSCOPED by Me/Team). MAX-of-per-day-orgDayMax over the window is the org
+  // population's observed max raw signal (the [0, max] normalization basis) —
+  // computed in the same grouped query so it can never disagree with the per-day
+  // means.
+  orgDayMax: number;
+};
+
+/**
+ * FEA-4022 (PLN-1481): daily MEAN session frustration, NORMALIZED 0–100 against
+ * the org POPULATION's observed MAX single-session raw signal over the same
+ * window.
+ *
+ * The persisted `frustration_raw` is deliberately unbounded and org-scoped, so a
+ * fixed 0..100 mapping can't be frozen on the row — the population max drifts as
+ * more sessions land (fluctuates on small data, stabilizes after a few hundred).
+ * So we aggregate per-day SUM/COUNT/MAX raw in ONE query (each SessionDetail is
+ * one row keyed by artifact_id — no linkage fan-out, so a session counts once),
+ * take the population max as MAX(dayMax) across the window, then map each day's
+ * MEAN raw to round(dayMean / populationMax * 100) in JS. A day mean can never
+ * exceed the max single-session raw, so the normalized value stays within
+ * [0, 100]. NULL-raw rows (unscored / org opted-out sessions) are excluded from
+ * every aggregate so they never dilute the mean or the normalization basis.
+ *
+ * Returns undefined when no session in the window carries a raw signal (nothing
+ * to show / population max is 0) so the caller omits the chart entirely.
+ */
+async function fetchFrustrationTrend(
+  ctx: InsightsScopeContext,
+  trendStart: Date,
+  end: Date
+): Promise<TimeSeries | undefined> {
+  const runQuery = (timeZone: string | undefined) => {
+    const dayExpr = timeZone
+      ? Prisma.sql`date_trunc('day', (s.session_started_at AT TIME ZONE 'UTC') AT TIME ZONE ${timeZone})`
+      : Prisma.sql`date_trunc('day', s.session_started_at)`;
+    // FEA-4022 (T16): the per-day MEAN is scoped to the requested view (Me /
+    // Team / Org), but the normalization DENOMINATOR (`orgDayMax`) is the org
+    // population's max single-session raw over the same window, independent of
+    // the Me/Team scope — the contract normalizes every scope against the org
+    // population, so a user's raw of 5 reads the same whether viewed as Me or
+    // Org. A per-day scoped mean can never exceed the org population max, so the
+    // normalized value stays within [0, 100].
+    return withDb((db) =>
+      db.$queryRaw<FrustrationDayRow[]>(
+        Prisma.sql`
+          SELECT
+            to_char(${dayExpr}, 'YYYY-MM-DD') AS day,
+            SUM(s.frustration_raw) FILTER (WHERE ${sessionScopeSql(ctx)})::float8 AS total,
+            COUNT(*) FILTER (WHERE ${sessionScopeSql(ctx)})::int AS sessions,
+            MAX(s.frustration_raw)::float8 AS "orgDayMax"
+          FROM session_detail s
+          JOIN artifacts a ON a.id = s.artifact_id
+          WHERE s.session_started_at >= ${trendStart}
+            AND s.session_started_at <= ${end}
+            AND s.frustration_raw IS NOT NULL
+            AND a.organization_id = ${ctx.organizationId}::uuid
+          GROUP BY day
+        `
+      )
+    );
+  };
+
+  const { rows, bucketedZone } = await runDailyBucketedQuery(
+    ctx.timeZone,
+    runQuery
+  );
+  // Population basis: the org's observed MAX single-session raw over the window
+  // (MAX of each day's org-wide MAX), independent of the Me/Team scope.
+  let populationMax = 0;
+  // Only days with at least one SCOPED scored session get a mean; a day with no
+  // scored sessions in the selected scope is a genuine gap.
+  const meanByDay = new Map<string, number>();
+  for (const row of rows) {
+    const dayMax = Number(row.orgDayMax);
+    if (dayMax > populationMax) {
+      populationMax = dayMax;
+    }
+    const sessions = Number(row.sessions);
+    if (sessions <= 0) {
+      continue;
+    }
+    meanByDay.set(row.day, Number(row.total) / sessions);
+  }
+  // Omit the chart when either (a) the org population has no scored session to
+  // normalize against, or (b) the SELECTED scope (Me / Team, incl. Team with no
+  // teamId → scope predicate is `false`) contributed no scored session — a chart
+  // that is null on every day is "no data for your scope", not a curve, so omit
+  // it rather than render an all-gap axis.
+  if (populationMax <= 0 || meanByDay.size === 0) {
+    return;
+  }
+  const series: TimeSeriesSeries = {
+    key: "frustration",
+    label: "Frustration",
+  };
+  const points = eachDayKey(trendStart, end, bucketedZone).map((date) => {
+    const mean = meanByDay.get(date);
+    // FEA-4022 (T17): a day with no scored sessions is a GAP (null), not a
+    // measured calm zero. `TimeSeriesPoint.values` reserves null for "no
+    // activity" so the chart renders a break instead of a false calm floor
+    // (mirrors the autonomy series' null-gap convention).
+    const normalized =
+      mean === undefined ? null : Math.round((mean / populationMax) * 100);
+    return { date, values: { [series.key]: normalized } };
+  });
+  return { series: [series], points };
+}
+
+/**
+ * FEA-4022 (T15): fail-open wrapper around the frustration trend aggregate. The
+ * trend is one widget on the all-or-nothing Agents response — its extra grouped
+ * query must never cascade a failure to the other widgets. On any error the
+ * chart is omitted (the empty state), and the failure is logged server-side for
+ * diagnosis rather than turned into a page-wide 500.
+ */
+async function fetchFrustrationTrendSafe(
+  ctx: InsightsScopeContext,
+  trendStart: Date,
+  end: Date
+): Promise<TimeSeries | undefined> {
+  try {
+    return await fetchFrustrationTrend(ctx, trendStart, end);
+  } catch (error) {
+    log.error("insights: frustration trend query failed; omitting chart", {
+      organizationId: ctx.organizationId,
+      scope: ctx.scope,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
 }
 
 function eventScope(
@@ -1207,6 +1283,10 @@ async function fetchToolUsageBuckets(
  * can't slip an offset into the SQL; a zone that can't be canonicalized falls
  * back to legacy UTC bucketing. The name is bound as a parameter, so the
  * round-trip is per-request and independent of the connection's TimeZone.
+ * FEA-3465: a canonical zone the PG server's tzdata rejects (version skew, which
+ * canonicalizeTimeZone doesn't catch) likewise degrades to UTC — via the shared
+ * {@link runDailyBucketedQuery} its sibling daily series already use — rather
+ * than 500ing the whole utilization endpoint.
  */
 async function fetchEventVolume(
   ctx: InsightsScopeContext,
@@ -1215,35 +1295,43 @@ async function fetchEventVolume(
   timeZone?: string
 ): Promise<TimeSeries> {
   const canonicalZone = timeZone ? canonicalizeTimeZone(timeZone) : null;
-  const dayBucket = canonicalZone
-    ? Prisma.sql`date_trunc('day', e.event_created_at AT TIME ZONE 'UTC' AT TIME ZONE ${canonicalZone}::text)`
-    : Prisma.sql`date_trunc('day', e.event_created_at)`;
-  const rows = await withDb((db) =>
-    db.$queryRaw<{ day: string; n: number }[]>(
-      Prisma.sql`
-        SELECT
-          to_char(${dayBucket}, 'YYYY-MM-DD') AS day,
-          COUNT(*)::int AS n
-        FROM agent_session_events e
-        JOIN session_detail s ON s.artifact_id = e.agent_session_id
-        JOIN artifacts a ON a.id = s.artifact_id
-        WHERE e.event_created_at >= ${trendStart}
-          AND e.event_created_at <= ${end}
-          AND (${sessionScopeSql(ctx)})
-        GROUP BY day
-      `
-    )
+  const runQuery = (zone: string | undefined) => {
+    const dayBucket = zone
+      ? Prisma.sql`date_trunc('day', e.event_created_at AT TIME ZONE 'UTC' AT TIME ZONE ${zone}::text)`
+      : Prisma.sql`date_trunc('day', e.event_created_at)`;
+    return withDb((db) =>
+      db.$queryRaw<{ day: string; n: number }[]>(
+        Prisma.sql`
+          SELECT
+            to_char(${dayBucket}, 'YYYY-MM-DD') AS day,
+            COUNT(*)::int AS n
+          FROM agent_session_events e
+          JOIN session_detail s ON s.artifact_id = e.agent_session_id
+          JOIN artifacts a ON a.id = s.artifact_id
+          WHERE e.event_created_at >= ${trendStart}
+            AND e.event_created_at <= ${end}
+            AND (${sessionScopeSql(ctx)})
+          GROUP BY day
+        `
+      )
+    );
+  };
+  // Bucket in the canonical zone, degrading to UTC when the PG server's tzdata
+  // rejects it (FEA-3465 — see runDailyBucketedQuery). `bucketedZone` then labels
+  // the point enumeration in the SAME zone the DB actually bucketed in.
+  const { rows, bucketedZone } = await runDailyBucketedQuery(
+    canonicalZone ?? undefined,
+    runQuery
   );
   const counts = new Map(rows.map((row) => [row.day, row.n]));
   const series: TimeSeriesSeries = { key: "events", label: "Events" };
-  // Label the enumerated day keys with the same canonical zone the SQL bucket
-  // used, so JS-labeled keys and SQL-bucketed rows land on identical dates.
-  const points = eachDayKey(trendStart, end, canonicalZone ?? undefined).map(
-    (date) => ({
-      date,
-      values: { [series.key]: counts.get(date) ?? 0 },
-    })
-  );
+  // Label the enumerated day keys with the same zone the SQL bucket used
+  // (canonical zone normally, UTC on the tzdata-skew fallback), so JS-labeled
+  // keys and SQL-bucketed rows land on identical dates.
+  const points = eachDayKey(trendStart, end, bucketedZone).map((date) => ({
+    date,
+    values: { [series.key]: counts.get(date) ?? 0 },
+  }));
   return { series: [series], points };
 }
 
@@ -1265,59 +1353,63 @@ function countSessions(
   );
 }
 
-function countReviewBacklog(ctx: InsightsScopeContext): Promise<number> {
-  return withDb((db) =>
-    db.pullRequestDetail.count({
-      where: {
-        branchArtifact: artifactScope(ctx),
-        reviewDecision: null,
-      },
-    })
-  );
-}
-
-function fetchReviews(
+/**
+ * Per-reviewer load for the org-scope "reviewer load" table: review count,
+ * approval count, and median PR-open→review wait, all rolled up in Postgres via
+ * a single GROUP BY author_login scan. Replaces materializing every review row
+ * org-wide (unbounded for the "all" period, which starts at the epoch) and
+ * reducing to per-author aggregates in JS. Raw SQL because the per-group median
+ * (`percentile_cont`) has no Prisma `groupBy` expression.
+ *
+ * Org-scope only (the sole caller guards on {@link isOrgScope}), so the scope is
+ * just the branch artifact's org — no per-user/team predicate like
+ * {@link artifactScope}. The wait mirrors the prior JS `wait >= 0` guard with a
+ * `FILTER (WHERE r.submitted_at >= a.created_at)`, so reviews submitted before
+ * their branch's recorded open time are excluded from the median (and the median
+ * is NULL when a reviewer has no non-negative wait), matching `median([]) → null`.
+ * `submitted_at - created_at` is an interval; EXTRACT(EPOCH ...)*1000 yields the
+ * same millisecond wait the JS path derived from `getTime()` deltas.
+ */
+async function fetchReviewerLoad(
   ctx: InsightsScopeContext,
   start: Date,
   end: Date
-): Promise<ReviewRow[]> {
-  return withDb((db) =>
-    db.gitHubPRReview.findMany({
-      where: {
-        submittedAt: { gte: start, lte: end },
-        pullRequestDetail: {
-          branchArtifact: artifactScope(ctx),
-        },
-      },
-      select: {
-        authorLogin: true,
-        state: true,
-        submittedAt: true,
-        pullRequestDetail: {
-          select: { branchArtifact: { select: { createdAt: true } } },
-        },
-      },
-    })
-  );
-}
-
-async function fetchReviewQueueBuckets(
-  ctx: InsightsScopeContext
-): Promise<CategoryBucket[]> {
+): Promise<ReviewerRow[]> {
   const rows = await withDb((db) =>
-    db.pullRequestDetail.groupBy({
-      by: ["reviewDecision"],
-      where: {
-        branchArtifact: artifactScope(ctx),
-        prState: { not: GitHubPRState.MERGED },
-      },
-      _count: { _all: true },
-    })
+    db.$queryRaw<
+      {
+        reviewer: string;
+        reviewed: number;
+        approved: number;
+        median_wait_ms: number | null;
+      }[]
+    >(
+      Prisma.sql`
+        SELECT
+          r.author_login AS reviewer,
+          COUNT(*)::int AS reviewed,
+          COUNT(*) FILTER (WHERE r.state::text = ${ReviewDecision.APPROVED})::int
+            AS approved,
+          percentile_cont(0.5) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (r.submitted_at - a.created_at)) * 1000
+          ) FILTER (WHERE r.submitted_at >= a.created_at) AS median_wait_ms
+        FROM github_pr_reviews r
+        JOIN pull_request_detail p ON p.id = r.pull_request_id
+        JOIN artifacts a ON a.id = p.branch_artifact_id
+        WHERE r.submitted_at >= ${start}
+          AND r.submitted_at <= ${end}
+          AND a.organization_id = ${ctx.organizationId}::uuid
+        GROUP BY r.author_login
+        ORDER BY reviewed DESC, reviewer ASC
+      `
+    )
   );
   return rows.map((row) => ({
-    key: row.reviewDecision ?? "PENDING",
-    label: REVIEW_QUEUE_LABELS[row.reviewDecision ?? "PENDING"],
-    value: row._count._all,
+    reviewer: row.reviewer,
+    reviewed: row.reviewed,
+    approved: row.approved,
+    medianWaitMs:
+      row.median_wait_ms === null ? null : Number(row.median_wait_ms),
   }));
 }
 
@@ -1372,34 +1464,6 @@ async function fetchTokenTotals(
 }
 
 /**
- * Spend (USD) by model, grouped in the DB. FEA-2331 ranks models by estimated
- * spend, not raw tokens. The distinct-model KPI is this array's length (groupBy
- * emits one row per distinct model). estimatedCost is Decimal(14,6) → a JS float
- * at the same boundary as the token totals; rounded to cents for display and
- * sorted descending so the top-N slice drives the model-usage series.
- */
-async function fetchModelBreakdown(
-  ctx: InsightsScopeContext,
-  start: Date,
-  end: Date
-): Promise<CategoryBucket[]> {
-  const rows = await withDb((db) =>
-    db.agentSessionTokenUsage.groupBy({
-      by: ["model"],
-      where: tokenUsageScope(ctx, start, end),
-      _sum: { estimatedCost: true },
-    })
-  );
-  return rows
-    .map((row) => ({
-      key: row.model,
-      label: row.model,
-      value: round(toNumber(row._sum.estimatedCost), 2),
-    }))
-    .sort((a, b) => b.value - a.value);
-}
-
-/**
  * Per-day per-model spend over the trend window, date-bucketed in Postgres so
  * only one aggregate row per (day, model) crosses the wire instead of every
  * token row. Mirrors {@link fetchEventVolume}, but buckets `session_started_at`
@@ -1416,20 +1480,30 @@ async function fetchModelUsageRows(
   end: Date,
   timeZone?: string
 ): Promise<{ rows: ModelUsageDayRow[]; bucketZone: string }> {
-  const runQuery = (zone: string) =>
+  const runQuery = (zone: string | undefined) =>
     withDb((db) =>
-      db.$queryRaw<{ day: string; model: string; cost: number }[]>(
+      db.$queryRaw<
+        { day: string; model: string; cost: number; tokens: number }[]
+      >(
         Prisma.sql`
           SELECT
             to_char(
               date_trunc(
                 'day',
-                (s.session_started_at AT TIME ZONE 'UTC') AT TIME ZONE ${zone}
+                (s.session_started_at AT TIME ZONE 'UTC') AT TIME ZONE ${zone ?? "UTC"}
               ),
               'YYYY-MM-DD'
             ) AS day,
             tu.model AS model,
-            SUM(tu.estimated_cost)::float8 AS cost
+            SUM(tu.estimated_cost)::float8 AS cost,
+            -- FEA-3497: total token volume for the dollar/count usage toggle.
+            -- Sums input + output + cache read/write so the usage view reflects
+            -- real work done (cache-heavy harnesses move huge volume cheaply).
+            -- float8 keeps the driver yielding plain numbers, matching cost.
+            SUM(
+              tu.input_tokens + tu.output_tokens
+              + tu.cache_read_tokens + tu.cache_write_tokens
+            )::float8 AS tokens
           FROM agent_session_token_usage tu
           JOIN session_detail s ON s.artifact_id = tu.agent_session_id
           JOIN artifacts a ON a.id = s.artifact_id
@@ -1441,33 +1515,17 @@ async function fetchModelUsageRows(
       )
     );
 
-  // Mirror the UTC-retry pattern from fetchDailySessionSeries: `ctx.timeZone`
-  // is validated against Node/ICU but a zone ICU accepts may be unknown to the
-  // Postgres server's tzdata (version skew). Degrade to UTC bucketing rather
-  // than propagating the error as a 500 for the entire /insights/agents endpoint.
-  const effectiveZone = timeZone ?? "UTC";
-  // The zone the rows are actually bucketed in. Stays `effectiveZone` on the
-  // happy path but flips to "UTC" when the tzdata-skew retry fires, so the
-  // caller can enumerate chart day keys in the same zone the rows were keyed in
-  // (otherwise UTC row keys wouldn't match local-zone point keys near day
-  // boundaries and spend would be dropped or misattributed).
-  let bucketZone = effectiveZone;
-  let raw: { day: string; model: string; cost: number }[];
-  try {
-    raw = await runQuery(effectiveZone);
-  } catch (error) {
-    // Only retry for timezone-specific Postgres rejections. Genuine DB errors
-    // (connection, permissions, syntax) are rethrown immediately.
-    if (!timeZone) {
-      throw error;
-    }
-    const msg = error instanceof Error ? error.message : String(error);
-    if (!msg.toLowerCase().includes("time zone")) {
-      throw error;
-    }
-    raw = await runQuery("UTC");
-    bucketZone = "UTC";
-  }
+  // Bucket in the requester's timezone, degrading to UTC when the PG server's
+  // tzdata rejects it (see runDailyBucketedQuery). `bucketZone` is the zone the
+  // rows were actually keyed in — `timeZone` on the happy path, "UTC" when it's
+  // unset or the tzdata-skew fallback fires — so the caller enumerates chart day
+  // keys in the same zone (otherwise UTC row keys wouldn't match local-zone point
+  // keys near day boundaries and spend would be dropped or misattributed).
+  const { rows: raw, bucketedZone } = await runDailyBucketedQuery(
+    timeZone,
+    runQuery
+  );
+  const bucketZone = bucketedZone ?? "UTC";
 
   return {
     bucketZone,
@@ -1475,6 +1533,7 @@ async function fetchModelUsageRows(
       day: row.day,
       model: row.model,
       cost: Number(row.cost),
+      tokens: Number(row.tokens),
     })),
   };
 }
@@ -1630,7 +1689,7 @@ export function reportDeltaFor(
  * any labels that collide after transformation and sorts by descending count —
  * the key mirrors the label, as before.
  */
-export function bucketByLabelCounts(
+function bucketByLabelCounts(
   entries: { label: string; value: number }[]
 ): CategoryBucket[] {
   const counts = new Map<string, number>();
@@ -1652,18 +1711,30 @@ export function bucketByLabelCounts(
  * buckets; the display label prefers the App's canonical casing when any row in
  * the group supplies it, else falls back to the (lowercased) short name. Rows
  * carrying neither identity cannot be bucketed by repo and are dropped.
+ *
+ * ISS-5411 split the two inputs. Buckets are COUNTED over `dedupedMerged`,
+ * because case-folding the label only stops the two lanes from fragmenting into
+ * two BUCKETS — it never stopped one pull request counting twice inside one.
+ * Casing is still resolved over ALL `scanned` rows: when a repo-less desktop row
+ * wins the dedupe (it is the sized one), dropping its App twin would otherwise
+ * take the only canonical-case name for that repo with it and downgrade the
+ * label to "foo-bar". A row excluded from the count can still name its repo.
  */
 export function buildPrByRepoBuckets(
-  merged: MergedPrRow[]
+  dedupedMerged: MergedPrRow[],
+  scanned: MergedPrRow[]
 ): { label: string; value: number }[] {
-  const byKey = new Map<
-    string,
-    { label: string; value: number; canonical: boolean }
-  >();
-  for (const pr of merged) {
-    const canonicalName = pr.repository?.name ?? null;
+  const canonicalByKey = new Map<string, string>();
+  for (const pr of scanned) {
+    const canonicalName = pr.repository?.name;
+    if (canonicalName) {
+      canonicalByKey.set(canonicalName.toLowerCase(), canonicalName);
+    }
+  }
+  const byKey = new Map<string, { label: string; value: number }>();
+  for (const pr of dedupedMerged) {
     const label =
-      canonicalName ?? pr.repositoryFullName?.split("/").at(-1) ?? null;
+      pr.repository?.name ?? pr.repositoryFullName?.split("/").at(-1) ?? null;
     if (!label) {
       continue;
     }
@@ -1671,16 +1742,11 @@ export function buildPrByRepoBuckets(
     const existing = byKey.get(key);
     if (existing) {
       existing.value += 1;
-      // Upgrade to the App's canonical casing once any row in the group has it.
-      if (!existing.canonical && canonicalName !== null) {
-        existing.label = canonicalName;
-        existing.canonical = true;
-      }
     } else {
-      byKey.set(key, { label, value: 1, canonical: canonicalName !== null });
+      byKey.set(key, { label: canonicalByKey.get(key) ?? label, value: 1 });
     }
   }
-  return [...byKey.values()].map(({ label, value }) => ({ label, value }));
+  return [...byKey.values()];
 }
 
 export function bucketCountByDay(
@@ -1705,22 +1771,30 @@ export function bucketCountByDay(
   return { series: [series], points };
 }
 
+/**
+ * PLN-1535 M4: takes ALREADY-DEDUPED merged PRs and reads each PR's own
+ * projected size, so the daily series is taken of the same population as the
+ * KLOC tile. A PR with unknown LOC contributes nothing to its day rather than a
+ * zero — the day's bar is a lower bound over what is known, matching the tile.
+ */
 function bucketKlocByDay(
-  merged: MergedPrRow[],
-  lineTotalsByBranch: Map<string, number>,
+  dedupedMerged: MergedPrRow[],
   start: Date,
   end: Date,
   timeZone?: string
 ): TimeSeries {
   const toKey = makeDayKey(timeZone);
   const counts = new Map<string, number>();
-  for (const pr of merged) {
+  for (const pr of dedupedMerged) {
     if (!(pr.mergedAt && pr.mergedAt >= start && pr.mergedAt <= end)) {
       continue;
     }
+    const loc = mergedPrLoc(pr);
+    if (loc === null) {
+      continue;
+    }
     const key = toKey(pr.mergedAt);
-    const kloc = (lineTotalsByBranch.get(pr.branchArtifactId) ?? 0) / 1000;
-    counts.set(key, (counts.get(key) ?? 0) + kloc);
+    counts.set(key, (counts.get(key) ?? 0) + loc / 1000);
   }
   const points = eachDayKey(start, end, timeZone).map((date) => ({
     date,
@@ -1730,8 +1804,10 @@ function bucketKlocByDay(
 }
 
 // FEA-2878: every fetched row is MERGED, so the state distribution is a single
-// bucket sized by the exact merged count — not the (possibly capped) row array —
-// keeping it consistent with the "Merged PRs" KPI at any org size.
+// bucket sized by the merged count — not the (possibly capped) row array —
+// keeping it consistent with the "Merged PRs" KPI at any org size. ISS-5411:
+// that count is now the distinct-pull-request one, so the bucket and the KPI
+// still agree.
 function mergedStateBuckets(mergedCount: number): CategoryBucket[] {
   if (mergedCount === 0) {
     return [];
@@ -1745,62 +1821,48 @@ function mergedStateBuckets(mergedCount: number): CategoryBucket[] {
   ];
 }
 
-function reviewerRows(reviews: ReviewRow[]): ReviewerRow[] {
-  const byReviewer = new Map<
-    string,
-    { reviewed: number; approved: number; waits: number[] }
-  >();
-  for (const review of reviews) {
-    const entry = byReviewer.get(review.authorLogin) ?? {
-      reviewed: 0,
-      approved: 0,
-      waits: [],
-    };
-    entry.reviewed += 1;
-    if (review.state === ReviewDecision.APPROVED) {
-      entry.approved += 1;
-    }
-    const wait =
-      review.submittedAt.getTime() -
-      review.pullRequestDetail.branchArtifact.createdAt.getTime();
-    if (wait >= 0) {
-      entry.waits.push(wait);
-    }
-    byReviewer.set(review.authorLogin, entry);
-  }
-  return [...byReviewer.entries()]
-    .map(([reviewer, { reviewed, approved, waits }]) => ({
-      reviewer,
-      reviewed,
-      approved,
-      medianWaitMs: median(waits),
-    }))
-    .sort((a, b) => b.reviewed - a.reviewed);
-}
-
-function tokenDistributionBuckets(totals: TokenTotals): CategoryBucket[] {
-  return [
-    { key: "input", label: "Input", value: totals.inputTokens },
-    { key: "output", label: "Output", value: totals.outputTokens },
-    { key: "cache-read", label: "Cache read", value: totals.cacheReadTokens },
-    {
-      key: "cache-write",
-      label: "Cache write",
-      value: totals.cacheWriteTokens,
-    },
-  ];
-}
-
+// Spend ($) and token (#) time-series for the Model Usage chart's $/# toggle
+// (FEA-3497). Both are built over the SAME top-N model keys (top-N by spend, from
+// `breakdown`) so toggling the metric only swaps y-values — the legend, colors,
+// and stacking order stay stable.
 function modelUsageSeries(
   rows: ModelUsageDayRow[],
   breakdown: CategoryBucket[],
   start: Date,
   end: Date,
   timeZone?: string
-): TimeSeries {
+): { spend: TimeSeries; tokens: TimeSeries } {
   const topModels = breakdown
     .slice(0, MAX_MODEL_SERIES)
     .map((bucket) => bucket.key);
+  return {
+    // FEA-2331: estimated spend (USD), rounded to whole cents once at emit.
+    spend: stackModelSeries(rows, topModels, start, end, timeZone, {
+      valueOf: (row) => row.cost,
+      round: (value) => round(value, 2),
+    }),
+    // FEA-3497: total token volume (input + output + cache), whole integers.
+    tokens: stackModelSeries(rows, topModels, start, end, timeZone, {
+      valueOf: (row) => row.tokens,
+      round: Math.round,
+    }),
+  };
+}
+
+// Stack per-(day, model) rows into a `TimeSeries` over a fixed top-N model set,
+// collapsing models outside the top-N into "other". Shared by the spend and
+// token series so both agree on which models appear (FEA-3497).
+function stackModelSeries(
+  rows: ModelUsageDayRow[],
+  topModels: string[],
+  start: Date,
+  end: Date,
+  timeZone: string | undefined,
+  metric: {
+    valueOf: (row: ModelUsageDayRow) => number;
+    round: (value: number) => number;
+  }
+): TimeSeries {
   const topSet = new Set(topModels);
   const seriesKey = (model: string) => (topSet.has(model) ? model : "other");
 
@@ -1808,10 +1870,9 @@ function modelUsageSeries(
   for (const row of rows) {
     const day = byDay.get(row.day) ?? {};
     const sKey = seriesKey(row.model);
-    // FEA-2331: stack estimated spend (USD) per day, not tokens. Rows already
-    // carry the per-(day, model) DB sum; models outside the top-N collapse into
-    // "other" and round to cents once at emit (below) to avoid rounding drift.
-    day[sKey] = (day[sKey] ?? 0) + row.cost;
+    // Rows already carry the per-(day, model) DB sum; models outside the top-N
+    // collapse into "other" and round once at emit (below) to avoid drift.
+    day[sKey] = (day[sKey] ?? 0) + metric.valueOf(row);
     byDay.set(row.day, day);
   }
 
@@ -1831,31 +1892,15 @@ function modelUsageSeries(
     series.push({ key: "other", label: "Other" });
   }
 
-  const points = eachDayKey(start, end, timeZone).map((date) => ({
-    date,
-    values: roundSpendValues(byDay.get(date) ?? {}),
-  }));
+  const points = eachDayKey(start, end, timeZone).map((date) => {
+    const raw = byDay.get(date) ?? {};
+    const rounded: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      rounded[key] = metric.round(value);
+    }
+    return { date, values: rounded };
+  });
   return { series, points };
-}
-
-// Round each model's accumulated daily spend to whole cents (FEA-2331).
-function roundSpendValues(
-  values: Record<string, number>
-): Record<string, number> {
-  const rounded: Record<string, number> = {};
-  for (const [key, value] of Object.entries(values)) {
-    rounded[key] = round(value, 2);
-  }
-  return rounded;
-}
-
-function displayName(user: {
-  firstName: string | null;
-  lastName: string | null;
-  email: string;
-}): string {
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
-  return name || user.email;
 }
 
 function round(value: number, decimals: number): number {
@@ -1865,34 +1910,6 @@ function round(value: number, decimals: number): number {
 
 function addDays(date: Date, days: number): Date {
   return new Date(date.getTime() + days * MS_PER_DAY);
-}
-
-// FEA-2745: build a yyyy-MM-dd bucket key that labels each instant by the
-// calendar day it falls on in `timeZone`. Undefined timeZone keeps the legacy
-// UTC bucketing (fast path, no formatter). Mirrors the desktop localDayKey()
-// contract so the two surfaces attribute the same activity to the same day.
-function makeDayKey(timeZone?: string): (date: Date) => string {
-  // Reuses the shared per-timezone formatter cache (getDateOnlyFormatter) and
-  // its UTC fallback so each chart bucket doesn't construct a fresh
-  // Intl.DateTimeFormat. `en-CA` emits YYYY-MM-DD, matching toIsoDateOnly's
-  // slice(0, 10) fallback for missing/invalid zones.
-  return (date) => toLocalDateOnly(date, timeZone);
-}
-
-function eachDayKey(start: Date, end: Date, timeZone?: string): string[] {
-  const toKey = makeDayKey(timeZone);
-  const keys: string[] = [];
-  // Anchor enumeration on the local calendar dates of the window edges, then
-  // advance in UTC-midnight steps: date-only arithmetic is DST-free, so each
-  // 24h step yields exactly one consecutive calendar day whose slice(0,10)
-  // matches the toKey() labels above.
-  const cursor = new Date(`${toKey(start)}T00:00:00.000Z`);
-  const endDay = new Date(`${toKey(end)}T00:00:00.000Z`).getTime();
-  while (cursor.getTime() <= endDay) {
-    keys.push(cursor.toISOString().slice(0, 10));
-    cursor.setTime(cursor.getTime() + MS_PER_DAY);
-  }
-  return keys;
 }
 
 function buildDeliveryTileAvailability({
@@ -1934,21 +1951,6 @@ function buildUtilizationTileAvailability({
     "chart:reviewerLoad": state,
   };
 }
-
-const CHECK_STATUS_LABELS: Record<ChecksStatus, string> = {
-  [ChecksStatus.PASSING]: "Passing",
-  [ChecksStatus.FAILING]: "Failing",
-  [ChecksStatus.PENDING]: "Running",
-  [ChecksStatus.UNKNOWN]: "Unknown",
-};
-
-const REVIEW_QUEUE_LABELS: Record<ReviewDecision | "PENDING", string> = {
-  PENDING: "Awaiting review",
-  [ReviewDecision.APPROVED]: "Approved, not merged",
-  [ReviewDecision.CHANGES_REQUESTED]: "Changes requested",
-  [ReviewDecision.COMMENTED]: "Commented",
-  [ReviewDecision.DISMISSED]: "Dismissed",
-};
 
 async function resolveGitHubProvenance(
   ctx: InsightsScopeContext

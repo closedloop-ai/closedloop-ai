@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isAllowedDesktopReleaseDownloadUrl } from "@repo/api/src/types/desktop-release";
 import { describe, expect, it } from "vitest";
 import { DESKTOP_INSTALLER_SCRIPT } from "../desktop-installer-script";
 import { buildDesktopOnboardingCommand } from "../desktop-managed-onboarding";
@@ -22,6 +23,11 @@ type ScriptResult = {
 };
 
 const INSTALLER_SCRIPT_TEST_TIMEOUT_MS = 15_000;
+const PRIVATE_RELEASE_DOWNLOAD_URL =
+  "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg";
+// The login-free public mirror of the signed DMG (FEA-3372).
+const PUBLIC_MIRROR_DOWNLOAD_URL =
+  "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg";
 
 async function writeExecutable(filePath: string, content: string) {
   await writeFile(filePath, content);
@@ -1238,14 +1244,20 @@ exit 1
       DESKTOP_INSTALLER_SCRIPT.indexOf("ensure_node_npm()")
     );
 
+    // Both the private release repo and the public mirror the signed DMG is
+    // copied to for login-free download (FEA-3372).
     expect(installBody).toContain(
-      "closedloop-ai/symphony-alpha/releases/download/desktop-v"
+      "closedloop-ai/(symphony-alpha|closedloop-ai)/releases/download/desktop-v"
     );
     // Dual-casing during the brand-rename transition (FEA-2101): accepts both
     // Closedloop-* and legacy ClosedLoop-* DMG URLs.
     expect(installBody).toContain("Closed[Ll]oop-([0-9]+");
-    expect(installBody).toContain("BASH_REMATCH[1]");
+    // The repo alternation is a capture group — POSIX ERE has no non-capturing
+    // groups — so the two version back-references are [2] and [3]. If these ever
+    // shift back to [1]/[2], the tag/asset version-agreement check silently
+    // compares the wrong things and stops catching mismatches.
     expect(installBody).toContain("BASH_REMATCH[2]");
+    expect(installBody).toContain("BASH_REMATCH[3]");
     expect(installBody).not.toContain("https://objects.githubusercontent.com");
     expect(installBody).not.toContain("closedloop-electron release");
     expect(installBody).toContain(
@@ -1304,6 +1316,97 @@ exit 1
       expect(combinedOutput).toContain("desktop_download");
       expect(result.log).not.toContain("curl ");
       expect(result.log).not.toContain("hdiutil ");
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  it.each([
+    ["public mirror DMG", PUBLIC_MIRROR_DOWNLOAD_URL],
+    [
+      "public mirror DMG, legacy casing",
+      "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/ClosedLoop-0.15.115-universal.dmg",
+    ],
+    ["private release DMG", PRIVATE_RELEASE_DOWNLOAD_URL],
+  ])(
+    "accepts the Desktop download URL: %s (FEA-3372 AC-5, static half)",
+    async (_name, downloadUrl) => {
+      // The harness runs validate_desktop_download_url in isolation, so a valid
+      // URL just exits 0 and never reaches the download. This proves the guard
+      // ACCEPTS the public URL; it does not prove the fetch succeeds without
+      // credentials — that is the live half (PLN-1367 T-7.3 step 5).
+      const result = await runDesktopDownloadUrlValidation(downloadUrl);
+
+      expect(result.code).toBe(0);
+      expect(result.log).not.toContain("curl ");
+      expect(result.log).not.toContain("hdiutil ");
+    },
+    INSTALLER_SCRIPT_TEST_TIMEOUT_MS
+  );
+
+  // FR-4 drift guard. The installer's bash guard and the server's TS guard are
+  // two independent implementations of one rule, and downloadUrl now has to pass
+  // BOTH — the server writes it, the installer fetches it. They are structurally
+  // different (a URL parser vs. a POSIX ERE), so this proves agreement over a
+  // FIXED TABLE, not universally. Its job is to make any divergence an explicit,
+  // deliberate edit here rather than silent drift that only shows up as a failed
+  // customer install.
+  it.each([
+    ["private release DMG", PRIVATE_RELEASE_DOWNLOAD_URL],
+    ["public mirror DMG", PUBLIC_MIRROR_DOWNLOAD_URL],
+    [
+      "old closedloop-electron repo",
+      "https://github.com/closedloop-ai/closedloop-electron/releases/download/v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "third repo under the allowed owner",
+      "https://github.com/closedloop-ai/closedloop-ai-evil/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "non-HTTPS",
+      "http://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "userinfo",
+      "https://token@github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    [
+      "host spoofing",
+      "https://github.com.evil.example/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    ["query string", `${PRIVATE_RELEASE_DOWNLOAD_URL}?download=1`],
+    ["hash", `${PRIVATE_RELEASE_DOWNLOAD_URL}#asset`],
+    ["extra path segment", `${PRIVATE_RELEASE_DOWNLOAD_URL}/extra`],
+    [
+      "encoded traversal",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-..%2F0.15.115-universal.dmg",
+    ],
+    [
+      "malformed percent escape",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-%E0%A4%A-universal.dmg",
+    ],
+    [
+      "zip asset",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-0.15.115-universal-mac.zip",
+    ],
+    [
+      "mismatched asset version",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/desktop-v0.15.115/Closedloop-9.9.9-universal.dmg",
+    ],
+    [
+      "mismatched asset version on the public mirror",
+      "https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-v0.15.115/Closedloop-9.9.9-universal.dmg",
+    ],
+    [
+      "non-Desktop release tag",
+      "https://github.com/closedloop-ai/symphony-alpha/releases/download/v0.15.115/Closedloop-0.15.115-universal.dmg",
+    ],
+    ["malformed URL", "not a url"],
+  ])(
+    "installer bash guard agrees with the server TS allowlist for %s",
+    async (_name, downloadUrl) => {
+      const { code } = await runDesktopDownloadUrlValidation(downloadUrl);
+
+      expect(code === 0).toBe(isAllowedDesktopReleaseDownloadUrl(downloadUrl));
     },
     INSTALLER_SCRIPT_TEST_TIMEOUT_MS
   );

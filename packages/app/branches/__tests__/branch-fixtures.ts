@@ -30,6 +30,7 @@ export function makeBranchSession(
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+    ownerUserName: null,
     ...over,
   };
 }

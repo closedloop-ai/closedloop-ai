@@ -1,14 +1,14 @@
+import { SummaryCardRow } from "@repo/app/shared/components/summary-card-row";
 import { Skeleton } from "@closedloop-ai/design-system/components/ui/skeleton";
 
-// Mirrors the five-card grid in `branches-view.tsx` (`CARDS_GRID_CLASS_NAME`).
-// Duplicated on purpose: this fallback is a *static* import so it is available
-// the instant the lazy `BranchesView` chunk starts loading — importing
-// `branches-view.tsx` to share the constant would pull the heavy branches slice
-// into the eager bundle and defeat the code split this skeleton exists to cover.
-// NOTE: `sm:grid-cols-2` is intentionally absent — the live view omits it too
-// (the sidebar means there is not enough room for 2 columns at the sm breakpoint).
-const CARDS_GRID_CLASS_NAME =
-  "grid grid-cols-1 gap-3 lg:grid-cols-3 xl:grid-cols-5";
+// The skeleton must reflow exactly as the live strip does, so it mounts the SAME
+// `SummaryCardRow` with the SAME `wrapBelow` that `branches-view.tsx` passes
+// (ISS-4787 follow-up: a hand-copied layout class here would drift the moment the
+// shared per-card floor changed, and the fallback would settle into a different
+// column count than the view it covers). `summary-card-row` is a leaf module, so a
+// static import of it costs the eager bundle nothing like importing
+// `branches-view.tsx` would — that is what the code split this skeleton exists to
+// cover was protecting against.
 
 const CARD_KEYS = ["a", "b", "c", "d", "e"] as const;
 const ROW_KEYS = ["r1", "r2", "r3", "r4", "r5", "r6"] as const;
@@ -44,11 +44,14 @@ export function BranchesLoading() {
       {/* Scroll region — cards above the table, same gutters as the live view. */}
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="sticky left-0 flex flex-col gap-3 px-4 pt-4 pb-3">
-          <div className={CARDS_GRID_CLASS_NAME}>
+          {/* The row itself, not a bare div: it publishes the
+              `--summary-card-min` custom property the grid's tracks read, so the
+              fallback reflows into exactly the column count the live strip will. */}
+          <SummaryCardRow busy wrapBelow>
             {CARD_KEYS.map((key) => (
               <Skeleton className="h-[112px] rounded-xl" key={key} />
             ))}
-          </div>
+          </SummaryCardRow>
         </div>
 
         <div className="flex flex-col gap-2 px-4 pb-4">

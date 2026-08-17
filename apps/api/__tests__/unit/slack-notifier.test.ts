@@ -38,6 +38,7 @@ vi.mock("@/env", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { makeCounters } from "@repo/database/scripts/cleanup-preview-schemas-lib";
 import {
   buildAlertText,
   buildCorrelationId,
@@ -365,17 +366,36 @@ describe("buildAlertText", () => {
     expect(text).toContain("ts=2026-01-01T00:00:00.000Z");
   });
 
+  it("keeps the historical headline when no title is supplied", () => {
+    const text = buildAlertText({
+      route: "cleanup-preview-schemas:daily",
+      message: "something broke",
+      correlationId: "sha=abc12345",
+    });
+
+    expect(text).toContain("*Preview schema cleanup failure*");
+  });
+
+  it("uses the caller's title so an alert cannot mislabel its own route", () => {
+    const text = buildAlertText({
+      route: "sample-session-ingestion-health",
+      title: "Session ingestion health check failure",
+      message: "something broke",
+      correlationId: "sha=abc12345",
+    });
+
+    expect(text).toContain("*Session ingestion health check failure*");
+    expect(text).not.toContain("Preview schema cleanup failure");
+  });
+
   it("includes error category lines when counters have errored > 0", () => {
     const text = buildAlertText({
       route: "cleanup",
       message: "errors found",
       correlationId: "sha=abc12345",
       counters: {
+        ...makeCounters(),
         "ttl-expired": { kept: 0, dropped: 0, errored: 3 },
-        orphan: { kept: 0, dropped: 0, errored: 0 },
-        "orphan-branch": { kept: 0, dropped: 0, errored: 0 },
-        "pr-closed": { kept: 0, dropped: 0, errored: 0 },
-        registryReadErrored: 0,
       },
     });
 
@@ -388,11 +408,8 @@ describe("buildAlertText", () => {
       message: "no errors",
       correlationId: "sha=abc12345",
       counters: {
+        ...makeCounters(),
         "ttl-expired": { kept: 5, dropped: 5, errored: 0 },
-        orphan: { kept: 0, dropped: 0, errored: 0 },
-        "orphan-branch": { kept: 0, dropped: 0, errored: 0 },
-        "pr-closed": { kept: 0, dropped: 0, errored: 0 },
-        registryReadErrored: 0,
       },
     });
 
@@ -405,11 +422,8 @@ describe("buildAlertText", () => {
       message: "orphan-branch errors found",
       correlationId: "sha=abc12345",
       counters: {
-        "ttl-expired": { kept: 0, dropped: 0, errored: 0 },
-        orphan: { kept: 0, dropped: 0, errored: 0 },
+        ...makeCounters(),
         "orphan-branch": { kept: 0, dropped: 0, errored: 2 },
-        "pr-closed": { kept: 0, dropped: 0, errored: 0 },
-        registryReadErrored: 0,
       },
     });
 
@@ -423,11 +437,9 @@ describe("buildAlertText", () => {
       message: "multiple category errors",
       correlationId: "sha=abc12345",
       counters: {
+        ...makeCounters(),
         "ttl-expired": { kept: 0, dropped: 0, errored: 4 },
-        orphan: { kept: 0, dropped: 0, errored: 0 },
         "orphan-branch": { kept: 0, dropped: 0, errored: 5 },
-        "pr-closed": { kept: 0, dropped: 0, errored: 0 },
-        registryReadErrored: 0,
       },
     });
 

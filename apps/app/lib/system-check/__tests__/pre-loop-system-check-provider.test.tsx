@@ -1,30 +1,29 @@
 import {
   ComputePreference,
-  ComputePreferenceRequiredMessage,
-  type ComputePreferenceResponse,
-  EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
+  HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
 } from "@repo/api/src/types/compute-target";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computeTargetKeys } from "@/hooks/queries/compute-target-query-keys";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
 import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "../plugin-auto-update";
-import { getPreLoopTargetKey, PreLoopCommand } from "../pre-loop-health-check";
+import { getPreLoopTargetKey } from "../pre-loop-health-check";
 import {
-  PreLoopSystemCheckProvider,
-  usePreLoopSystemCheckGate,
-} from "../pre-loop-system-check-provider";
+  applyDefaultProviderMocks,
+  computeState,
+  createFeatureFlagMocker,
+  createQueryClient,
+  failingResult,
+  healthyResult,
+  PreLoopGateTree,
+  renderGate,
+  undeterminableResult,
+} from "./fixtures/pre-loop-provider-harness";
 
 const mockCapture = vi.hoisted(() => vi.fn());
 const mockError = vi.hoisted(() => vi.fn());
 const mockWarning = vi.hoisted(() => vi.fn());
+const mockInfo = vi.hoisted(() => vi.fn());
 const mockUseFeatureFlag = vi.hoisted(() => vi.fn());
 const mockUseComputePreference = vi.hoisted(() => vi.fn());
 const mockUseComputeTargets = vi.hoisted(() => vi.fn());
@@ -58,6 +57,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
   toast: {
     error: mockError,
     warning: mockWarning,
+    info: mockInfo,
   },
 }));
 
@@ -95,6 +95,14 @@ vi.mock("@/hooks/use-api-client", () => ({
   }),
 }));
 
+// The Cloud pre-flight resolves a Settings deep-link (ISS-5172) through these
+// two hooks on every provider render, so both need stubbing here.
+vi.mock("@/hooks/use-org-slug", () => ({ useOrgSlug: () => "org-test" }));
+
+vi.mock("@repo/navigation/use-navigation", () => ({
+  useNavigation: () => ({ navigate: vi.fn() }),
+}));
+
 vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   HealthCheckDialog: ({
     initialData,
@@ -102,6 +110,7 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
     onCancel,
     onRecheckUnavailable,
     onResolvedAfterRecheck,
+    onRunOnCloud,
     targetKey,
   }: {
     initialData?: unknown;
@@ -109,18 +118,25 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
     onCancel: () => void;
     onRecheckUnavailable: (reason: string) => void;
     onResolvedAfterRecheck: () => void;
+    onRunOnCloud?: () => void;
     targetKey?: string;
   }) => {
     mockHealthCheckDialogRender({
       initialData,
       latestVersionOverride,
       targetKey,
+      hasRunOnCloud: Boolean(onRunOnCloud),
     });
     return (
       <div data-testid="blocking-dialog">
         <button onClick={onCancel} type="button">
           Cancel
         </button>
+        {onRunOnCloud ? (
+          <button onClick={onRunOnCloud} type="button">
+            Run on Cloud
+          </button>
+        ) : null}
         <button onClick={onResolvedAfterRecheck} type="button">
           Resolved
         </button>
@@ -132,272 +148,21 @@ vi.mock("@/components/engineer/HealthCheckDialog", () => ({
   },
 }));
 
-const healthyResult = {
-  checks: [{ id: "git", label: "Git", required: true, passed: true }],
-  allRequiredPassed: true,
-};
-
-const failingResult = {
-  checks: [{ id: "cli", label: "CLI", required: true, passed: false }],
-  allRequiredPassed: false,
-};
-
-let preference: ComputePreferenceResponse = {
-  preferredComputeMode: ComputePreference.Local,
-  computeTargetId: "target-1",
-};
-const defaultTargets = [
-  {
-    id: "target-1",
-    machineName: "Laptop",
-    ownerName: null,
-    isOnline: true,
-    lastSeenAt: new Date("2026-05-04T15:00:00Z"),
-    createdAt: new Date("2026-05-04T15:00:00Z"),
-    updatedAt: new Date("2026-05-04T15:00:00Z"),
-  },
-  {
-    id: "target-2",
-    machineName: "Desktop",
-    ownerName: null,
-    isOnline: true,
-    lastSeenAt: new Date("2026-05-04T15:01:00Z"),
-    createdAt: new Date("2026-05-04T15:00:00Z"),
-    updatedAt: new Date("2026-05-04T15:00:00Z"),
-  },
-];
-let targets = defaultTargets.map((target) => ({ ...target }));
-
-function GateHarness({
-  execute,
-  computeTargetId,
-}: {
-  execute: (context?: unknown) => void;
-  computeTargetId?: string | null;
-}) {
-  const gate = usePreLoopSystemCheckGate();
-  let stateLabel = "idle";
-  if (gate.isChecking) {
-    stateLabel = "checking";
-  } else if (gate.isDialogOpen) {
-    stateLabel = "dialog";
-  }
-
-  return (
-    <>
-      <button
-        disabled={gate.isChecking || gate.isDialogOpen}
-        onClick={() => {
-          gate
-            .runWithPreLoopSystemCheck(
-              {
-                command: PreLoopCommand.ExecutePlan,
-                documentId: "plan-1",
-                documentType: "implementation_plan",
-                ownerKey: "owner-1",
-                computeTargetId,
-              },
-              execute
-            )
-            .catch(() => undefined);
-        }}
-        type="button"
-      >
-        Run
-      </button>
-      <button
-        onClick={() => gate.cancelPendingPreLoopAttempt("owner-1")}
-        type="button"
-      >
-        Cancel Owner
-      </button>
-      <div data-testid="state">{stateLabel}</div>
-      <div data-testid="is-checking">{String(gate.isChecking)}</div>
-      <div data-testid="is-dialog-open">{String(gate.isDialogOpen)}</div>
-    </>
-  );
-}
-
-function renderGate({
-  queryClient,
-  execute,
-  computeTargetId,
-}: {
-  queryClient: QueryClient;
-  execute: (context?: unknown) => void;
-  computeTargetId?: string | null;
-}) {
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <PreLoopSystemCheckProvider>
-        <GateHarness computeTargetId={computeTargetId} execute={execute} />
-      </PreLoopSystemCheckProvider>
-    </QueryClientProvider>
-  );
-}
-
-function createQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, gcTime: Number.POSITIVE_INFINITY },
-      mutations: { retry: false },
-    },
-  });
-}
-
-function mockEnabledFeatureFlags(...enabledKeys: string[]) {
-  const enabledKeySet = new Set(enabledKeys);
-  mockUseFeatureFlag.mockImplementation((key: string) => ({
-    enabled: enabledKeySet.has(key),
-  }));
-}
+const mockEnabledFeatureFlags = createFeatureFlagMocker(mockUseFeatureFlag);
 
 describe("PreLoopSystemCheckProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseUser.mockReturnValue({ user: { id: "user-1" } });
-    preference = {
-      preferredComputeMode: ComputePreference.Local,
-      computeTargetId: "target-1",
-    };
+    applyDefaultProviderMocks({
+      mockUseUser,
+      mockUseFeatureFlag,
+      mockUseComputePreference,
+      mockUseComputeTargets,
+      mockUseLatestElectronRelease,
+      mockApiGet,
+    });
     mockEnabledFeatureFlags();
-    targets = defaultTargets.map((target) => ({ ...target }));
-    mockUseComputePreference.mockImplementation(() => ({
-      data: preference,
-      refetch: vi.fn().mockResolvedValue({ data: preference, error: null }),
-    }));
-    mockUseComputeTargets.mockImplementation(() => ({
-      data: targets,
-      refetch: vi.fn().mockResolvedValue({ data: targets, error: null }),
-    }));
-    mockUseLatestElectronRelease.mockReturnValue({
-      data: { version: "1.0.0" },
-      refetch: vi.fn().mockResolvedValue({
-        data: { version: "1.0.0" },
-        error: null,
-      }),
-    });
-    mockApiGet.mockResolvedValue(null);
     vi.stubGlobal("fetch", vi.fn());
-  });
-
-  it("blocks before target resolution when explicit selection is required and preference is not explicit", async () => {
-    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
-    preference = {
-      preferredComputeMode: ComputePreference.Cloud,
-      computeTargetId: undefined,
-    };
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-
-    renderGate({ queryClient, execute });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(mockError).toHaveBeenCalledWith(ComputePreferenceRequiredMessage);
-    });
-    expect(execute).not.toHaveBeenCalled();
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-    expect(mockCapture).toHaveBeenCalledWith(
-      "pre_loop_compute_selection_blocked",
-      expect.objectContaining({
-        reason: "missing_explicit_compute_selection",
-      })
-    );
-  });
-
-  it("honors explicit metadata target when explicit selection is required and preference is not explicit", async () => {
-    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
-    preference = {
-      preferredComputeMode: ComputePreference.Cloud,
-      computeTargetId: undefined,
-    };
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-    queryClient.setQueryData(
-      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
-        relayTargetId: "target-1",
-        latestVersion: "1.0.0",
-      }).queryKey,
-      healthyResult
-    );
-
-    renderGate({ queryClient, execute, computeTargetId: "target-1" });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith({ computeTargetId: "target-1" });
-    });
-    expect(mockError).not.toHaveBeenCalledWith(
-      ComputePreferenceRequiredMessage
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("honors explicit metadata Cloud override when explicit selection is required and preference is not explicit", async () => {
-    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
-    preference = {
-      preferredComputeMode: ComputePreference.Cloud,
-      computeTargetId: undefined,
-    };
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-
-    renderGate({ queryClient, execute, computeTargetId: null });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith({ computeTargetId: null });
-    });
-    expect(mockError).not.toHaveBeenCalledWith(
-      ComputePreferenceRequiredMessage
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("passes an explicit Cloud override when explicit selection is required", async () => {
-    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
-    preference = {
-      preferredComputeMode: ComputePreference.Cloud,
-      computeTargetId: undefined,
-      isExplicit: true,
-    };
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-
-    renderGate({ queryClient, execute });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith({ computeTargetId: null });
-    });
-    expect(globalThis.fetch).not.toHaveBeenCalled();
-  });
-
-  it("passes the resolved explicit Local target after the local health check passes", async () => {
-    mockEnabledFeatureFlags(EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY);
-    preference = {
-      preferredComputeMode: ComputePreference.Local,
-      computeTargetId: "target-1",
-      isExplicit: true,
-    };
-    const queryClient = createQueryClient();
-    const execute = vi.fn();
-    queryClient.setQueryData(
-      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
-        relayTargetId: "target-1",
-        latestVersion: "1.0.0",
-      }).queryKey,
-      healthyResult
-    );
-
-    renderGate({ queryClient, execute });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    await waitFor(() => {
-      expect(execute).toHaveBeenCalledWith({ computeTargetId: "target-1" });
-    });
-    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("executes immediately for a fresh healthy cached result", async () => {
@@ -454,6 +219,41 @@ describe("PreLoopSystemCheckProvider", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
+  /**
+   * ISS-5811, at the provider — the layer that actually decides. The pure
+   * predicate returning `[]` is not the launch; `execute()` being called is.
+   * This is the counterpart to the `failingResult` test directly below, and the
+   * two together are what pin the boundary: a PROVEN failure opens the dialog,
+   * an UNDETERMINABLE one launches.
+   *
+   * The 2026-08-10 outage lived exactly here. Every required Closedloop plugin
+   * row came back "Could not verify enabled state" with `repair.repairable:
+   * false`, the gate blocked, and no run-loop request was ever made — so the
+   * command never entered the transport at all and nothing downstream (relay,
+   * gateway, Electron) ever saw it.
+   */
+  it("executes from a fresh cache whose only required failures are undeterminable", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    queryClient.setQueryData(
+      healthCheckOptions(getPreLoopTargetKey("target-1"), EXPECTED_MCP_URL, {
+        relayTargetId: "target-1",
+        latestVersion: "1.0.0",
+      }).queryKey,
+      undeterminableResult
+    );
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(execute).toHaveBeenCalledWith({ computeTargetId: "target-1" });
+    expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
+    expect(mockHealthCheckDialogRender).not.toHaveBeenCalled();
+  });
+
   it("opens the blocking dialog from a fresh failing cache without re-running health check", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
@@ -499,7 +299,7 @@ describe("PreLoopSystemCheckProvider", () => {
       result: healthyResult,
       allRequiredPassed: true,
       requiredFailureIds: [],
-      schemaVersion: 1,
+      schemaVersion: HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -514,6 +314,39 @@ describe("PreLoopSystemCheckProvider", () => {
       "/compute-targets/target-1/health-check"
     );
     expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  // The pre-ISS-5811 API validator stripped `severity` from every stored row,
+  // so a schemaVersion-1 snapshot resolves an undeterminable check back to
+  // `error` and blocks. It is timestamped NOW here on purpose: the freshness
+  // window would accept it, so only the version guard can reject it. The live
+  // check firing is the proof it did.
+  it("ignores a persisted snapshot written under an older schema version", async () => {
+    const queryClient = createQueryClient();
+    const execute = vi.fn();
+    mockApiGet.mockResolvedValue({
+      id: "snapshot-1",
+      organizationId: "org-1",
+      computeTargetId: "target-1",
+      checkedAt: new Date().toISOString(),
+      expectedMcpUrl: EXPECTED_MCP_URL,
+      latestVersion: "1.0.0",
+      result: healthyResult,
+      allRequiredPassed: true,
+      requiredFailureIds: [],
+      schemaVersion: HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION - 1,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    vi.mocked(globalThis.fetch).mockResolvedValue(Response.json(healthyResult));
+
+    renderGate({ queryClient, execute, computeTargetId: "target-1" });
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+
+    await waitFor(() => {
+      expect(execute).toHaveBeenCalledOnce();
+    });
+    expect(globalThis.fetch).toHaveBeenCalledOnce();
   });
 
   it("does not refetch a persisted snapshot when a null snapshot is cached", async () => {
@@ -557,12 +390,14 @@ describe("PreLoopSystemCheckProvider", () => {
   it("does not allow an offline target to pass from a persisted snapshot", async () => {
     const queryClient = createQueryClient();
     const execute = vi.fn();
-    targets = targets.map((target) =>
+    computeState.targets = computeState.targets.map((target) =>
       target.id === "target-1" ? { ...target, isOnline: false } : target
     );
     mockUseComputeTargets.mockImplementation(() => ({
-      data: targets,
-      refetch: vi.fn().mockResolvedValue({ data: targets, error: null }),
+      data: computeState.targets,
+      refetch: vi
+        .fn()
+        .mockResolvedValue({ data: computeState.targets, error: null }),
     }));
     mockApiGet.mockResolvedValue({
       id: "snapshot-1",
@@ -574,7 +409,7 @@ describe("PreLoopSystemCheckProvider", () => {
       result: healthyResult,
       allRequiredPassed: true,
       requiredFailureIds: [],
-      schemaVersion: 1,
+      schemaVersion: HEALTH_CHECK_SNAPSHOT_SCHEMA_VERSION,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     });
@@ -849,17 +684,11 @@ describe("PreLoopSystemCheckProvider", () => {
     });
     expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
-    preference = {
+    computeState.preference = {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-2",
     };
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <PreLoopSystemCheckProvider>
-          <GateHarness execute={execute} />
-        </PreLoopSystemCheckProvider>
-      </QueryClientProvider>
-    );
+    rerender(<PreLoopGateTree execute={execute} queryClient={queryClient} />);
 
     await waitFor(() => {
       expect(mockCapture).toHaveBeenCalledWith(
@@ -903,17 +732,11 @@ describe("PreLoopSystemCheckProvider", () => {
     });
     expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();
 
-    preference = {
+    computeState.preference = {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-2",
     };
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <PreLoopSystemCheckProvider>
-          <GateHarness execute={execute} />
-        </PreLoopSystemCheckProvider>
-      </QueryClientProvider>
-    );
+    rerender(<PreLoopGateTree execute={execute} queryClient={queryClient} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => {
@@ -1156,17 +979,11 @@ describe("PreLoopSystemCheckProvider", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await screen.findByTestId("blocking-dialog");
 
-    preference = {
+    computeState.preference = {
       preferredComputeMode: ComputePreference.Local,
       computeTargetId: "target-2",
     };
-    rerender(
-      <QueryClientProvider client={queryClient}>
-        <PreLoopSystemCheckProvider>
-          <GateHarness execute={execute} />
-        </PreLoopSystemCheckProvider>
-      </QueryClientProvider>
-    );
+    rerender(<PreLoopGateTree execute={execute} queryClient={queryClient} />);
 
     await waitFor(() => {
       expect(screen.queryByTestId("blocking-dialog")).not.toBeInTheDocument();

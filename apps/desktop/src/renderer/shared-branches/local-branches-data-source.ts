@@ -1,22 +1,36 @@
 import {
   BranchCommentsState,
+  type BranchPageDetail,
   encodeBranchId,
 } from "@repo/api/src/types/branch";
+import { branchAnalyticsCohortConsumerResponseSchema } from "@repo/api/src/types/branch-analytics-cohort";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
+import {
+  BranchSelectedPullRequestChecksAvailability,
+  BranchSelectedPullRequestChecksUnavailableSource,
+} from "@repo/api/src/types/branch-selected-pull-request-checks";
+import {
+  BranchTraceUnavailableReason,
+  normalizeBranchTraceResult,
+  unavailableBranchTraceResult,
+} from "@repo/api/src/types/branch-trace";
 import {
   GitHubDirtyScopeKind,
   type GitHubResyncNudgeBody,
 } from "@repo/api/src/types/github-dirty-scope-constants";
 import { ReadSource } from "@repo/api/src/types/read-source";
+import { SelectedPullRequestEvidenceUnavailableReason } from "@repo/api/src/types/selected-pull-request-evidence";
 import type {
   BranchesChange,
   BranchesDataSource,
 } from "@repo/app/branches/data-source/branches-data-source";
-import { buildLocalCommentsResponse } from "@repo/app/branches/lib/live-overlays/live-pr-comments";
+import { buildLocalCommentsResponse } from "@repo/app/branches/lib/local-pr-comments";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { withReadSource } from "@repo/app/shared/lib/read-source";
 import {
   SHARED_BRANCHES_NOT_FOUND_CODE,
   SHARED_BRANCHES_SOURCE_ERROR_CODE,
+  SHARED_BRANCHES_TRANSIENT_ERROR_CODE,
 } from "../../shared/shared-branches-contract";
 import { runSource } from "../shared/run-source";
 import type { DesktopApi } from "../types/desktop-api";
@@ -56,7 +70,8 @@ export function createLocalBranchesDataSource(
     runSource(
       run,
       "Branches source failed.",
-      SHARED_BRANCHES_SOURCE_ERROR_CODE
+      SHARED_BRANCHES_SOURCE_ERROR_CODE,
+      SHARED_BRANCHES_TRANSIENT_ERROR_CODE
     );
 
   return {
@@ -72,9 +87,7 @@ export function createLocalBranchesDataSource(
     },
     detail: async (id, options) => {
       const data = await sanitize(() =>
-        desktopApi.branchesApi.detail(
-          options?.forceRefresh ? { id, forceRefresh: true } : id
-        )
+        desktopApi.branchesApi.detail(detailRequest(id, options))
       );
       if (!data) {
         throw new ApiError(
@@ -83,10 +96,12 @@ export function createLocalBranchesDataSource(
           SHARED_BRANCHES_NOT_FOUND_CODE
         );
       }
-      return data;
+      return suppressMismatchedSelectedPullRequest(data, options);
     },
-    comments: async (id) => {
-      const detail = await sanitize(() => desktopApi.branchesApi.detail(id));
+    comments: async (id, options) => {
+      const detail = await sanitize(() =>
+        desktopApi.branchesApi.detail(detailRequest(id, options))
+      );
       if (!detail) {
         throw new ApiError(
           "Branch not found.",
@@ -94,29 +109,163 @@ export function createLocalBranchesDataSource(
           SHARED_BRANCHES_NOT_FOUND_CODE
         );
       }
+      const resolved = suppressMismatchedSelectedPullRequest(detail, options);
       return buildLocalCommentsResponse({
         branchId: id,
         state: BranchCommentsState.UnsyncedUnknown,
-        prNumber: detail.prNumber,
-        prUrl: detail.prUrl,
+        prNumber: resolved.prNumber,
+        prUrl: resolved.prUrl,
       });
     },
-    // Best-effort (PLN-1148 Phase 2): the trace is enrichment for the timeline
-    // tab — a failure degrades to an empty timeline rather than rejecting, so it
-    // does NOT go through `sanitize` (which would surface a retry-skipping
-    // ApiError). The main-process handler already degrades to [] on its own.
-    trace: async (id) => {
+    // Version-skewed Desktop mains may still return the legacy raw item array.
+    trace: async (id, options) => {
       try {
-        return await desktopApi.branchesApi.trace(id);
-      } catch {
-        return [];
+        options?.signal?.throwIfAborted();
+        const result = normalizeBranchTraceResult(
+          await desktopApi.branchesApi.trace(id)
+        );
+        options?.signal?.throwIfAborted();
+        return result;
+      } catch (error) {
+        if (options?.signal?.aborted) {
+          options.signal.throwIfAborted();
+        }
+        if (isAbortError(error)) {
+          throw error;
+        }
+        return unavailableBranchTraceResult(
+          [],
+          BranchTraceUnavailableReason.Unknown
+        );
       }
     },
     usage: (filters) => sanitize(() => desktopApi.branchesApi.usage(filters)),
     analytics: (filters) =>
       sanitize(() => desktopApi.branchesApi.analytics(filters)),
+    cohortAnalytics: (request) => {
+      const cohortAnalytics = desktopApi.branchesApi.cohortAnalytics;
+      return cohortAnalytics
+        ? sanitize(async () => {
+            const response = await cohortAnalytics(request);
+            return response === null
+              ? null
+              : branchAnalyticsCohortConsumerResponseSchema.parse(response);
+          })
+        : Promise.resolve(null);
+    },
+    // Same FEA-3120 stamp as `list` above, applied to the nested list — the
+    // combined read still carries local provenance for the ReadSourceBadge.
+    pageData: async (filters) => {
+      const response = await sanitize(() =>
+        desktopApi.branchesApi.pageData(filters)
+      );
+      return {
+        ...response,
+        list: withReadSource(response.list, ReadSource.Local),
+      };
+    },
     subscribe: createBranchChangeSubscription(desktopApi),
   };
+}
+
+function detailRequest(
+  id: string,
+  options: Parameters<BranchesDataSource["detail"]>[1]
+) {
+  if (!options) {
+    return id;
+  }
+  return {
+    id,
+    ...(options.forceRefresh ? { forceRefresh: true } : {}),
+    ...(options.repositoryFullName === undefined
+      ? {}
+      : { repositoryFullName: options.repositoryFullName }),
+    ...(options.pullRequestNumber === undefined
+      ? {}
+      : { pullRequestNumber: options.pullRequestNumber }),
+  };
+}
+
+/**
+ * A newer renderer can send explicit selection to an older main that silently
+ * ignores the additive request fields. Detect that version skew from the
+ * returned selected identity and withhold only PR-owned evidence; Branch-owned
+ * identity, Sessions, costs, collaborators, and activity remain intact.
+ */
+export function suppressMismatchedSelectedPullRequest(
+  detail: BranchPageDetail,
+  selection:
+    | {
+        repositoryFullName?: string;
+        pullRequestNumber?: number;
+      }
+    | undefined
+): BranchPageDetail {
+  if (
+    selection?.repositoryFullName === undefined ||
+    selection.pullRequestNumber === undefined
+  ) {
+    return detail;
+  }
+  const selected = detail.selectedPullRequest;
+  if (
+    selected?.repositoryFullName === selection.repositoryFullName &&
+    selected.number === selection.pullRequestNumber
+  ) {
+    return detail;
+  }
+  return {
+    ...detail,
+    selectedPullRequest: null,
+    selectedPullRequestChecks: {
+      status: BranchSelectedPullRequestChecksAvailability.Unavailable,
+      source: BranchSelectedPullRequestChecksUnavailableSource.Evidence,
+      reason: SelectedPullRequestEvidenceUnavailableReason.MalformedResponse,
+    },
+    prNumber: null,
+    prState: null,
+    prTitle: null,
+    prUrl: null,
+    reviewDecision: null,
+    prBody: null,
+    prBodyHtmlUrl: null,
+    headSha: null,
+    mergeCommitSha: null,
+    mergedAt: null,
+    closedAt: null,
+    openedAt: null,
+    additions: null,
+    deletions: null,
+    filesChanged: null,
+    checksStatus: null,
+    checksPassed: null,
+    checksTotal: null,
+    reviewedParticipants: [],
+    reviewedParticipantsTruncated: false,
+    ...(detail.canonicalMetrics
+      ? {
+          canonicalMetrics: {
+            ...detail.canonicalMetrics,
+            locPerDollar: unavailableMetric(),
+            leadTimeMs: unavailableMetric(),
+            abandonmentTimeMs: unavailableMetric(),
+            idleTimeMs: unavailableMetric(),
+          },
+        }
+      : {}),
+  };
+}
+
+function unavailableMetric() {
+  return {
+    state: BranchMetricAvailability.Unavailable,
+    value: null,
+  } as const;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function createBranchChangeSubscription(

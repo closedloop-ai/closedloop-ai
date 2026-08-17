@@ -7,6 +7,7 @@
  */
 
 import type {
+  CustomFieldEnumOption,
   CustomFieldSettingWithOptions,
   CustomFieldValueDetail,
 } from "@repo/api/src/types/custom-field";
@@ -26,6 +27,8 @@ import { CustomFieldValueEditor } from "../custom-field-value-editor";
 const mockMutate = vi.fn();
 
 const NO_PEOPLE_ASSIGNED_RE = /No people assigned/i;
+const REMOVE_ARCHIVED_RE = /Remove Archived/i;
+const REMOVE_UNKNOWN_RE = /Remove unknown option/i;
 
 vi.mock("@repo/app/custom-fields/hooks/use-custom-fields", () => ({
   useUpdateCustomFieldValue: () => ({
@@ -333,6 +336,118 @@ describe("CustomFieldValueEditor", () => {
       expect(mockMutate).toHaveBeenCalledWith({
         fieldId: "field-1",
         value: null,
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // MultiEnumFieldEditor — disabled-but-selected "ghost" values (FEA-3269)
+  // -------------------------------------------------------------------------
+
+  describe("MultiEnumFieldEditor ghost selections", () => {
+    const OPT_ACTIVE: CustomFieldEnumOption = {
+      id: "opt-active",
+      customFieldId: "field-1",
+      name: "Active",
+      color: "#00ff00",
+      enabled: true,
+      sortOrder: 0,
+    };
+    const OPT_DISABLED: CustomFieldEnumOption = {
+      id: "opt-disabled",
+      customFieldId: "field-1",
+      name: "Archived",
+      color: "#888888",
+      enabled: false,
+      sortOrder: 1,
+    };
+
+    function renderWithSelected(selected: CustomFieldEnumOption[]) {
+      render(
+        <CustomFieldValueEditor
+          {...BASE_ENTITY}
+          setting={makeSetting(CustomFieldType.MultiEnum, {
+            name: "Tags",
+            enumOptions: [OPT_ACTIVE, OPT_DISABLED],
+          })}
+          value={
+            {
+              id: "v1",
+              customFieldId: "field-1",
+              entityId: "proj-1",
+              name: "Tags",
+              fieldType: CustomFieldType.MultiEnum,
+              displayValue: null,
+              showInTable: false,
+              textValue: null,
+              numberValue: null,
+              dateValue: null,
+              enumValue: null,
+              multiEnumValues: selected,
+              peopleValues: [],
+            } satisfies CustomFieldValueDetail
+          }
+        />
+      );
+    }
+
+    it("renders a pill for a selected option whose option is now disabled", () => {
+      renderWithSelected([OPT_ACTIVE, OPT_DISABLED]);
+      // Both pills render even though "Archived" is disabled, and the count
+      // matches the number of pills (no invisible ghost).
+      expect(screen.getByText("Active")).toBeTruthy();
+      expect(screen.getByText("Archived")).toBeTruthy();
+      expect(screen.getByText("2 selected")).toBeTruthy();
+    });
+
+    it("removes a disabled-but-selected option via its pill", () => {
+      renderWithSelected([OPT_ACTIVE, OPT_DISABLED]);
+      const removeButton = screen.getByRole("button", {
+        name: REMOVE_ARCHIVED_RE,
+      });
+      fireEvent.click(removeButton);
+      expect(mockMutate).toHaveBeenCalledWith({
+        fieldId: "field-1",
+        value: ["opt-active"],
+      });
+    });
+
+    it("renders a removable pill for an id that resolves to no option", () => {
+      // Simulate an id left in the stored value after its option was
+      // hard-deleted from the field (multiEnumValueIds has no FK cascade).
+      const orphan: CustomFieldEnumOption = {
+        id: "opt-deleted",
+        customFieldId: "field-1",
+        name: "Gone",
+        color: "none",
+        enabled: true,
+        sortOrder: 9,
+      };
+      renderWithSelected([OPT_ACTIVE, orphan]);
+      // The orphan renders as an "Unknown option" pill, and the count matches
+      // the pills shown (no invisible ghost).
+      expect(screen.getByText("Active")).toBeTruthy();
+      expect(screen.getByText("Unknown option")).toBeTruthy();
+      expect(screen.getByText("2 selected")).toBeTruthy();
+    });
+
+    it("removes an orphaned id via its Unknown option pill", () => {
+      const orphan: CustomFieldEnumOption = {
+        id: "opt-deleted",
+        customFieldId: "field-1",
+        name: "Gone",
+        color: "none",
+        enabled: true,
+        sortOrder: 9,
+      };
+      renderWithSelected([OPT_ACTIVE, orphan]);
+      const removeButton = screen.getByRole("button", {
+        name: REMOVE_UNKNOWN_RE,
+      });
+      fireEvent.click(removeButton);
+      expect(mockMutate).toHaveBeenCalledWith({
+        fieldId: "field-1",
+        value: ["opt-active"],
       });
     });
   });

@@ -1,6 +1,7 @@
 "use client";
 
 import { Composer } from "@liveblocks/react-ui";
+import { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import { useLiveblocksSourceContext } from "./liveblocks-source-provider";
 
 /**
@@ -20,7 +21,10 @@ export function LiveblocksComposer() {
     <div className="shrink-0 border-t bg-background p-3">
       <Composer
         className="lb-collab-artifact-composer"
-        metadata={{ anchorStatus: "artifact-level", version: latestVersion }}
+        metadata={{
+          anchorStatus: DocumentThreadAnchorStatus.ArtifactLevel,
+          version: latestVersion,
+        }}
         overrides={{ COMPOSER_PLACEHOLDER: "Add a comment…" }}
         showAttachments
       />

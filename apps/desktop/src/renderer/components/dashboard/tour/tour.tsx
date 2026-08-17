@@ -47,6 +47,8 @@ type Rect = { top: number; left: number; width: number; height: number };
 const CALLOUT_WIDTH = 344;
 const DOCK = 24;
 const SPOTLIGHT_PAD = 8;
+/** What the last step's primary button says when it really does just close. */
+const DEFAULT_COMPLETE_LABEL = "Done";
 
 function getScrollParent(node: HTMLElement | null): HTMLElement | null {
   let current = node?.parentElement ?? null;
@@ -72,19 +74,40 @@ export function Tour({
   active,
   steps,
   onClose,
+  completeLabel = DEFAULT_COMPLETE_LABEL,
 }: {
   active: boolean;
   steps: TourStep[];
   onClose: (reason: "done" | "skip") => void;
+  /**
+   * What the last step's primary button says. Defaults to "Done", which is only
+   * true when finishing the tour closes it and nothing else. ISS-5112's guest
+   * mode hands the last step off to the account dialog, so it passes the label
+   * for what actually happens next.
+   */
+  completeLabel?: string;
 }) {
   const [idx, setIdx] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const [skip, setSkip] = useState<{ dx: number; dy: number } | null>(null);
   const calloutRef = useRef<HTMLDivElement | null>(null);
-  const step = steps[idx];
+  /**
+   * The step set this run started with.
+   *
+   * `steps` is rebuilt from live data — the `guest-onboarding` flag can resolve
+   * and the harness read can land after the tour is already open — and swapping
+   * it mid-run leaves `idx` pointing past the new end. `step` goes `undefined`,
+   * the guard below returns null, and the tour VANISHES without ever calling
+   * `onClose`: the tour-seen flag is never written and the host still believes
+   * the tour is open. Freezing on activation makes a started run immutable.
+   */
+  const [runSteps, setRunSteps] = useState(steps);
+  const step = runSteps[idx];
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `steps` is captured on activation only. Re-syncing whenever it is rebuilt is precisely the mid-run swap this freeze exists to prevent; a run adopts a new set on its next activation, which is what `replayTour` triggers.
   useEffect(() => {
     if (active) {
+      setRunSteps(steps);
       setIdx(0);
       setSkip(null);
     }
@@ -166,7 +189,9 @@ export function Tour({
   // view is hidden) falls back to a full-dim scrim + docked callout instead of
   // unmounting the whole tour — the user can still read it and advance.
 
-  const last = idx === steps.length - 1;
+  // `runSteps`, not `steps`: everything a started run renders has to agree with
+  // the frozen set, or the last step shows "Next" and the dots count wrong.
+  const last = idx === runSteps.length - 1;
   const first = idx === 0;
   const next = () => (last ? close("done") : setIdx((i) => i + 1));
   const back = () => setIdx((i) => Math.max(0, i - 1));
@@ -215,7 +240,7 @@ export function Tour({
 
   const dots = (
     <span style={{ marginLeft: "auto", display: "flex", gap: 4 }}>
-      {steps.map((_, i) => (
+      {runSteps.map((_, i) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: progress dots are positional
           key={i}
@@ -594,7 +619,7 @@ export function Tour({
                 </Button>
               )}
               <Button onClick={next} size="sm" type="button">
-                {last ? "Done" : "Next"}
+                {last ? completeLabel : "Next"}
                 {last ? null : <ArrowRightIcon className="size-3.5" />}
               </Button>
             </span>
