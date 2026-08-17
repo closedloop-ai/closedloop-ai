@@ -35,6 +35,9 @@
     "./styles/globals.css": {
       "default": "./styles/globals.css"
     },
+    "./styles/storybook.css": {
+      "default": "./styles/storybook.css"
+    },
     "./postcss.config.mjs": {
       "default": "./postcss.config.mjs"
     },
@@ -1573,7 +1576,8 @@
       "import": "./dist/lib/table-saved-views.js",
       "require": "./dist/lib/table-saved-views.cjs",
       "default": "./dist/lib/table-saved-views.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
