@@ -1,4 +1,4 @@
-import { Octokit } from "@octokit/rest";
+import type { Octokit } from "@octokit/rest";
 import {
   type CreatePullRequestReviewCommentWithUserTokenInput,
   type GitHubPullRequestIssueComment,
@@ -8,23 +8,32 @@ import {
 } from "./comment-payloads";
 import { fetchReviewThreadNodeIdByCommentId } from "./review-thread-lookup";
 
-function getUserTokenOctokit(userAccessToken: string): Octokit {
-  return new Octokit({
-    auth: userAccessToken,
-  });
-}
+/**
+ * User-authored pull-request comment writes.
+ *
+ * Every function here takes the caller's Octokit (PLN-1525), so one client is
+ * resolved per request instead of one per write, and the resolver's timeout,
+ * rate-limit accounting, and 401-observation apply to writes as they already do
+ * to reads.
+ *
+ * `WithUserToken` names the CREDENTIAL FAMILY, and it is a hard contract: the
+ * comment must be attributed to the human who wrote it, so the client passed in
+ * must be a user client (`GitHubAccessIntent.WriteAsUser`), never an
+ * installation client. The parameter type cannot express that — passing an
+ * installation Octokit here would compile and would silently post as the app.
+ * `apps/api/app/comments/github-identity.ts` is the only sanctioned source.
+ */
 
 /**
  * Create a general pull request conversation comment as the authenticated user.
  */
 export async function createPullRequestIssueCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number,
   body: string
 ): Promise<GitHubPullRequestIssueComment> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
@@ -39,13 +48,12 @@ export async function createPullRequestIssueCommentWithUserToken(
  * Update a general pull request conversation comment as the authenticated user.
  */
 export async function updatePullRequestIssueCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
   body: string
 ): Promise<GitHubPullRequestIssueComment> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const { data } = await octokit.rest.issues.updateComment({
     owner,
     repo,
@@ -60,12 +68,11 @@ export async function updatePullRequestIssueCommentWithUserToken(
  * Delete a general pull request conversation comment as the authenticated user.
  */
 export async function deletePullRequestIssueCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number
 ): Promise<void> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   await octokit.rest.issues.deleteComment({
     owner,
     repo,
@@ -77,13 +84,12 @@ export async function deletePullRequestIssueCommentWithUserToken(
  * Create an inline pull request review comment as the authenticated user.
  */
 export async function createPullRequestReviewCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number,
   input: CreatePullRequestReviewCommentWithUserTokenInput
 ): Promise<GitHubPullRequestReviewComment> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const { data } = await octokit.rest.pulls.createReviewComment({
     owner,
     repo,
@@ -113,14 +119,13 @@ export async function createPullRequestReviewCommentWithUserToken(
  * Reply to an existing pull request review comment as the authenticated user.
  */
 export async function createReplyForReviewCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number,
   commentId: number,
   body: string
 ): Promise<GitHubPullRequestReviewComment> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const { data } = await octokit.rest.pulls.createReplyForReviewComment({
     owner,
     repo,
@@ -145,13 +150,12 @@ export async function createReplyForReviewCommentWithUserToken(
  * Update an inline pull request review comment as the authenticated user.
  */
 export async function updatePullRequestReviewCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
   body: string
 ): Promise<GitHubPullRequestReviewComment> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const { data } = await octokit.rest.pulls.updateReviewComment({
     owner,
     repo,
@@ -166,12 +170,11 @@ export async function updatePullRequestReviewCommentWithUserToken(
  * Delete an inline pull request review comment as the authenticated user.
  */
 export async function deletePullRequestReviewCommentWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number
 ): Promise<void> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   await octokit.rest.pulls.deleteReviewComment({
     owner,
     repo,
@@ -183,10 +186,9 @@ export async function deletePullRequestReviewCommentWithUserToken(
  * Resolve a GitHub pull request review thread as the authenticated user.
  */
 export async function resolvePullRequestReviewThreadWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   threadId: string
 ): Promise<{ id: string; isResolved: boolean }> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const response = await octokit.graphql<{
     resolveReviewThread: { thread: { id: string; isResolved: boolean } };
   }>(
@@ -210,10 +212,9 @@ export async function resolvePullRequestReviewThreadWithUserToken(
  * Reopen a GitHub pull request review thread as the authenticated user.
  */
 export async function unresolvePullRequestReviewThreadWithUserToken(
-  userAccessToken: string,
+  octokit: Octokit,
   threadId: string
 ): Promise<{ id: string; isResolved: boolean }> {
-  const octokit = getUserTokenOctokit(userAccessToken);
   const response = await octokit.graphql<{
     unresolveReviewThread: { thread: { id: string; isResolved: boolean } };
   }>(

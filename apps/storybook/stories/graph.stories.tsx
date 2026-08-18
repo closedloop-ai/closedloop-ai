@@ -23,6 +23,15 @@ const meta: Meta<typeof Graph> = {
   component: Graph,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  // The Graph sizes to its container (FEA-3622); frame it in a fixed-height card
+  // so the story mirrors the dashboard slot it ships in and stays contained.
+  decorators: [
+    (Story) => (
+      <div className="h-[340px] w-full overflow-hidden rounded-lg border p-4">
+        <Story />
+      </div>
+    ),
+  ],
   args: {
     nodes,
     links,

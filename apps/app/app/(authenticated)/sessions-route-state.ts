@@ -1,5 +1,6 @@
 "use client";
 
+import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
 import type { ReadonlySearchParams } from "@repo/navigation/navigation-adapter";
 import {
   type MutableRefObject,
@@ -31,16 +32,48 @@ export function parseSessionsPageIndex(value: string | null): number {
 }
 
 /**
- * Reads the current sessions page from the navigation snapshot, falling back to
- * the browser URL for the first client render when app-router search params can
- * still be reconciling.
+ * Reads the current sessions page from the navigation snapshot.
+ *
+ * The `page` param is omitted for page 1, so an absent param normally means
+ * page 1. The one exception is the initial client render, when the app-router
+ * `useSearchParams()` snapshot can still be empty while the real URL carries
+ * `?page=N` — only then do we consult the (non-reactive) browser URL, gated by
+ * `allowBrowserFallback`.
+ *
+ * FEA-3664: after mount the snapshot is authoritative and reactive, so we must
+ * NOT fall back to the browser URL there. Doing so made an absent `page` param
+ * read the stale browser URL instead of page 1, so returning to page 1 (the only
+ * param-absent page) stuck on the previous page. The original hydration fallback
+ * is FEA-2083. Prefer {@link useSessionsUrlPageIndex} in components; it wires
+ * `allowBrowserFallback` to the mount state.
  */
 export function readSessionsPageIndex(
+  searchParams: Pick<ReadonlySearchParams, "get">,
+  options?: { allowBrowserFallback?: boolean }
+): number {
+  const fromSnapshot = searchParams.get(PAGE_PARAM);
+  if (fromSnapshot !== null) {
+    return parseSessionsPageIndex(fromSnapshot);
+  }
+  if (options?.allowBrowserFallback ?? true) {
+    return parseSessionsPageIndex(readBrowserPageParam());
+  }
+  return 0;
+}
+
+/**
+ * Reactive page index for the sessions route. Consults the browser URL only
+ * until the client has mounted (the FEA-2083 hydration window); afterwards the
+ * reactive search-params snapshot is the single source of truth, so an absent
+ * `page` param resolves to page 1 (FEA-3664).
+ */
+export function useSessionsUrlPageIndex(
   searchParams: Pick<ReadonlySearchParams, "get">
 ): number {
-  return parseSessionsPageIndex(
-    searchParams.get(PAGE_PARAM) ?? readBrowserPageParam()
-  );
+  const mounted = useIsMounted();
+  return readSessionsPageIndex(searchParams, {
+    allowBrowserFallback: !mounted,
+  });
 }
 
 /**
@@ -83,6 +116,17 @@ export function clampSessionsPageIndex({
  * Keeps the effective sessions page at an intended target immediately after a
  * query-domain reset or stale-page repair, even while router search params
  * still expose the old page value.
+ *
+ * FEA-3655: the override masks the URL only while the URL still shows the
+ * pre-override (baseline) value it was set against. As soon as the URL moves off
+ * that baseline the override is dropped — whether the URL caught up to the
+ * target, OR a newer navigation (a Next/page click, whose `replacePage` writes a
+ * value other than the pending target) superseded it. The previous logic cleared
+ * only on exact `urlPageIndex === pendingPageIndex` equality, so a click that
+ * moved the URL to any other value orphaned the override forever and froze
+ * `effectivePageIndex` — the "pagination does nothing after filtering by Owner"
+ * bug, where the Owner filter narrows the list, fires the stale-page clamp, and
+ * the clamp's in-flight URL round-trip races the user's next click.
  */
 export function useSessionsPageReset({
   urlPageIndex,
@@ -90,18 +134,31 @@ export function useSessionsPageReset({
   urlPageIndex: number;
 }) {
   const [pendingPageIndex, setPendingPageIndex] = useState<number | null>(null);
+  // The URL page index observed when the current override was set. The override
+  // is discarded the moment the URL differs from it (see the doc comment above).
+  const overrideBaselineRef = useRef<number | null>(null);
+  // Mirror of the latest URL so the setters capture the current baseline without
+  // being recreated on every URL change.
+  const urlPageIndexRef = useRef(urlPageIndex);
+  urlPageIndexRef.current = urlPageIndex;
 
   useEffect(() => {
-    if (pendingPageIndex !== null && urlPageIndex === pendingPageIndex) {
+    if (
+      pendingPageIndex !== null &&
+      urlPageIndex !== overrideBaselineRef.current
+    ) {
+      overrideBaselineRef.current = null;
       setPendingPageIndex(null);
     }
   }, [pendingPageIndex, urlPageIndex]);
 
   const markPageReset = useCallback(() => {
+    overrideBaselineRef.current = urlPageIndexRef.current;
     setPendingPageIndex(0);
   }, []);
 
   const markPageOverride = useCallback((pageIndex: number) => {
+    overrideBaselineRef.current = urlPageIndexRef.current;
     setPendingPageIndex(Math.max(0, pageIndex));
   }, []);
 

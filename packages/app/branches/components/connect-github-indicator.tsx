@@ -1,8 +1,13 @@
 "use client";
 
-import { Button } from "@repo/design-system/components/ui/button";
-import { cn } from "@repo/design-system/lib/utils";
-import { Link } from "@repo/navigation/link";
+// Cross-slice import (shared gated-metric affordance): the connect-GitHub and
+// sign-in indicators are the same compact gated-metric layout differing only in
+// icon/copy/verb, so both compose the one shared component instead of
+// hand-keeping two copies (FEA-3574).
+import {
+  GatedMetricIndicator,
+  GatedMetricIndicatorVariant,
+} from "@repo/app/shared/components/gated-metric-indicator";
 import { PlugIcon } from "lucide-react";
 
 /**
@@ -11,12 +16,19 @@ import { PlugIcon } from "lucide-react";
  * populate. Surface adapters own whether that becomes a hard-navigation link,
  * a desktop IPC action, or informational copy only.
  *
- * Consumed by both the gated KPI cards (B6, `compact`) and the page-shell
- * `github-not-connected` empty state (B2, stacked). When `onConnect` is
- * provided a CTA button fires it; otherwise the affordance is informational.
+ * A thin wrapper over the shared `GatedMetricIndicator` (the compact gated-metric
+ * template): it supplies the "plug/connect" icon (lucide 1.x removed brand/logo
+ * icons, so a generic connect icon stands in for the GitHub mark), the connect
+ * copy, and the "Connect GitHub" verb; the layout/typography/spacing live in the
+ * shared component so this and the Sessions slice's `SessionsSignInIndicator`
+ * cannot drift.
  *
- * Note: lucide 1.x removed brand/logo icons (no GitHub mark), so a generic
- * "plug/connect" icon stands in for the integration.
+ * Consumed by both the gated KPI cards (B6, `compact`) and the page-shell
+ * `github-not-connected` empty state (B2, stacked). When `onConnect` is provided
+ * a CTA button fires it; a surface owning a connect action must never fall back
+ * to `connectHref`, because the desktop renderer's href store turns that link
+ * into an inert in-app navigation — a dead click that never reaches the connect
+ * flow (FEA-3280). When both are omitted, the affordance is informational only.
  */
 export type ConnectGitHubIndicatorProps = {
   /**
@@ -30,9 +42,8 @@ export type ConnectGitHubIndicatorProps = {
    */
   connectHref?: string;
   /**
-   * Optional connect handler. When provided, a "Connect GitHub" CTA button
-   * fires it; when both `connectHref` and `onConnect` are omitted, the
-   * affordance is informational only.
+   * Optional connect handler. When provided it takes precedence over
+   * `connectHref` (see FEA-3280 note above).
    */
   onConnect?: () => void;
   className?: string;
@@ -47,40 +58,18 @@ export function ConnectGitHubIndicator({
   className,
 }: ConnectGitHubIndicatorProps) {
   return (
-    <div
-      className={cn(
-        "flex text-[var(--muted-foreground)] text-xs",
+    <GatedMetricIndicator
+      actionHref={connectHref}
+      className={className}
+      ctaLabel="Connect GitHub"
+      explanation={EXPLANATION}
+      icon={PlugIcon}
+      onAction={onConnect}
+      variant={
         compact
-          ? "min-w-0 flex-col items-start justify-center gap-2 text-left"
-          : "flex-col items-center gap-2 text-center",
-        className
-      )}
-    >
-      <span
-        className={cn(
-          "flex items-center gap-1.5",
-          compact ? "min-w-0" : undefined
-        )}
-      >
-        <PlugIcon className="size-3.5 shrink-0" />
-        <span className={compact ? "min-w-0 leading-snug" : undefined}>
-          {EXPLANATION}
-        </span>
-      </span>
-      {connectHref ? (
-        <Button asChild size="sm" variant="outline">
-          <Link href={connectHref} prefetch={false}>
-            <PlugIcon className="size-3.5" />
-            Connect GitHub
-          </Link>
-        </Button>
-      ) : null}
-      {!connectHref && onConnect ? (
-        <Button onClick={onConnect} size="sm" type="button" variant="outline">
-          <PlugIcon className="size-3.5" />
-          Connect GitHub
-        </Button>
-      ) : null}
-    </div>
+          ? GatedMetricIndicatorVariant.Card
+          : GatedMetricIndicatorVariant.Centered
+      }
+    />
   );
 }

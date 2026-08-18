@@ -1,0 +1,38 @@
+---
+title: Linear
+description: 'Connect Linear to export Closedloop features to Linear issues'
+---
+
+The Linear integration lets you export Closedloop features to Linear as issues,
+keeping your issue tracker in sync with the work planned in Closedloop.
+
+## Connect
+
+1. In the web app, open **Settings → Integrations → Linear** and start the
+   connect flow.
+2. Authorize Closedloop with your Linear workspace.
+3. Closedloop completes the connection and can then export features to Linear.
+
+## Export features
+
+Once connected, export a feature (or set of features) to Linear. Closedloop
+creates the corresponding Linear issues through the `/integrations/linear/export`
+endpoint.
+
+## Status
+
+```bash
+curl https://api.closedloop.ai/integrations/linear \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+The MCP server exposes `get-linear-status`.
+
+## Disconnect
+
+Disconnect from **Settings → Integrations → Linear**, or over the API:
+
+```bash
+curl -X DELETE https://api.closedloop.ai/integrations/linear \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```

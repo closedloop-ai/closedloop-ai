@@ -106,7 +106,11 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 25, not 10: the refreshed suite is 822 test files / ~9.2k tests, and
+    # apps/api alone takes ~5.3min. The 10min budget predates the refresh and
+    # cancelled the job mid-run at 22:18 having already passed api 822/822 —
+    # steady progress, not a hang.
+    timeout-minutes: 25
     permissions:
       contents: read
 

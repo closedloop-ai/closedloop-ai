@@ -1,6 +1,7 @@
 import { ApiKeySource, withDb } from "@repo/database";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
+import { hasDesktopCommandSigningEnforcement } from "./command-signing-enforcement";
 import {
   type ComputeTargetSigningIdentity,
   getComputeTargetSigningFeatureSupport,
@@ -294,6 +295,56 @@ export async function isComputeTargetSigningEligible(input: {
         status: CommandSigningEligibilityStatus.Ineligible,
         reason: "no_active_managed_key",
       };
+}
+
+/**
+ * Whether a target effectively enforces browser command signing, as one
+ * tri-state requirement, so every dispatch path (the generic commands route and
+ * the member-pack-install dispatcher) derives the same policy from one place
+ * instead of re-deriving `capability + eligibility` and drifting on `Unknown`
+ * handling or the owner-vs-requester clerk-id selection.
+ *
+ *  - `NotRequired` — the node does not advertise signing enforcement, OR the
+ *    owner/org is signing-`Ineligible` (the node is not actually verifying, so
+ *    an unsigned dispatch is accepted).
+ *  - `Required` — the node advertises enforcement AND the owner/org is
+ *    signing-`Eligible`.
+ *  - `Unknown` — enforcement is advertised but eligibility could not be
+ *    verified. Callers apply their own policy: the generic commands route
+ *    proceeds unsigned and surfaces a warning; the member-pack dispatcher fails
+ *    closed (it has no browser signature to fall back on).
+ *
+ * The requester's clerk id is used only when the requester IS the target owner;
+ * otherwise the resolved owner clerk id is used, mirroring the commands route's
+ * `targetUserId === requesterUserId` branch.
+ */
+export async function resolveCommandSigningRequirement(input: {
+  capabilities: Record<string, unknown>;
+  organizationId: string;
+  targetUserId: string;
+  targetGatewayId?: string | null;
+  requesterUserId: string;
+  requesterClerkUserId?: string | null;
+  targetOwnerClerkUserId?: string | null;
+}): Promise<CommandSigningRequirementResult> {
+  if (!hasDesktopCommandSigningEnforcement(input.capabilities)) {
+    return { status: CommandSigningRequirementStatus.NotRequired };
+  }
+  const eligibility = await isComputeTargetSigningEligible({
+    organizationId: input.organizationId,
+    userId: input.targetUserId,
+    clerkUserId:
+      input.targetUserId === input.requesterUserId
+        ? (input.requesterClerkUserId ?? undefined)
+        : (input.targetOwnerClerkUserId ?? undefined),
+    gatewayId: input.targetGatewayId,
+  });
+  if (eligibility.status === CommandSigningEligibilityStatus.Unknown) {
+    return { status: CommandSigningRequirementStatus.Unknown };
+  }
+  return eligibility.status === CommandSigningEligibilityStatus.Eligible
+    ? { status: CommandSigningRequirementStatus.Required }
+    : { status: CommandSigningRequirementStatus.NotRequired };
 }
 
 /**

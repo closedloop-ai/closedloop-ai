@@ -1,13 +1,7 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { DASHBOARD_PAGE_TITLE } from "../dashboard-constants";
 import { DashboardFallback } from "../dashboard-fallback";
-
-// The fallback renders the real DashboardLoading, which polls runtime status via
-// the shared ingest poller; stub it so the test doesn't depend on `desktopApi`.
-vi.mock("../../../hooks/use-ingest-progress", () => ({
-  useIngestProgress: () => null,
-}));
 
 describe("DashboardFallback", () => {
   it("renders the dashboard header and skeleton so the lazy-load frame matches the in-page loading treatment (FEA-2933)", () => {

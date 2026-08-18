@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { ShutdownResult } from "../src/main/shutdown.js";
+import type { ShutdownResult } from "../src/main/lifecycle/shutdown.js";
 import {
   type BeforeQuitEvent,
   createBeforeQuitHandler,
   type ShutdownLifecycleApplication,
-} from "../src/main/shutdown-lifecycle.js";
-import type { DesktopShutdownDiagnostics } from "../src/main/telemetry-protocol.js";
+} from "../src/main/lifecycle/shutdown-lifecycle.js";
+import type { DesktopShutdownDiagnostics } from "../src/main/telemetry/telemetry-protocol.js";
 
 type TestTimer = ReturnType<typeof setTimeout>;
 

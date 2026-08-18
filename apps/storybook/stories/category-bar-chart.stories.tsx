@@ -1,3 +1,5 @@
+import { spendByOutcomeFixture } from "@repo/app/insights/components/insights-section-fixtures";
+import { SPEND_OUTCOME_COLORS } from "@repo/app/insights/lib/spend-outcome-palette";
 import { CategoryBarChart } from "@repo/design-system/components/ui/category-bar-chart";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ComponentProps } from "react";
@@ -87,6 +89,68 @@ export const ClickableTracker: Story = {
     data: timeBucketData,
   },
   render: (args) => <ClickableTrackerChart {...args} />,
+};
+
+// ISS-4463: `colorByKey` gives this chart a SEMANTIC colour contract — the
+// failure bar is destructive because it means failure, not because of where it
+// happens to sit in the array. The stories below are the visual guard on that:
+// without them a regression that stops applying the map falls back to the index
+// palette and silently paints meaning the data does not carry (green for the
+// errored bucket, three bars over).
+//
+// ISS-5335 (review): the data and the map used to be hand-copied here, and had
+// drifted onto `var(--chart-4)` for `clean` and `var(--muted)` for `unknown` —
+// the two values that ticket banned for measuring 1.31:1 and 1.10:1 against the
+// card. Both now come from the shipping constants, so the visual guard is a
+// guard on what actually ships rather than on a stale copy of it.
+const outcomeData = spendByOutcomeFixture;
+const outcomeColors = SPEND_OUTCOME_COLORS;
+/**
+ * The shipping map minus its last two buckets in render order, for the
+ * partial-map fallback story. Derived so no outcome key is spelled out here — a
+ * hand-written key is how the full map drifted onto banned colours in the first
+ * place.
+ */
+const partialOutcomeColors: Record<string, string> = Object.fromEntries(
+  outcomeData
+    .slice(0, -2)
+    .map((bucket) => [bucket.key, outcomeColors[bucket.key]])
+);
+const formatOutcomeSpend = (value: number) => `$${value.toFixed(2)}`;
+
+export const SemanticColors: Story = {
+  args: {
+    data: outcomeData,
+    colorByKey: outcomeColors,
+  },
+};
+
+/**
+ * Deliberately PARTIAL — the trailing buckets are absent from the map — to
+ * exercise the documented fallback: an unmapped key keeps the index palette, so
+ * a partial map stays safe rather than dropping the bar's fill.
+ */
+export const PartialSemanticColors: Story = {
+  args: {
+    data: outcomeData,
+    colorByKey: partialOutcomeColors,
+  },
+};
+
+/**
+ * How the map actually ships on the "Spend by session outcome" tile: horizontal
+ * bars, long category labels, and on-bar currency values. Pairs with the donut's
+ * `SemanticColors` story so the two renderings of one dimension stay consistent.
+ */
+export const HorizontalSemanticColorsWithValueLabels: Story = {
+  args: {
+    data: outcomeData,
+    colorByKey: outcomeColors,
+    horizontal: true,
+    showValueLabels: true,
+    allowDecimals: true,
+    valueFormatter: formatOutcomeSpend,
+  },
 };
 
 function ClickableTrackerChart(args: ComponentProps<typeof CategoryBarChart>) {

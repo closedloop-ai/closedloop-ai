@@ -1,0 +1,97 @@
+-- ISS-4654 (gate 3): collapse the legacy `completed` and `abandoned` session
+-- statuses to the canonical `inactive`, so the ISS-4586 compatibility layer can
+-- eventually be removed.
+--
+-- HAND-WRITTEN ON PURPOSE (packages/database/AGENTS.md): this is a pure DATA
+-- migration — no schema change, so `prisma migrate dev` has nothing to generate
+-- and reports no drift after it is applied.
+--
+-- WHY THIS EXISTS. ISS-4586 replaced `completed`/`abandoned` with
+-- `active`/`inactive`/`error`. Three PRs shipped it (#4081 contract, #4092
+-- desktop producer, #4112 cloud producer + reaper) and the desktop's own
+-- migration `0042_iss4586_session_status_ends_with_error` collapsed the LOCAL
+-- store. The cloud never got the equivalent: its only ISS-4586 migration,
+-- `20260731120000_iss4586_session_detail_ends_with_error`, is a single additive
+-- `ALTER TABLE ... ADD COLUMN ends_with_error`. So historical cloud rows still
+-- carry `completed` indefinitely — measured 2026-08-08 across org samples at
+-- 72% of sessions last active Apr–Jun, 33% Jun–Jul, and 0% since Aug 4 (new
+-- producers are clean; only history is affected). ISS-4654's gate 3 ("confirm
+-- no live rows still carry completed/abandoned") can therefore never be met by
+-- waiting — it needs this backfill.
+--
+-- THE MAPPING IS NOT A JUDGEMENT CALL. `CANONICAL_SESSION_STATUS_FOLD` in
+-- `packages/loops-api/src/session-status.ts` is the SSOT and already folds BOTH
+-- `completed` -> `inactive` and `abandoned` -> `inactive`. This migration
+-- persists what that contract already says.
+--
+-- `completed` IS DISPLAY-NEUTRAL (verified, not assumed):
+--   * List/badge — `normalizeDisplayedSessionStatus('completed')` returns
+--     `inactive`, whose label is already "Inactive". Unchanged.
+--   * Detail — `toAgentSessionState` maps BOTH `completed` and `inactive` to
+--     `AgentSessionState.Completed` (the latter deliberately, per #4112's
+--     version-skew deferral). Unchanged.
+--
+-- `abandoned` DOES CHANGE THE DETAIL PAGE, AND THAT IS INTENDED. ISS-4586
+-- SUPERSEDES FEA-4287 (owner decision, 2026-08-08). The two disagree, so this
+-- records which wins and why:
+--   * FEA-4287 preserved `abandoned` as a DISTINCT `AgentSessionState.Abandoned`
+--     on the detail projection, to stop it collapsing into `Blocked`.
+--   * ISS-4586 then redefined the vocabulary so that a session is running,
+--     finished, or finished-with-an-error — `abandoned` is not an outcome in
+--     that model, it is a finished run, and the SSOT fold says so.
+--   * The two surfaces ALREADY disagree today because of this:
+--     `normalizeDisplayedSessionStatus('abandoned')` yields `inactive`, so the
+--     LIST renders "Inactive", while the DETAIL renders "Abandoned". Collapsing
+--     the stored value makes them agree instead of drift — which is the very
+--     list-vs-detail consistency FEA-4287 was arguing for, now satisfied under
+--     the newer vocabulary.
+-- CONSEQUENCE, STATED PLAINLY: after this runs, a session that renders
+-- "Abandoned" on the detail page renders as Completed. `AgentSessionState
+-- .Abandoned` becomes unreachable for these rows, which is precisely the
+-- precondition ISS-4654's removal checklist names ("`toAgentSessionState`
+-- ABANDONED branches + `AgentSessionState.Abandoned` ... IF UNREACHABLE"). The
+-- FEA-3551 carve-out (an abandoned run that shipped a merged PR already reads
+-- Completed) is likewise moot for these rows — they all read Completed now.
+-- Empirically this is close to a no-op: `abandoned` appeared in ZERO of ~300
+-- sampled cloud sessions. Correctness first regardless.
+--
+-- `waiting` IS NOT TOUCHED. It folds to `active`, not to a terminal value, so
+-- rewriting it would persist a lifecycle claim rather than collapse a terminal
+-- alias — a live run would be frozen as "running" in stored data rather than
+-- re-derived. ISS-4654 treats it conditionally ("and WAITING if fully retired")
+-- and it is not part of gate 3.
+--
+-- `type = 'SESSION'` IS LOAD-BEARING, NOT DECORATION. `artifacts.status` is a
+-- FREEFORM per-subtype lifecycle column, explicitly not bound to a DB enum
+-- (see the model comment in schema.prisma). A DOCUMENT, BRANCH, or DEPLOYMENT
+-- artifact may legitimately carry the string 'completed' with an entirely
+-- different meaning. Without this predicate the statement would rewrite them.
+--
+-- `updated_at` IS DELIBERATELY NOT BUMPED. Prisma's `@updatedAt` is applied by
+-- the client, not the database, so a raw UPDATE leaves the column alone — and
+-- that is what we want. `artifacts_org_assignee_updated_idx` backs
+-- "recently updated" ordering; touching `updated_at` here would float every
+-- historical session to the top of those views for no reason.
+--
+-- NO SEARCH PROJECTION TO REPAIR. Unlike the ISS-4778 backfill, there is no
+-- denormalized mirror to keep in step: `agentSessionProjection`
+-- (apps/api/app/search/search-index-service.ts) sets `status: null` for
+-- sessions, with the comment "A session carries no status/priority in the
+-- projection." `session_detail.state` is likewise untouched — nothing writes
+-- that column (see ISS-5192), so it holds no legacy status to collapse.
+--
+-- RETRY-IDEMPOTENT. A single statement whose predicate is exactly the
+-- population it eliminates: once applied, a re-run matches zero rows. Safe
+-- under Prisma's deploy-recovery re-run of a migration it marked rolled back,
+-- and safe to apply by hand twice.
+--
+-- FORWARD-ONLY: no rollback path. Neither legacy spelling is recoverable
+-- afterwards. For `completed` that costs nothing (it carried no information
+-- `inactive` does not). For `abandoned` it does discard the swept-as-idle
+-- distinction from stored data — accepted deliberately under the ISS-4586
+-- vocabulary, where that distinction is not one of the three outcomes.
+
+UPDATE "artifacts"
+   SET "status" = 'inactive'
+ WHERE "type" = 'SESSION'
+   AND "status" IN ('completed', 'abandoned');

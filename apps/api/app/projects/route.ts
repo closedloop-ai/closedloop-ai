@@ -9,11 +9,12 @@ import {
   badRequestResponse,
   errorResponse,
   parseBody,
+  parseQueryParams,
   successResponse,
 } from "@/lib/route-utils";
 import { customFieldValuesService } from "../custom-fields/values-service";
 import { parseProjectStatuses } from "./project-route-helpers";
-import { projectsService } from "./service";
+import { InvalidProjectTeamsError, projectsService } from "./service";
 import { createProjectValidator } from "./validators";
 
 /**
@@ -28,28 +29,24 @@ import { createProjectValidator } from "./validators";
 export const GET = withAnyAuth<ProjectWithDetails[], "/projects">(
   async ({ user }, request) => {
     try {
-      const url = new URL(request.url);
+      const querySchema = z
+        .object({
+          teamId: z.string().optional(),
+          limit: z.coerce.number().int().positive().max(100).optional(),
+          status: z.string().optional(),
+          excludeStatus: z.string().optional(),
+        })
+        .strict();
 
-      // Validate query parameters
-      const querySchema = z.object({
-        teamId: z.string().optional(),
-        limit: z.coerce.number().int().positive().max(100).optional(),
-        status: z.string().optional(),
-        excludeStatus: z.string().optional(),
-      });
-
-      const queryResult = querySchema.safeParse({
-        teamId: url.searchParams.get("teamId") ?? undefined,
-        limit: url.searchParams.get("limit") ?? undefined,
-        status: url.searchParams.get("status") ?? undefined,
-        excludeStatus: url.searchParams.get("excludeStatus") ?? undefined,
-      });
-
-      if (!queryResult.success) {
-        return badRequestResponse("Invalid query parameters");
+      const { params, errorResponse: queryError } = parseQueryParams(
+        request,
+        querySchema
+      );
+      if (queryError) {
+        return queryError;
       }
 
-      const { teamId, limit, status, excludeStatus } = queryResult.data;
+      const { teamId, limit, status, excludeStatus } = params;
       const statusFilter = parseProjectStatuses(status);
       const excludeStatusFilter = parseProjectStatuses(excludeStatus);
 
@@ -147,6 +144,9 @@ export const POST = withAnyAuth<ProjectWithDetails, "/projects">(
 
       return successResponse(projectWithDetails);
     } catch (error) {
+      if (error instanceof InvalidProjectTeamsError) {
+        return badRequestResponse(error.message);
+      }
       return errorResponse("Failed to create project", error);
     }
   },

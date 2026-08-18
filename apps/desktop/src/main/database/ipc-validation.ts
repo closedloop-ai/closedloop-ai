@@ -5,7 +5,7 @@
 // from a compromised or buggy renderer could otherwise reach database bindings
 // and throw inside the query or alter its behavior. The DB IPC handlers
 // must coerce every identifier through these guards before it touches the store
-// layer. (CLAUDE.md: runtime-validate gateway, IPC, and persisted payloads.)
+// layer. (AGENTS.md: runtime-validate gateway, IPC, and persisted payloads.)
 
 /**
  * Upper bound on identifier length. Session/agent ids are short UUID-ish

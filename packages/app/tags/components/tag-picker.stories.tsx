@@ -1,7 +1,7 @@
 import type { Tag, TagSummary } from "@repo/api/src/types/tag";
 import { TagColor, TagEntityType } from "@repo/api/src/types/tag";
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../shared/storybook/decorators";
+import { userEvent, within } from "storybook/test";
 import { tagKeys } from "../hooks/use-tags";
 import { TagPicker } from "./tag-picker";
 
@@ -23,13 +23,7 @@ const appliedTags: TagSummary[] = [
 const meta: Meta<typeof TagPicker> = {
   title: "App Core/Tags/Tag Picker",
   component: TagPicker,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders queryData={[[tagKeys.list({}), orgTags]]}>
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
+  parameters: { appCore: { queryData: [[tagKeys.list({}), orgTags]] } },
 };
 
 export default meta;
@@ -48,6 +42,25 @@ export const Empty: Story = {
     entityType: TagEntityType.Artifact,
     entityId: "doc_2",
     appliedTags: [],
+  },
+};
+
+/** Permission-restricted treatment used by the approved Branches list. */
+export const ReadOnly: Story = {
+  args: {
+    entityType: TagEntityType.Artifact,
+    entityId: "branch_read_only",
+    appliedTags,
+    canApply: false,
+    canRemove: false,
+    showAppliedChips: true,
+    showCreate: false,
+    trigger: <button type="button">Inspect tags</button>,
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: "Inspect tags" })
+    );
   },
 };
 

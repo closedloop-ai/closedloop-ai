@@ -1,5 +1,14 @@
 import { SignJWT } from "jose";
-import { beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   AUDIENCE,
   authenticateChatRunner,
@@ -28,8 +37,28 @@ function signWithAudience(audience: string): Promise<string> {
 }
 
 describe("chat-runner-jwt", () => {
+  let originalSecret: string | undefined;
+
   beforeAll(() => {
+    originalSecret = process.env.CLOSEDLOOP_RUNNER_JWT_SECRET;
     process.env.CLOSEDLOOP_RUNNER_JWT_SECRET = TEST_SECRET;
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-08T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  afterAll(() => {
+    if (originalSecret === undefined) {
+      Reflect.deleteProperty(process.env, "CLOSEDLOOP_RUNNER_JWT_SECRET");
+    } else {
+      process.env.CLOSEDLOOP_RUNNER_JWT_SECRET = originalSecret;
+    }
   });
 
   it("issues and verifies a token round trip", async () => {
@@ -78,6 +107,42 @@ describe("chat-runner-jwt", () => {
     const tampered = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -4)}AAAA`;
 
     await expect(verifyChatRunnerToken(tampered)).rejects.toThrow();
+  });
+
+  it("rejects a correctly signed token without a subject", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({
+      orgId: "org-1",
+      chatKey: "chat-1",
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setJti("token-1")
+      .setAudience(AUDIENCE)
+      .setIssuer(ISSUER)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 60)
+      .sign(getSecretBytes());
+
+    await expect(verifyChatRunnerToken(token)).rejects.toThrow("missing sub");
+  });
+
+  it.each([
+    ["jti", { sub: "user-1", orgId: "org-1", chatKey: "chat-1" }],
+    ["orgId", { sub: "user-1", jti: "token-1", chatKey: "chat-1" }],
+    ["chatKey", { sub: "user-1", jti: "token-1", orgId: "org-1" }],
+  ])("rejects a correctly signed token without %s", async (claim, payload) => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT(payload)
+      .setProtectedHeader({ alg: "HS256" })
+      .setAudience(AUDIENCE)
+      .setIssuer(ISSUER)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 60)
+      .sign(getSecretBytes());
+
+    await expect(verifyChatRunnerToken(token)).rejects.toThrow(
+      `missing ${claim}`
+    );
   });
 
   it("authenticateChatRunner returns null when the Authorization header is missing", async () => {

@@ -3,7 +3,6 @@
 import type {
   CreateDistributionRequest,
   DistributionDto,
-  UpdateDistributionRequest,
 } from "@repo/api/src/types/distribution";
 import {
   type UseQueryOptions,
@@ -80,20 +79,39 @@ export function useCreateDistribution() {
 }
 
 /**
- * Updates an existing Distribution.
- * PATCH /distributions/{id} (admin-only)
+ * Withdraws a Distribution — stops offering the pack to the organization
+ * (ISS-5123).
+ * DELETE /distributions/{id} (admin-only)
+ *
+ * The cache work here exists to stop the UI briefly asserting a roll-out that
+ * no longer exists, so it deliberately does NOT mirror `useCreateDistribution`:
+ *
+ *  - The detail entry is REMOVED, not invalidated. `getDetailForOrg` still
+ *    returns a withdrawn record by id (the row survives, only the live reads
+ *    filter it), and consumers prefer the detail read over the list row — so
+ *    re-fetching it would re-render the dead distribution as though it were
+ *    live. Nothing in the render path inspects `withdrawnAt`, so there is
+ *    nothing to gain by keeping it and a false "still distributed" to lose.
+ *  - The list entry is dropped from the cache immediately rather than only
+ *    invalidated, so the surface flips to "not distributed" on the spot instead
+ *    of showing a live roll-out until a round trip completes. The invalidate
+ *    still follows, to reconcile with the server.
  */
-export function useUpdateDistribution() {
+export function useWithdrawDistribution() {
   const apiClient = useApiClient();
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, ...data }: UpdateDistributionRequest & { id: string }) =>
-      apiClient.patch<DistributionDto>(`/distributions/${id}`, data),
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: distributionKeys.detail(variables.id),
+    mutationFn: (distributionId: string) =>
+      apiClient.delete<DistributionDto>(`/distributions/${distributionId}`),
+    onSuccess: (_data, distributionId) => {
+      queryClient.removeQueries({
+        queryKey: distributionKeys.detail(distributionId),
       });
+      queryClient.setQueryData<DistributionDto[]>(
+        distributionKeys.list(),
+        (previous) => previous?.filter((entry) => entry.id !== distributionId)
+      );
       queryClient.invalidateQueries({ queryKey: distributionKeys.lists() });
     },
   });

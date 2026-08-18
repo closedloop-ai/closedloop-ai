@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
-import { SettingsStore } from "../src/main/settings-store.js";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
 import { resolveHarnessBinary } from "../src/server/operations/binary-paths.js";
 import { resetMcpDetectionCache } from "../src/server/operations/mcp-detection.js";
 import {

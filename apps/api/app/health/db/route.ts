@@ -1,5 +1,5 @@
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
+import { scheduleLogFlush } from "@/lib/route-utils";
 import { tokenMatches } from "./db-health-helpers";
 import { getDatabaseHealth } from "./service";
 
@@ -27,7 +27,10 @@ export const GET = async (request: Request) => {
 
   // Serverless: ensure buffered health.db_check_failed entries are shipped to
   // Datadog before the function freezes (the flush timer is unref'd).
-  waitUntil(log.flush());
+  // ISS-4659: routed through the shared helper rather than a bare
+  // `waitUntil(log.flush())` so this route's spans flush too — it bypasses the
+  // auth wrappers, so `logRequestCompleted` never runs for it.
+  scheduleLogFlush();
 
   return Response.json(result, { status: result.ok ? 200 : 503 });
 };

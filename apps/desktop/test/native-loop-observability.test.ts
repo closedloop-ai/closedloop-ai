@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import { LoopHarness } from "@closedloop-ai/loops-api/desktop-request";
-import type { TelemetryEventPayload } from "../src/main/telemetry-protocol.js";
+import type { TelemetryEventPayload } from "../src/main/telemetry/telemetry-protocol.js";
 import {
   clearActiveAgents,
   getActiveAgents,

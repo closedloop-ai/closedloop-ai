@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveClaudeOutputPath } from "../../main/token-usage.js";
+import { resolveClaudeOutputPath } from "../../main/cost/token-usage.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { DirectoryNotAllowedError } from "../security.js";
 import { json } from "./response-utils.js";

@@ -12,6 +12,8 @@ import {
   it,
   vi,
 } from "vitest";
+import { createGatewayHarness } from "./gateway-harness.js";
+import { reserveTestPort } from "./helpers/reserve-test-port.js";
 
 const socketIoMocks = vi.hoisted(() => ({
   namespace: {
@@ -20,7 +22,7 @@ const socketIoMocks = vi.hoisted(() => ({
   },
 }));
 
-const TEST_PORT = 20_000 + Math.floor(Math.random() * 10_000);
+const TEST_PORT = await reserveTestPort(21_000, 1500);
 const TEST_SECRET = "test-internal-secret";
 const TEST_API_URL = "http://127.0.0.1:19877";
 const ORIGINAL_ENV = { ...process.env };
@@ -76,10 +78,7 @@ afterAll(async () => {
 });
 
 afterEach(async () => {
-  for (const socket of registeredTestSockets) {
-    await disconnectSocketTarget(socket);
-  }
-  registeredTestSockets.clear();
+  await harness.cleanupRegisteredSockets();
   vi.unstubAllGlobals();
 });
 
@@ -134,82 +133,8 @@ function requestJson(
   });
 }
 
-type MockRelaySocket = {
-  id: string;
-  data: {
-    auth: {
-      organizationId: string;
-      userId: string;
-    };
-    pendingBuffer?: Array<{ event: string; args: unknown[] }>;
-  };
-  conn: { transport: { name: string } };
-  connected: boolean;
-  on: ReturnType<typeof vi.fn>;
-  emit: ReturnType<typeof vi.fn>;
-  disconnect: ReturnType<typeof vi.fn>;
-  handlers: Map<string, (...args: unknown[]) => Promise<void> | void>;
-};
-
-const registeredTestSockets = new Set<MockRelaySocket>();
-
-function createMockRelaySocket(id: string): MockRelaySocket {
-  const handlers = new Map<
-    string,
-    (...args: unknown[]) => Promise<void> | void
-  >();
-  return {
-    id,
-    data: {
-      auth: {
-        organizationId: "org-1",
-        userId: "user-1",
-      },
-    },
-    conn: { transport: { name: "websocket" } },
-    connected: true,
-    on: vi.fn(
-      (
-        event: string,
-        handler: (...args: unknown[]) => Promise<void> | void
-      ) => {
-        handlers.set(event, handler);
-      }
-    ),
-    emit: vi.fn(),
-    disconnect: vi.fn(),
-    handlers,
-  };
-}
-
-function getConnectionHandler() {
-  const call = socketIoMocks.namespace.on.mock.calls.find(
-    ([event]) => event === "connection"
-  );
-  if (!call) {
-    throw new Error("Expected relay connection handler to be registered");
-  }
-  return call[1] as (socket: MockRelaySocket) => void;
-}
-
-async function registerSocketTarget(socket: MockRelaySocket, targetId: string) {
-  getConnectionHandler()(socket);
-  const helloHandler = socket.handlers.get("desktop.hello");
-  if (!helloHandler) {
-    throw new Error("Expected desktop.hello handler to be registered");
-  }
-  await helloHandler({ targetId, pluginVersion: "test" });
-  registeredTestSockets.add(socket);
-}
-
-async function disconnectSocketTarget(socket: MockRelaySocket) {
-  const disconnectHandler = socket.handlers.get("disconnect");
-  if (!disconnectHandler) {
-    return;
-  }
-  socket.connected = false;
-  await disconnectHandler("test_cleanup");
-}
+const harness = createGatewayHarness(socketIoMocks.namespace);
+const { createMockRelaySocket, registerSocketTarget } = harness;
 
 describe("GET /health", () => {
   it("returns ok status", async () => {

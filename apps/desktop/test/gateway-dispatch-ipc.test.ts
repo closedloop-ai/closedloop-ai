@@ -1,22 +1,34 @@
 import assert from "node:assert/strict";
-import { describe, mock, test } from "node:test";
-import { LOCAL_REPO_SENTINEL } from "@repo/api/src/types/branch.js";
+import { describe, test } from "node:test";
+import { vi } from "vitest";
 import {
   createGatewayDispatchHandler,
   GATEWAY_DISPATCH_ALLOWED_PATHS,
   GATEWAY_DISPATCH_MAX_BODY_BYTES,
-} from "../src/main/gateway-dispatch-ipc.js";
+} from "../src/main/ipc/gateway-dispatch-ipc.js";
 
 const MAIN_TOKEN = "main-gateway-token-abc123";
 const PORT = 19_432;
-const SCOPED_BRANCH_ID = "o%2Fr::main";
-const LOCAL_SCOPED_BRANCH_ID = `${LOCAL_REPO_SENTINEL}::main`;
+
+/**
+ * PLN-1535 M5 deletion 2 emptied the production allowlist: its only members were
+ * the three PR overlay routes, now retired (HTTP 410).
+ *
+ * The guards below — sender trust, path normalization, authority tricks, header
+ * stripping, body caps, log redaction — are generic and long outlive any single
+ * route, so they are driven through this SYNTHETIC path via the `allowedPaths`
+ * seam. Binding them to whichever product route happens to be allowlisted is
+ * what made this suite need rewriting in the first place.
+ */
+const TEST_ALLOWED_PATH = "/api/gateway/test/echo";
+const TEST_ALLOWED_PATHS: ReadonlySet<string> = new Set([TEST_ALLOWED_PATH]);
 
 type Overrides = {
   isTrustedSender?: (sender: unknown) => boolean;
   getActivePort?: () => number;
   getGatewayAuthToken?: () => string;
   fetchImpl?: typeof fetch;
+  allowedPaths?: ReadonlySet<string>;
   log?: {
     info: (t: string, m: string) => void;
     warn: (t: string, m: string) => void;
@@ -24,7 +36,7 @@ type Overrides = {
 };
 
 function okFetch() {
-  return mock.fn(
+  return vi.fn(
     async () =>
       new Response(JSON.stringify({ files: ["a.ts"] }), {
         status: 200,
@@ -39,59 +51,53 @@ function makeDeps(overrides: Overrides = {}) {
     getActivePort: () => PORT,
     getGatewayAuthToken: () => MAIN_TOKEN,
     fetchImpl: okFetch() as unknown as typeof fetch,
+    allowedPaths: TEST_ALLOWED_PATHS,
     ...overrides,
   };
 }
 
-const trustedEvent = {
-  sender: {
-    getURL: () =>
-      `app://desktop/index.html#/branches/${encodeURIComponent(
-        SCOPED_BRANCH_ID
-      )}`,
-    id: "trusted",
-  },
-};
+const trustedEvent = { sender: { id: "trusted" } };
 
 function noneBody() {
   return { kind: "none" } as const;
 }
 
-function filesPayload(query = "?owner=o&repo=r&number=1") {
+function allowedPayload(query = "?owner=o&repo=r&number=1") {
   return {
     method: "GET",
-    path: `/api/gateway/git/pr/files${query}`,
-    headers: {},
-    body: noneBody(),
-  };
-}
-
-function fileDiffPayload(
-  query = `?owner=o&repo=r&number=1&branchId=${encodeURIComponent(
-    SCOPED_BRANCH_ID
-  )}&path=src%2Fa.ts`
-) {
-  return {
-    method: "GET",
-    path: `/api/gateway/git/pr/file-diff${query}`,
+    path: `${TEST_ALLOWED_PATH}${query}`,
     headers: {},
     body: noneBody(),
   };
 }
 
 describe("gateway-dispatch-ipc handler", () => {
-  test("allowlist contains exactly the v1 PR overlay routes", () => {
-    assert.deepEqual([...GATEWAY_DISPATCH_ALLOWED_PATHS].sort(), [
-      "/api/gateway/git/pr/file-diff",
-      "/api/gateway/git/pr/files",
-      "/api/gateway/git/pr/reviews",
-    ]);
+  // PLN-1535 M5 deletion 2. The three PR overlay routes were this allowlist's
+  // only members and are now retired, so the production set is empty and the
+  // channel currently permits nothing. Pinned as a deliberate state rather than
+  // left implicit: re-adding a path is a security decision that should have to
+  // change this assertion.
+  test("the production allowlist is empty after the PR overlay retirement", () => {
+    assert.deepEqual([...GATEWAY_DISPATCH_ALLOWED_PATHS], []);
+  });
+
+  // The seam above must not weaken the real default: a handler built WITHOUT an
+  // injected allowlist refuses a path the tests would otherwise permit.
+  test("a handler using the production allowlist refuses every path", async () => {
+    const deps = makeDeps({ allowedPaths: undefined });
+    const handler = createGatewayDispatchHandler(deps);
+    const result = await handler(trustedEvent, allowedPayload());
+    assert.equal(result.status, 403);
+    assert.equal(
+      (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls.length,
+      0
+    );
   });
 
   test("CRITICAL-1: untrusted sender → 403, no network", async () => {
     const deps = makeDeps({ isTrustedSender: () => false });
     const handler = createGatewayDispatchHandler(deps);
-    const result = await handler({ sender: { id: "evil" } }, filesPayload());
+    const result = await handler({ sender: { id: "evil" } }, allowedPayload());
     assert.equal(result.status, 403);
     assert.equal(
       (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls.length,
@@ -136,15 +142,15 @@ describe("gateway-dispatch-ipc handler", () => {
     const handler = createGatewayDispatchHandler(deps);
     const result = await handler(trustedEvent, {
       method: "GET",
-      path: "//evil.example/api/gateway/git/pr/files?owner=o&repo=r&number=1",
+      path: `//evil.example${TEST_ALLOWED_PATH}?owner=o&repo=r&number=1`,
       headers: {},
       body: noneBody(),
     });
     assert.equal(result.status, 200);
     const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
-    const target = String(call.arguments[0]);
+    const target = String(call[0]);
     assert.ok(
-      target.startsWith(`http://127.0.0.1:${PORT}/api/gateway/git/pr/files`),
+      target.startsWith(`http://127.0.0.1:${PORT}${TEST_ALLOWED_PATH}`),
       `expected loopback target, got ${target}`
     );
     assert.ok(!target.includes("evil.example"));
@@ -155,7 +161,7 @@ describe("gateway-dispatch-ipc handler", () => {
     const handler = createGatewayDispatchHandler(deps);
     await handler(trustedEvent, {
       method: "GET",
-      path: "/api/gateway/git/pr/files?owner=o&repo=r&number=1",
+      path: `${TEST_ALLOWED_PATH}?owner=o&repo=r&number=1`,
       headers: {
         authorization: "Bearer sk_live_evil",
         cookie: "session=abc",
@@ -165,7 +171,7 @@ describe("gateway-dispatch-ipc handler", () => {
       body: noneBody(),
     });
     const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
-    const headers = (call.arguments[1] as RequestInit).headers as Headers;
+    const headers = (call[1] as RequestInit).headers as Headers;
     assert.equal(headers.get("authorization"), null);
     assert.equal(headers.get("cookie"), null);
     assert.equal(headers.get("x-desktop-force-approval"), null);
@@ -177,13 +183,13 @@ describe("gateway-dispatch-ipc handler", () => {
     const handler = createGatewayDispatchHandler(deps);
     const result = await handler(trustedEvent, {
       method: "GET",
-      path: "/api/gateway/git/pr/files?owner=o&repo=r&number=1",
+      path: `${TEST_ALLOWED_PATH}?owner=o&repo=r&number=1`,
       headers: { "x-evil": "a\r\nx-injected: 1" },
       body: noneBody(),
     });
     assert.equal(result.status, 200);
     const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
-    const headers = (call.arguments[1] as RequestInit).headers as Headers;
+    const headers = (call[1] as RequestInit).headers as Headers;
     assert.equal(headers.get("x-evil"), null);
     assert.equal(headers.get("x-injected"), null);
   });
@@ -194,7 +200,7 @@ describe("gateway-dispatch-ipc handler", () => {
     const oversized = "A".repeat(GATEWAY_DISPATCH_MAX_BODY_BYTES + 10);
     const result = await handler(trustedEvent, {
       method: "GET",
-      path: "/api/gateway/git/pr/files",
+      path: TEST_ALLOWED_PATH,
       headers: {},
       body: { kind: "text", value: oversized, contentType: null },
     });
@@ -207,7 +213,7 @@ describe("gateway-dispatch-ipc handler", () => {
 
   test("MEDIUM-2: set-cookie from the gateway is stripped from the envelope", async () => {
     const deps = makeDeps({
-      fetchImpl: mock.fn(
+      fetchImpl: vi.fn(
         async () =>
           new Response(JSON.stringify({ files: [] }), {
             status: 200,
@@ -220,7 +226,7 @@ describe("gateway-dispatch-ipc handler", () => {
       ) as unknown as typeof fetch,
     });
     const handler = createGatewayDispatchHandler(deps);
-    const result = await handler(trustedEvent, filesPayload());
+    const result = await handler(trustedEvent, allowedPayload());
     assert.equal(result.status, 200);
     assert.deepEqual(Object.keys(result.headers ?? {}), ["content-type"]);
   });
@@ -230,7 +236,7 @@ describe("gateway-dispatch-ipc handler", () => {
     const handler = createGatewayDispatchHandler(deps);
     const result = await handler(trustedEvent, {
       method: "POST",
-      path: "/api/gateway/git/pr/files",
+      path: TEST_ALLOWED_PATH,
       headers: {},
       body: noneBody(),
     });
@@ -263,121 +269,27 @@ describe("gateway-dispatch-ipc handler", () => {
     const handler = createGatewayDispatchHandler(deps);
     await handler(
       trustedEvent,
-      filesPayload("?owner=secretOrg&repo=secretRepo&number=42")
+      allowedPayload("?owner=secretOrg&repo=secretRepo&number=42")
     );
     assert.equal(logged.length, 1);
     const line = logged[0];
-    assert.ok(line.includes("/api/gateway/git/pr/files"));
+    assert.ok(line.includes(TEST_ALLOWED_PATH));
     assert.ok(line.includes("200"));
     assert.ok(!line.includes("secretOrg"));
     assert.ok(!line.includes("secretRepo"));
     assert.ok(!line.includes("?"));
   });
 
-  test("happy path: valid /pr/files returns the gateway envelope", async () => {
+  test("happy path: an allowlisted path returns the gateway envelope", async () => {
     const deps = makeDeps();
     const handler = createGatewayDispatchHandler(deps);
-    const result = await handler(trustedEvent, filesPayload());
+    const result = await handler(trustedEvent, allowedPayload());
     assert.equal(result.status, 200);
     assert.deepEqual(JSON.parse(String(result.body)), { files: ["a.ts"] });
     const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
     assert.equal(
-      String(call.arguments[0]),
-      `http://127.0.0.1:${PORT}/api/gateway/git/pr/files?owner=o&repo=r&number=1`
-    );
-  });
-
-  test("happy path: valid /pr/file-diff returns the gateway envelope", async () => {
-    const deps = makeDeps({
-      fetchImpl: mock.fn(
-        async () =>
-          new Response(JSON.stringify({ path: "src/a.ts" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-      ) as unknown as typeof fetch,
-    });
-    const handler = createGatewayDispatchHandler(deps);
-    const result = await handler(trustedEvent, fileDiffPayload());
-    assert.equal(result.status, 200);
-    assert.deepEqual(JSON.parse(String(result.body)), { path: "src/a.ts" });
-    const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
-    assert.equal(
-      String(call.arguments[0]),
-      `http://127.0.0.1:${PORT}/api/gateway/git/pr/file-diff?owner=o&repo=r&number=1&branchId=o%252Fr%3A%3Amain&path=src%2Fa.ts`
-    );
-  });
-
-  test("file-diff dispatch allows the current repo-less branch for server resolver validation", async () => {
-    const deps = makeDeps({
-      fetchImpl: mock.fn(
-        async () =>
-          new Response(JSON.stringify({ path: "src/a.ts" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          })
-      ) as unknown as typeof fetch,
-    });
-    const handler = createGatewayDispatchHandler(deps);
-    const result = await handler(
-      {
-        sender: {
-          getURL: () =>
-            `app://desktop/index.html#/branches/${encodeURIComponent(
-              LOCAL_SCOPED_BRANCH_ID
-            )}`,
-        },
-      },
-      fileDiffPayload(
-        `?owner=o&repo=r&number=1&branchId=${encodeURIComponent(
-          LOCAL_SCOPED_BRANCH_ID
-        )}&path=src%2Fa.ts`
-      )
-    );
-
-    assert.equal(result.status, 200);
-    const call = (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls[0];
-    assert.equal(
-      String(call.arguments[0]),
-      `http://127.0.0.1:${PORT}/api/gateway/git/pr/file-diff?owner=o&repo=r&number=1&branchId=local%3A%3Amain&path=src%2Fa.ts`
-    );
-  });
-
-  test("file-diff dispatch requires the current branch route scope", async () => {
-    const deps = makeDeps();
-    const handler = createGatewayDispatchHandler(deps);
-
-    const missingScope = await handler(
-      trustedEvent,
-      fileDiffPayload("?owner=o&repo=r&number=1&path=src%2Fa.ts")
-    );
-    assert.equal(missingScope.status, 403);
-
-    const wrongRoute = await handler(
-      {
-        sender: {
-          getURL: () =>
-            `app://desktop/index.html#/branches/${encodeURIComponent(
-              "other%2Fr::main"
-            )}`,
-        },
-      },
-      fileDiffPayload()
-    );
-    assert.equal(wrongRoute.status, 403);
-
-    const wrongRepo = await handler(
-      trustedEvent,
-      fileDiffPayload(
-        `?owner=o&repo=other&number=1&branchId=${encodeURIComponent(
-          SCOPED_BRANCH_ID
-        )}&path=src%2Fa.ts`
-      )
-    );
-    assert.equal(wrongRepo.status, 403);
-    assert.equal(
-      (deps.fetchImpl as ReturnType<typeof okFetch>).mock.calls.length,
-      0
+      String(call[0]),
+      `http://127.0.0.1:${PORT}${TEST_ALLOWED_PATH}?owner=o&repo=r&number=1`
     );
   });
 });

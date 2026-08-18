@@ -21,6 +21,7 @@ const mockUseComputeTargetStatusStream = vi.fn();
 const mockUseComputeTargetHealthCheckSnapshot = vi.fn();
 const mockUseUpdateComputeTargetHarness = vi.fn();
 const mockUpdateHarnessMutate = vi.fn();
+const mockUseLatestElectronRelease = vi.fn();
 
 // Regex patterns at top level to avoid performance issues
 const SELECT_NEWER_MAC_PATTERN = /Select newer-mac compute target/i;
@@ -33,59 +34,22 @@ vi.mock("@repo/auth/client", () => ({
   useUser: () => mockUseUser(),
 }));
 
-vi.mock("@repo/design-system/components/ui/sidebar", () => ({
-  SidebarMenuButton: ({
-    children,
-    "aria-label": ariaLabel,
-    tooltip,
-  }: {
-    children: React.ReactNode;
-    "aria-label"?: string;
-    tooltip?: string;
-  }) => (
-    <button
-      aria-label={ariaLabel}
-      data-testid="sidebar-menu-button"
-      title={tooltip}
-      type="button"
-    >
-      {children}
-    </button>
-  ),
-  useSidebar: () => mockUseSidebar(),
-}));
+vi.mock("@repo/design-system/components/ui/sidebar", async () => {
+  const fixtures = await import("./compute-target-popover-fixtures");
+  return {
+    SidebarMenuButton: fixtures.SidebarMenuButtonStub,
+    useSidebar: () => mockUseSidebar(),
+  };
+});
 
-vi.mock("@repo/design-system/components/ui/popover", () => ({
-  Popover: ({
-    children,
-    open,
-  }: {
-    children: React.ReactNode;
-    open: boolean;
-    onOpenChange: (next: boolean) => void;
-  }) => (
-    <div data-open={open} data-testid="popover">
-      {children}
-    </div>
-  ),
-  PopoverTrigger: ({
-    children,
-  }: {
-    children: React.ReactNode;
-    asChild?: boolean;
-  }) => <div data-testid="popover-trigger">{children}</div>,
-  PopoverContent: ({
-    children,
-    "aria-label": ariaLabel,
-  }: {
-    children: React.ReactNode;
-    "aria-label"?: string;
-  }) => (
-    <section aria-label={ariaLabel} data-testid="popover-content">
-      {children}
-    </section>
-  ),
-}));
+vi.mock("@repo/design-system/components/ui/popover", async () => {
+  const fixtures = await import("./compute-target-popover-fixtures");
+  return {
+    Popover: fixtures.PopoverStub,
+    PopoverContent: fixtures.PopoverContentStub,
+    PopoverTrigger: fixtures.PopoverTriggerStub,
+  };
+});
 
 vi.mock("@repo/app/compute/hooks/use-compute-preference", () => ({
   useComputePreference: (...args: unknown[]) =>
@@ -148,14 +112,23 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
     mockUseFeatureFlagEnabled(...args),
 }));
 
+vi.mock("@repo/app/desktop/hooks/use-electron-release", () => ({
+  useLatestElectronRelease: (...args: unknown[]) =>
+    mockUseLatestElectronRelease(...args),
+}));
+
 import {
   type ComputeTargetHealthCheckSnapshot,
   EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY,
   HARNESS_SELECTION_FEATURE_FLAG_KEY,
   HarnessType,
 } from "@repo/api/src/types/compute-target";
-import type React from "react";
 import { ComputeTargetPopover } from "../compute-target-popover";
+import {
+  defaultSidebar,
+  offlineTarget,
+  onlineTarget,
+} from "./compute-target-popover-fixtures";
 
 const RE_SELECT_CLOUD = /Select Cloud compute target/i;
 const RE_SELECT_LOCAL = /Select Local compute target/i;
@@ -167,28 +140,6 @@ const RE_DESKTOP_OFFLINE = /Desktop app is offline/i;
 const RE_NOT_REACHABLE = /Your local compute target is not reachable/i;
 const RE_LIVE_UNAVAILABLE = /Live status updates unavailable/i;
 const RE_RECONNECT_EXHAUSTED = /Reconnect attempts exhausted/i;
-
-const defaultSidebar = { open: true };
-
-const onlineTarget = {
-  id: "ct-local",
-  machineName: "my-mac",
-  platform: "macOS",
-  isOnline: true,
-  organizationId: "org-1",
-  userId: "user-1",
-  capabilities: {},
-  supportedOperations: [],
-  lastSeenAt: new Date(),
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
-const offlineTarget = {
-  ...onlineTarget,
-  id: "ct-offline",
-  isOnline: false,
-};
 
 describe("ComputeTargetPopover", () => {
   beforeEach(() => {
@@ -212,6 +163,10 @@ describe("ComputeTargetPopover", () => {
       mutate: mockUpdateHarnessMutate,
     });
     mockUseComputeTargetHealthCheckSnapshot.mockReturnValue({ data: null });
+    mockUseLatestElectronRelease.mockReturnValue({
+      data: null,
+      isLoading: false,
+    });
   });
 
   // Enable the explicit-selection and harness-selection flags independently.

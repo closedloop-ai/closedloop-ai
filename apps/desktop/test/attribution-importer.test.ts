@@ -459,3 +459,42 @@ test("Importer: model backfill from tokensByModel when session.model is null", a
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// FEA-3578: a Claude session's name is the harness ai-title, which can change
+// across syncs. `name` is NOT part of the metadata blob and `data_revision` is
+// unchanged on a plain re-sync, so a name-only refresh must still be detected —
+// otherwise the sessionDataChanged gate skips the UPDATE and strands the old
+// title. (The COALESCE keeps the old name only when the fresh parse yields none.)
+test("Importer: re-import refreshes a name-only ai-title change (FEA-3578)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fea3578-name-"));
+  const db = await openTestDb(dir);
+
+  try {
+    const sessionId = "fea3578-name-refresh";
+    // First sync: no ai-title yet, so the name is the cwd-derived fallback.
+    await db.importer.importSession(
+      makeSession({ sessionId, name: "myproject - fea3578" }),
+      "claude"
+    );
+
+    // Re-sync the SAME session with ONLY the name changed (harness emitted an
+    // ai-title). Everything else is identical, so metadata + data_revision match
+    // the stored row — the change must be caught by the name comparison alone.
+    await db.importer.importSession(
+      makeSession({ sessionId, name: "Refined AI title" }),
+      "claude"
+    );
+
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { name: string | null }[]
+    >("SELECT name FROM sessions WHERE id = $1", sessionId);
+    assert.equal(
+      rows[0]?.name,
+      "Refined AI title",
+      "name-only re-sync updates the stored name"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

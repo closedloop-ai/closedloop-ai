@@ -5,6 +5,7 @@ import {
   BranchViewLocalErrorCode,
   BranchViewLocalHeader,
   isBranchViewLocalGatewayPath,
+  isBranchViewLocalOperationId,
   resolveBranchViewLocalOperationId,
 } from "@repo/api/src/types/branch-view-local";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
@@ -44,6 +45,7 @@ export type BranchViewLocalAccessResult =
 
 type StoredCommandPayload = {
   computeTargetId: string;
+  operationId: string;
   requestPayload: unknown;
 } | null;
 
@@ -165,13 +167,16 @@ export async function authorizeBranchViewLocalEventRead(input: {
   if (command.computeTargetId !== input.computeTargetId) {
     return deny(403, BranchViewLocalErrorCode.ContextMismatch);
   }
-  const payload = isRecord(command.requestPayload)
-    ? (command.requestPayload as JsonObject)
-    : {};
-  const headers = readHeaders(payload.headers);
-  if (headers[BranchViewLocalHeader.Operation] !== "1") {
+  // Classify from the command's OWN stored identity — its operation id and its
+  // gateway path — before reading the API-owned proof. Classifying off the proof
+  // header alone fails OPEN: a stored local-changes command whose marker is
+  // missing or corrupt would be waved through as an ordinary command, skipping
+  // the author check entirely.
+  if (!isStoredBranchViewLocalPayload(command)) {
     return { ok: true, metadataHeaders: {} };
   }
+  const payload = toStoredRequestPayload(command.requestPayload);
+  const headers = readHeaders(payload.headers);
   const externalLinkId = headers[BranchViewLocalHeader.ExternalLinkId];
   const repoFullName = headers[BranchViewLocalHeader.RepoFullName];
   const headBranch = headers[BranchViewLocalHeader.HeadBranch];
@@ -180,8 +185,12 @@ export async function authorizeBranchViewLocalEventRead(input: {
   const authorizedOrgId = headers[BranchViewLocalHeader.AuthorizedOrgId];
   const path = typeof payload.path === "string" ? payload.path : "";
 
+  // Past this point the command IS a Branch View local command, so an absent or
+  // unusable proof is a stale proof, never a pass-through.
   if (
     !(
+      headers[BranchViewLocalHeader.Operation] === "1" &&
+      isBranchViewLocalGatewayPath(path) &&
       externalLinkId &&
       repoFullName &&
       headBranch &&
@@ -213,11 +222,40 @@ export async function isStoredBranchViewLocalCommand(input: {
   if (!command || command.computeTargetId !== input.computeTargetId) {
     return false;
   }
-  const payload = isRecord(command.requestPayload)
-    ? (command.requestPayload as JsonObject)
-    : {};
-  const headers = readHeaders(payload.headers);
-  return headers[BranchViewLocalHeader.Operation] === "1";
+  return isStoredBranchViewLocalPayload(command);
+}
+
+function toStoredRequestPayload(requestPayload: unknown): JsonObject {
+  return isRecord(requestPayload) ? (requestPayload as JsonObject) : {};
+}
+
+/**
+ * Whether a STORED desktop command is a Branch View local-content command,
+ * decided from the command's own identity rather than from the proof it is
+ * supposed to carry.
+ *
+ * The API-owned marker header is the proof, not the classification: trusting it
+ * to classify means a row whose marker was never stamped, was stamped by an
+ * older build, or was written by any other `createCommand` caller reads as an
+ * ordinary command and escapes both the public author check and the internal
+ * read block. The operation id and the gateway path are the durable identity
+ * that the dispatch side (`classifyBranchViewLocalCommand`) also keys off.
+ */
+function isStoredBranchViewLocalPayload(command: {
+  operationId: string;
+  requestPayload: unknown;
+}): boolean {
+  if (isBranchViewLocalOperationId(command.operationId)) {
+    return true;
+  }
+  const payload = toStoredRequestPayload(command.requestPayload);
+  if (
+    typeof payload.path === "string" &&
+    isBranchViewLocalGatewayPath(payload.path)
+  ) {
+    return true;
+  }
+  return readHeaders(payload.headers)[BranchViewLocalHeader.Operation] === "1";
 }
 
 function readHeaders(value: JsonValue | undefined): Record<string, string> {
@@ -237,7 +275,11 @@ async function loadStoredCommandPayload(
   return await withDb((db) =>
     db.desktopCommand.findUnique({
       where: { id: commandId },
-      select: { computeTargetId: true, requestPayload: true },
+      select: {
+        computeTargetId: true,
+        operationId: true,
+        requestPayload: true,
+      },
     })
   );
 }

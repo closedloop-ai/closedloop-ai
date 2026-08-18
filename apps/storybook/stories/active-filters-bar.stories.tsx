@@ -6,6 +6,7 @@ import type {
   DocumentTableFiltersViewModel,
 } from "@repo/app/documents/components/table/document-table-filters";
 import { ActiveFiltersBar } from "@repo/design-system/components/ui/active-filters-bar";
+import { FilterChip } from "@repo/design-system/components/ui/filter-chip";
 import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import {
@@ -15,7 +16,7 @@ import {
 } from "@repo/design-system/components/ui/table-filters";
 import type { Meta, StoryObj } from "@storybook/react";
 import { UserIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 const defaultViewModel: DocumentTableFiltersViewModel = {
   currentUser: { id: "user_1", name: "Avery Carter", avatarUrl: "" },
@@ -141,9 +142,13 @@ function buildActiveChips(filters: DocumentTableFiltersState) {
 function ActiveFiltersBarDemo({
   initialState,
   viewModel,
+  extraChips,
+  showFilterControls,
 }: {
   initialState: DocumentTableFiltersState;
   viewModel: DocumentTableFiltersViewModel;
+  extraChips?: ReactNode;
+  showFilterControls?: boolean;
 }) {
   const [filters, setFilters] =
     useState<DocumentTableFiltersState>(initialState);
@@ -221,7 +226,23 @@ function ActiveFiltersBarDemo({
     [filters]
   );
 
-  return <ActiveFiltersBar controller={controller} viewModel={viewModel} />;
+  return (
+    <ActiveFiltersBar
+      controller={controller}
+      extraChips={extraChips}
+      showFilterControls={showFilterControls}
+      viewModel={viewModel}
+    />
+  );
+}
+
+/**
+ * Stand-in for a surface-owned chip (FEA-1626: My Tasks' "Last 90 days" recency
+ * window). Rendered through the real `FilterChip`, so the stories show the
+ * actual geometry the two chip sources share.
+ */
+function SurfaceChip({ label }: { label: string }) {
+  return <FilterChip label={label} onRemove={() => undefined} />;
 }
 
 const meta = {
@@ -281,5 +302,33 @@ export const HiddenAssignee: Story = {
       ...defaultViewModel,
       hideAssignee: true,
     },
+  },
+};
+
+/**
+ * FEA-1626 — the bar carrying ONLY a surface-owned chip, with the facet
+ * add/clear controls suppressed. This is the My Tasks recency window: the bar is
+ * on screen purely to disclose a server-side narrowing, so a "Clear all" button
+ * would sit there with nothing to clear. Worth eyeing for the lone-chip case,
+ * where the strip has no facet chips to sit against.
+ */
+export const SurfaceChipOnly: Story = {
+  args: {
+    extraChips: <SurfaceChip label="Last 90 days" />,
+    initialState: emptyState,
+    showFilterControls: false,
+  },
+};
+
+/**
+ * FEA-1626 — both chip sources at once: the surface-owned chip renders ahead of
+ * the managed facet chips, with the facet controls shown because facet filters
+ * ARE active. The state to check for wrap and spacing — a full facet set plus a
+ * caller chip is the widest this strip gets.
+ */
+export const SurfaceChipWithActiveFacets: Story = {
+  args: {
+    extraChips: <SurfaceChip label="Last 90 days" />,
+    showFilterControls: true,
   },
 };

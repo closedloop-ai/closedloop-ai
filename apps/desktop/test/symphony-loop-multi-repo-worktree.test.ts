@@ -11,21 +11,24 @@
  */
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { promisify } from "node:util";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
-import { JobStore } from "../src/main/job-store.js";
+import { JobStore } from "../src/main/jobs/job-store.js";
 import type { WorktreeProvider } from "../src/server/operations/symphony-loop.js";
 import {
   defaultWorktreeProvider,
   handleProcessCompletion,
 } from "../src/server/operations/symphony-loop.js";
 import { setShellPathForTest } from "../src/server/shell-path.js";
+import { writeFakeClaudeScript } from "./helpers/fake-harness-artifacts.js";
+import {
+  createRepoWithOrigin,
+  remoteBranchSha,
+} from "./helpers/git-fixture.js";
 import {
   createFakeRunLoopScript,
   FAKE_TOKEN_JSONL,
@@ -38,8 +41,6 @@ import {
   waitForCompletedEvent,
   waitForTerminalEvent,
 } from "./symphony-test-utils.js";
-
-const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Shared state and cleanup
@@ -62,54 +63,6 @@ function createTestGateway(
     worktreeProvider,
     serversToClose,
   });
-}
-
-async function createRepoWithOrigin(
-  root: string,
-  name: string
-): Promise<{ repoPath: string; originPath: string; fullName: string }> {
-  const originPath = path.join(root, `${name}.git`);
-  const repoPath = path.join(root, name);
-  await execFileAsync("git", ["init", "--bare", "-b", "main", originPath]);
-  await execFileAsync("git", ["clone", originPath, repoPath]);
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
-    cwd: repoPath,
-  });
-  await execFileAsync("git", ["config", "user.name", "Test User"], {
-    cwd: repoPath,
-  });
-  await fs.writeFile(path.join(repoPath, "README.md"), `# ${name}\n`);
-  await execFileAsync("git", ["add", "README.md"], { cwd: repoPath });
-  await execFileAsync("git", ["commit", "-m", "initial"], { cwd: repoPath });
-  await execFileAsync("git", ["push", "-u", "origin", "main"], {
-    cwd: repoPath,
-  });
-  const fullName = `org/${name}`;
-  await execFileAsync(
-    "git",
-    ["remote", "set-url", "origin", `git@github.com:${fullName}.git`],
-    { cwd: repoPath }
-  );
-  await execFileAsync(
-    "git",
-    ["remote", "set-url", "--push", "origin", originPath],
-    {
-      cwd: repoPath,
-    }
-  );
-  return { repoPath, originPath, fullName };
-}
-
-async function remoteBranchSha(
-  originPath: string,
-  branchName: string
-): Promise<string> {
-  const result = await execFileAsync(
-    "git",
-    ["--git-dir", originPath, "rev-parse", branchName],
-    { encoding: "utf8" }
-  );
-  return String(result.stdout).trim();
 }
 
 async function waitForBranchArtifacts(
@@ -161,10 +114,9 @@ test("ensureWorktree called for each additional repo with correct branch before 
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    ["#!/bin/sh", `printf '%s\\n' '${FAKE_TOKEN_JSONL}'`, "exit 0"].join("\n"),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    ["#!/bin/sh", `printf '%s\\n' '${FAKE_TOKEN_JSONL}'`, "exit 0"].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -265,14 +217,13 @@ test("PLAN materializes expected additional repo branch and records callback pay
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
+  await writeFakeClaudeScript(
+    fakeBin,
     [
       "#!/bin/sh",
       'echo \'{"type":"result","subtype":"success","result":"","is_error":false}\'',
       "exit 0",
-    ].join("\n"),
-    { mode: 0o755 }
+    ].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -363,14 +314,13 @@ test("PLAN materialization rejects additional repo identity mismatch before side
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
+  await writeFakeClaudeScript(
+    fakeBin,
     [
       "#!/bin/sh",
       'echo \'{"type":"result","subtype":"success","result":"","is_error":false}\'',
       "exit 0",
-    ].join("\n"),
-    { mode: 0o755 }
+    ].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -483,9 +433,7 @@ test("removeWorktree called for additional worktree dirs when process fails", as
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(path.join(fakeBin, "claude"), "#!/bin/sh\nexit 1\n", {
-    mode: 0o755,
-  });
+  await writeFakeClaudeScript(fakeBin, "#!/bin/sh\nexit 1\n");
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
 
@@ -587,9 +535,7 @@ test("ensureWorktree throws for additional repo — cleans leaked worktree, post
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(path.join(fakeBin, "claude"), "#!/bin/sh\nexit 0\n", {
-    mode: 0o755,
-  });
+  await writeFakeClaudeScript(fakeBin, "#!/bin/sh\nexit 0\n");
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
 
@@ -722,10 +668,9 @@ test("EXECUTE retry reuses retained additional-repo worktree instead of force-re
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    ["#!/bin/sh", `printf '%s\\n' '${FAKE_TOKEN_JSONL}'`, "exit 0"].join("\n"),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    ["#!/bin/sh", `printf '%s\\n' '${FAKE_TOKEN_JSONL}'`, "exit 0"].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -973,10 +918,9 @@ for (const command of PRD_PEER_COMMANDS) {
     // Direct-claude pipeline (no run-loop.sh) — exit 0 → completed terminal.
     const fakeBin = path.join(tmpDir, "fake-bin");
     await fs.mkdir(fakeBin, { recursive: true });
-    await fs.writeFile(
-      path.join(fakeBin, "claude"),
-      '#!/bin/sh\necho \'{"type":"result"}\'\nexit 0\n',
-      { mode: 0o755 }
+    await writeFakeClaudeScript(
+      fakeBin,
+      '#!/bin/sh\necho \'{"type":"result"}\'\nexit 0\n'
     );
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();

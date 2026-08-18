@@ -104,32 +104,55 @@ describe("main — cross-org safety", () => {
   it("exits with error when DRY_RUN=0 and ORG_ID is unset", async () => {
     const savedDryRun = process.env.DRY_RUN;
     const savedOrgId = process.env.ORG_ID;
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation(() => undefined as never);
+    // THROWS, rather than returning undefined. `process.exit` never returns in
+    // production, so a no-op mock lets `main()` run ON past the guard it just
+    // tripped — straight into `withDb`, which then demands real IAM credentials
+    // (PGHOST/PGUSER/AWS_REGION/AWS_ROLE_ARN). That made a pure four-line env
+    // check look like it needed a database: green in CI where the credentials
+    // exist, red on a developer machine where they do not, and in neither case
+    // exercising the path production actually takes.
+    //
+    // The direction matters: the no-op mock made everything after
+    // `process.exit` REACHABLE here, when production can never reach it. So the
+    // test exercised strictly more than the real thing, and could pass on
+    // behaviour that never runs — the database access being exactly that. Same
+    // shape as the seed entrypoint tests
+    // (packages/database/scripts/seed/__tests__/unit).
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+      code?: string | number | null | undefined
+    ) => {
+      throw new Error(`process.exit:${code}`);
+    }) as typeof process.exit);
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    process.env.DRY_RUN = "0";
-    delete process.env.ORG_ID;
-
-    await main();
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(errorSpy).toHaveBeenCalledWith(
-      expect.stringContaining("ORG_ID is required")
-    );
-
-    exitSpy.mockRestore();
-    errorSpy.mockRestore();
-    if (savedDryRun === undefined) {
-      delete process.env.DRY_RUN;
-    } else {
-      process.env.DRY_RUN = savedDryRun;
-    }
-    if (savedOrgId === undefined) {
+    try {
+      process.env.DRY_RUN = "0";
       delete process.env.ORG_ID;
-    } else {
-      process.env.ORG_ID = savedOrgId;
+
+      // Asserting the REJECTION, not just the spy: `toHaveBeenCalledWith(1)`
+      // alone passes for a mock that returns, which is the bug this replaces.
+      await expect(main()).rejects.toThrow("process.exit:1");
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("ORG_ID is required")
+      );
+    } finally {
+      // `finally`, because the restore used to sit after an `await main()` that
+      // threw on any machine without those credentials — leaking DRY_RUN=0 into
+      // every test that ran after it.
+      exitSpy.mockRestore();
+      errorSpy.mockRestore();
+      if (savedDryRun === undefined) {
+        delete process.env.DRY_RUN;
+      } else {
+        process.env.DRY_RUN = savedDryRun;
+      }
+      if (savedOrgId === undefined) {
+        delete process.env.ORG_ID;
+      } else {
+        process.env.ORG_ID = savedOrgId;
+      }
     }
   });
 });

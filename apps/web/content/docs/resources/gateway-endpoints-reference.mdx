@@ -28,14 +28,32 @@ The desktop gateway binds to `127.0.0.1:19432` (or the first fallback in `19433â
 | `/api/gateway/git/branch-worktree` | GET |
 | `/api/gateway/git/repo-path` | GET |
 | `/api/gateway/git/pr` | POST |
+| `/api/gateway/git/user` | GET |
+
+### Retired: local-`gh` PR data routes
+
+These answered from a local `gh` invocation and were retired in PLN-1535. Desktop
+GitHub data now comes from the cloud projection, so the routes stay registered
+and, once a request passes the gateway's auth, onboarding and approval gates,
+respond **HTTP 410** with `{ "error": "github_data_route_retired" }`. Those gates
+run first and can answer before the route does â€” a request made before onboarding
+completes gets 403, not 410.
+
+410 rather than an unregistered path so a version-skewed client can tell a
+deliberately removed endpoint from one that is merely unimplemented: this gateway
+answers 501 `operation not implemented` for an unrecognized `/api/gateway/*`
+path, which means "may arrive later".
+
+| Route | Methods |
+|---|---|
 | `/api/gateway/git/pr/list` | GET |
 | `/api/gateway/git/pr/comments` | GET |
 | `/api/gateway/git/pr/reviews` | GET |
 | `/api/gateway/git/pr/reply` | POST |
 | `/api/gateway/git/pr/files` | GET |
+| `/api/gateway/git/pr/file-diff` | GET |
 | `/api/gateway/git/pr/head-sha` | GET |
 | `/api/gateway/git/pr/inline-comment` | POST |
-| `/api/gateway/git/user` | GET |
 
 ## Filesystem
 

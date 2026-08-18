@@ -1,5 +1,5 @@
 import type { DesktopPrisma } from "../database/prisma-client.js";
-import { writePersistentLog } from "../persistent-log.js";
+import { writePersistentLog } from "../logging/persistent-log.js";
 import { isInsideWorkTree } from "./git-exec.js";
 import {
   captureRepoIdentity,

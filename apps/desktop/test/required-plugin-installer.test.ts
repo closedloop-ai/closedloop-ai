@@ -23,147 +23,22 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type {
-  DistributionDto,
-  DistributionStatusReport,
-} from "@repo/api/src/types/distribution";
-import type { StreamRunResult } from "../src/main/packs/install-orchestrator.js";
+import type { DistributionDto } from "@repo/api/src/types/distribution";
 import { RequiredPluginInstaller } from "../src/main/packs/required-plugin-installer.js";
-
-// ---------------------------------------------------------------------------
-// Test helpers
-// ---------------------------------------------------------------------------
-
-const COMPUTE_TARGET_ID = "ct-test-001";
-const API_ORIGIN = "https://api.example.com";
-const ACCESS_TOKEN = "test-access-token";
-
-type StatusBody = {
-  computeTargetId: string;
-  reports: DistributionStatusReport[];
-};
-
-/**
- * Builds a DistributionDto for use in tests.
- * The assetDownloadUrl is set to a non-null value to verify the trust boundary —
- * the installer must NOT pass it to runInstall or execute it as a command.
- */
-function makeAutoInstallDist(
-  overrides: Partial<DistributionDto> = {}
-): DistributionDto {
-  return {
-    id: "dist-001",
-    organizationId: "org-001",
-    catalogItemId: "ci-001",
-    catalogItem: {
-      id: "ci-001",
-      targetKind: "plugin",
-      name: "RTK",
-      source: "curated",
-    },
-    mode: "auto_install",
-    targetingType: "all",
-    desiredEnabled: true,
-    targetingEntries: [],
-    targetStatuses: [],
-    // Explicitly set a presigned S3 URL — the installer MUST NOT execute this.
-    assetDownloadUrl:
-      "https://s3.example.com/presigned/rtk.zip?token=secret123",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-function makeOptInDist(
-  overrides: Partial<DistributionDto> = {}
-): DistributionDto {
-  return {
-    id: "dist-opt-001",
-    organizationId: "org-001",
-    catalogItemId: "ci-opt-001",
-    catalogItem: {
-      id: "ci-opt-001",
-      targetKind: "plugin",
-      name: "GStack",
-      source: "curated",
-    },
-    mode: "opt_in",
-    targetingType: "all",
-    desiredEnabled: true,
-    targetingEntries: [],
-    targetStatuses: [],
-    assetDownloadUrl: null,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-/**
- * Creates a fake fetch function that responds to the two distributions endpoints.
- * Records all status POST bodies for later assertion.
- */
-function makeFakeFetch(assignedDistributions: DistributionDto[]): {
-  fetch: typeof fetch;
-  statusBodies: StatusBody[];
-} {
-  const statusBodies: StatusBody[] = [];
-
-  const fakeFetch = async (
-    input: RequestInfo | URL,
-    init?: RequestInit
-  ): Promise<Response> => {
-    const url = typeof input === "string" ? input : input.toString();
-
-    if (url.includes("/desktop/distributions/assigned")) {
-      // Wrap in the API envelope format that unwrapApiEnvelope expects:
-      // { success: true, data: [...] }
-      const body = JSON.stringify({
-        success: true,
-        data: assignedDistributions,
-      });
-      return new Response(body, {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    if (url.includes("/desktop/distributions/status")) {
-      const body = await new Request(url, init).json();
-      statusBodies.push(body as StatusBody);
-      return new Response(
-        JSON.stringify({
-          success: true,
-          data: { accepted: body.reports.length },
-        }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    throw new Error(`Unexpected fetch to: ${url}`);
-  };
-
-  return { fetch: fakeFetch as unknown as typeof fetch, statusBodies };
-}
-
-/**
- * Builds the minimal DistributionsClientOptions for tests.
- */
-function makeClientOptions(fetchFn: typeof fetch, authenticated = true) {
-  return {
-    getAccessToken: async () => (authenticated ? ACCESS_TOKEN : null),
-    getApiOrigin: () => (authenticated ? API_ORIGIN : undefined),
-    fetch: fetchFn,
-  };
-}
+import type { StreamRunResult } from "../src/shared/install-run-contract.js";
+import {
+  COMPUTE_TARGET_ID,
+  makeAutoInstallDist,
+  makeClientOptions,
+  makeFakeFetch,
+  makeOptInDist,
+} from "./support/required-plugin-installer-fixtures.js";
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+const NO_LONGER_ASSIGNED_ERROR = /no longer assigned/;
 
 describe("RequiredPluginInstaller", () => {
   describe("(1) missing plugin → install spawned", () => {
@@ -550,6 +425,89 @@ describe("RequiredPluginInstaller", () => {
       assert.equal(statusBodies.length, 0);
     });
 
+    /**
+     * ISS-5123 — the push is a SNAPSHOT of what the org offers, not an
+     * increment. The renderer replaces its pending set from it, so an empty
+     * payload is how "the last opt-in pack was withdrawn" reaches the banner.
+     * Withholding the push on empty (the previous behavior) left a revoked
+     * offer on screen and installable until the app restarted.
+     */
+    test("pushes an EMPTY opt-in snapshot so a withdrawal can clear the banner", async () => {
+      const { fetch: fakeFetch } = makeFakeFetch([]);
+
+      const optInReceived: DistributionDto[][] = [];
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: () => Promise.resolve({ started: true }),
+        onOptInAvailable: (dists) => {
+          optInReceived.push(dists);
+        },
+      });
+
+      await installer.reconcile(COMPUTE_TARGET_ID);
+
+      assert.equal(
+        optInReceived.length,
+        1,
+        "an empty assignment list must still publish a snapshot"
+      );
+      assert.equal(optInReceived[0].length, 0);
+    });
+
+    test("pushes an empty snapshot when the only assignment is auto_install", async () => {
+      const { fetch: fakeFetch } = makeFakeFetch([makeAutoInstallDist()]);
+
+      const optInReceived: DistributionDto[][] = [];
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: () => Promise.resolve({ started: true }),
+        onOptInAvailable: (dists) => {
+          optInReceived.push(dists);
+        },
+      });
+
+      await installer.reconcile(COMPUTE_TARGET_ID);
+
+      // The opt-in set going from one pack to none must be published too — it is
+      // the same revocation, just with other assignments still present.
+      assert.equal(optInReceived.length, 1);
+      assert.equal(optInReceived[0].length, 0);
+    });
+  });
+
+  describe("(8b) pre-install revalidation of an offer (ISS-5123)", () => {
+    test("resolves when the distribution is still assigned", async () => {
+      const optIn = makeOptInDist();
+      const { fetch: fakeFetch } = makeFakeFetch([optIn]);
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: () => Promise.resolve({ started: true }),
+      });
+
+      await installer.assertDistributionAssigned(COMPUTE_TARGET_ID, optIn.id);
+    });
+
+    test("rejects once the offer has been withdrawn", async () => {
+      const optIn = makeOptInDist();
+      // Withdrawal is expressed to the desktop as absence from the poll.
+      const { fetch: fakeFetch } = makeFakeFetch([]);
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: () => Promise.resolve({ started: true }),
+      });
+
+      await assert.rejects(
+        () => installer.assertDistributionAssigned(COMPUTE_TARGET_ID, optIn.id),
+        NO_LONGER_ASSIGNED_ERROR
+      );
+    });
+  });
+
+  describe("(8c) opt-in distributions surfaced, not installed (cont.)", () => {
     test("mixed auto_install + opt_in: installs auto only, surfaces opt_in", async () => {
       const autoInst = makeAutoInstallDist();
       const optIn = makeOptInDist();
@@ -586,7 +544,7 @@ describe("RequiredPluginInstaller", () => {
   });
 
   describe("(9) re-entrant reconcile guard", () => {
-    test("concurrent reconcile() calls do not trigger double-install (in-flight guard)", async () => {
+    test("concurrent reconcile() calls do not trigger double-install", async () => {
       const dist = makeAutoInstallDist();
 
       let resolveInstall!: () => void;
@@ -597,18 +555,26 @@ describe("RequiredPluginInstaller", () => {
       const { fetch: fakeFetch, statusBodies } = makeFakeFetch([dist]);
       const installCalls: string[] = [];
 
+      // Model a real install: once runInstall lands, the pack is present, so a
+      // subsequent getInstalledVersion reports its version. ISS-4428 changed the
+      // in-flight guard to coalesce (rather than drop) a request that arrives
+      // mid-reconcile, so one trailing pass runs after the first drains — but
+      // that pass sees the pack already installed and does NOT re-install.
+      let installedVersion: string | null = null;
       const installer = new RequiredPluginInstaller({
         distributionsClient: makeClientOptions(fakeFetch),
-        getInstalledVersion: async () => null,
+        getInstalledVersion: async () => installedVersion,
         runInstall: async (packId) => {
           installCalls.push(packId);
           // Block until the test resolves the promise.
           await installPromise;
+          installedVersion = "1.0.0";
           return { started: true, runId: 1 };
         },
       });
 
-      // Fire two concurrent reconcile() calls.
+      // Fire two concurrent reconcile() calls. The second is coalesced into a
+      // single trailing pass (not dropped, not a second concurrent install).
       const p1 = installer.reconcile(COMPUTE_TARGET_ID);
       const p2 = installer.reconcile(COMPUTE_TARGET_ID);
 
@@ -616,10 +582,71 @@ describe("RequiredPluginInstaller", () => {
       resolveInstall();
       await Promise.all([p1, p2]);
 
-      // Only one install should have been triggered (the second reconcile was
-      // a no-op due to the in-flight guard).
+      // Exactly one install: the concurrent second call did not double-install,
+      // and the coalesced trailing pass no-ops on the now-installed pack.
       assert.equal(installCalls.length, 1);
-      assert.equal(statusBodies.length, 1);
+      // Two status reports: the install pass, then the idempotent trailing pass
+      // (which reports the already-installed version, not a re-install).
+      assert.equal(statusBodies.length, 2);
+      assert.equal(statusBodies[0].reports[0].status, "installed");
+      assert.equal(statusBodies[1].reports[0].status, "installed");
+      assert.equal(statusBodies[1].reports[0].installedVersion, "1.0.0");
+    });
+
+    test("a request that lands mid-reconcile is coalesced, not dropped (ISS-4428)", async () => {
+      // The race the fix closes: a runtime-ready trigger arrives while the
+      // cloud-online reconcile is still in flight. The in-flight guard used to
+      // drop it, stranding a deferred "runtime not ready" pack until the next
+      // cloud-online. Now it runs exactly one trailing pass. Here the runtime is
+      // not ready on the first pass (deferred) and ready on the coalesced
+      // trailing pass, which installs the pack the first pass deferred.
+      const dist = makeAutoInstallDist();
+
+      let resolveFirst!: () => void;
+      const firstReconcileGate = new Promise<void>((res) => {
+        resolveFirst = res;
+      });
+
+      const { fetch: fakeFetch, statusBodies } = makeFakeFetch([dist]);
+      const installCalls: string[] = [];
+      // Runtime readiness is decided by which reconcile pass this is, not by a
+      // shared flag whose timing depends on microtask ordering: the first
+      // runInstall (the pass we hold open so the second reconcile lands
+      // mid-flight) defers; the coalesced trailing pass installs.
+      let runInstallCount = 0;
+
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async (packId) => {
+          runInstallCount += 1;
+          if (runInstallCount === 1) {
+            // Hold the first (runtime-not-ready) pass open so the second
+            // reconcile lands while it is still in flight, then defer.
+            await firstReconcileGate;
+            return null;
+          }
+          installCalls.push(packId);
+          return { started: true, runId: 9 };
+        },
+      });
+
+      const first = installer.reconcile(COMPUTE_TARGET_ID);
+      // Second reconcile lands while `first` is blocked → coalesced as pending.
+      const second = installer.reconcile(COMPUTE_TARGET_ID);
+      // Let the first (deferring) pass finish; the coalesced trailing pass then
+      // runs and installs the pack the first pass deferred.
+      resolveFirst();
+      await Promise.all([first, second]);
+
+      assert.equal(
+        installCalls.length,
+        1,
+        "the coalesced trailing pass installed the deferred pack"
+      );
+      assert.equal(statusBodies.length, 2);
+      assert.equal(statusBodies[0].reports[0].status, "pending");
+      assert.equal(statusBodies[1].reports[0].status, "installed");
     });
   });
 
@@ -707,6 +734,194 @@ describe("RequiredPluginInstaller", () => {
       assert.equal(report.distributionId, "dist-001");
       assert.equal(report.status, "pending");
       assert.ok(report.failureReason?.includes("runtime not ready"));
+    });
+  });
+
+  // FEA-4050: a declined opt-in pack must not be re-surfaced by reconcile.
+  describe("(10) declined opt-in packs are suppressed (FEA-4050)", () => {
+    test("declined distribution is NOT passed to onOptInAvailable", async () => {
+      const optIn = makeOptInDist();
+      const { fetch: fakeFetch } = makeFakeFetch([optIn]);
+
+      const optInReceived: DistributionDto[] = [];
+      const declinedIds = new Set([optIn.id]);
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        isDistributionDeclined: (id, _computeTargetId) => declinedIds.has(id),
+        onOptInAvailable: (dists) => {
+          optInReceived.push(...dists);
+        },
+      });
+
+      await installer.reconcile(COMPUTE_TARGET_ID);
+
+      assert.equal(
+        optInReceived.length,
+        0,
+        "a declined opt-in pack must not be re-surfaced"
+      );
+    });
+
+    test("a genuinely-new offer (different id) IS still surfaced", async () => {
+      // The user declined dist-opt-001; the admin re-shares as a NEW assignment
+      // dist-opt-002. The new id must NOT be suppressed by the old decline.
+      const newOffer = makeOptInDist({ id: "dist-opt-002" });
+      const { fetch: fakeFetch } = makeFakeFetch([newOffer]);
+
+      const optInReceived: DistributionDto[] = [];
+      const declinedIds = new Set(["dist-opt-001"]);
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        isDistributionDeclined: (id, _computeTargetId) => declinedIds.has(id),
+        onOptInAvailable: (dists) => {
+          optInReceived.push(...dists);
+        },
+      });
+
+      await installer.reconcile(COMPUTE_TARGET_ID);
+
+      assert.equal(optInReceived.length, 1, "a new offer must be surfaced");
+      assert.equal(optInReceived[0].id, "dist-opt-002");
+    });
+
+    test("mixed: only the declined pack is filtered, others pass through", async () => {
+      const declined = makeOptInDist({ id: "dist-opt-001" });
+      const fresh = makeOptInDist({
+        id: "dist-opt-003",
+        catalogItemId: "ci-opt-003",
+        catalogItem: {
+          id: "ci-opt-003",
+          targetKind: "skill",
+          name: "Verify",
+          source: "curated",
+        },
+      });
+      const { fetch: fakeFetch } = makeFakeFetch([declined, fresh]);
+
+      const optInReceived: DistributionDto[] = [];
+      const declinedIds = new Set(["dist-opt-001"]);
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        isDistributionDeclined: (id, _computeTargetId) => declinedIds.has(id),
+        onOptInAvailable: (dists) => {
+          optInReceived.push(...dists);
+        },
+      });
+
+      await installer.reconcile(COMPUTE_TARGET_ID);
+
+      assert.equal(optInReceived.length, 1);
+      assert.equal(optInReceived[0].id, "dist-opt-003");
+    });
+  });
+
+  // FEA-4050: declineDistributionById records the cloud-authoritative identity.
+  describe("(11) declineDistributionById persists identity (FEA-4050)", () => {
+    test("persists id-first, then enriches with the resolved cloud identity", async () => {
+      const optIn = makeOptInDist();
+      const { fetch: fakeFetch } = makeFakeFetch([optIn]);
+
+      const recorded: Array<{
+        distributionId: string;
+        catalogItemId: string;
+        organizationId: string;
+        computeTargetId: string;
+      }> = [];
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        recordDeclinedDistribution: (record) => {
+          recorded.push(record);
+        },
+      });
+
+      await installer.declineDistributionById(COMPUTE_TARGET_ID, optIn.id);
+
+      // Durability: the id is persisted BEFORE the cloud lookup (write #1,
+      // id-only) so a quit mid-lookup cannot lose the decline; the second write
+      // enriches the audit fields from the authoritative cloud response.
+      assert.equal(recorded.length, 2, "id-first then enriched");
+      assert.equal(recorded[0].distributionId, optIn.id);
+      assert.equal(recorded[0].catalogItemId, "", "write #1 is id-only");
+      assert.equal(recorded[0].organizationId, "");
+      assert.equal(
+        recorded[0].computeTargetId,
+        COMPUTE_TARGET_ID,
+        "id-first write is compute-target scoped"
+      );
+      assert.equal(recorded[1].distributionId, optIn.id);
+      // Identity comes from the authoritative cloud response, not renderer data.
+      assert.equal(recorded[1].catalogItemId, optIn.catalogItemId);
+      assert.equal(recorded[1].organizationId, optIn.organizationId);
+      assert.equal(recorded[1].computeTargetId, COMPUTE_TARGET_ID);
+    });
+
+    test("keeps only the id-first record when the distribution is no longer assigned", async () => {
+      // The offer was withdrawn cloud-side; the decline must still persist so a
+      // re-appearance under the same id stays suppressed. Suppression keys on
+      // distributionId alone, so empty audit fields are acceptable. Only the
+      // id-first write happens — the enrich returns early on not-found.
+      const { fetch: fakeFetch } = makeFakeFetch([]);
+
+      const recorded: Array<{
+        distributionId: string;
+        computeTargetId: string;
+      }> = [];
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(fakeFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        recordDeclinedDistribution: (record) => {
+          recorded.push(record);
+        },
+      });
+
+      await installer.declineDistributionById(
+        COMPUTE_TARGET_ID,
+        "dist-gone-001"
+      );
+
+      assert.equal(recorded.length, 1, "only the durable id-first write");
+      assert.equal(recorded[0].distributionId, "dist-gone-001");
+      assert.equal(recorded[0].computeTargetId, COMPUTE_TARGET_ID);
+    });
+
+    test("keeps the id-first decline durable when the cloud re-fetch throws", async () => {
+      // Offline / transient failure during the enrich step must not lose the
+      // decline: the id-first write already persisted it durably.
+      const throwingFetch = (() =>
+        Promise.reject(new Error("network down"))) as typeof fetch;
+
+      const recorded: Array<{
+        distributionId: string;
+        catalogItemId: string;
+        computeTargetId: string;
+      }> = [];
+      const installer = new RequiredPluginInstaller({
+        distributionsClient: makeClientOptions(throwingFetch),
+        getInstalledVersion: async () => null,
+        runInstall: async () => ({ started: true }),
+        recordDeclinedDistribution: (record) => {
+          recorded.push(record);
+        },
+      });
+
+      await installer.declineDistributionById(
+        COMPUTE_TARGET_ID,
+        "dist-off-001"
+      );
+
+      assert.equal(recorded.length, 1, "id-first write survives the throw");
+      assert.equal(recorded[0].distributionId, "dist-off-001");
+      assert.equal(recorded[0].catalogItemId, "");
+      assert.equal(recorded[0].computeTargetId, COMPUTE_TARGET_ID);
     });
   });
 });

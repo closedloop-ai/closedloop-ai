@@ -15,9 +15,8 @@ type ActivitySegmentBackfillRuntimeBoundaryOptions = {
 
 /**
  * Runs the runtime-facing DB-host activity-segment backfill op and invalidates
- * the renderer session projection when any session was re-tiled. Unlike the
- * artifact-link boundary there is no enrichment sweep to trigger — segments are
- * a pure local derivation with no git/gh follow-up.
+ * the renderer session projection when any session was re-tiled. Segments are a
+ * pure local derivation with no follow-up work of any kind.
  */
 export async function runActivitySegmentBackfillRuntimeBoundary(
   options: ActivitySegmentBackfillRuntimeBoundaryOptions

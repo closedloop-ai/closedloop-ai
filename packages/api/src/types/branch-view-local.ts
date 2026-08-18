@@ -1,3 +1,5 @@
+import { toDesktopApiPathname } from "../desktop-api-namespace";
+
 export const BranchViewLocalGatewayPath = {
   List: "/api/gateway/git/local-changes",
   Diff: "/api/gateway/git/local-changes/diff",
@@ -40,7 +42,11 @@ export type BranchViewLocalErrorCode =
   (typeof BranchViewLocalErrorCode)[keyof typeof BranchViewLocalErrorCode];
 
 export function getBranchViewLocalGatewayPathname(path: string): string {
-  return new URL(path, "http://local").pathname;
+  // Delegates to the shared desktop-path normalizer so this stays total. The
+  // strings reaching it now include values read back out of a stored
+  // `requestPayload` JSON column, where a malformed path must classify as "not
+  // one of ours" instead of throwing inside an authorization check.
+  return toDesktopApiPathname(path);
 }
 
 export function isBranchViewLocalGatewayPath(path: string): boolean {
@@ -66,4 +72,20 @@ export function resolveBranchViewLocalOperationId(
     return BranchViewLocalOperationId.Read;
   }
   return null;
+}
+
+/**
+ * Whether a stored/persisted `operationId` names a Branch View local operation.
+ *
+ * The operation id is a first-class column on a stored desktop command, so it
+ * identifies the command independently of the API-owned proof headers — which
+ * is what lets replay classify a command it never re-derives a path for.
+ */
+export function isBranchViewLocalOperationId(
+  value: unknown
+): value is BranchViewLocalOperationId {
+  return (
+    value === BranchViewLocalOperationId.Read ||
+    value === BranchViewLocalOperationId.CommitPush
+  );
 }

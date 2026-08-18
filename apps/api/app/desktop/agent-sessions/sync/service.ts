@@ -14,15 +14,23 @@ type DesktopAgentSessionsSyncInput = {
   userId: string;
 };
 
+/**
+ * ISS-5090: the failure channel carries the ingest ack's optional field/path
+ * `detail` alongside the reason, so the route can hand it back to the desktop
+ * instead of collapsing every rejection into an opaque `validation_failed`.
+ * `detail` is omitted (never `null`) when the ack carried none.
+ */
+export type DesktopAgentSessionsSyncFailure = {
+  reason: StatusCode | DesktopAgentSessionsAckReason;
+  detail?: string;
+};
+
 /** Upserts desktop agent-session payloads for one authenticated compute target. */
 export const desktopAgentSessionsSyncService = {
   async sync(
     input: DesktopAgentSessionsSyncInput
   ): Promise<
-    Result<
-      DesktopAgentSessionsSyncResponse,
-      StatusCode | DesktopAgentSessionsAckReason
-    >
+    Result<DesktopAgentSessionsSyncResponse, DesktopAgentSessionsSyncFailure>
   > {
     const target = await computeTargetsService.findOwnedById(
       input.computeTargetId,
@@ -31,7 +39,7 @@ export const desktopAgentSessionsSyncService = {
       input.clerkUserId
     );
     if (!target) {
-      return Result.err(Status.Forbidden);
+      return Result.err({ reason: Status.Forbidden });
     }
 
     const ack = await handleDesktopAgentSessionsEvent(input.rawBody, {
@@ -42,9 +50,21 @@ export const desktopAgentSessionsSyncService = {
     });
 
     if (!ack.accepted) {
-      return Result.err(ack.reason);
+      return Result.err({
+        reason: ack.reason,
+        ...(ack.detail ? { detail: ack.detail } : {}),
+      });
     }
 
-    return Result.ok({ synced: true });
+    // Goal stage 2: pass the request-gated per-session ack ids through when the
+    // handler produced them (the batch opted in via `wantsAcceptedSessionIds`).
+    // Omit-not-null when absent: installed desktops `.strict()`-parse this
+    // response, so an unrequested extra key would reject a successful sync.
+    return Result.ok({
+      synced: true,
+      ...(ack.acceptedSessionIds
+        ? { acceptedSessionIds: ack.acceptedSessionIds }
+        : {}),
+    });
   },
 };

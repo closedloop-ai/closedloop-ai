@@ -14,16 +14,14 @@ import { signInPendingMessage } from "../shared-agent-sessions/desktop-sign-in-c
  * hides once signed back in.
  *
  * No separate feature-flag check is needed at mount: `refresh_failed` is only
- * reachable once a first-party session has existed, and creating that session is
- * itself gated behind `desktopFirstPartyAuthEnabled`. Gating on the (already
- * typed) `useDesktopAuth()` state therefore keeps the banner dark wherever the
- * feature is off, without reaching into the untyped settings blob.
+ * reachable once a first-party session has existed. Gating on the (already
+ * typed) `useDesktopAuth()` state keeps the banner dark until a session has
+ * existed, without reaching into the untyped settings blob.
  *
- * The one residual edge is the flag being turned off *after* a session existed
- * and then expiring: the banner still latches, but re-auth is now gated off at
- * the IPC boundary (FEA-2687) and returns `{ ok: false, reason: "unavailable" }`.
- * `handleSignIn` detects that terminal result and dismisses the banner rather
- * than stranding the user on a dead "Sign in" button.
+ * If the auth bridge is absent (a partial test stub), re-auth resolves to
+ * `{ ok: false, reason: "unavailable" }`. `handleSignIn` detects that terminal
+ * result and dismisses the banner rather than stranding the user on a dead
+ * "Sign in" button.
  */
 export function DesktopSessionExpiredBanner() {
   const { state, beginSignIn, cancelSignIn } = useDesktopAuth();
@@ -48,10 +46,12 @@ export function DesktopSessionExpiredBanner() {
     setSigningIn(true);
     try {
       const result = await beginSignIn();
-      // Flag-off-after-session: re-auth is gated off at the IPC boundary
-      // (FEA-2687), so this recovery can never succeed. Drop the latch to hide
-      // the banner instead of leaving a dead "Sign in" button. Other failures
-      // are retryable, so keep the banner up for those.
+      // Bridge/manager unavailable: with the first-party-auth gate retired
+      // (FEA-4133), `reason: "unavailable"` now means the auth bridge or session
+      // manager is genuinely unavailable (e.g. a partial test stub), so this
+      // recovery can never succeed. Drop the latch to hide the banner instead of
+      // leaving a dead "Sign in" button. Other failures are retryable, so keep
+      // the banner up for those.
       if (!result.ok && result.reason === "unavailable") {
         setNeedsReauth(false);
       }

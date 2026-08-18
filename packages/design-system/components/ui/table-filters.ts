@@ -96,8 +96,12 @@ export type TableFilterDatePresetOption = {
  * Owner / Repository) instead of the built-in assignee/status/priority/dates/
  * tags set, without leaking domain concepts into the design system — callers
  * supply the options + selection + toggle handler.
+ *
+ * `kind` defaults to the multi-select "options" variant (backward compatible —
+ * groups authored without a `kind` keep rendering as option submenus).
  */
 export type FilterFacetGroup<TValue extends string = string> = {
+  kind?: "options";
   id: string;
   label: string;
   icon?: ReactNode;
@@ -105,12 +109,49 @@ export type FilterFacetGroup<TValue extends string = string> = {
   selectedValues: TValue[];
   onToggle: (value: TValue) => void;
   submenuClassName?: string;
+  /**
+   * Message shown as a disabled row when `options` is empty (e.g. "No models in
+   * range"). Without it an empty options facet renders as a bare search box with
+   * nothing under it, which reads as broken/loading rather than "nothing to
+   * filter by" — mirrors the built-in tags submenu's empty state.
+   */
+  emptyLabel?: string;
 };
+
+/**
+ * A generic numeric min/max range facet rendered as a submenu in
+ * `FilterPopover` (FEA-4003). Callers own the (clamped) `min`/`max` values and
+ * the `onChange` handler; `undefined` on either end means that bound is
+ * unset/open. Stays domain-agnostic — the host supplies labels and semantics.
+ */
+export type FilterRangeGroup = {
+  kind: "range";
+  id: string;
+  label: string;
+  icon?: ReactNode;
+  min?: number;
+  max?: number;
+  onChange: (next: { min?: number; max?: number }) => void;
+  /** Placeholder text for the min/max inputs (e.g. "0", "Any"). */
+  minPlaceholder?: string;
+  maxPlaceholder?: string;
+  submenuClassName?: string;
+};
+
+/** Either facet variant a host can drive through `FilterPopover`. */
+export type FilterMenuGroup<TValue extends string = string> =
+  | FilterFacetGroup<TValue>
+  | FilterRangeGroup;
 
 export type TableFilterLabels = {
   filterButton?: string;
   filterSearchPlaceholder?: string;
   clearAll?: string;
+  /**
+   * Label for a SINGLE-facet clear action (e.g. the range submenu's clear
+   * button), distinct from the menu-wide `clearAll`. Defaults to "Clear".
+   */
+  clear?: string;
   loading?: string;
   loadError?: string;
   noTags?: string;
@@ -169,7 +210,8 @@ export type TableFiltersViewModel<
   /**
    * When provided, render these generic facet submenus instead of the built-in
    * assignee/status/priority/dates/tags set. The host owns the filter state and
-   * toggle handlers (see `FilterFacetGroup`).
+   * toggle handlers. Each entry is either a multi-select options facet
+   * (`FilterFacetGroup`) or a numeric range facet (`FilterRangeGroup`).
    */
-  facetGroups?: FilterFacetGroup[];
+  facetGroups?: FilterMenuGroup[];
 };

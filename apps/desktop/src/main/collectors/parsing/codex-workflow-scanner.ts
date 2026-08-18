@@ -15,7 +15,7 @@ import path from "node:path";
 import {
   addStorageTokenCounts,
   parseOptionalStorageTokenCount,
-} from "../../token-counts.js";
+} from "../../cost/token-counts.js";
 import {
   createParseQualityScan,
   type ParseQualityScan,

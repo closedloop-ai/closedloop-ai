@@ -1,9 +1,4 @@
-import type {
-  CategoryBucket,
-  DeliveryInsightsResponse,
-  TimeSeries,
-} from "@repo/api/src/types/insights";
-import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
+import { InsightsSection } from "@repo/api/src/types/insights";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -11,9 +6,12 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { type TileDescriptor, TileKind } from "../lib/tile-catalog";
 import {
+  makeDeliverySections,
+  makeRepoSections,
+} from "./insights-section-fixtures";
+import {
   DELIVERY_SEGMENT_FEATURE_FLAG_KEY,
   InsightsChartContent,
-  type InsightsSectionData,
 } from "./tile-content";
 
 const timeSeriesBarTile: TileDescriptor = {
@@ -28,12 +26,12 @@ const timeSeriesBarTile: TileDescriptor = {
   grid: { w: 12, h: 4 },
 };
 
-const initialSections = makeSections([
+const initialSections = makeDeliverySections([
   ["2026-01-01", 8],
   ["2026-01-02", 18],
   ["2026-01-03", 13],
 ]);
-const updatedSections = makeSections([
+const updatedSections = makeDeliverySections([
   ["2026-01-01", 3],
   ["2026-02-01", 21],
   ["2026-02-02", 8],
@@ -129,55 +127,4 @@ function ChangingTimeSeriesBarContent() {
       </div>
     </div>
   );
-}
-
-function makeSections(points: [string, number][]): InsightsSectionData {
-  return {
-    [InsightsSection.Delivery]: makeDeliveryResponse(makeTimeSeries(points)),
-  };
-}
-
-function makeRepoSections(prByRepo: CategoryBucket[]): InsightsSectionData {
-  const base = makeDeliveryResponse(makeTimeSeries([["2026-01-01", 28]]));
-  return {
-    [InsightsSection.Delivery]: {
-      ...base,
-      charts: { ...base.charts, prByRepo },
-    },
-  };
-}
-
-function makeTimeSeries(points: [string, number][]): TimeSeries {
-  return {
-    series: [{ key: "merged", label: "Merged" }],
-    points: points.map(([date, value]) => ({
-      date,
-      values: { merged: value },
-    })),
-  };
-}
-
-function makeDeliveryResponse(prTrend: TimeSeries): DeliveryInsightsResponse {
-  return {
-    kpis: [
-      {
-        key: "merged",
-        label: "Merged PRs",
-        value: 0,
-        format: KpiFormat.Number,
-        sub: "pull requests",
-        deltaPct: null,
-      },
-    ],
-    charts: {
-      prTrend,
-      klocTrend: undefined,
-      prByRepo: [],
-      meanTimeToMerge: [],
-      prByState: [],
-      checkStatus: [],
-      branchLifespan: [],
-      branchesWithoutPr: [],
-    },
-  };
 }

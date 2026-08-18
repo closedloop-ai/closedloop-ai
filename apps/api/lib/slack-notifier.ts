@@ -37,7 +37,20 @@ export type NotifySlackOpts = {
   counters?: CategoryCounters;
   /** Datadog-pivotable correlation identifier. Derive via `buildCorrelationId()`. */
   correlationId: string;
+  /**
+   * Bold headline for the alert. Optional: omitting it keeps the historical
+   * preview-schema wording so the existing callers' alerts are unchanged.
+   *
+   * New callers should pass their own. This helper started life serving one
+   * route and hardcoded that route's headline, so every later caller posts
+   * under a title describing work it never did — an ops channel where the
+   * headline contradicts the route on the next line costs triage time exactly
+   * when it is scarcest.
+   */
+  title?: string;
 };
+
+const DEFAULT_ALERT_TITLE = "Preview schema cleanup failure";
 
 const slackApiResponseSchema = z.object({
   ok: z.boolean(),
@@ -67,15 +80,16 @@ type PostToSlackResult = SlackApiResponse & {
  * Pure function — reads no environment variables and produces no side effects.
  *
  * Includes:
+ * - Headline from `opts.title` (defaults to the historical preview-schema text)
  * - Route name for triage
  * - Per-category error summary for any category with errored > 0
  * - Datadog correlation identifier passed in via `opts.correlationId`
  */
 export function buildAlertText(opts: NotifySlackOpts): string {
-  const { route, message, counters, correlationId } = opts;
+  const { route, message, counters, correlationId, title } = opts;
 
   const lines: string[] = [
-    `*Preview schema cleanup failure* — route: \`${route}\``,
+    `*${title ?? DEFAULT_ALERT_TITLE}* — route: \`${route}\``,
     message,
   ];
 

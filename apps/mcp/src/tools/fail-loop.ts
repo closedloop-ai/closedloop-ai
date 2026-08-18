@@ -3,8 +3,8 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildLoopUrl,
   encodePathSegment,
+  type McpUrlBuilder,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -14,7 +14,8 @@ import {
  */
 export function registerFailLoop(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "fail-loop",
@@ -46,7 +47,7 @@ export function registerFailLoop(
           }
         );
         const record = asRecord(result);
-        const webUrl = buildLoopUrl(loopId);
+        const webUrl = urls.buildLoopUrl(loopId);
         return {
           content: [
             {

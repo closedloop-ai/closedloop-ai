@@ -13,6 +13,13 @@ type CreateProjectStepProps = {
   readonly onNext: (projectId: string, projectName: string) => void;
   readonly createdProjectId: string | null;
   readonly createdProjectName: string | null;
+  /**
+   * Whether finishing the wizard is already in flight. This step is the last
+   * one, so creating the project starts a completion the step then sits on top
+   * of — and a live Continue that silently does nothing is the UI lying about
+   * what it is doing.
+   */
+  readonly completing?: boolean;
 };
 
 export function CreateProjectStep({
@@ -20,6 +27,7 @@ export function CreateProjectStep({
   onNext,
   createdProjectId,
   createdProjectName,
+  completing = false,
 }: CreateProjectStepProps) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -36,7 +44,11 @@ export function CreateProjectStep({
           <p className="font-semibold">Project created</p>
           <p className="text-muted-foreground text-sm">{createdProjectName}</p>
         </div>
-        <Button onClick={() => onNext(createdProjectId, createdProjectName)}>
+        <Button
+          disabled={completing}
+          onClick={() => onNext(createdProjectId, createdProjectName)}
+        >
+          {completing && <Loader2 className="h-4 w-4 animate-spin" />}
           Continue
         </Button>
       </div>

@@ -137,11 +137,11 @@
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
-    "react": "19.2.5",
+    "@types/react": "^19.2.17",
+    "react": "19.2.8",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "zod": "^4.3.6"

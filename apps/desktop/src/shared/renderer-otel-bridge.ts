@@ -1,9 +1,22 @@
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import {
+  SpanIdSchema,
+  SpanKind,
+  SpanStatusCode,
+  SpanStatusSchema,
+  TraceIdSchema,
+} from "@closedloop-ai/telemetry-contract/span";
 import type { AttributeValue } from "@opentelemetry/api";
 import { z } from "zod";
-import { sanitizeDesktopExceptionAttributes } from "./exception-sanitizer.js";
 import {
+  containsSensitivePathOrUrlValue,
+  containsSensitiveSecretValue,
+  containsSensitiveUrlValue,
+  sanitizeDesktopExceptionAttributes,
+} from "./exception-sanitizer.js";
+import {
+  type DesktopOtelInstrumentationScope,
   DesktopOtelSignal,
   RENDERER_OTEL_MAX_ATTRIBUTES_PER_RECORD,
   RENDERER_OTEL_MAX_BATCH_BYTES,
@@ -17,6 +30,7 @@ import {
   RendererOtelExportFailureReason,
   type RendererOtelExportResult,
   type RendererOtelGenericAttributes,
+  type RendererOtelGenericBridgeRecord,
 } from "./renderer-otel-bridge-constants.js";
 import { containsControlCharacter } from "./renderer-otel-bridge-utils.js";
 
@@ -26,13 +40,6 @@ export type RendererOtelBridgeParseResult =
 
 const SENSITIVE_KEY_PATTERN =
   /(api[_-]?key|authorization|body|cwd|device\.id|endpoint|error|file|home|host|installation|org|path|prompt|resource|session|stack|token|url|user)/i;
-const FILE_PATH_VALUE_PATTERN =
-  /(?:^|[\s"'])((?:\/(?!\/)[^\s"']+|\\+[^\s"']*|[A-Za-z]:[\\/][^\s"']*|~\/[^\s"']*))/;
-const RELATIVE_PATH_VALUE_PATTERN =
-  /(?:^|[\s"'])((?:\.{1,2}[\\/]|[A-Za-z0-9._-]+[\\/])[^\s"']*)/;
-const URL_VALUE_PATTERN = /\b(?:https?:\/\/|localhost\b|127\.0\.0\.1\b)/i;
-const SECRET_VALUE_PATTERN =
-  /\b(?:bearer\s+[A-Za-z0-9._~+/-]{12,}=*|github_pat_[A-Za-z0-9_]{20,}|gh[opsu]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|re_[A-Za-z0-9]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{6,}|sk_(?:live|test)_[A-Za-z0-9]{6,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/i;
 const ALLOWED_ATTRIBUTE_KEYS = new Set<string>(
   Object.values(RendererOtelAllowedAttributeKey)
 );
@@ -49,39 +56,84 @@ const attributeValueSchema = z.union([
   z.array(z.boolean()).max(16),
 ]);
 
-const instrumentationScopeSchema = z
-  .object({
-    name: z.string(),
-    version: z.string().optional(),
-  })
-  .strict();
+/**
+ * Field validators for each bridged shape, kept as standalone literals so the
+ * keys-covered guards can see them.
+ *
+ * `satisfies Record<keyof T, z.ZodTypeAny>` is the compile-time guard (FEA-3701,
+ * root AGENTS.md). Every schema below is `.strict()` and sits on the
+ * renderer→main trust boundary: a field added to one of the bridge record types
+ * in `renderer-otel-bridge-constants.ts` and emitted by the renderer without
+ * being taught here would make main reject the ENTIRE batch, dropping up to
+ * `RENDERER_OTEL_MAX_RECORDS_PER_BATCH` records at once — and re-dropping every
+ * subsequent batch — while the in-process producer never sees this schema.
+ * `satisfies` turns that into a `tsc` failure: a missing key and an extra key
+ * are both errors.
+ */
+const instrumentationScopeShape = {
+  name: z.string(),
+  version: z.string().optional(),
+} satisfies Record<keyof DesktopOtelInstrumentationScope, z.ZodTypeAny>;
 
-const bridgeRecordSchema = z
-  .object({
-    signal: z.enum([
-      DesktopOtelSignal.Trace,
-      DesktopOtelSignal.Metric,
-      DesktopOtelSignal.Log,
-    ]),
-    instrumentationScope: instrumentationScopeSchema.optional(),
-    timestampUnixNano: z.string().optional(),
-    name: z.string().optional(),
-    value: attributeValueSchema.optional(),
-    attributes: z.record(z.string(), attributeValueSchema).optional(),
-    droppedAttributesCount: z.number().int().nonnegative().optional(),
-    droppedEventsCount: z.number().int().nonnegative().optional(),
-    droppedLinksCount: z.number().int().nonnegative().optional(),
-  })
-  .strict();
+const instrumentationScopeSchema = z.object(instrumentationScopeShape).strict();
 
-const bridgePayloadSchema = z
-  .object({
-    records: z
-      .array(bridgeRecordSchema)
-      .min(1)
-      .max(RENDERER_OTEL_MAX_RECORDS_PER_BATCH),
-  })
-  .strict();
+/**
+ * Every key of every arm of a union.
+ *
+ * A bare `keyof (A | B)` is the INTERSECTION of the arms' keys, so it silently
+ * shrinks to the keys the arms already share — the opposite of what a
+ * keys-covered guard needs. This conditional type is distributive, so it
+ * resolves to `keyof A | keyof B`: the UNION of the arms' keys.
+ */
+type KeysOfUnion<T> = T extends unknown ? keyof T : never;
+
+/**
+ * Guarded against every arm of the `RendererOtelBridgeRecord` union, not just
+ * the generic one.
+ *
+ * `bridgeRecordSchema` is `.strict()` and parses BOTH arms, so an untaught key
+ * on EITHER arm makes main reject the whole batch. Guarding only
+ * `keyof RendererOtelGenericBridgeRecord` left the exception arm uncovered:
+ * `RendererOtelExceptionBridgeRecord` is declared independently and is not
+ * constrained to extend the generic record, so the fact that its keys are
+ * currently a subset is a coincidence this guard must not rely on. A field
+ * added only to the exception arm — the renderer's crash-reporting path —
+ * compiled green and was then rejected at runtime, dropping the entire batch.
+ *
+ * `KeysOfUnion` makes that a `tsc` failure, and keeps covering any arm added to
+ * the union later.
+ */
+const bridgeRecordShape = {
+  signal: z.enum([
+    DesktopOtelSignal.Trace,
+    DesktopOtelSignal.Metric,
+    DesktopOtelSignal.Log,
+  ]),
+  instrumentationScope: instrumentationScopeSchema.optional(),
+  timestampUnixNano: z.string().optional(),
+  traceId: TraceIdSchema.optional(),
+  spanId: SpanIdSchema.optional(),
+  parentSpanId: SpanIdSchema.optional(),
+  kind: z.enum(SpanKind).optional(),
+  status: SpanStatusSchema.optional(),
+  name: z.string().optional(),
+  value: attributeValueSchema.optional(),
+  attributes: z.record(z.string(), attributeValueSchema).optional(),
+  droppedAttributesCount: z.number().int().nonnegative().optional(),
+  droppedEventsCount: z.number().int().nonnegative().optional(),
+  droppedLinksCount: z.number().int().nonnegative().optional(),
+} satisfies Record<KeysOfUnion<RendererOtelBridgeRecord>, z.ZodTypeAny>;
+
+const bridgeRecordSchema = z.object(bridgeRecordShape).strict();
+
+const bridgePayloadShape = {
+  records: z
+    .array(bridgeRecordSchema)
+    .min(1)
+    .max(RENDERER_OTEL_MAX_RECORDS_PER_BATCH),
+} satisfies Record<keyof RendererOtelBridgePayload, z.ZodTypeAny>;
+
+const bridgePayloadSchema = z.object(bridgePayloadShape).strict();
 
 export function parseRendererOtelBridgePayload(
   payload: unknown
@@ -118,20 +170,18 @@ function sanitizeRecord(
     record.instrumentationScope
   );
   const attributes = sanitizeAttributes(record.attributes);
+  const status = sanitizeSpanStatus(record.status);
   const value = sanitizeAttributeValue(record.value);
-  if (record.name !== undefined && !name) {
-    return null;
-  }
-  if (record.timestampUnixNano !== undefined && !timestampUnixNano) {
-    return null;
-  }
-  if (record.instrumentationScope !== undefined && !instrumentationScope) {
-    return null;
-  }
-  if (record.attributes !== undefined && !attributes) {
-    return null;
-  }
-  if (record.value !== undefined && value === null) {
+  if (
+    !isValidSanitizedRecord(record, {
+      attributes,
+      instrumentationScope,
+      name,
+      status,
+      timestampUnixNano,
+      value,
+    })
+  ) {
     return null;
   }
   const sanitizedValue = value === null ? undefined : value;
@@ -140,6 +190,7 @@ function sanitizeRecord(
     signal: record.signal,
     ...(instrumentationScope ? { instrumentationScope } : {}),
     ...(timestampUnixNano ? { timestampUnixNano } : {}),
+    ...traceIdentityFields(record, status),
     ...(name ? { name } : {}),
     ...(sanitizedValue === undefined ? {} : { value: sanitizedValue }),
     ...(attributes ? { attributes } : {}),
@@ -155,15 +206,76 @@ function sanitizeRecord(
   };
 }
 
+function isValidSanitizedRecord(
+  record: z.infer<typeof bridgeRecordSchema>,
+  sanitized: {
+    attributes: RendererOtelGenericAttributes | null | undefined;
+    instrumentationScope:
+      | RendererOtelBridgeRecord["instrumentationScope"]
+      | null
+      | undefined;
+    name: string | undefined;
+    status: RendererOtelGenericBridgeRecord["status"] | null | undefined;
+    timestampUnixNano: string | undefined;
+    value: AttributeValue | null | undefined;
+  }
+): boolean {
+  if (
+    record.signal !== DesktopOtelSignal.Trace &&
+    hasTraceIdentityFields(record)
+  ) {
+    return false;
+  }
+  if (
+    record.signal === DesktopOtelSignal.Trace &&
+    hasPartialSpanIdentity(record)
+  ) {
+    return false;
+  }
+  if (record.name !== undefined && !sanitized.name) {
+    return false;
+  }
+  if (record.timestampUnixNano !== undefined && !sanitized.timestampUnixNano) {
+    return false;
+  }
+  if (
+    record.instrumentationScope !== undefined &&
+    !sanitized.instrumentationScope
+  ) {
+    return false;
+  }
+  if (record.status !== undefined && !sanitized.status) {
+    return false;
+  }
+  if (record.attributes !== undefined && !sanitized.attributes) {
+    return false;
+  }
+  return !(record.value !== undefined && sanitized.value === null);
+}
+
+function traceIdentityFields(
+  record: z.infer<typeof bridgeRecordSchema>,
+  status: RendererOtelGenericBridgeRecord["status"] | null | undefined
+) {
+  return {
+    ...(record.traceId === undefined ? {} : { traceId: record.traceId }),
+    ...(record.spanId === undefined ? {} : { spanId: record.spanId }),
+    ...(record.parentSpanId === undefined
+      ? {}
+      : { parentSpanId: record.parentSpanId }),
+    ...(record.kind === undefined ? {} : { kind: record.kind }),
+    ...(status === undefined || status === null ? {} : { status }),
+  };
+}
+
 function sanitizeExceptionRecord(
   record: z.infer<typeof bridgeRecordSchema>
 ): RendererOtelBridgeRecord | null {
   if (
-    record.signal !== DesktopOtelSignal.Log ||
+    !isSupportedExceptionSignal(record) ||
     record.name !== "exception" ||
     record.value !== undefined ||
-    record.droppedEventsCount !== undefined ||
-    record.droppedLinksCount !== undefined
+    !isValidExceptionTraceShape(record)
   ) {
     return null;
   }
@@ -182,16 +294,31 @@ function sanitizeExceptionRecord(
   if (record.instrumentationScope !== undefined && !instrumentationScope) {
     return null;
   }
+  const status = sanitizeSpanStatus(record.status);
+  if (record.status !== undefined && !status) {
+    return null;
+  }
+  const signal =
+    record.signal === DesktopOtelSignal.Trace
+      ? DesktopOtelSignal.Trace
+      : DesktopOtelSignal.Log;
 
   return {
-    signal: DesktopOtelSignal.Log,
+    signal,
     name: "exception",
     attributes,
+    ...traceIdentityFields(record, status),
     ...(instrumentationScope ? { instrumentationScope } : {}),
     ...(timestampUnixNano ? { timestampUnixNano } : {}),
     ...(record.droppedAttributesCount === undefined
       ? {}
       : { droppedAttributesCount: record.droppedAttributesCount }),
+    ...(record.droppedEventsCount === undefined
+      ? {}
+      : { droppedEventsCount: record.droppedEventsCount }),
+    ...(record.droppedLinksCount === undefined
+      ? {}
+      : { droppedLinksCount: record.droppedLinksCount }),
   };
 }
 
@@ -303,6 +430,20 @@ function sanitizeAttributeValue(
   return isAllowedAttributeValue(value) ? value : null;
 }
 
+function sanitizeSpanStatus(
+  status: z.infer<typeof bridgeRecordSchema>["status"]
+): RendererOtelGenericBridgeRecord["status"] | null | undefined {
+  if (!status) {
+    return undefined;
+  }
+  if (!status.message) {
+    return status;
+  }
+  return isAllowedAttributeValue(status.message)
+    ? status
+    : { code: status.code };
+}
+
 function isAllowedAttributeKey(
   key: string
 ): key is RendererOtelAllowedAttributeKey {
@@ -326,7 +467,7 @@ function isAllowedAttributeValue(value: AttributeValue): boolean {
 
 // Identifier fields (span/scope names, scope versions, timestamps) are
 // developer-controlled OTel identifiers, not user-supplied values. They are NOT
-// run through SENSITIVE_KEY_PATTERN or the FILE/RELATIVE path patterns: doing so
+// run through SENSITIVE_KEY_PATTERN or the canonical path check: doing so
 // silently dropped legitimate names like "renderer.session.created",
 // "renderer.error.boundary", or HTTP-style span names such as "GET /settings"
 // (and, because one rejected field nulls the whole record, the entire batch).
@@ -348,8 +489,8 @@ function isSafeIdentifier(value: string): boolean {
   return (
     Buffer.byteLength(value) <= RENDERER_OTEL_MAX_STRING_BYTES &&
     !containsControlCharacter(value) &&
-    !URL_VALUE_PATTERN.test(value) &&
-    !SECRET_VALUE_PATTERN.test(value)
+    !containsSensitiveUrlValue(value) &&
+    !containsSensitiveSecretValue(value)
   );
 }
 
@@ -357,10 +498,8 @@ function isSafeString(value: string): boolean {
   return (
     Buffer.byteLength(value) <= RENDERER_OTEL_MAX_STRING_BYTES &&
     !SENSITIVE_KEY_PATTERN.test(value) &&
-    !FILE_PATH_VALUE_PATTERN.test(value) &&
-    !RELATIVE_PATH_VALUE_PATTERN.test(value) &&
-    !URL_VALUE_PATTERN.test(value) &&
-    !SECRET_VALUE_PATTERN.test(value)
+    !containsSensitivePathOrUrlValue(value) &&
+    !containsSensitiveSecretValue(value)
   );
 }
 
@@ -375,7 +514,61 @@ function serializedPayloadBytes(payload: unknown): number {
 function isExceptionRecord(
   record: z.infer<typeof bridgeRecordSchema>
 ): boolean {
-  return record.signal === DesktopOtelSignal.Log && record.name === "exception";
+  return (
+    (record.signal === DesktopOtelSignal.Log ||
+      record.signal === DesktopOtelSignal.Trace) &&
+    record.name === "exception"
+  );
+}
+
+function isSupportedExceptionSignal(
+  record: z.infer<typeof bridgeRecordSchema>
+): boolean {
+  return (
+    record.signal === DesktopOtelSignal.Log ||
+    record.signal === DesktopOtelSignal.Trace
+  );
+}
+
+function isValidExceptionTraceShape(
+  record: z.infer<typeof bridgeRecordSchema>
+): boolean {
+  if (record.signal === DesktopOtelSignal.Log) {
+    return (
+      !hasTraceIdentityFields(record) &&
+      record.droppedEventsCount === undefined &&
+      record.droppedLinksCount === undefined
+    );
+  }
+  return (
+    record.traceId !== undefined &&
+    record.spanId !== undefined &&
+    !hasPartialSpanIdentity(record) &&
+    record.status?.code === SpanStatusCode.Error
+  );
+}
+
+function hasTraceIdentityFields(
+  record: z.infer<typeof bridgeRecordSchema>
+): boolean {
+  return (
+    record.traceId !== undefined ||
+    record.spanId !== undefined ||
+    record.parentSpanId !== undefined ||
+    record.kind !== undefined ||
+    record.status !== undefined
+  );
+}
+
+function hasPartialSpanIdentity(
+  record: z.infer<typeof bridgeRecordSchema>
+): boolean {
+  const hasTraceId = record.traceId !== undefined;
+  const hasSpanId = record.spanId !== undefined;
+  return (
+    hasTraceId !== hasSpanId ||
+    (record.parentSpanId !== undefined && !hasSpanId)
+  );
 }
 
 function readOptionalString(

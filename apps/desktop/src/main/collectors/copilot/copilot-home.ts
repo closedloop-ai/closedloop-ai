@@ -33,8 +33,19 @@ export function getCopilotCliSessionStateDir(): string {
 
 /**
  * VS Code workspace storage root. Platform-dependent.
+ *
+ * Honors a `COPILOT_VSCODE_STORAGE_DIR` env override (mirroring the
+ * `COPILOT_HOME` override for the CLI home above) so tests and isolated runs can
+ * point Copilot-Chat discovery at a fresh empty directory. Without it the
+ * default resolves under `os.homedir()`, which the Copilot collector (enabled by
+ * default) still scans on a developer machine — importing the operator's real
+ * VS Code Copilot Chat sessions and inflating any seeded corpus.
  */
 export function getVscodeWorkspaceStorageDir(): string {
+  const override = process.env.COPILOT_VSCODE_STORAGE_DIR;
+  if (override?.trim()) {
+    return override.trim().replace(/^~(?=\/)/, os.homedir());
+  }
   const home = os.homedir();
   switch (process.platform) {
     case "darwin":

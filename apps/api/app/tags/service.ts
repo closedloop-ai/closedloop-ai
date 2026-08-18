@@ -7,6 +7,10 @@ import type {
 import { TAG_COLORS, TagEntityType } from "@repo/api/src/types/tag";
 import { withDb } from "@repo/database";
 import { basicUserSelect, getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  reconcileLinkedPullRequestLabelsForArtifact,
+  reconcileLinkedPullRequestLabelsForArtifacts,
+} from "@/lib/github/artifact-tag-label-reconciliation";
 
 export class DuplicateNameError extends Error {
   constructor(name: string) {
@@ -167,17 +171,26 @@ export const tagService = {
         switch (entityType) {
           case TagEntityType.Project:
             await withDb((db) =>
-              db.tagProject.create({ data: { tagId, projectId: entityId } })
+              db.tagProject.create({
+                data: { tagId, projectId: entityId },
+                select: { id: true },
+              })
             );
             break;
           case TagEntityType.Artifact:
             await withDb((db) =>
-              db.tagArtifact.create({ data: { tagId, artifactId: entityId } })
+              db.tagArtifact.create({
+                data: { tagId, artifactId: entityId },
+                select: { id: true },
+              })
             );
             break;
           case TagEntityType.Loop:
             await withDb((db) =>
-              db.tagLoop.create({ data: { tagId, loopId: entityId } })
+              db.tagLoop.create({
+                data: { tagId, loopId: entityId },
+                select: { id: true },
+              })
             );
             break;
           default:
@@ -186,6 +199,15 @@ export const tagService = {
       });
     } catch (error) {
       if (getPrismaErrorCode(error) === "P2002") {
+        // Already tagged. The write is a no-op, but the artifact's linked PRs
+        // may still be missing the label (an earlier propagation could have
+        // failed), so reconciliation is deliberately NOT skipped here — it is
+        // idempotent and additive.
+        await reconcileArtifactPullRequestLabels(
+          entityType,
+          entityId,
+          organizationId
+        );
         return;
       }
       // P2003: the entity was deleted between validation and insert, so the
@@ -195,6 +217,15 @@ export const tagService = {
       }
       throw error;
     }
+
+    // ISS-4760: the tag row is committed, so converge the artifact's linked PRs
+    // now instead of waiting for someone to edit or reopen the PR on GitHub.
+    // Best-effort — never fails the mutation the user asked for.
+    await reconcileArtifactPullRequestLabels(
+      entityType,
+      entityId,
+      organizationId
+    );
   },
 
   async batchApplyTag(
@@ -238,6 +269,13 @@ export const tagService = {
       })
     );
 
+    // ISS-4760: same convergence for the batch path, bounded by the helper so a
+    // 50-artifact batch cannot fan out into an unbounded GitHub write storm.
+    await reconcileLinkedPullRequestLabelsForArtifacts({
+      organizationId,
+      artifactIds: uniqueIds,
+    });
+
     return { appliedCount: result.count };
   },
 
@@ -267,6 +305,15 @@ export const tagService = {
       default:
         throw new Error(`Unknown entity type: ${entityType as string}`);
     }
+
+    // ISS-4760: a removal reconciles too. Reconciliation is ADDITIVE, so this
+    // does not strip the label from GitHub — it re-applies the artifact's
+    // REMAINING tags, which is what keeps a PR converged after any tag edit.
+    await reconcileArtifactPullRequestLabels(
+      entityType,
+      entityId,
+      organizationId
+    );
   },
 };
 
@@ -341,4 +388,23 @@ export class EntityNotFoundError extends Error {
     super(`${entityType} ${entityId} not found in this organization`);
     this.name = "EntityNotFoundError";
   }
+}
+
+/**
+ * ISS-4760: converge the artifact's linked PR labels after a tag mutation.
+ * Only ARTIFACT tags can become PR labels — a project or loop tag reaches no
+ * pull request, so those entity types make no GitHub call at all.
+ */
+async function reconcileArtifactPullRequestLabels(
+  entityType: TagEntityTypeValue,
+  entityId: string,
+  organizationId: string
+): Promise<void> {
+  if (entityType !== TagEntityType.Artifact) {
+    return;
+  }
+  await reconcileLinkedPullRequestLabelsForArtifact({
+    organizationId,
+    artifactId: entityId,
+  });
 }

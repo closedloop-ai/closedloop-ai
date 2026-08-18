@@ -16,14 +16,11 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { isRecord } from "../../../shared/type-guards.js";
-import {
-  addStorageTokenCounts,
-  readStorageTokenCountAlias,
-} from "../../token-counts.js";
 import { coldReadGate } from "../parsing/cold-read-gate.js";
 import {
   collectArtifacts,
   extractErrorMessage,
+  isMeaningfulCwd,
   isSyntheticModelKey,
   noteTimestamp,
   pushTurnDuration,
@@ -40,6 +37,13 @@ import type {
   NormalizedTurnDuration,
 } from "../types.js";
 import { createNormalizedSession } from "../types.js";
+import type { TokenFields } from "./copilot-token-fields.js";
+import {
+  addTokenFields,
+  hasTokenFields,
+  maxTokenFields,
+  readCopilotUsage,
+} from "./copilot-token-fields.js";
 
 /** Read a property off an unknown value without throwing. */
 function get(value: unknown, key: string): unknown {
@@ -358,88 +362,6 @@ function normalizeChatMessages(data: Record<string, unknown>): unknown[] {
   return requests.flatMap((request) => normalizeChatRequest(request, data));
 }
 
-type TokenFields = {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-};
-
-// Canonical fresh shape (see NormalizedTokenCounts): Copilot reports `input`
-// as FRESH/uncached with cache_read/cache_write as separate additive fields
-// (confirmed by fixtures where cache_read far exceeds input — impossible under
-// an inclusive total), so they are read verbatim — no subtraction.
-function readCopilotUsage(
-  usage: Record<string, unknown>,
-  context: string
-): TokenFields {
-  const input = readStorageTokenCountAlias(usage, `${context}.input`, [
-    "input_tokens",
-    "prompt_tokens",
-  ]);
-  const output = addStorageTokenCounts(
-    readStorageTokenCountAlias(usage, `${context}.output`, [
-      "output_tokens",
-      "completion_tokens",
-    ]),
-    readStorageTokenCountAlias(usage, `${context}.reasoning`, [
-      "reasoning_tokens",
-      "reasoning_output_tokens",
-    ]),
-    `${context}.output_with_reasoning`
-  );
-  const cacheRead = readStorageTokenCountAlias(usage, `${context}.cache_read`, [
-    "cache_read_tokens",
-    "cached_input_tokens",
-  ]);
-  const cacheWrite = readStorageTokenCountAlias(
-    usage,
-    `${context}.cache_write`,
-    ["cache_write_tokens", "cache_creation_input_tokens"]
-  );
-  return { input, output, cacheRead, cacheWrite };
-}
-
-function addTokenFields(
-  target: TokenFields,
-  next: TokenFields,
-  context: string
-): void {
-  target.input = addStorageTokenCounts(
-    target.input,
-    next.input,
-    `${context}.input`
-  );
-  target.output = addStorageTokenCounts(
-    target.output,
-    next.output,
-    `${context}.output`
-  );
-  target.cacheRead = addStorageTokenCounts(
-    target.cacheRead,
-    next.cacheRead,
-    `${context}.cache_read`
-  );
-  target.cacheWrite = addStorageTokenCounts(
-    target.cacheWrite,
-    next.cacheWrite,
-    `${context}.cache_write`
-  );
-}
-
-function maxTokenFields(target: TokenFields, next: TokenFields): void {
-  target.input = Math.max(target.input, next.input);
-  target.output = Math.max(target.output, next.output);
-  target.cacheRead = Math.max(target.cacheRead, next.cacheRead);
-  target.cacheWrite = Math.max(target.cacheWrite, next.cacheWrite);
-}
-
-function hasTokenFields(tokens: TokenFields): boolean {
-  return Boolean(
-    tokens.input || tokens.output || tokens.cacheRead || tokens.cacheWrite
-  );
-}
-
 /**
  * Mutable per-session accumulator shared by the chat-message role handlers and
  * the raw-request loop. Bundling the running state lets each handler be a small
@@ -470,6 +392,11 @@ type BaseSessionAccumulator = {
 type ChatAccumulator = BaseSessionAccumulator & {
   /** Session-level model used as the tokenSeries fallback. */
   sessionModel: string | null;
+  /**
+   * Timestamps already present in `tokenSeries`, mirrored at every push site so
+   * the raw-request dedup is an O(1) `has` lookup instead of an O(n) scan.
+   */
+  seenTokenSeriesTimestamps: Set<string>;
 };
 
 /** Per-message context resolved once and passed to each handler. */
@@ -539,6 +466,7 @@ function handleAssistantChatMessage(
         cacheRead: tokens.cacheRead,
         cacheWrite: tokens.cacheWrite,
       });
+      acc.seenTokenSeriesTimestamps.add(iso);
     }
   }
 }
@@ -689,7 +617,7 @@ function accumulateRequestTokenSeries(
     return;
   }
   // Skip if we already have a tokenSeries entry at this exact timestamp
-  if (acc.tokenSeries.some((ts) => ts.timestamp === reqTs)) {
+  if (acc.seenTokenSeriesTimestamps.has(reqTs)) {
     return;
   }
   const reqModel = resolveRequestModel(reqObj);
@@ -703,6 +631,7 @@ function accumulateRequestTokenSeries(
       cacheRead: tokens.cacheRead,
       cacheWrite: tokens.cacheWrite,
     });
+    acc.seenTokenSeriesTimestamps.add(reqTs);
   }
 }
 
@@ -767,6 +696,7 @@ export function parseChatSessionFile(
     normalizedMessages: [],
     tokenSeries: [],
     sessionModel: model,
+    seenTokenSeriesTimestamps: new Set(),
   };
 
   const noteTs = (raw: unknown): string | null => noteTimestamp(acc, raw);
@@ -835,10 +765,17 @@ export function parseChatSessionFile(
     }
   }
 
-  const cwd = (workspacePath ||
-    dataObj.cwd ||
-    dataObj.workspaceFolder ||
-    null) as string | null;
+  // FEA-3668: pick the first MEANINGFUL candidate (skip `/` and other non-repo
+  // roots) rather than the first truthy one.
+  const cwd =
+    [
+      workspacePath,
+      typeof dataObj.cwd === "string" ? dataObj.cwd : null,
+      typeof dataObj.workspaceFolder === "string"
+        ? dataObj.workspaceFolder
+        : null,
+    ].find((candidate): candidate is string => isMeaningfulCwd(candidate)) ??
+    null;
 
   let fileModifiedAt: number | null = null;
   try {
@@ -936,7 +873,10 @@ function handleCliSessionMeta(
   { payload }: CliEventContext
 ): void {
   if (!acc.cwd) {
-    acc.cwd = (payload.cwd || payload.workdir || null) as string | null;
+    const candidate = (payload.cwd || payload.workdir || null) as string | null;
+    if (isMeaningfulCwd(candidate)) {
+      acc.cwd = candidate;
+    }
   }
   if (!acc.version) {
     acc.version = (payload.version || payload.cli_version || null) as

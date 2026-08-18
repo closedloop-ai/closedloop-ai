@@ -288,4 +288,61 @@ describe("mergeLoopStatuses", () => {
     await mergeLoopStatuses(["doc-1", "doc-2"], map);
     expect(map.size).toBe(0);
   });
+
+  // `Loop.artifactId` (the document the run targets) and `Loop.sessionArtifactId`
+  // (the SESSION artifact the run materializes) are different columns, so the
+  // batch path has to select the second one explicitly. It previously selected
+  // only the first, which silently dropped the session link from every list
+  // response while the single-document path carried it — the exact
+  // same-surface divergence the batch/single pair is supposed to avoid.
+  it("selects sessionArtifactId and carries it onto the merged status", async () => {
+    const findMany = vi.fn().mockResolvedValue([
+      {
+        id: "loop-1",
+        artifactId: "doc-1",
+        status: LoopStatus.Running,
+        command: LoopCommand.Plan,
+        startedAt: new Date(),
+        completedAt: null,
+        sessionArtifactId: "session-1",
+        user: null,
+      },
+    ]);
+    mockDb({ loop: { findMany } });
+
+    const map = new Map<string, GenerationStatus>();
+    await mergeLoopStatuses(["doc-1"], map);
+
+    expect(findMany.mock.calls[0]?.[0]?.select?.sessionArtifactId).toBe(true);
+    expect(map.get("doc-1")?.sessionArtifactId).toBe("session-1");
+  });
+
+  // The Session is written after the run starts, so an active run legitimately
+  // has none for its first moments. The key must be ABSENT rather than a `null`
+  // an older client never declared.
+  it("omits sessionArtifactId entirely when the session has not materialized", async () => {
+    mockDb({
+      loop: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "loop-1",
+            artifactId: "doc-1",
+            status: LoopStatus.Running,
+            command: LoopCommand.Plan,
+            startedAt: new Date(),
+            completedAt: null,
+            sessionArtifactId: null,
+            user: null,
+          },
+        ]),
+      },
+    });
+
+    const map = new Map<string, GenerationStatus>();
+    await mergeLoopStatuses(["doc-1"], map);
+
+    const merged = map.get("doc-1");
+    expect(merged?.status).toBe("RUNNING");
+    expect(merged && "sessionArtifactId" in merged).toBe(false);
+  });
 });

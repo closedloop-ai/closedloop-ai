@@ -1,8 +1,8 @@
+import type { CreatePrArtifactResponse } from "@repo/api/src/types/pull-request-artifact-link";
+import { createPrArtifactValidator } from "@repo/api/src/types/pull-request-artifact-link";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { pullRequestArtifactLinkService } from "./pull-request-artifact-service";
-import type { CreatePrArtifactResponse } from "./route-contract";
-import { createPrArtifactValidator } from "./route-contract";
 import { createPullRequestArtifactErrorResponse } from "./route-response";
 
 /**
@@ -40,7 +40,10 @@ export const POST = withAnyAuth<
         return createPullRequestArtifactErrorResponse(result.error);
       }
 
-      return successResponse({ id: result.value.id });
+      // ISS-4764: return the whole service result, not just `{ id }` — the
+      // label-sync status and the link echo are what let the dialog stop
+      // claiming success it cannot observe.
+      return successResponse(result.value);
     } catch (error) {
       return errorResponse("Failed to create pull request artifact", error);
     }

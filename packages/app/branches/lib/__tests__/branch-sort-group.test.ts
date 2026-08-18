@@ -92,6 +92,7 @@ describe("sortBranchRows", () => {
 
 describe("filterBranchRowsByWindow", () => {
   const START = "2026-06-17T00:00:00.000Z";
+  const END = "2026-06-17T23:59:59.999Z";
 
   it("returns all rows when the window is 'All time' (no startDate)", () => {
     const rows = [row({ id: "a" }), row({ id: "b" })];
@@ -121,5 +122,15 @@ describe("filterBranchRowsByWindow", () => {
         .map((r) => r.id)
         .sort()
     ).toEqual(["junk", "null"]);
+  });
+
+  it("excludes activity after a completed window's upper bound", () => {
+    const rows = [
+      row({ id: "inside", lastActivityAt: "2026-06-17T12:00:00.000Z" }),
+      row({ id: "future", lastActivityAt: "2026-06-18T00:00:00.000Z" }),
+    ];
+    expect(
+      filterBranchRowsByWindow(rows, START, END).map((item) => item.id)
+    ).toEqual(["inside"]);
   });
 });

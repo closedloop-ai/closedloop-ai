@@ -7,29 +7,25 @@ import {
 } from "@/lib/route-utils";
 import {
   authorizeAgentSessionTeamScope,
-  getAgentSessionViewerScope,
+  resolveDisplayedStatusParity,
 } from "../route-helpers";
 import { agentSessionsService } from "../service";
-import { baseAgentSessionQuerySchema } from "../validators";
+import { agentSessionUsageQuerySchema } from "../validators";
 
+// FEA-4155: no `monitoringEnabled` flag gate — see the sibling list route. The
+// Sessions surface is always-on now, so this usage read must not 403 as the
+// winding-down `DESKTOP_AGENT_SESSION_SYNC` flag resolves false. Org/team RBAC
+// stays via `authorizeAgentSessionTeamScope`.
 export const GET = withAnyAuth<
   AgentSessionUsageSummary,
   "/agent-sessions/usage"
 >(async ({ user, clerkOrgId, clerkUserId }, request) => {
   const { params, errorResponse } = parseQueryParams(
     request,
-    baseAgentSessionQuerySchema
+    agentSessionUsageQuerySchema
   );
   if (errorResponse) {
     return errorResponse;
-  }
-
-  const viewerScope = await getAgentSessionViewerScope({
-    userId: user.id,
-    clerkUserId,
-  });
-  if (!viewerScope.monitoringEnabled) {
-    return forbiddenResponse();
   }
 
   const teamScopeAllowed = await authorizeAgentSessionTeamScope({
@@ -45,6 +41,14 @@ export const GET = withAnyAuth<
 
   const summary = await agentSessionsService.getUsageSummary({
     organizationId: user.organizationId,
+    // FEA-3534: enforce `viewerScope=self` for Me-scoped usage reads.
+    viewerId: user.id,
+    // ISS-4556 / ISS-4559: the cards summarize exactly the population the table
+    // lists, so the Status facet must resolve the same gate the list route does.
+    displayedStatusParity: await resolveDisplayedStatusParity({
+      userId: user.id,
+      clerkUserId,
+    }),
     filters: params,
   });
 

@@ -122,15 +122,17 @@ function EnumOptionRow({
       style={style}
     >
       {/* Drag handle */}
-      <button
-        className="cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+      <Button
+        className="shrink-0 cursor-grab text-muted-foreground active:cursor-grabbing"
+        size="icon-sm"
         type="button"
+        variant="ghost"
         {...attributes}
         {...listeners}
       >
         <GripVertical className="h-4 w-4" />
         <span className="sr-only">Drag to reorder</span>
-      </button>
+      </Button>
 
       {/* Color picker dot */}
       <ColorPicker onChange={onColorChange} value={color} />
@@ -139,7 +141,7 @@ function EnumOptionRow({
       {isRenaming ? (
         <Input
           autoFocus
-          className="h-7 flex-1 text-sm"
+          className="h-8 flex-1 text-sm"
           onBlur={handleRenameCommit}
           onChange={(e) => setDraftName(e.target.value)}
           onKeyDown={handleRenameKeyDown}
@@ -160,13 +162,15 @@ function EnumOptionRow({
       {/* Actions dropdown */}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button
-            className="shrink-0 text-muted-foreground hover:text-foreground"
+          <Button
+            className="shrink-0 text-muted-foreground"
+            size="icon-sm"
             type="button"
+            variant="ghost"
           >
             <MoreHorizontal className="h-4 w-4" />
             <span className="sr-only">Option actions</span>
-          </button>
+          </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
@@ -176,13 +180,6 @@ function EnumOptionRow({
             }}
           >
             Rename
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            onSelect={() => {
-              /* ColorPicker is always accessible on the row — this is a shortcut hint. */
-            }}
-          >
-            Change Color
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={onDisable}>

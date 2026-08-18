@@ -2,6 +2,7 @@ import {
   RepoSource,
   type UseResolvedJobReposResult,
 } from "@repo/app/loops/hooks/use-resolved-job-repos";
+import { TEAM_REPOSITORIES_LOAD_FAILURE } from "@repo/app/teams/hooks/use-team-repositories-union";
 import {
   cleanup,
   fireEvent,
@@ -100,6 +101,7 @@ function buildResolved(
     additional: [],
     pool: [],
     isLoading: false,
+    poolError: null,
     ...overrides,
   };
 }
@@ -127,6 +129,25 @@ describe("JobRepositoriesSection (PLN-529)", () => {
       />
     );
     expect(screen.getByText(NO_REPOS_REGEX)).toBeInTheDocument();
+  });
+
+  // ISS-5095: a failed read also arrives as an empty pool, so without this
+  // branch the section states the team curated nothing and sends the user to a
+  // settings page — a claim it has no evidence for.
+  it("renders the load failure instead of the empty-pool claim when the read failed", () => {
+    render(
+      <JobRepositoriesSection
+        onChange={vi.fn()}
+        resolved={buildResolved({
+          pool: [],
+          poolError: TEAM_REPOSITORIES_LOAD_FAILURE,
+        })}
+      />
+    );
+    expect(
+      screen.getByText(TEAM_REPOSITORIES_LOAD_FAILURE)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(NO_REPOS_REGEX)).not.toBeInTheDocument();
   });
 
   it("emits the seeded selection on first paint with a complete resolver payload", async () => {

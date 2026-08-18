@@ -1,5 +1,13 @@
 import type { IncomingMessage } from "node:http";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 vi.mock("../api-client.js", () => ({
   verifyApiKey: vi.fn(),
@@ -145,5 +153,120 @@ describe("in-memory rate limiter", () => {
     resetInMemorySecurityState();
 
     expect(consumeInMemoryRateLimit(req, "authorize").limited).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getClientAddress — via consumeInMemoryRateLimit (L1129/1130/1135/1139)
+//
+// MCP_TRUST_PROXY and INTERNAL_ENDPOINT_ALLOWLIST are module-level constants
+// so each env variant needs vi.resetModules() + a fresh dynamic import.
+// ---------------------------------------------------------------------------
+
+describe.sequential("getClientAddress via consumeInMemoryRateLimit", () => {
+  const ORIG_TRUST_PROXY = process.env.MCP_TRUST_PROXY;
+
+  afterEach(() => {
+    vi.resetModules();
+    if (ORIG_TRUST_PROXY === undefined) {
+      Reflect.deleteProperty(process.env, "MCP_TRUST_PROXY");
+    } else {
+      process.env.MCP_TRUST_PROXY = ORIG_TRUST_PROXY;
+    }
+  });
+
+  it("ignores x-forwarded-for and uses socket.remoteAddress when TRUST_PROXY is not set", async () => {
+    // MCP_TRUST_PROXY not set → TRUST_PROXY = false → x-forwarded-for is skipped.
+    const mod = await import("../index.js");
+    const { consumeInMemoryRateLimit: fn, inMemoryRateLimits: map } =
+      mod.__testables;
+    map.clear();
+
+    const req = {
+      method: "POST",
+      url: "/",
+      headers: { "x-forwarded-for": "9.9.9.9" },
+      socket: { remoteAddress: "10.0.0.5" },
+    } as unknown as import("node:http").IncomingMessage;
+
+    fn(req, "token");
+    // x-forwarded-for is NOT trusted → address is socket.remoteAddress.
+    expect(map.has("token:10.0.0.5")).toBe(true);
+    expect(map.has("token:9.9.9.9")).toBe(false);
+  });
+
+  it("honors x-forwarded-for when TRUST_PROXY=1", async () => {
+    process.env.MCP_TRUST_PROXY = "1";
+    const mod = await import("../index.js");
+    const { consumeInMemoryRateLimit: fn, inMemoryRateLimits: map } =
+      mod.__testables;
+    map.clear();
+
+    const req = {
+      method: "POST",
+      url: "/",
+      headers: { "x-forwarded-for": "9.9.9.9" },
+      socket: { remoteAddress: "10.0.0.5" },
+    } as unknown as import("node:http").IncomingMessage;
+
+    fn(req, "token");
+    expect(map.has("token:9.9.9.9")).toBe(true);
+    expect(map.has("token:10.0.0.5")).toBe(false);
+  });
+
+  it("falls back to socket.remoteAddress when x-forwarded-for is whitespace with TRUST_PROXY=1", async () => {
+    // forwarded.trim().length === 0 → condition false → falls through to socket.
+    process.env.MCP_TRUST_PROXY = "1";
+    const mod = await import("../index.js");
+    const { consumeInMemoryRateLimit: fn, inMemoryRateLimits: map } =
+      mod.__testables;
+    map.clear();
+
+    const req = {
+      method: "POST",
+      url: "/",
+      headers: { "x-forwarded-for": "   " },
+      socket: { remoteAddress: "10.0.0.5" },
+    } as unknown as import("node:http").IncomingMessage;
+
+    fn(req, "token");
+    expect(map.has("token:10.0.0.5")).toBe(true);
+  });
+
+  it("takes the first entry from a multi-hop x-forwarded-for with TRUST_PROXY=1", async () => {
+    process.env.MCP_TRUST_PROXY = "1";
+    const mod = await import("../index.js");
+    const { consumeInMemoryRateLimit: fn, inMemoryRateLimits: map } =
+      mod.__testables;
+    map.clear();
+
+    const req = {
+      method: "POST",
+      url: "/",
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8, 9.10.11.12" },
+      socket: { remoteAddress: "10.0.0.5" },
+    } as unknown as import("node:http").IncomingMessage;
+
+    fn(req, "token");
+    // Only the leftmost (client-supplied) IP is trusted.
+    expect(map.has("token:1.2.3.4")).toBe(true);
+  });
+
+  it("uses 'unknown' when socket.remoteAddress is absent", async () => {
+    // socket?.remoteAddress → undefined ?? "unknown" → L1139 branch.
+    const mod = await import("../index.js");
+    const { consumeInMemoryRateLimit: fn, inMemoryRateLimits: map } =
+      mod.__testables;
+    map.clear();
+
+    const req = {
+      method: "POST",
+      url: "/",
+      headers: {},
+      socket: null,
+    } as unknown as import("node:http").IncomingMessage;
+
+    fn(req, "token");
+    expect(map.has("token:unknown")).toBe(true);
   });
 });

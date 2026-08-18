@@ -1,426 +1,317 @@
 "use client";
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
-import { BranchFileDiffViewer } from "@repo/app/branches/components/diff/branch-file-diff-viewer";
+import {
+  type BranchSelectedPullRequestFile,
+  BranchSelectedPullRequestFileCompleteness,
+  type BranchSelectedPullRequestFiles,
+  type BranchSelectedPullRequestFilesResponse,
+  BranchSelectedPullRequestGrossTotalAvailability,
+  BranchSelectedPullRequestReadAvailability,
+} from "@repo/api/src/types/branch-selected-pull-request-files";
 import { formatNumber } from "@repo/app/shared/lib/format-utils";
+import { Button } from "@repo/design-system/components/ui/button";
 import { Chip } from "@repo/design-system/components/ui/chip";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { useQuery } from "@tanstack/react-query";
-import {
-  ChevronLeftIcon,
-  FileDiffIcon,
-  FileIcon,
-  GitBranchIcon,
-  HardDriveIcon,
-} from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
-import { livePrFileDiffOptions } from "../../lib/live-overlays/live-pr-file-diff";
-import {
-  type LivePrFile,
-  livePrFilesOptions,
-} from "../../lib/live-overlays/live-pr-files";
-import { derivePrIdentity } from "../../lib/live-overlays/pr-identity";
-
-/**
- * F1 — live files-changed panel (Epic F / FEA-1952).
- *
- * Renders the PR's changed-file list fetched LIVE from the GitHub gateway
- * (`/pr/files`) — with per-file additions/deletions from the PR's own data,
- * never persisted. Identity is the owner/repo slug + PR number (like the F2
- * status overlay), so files resolve for any PR the authed `gh` user can read,
- * with NO local clone/registration required. The result lives only in the React
- * Query overlay cache; `BranchPageDetail.filesChanged`/`additions`/`deletions`
- * from the port stay `null` and are never read as numbers here.
- *
- * LOC preference: when a PR is connected, the panel shows the PR-sourced totals
- * (authoritative — "GitHub" source). The enrichment-derived `DerivedLoc`
- * fallback ("Local filesystem") is shown ONLY in degraded states (no PR / multi
- * PR / unavailable), so PR numbers always win when available.
- *
- * Degrades honestly per state (never a thrown error): a branch with no PR shows
- * "changed files appear once a pull request is opened" (the common case — there
- * is no per-file source for a branch without a connected PR in v1); multiple
- * linked PRs gate on ambiguity; a single linked PR whose files can't be fetched
- * (local gateway/CLI unavailable) shows a local unavailable state.
- */
+import { FileIcon } from "lucide-react";
+import { useId, useState } from "react";
+import { useBranchSelectedPullRequestDiff } from "../../hooks/use-branch-selected-pull-request-files";
+import type { BranchesQueryIdentity } from "../../hooks/use-branches";
+import { BranchFileDiffViewer } from "../diff/branch-file-diff-viewer";
 
 export type BranchFilesChangedPanelProps = {
   branchId?: string;
   detail: BranchPageDetail;
+  filesError?: boolean;
+  filesLoading?: boolean;
+  filesResponse?: BranchSelectedPullRequestFilesResponse;
+  onRetry?: () => void;
+  queryIdentity?: BranchesQueryIdentity;
 };
 
-/**
- * Source-of-truth indicator for a changes measure. Exported so the same chip can
- * mark the derived-LOC fallback wherever it appears (e.g. a list "Changes" cell).
- */
-export function SourceIndicatorChip({
-  source,
-}: {
-  source: "github" | "local";
-}) {
-  const isGithub = source === "github";
+/** Selected-PR file evidence with revision-pinned inline diffs. */
+export function BranchFilesChangedPanel({
+  branchId,
+  detail,
+  filesError = false,
+  filesLoading = false,
+  filesResponse,
+  onRetry,
+  queryIdentity,
+}: BranchFilesChangedPanelProps) {
+  const selected = detail.selectedPullRequest;
+
   return (
-    <Chip size="sm" variant={isGithub ? "accent" : "muted"}>
-      {isGithub ? <GitBranchIcon aria-hidden /> : <HardDriveIcon aria-hidden />}
-      {isGithub ? "GitHub" : "Local filesystem"}
-    </Chip>
+    <section aria-labelledby="selected-pr-files-title">
+      <div className="bq-sec-head">
+        <span className="bq-sec-title" id="selected-pr-files-title">
+          Files changed
+        </span>
+        {filesResponse?.status ===
+        BranchSelectedPullRequestReadAvailability.Available ? (
+          <FilesSummary value={filesResponse.value} />
+        ) : null}
+        {selected ? (
+          <Chip className="ml-auto" size="sm" variant="info">
+            GitHub
+          </Chip>
+        ) : null}
+      </div>
+      <FilesBody
+        branchId={branchId ?? detail.id}
+        detail={detail}
+        isError={filesError}
+        isLoading={filesLoading}
+        onRetry={onRetry}
+        queryIdentity={queryIdentity}
+        response={filesResponse}
+      />
+    </section>
   );
 }
 
-/**
- * Presentational net-LOC: `+adds −dels`. `withLabel` appends " changed" for the
- * summary line; per-file rows omit it to stay compact.
- */
-function NetLoc({
-  additions,
-  deletions,
-  withLabel = false,
+function FilesBody({
+  branchId,
+  detail,
+  isError,
+  isLoading,
+  onRetry,
+  queryIdentity,
+  response,
 }: {
-  additions: number;
-  deletions: number;
-  withLabel?: boolean;
+  branchId: string;
+  detail: BranchPageDetail;
+  isError: boolean;
+  isLoading: boolean;
+  onRetry?: () => void;
+  queryIdentity?: BranchesQueryIdentity;
+  response: BranchSelectedPullRequestFilesResponse | undefined;
 }) {
+  const selected = detail.selectedPullRequest;
+  if (selected === null) {
+    return (
+      <p className="py-1 text-muted-foreground text-xs">
+        Changed files appear here once a pull request is opened on this branch.
+      </p>
+    );
+  }
+  if (selected === undefined) {
+    return (
+      <p className="py-1 text-muted-foreground text-xs">
+        File evidence isn't available yet.
+      </p>
+    );
+  }
+  if (isLoading) {
+    return <Skeleton className="mt-2 h-20 w-full" />;
+  }
+  if (
+    isError ||
+    !response ||
+    response.status === BranchSelectedPullRequestReadAvailability.Unavailable
+  ) {
+    return (
+      <div className="flex items-center justify-between gap-3 py-1">
+        <p className="text-muted-foreground text-xs">
+          File evidence is unavailable for pull request #{selected.number}.
+        </p>
+        {onRetry ? (
+          <Button onClick={onRetry} size="sm" type="button" variant="outline">
+            Retry
+          </Button>
+        ) : null}
+      </div>
+    );
+  }
+  if (response.value.files.length === 0) {
+    const isCompleteKnownEmpty =
+      response.value.coverage.completeness ===
+        BranchSelectedPullRequestFileCompleteness.Complete &&
+      response.value.counts.expected === 0 &&
+      response.value.counts.loaded === 0;
+    if (!isCompleteKnownEmpty) {
+      return (
+        <div className="py-1">
+          <p className="text-muted-foreground text-xs">
+            No verified file rows are available.
+          </p>
+          <FilesCoverageNote value={response.value} />
+        </div>
+      );
+    }
+    return (
+      <p className="py-1 text-muted-foreground text-xs">
+        This pull request has no changed files.
+      </p>
+    );
+  }
   return (
-    <span className="text-xs">
-      <b className="font-semibold text-success">{`+${formatNumber(additions)}`}</b>{" "}
-      <b className="font-semibold text-destructive">{`−${formatNumber(deletions)}`}</b>
-      {withLabel ? (
-        <span className="text-muted-foreground"> changed</span>
+    <div>
+      <FilesCoverageNote value={response.value} />
+      <div className="bq-files">
+        {response.value.files.map((file) => (
+          <FileRow
+            branchId={branchId}
+            file={file}
+            files={response.value}
+            key={file.path}
+            queryIdentity={queryIdentity}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FileRow({
+  branchId,
+  file,
+  files,
+  queryIdentity,
+}: {
+  branchId: string;
+  file: BranchSelectedPullRequestFile;
+  files: BranchSelectedPullRequestFiles;
+  queryIdentity?: BranchesQueryIdentity;
+}) {
+  const [open, setOpen] = useState(false);
+  const diffId = useId();
+  const diffQuery = useBranchSelectedPullRequestDiff(
+    {
+      branchId,
+      repositoryFullName: files.identity.repositoryFullName,
+      pullRequestNumber: files.identity.number,
+      path: file.path,
+      baseSha: files.revision.baseSha,
+      headSha: files.revision.headSha,
+    },
+    { enabled: open },
+    queryIdentity
+  );
+  const diff =
+    diffQuery.data?.status ===
+    BranchSelectedPullRequestReadAvailability.Available
+      ? diffQuery.data.value.diff
+      : undefined;
+  const diffError =
+    diffQuery.isError ||
+    diffQuery.data?.status ===
+      BranchSelectedPullRequestReadAvailability.Unavailable
+      ? (diffQuery.error ?? new Error("Selected pull request diff unavailable"))
+      : null;
+
+  return (
+    <div>
+      <button
+        aria-controls={diffId}
+        aria-expanded={open}
+        className="bq-file bq-file-button"
+        onClick={() => setOpen((value) => !value)}
+        type="button"
+      >
+        <FileIcon aria-hidden className="bq-file-ic size-3.5" />
+        <span className="bq-file-path font-mono">{file.path}</span>
+        <span className="shrink-0 pl-2 font-mono text-xs tabular-nums">
+          <b className="bq-add">
+            {file.additions === null ? "—" : `+${formatNumber(file.additions)}`}
+          </b>{" "}
+          <b className="bq-del">
+            {file.deletions === null ? "—" : `−${formatNumber(file.deletions)}`}
+          </b>
+        </span>
+      </button>
+      {open ? (
+        <div id={diffId}>
+          <BranchFileDiffViewer
+            diffData={diff}
+            diffError={diffError}
+            isDiffLoading={diffQuery.isLoading}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FilesSummary({ value }: { value: BranchSelectedPullRequestFiles }) {
+  const incomplete =
+    value.coverage.completeness ===
+    BranchSelectedPullRequestFileCompleteness.Incomplete;
+  const additions = formatGrossTotal(value.grossTotals.additions, incomplete);
+  const deletions = formatGrossTotal(value.grossTotals.deletions, incomplete);
+  return (
+    <span className="bq-sec-count flex items-center gap-2 tabular-nums">
+      {fileCountLabel(value)}
+      {additions || deletions ? (
+        <span className="font-mono">
+          {additions ? <b className="bq-add">+{additions}</b> : null}{" "}
+          {deletions ? <b className="bq-del">−{deletions}</b> : null}
+        </span>
       ) : null}
     </span>
   );
 }
 
-/**
- * The enrichment-derived net-LOC line ("Local filesystem" source), shown ONLY in
- * degraded states and ONLY when the enrichment columns are populated — PR-sourced
- * totals are preferred whenever a PR is connected. NULL means "unavailable", not
- * 0 (branch.ts); with only one side populated, "+10 −0" would fabricate the
- * other, so we require both.
- */
-function DerivedLoc({ detail }: { detail: BranchPageDetail }) {
-  const { additions, deletions } = detail;
-  if (additions == null || deletions == null) {
-    return null;
+function fileCountLabel(value: BranchSelectedPullRequestFiles): string {
+  if (
+    value.coverage.completeness ===
+    BranchSelectedPullRequestFileCompleteness.Incomplete
+  ) {
+    return value.counts.expected === null
+      ? `${formatNumber(value.counts.loaded)} ${fileNoun(value.counts.loaded)} shown*`
+      : `${formatNumber(value.counts.loaded)} of ${formatNumber(value.counts.expected)} ${fileNoun(value.counts.expected)} shown*`;
   }
-  return <NetLoc additions={additions} deletions={deletions} withLabel />;
+  if (
+    value.coverage.completeness ===
+    BranchSelectedPullRequestFileCompleteness.Unavailable
+  ) {
+    return `${formatNumber(value.counts.loaded)} verified ${fileNoun(value.counts.loaded)}`;
+  }
+  return `${formatNumber(value.counts.loaded)} ${fileNoun(value.counts.loaded)}`;
 }
 
-function FilesList({
-  files,
-  onSelectFile,
-  selectedFileKey,
+function FilesCoverageNote({
+  value,
 }: {
-  files: readonly LivePrFile[];
-  onSelectFile: (file: LivePrFile | null) => void;
-  selectedFileKey: string | null;
+  value: BranchSelectedPullRequestFiles;
 }) {
-  if (files.length === 0) {
+  if (
+    value.coverage.completeness ===
+    BranchSelectedPullRequestFileCompleteness.Complete
+  ) {
+    return null;
+  }
+  if (
+    value.coverage.completeness ===
+    BranchSelectedPullRequestFileCompleteness.Incomplete
+  ) {
     return (
-      <p className="py-2 text-muted-foreground text-xs">
-        This pull request changed no files.
+      <p className="pb-2 text-muted-foreground text-xs">
+        * The file list and totals include only the verified rows shown here.
       </p>
     );
   }
   return (
-    <div className="bq-files">
-      {files.map((file) => (
-        <button
-          aria-label={`Open diff for ${file.path}`}
-          aria-pressed={selectedFileKey === getFileSelectionKey(file)}
-          className="bq-file bq-file-button"
-          key={getFileSelectionKey(file)}
-          onClick={() => onSelectFile(file)}
-          type="button"
-        >
-          <FileIcon aria-hidden className="bq-file-ic size-3.5" />
-          <span className="bq-file-path font-mono">{file.path}</span>
-          <span className="ml-auto shrink-0 pl-2">
-            <NetLoc additions={file.additions} deletions={file.deletions} />
-          </span>
-        </button>
-      ))}
-    </div>
+    <p className="pb-2 text-muted-foreground text-xs">
+      File completeness and totals are unavailable. Verified file rows are still
+      shown.
+    </p>
   );
 }
 
-/**
- * The render state of the files panel. `live` lists files from `/pr/files`
- * (fetched slug-only via `gh`, no local checkout); `no-pr` is the common net-new
- * local branch (no PR to query); `multi-pr` gates ambiguous attribution;
- * `unavailable` is a linked PR whose files can't be fetched (GitHub not
- * reachable through the local gateway/CLI). There is genuinely no per-file
- * source for a branch with no connected PR in v1 — so we say so plainly instead
- * of looking broken.
- */
-type FilesPanelState =
-  | { kind: "loading" }
-  | {
-      kind: "live";
-      files: readonly LivePrFile[];
-      count: number;
-      additions: number;
-      deletions: number;
-    }
-  | { kind: "no-pr" }
-  | { kind: "multi-pr" }
-  | { kind: "unavailable"; prNumber: number };
-
-function resolveFilesState(input: {
-  live: {
-    files: readonly LivePrFile[];
-    filesChanged: number;
-    additions: number;
-    deletions: number;
-  } | null;
-  identityPresent: boolean;
-  hasPr: boolean;
-  prNumber: number | null;
-  multiPr: boolean;
-  isError: boolean;
-}): FilesPanelState {
-  if (input.live) {
-    return {
-      kind: "live",
-      files: input.live.files,
-      count: input.live.filesChanged,
-      additions: input.live.additions,
-      deletions: input.live.deletions,
-    };
-  }
-  if (!(input.hasPr && input.prNumber != null)) {
-    return { kind: "no-pr" };
-  }
-  if (input.multiPr) {
-    return { kind: "multi-pr" };
-  }
-  // A single PR is linked. If we couldn't form an identity (e.g. a non
-  // owner/name slug) or the fetch errored, the files can't be listed; otherwise
-  // the query is in flight (or settling) → show the loading skeleton.
-  if (!input.identityPresent || input.isError) {
-    return { kind: "unavailable", prNumber: input.prNumber };
-  }
-  return { kind: "loading" };
-}
-
-export function BranchFilesChangedPanel({
-  branchId,
-  detail,
-}: BranchFilesChangedPanelProps) {
-  const [selection, setSelection] = useState<{
-    fileKey: string | null;
-    identityKey: string | null;
-  }>({ fileKey: null, identityKey: null });
-  const identity = derivePrIdentity({
-    repoFullName: detail.repoFullName,
-    prUrl: detail.prUrl,
-    prNumber: detail.prNumber,
-    multiPrWarning: detail.multiPrWarning,
-  });
-  const filesQuery = useQuery(livePrFilesOptions(identity));
-
-  const state = resolveFilesState({
-    // Only trust data for the CURRENT identity — gated/disabled keys never
-    // surface another branch's cached files.
-    live: identity ? (filesQuery.data ?? null) : null,
-    identityPresent: identity != null,
-    hasPr: detail.prNumber != null,
-    prNumber: detail.prNumber,
-    multiPr: detail.multiPrWarning,
-    isError: filesQuery.isError,
-  });
-  const identityKey = identity
-    ? `${identity.owner}/${identity.repo}#${identity.prNumber}`
-    : null;
-  const selectedFileKey =
-    selection.identityKey === identityKey ? selection.fileKey : null;
-
-  useEffect(() => {
-    setSelection((current) => {
-      if (current.identityKey === null || current.identityKey === identityKey) {
-        return current;
-      }
-      return { fileKey: null, identityKey: null };
-    });
-  }, [identityKey]);
-
-  useEffect(() => {
-    if (state.kind !== "live") {
-      setSelection({ fileKey: null, identityKey: null });
-    }
-  }, [state.kind]);
-
-  return (
-    <section className="mt-2">
-      <div className="bq-sec-head">
-        <span className="bq-sec-title">Files changed</span>
-        {state.kind === "live" ? (
-          <>
-            <span className="bq-sec-count">{state.count}</span>
-            {/* PR-sourced totals — authoritative LOC, preferred over enrichment. */}
-            <NetLoc
-              additions={state.additions}
-              deletions={state.deletions}
-              withLabel
-            />
-          </>
-        ) : null}
-        {/* Source indicator is always present: GitHub when we listed live files,
-            else Local filesystem (the derived-LOC fallback's source). */}
-        <span className="ml-auto">
-          <SourceIndicatorChip
-            source={state.kind === "live" ? "github" : "local"}
-          />
-        </span>
-      </div>
-      {renderBody({
-        branchId,
-        detail,
-        identity,
-        onSelectFile: (file) =>
-          setSelection({
-            fileKey: getFileSelectionKey(file),
-            identityKey,
-          }),
-        selectedFileKey,
-        state,
-      })}
-    </section>
-  );
-}
-
-function renderBody({
-  branchId,
-  detail,
-  identity,
-  onSelectFile,
-  selectedFileKey,
-  state,
-}: {
-  branchId?: string;
-  detail: BranchPageDetail;
-  identity: ReturnType<typeof derivePrIdentity>;
-  onSelectFile: (file: LivePrFile | null) => void;
-  selectedFileKey: string | null;
-  state: FilesPanelState;
-}) {
-  if (state.kind === "loading") {
-    return (
-      <div className="flex flex-col gap-1.5 py-1">
-        <Skeleton className="h-5 w-2/3" />
-        <Skeleton className="h-5 w-1/2" />
-        <Skeleton className="h-5 w-3/5" />
-      </div>
-    );
-  }
-  if (state.kind === "live") {
-    const selectedFile =
-      state.files.find(
-        (file) => getFileSelectionKey(file) === selectedFileKey
-      ) ?? null;
-    return (
-      <div className="flex flex-col gap-2">
-        {selectedFile && identity ? (
-          <BranchFileDiffPreview
-            branchId={branchId}
-            file={selectedFile}
-            identity={identity}
-            onClose={() => onSelectFile(null)}
-          />
-        ) : (
-          <FilesList
-            files={state.files}
-            onSelectFile={onSelectFile}
-            selectedFileKey={null}
-          />
-        )}
-      </div>
-    );
-  }
-  if (state.kind === "no-pr") {
-    return (
-      <div className="flex flex-col gap-2 py-1">
-        <p className="text-muted-foreground text-xs">
-          Changed files appear here once a pull request is opened on this
-          branch.
-        </p>
-        <DerivedLoc detail={detail} />
-      </div>
-    );
-  }
-  if (state.kind === "multi-pr") {
-    return (
-      <div className="flex flex-col gap-2 py-1">
-        <p className="text-muted-foreground text-xs">
-          Multiple pull requests are linked — changed files aren't shown to
-          avoid ambiguous attribution.
-        </p>
-        <DerivedLoc detail={detail} />
-      </div>
-    );
-  }
-  // unavailable — a single PR is linked but its files can't be fetched.
-  return (
-    <div className="flex flex-col gap-2 py-1">
-      <p className="text-muted-foreground text-xs">
-        Changed files for pull request #{state.prNumber} are not available from
-        the local GitHub CLI.
-      </p>
-      <DerivedLoc detail={detail} />
-    </div>
-  );
-}
-
-function BranchFileDiffPreview({
-  branchId,
-  file,
-  identity,
-  onClose,
-}: {
-  branchId?: string;
-  file: LivePrFile;
-  identity: NonNullable<ReturnType<typeof derivePrIdentity>>;
-  onClose: () => void;
-}) {
-  const fileDiffIdentity = useMemo(
-    () => ({
-      ...identity,
-      ...(branchId ? { branchId } : {}),
-      path: file.path,
-      ...(file.previousPath ? { previousPath: file.previousPath } : {}),
-    }),
-    [branchId, file.path, file.previousPath, identity]
-  );
-  const { data, error, isLoading } = useQuery(
-    livePrFileDiffOptions(fileDiffIdentity)
-  );
-
-  return (
-    <div className="bq-file-diff" data-testid="branch-file-diff-preview">
-      <div className="bq-file-diff-head">
-        <FileDiffIcon aria-hidden className="size-3.5" />
-        <span className="bq-file-diff-path font-mono">{file.path}</span>
-        <button
-          aria-label="Back to files changed"
-          className="bq-file-diff-close"
-          onClick={onClose}
-          type="button"
-        >
-          <ChevronLeftIcon aria-hidden className="size-3.5" />
-        </button>
-      </div>
-      <BranchFileDiffViewer
-        diffData={data}
-        diffError={error}
-        isDiffLoading={isLoading}
-      />
-    </div>
-  );
-}
-
-function getFileSelectionKey(file: LivePrFile | null): string | null {
-  if (!file) {
+function formatGrossTotal(
+  total: BranchSelectedPullRequestFiles["grossTotals"]["additions"],
+  incomplete: boolean
+): string | null {
+  if (
+    total.availability ===
+    BranchSelectedPullRequestGrossTotalAvailability.Unavailable
+  ) {
     return null;
   }
-  return `${file.path}\u0000${file.previousPath ?? ""}`;
+  return `${formatNumber(total.value)}${incomplete ? "*" : ""}`;
+}
+
+function fileNoun(count: number): "file" | "files" {
+  return count === 1 ? "file" : "files";
 }

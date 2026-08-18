@@ -1,0 +1,92 @@
+[
+  {
+    "id": "bootstrap@closedloop-ai",
+    "version": "1.2.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/bootstrap/1.2.0",
+    "installedAt": "2026-03-06T15:19:40.516Z",
+    "lastUpdated": "2026-05-13T15:50:37.724Z"
+  },
+  {
+    "id": "code-review@claude-plugins-official",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/claude-plugins-official/code-review/unknown",
+    "installedAt": "2026-08-05T17:26:45.723Z",
+    "lastUpdated": "2026-08-05T17:26:45.723Z"
+  },
+  {
+    "id": "code-review@closedloop-ai",
+    "version": "3.7.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/code-review/3.7.0",
+    "installedAt": "2026-03-06T15:20:26.530Z",
+    "lastUpdated": "2026-07-22T19:59:20.933Z"
+  },
+  {
+    "id": "code@closedloop-ai",
+    "version": "1.14.7",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/code/1.14.7",
+    "installedAt": "2026-03-06T15:20:06.588Z",
+    "lastUpdated": "2026-06-18T15:33:42.147Z"
+  },
+  {
+    "id": "context7@claude-plugins-official",
+    "version": "unknown",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/claude-plugins-official/context7/unknown",
+    "installedAt": "2026-07-22T19:55:36.625Z",
+    "lastUpdated": "2026-07-22T19:55:36.625Z",
+    "mcpServers": {
+      "context7": {
+        "command": "npx",
+        "args": [
+          "-y",
+          "@upstash/context7-mcp"
+        ]
+      }
+    }
+  },
+  {
+    "id": "judges@closedloop-ai",
+    "version": "1.7.1",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/judges/1.7.1",
+    "installedAt": "2026-03-06T15:21:00.391Z",
+    "lastUpdated": "2026-05-14T03:22:59.598Z"
+  },
+  {
+    "id": "platform@closedloop-ai",
+    "version": "1.1.3",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/platform/1.1.3",
+    "installedAt": "2026-03-06T15:21:15.033Z",
+    "lastUpdated": "2026-05-13T15:50:37.752Z"
+  },
+  {
+    "id": "pyright-lsp@claude-plugins-official",
+    "version": "1.0.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/claude-plugins-official/pyright-lsp/1.0.0",
+    "installedAt": "2026-01-02T17:19:35.186Z",
+    "lastUpdated": "2026-05-13T15:50:08.473Z"
+  },
+  {
+    "id": "self-learning@closedloop-ai",
+    "version": "1.2.5",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/synthetic-home/.claude/plugins/cache/closedloop-ai/self-learning/1.2.5",
+    "installedAt": "2026-03-06T15:20:41.627Z",
+    "lastUpdated": "2026-05-13T15:50:37.742Z"
+  }
+]

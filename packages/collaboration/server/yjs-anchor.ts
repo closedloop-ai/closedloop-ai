@@ -25,6 +25,11 @@ type AnchorError = {
   status: 400;
 };
 
+export const ANCHOR_TEXT_NOT_FOUND_ERROR = "Anchor text not found in document";
+
+const DUPLICATE_ANCHOR_TEXT_ERROR =
+  /^Anchor text ".+" appears \d+ times in the document; use more specific text$/;
+
 /**
  * Compute a short hash of a JSON value using the same algorithm as y-prosemirror.
  * CRITICAL: lib0.encodeAny is order-sensitive -- object key order must match exactly.
@@ -89,6 +94,27 @@ export async function anchorThreadToText(
   await liveblocks.sendYjsBinaryUpdate(roomId, diff);
 }
 
+/**
+ * Identifies structured Yjs anchor validation failures that are safe to expose
+ * to document-thread callers. Provider/auth failures should keep the generic
+ * API error contract.
+ */
+export function isAnchorValidationError(error: unknown): boolean {
+  if (!(error != null && typeof error === "object" && "status" in error)) {
+    return false;
+  }
+  if (error.status !== 400 || !("message" in error)) {
+    return false;
+  }
+  if (error.message === ANCHOR_TEXT_NOT_FOUND_ERROR) {
+    return true;
+  }
+  return (
+    typeof error.message === "string" &&
+    DUPLICATE_ANCHOR_TEXT_ERROR.test(error.message)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
@@ -115,7 +141,7 @@ async function fetchYDoc(liveblocks: Liveblocks, roomId: string): Promise<Doc> {
 function validateMatchCount(matchCount: number, anchorText: string): void {
   if (matchCount === 0) {
     throw {
-      message: "Anchor text not found in document",
+      message: ANCHOR_TEXT_NOT_FOUND_ERROR,
       status: 400,
     } satisfies AnchorError;
   }

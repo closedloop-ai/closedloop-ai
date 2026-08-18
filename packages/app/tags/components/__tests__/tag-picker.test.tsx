@@ -197,6 +197,40 @@ describe("TagPicker", () => {
     });
   });
 
+  describe("independent mutation permissions", () => {
+    it("allows applying without exposing removal", async () => {
+      renderPicker({
+        appliedTags: [ORG_TAGS[0]],
+        canApply: true,
+        canRemove: false,
+        trigger: <button type="button">edit tags</button>,
+      });
+      fireEvent.click(screen.getByText("edit tags"));
+
+      expect(
+        await screen.findByRole("button", { name: "backend" })
+      ).toBeDisabled();
+      expect(screen.getByRole("button", { name: "urgent" })).toBeEnabled();
+    });
+
+    it("allows removing without exposing apply or create actions", async () => {
+      renderPicker({
+        appliedTags: [ORG_TAGS[0]],
+        canApply: false,
+        canRemove: true,
+        trigger: <button type="button">edit tags</button>,
+      });
+      fireEvent.click(screen.getByText("edit tags"));
+
+      expect(
+        await screen.findByRole("button", { name: "backend" })
+      ).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: "urgent" })
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("search state reset on close", () => {
     it("clears the search input when the popover is closed and reopened", async () => {
       renderPicker();

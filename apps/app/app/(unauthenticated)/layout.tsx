@@ -1,5 +1,7 @@
+import { Link } from "@repo/navigation/link";
 import Image from "next/image";
 import type { ReactNode } from "react";
+import { env } from "@/env";
 
 type AuthLayoutProps = {
   readonly children: ReactNode;
@@ -7,10 +9,20 @@ type AuthLayoutProps = {
 
 function AuthLayout({ children }: AuthLayoutProps) {
   return (
-    <div className="relative grid h-dvh lg:grid-cols-2">
-      {/* Left — auth form */}
-      <div className="flex h-full flex-col px-6 py-10 lg:px-10">
-        <div>
+    <main className="relative grid min-h-dvh lg:grid-cols-2">
+      {/* Left — wordmark + centered auth card. min-h-dvh with its own scroll so
+          a tall Clerk card (error banner, extra providers) is always reachable
+          under the root body's overflow-hidden. */}
+      <div className="flex min-h-dvh flex-col overflow-y-auto px-6 py-10 lg:px-10">
+        {/* Links to the marketing site, not `/`: the app root resolves to the
+            authenticated shell, which redirects a signed-out visitor into
+            sign-up. self-start keeps the hit target on the wordmark rather than
+            stretching across the whole column. */}
+        <Link
+          aria-label="Closedloop home"
+          className="inline-flex self-start"
+          href={env.NEXT_PUBLIC_WEB_URL}
+        >
           <Image
             alt="Closedloop logo"
             className="dark:hidden"
@@ -25,20 +37,20 @@ function AuthLayout({ children }: AuthLayoutProps) {
             src="/logo-dark.svg"
             width={200}
           />
-        </div>
-        <div className="flex flex-1 items-center justify-center">
-          <div className="w-full max-w-[400px]">{children}</div>
+        </Link>
+
+        <div className="flex flex-1 items-center justify-center py-8">
+          <div className="w-full max-w-sm">{children}</div>
         </div>
       </div>
 
-      {/* Right — product showcase (hidden on mobile) */}
-      <div className="hidden h-full items-center justify-center p-8 lg:flex">
+      {/* Right — product showcase over the brand gradient (hidden on mobile).
+          Near full-bleed: a slim p-3 gutter, the gradient panel owns the rest of
+          the half so the art fills its frame instead of floating in dead space. */}
+      <div className="hidden h-full p-3 lg:block">
         <div
-          className="flex h-[90%] w-[90%] items-center justify-end overflow-hidden rounded-3xl pl-12"
-          style={{
-            background:
-              "linear-gradient(to bottom, #fff9eb, #ffe4ab 31%, #d9a2d2 68%, #4685ff)",
-          }}
+          className="flex h-full w-full items-center justify-end overflow-hidden rounded-2xl pl-12"
+          style={{ background: "var(--brand-gradient)" }}
         >
           <Image
             alt="Closedloop product screenshot"
@@ -50,7 +62,7 @@ function AuthLayout({ children }: AuthLayoutProps) {
           />
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 

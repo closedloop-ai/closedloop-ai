@@ -29,7 +29,7 @@ vi.mock("@aws-sdk/client-ecs", () => ({
 
 vi.mock("@repo/github", () => ({
   getInstallationAccessToken: vi.fn(),
-  verifyInstallationBranchExists: vi.fn(),
+  verifyBranchExists: vi.fn(),
 }));
 
 vi.mock("@repo/observability/log", () => ({

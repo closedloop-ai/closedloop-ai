@@ -14,6 +14,7 @@
 
 import type { KpiFormat as KpiFormatType } from "../../types/insights.ts";
 import { KpiFormat } from "../../types/insights.ts";
+import { LOC_PER_DOLLAR_LABEL } from "../../utils/loc-per-dollar.ts";
 import type { AggregationKey } from "./aggregations.ts";
 import type {
   BranchMeasureKey,
@@ -36,7 +37,7 @@ export const DeliveryKpiKey = {
   TokensPerKloc: "tokensPerKloc",
   TimeToMerge: "timeToMerge",
   ActivePrCount: "activePrCount",
-  MergedKlocPerDollar: "mergedKlocPerDollar",
+  MergedLocPerDollar: "mergedLocPerDollar",
   MergedCount: "mergedCount",
   DecidedCount: "decidedCount",
   ReviewBacklog: "reviewBacklog",
@@ -125,6 +126,15 @@ export type DeliveryKpiDefinition =
   | BranchKpiDefinition
   | SessionKpiDefinition
   | DerivedKpiDefinition;
+
+/**
+ * ISS-4667: multiplies a KLOC-denominated numerator back into raw LINES. Lets
+ * `MergedLocPerDollar` reuse the registered `Kloc` base KPI (whose
+ * `PerThousand` transform already divided lines by 1000) without adding a
+ * duplicate lines-summing base entry — the derived ratio is then exactly
+ * `gross merged lines ÷ cost`.
+ */
+const LINES_PER_KLOC_SCALE = 1000;
 
 /**
  * THE registry — one entry per delivery KPI, each a Phase-0 canonical default.
@@ -344,22 +354,30 @@ export const DELIVERY_KPI_REGISTRY: readonly DeliveryKpiDefinition[] = [
     help: "Total cost divided by merged PR count.",
     format: KpiFormat.Currency,
   },
-  // Merged KLOC per dollar = KLOC ÷ Cost.
+  // Merged LOC per dollar = merged gross LINES ÷ Cost (ISS-4667).
   //
-  // Derived (NOT computed from display-rounded KLOC): the engine divides by the
-  // RAW, un-rounded KLOC from the base value table, so a sub-100-line window
-  // (whose KLOC rounds to 0.0 for display) still divides honestly instead of
-  // fabricating 0.00 KLOC/$. Powers the Sessions "KLOC per $" delivery card
-  // (apps/api/lib/agent-session-delivery-metrics.ts).
+  // UNIT (ISS-4667): the metric is LOC/$ — raw lines per dollar, NO
+  // divide-by-1000 and never inverted. The KLOC unit floored a real session
+  // (4,004 lines / $4,574.72) to a misleading `0.00`. The numerator stays the
+  // registered `Kloc` base KPI (same population, same measure — nothing else in
+  // the registry needs a second lines-summing base entry) and the derived
+  // `scale: 1000` multiplies its thousands back into lines, so the ratio is
+  // exactly `gross merged lines ÷ cost`.
+  //
+  // Derived (NOT computed from a display-rounded base): the engine divides the
+  // RAW, un-rounded base value, so a sub-100-line window (whose KLOC rounds to
+  // 0.0 for display) still divides honestly. Powers the Sessions "LOC / $"
+  // delivery card (apps/api/lib/agent-session-delivery-metrics.ts).
   {
-    key: DeliveryKpiKey.MergedKlocPerDollar,
+    key: DeliveryKpiKey.MergedLocPerDollar,
     source: "derived",
     derived: {
       numeratorKpi: DeliveryKpiKey.Kloc,
       denominatorKpi: DeliveryKpiKey.Cost,
+      scale: LINES_PER_KLOC_SCALE,
     },
-    label: "KLOC per $",
-    help: "Thousands of gross lines landed in merged PRs per dollar of agent spend.",
+    label: LOC_PER_DOLLAR_LABEL,
+    help: "Gross lines landed in merged PRs per dollar of agent spend. Higher is better.",
     format: KpiFormat.Number,
   },
   // Tokens per KLOC = (sum tokens) ÷ KLOC.

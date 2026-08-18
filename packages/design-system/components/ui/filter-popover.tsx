@@ -33,12 +33,16 @@ import {
   XIcon,
 } from "lucide-react";
 import { Fragment, useMemo, useState, type ReactNode } from "react";
+import {
+  isFilterMenuGroupActive,
+  LeadingVisual,
+  RangeSubmenu,
+} from "./filter-range-submenu";
 import { StatusIcon } from "./status-icon";
 import {
   TABLE_DATE_PRESET_LABELS,
   TableDateFilterField,
   TableDatePreset,
-  type FilterFacetGroup,
   type TableFilterLabels,
   type TableFilterDatePresetOption,
   type TableFilterOption,
@@ -70,6 +74,7 @@ const DEFAULT_LABELS: Required<TableFilterLabels> = {
   filterButton: "Filter",
   filterSearchPlaceholder: "Filter...",
   clearAll: "Clear all",
+  clear: "Clear",
   loading: "Loading...",
   loadError: "Could not load members",
   noTags: "No tags created yet",
@@ -104,12 +109,12 @@ export function FilterPopover<
   const [open, setOpen] = useState(false);
   const labels = useLabels(viewModel.labels);
   // Count of applied filters: when generic facet groups drive the menu, count
-  // the groups with at least one selection; otherwise one per active facet
-  // category (activeChips mirrors isAnyFilterActive). Plus the in-menu text
-  // search when it has input.
+  // the groups that are active (an options facet with a selection, or a range
+  // facet with either bound set); otherwise one per active facet category
+  // (activeChips mirrors isAnyFilterActive). Plus the in-menu text search when
+  // it has input.
   const facetFilterCount = viewModel.facetGroups
-    ? viewModel.facetGroups.filter((group) => group.selectedValues.length > 0)
-        .length
+    ? viewModel.facetGroups.filter(isFilterMenuGroupActive).length
     : controller.activeChips.length;
   const filterCount =
     facetFilterCount + ((textFilter?.value ?? "").length > 0 ? 1 : 0);
@@ -178,19 +183,35 @@ export function FilterMenuContent<
           />
         )}
         <DropdownMenuGroup>
-          {viewModel.facetGroups.map((group) => (
-            <OptionsSubmenu
-              count={group.selectedValues.length}
-              icon={group.icon ? <LeadingVisual>{group.icon}</LeadingVisual> : undefined}
-              key={group.id}
-              label={group.label}
-              onToggle={group.onToggle}
-              options={group.options}
-              searchPlaceholder={labels.filterSearchPlaceholder}
-              selectedValues={group.selectedValues}
-              submenuClassName={group.submenuClassName ?? "w-60"}
-            />
-          ))}
+          {viewModel.facetGroups.map((group) => {
+            if (group.kind === "range") {
+              return (
+                <RangeSubmenu
+                  clearLabel={labels.clear}
+                  group={group}
+                  key={group.id}
+                />
+              );
+            }
+            return (
+              <OptionsSubmenu
+                count={group.selectedValues.length}
+                emptyLabel={group.emptyLabel}
+                icon={
+                  group.icon ? (
+                    <LeadingVisual>{group.icon}</LeadingVisual>
+                  ) : undefined
+                }
+                key={group.id}
+                label={group.label}
+                onToggle={group.onToggle}
+                options={group.options}
+                searchPlaceholder={labels.filterSearchPlaceholder}
+                selectedValues={group.selectedValues}
+                submenuClassName={group.submenuClassName ?? "w-60"}
+              />
+            );
+          })}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     );
@@ -467,6 +488,7 @@ export function TagsFilterContent<
 
 function OptionsSubmenu<TValue extends string>({
   count,
+  emptyLabel,
   icon,
   label,
   options,
@@ -476,6 +498,7 @@ function OptionsSubmenu<TValue extends string>({
   onToggle,
 }: {
   count: number;
+  emptyLabel?: string;
   icon?: ReactNode;
   label: string;
   options: TableFilterOption<TValue>[];
@@ -496,6 +519,7 @@ function OptionsSubmenu<TValue extends string>({
       <DropdownMenuPortal>
         <DropdownMenuSubContent className={submenuClassName}>
           <OptionsFilterContent
+            emptyLabel={emptyLabel}
             options={options}
             searchPlaceholder={searchPlaceholder}
             selectedValues={selectedValues}
@@ -508,17 +532,28 @@ function OptionsSubmenu<TValue extends string>({
 }
 
 function OptionsFilterContent<TValue extends string>({
+  emptyLabel,
   options,
   searchPlaceholder,
   selectedValues,
   onToggle,
 }: {
+  emptyLabel?: string;
   options: TableFilterOption<TValue>[];
   searchPlaceholder: string;
   selectedValues: TValue[];
   onToggle: (value: TValue) => void;
 }) {
   const [search, setSearch] = useState("");
+
+  // A facet with zero options renders a disabled explanatory row instead of a
+  // bare search box, mirroring the built-in tags submenu — "nothing to filter
+  // by", not broken/loading. Only when the host supplied a message; otherwise
+  // keep the prior (empty) behavior for callers that never pass one.
+  if (options.length === 0 && emptyLabel) {
+    return <DropdownMenuItem disabled>{emptyLabel}</DropdownMenuItem>;
+  }
+
   const filteredOptions = options.filter((option) =>
     (option.searchText ?? option.label).toLowerCase().includes(search.toLowerCase())
   );
@@ -725,14 +760,6 @@ function TagsSubmenu({
  * same footprint (so the text labels stay aligned) while letting the avatar fill
  * the box and the icons sit padded/centered inside it.
  */
-function LeadingVisual({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex size-[18px] shrink-0 items-center justify-center">
-      {children}
-    </span>
-  );
-}
-
 function FilterTextSearch({
   value,
   onChange,
@@ -784,6 +811,7 @@ function SubMenuSearch({
     <>
       <div className="px-2 pt-0.5 pb-1.5">
         <input
+          aria-label={placeholder || "Search"}
           className="h-6 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => event.stopPropagation()}
@@ -882,3 +910,4 @@ function useLabels(labels?: TableFilterLabels): Required<TableFilterLabels> {
     [labels]
   );
 }
+

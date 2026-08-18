@@ -3,11 +3,9 @@
  * @description Unit tests for the desktop AgentsView renderer component
  * (FEA-2923 / T-10.11 / T-5.2).
  *
- * Two assertions per the task:
- * 1. When the AGENTS_FEATURE_FLAG_KEY flag is on, the component mounts the
- *    shared `AgentsGroupedList` via a minimal injected test data source.
- * 2. When the flag is off, the component renders null immediately (the
- *    `hiddenNavIds` guard supplements the runtime null guard; both must hold).
+ * FEA-3994: the Agents Workspace is now always-on (its Labs flag was graduated
+ * and removed), so the view mounts the shared `AgentsGroupedList`
+ * unconditionally — there is no longer a flag-off null guard to exercise.
  *
  * The shared workspace components (`AgentsGroupedList`, hooks, etc.) require
  * a running API and auth context to function. To keep this a pure unit test
@@ -15,7 +13,6 @@
  * minimal stub `AgentComponentsDataSource` via the `dataSource` test-seam prop.
  */
 import type { AgentComponentsDataSource } from "@repo/app/agents/data-source/agent-components-data-source";
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -24,16 +21,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // Vitest's hoisting guarantees they are in place when the test file is loaded.
 // ---------------------------------------------------------------------------
 
-// Mock the feature-flag hook so tests control the flag value directly.
-vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
-  useFeatureFlagEnabled: vi.fn(),
+// Mock the shared workspace list component to a simple test marker. This
+// prevents the test from needing a full React-Query + auth + API setup. The
+// stub RENDERS its `pluginsFooter` prop so the desktop adapter's footer wiring
+// (FEA-4085: desktop keeps its plugin management panel reachable under the
+// Plugins tab) is observable — a prop-blind stub could never prove it.
+vi.mock("@repo/app/agents/components/workspace/agents-grouped-list", () => ({
+  AgentsGroupedList: ({
+    pluginsFooter,
+  }: {
+    pluginsFooter?: React.ReactNode;
+  }) => (
+    <div data-testid="agents-grouped-list">
+      AgentsGroupedList
+      {pluginsFooter}
+    </div>
+  ),
 }));
 
-// Mock the shared workspace list component to a simple test marker. This
-// prevents the test from needing a full React-Query + auth + API setup.
-vi.mock("@repo/app/agents/components/workspace/agents-grouped-list", () => ({
-  AgentsGroupedList: () => (
-    <div data-testid="agents-grouped-list">AgentsGroupedList</div>
+// The desktop plugin management panel injected as the list's `pluginsFooter`.
+// Stubbed to a marker so the wiring is asserted without the IPC/render graph.
+vi.mock("../plugins-panel", () => ({
+  PluginsPanel: () => (
+    <div data-testid="plugins-panel-marker">PluginsPanel</div>
   ),
 }));
 
@@ -56,7 +66,6 @@ vi.mock("../../../navigation/route-table", () => ({
 // Import the module under test AFTER the mocks are declared.
 // ---------------------------------------------------------------------------
 
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { AgentsView } from "../agents-view";
 
 // ---------------------------------------------------------------------------
@@ -81,25 +90,17 @@ afterEach(() => {
 });
 
 describe("AgentsView (T-10.11)", () => {
-  it("renders AgentsGroupedList when the AGENTS_FEATURE_FLAG_KEY flag is on", () => {
-    vi.mocked(useFeatureFlagEnabled).mockReturnValue(true);
-
+  it("renders AgentsGroupedList unconditionally (always-on, FEA-3994)", () => {
     render(<AgentsView dataSource={makeStubDataSource()} />);
 
     expect(screen.getByTestId("agents-grouped-list")).toBeDefined();
-    // The mock is called with the agents feature flag key specifically.
-    expect(useFeatureFlagEnabled).toHaveBeenCalledWith(AGENTS_FEATURE_FLAG_KEY);
   });
 
-  it("renders null when AGENTS_FEATURE_FLAG_KEY returns false", () => {
-    vi.mocked(useFeatureFlagEnabled).mockReturnValue(false);
+  it("injects the plugin management panel as the list's pluginsFooter (FEA-4085 keeps desktop pack management reachable)", () => {
+    render(<AgentsView dataSource={makeStubDataSource()} />);
 
-    const { container } = render(
-      <AgentsView dataSource={makeStubDataSource()} />
-    );
-
-    // Nothing should be rendered — the flag guard returns null immediately.
-    expect(container.firstChild).toBeNull();
-    expect(screen.queryByTestId("agents-grouped-list")).toBeNull();
+    // The desktop adapter passes `<PluginsPanel />` as `pluginsFooter`; the
+    // stubbed list renders that prop, so the marker proves the wiring survives.
+    expect(screen.getByTestId("plugins-panel-marker")).toBeDefined();
   });
 });

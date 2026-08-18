@@ -1,0 +1,91 @@
+{
+  "name": "@repo/crewd",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable, harness-agnostic night-crew scheduler + cascade. Core is fs/CLI-free and importable by apps/desktop; the CLI and file store are separate entry points.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./model": {
+      "types": "./src/model.ts",
+      "default": "./src/model.ts"
+    },
+    "./store": {
+      "types": "./src/scheduler/store.ts",
+      "default": "./src/scheduler/store.ts"
+    },
+    "./file-lock": {
+      "types": "./src/scheduler/file-lock.ts",
+      "default": "./src/scheduler/file-lock.ts"
+    },
+    "./native-scheduled-tasks": {
+      "types": "./src/scheduler/native-scheduled-tasks.ts",
+      "default": "./src/scheduler/native-scheduled-tasks.ts"
+    },
+    "./night-crew-config": {
+      "types": "./src/scheduler/night-crew-config.ts",
+      "default": "./src/scheduler/night-crew-config.ts"
+    },
+    "./harness": {
+      "types": "./src/harness/index.ts",
+      "default": "./src/harness/index.ts"
+    },
+    "./dispatch": {
+      "types": "./src/dispatch.ts",
+      "default": "./src/dispatch.ts"
+    },
+    "./passes/review": {
+      "types": "./src/passes/review.ts",
+      "default": "./src/passes/review.ts"
+    },
+    "./passes/audit": {
+      "types": "./src/passes/audit.ts",
+      "default": "./src/passes/audit.ts"
+    },
+    "./passes/audit-workspace": {
+      "types": "./src/passes/audit-workspace.ts",
+      "default": "./src/passes/audit-workspace.ts"
+    },
+    "./passes/findings": {
+      "types": "./src/passes/findings.ts",
+      "default": "./src/passes/findings.ts"
+    },
+    "./clients/closedloop": {
+      "types": "./src/clients/closedloop.ts",
+      "default": "./src/clients/closedloop.ts"
+    },
+    "./clients/github": {
+      "types": "./src/clients/github.ts",
+      "default": "./src/clients/github.ts"
+    },
+    "./cli": {
+      "types": "./src/cli.ts",
+      "default": "./src/cli.ts"
+    }
+  },
+  "bin": {
+    "crewd": "./bin/crewd.mjs"
+  },
+  "scripts": {
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}' '--coverage.include=bin/**/*.{ts,tsx}'",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "cron-parser": "^4.9.0",
+    "tsx": "^4.21.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "^25.9.1",
+    "typescript": "^7.0.2",
+    "typescript6": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^4.1.9"
+  }
+}

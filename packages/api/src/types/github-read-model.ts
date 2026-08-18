@@ -1,5 +1,10 @@
 import type { ChecksStatus, ReviewDecision } from "./branch-checks";
 import type { GitHubPRState } from "./github";
+import type {
+  RepositoryDefaultAuthority,
+  RepositoryDefaultProvenance,
+  RepositoryDefaultUnavailableObservation,
+} from "./repository-default-identity";
 
 export const GitHubDataChannel = {
   LocalGit: "local_git",
@@ -33,6 +38,7 @@ export type GitHubProviderBudgetState =
 export const GitHubFetchCredentialType = {
   GitHubApp: "github_app",
   UserOAuth: "user_oauth",
+  Unauthenticated: "unauthenticated",
   // FEA-2732: the desktop's local `gh`/git credentials, used to sync PR (and
   // branch) facts for repos with no GitHub App. Distinct from the App
   // credential so webhook-wins provenance can tell the two producers apart.
@@ -101,6 +107,25 @@ export type GitHubRateLimitBudget = {
   state: GitHubProviderBudgetState;
 };
 
+/**
+ * PLN-1535 M0: a per-page hook so callers can measure the GraphQL `rateLimit`
+ * cost that the bundled PR read otherwise discards (today only `state` is read,
+ * to gate paging). The reader stays logging-agnostic — the caller supplies the
+ * route/context label and the sink. Reused by the M2 reconciler to feed the
+ * credential-pool budget from the same observation.
+ */
+export type GitHubBundledPullRequestsObservation = {
+  /** Zero-based page index within a single bundled read. */
+  page: number;
+  /** Pull requests returned on this page. */
+  itemCount: number;
+  rateLimit: GitHubRateLimitBudget;
+};
+
+export type GitHubBundledPullRequestsObserver = (
+  observation: GitHubBundledPullRequestsObservation
+) => void;
+
 export const GitHubBundledPullRequestsStopReason = {
   Complete: "complete",
   TargetFound: "target_found",
@@ -148,7 +173,17 @@ export type GitHubReadModelPullRequest = {
   updatedAt: string | null;
   author: string | null;
   source: GitHubReadModelSource;
+  /** Additive fork-head snapshot; absent for legacy callers or inaccessible heads. */
+  headRepository?: RepositoryDefaultAuthority;
+  /** Typed absence without substituting the base repository for an inaccessible head. */
+  headRepositoryUnavailable?: RepositoryDefaultUnavailableObservation;
 };
+
+/** Caller-owned provenance for a bounded GraphQL acquisition attempt. */
+export type GitHubRepositoryDefaultObservationContext = Omit<
+  RepositoryDefaultProvenance,
+  "source"
+>;
 
 export type GitHubBundledPullRequestsResult = {
   pullRequests: GitHubReadModelPullRequest[];

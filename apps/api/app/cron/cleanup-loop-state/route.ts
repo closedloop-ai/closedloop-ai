@@ -93,7 +93,7 @@ export const GET = async (request: Request): Promise<Response> => {
     } catch (err) {
       log.warn("[cleanup-loop-state] Failed to purge loop state", {
         loopId: loop.id,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     }
   }

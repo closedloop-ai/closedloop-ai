@@ -11,19 +11,25 @@ const {
   mockUseClerk,
   mockUseOrganization,
   mockUseOrganizationList,
+  mockUseUser,
 } = vi.hoisted(() => ({
   mockSetActive: vi.fn(),
   mockUseAuth: vi.fn(),
   mockUseClerk: vi.fn(),
   mockUseOrganization: vi.fn(),
   mockUseOrganizationList: vi.fn(),
+  mockUseUser: vi.fn(),
 }));
 
+// `useUser` is consumed transitively via StaffParsingBugFlagProvider, which
+// OrgIdentityProvider mounts on its render-children path (FEA-4347). These tests
+// only assert org routing, so a loaded non-staff user keeps that provider inert.
 vi.mock("@repo/auth/client", () => ({
   useAuth: mockUseAuth,
   useClerk: mockUseClerk,
   useOrganization: mockUseOrganization,
   useOrganizationList: mockUseOrganizationList,
+  useUser: mockUseUser,
 }));
 
 const { mockNotFound } = vi.hoisted(() => ({
@@ -56,6 +62,7 @@ describe("OrgIdentityProvider", () => {
       userMemberships: { data: [], isLoading: false },
       isLoaded: true,
     });
+    mockUseUser.mockReturnValue({ isLoaded: true, user: null });
   });
 
   it("renders children when the session org already matches the URL slug", () => {
@@ -187,6 +194,54 @@ describe("OrgIdentityProvider", () => {
     expect(screen.queryByText("child content")).not.toBeInTheDocument();
     expect(mockSetActive).not.toHaveBeenCalled();
     expect(mockNotFound).not.toHaveBeenCalled();
+  });
+
+  it("renders children immediately when the server says to bypass the client org gate", () => {
+    // ISS-4406: under AUTH_MODE=local_trusted the server holds a synthetic
+    // session but the browser has no Clerk session at all, so activeOrgSlug can
+    // never match and this component would spin forever. Mocks are set to the
+    // never-matching state on purpose — without the bypass this case renders a
+    // spinner, so the assertion cannot pass for the wrong reason.
+    mockUseAuth.mockReturnValue({ orgSlug: null, isLoaded: true });
+    mockUseOrganizationList.mockReturnValue({
+      userMemberships: { data: [], isLoading: false },
+      isLoaded: true,
+    });
+
+    render(
+      <OrgIdentityProvider bypassClientOrgGate orgSlug="closedloop-ai">
+        <div>child content</div>
+      </OrgIdentityProvider>
+    );
+
+    expect(screen.getByText("child content")).toBeInTheDocument();
+    expect(document.querySelector(".animate-spin")).not.toBeInTheDocument();
+    // The bypass short-circuits the gate only; it must not fire an org switch
+    // or a 404 against the synthetic session.
+    expect(mockSetActive).not.toHaveBeenCalled();
+    expect(mockNotFound).not.toHaveBeenCalled();
+  });
+
+  it("still gates on the client org when the bypass prop is omitted", () => {
+    // Same mock state as the bypass case above, with the prop left off: it
+    // defaults to false, so the client gate still runs and this non-member slug
+    // 404s. This is the paired negative — it proves the previous test passes
+    // because of the bypass, not because the mocks happened to be permissive.
+    mockUseAuth.mockReturnValue({ orgSlug: null, isLoaded: true });
+    mockUseOrganizationList.mockReturnValue({
+      userMemberships: { data: [], isLoading: false },
+      isLoaded: true,
+    });
+
+    expect(() =>
+      render(
+        <OrgIdentityProvider orgSlug="closedloop-ai">
+          <div>child content</div>
+        </OrgIdentityProvider>
+      )
+    ).toThrow("NEXT_NOT_FOUND");
+
+    expect(mockNotFound).toHaveBeenCalled();
   });
 
   it("does not switch while the active org is still loading", () => {

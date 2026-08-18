@@ -136,24 +136,30 @@ export function SubagentEffectivenessPanel({
         </div>
       </div>
 
-      <Table className="min-w-[720px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Agent</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="text-right">Duration</TableHead>
-            <TableHead className="text-right">Tool Uses</TableHead>
-            <TableHead className="text-right">Errors</TableHead>
-            <TableHead className="text-right">Events</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {flatNodes.map((node) => (
-            <AgentRow key={node.agent.externalAgentId} node={node} />
-          ))}
-        </TableBody>
-      </Table>
+      {/* FEA-3866: the 720px-floor tree table can't collapse to a phone width,
+          so it gets a horizontal-scroll affordance (stopgap) rather than
+          overflowing the page. A dedicated card fallback for this nested tree is
+          out of scope for Phase 3. */}
+      <div className="overflow-x-auto">
+        <Table className="min-w-[720px]">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Agent</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="text-right">Duration</TableHead>
+              <TableHead className="text-right">Tool Uses</TableHead>
+              <TableHead className="text-right">Errors</TableHead>
+              <TableHead className="text-right">Events</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {flatNodes.map((node) => (
+              <AgentRow key={node.agent.externalAgentId} node={node} />
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }

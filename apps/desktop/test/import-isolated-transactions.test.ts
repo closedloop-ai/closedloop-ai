@@ -8,7 +8,12 @@
  *   1. Tolerance + isolation: a mid-pipeline group failing (here: the
  *      token_events+costs group) does NOT abort the import — groups before it
  *      stay committed AND groups after it still run, and the import is flagged
- *      `incomplete` so the source is re-imported (not marked seen).
+ *      `incomplete` so the source is re-imported (not marked seen). A later
+ *      group may legitimately *read* the failed group's table (FEA-3636: the
+ *      analytics rollup's est_cost folds in a `SUM(...) FROM token_events`
+ *      premium); the fault is injected as a write-blocking trigger, not a
+ *      `DROP TABLE`, so that read still resolves against the intact schema
+ *      table and coalesces to +0 — matching the real production failure mode.
  *   2. Gating: if the session+main-agent group (the FK parent) fails, the import
  *      is reported failed and no child rows are written.
  *   3. Idempotency: re-importing the same session is a no-op (skipped) and leaves
@@ -86,10 +91,21 @@ test("a mid-pipeline group failure does not abort the import; earlier and later 
   const logs: string[] = [];
   const db = await openDb(dir, (m) => logs.push(m));
   try {
-    // Fault injection: remove the token_events table so the token_events+costs
-    // group (group 4) fails. No group BEFORE or AFTER it touches token_events,
-    // so the failure is contained to that one group's transaction.
-    await db.run("DROP TABLE token_events");
+    // Fault injection: make every INSERT into token_events raise so the
+    // token_events+costs group (group 4) fails, WITHOUT dropping the table.
+    // This mirrors the real production failure mode — a bad write against an
+    // intact schema table — and keeps the isolation guarantee honest: a later
+    // group that legitimately *reads* token_events (FEA-3636: the analytics
+    // rollup's est_cost folds in the 1h cache-write TTL premium, a
+    // `SUM(...) FROM token_events` correlated read) still finds the table and,
+    // seeing no rows for this session, coalesces the premium to +0 and commits.
+    // (Dropping the table would fault the reader's prepare step too — a mode
+    // that cannot occur in production, where the schema table always exists.)
+    await db.run(
+      `CREATE TRIGGER _fault_block_token_events
+         BEFORE INSERT ON token_events
+         BEGIN SELECT RAISE(ABORT, 'fault: token_events write blocked'); END`
+    );
 
     const result = await db.importer.importSession(
       makeSession("sess-tolerance"),
@@ -149,6 +165,53 @@ test("a mid-pipeline group failure does not abort the import; earlier and later 
     assert.ok(
       logs.some((m) => m.includes("token_events") && m.includes("failed")),
       "the token_events group failure was logged"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-2273: a metrics-emission failure is best-effort — the import still completes and the analytics rollup commits", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "import-isolated-metrics-"));
+  const logs: string[] = [];
+  const db = await openDb(dir, (m) => logs.push(m));
+  try {
+    // Let the boot backfill settle, then remove the metrics table so ONLY the
+    // activity-metrics emission fails — every other group is intact.
+    await db.whenBootMaintenanceSettled();
+    await db.run("DROP TABLE session_activity_metrics");
+
+    const result = await db.importer.importSession(
+      makeSession("sess-metrics-drop"),
+      "codex"
+    );
+
+    // Best-effort: the metrics failure neither fails NOR flags the import
+    // incomplete — the analytics rollup is primary and a re-import must not be
+    // forced (the version-aware backfill refreshes metrics later instead).
+    assert.notEqual(result.failed, true, "import must not be marked failed");
+    assert.notEqual(
+      result.incomplete,
+      true,
+      "a best-effort metrics failure must not force a re-import"
+    );
+    // The primary analytics rollup (last group) still committed.
+    assert.equal(
+      await countRows(
+        db,
+        "SELECT COUNT(*) AS n FROM session_analytics WHERE session_id = $1",
+        "sess-metrics-drop"
+      ),
+      1,
+      "analytics rollup committed despite the metrics-emission failure"
+    );
+    // The failure was surfaced (best-effort log), not swallowed silently.
+    assert.ok(
+      logs.some(
+        (m) => m.includes("activity_metrics") && m.includes("best-effort")
+      ),
+      `expected a best-effort metrics log, got: ${logs.join(" | ")}`
     );
   } finally {
     await db.close();

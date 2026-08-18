@@ -1,24 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { afterEach, mock, test } from "node:test";
+import { after, afterEach, test } from "node:test";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
-import {
-  BranchCommentsFailureReason,
-  BranchCommentsState,
-  BranchPrCommentKind,
-  encodeBranchId,
-} from "@repo/api/src/types/branch.js";
-import type { LocalJob, LocalJobStatus } from "../src/main/job-store.js";
-import { JobStore } from "../src/main/job-store.js";
-import { Observability } from "../src/main/observability.js";
-import type { EnrichedTelemetryEvent } from "../src/main/telemetry-service.js";
+import { vi } from "vitest";
+import type { LocalJob, LocalJobStatus } from "../src/main/jobs/job-store.js";
+import { JobStore } from "../src/main/jobs/job-store.js";
+import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import type { EnrichedTelemetryEvent } from "../src/main/telemetry/telemetry-service.js";
 import { saveCodexChatSession } from "../src/server/operations/codex.js";
 import {
   _setKnownBinaryLocationsForTesting,
@@ -45,19 +39,25 @@ import {
 } from "../src/server/router.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
+  _setKnownBinaryLocationsForResolverTest,
   resetShellPathCache,
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import { dispatchMockRequest } from "./gateway-server-test-doubles.js";
+import {
+  CLAUDE_CODE_OTEL_ENV_KEYS,
+  installHermeticClaudeCodeOtelEnv,
+  READY_CLAUDE_CODE_OTEL_ENV,
+} from "./helpers/ambient-otel-env.js";
+import {
+  buildChatSessionRow,
+  buildGatewayChatPayload,
+} from "./helpers/gateway-chat-fixtures.js";
 
 const GENERIC_JSON_LIMIT_BYTES = 256 * 1024;
 const SYMPHONY_LOOP_LIMIT_BYTES = 1024 * 1024;
 const RELAY_DISPATCH_LIMIT_BYTES = 1_048_576;
-const OCTO_REPO_BRANCH_ID = "octo%2Frepo::feature%2Fx";
-const LOCAL_BRANCH_ID = encodeBranchId({
-  repoFullName: null,
-  branchName: "feature/x",
-});
 
 const serversToClose: DesktopGatewayServer[] = [];
 const blockersToClose: net.Server[] = [];
@@ -69,72 +69,8 @@ const originalHome = process.env.HOME;
 const originalPath = process.env.PATH;
 const originalFetch = globalThis.fetch;
 
-class TestResponse extends EventEmitter {
-  statusCode = 200;
-  finished = false;
-  socket = { setNoDelay: () => {} };
-  readonly headers = new Map<string, string | number | readonly string[]>();
-  readonly chunks: Buffer[] = [];
-
-  setHeader(name: string, value: string | number | readonly string[]): void {
-    this.headers.set(name.toLowerCase(), value);
-  }
-
-  flushHeaders(): void {}
-
-  write(
-    chunk: unknown,
-    encodingOrCallback?: BufferEncoding | ((error?: Error) => void)
-  ): boolean {
-    this.appendChunk(chunk, encodingOrCallback);
-    return true;
-  }
-
-  end(
-    chunk?: unknown,
-    encodingOrCallback?: BufferEncoding | (() => void)
-  ): this {
-    if (chunk != null && typeof chunk !== "function") {
-      this.appendChunk(chunk, encodingOrCallback);
-    }
-    this.finished = true;
-    this.emit("finish");
-    return this;
-  }
-
-  text(): string {
-    return Buffer.concat(this.chunks).toString("utf-8");
-  }
-
-  json(): Record<string, unknown> {
-    return JSON.parse(this.text()) as Record<string, unknown>;
-  }
-
-  private appendChunk(
-    chunk: unknown,
-    encodingOrCallback?:
-      | BufferEncoding
-      | ((error?: Error) => void)
-      | (() => void)
-  ): void {
-    if (typeof chunk === "string") {
-      this.chunks.push(
-        Buffer.from(
-          chunk,
-          typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8"
-        )
-      );
-      return;
-    }
-    if (Buffer.isBuffer(chunk)) {
-      this.chunks.push(chunk);
-      return;
-    }
-    if (chunk instanceof Uint8Array) {
-      this.chunks.push(Buffer.from(chunk));
-    }
-  }
-}
+// ISS-5114: these routes read the REAL process.env — see the helper.
+installHermeticClaudeCodeOtelEnv(after);
 
 afterEach(async () => {
   globalThis.fetch = originalFetch;
@@ -158,6 +94,8 @@ afterEach(async () => {
     process.env.PATH = originalPath;
   }
   resetShellPathCache();
+  // Ensure no test leaks a known-location resolver override into the next one.
+  _setKnownBinaryLocationsForResolverTest(null);
 
   for (const server of serversToClose.splice(0)) {
     await server.stop();
@@ -192,7 +130,7 @@ afterEach(async () => {
   Observability.reset();
   _setRunCommandForTesting();
   _setPluginEnableCommandForTesting();
-  mock.restoreAll();
+  vi.restoreAllMocks();
 });
 
 function createGatewayRouter(
@@ -206,6 +144,14 @@ function createGatewayRouter(
     capabilities: EMPTY_CAPABILITIES,
     getActivePort: () => 0,
     getGatewayId: () => "test-gateway-id",
+    // `schedulers` is a REQUIRED router option — `DesktopGatewayServer` always
+    // hands the router a real context (`options.schedulers ?? new
+    // LoopSchedulerContext()`), and the loop routes it feeds take it as
+    // non-optional. Omitting it here handed those routes `undefined`, so this
+    // fixture built a router production can never construct. A fresh context
+    // holds only empty timer maps until a loop starts one, so no suite here
+    // schedules anything.
+    schedulers: new LoopSchedulerContext(),
     ...overrides,
   });
 }
@@ -246,9 +192,7 @@ test("gateway chat route wires ready Claude Code OTel status through default pro
   }) as typeof fetch;
 
   let capturedEnv: NodeJS.ProcessEnv | undefined;
-  mock.method(
-    ProcessManager.prototype,
-    "spawnStreaming",
+  vi.spyOn(ProcessManager.prototype, "spawnStreaming").mockImplementation(
     async (options: StreamingSpawnOptions): Promise<StreamingProcessHandle> => {
       capturedEnv = options.env;
       setImmediate(() => {
@@ -354,9 +298,7 @@ test("gateway chat route keeps ready OTel status after a later router has no get
   }) as typeof fetch;
 
   const capturedEnvs: NodeJS.ProcessEnv[] = [];
-  mock.method(
-    ProcessManager.prototype,
-    "spawnStreaming",
+  vi.spyOn(ProcessManager.prototype, "spawnStreaming").mockImplementation(
     async (options: StreamingSpawnOptions): Promise<StreamingProcessHandle> => {
       capturedEnvs.push(options.env ?? {});
       const sessionId = `sess-router-${capturedEnvs.length}`;
@@ -463,9 +405,7 @@ test("gateway chat route keeps no-status OTel behavior after a later ready route
   }) as typeof fetch;
 
   const capturedEnvs: NodeJS.ProcessEnv[] = [];
-  mock.method(
-    ProcessManager.prototype,
-    "spawnStreaming",
+  vi.spyOn(ProcessManager.prototype, "spawnStreaming").mockImplementation(
     async (options: StreamingSpawnOptions): Promise<StreamingProcessHandle> => {
       capturedEnvs.push(options.env ?? {});
       const sessionId = `sess-router-${capturedEnvs.length}`;
@@ -514,1503 +454,17 @@ test("gateway chat route keeps no-status OTel behavior after a later ready route
   assertClaudeCodeOtelEnv(readyEnv);
 });
 
-async function dispatchMockRequest(input: {
-  router: GatewayRouter;
-  method?: string;
-  path: string;
-  headers?: http.IncomingHttpHeaders;
-  chunks?: Array<string | Buffer>;
-  remoteAddress?: string;
-}): Promise<TestResponse> {
-  const request = Readable.from(input.chunks ?? []) as Readable & {
-    method?: string;
-    url?: string;
-    headers: http.IncomingHttpHeaders;
-    socket: { remoteAddress?: string };
-  };
-  request.method = input.method ?? "POST";
-  request.url = input.path;
-  request.headers = input.headers ?? {};
-  request.socket = { remoteAddress: input.remoteAddress ?? "127.0.0.1" };
-
-  const response = new TestResponse();
-  await input.router.handle(
-    request as unknown as http.IncomingMessage,
-    response as unknown as http.ServerResponse
-  );
-  if (!response.finished) {
-    await new Promise<void>((resolve) =>
-      response.once("finish", () => resolve())
-    );
-  }
-  return response;
-}
-
-function buildChatSessionRow(
-  overrides: Record<string, unknown> = {}
-): Record<string, unknown> {
-  return {
-    id: "chat-1",
-    chatKey: "chat-key-1",
-    provider: "claude",
-    model: "claude-sonnet-4-5",
-    context: null,
-    messages: [
-      {
-        id: "u1",
-        role: "user",
-        content: "hi",
-        timestamp: "2026-06-17T00:00:00.000Z",
-      },
-    ],
-    sessionId: null,
-    sessionSourceId: null,
-    createdAt: "2026-06-17T00:00:00.000Z",
-    updatedAt: "2026-06-17T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-function buildGatewayChatPayload(): Record<string, unknown> {
-  return {
-    chatKey: "chat-key-1",
-    userMessage: {
-      id: "u1",
-      role: "user",
-      content: "hi",
-      timestamp: "2026-06-17T00:00:00.000Z",
-    },
-    provider: "claude",
-    apiBaseUrl: "https://api.example.test",
-    apiAuthToken: "token-xyz",
-  };
-}
-
 function assertClaudeCodeOtelEnv(env: NodeJS.ProcessEnv): void {
-  assert.equal(env[ClaudeCodeOtelEnvVar.EnableTelemetry], "1");
-  assert.equal(env[ClaudeCodeOtelEnvVar.MetricsExporter], "otlp");
-  assert.equal(env[ClaudeCodeOtelEnvVar.LogsExporter], "otlp");
-  assert.equal(env[ClaudeCodeOtelEnvVar.OtlpProtocol], "http/protobuf");
-  assert.equal(env[ClaudeCodeOtelEnvVar.OtlpEndpoint], "http://127.0.0.1:4318");
+  for (const [key, value] of Object.entries(READY_CLAUDE_CODE_OTEL_ENV)) {
+    assert.equal(env[key], value);
+  }
 }
 
 function assertNoClaudeCodeOtelEnv(env: NodeJS.ProcessEnv): void {
-  for (const key of Object.values(ClaudeCodeOtelEnvVar)) {
+  for (const key of CLAUDE_CODE_OTEL_ENV_KEYS) {
     assert.equal(env[key], undefined, `${key} should not be injected`);
   }
 }
-
-test("gateway PR files route omits null previous_filename from non-renames", async () => {
-  const { server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/a.ts", additions: 1, deletions: 2, status: "modified", previous_filename: null }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/files?owner=octo&repo=repo&number=42`
-  );
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    files: [
-      {
-        filename: "src/a.ts",
-        additions: 1,
-        deletions: 2,
-        status: "modified",
-      },
-    ],
-  });
-});
-
-test("gateway PR file-diff route validates membership before reading contents", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/new.ts", additions: 2, deletions: 1, status: "renamed", previous_filename: "src/old.ts" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.log(JSON.stringify({ mergeBase: "merge-base-sha" }));
-} else if (route === "repos/octo/repo/contents/src/old.ts?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("old content").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/new.ts?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("new content").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/new.ts")}&previousPath=${encodeURIComponent("src/old.ts")}`
-  );
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    path: "src/new.ts",
-    oldContent: "old content",
-    newContent: "new content",
-    isNew: false,
-    isDeleted: false,
-    isBinary: false,
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls[0]?.[1], "repos/octo/repo/pulls/42/files");
-  assert.equal(calls[1]?.[1], "repos/octo/repo/pulls/42");
-  assert.equal(calls[2]?.[1], "repos/octo/repo/compare/base-sha...head-sha");
-  assert.equal(
-    calls[3]?.[1],
-    "repos/octo/repo/contents/src/old.ts?ref=merge-base-sha"
-  );
-  assert.equal(
-    calls[4]?.[1],
-    "repos/octo/repo/contents/src/new.ts?ref=head-sha"
-  );
-});
-
-test("gateway PR file-diff route rejects same-repo non-current PR before provider calls", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-console.error("provider should not be called");
-process.exit(1);
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=43&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/a.ts")}`
-  );
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(await response.json(), {
-    error: "branch scope does not match pull request",
-  });
-  assert.deepEqual(await readGhCallLog(logPath), []);
-});
-
-test("gateway PR comments route validates branch PR identity before provider calls", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-console.error("provider should not be called");
-process.exit(1);
-`);
-
-  const response = await fetchPrComments(server, 43);
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(await response.json(), {
-    error: "branch scope does not match pull request",
-    reason: BranchCommentsFailureReason.ForbiddenMismatch,
-  });
-  assert.deepEqual(await readGhCallLog(logPath), []);
-});
-
-test("gateway PR comments route returns read-only bounded comments for the branch PR", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: { nodes: [{
-          id: "IC_1",
-          databaseId: 101,
-          author: { login: "reviewer" },
-          body: "Looks good",
-          createdAt: "2026-07-03T12:00:00.000Z",
-          url: "https://github.com/octo/repo/pull/42#issuecomment-101"
-        }] },
-        reviews: { nodes: [] },
-        reviewThreads: { nodes: [] }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.Populated);
-  assert.equal(body.prNumber, 42);
-  assert.equal(body.comments.length, 1);
-  assert.equal(body.comments[0].body, "Looks good");
-  assert.equal(body.comments[0].kind, BranchPrCommentKind.Issue);
-  assert.equal(body.comments[0].providerCommentId, "101");
-  assert.deepEqual(Object.keys(body).sort(), [
-    "branchId",
-    "budget",
-    "comments",
-    "mixedProjection",
-    "prNumber",
-    "prUrl",
-    "providerProofedAt",
-    "stale",
-    "state",
-  ]);
-  assert.deepEqual(Object.keys(body.comments[0]).sort(), [
-    "author",
-    "body",
-    "bodyTruncated",
-    "createdAt",
-    "id",
-    "inReplyToId",
-    "kind",
-    "line",
-    "path",
-    "providerCommentId",
-    "providerNodeId",
-    "providerUrl",
-    "resolved",
-    "stale",
-    "threadId",
-    "updatedAt",
-  ]);
-  assert.equal(JSON.stringify(body).includes("canReply"), false);
-  assert.equal(JSON.stringify(body).includes("replyUrl"), false);
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0]?.slice(0, 2), ["api", "graphql"]);
-});
-
-test("gateway PR comments route follows provider pages and reports truncation", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const secondPage = getVariable("issueAfter") === "issue-cursor-1";
-  const nodes = Array.from({ length: secondPage ? 1 : 50 }, (_, index) => {
-    const id = secondPage ? 51 : index + 1;
-    return {
-      id: "IC_" + id,
-      databaseId: 100 + id,
-      author: { login: "reviewer" },
-      body: "Issue comment " + id,
-      createdAt: "2026-07-03T12:00:00.000Z",
-      url: "https://github.com/octo/repo/pull/42#issuecomment-" + id
-    };
-  });
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: {
-            hasNextPage: !secondPage,
-            endCursor: secondPage ? null : "issue-cursor-1"
-          },
-          nodes
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: []
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: []
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.Populated);
-  assert.equal(body.comments.length, 51);
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls.length, 2);
-});
-
-test("gateway PR comments route counts duplicate review-thread nodes once for pagination budget", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const secondIssuePage = getVariable("issueAfter") === "issue-dup-cursor";
-  const issueNodes = Array.from({ length: secondIssuePage ? 1 : 48 }, (_, index) => {
-    const id = secondIssuePage ? 49 : index + 1;
-    return {
-      id: "IC_UNIQUE_" + id,
-      databaseId: 100 + id,
-      author: { login: "reviewer" },
-      body: "Issue comment " + id,
-      createdAt: "2026-07-03T12:00:00.000Z",
-      url: "https://github.com/octo/repo/pull/42#issuecomment-" + id
-    };
-  });
-  const duplicatedReviewNodes = Array.from({ length: 50 }, (_, index) => ({
-    id: "RC_SHARED_" + index,
-    databaseId: 200 + index,
-    author: { login: "reviewer" },
-    body: "Inline review comment " + index,
-    createdAt: "2026-07-03T12:01:00.000Z",
-    path: "src/review.ts",
-    line: 5,
-    originalLine: 5,
-    url: "https://github.com/octo/repo/pull/42#discussion_r" + (200 + index)
-  }));
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: {
-            hasNextPage: !secondIssuePage,
-            endCursor: secondIssuePage ? null : "issue-dup-cursor"
-          },
-          nodes: issueNodes
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "REV_UNIQUE",
-            author: { login: "reviewer" },
-            body: "Review body",
-            createdAt: "2026-07-03T12:00:00.000Z",
-            comments: {
-              pageInfo: { hasNextPage: false, endCursor: null },
-              nodes: duplicatedReviewNodes
-            }
-          }]
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "THREAD_UNIQUE",
-            comments: {
-              pageInfo: { hasNextPage: false, endCursor: null },
-              nodes: duplicatedReviewNodes
-            }
-          }]
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-  const calls = await readGhCallLog(logPath);
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.Populated);
-  assert.equal(body.comments.length, 100);
-  assert.equal(body.budget.providerTruncated, false);
-  assert.equal(body.budget.omittedComments, 0);
-  assert.ok(
-    body.comments.some(
-      (comment: { body: string }) => comment.body === "Issue comment 49"
-    )
-  );
-  assert.equal(calls.length, 2);
-});
-
-test("gateway PR comments route does not let repeated exhausted top-level pages consume nested budget", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const nodeId = getVariable("id");
-  const commentsAfter = getVariable("commentsAfter");
-  if (nodeId === "REV_DUP" && commentsAfter === "review-dup-cursor") {
-    console.log(JSON.stringify({
-      node: {
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "RC_DUP_EXTRA",
-            databaseId: 400,
-            author: { login: "reviewer" },
-            body: "Inline review comment final",
-            createdAt: "2026-07-03T12:04:00.000Z",
-            path: "src/review.ts",
-            line: 10,
-            originalLine: 10,
-            url: "https://github.com/octo/repo/pull/42#discussion_r400"
-          }]
-        }
-      }
-    }));
-    return;
-  }
-  if (nodeId === "THREAD_DUP" && commentsAfter === "thread-dup-cursor") {
-    console.log(JSON.stringify({
-      node: {
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "TRC_DUP_EXTRA",
-            databaseId: 500,
-            author: { login: "maintainer" },
-            body: "Thread reply final",
-            createdAt: "2026-07-03T12:05:00.000Z",
-            path: "src/thread.ts",
-            line: 12,
-            originalLine: 12,
-            url: "https://github.com/octo/repo/pull/42#discussion_r500",
-            replyTo: { databaseId: 476 }
-          }]
-        }
-      }
-    }));
-    return;
-  }
-  if (nodeId) {
-    console.error("unexpected nested query " + JSON.stringify(args));
-    process.exit(1);
-  }
-
-  const secondIssuePage = getVariable("issueAfter") === "issue-dup-cursor";
-  const issueNodes = Array.from({ length: secondIssuePage ? 1 : 50 }, (_, index) => {
-    const id = secondIssuePage ? 51 : index + 1;
-    return {
-      id: "IC_DUP_" + id,
-      databaseId: 100 + id,
-      author: { login: "reviewer" },
-      body: "Issue comment " + id,
-      createdAt: "2026-07-03T12:00:00.000Z",
-      url: "https://github.com/octo/repo/pull/42#issuecomment-" + id
-    };
-  });
-  const reviewNodes = Array.from({ length: 23 }, (_, index) => ({
-    id: "RC_DUP_" + index,
-    databaseId: 200 + index,
-    author: { login: "reviewer" },
-    body: "Inline review comment " + index,
-    createdAt: "2026-07-03T12:01:00.000Z",
-    path: "src/review.ts",
-    line: 5,
-    originalLine: 5,
-    url: "https://github.com/octo/repo/pull/42#discussion_r" + (200 + index)
-  }));
-  const threadNodes = Array.from({ length: 23 }, (_, index) => ({
-    id: "TRC_DUP_" + index,
-    databaseId: 300 + index,
-    author: { login: "maintainer" },
-    body: "Thread reply " + index,
-    createdAt: "2026-07-03T12:02:00.000Z",
-    path: "src/thread.ts",
-    line: 7,
-    originalLine: 7,
-    url: "https://github.com/octo/repo/pull/42#discussion_r" + (300 + index),
-    replyTo: { databaseId: 200 }
-  }));
-
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: {
-            hasNextPage: !secondIssuePage,
-            endCursor: secondIssuePage ? null : "issue-dup-cursor"
-          },
-          nodes: issueNodes
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "REV_DUP",
-            author: { login: "reviewer" },
-            body: "Review body",
-            createdAt: "2026-07-03T12:00:00.000Z",
-            comments: {
-              pageInfo: { hasNextPage: true, endCursor: "review-dup-cursor" },
-              nodes: reviewNodes
-            }
-          }]
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "THREAD_DUP",
-            comments: {
-              pageInfo: { hasNextPage: true, endCursor: "thread-dup-cursor" },
-              nodes: threadNodes
-            }
-          }]
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-  const calls = await readGhCallLog(logPath);
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.Populated);
-  assert.equal(body.comments.length, 100);
-  assert.equal(body.budget.providerTruncated, false);
-  assert.equal(body.budget.omittedComments, 0);
-  assert.ok(
-    body.comments.some(
-      (comment: { body: string }) =>
-        comment.body === "Inline review comment final"
-    )
-  );
-  assert.ok(
-    body.comments.some(
-      (comment: { body: string }) => comment.body === "Thread reply final"
-    )
-  );
-  assert.equal(calls.length, 4);
-  assert.equal(calls.filter((call) => call.includes("id=REV_DUP")).length, 1);
-  assert.equal(
-    calls.filter((call) => call.includes("id=THREAD_DUP")).length,
-    1
-  );
-});
-
-test("gateway PR comments route returns typed provider failure responses", async () => {
-  const auth = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.error("gh auth login required");
-  process.exit(1);
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const authResponse = await fetchPrComments(auth.server, 42);
-  assert.equal(authResponse.status, 401);
-  assert.deepEqual(await authResponse.json(), {
-    error: "GitHub CLI not authenticated. Run 'gh auth login' in terminal.",
-    reason: BranchCommentsFailureReason.Auth,
-  });
-
-  const rate = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.error("API rate limit exceeded");
-  process.exit(1);
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const rateResponse = await fetchPrComments(rate.server, 42);
-  assert.equal(rateResponse.status, 503);
-  assert.deepEqual(await rateResponse.json(), {
-    error: "GitHub rate limit reached. Try again later.",
-    reason: BranchCommentsFailureReason.RateLimit,
-  });
-
-  const secondary = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.error("secondary rate limit");
-  process.exit(1);
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const secondaryResponse = await fetchPrComments(secondary.server, 42);
-  assert.equal(secondaryResponse.status, 503);
-  assert.deepEqual(await secondaryResponse.json(), {
-    error: "GitHub secondary rate limit reached. Try again later.",
-    reason: BranchCommentsFailureReason.SecondaryLimit,
-  });
-
-  const timeout = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.error("request timed out");
-  process.exit(1);
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const timeoutResponse = await fetchPrComments(timeout.server, 42);
-  assert.equal(timeoutResponse.status, 503);
-  assert.deepEqual(await timeoutResponse.json(), {
-    error: "GitHub request timed out. Try again.",
-    reason: BranchCommentsFailureReason.Timeout,
-  });
-
-  const invalid = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.log("{not valid json");
-  return;
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const invalidResponse = await fetchPrComments(invalid.server, 42);
-  assert.equal(invalidResponse.status, 503);
-  assert.deepEqual(await invalidResponse.json(), {
-    error: "GitHub returned an invalid response.",
-    reason: BranchCommentsFailureReason.ProviderUnavailable,
-  });
-
-  const unavailable = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.error("ENOTFOUND api.github.com");
-  process.exit(1);
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const unavailableResponse = await fetchPrComments(unavailable.server, 42);
-  assert.equal(unavailableResponse.status, 503);
-  assert.deepEqual(await unavailableResponse.json(), {
-    error: "GitHub CLI unavailable. Ensure gh is installed and authenticated.",
-    reason: BranchCommentsFailureReason.ProviderUnavailable,
-  });
-
-  const notFound = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  console.log(JSON.stringify({ repository: { pullRequest: null } }));
-  return;
-}
-console.error("unexpected args " + JSON.stringify(args));
-process.exit(1);
-`);
-  const notFoundResponse = await fetchPrComments(notFound.server, 42);
-  assert.equal(notFoundResponse.status, 404);
-  assert.deepEqual(await notFoundResponse.json(), {
-    error: "PR #42 not found",
-    reason: BranchCommentsFailureReason.NotFound,
-  });
-});
-
-test("gateway PR comments route follows nested review and thread comment pages", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const nodeId = getVariable("id");
-  const commentsAfter = getVariable("commentsAfter");
-  if (nodeId === "REV_1" && commentsAfter === "review-cursor-1") {
-    console.log(JSON.stringify({
-      node: {
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "RC_2",
-            databaseId: 202,
-            author: { login: "reviewer" },
-            body: "Inline review comment page 2",
-            createdAt: "2026-07-03T12:01:00.000Z",
-            path: "src/a.ts",
-            line: 5,
-            originalLine: 5,
-            url: "https://github.com/octo/repo/pull/42#discussion_r202"
-          }]
-        }
-      }
-    }));
-    return;
-  }
-  if (nodeId === "THREAD_1" && commentsAfter === "thread-cursor-1") {
-    console.log(JSON.stringify({
-      node: {
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "TRC_2",
-            databaseId: 302,
-            author: { login: "maintainer" },
-            body: "Thread reply page 2",
-            createdAt: "2026-07-03T12:03:00.000Z",
-            path: "src/b.ts",
-            line: 8,
-            originalLine: 8,
-            url: "https://github.com/octo/repo/pull/42#discussion_r302",
-            replyTo: { databaseId: 301 }
-          }]
-        }
-      }
-    }));
-    return;
-  }
-  if (nodeId) {
-    console.error("unexpected nested query " + JSON.stringify(args));
-    process.exit(1);
-  }
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: []
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "REV_1",
-            author: { login: "reviewer" },
-            body: "",
-            createdAt: "2026-07-03T12:00:00.000Z",
-            comments: {
-              pageInfo: { hasNextPage: true, endCursor: "review-cursor-1" },
-              nodes: [{
-                id: "RC_1",
-                databaseId: 201,
-                author: { login: "reviewer" },
-                body: "Inline review comment",
-                createdAt: "2026-07-03T12:00:00.000Z",
-                path: "src/a.ts",
-                line: 4,
-                originalLine: 4,
-                url: "https://github.com/octo/repo/pull/42#discussion_r201"
-              }]
-            }
-          }]
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "THREAD_1",
-            comments: {
-              pageInfo: { hasNextPage: true, endCursor: "thread-cursor-1" },
-              nodes: [{
-                id: "TRC_1",
-                databaseId: 301,
-                author: { login: "maintainer" },
-                body: "Thread reply page 1",
-                createdAt: "2026-07-03T12:02:00.000Z",
-                path: "src/b.ts",
-                line: 7,
-                originalLine: 7,
-                url: "https://github.com/octo/repo/pull/42#discussion_r301",
-                replyTo: { databaseId: 201 }
-              }]
-            }
-          }]
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.Populated);
-  assert.equal(body.budget.providerTruncated, false);
-  assert.equal(body.budget.omittedComments, 0);
-  assert.deepEqual(
-    body.comments.map((comment: { body: string }) => comment.body).sort(),
-    [
-      "Inline review comment",
-      "Inline review comment page 2",
-      "Thread reply page 1",
-      "Thread reply page 2",
-    ]
-  );
-  assert.deepEqual(
-    body.comments.map((comment: { kind: BranchPrCommentKind }) => comment.kind),
-    [
-      BranchPrCommentKind.ReviewReply,
-      BranchPrCommentKind.ReviewReply,
-      BranchPrCommentKind.Review,
-      BranchPrCommentKind.Review,
-    ]
-  );
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls.length, 3);
-  assert.ok(calls.some((call) => call.includes("id=REV_1")));
-  assert.ok(calls.some((call) => call.includes("id=THREAD_1")));
-});
-
-test("gateway PR comments route reports truncation when nested pages exceed the bound", async () => {
-  const { server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const nodeId = getVariable("id");
-  const commentsAfter = getVariable("commentsAfter");
-  if (nodeId === "REV_1" && commentsAfter === "review-cursor-1") {
-    console.log(JSON.stringify({
-      node: {
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 50 }, (_, index) => ({
-            id: "RC_EXTRA_" + index,
-            databaseId: 300 + index,
-            author: { login: "reviewer" },
-            body: "Overflow inline " + index,
-            createdAt: "2026-07-03T12:01:00.000Z",
-            path: "src/a.ts",
-            line: 5,
-            originalLine: 5,
-            url: "https://github.com/octo/repo/pull/42#discussion_r" + (300 + index)
-          }))
-        }
-      }
-    }));
-    return;
-  }
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 49 }, (_, index) => ({
-            id: "IC_" + index,
-            databaseId: 100 + index,
-            author: { login: "reviewer" },
-            body: "Issue comment " + index,
-            createdAt: "2026-07-03T12:00:00.000Z",
-            url: "https://github.com/octo/repo/pull/42#issuecomment-" + index
-          }))
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "REV_1",
-            author: { login: "reviewer" },
-            body: "",
-            createdAt: "2026-07-03T12:00:00.000Z",
-            comments: {
-              pageInfo: { hasNextPage: true, endCursor: "review-cursor-1" },
-              nodes: Array.from({ length: 50 }, (_, index) => ({
-                id: "RC_" + index,
-                databaseId: 200 + index,
-                author: { login: "reviewer" },
-                body: "Inline review comment " + index,
-                createdAt: "2026-07-03T12:00:00.000Z",
-                path: "src/a.ts",
-                line: 4,
-                originalLine: 4,
-                url: "https://github.com/octo/repo/pull/42#discussion_r" + (200 + index)
-              }))
-            }
-          }]
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: []
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.OverLimitTruncated);
-  assert.equal(body.budget.providerTruncated, true);
-  assert.equal(body.budget.omittedComments, 49);
-  assert.equal(body.comments.length, 100);
-});
-
-test("gateway PR comments route stops nested pagination at the comment bound", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const nodeId = getVariable("id");
-  if (nodeId !== null) {
-    console.error("unexpected nested comments query for " + nodeId);
-    process.exit(1);
-  }
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 100 }, (_, index) => ({
-            id: "IC_BOUND_" + index,
-            databaseId: 100 + index,
-            author: { login: "reviewer" },
-            body: "Issue comment " + index,
-            createdAt: "2026-07-03T12:00:00.000Z",
-            url: "https://github.com/octo/repo/pull/42#issuecomment-" + index
-          }))
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [{
-            id: "REV_BOUND",
-            author: { login: "reviewer" },
-            body: "",
-            createdAt: "2026-07-03T12:00:00.000Z"
-          }]
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: []
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-  const calls = await readGhCallLog(logPath);
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.OverLimitTruncated);
-  assert.equal(body.budget.providerTruncated, true);
-  assert.equal(body.budget.omittedComments, 1);
-  assert.equal(body.comments.length, 100);
-  assert.equal(calls.length, 1);
-});
-
-test("gateway PR comments route does not fetch nested review or thread comments past the global comment bound", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-if (args[1] === "graphql") {
-  const getVariable = (key) => {
-    const prefix = key + "=";
-    const value = args.find((arg) => arg.startsWith(prefix));
-    return value ? value.slice(prefix.length) : null;
-  };
-  const nodeId = getVariable("id");
-  if (nodeId !== null) {
-    if (nodeId.startsWith("REV_")) {
-      const reviewIndex = Number(nodeId.slice("REV_".length));
-      console.log(JSON.stringify({
-        node: {
-          comments: {
-            pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: [{
-              id: "RC_BOUND_" + reviewIndex,
-              databaseId: 900 + reviewIndex,
-              author: { login: "reviewer" },
-              body: reviewIndex === 49 ? "Nested final budget comment" : "Nested review comment " + reviewIndex,
-              createdAt: "2026-07-03T12:00:00.000Z",
-              path: "src/a.ts",
-              line: 4,
-              originalLine: 4,
-              url: "https://github.com/octo/repo/pull/42#discussion_r" + (900 + reviewIndex)
-            }]
-          }
-        }
-      }));
-      return;
-    }
-    console.error("unexpected nested comments query for " + nodeId);
-    process.exit(1);
-  }
-  console.log(JSON.stringify({
-    repository: {
-      pullRequest: {
-        number: 42,
-        url: "https://github.com/octo/repo/pull/42",
-        comments: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 50 }, (_, index) => ({
-            id: "IC_MULTI_BOUND_" + index,
-            databaseId: 100 + index,
-            author: { login: "reviewer" },
-            body: "Issue comment " + index,
-            createdAt: "2026-07-03T12:00:00.000Z",
-            url: "https://github.com/octo/repo/pull/42#issuecomment-" + index
-          }))
-        },
-        reviews: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 50 }, (_, index) => ({
-            id: "REV_" + index,
-            author: { login: "reviewer" },
-            body: "",
-            createdAt: "2026-07-03T12:00:00.000Z"
-          }))
-        },
-        reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: Array.from({ length: 50 }, (_, index) => ({ id: "THREAD_" + index }))
-        }
-      }
-    }
-  }));
-} else {
-  console.error("unexpected args " + JSON.stringify(args));
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrComments(server, 42);
-  const body = await response.json();
-  const calls = await readGhCallLog(logPath);
-
-  assert.equal(response.status, 200);
-  assert.equal(body.state, BranchCommentsState.OverLimitTruncated);
-  assert.equal(body.budget.providerTruncated, true);
-  assert.equal(body.comments.length, 100);
-  assert.equal(
-    body.comments.some(
-      (comment: { body: string }) =>
-        comment.body === "Nested final budget comment"
-    ),
-    true
-  );
-  assert.equal(calls.length, 51);
-  assert.deepEqual(
-    calls.slice(1).map((call) => call.find((arg) => arg.startsWith("id="))),
-    Array.from({ length: 50 }, (_, index) => `id=REV_${index}`)
-  );
-});
-
-test("gateway PR file-diff route accepts current PR identity from branch external link", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(
-    `
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/a.ts", additions: 1, deletions: 1, status: "modified", previous_filename: null }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.log(JSON.stringify({ mergeBase: "merge-base-sha" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("old").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("new").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`,
-    {
-      repoFullName: null,
-      prNumber: null,
-      prUrl: "https://github.com/octo/repo/pull/42",
-    }
-  );
-
-  const response = await fetchPrFileDiff(server, 42, "src/a.ts");
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    path: "src/a.ts",
-    oldContent: "old",
-    newContent: "new",
-    isNew: false,
-    isDeleted: false,
-    isBinary: false,
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls[0]?.[1], "repos/octo/repo/pulls/42/files");
-});
-
-test("gateway PR file-diff route accepts repo-less branch ids after PR URL resolver validation", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(
-    `
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/a.ts", additions: 1, deletions: 1, status: "modified" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.log(JSON.stringify({ mergeBase: "merge-base-sha" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("old").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("new").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`,
-    {
-      repoFullName: null,
-      prNumber: null,
-      prUrl: "https://github.com/octo/repo/pull/42",
-    }
-  );
-
-  const params = new URLSearchParams({
-    owner: "octo",
-    repo: "repo",
-    number: "42",
-    branchId: LOCAL_BRANCH_ID,
-    path: "src/a.ts",
-  });
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?${params.toString()}`
-  );
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    path: "src/a.ts",
-    oldContent: "old",
-    newContent: "new",
-    isNew: false,
-    isDeleted: false,
-    isBinary: false,
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls[0]?.[1], "repos/octo/repo/pulls/42/files");
-});
-
-test("gateway PR file-diff route falls back to base ref only when merge-base lookup fails", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/a.ts", additions: 1, deletions: 1, status: "modified" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.error("compare failed");
-  process.exit(1);
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("old fallback").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("new content").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/a.ts")}`
-  );
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    path: "src/a.ts",
-    oldContent: "old fallback",
-    newContent: "new content",
-    isNew: false,
-    isDeleted: false,
-    isBinary: false,
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls[2]?.[1], "repos/octo/repo/compare/base-sha...head-sha");
-  assert.equal(calls[3]?.[1], "repos/octo/repo/contents/src/a.ts?ref=base-sha");
-});
-
-test("gateway PR file-diff route rejects rename previousPath mismatch before content reads", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/new.ts", additions: 2, deletions: 1, status: "renamed", previous_filename: "src/old.ts" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/new.ts")}&previousPath=${encodeURIComponent("src/wrong.ts")}`
-  );
-
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), {
-    error: "previousPath does not match pull request",
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.[1], "repos/octo/repo/pulls/42/files");
-});
-
-test("gateway PR file-diff route rejects unsafe slug segments before provider calls", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-console.error("provider should not be called");
-process.exit(1);
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=${encodeURIComponent("octo/bad")}&repo=repo&number=42&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/a.ts")}`
-  );
-
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), {
-    error: "Invalid owner, repo, number, or path",
-  });
-  const calls = await readGhCallLog(logPath);
-  assert.equal(calls.length, 0);
-});
-
-test("gateway PR file-diff route caps provider content per side", async () => {
-  const { server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/a.ts", additions: 1, deletions: 1, status: "modified" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.log(JSON.stringify({ mergeBase: "merge-base-sha" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=base-sha") {
-  console.log(JSON.stringify({ content: Buffer.alloc(1024 * 1024 + 1, "a").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/a.ts?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.alloc(1024 * 1024 + 1, "a").toString("base64"), encoding: "base64" }));
-} else {
-  console.log(JSON.stringify({ content: Buffer.from("new").toString("base64"), encoding: "base64" }));
-}
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&branchId=${encodeURIComponent(OCTO_REPO_BRANCH_ID)}&path=${encodeURIComponent("src/a.ts")}`
-  );
-
-  assert.equal(response.status, 413);
-  assert.deepEqual(await response.json(), {
-    error: "PR file content is too large",
-  });
-});
-
-test("gateway PR file-diff route rejects missing params before provider calls", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-console.error("provider should not be called");
-process.exit(1);
-`);
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42`
-  );
-
-  assert.equal(response.status, 400);
-  assert.deepEqual(await response.json(), {
-    error: "owner, repo, number, path, and branchId are required",
-  });
-  assert.deepEqual(await readGhCallLog(logPath), []);
-});
-
-test("gateway PR file-diff route rejects missing or mismatched branch scope before provider calls", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-console.error("provider should not be called");
-process.exit(1);
-`);
-
-  const missingScope = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&path=${encodeURIComponent("src/a.ts")}`
-  );
-  assert.equal(missingScope.status, 400);
-  assert.deepEqual(await missingScope.json(), {
-    error: "owner, repo, number, path, and branchId are required",
-  });
-
-  const wrongScope = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?owner=octo&repo=repo&number=42&branchId=${encodeURIComponent("other%2Frepo::main")}&path=${encodeURIComponent("src/a.ts")}`
-  );
-  assert.equal(wrongScope.status, 403);
-  assert.deepEqual(await wrongScope.json(), {
-    error: "branch scope does not match pull request",
-  });
-  assert.deepEqual(await readGhCallLog(logPath), []);
-});
-
-test("gateway PR file-diff route maps added deleted and binary files", async () => {
-  const { logPath, server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/added.ts", additions: 3, deletions: 0, status: "added" }));
-  console.log(JSON.stringify({ filename: "src/deleted.ts", additions: 0, deletions: 4, status: "removed" }));
-  console.log(JSON.stringify({ filename: "src/bin.dat", additions: 1, deletions: 1, status: "modified" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base-sha", head: "head-sha" }));
-} else if (route === "repos/octo/repo/compare/base-sha...head-sha") {
-  console.log(JSON.stringify({ mergeBase: "merge-base-sha" }));
-} else if (route === "repos/octo/repo/contents/src/added.ts?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("added content").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/deleted.ts?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("deleted content").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/bin.dat?ref=merge-base-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("old\\0binary").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/src/bin.dat?ref=head-sha") {
-  console.log(JSON.stringify({ content: Buffer.from("new binary").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const addedResponse = await fetchPrFileDiff(server, 42, "src/added.ts");
-  assert.equal(addedResponse.status, 200);
-  assert.deepEqual(await addedResponse.json(), {
-    path: "src/added.ts",
-    oldContent: "",
-    newContent: "added content",
-    isNew: true,
-    isDeleted: false,
-    isBinary: false,
-  });
-
-  const deletedResponse = await fetchPrFileDiff(server, 42, "src/deleted.ts");
-  assert.equal(deletedResponse.status, 200);
-  assert.deepEqual(await deletedResponse.json(), {
-    path: "src/deleted.ts",
-    oldContent: "deleted content",
-    newContent: "",
-    isNew: false,
-    isDeleted: true,
-    isBinary: false,
-  });
-
-  const binaryResponse = await fetchPrFileDiff(server, 42, "src/bin.dat");
-  assert.equal(binaryResponse.status, 200);
-  assert.deepEqual(await binaryResponse.json(), {
-    path: "src/bin.dat",
-    oldContent: "",
-    newContent: "",
-    isNew: false,
-    isDeleted: false,
-    isBinary: true,
-  });
-
-  const routes = (await readGhCallLog(logPath)).map((call) => call[1]);
-  assert.ok(
-    !routes.includes("repos/octo/repo/contents/src/added.ts?ref=merge-base-sha")
-  );
-  assert.ok(
-    !routes.includes("repos/octo/repo/contents/src/deleted.ts?ref=head-sha")
-  );
-});
-
-test("gateway PR file-diff route returns typed provider failure responses", async () => {
-  const network = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: "src/network.ts", additions: 1, deletions: 1, status: "modified" }));
-} else if (route.endsWith("/pulls/42")) {
-  console.error("ENOTFOUND api.github.com");
-  process.exit(1);
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-  const networkResponse = await fetchPrFileDiff(
-    network.server,
-    42,
-    "src/network.ts"
-  );
-  assert.equal(networkResponse.status, 503);
-  assert.deepEqual(await networkResponse.json(), {
-    error: "Network error. Check your connection.",
-  });
-
-  const parse = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log("{not valid json");
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-  const parseResponse = await fetchPrFileDiff(parse.server, 42, "src/parse.ts");
-  assert.equal(parseResponse.status, 502);
-  assert.deepEqual(await parseResponse.json(), {
-    error: "GitHub provider returned an invalid PR file-diff response",
-  });
-
-  const timeout = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  setTimeout(() => {}, 20000);
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-  const timeoutResponse = await fetchPrFileDiff(
-    timeout.server,
-    42,
-    "src/timeout.ts"
-  );
-  assert.equal(timeoutResponse.status, 504);
-  assert.deepEqual(await timeoutResponse.json(), {
-    error: "GitHub provider timed out",
-  });
-});
-
-test("gateway PR file-diff route keeps adversarial file paths inside provider path segments", async () => {
-  const filePath = "dir/name with spaces/q?#%/../new file.ts";
-  const previousPath = "old dir/slash/rename ?#%/../old file.ts";
-  const { logPath, server } = await startPrFileDiffGateway(`
-const route = args[1] || "";
-if (route.endsWith("/pulls/42/files")) {
-  console.log(JSON.stringify({ filename: ${JSON.stringify(filePath)}, additions: 2, deletions: 2, status: "renamed", previous_filename: ${JSON.stringify(previousPath)} }));
-} else if (route.endsWith("/pulls/42")) {
-  console.log(JSON.stringify({ base: "base sha/with space", head: "head sha#with?chars" }));
-} else if (route === "repos/octo/repo/compare/base%20sha%2Fwith%20space...head%20sha%23with%3Fchars") {
-  console.log(JSON.stringify({ mergeBase: "merge sha/%#?" }));
-} else if (route === "repos/octo/repo/contents/old%20dir/slash/rename%20%3F%23%25/%2E%2E/old%20file.ts?ref=merge%20sha%2F%25%23%3F") {
-  console.log(JSON.stringify({ content: Buffer.from("old adversarial").toString("base64"), encoding: "base64" }));
-} else if (route === "repos/octo/repo/contents/dir/name%20with%20spaces/q%3F%23%25/%2E%2E/new%20file.ts?ref=head%20sha%23with%3Fchars") {
-  console.log(JSON.stringify({ content: Buffer.from("new adversarial").toString("base64"), encoding: "base64" }));
-} else {
-  console.error("unexpected route " + route);
-  process.exit(1);
-}
-`);
-
-  const response = await fetchPrFileDiff(server, 42, filePath, previousPath);
-
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    path: filePath,
-    oldContent: "old adversarial",
-    newContent: "new adversarial",
-    isNew: false,
-    isDeleted: false,
-    isBinary: false,
-  });
-  const routes = (await readGhCallLog(logPath)).map((call) => call[1]);
-  assert.deepEqual(routes, [
-    "repos/octo/repo/pulls/42/files",
-    "repos/octo/repo/pulls/42",
-    "repos/octo/repo/compare/base%20sha%2Fwith%20space...head%20sha%23with%3Fchars",
-    "repos/octo/repo/contents/old%20dir/slash/rename%20%3F%23%25/%2E%2E/old%20file.ts?ref=merge%20sha%2F%25%23%3F",
-    "repos/octo/repo/contents/dir/name%20with%20spaces/q%3F%23%25/%2E%2E/new%20file.ts?ref=head%20sha%23with%3Fchars",
-  ]);
-});
 
 function assertRunLoopSpyContainsClaudeCodeOtelEnv(spyContent: string): void {
   assert.ok(
@@ -2039,105 +493,6 @@ function assertRunLoopSpyContainsClaudeCodeOtelEnv(spyContent: string): void {
 
 function sizeOfJson(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
-}
-
-async function startPrFileDiffGateway(
-  routeScript: string,
-  branchPrIdentity: {
-    repoFullName: string | null;
-    prNumber: number | null;
-    prUrl: string | null;
-  } = {
-    repoFullName: "octo/repo",
-    prNumber: 42,
-    prUrl: "https://github.com/octo/repo/pull/42",
-  }
-): Promise<{
-  logPath: string;
-  server: DesktopGatewayServer;
-}> {
-  const tmpDir = await fs.mkdtemp(
-    path.join(os.tmpdir(), "desktop-gateway-pr-file-diff-")
-  );
-  tempPathsToClean.push(tmpDir);
-
-  const fakeBin = path.join(tmpDir, "fake-bin");
-  await fs.mkdir(fakeBin, { recursive: true });
-  const logPath = path.join(tmpDir, "gh-calls.jsonl");
-  await fs.writeFile(logPath, "");
-  const ghScript = [
-    "#!/usr/bin/env node",
-    'const fs = require("node:fs");',
-    `const logPath = ${JSON.stringify(logPath)};`,
-    "const args = process.argv.slice(2);",
-    "fs.appendFileSync(logPath, JSON.stringify(args) + String.fromCharCode(10));",
-    routeScript,
-  ].join("\n");
-  await fs.writeFile(path.join(fakeBin, "gh"), ghScript, { mode: 0o755 });
-
-  process.env.PATH = `${fakeBin}:${originalPath ?? ""}`;
-  setShellPathForTest();
-
-  const server = new DesktopGatewayServer({
-    host: "127.0.0.1",
-    preferredPort: 0,
-    fallbackPorts: [0],
-    webAppOrigin: "https://app.symphony.com",
-    getAllowedDirectories: () => [tmpDir],
-    machineName: "pr-file-diff-machine",
-    version: "0.1.0-test",
-    capabilities: EMPTY_CAPABILITIES,
-    discoveryFilePath: path.join(tmpDir, "electron-port"),
-    resolveBranchPrIdentity: () => branchPrIdentity,
-  });
-  serversToClose.push(server);
-  await server.start();
-
-  return { logPath, server };
-}
-
-async function readGhCallLog(logPath: string): Promise<string[][]> {
-  const content = await fs.readFile(logPath, "utf8");
-  return content
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as string[]);
-}
-
-function fetchPrFileDiff(
-  server: DesktopGatewayServer,
-  prNumber: number,
-  filePath: string,
-  previousPath?: string
-): Promise<Response> {
-  const params = new URLSearchParams({
-    owner: "octo",
-    repo: "repo",
-    number: String(prNumber),
-    branchId: OCTO_REPO_BRANCH_ID,
-    path: filePath,
-  });
-  if (previousPath !== undefined) {
-    params.set("previousPath", previousPath);
-  }
-  return fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/file-diff?${params.toString()}`
-  );
-}
-
-function fetchPrComments(
-  server: DesktopGatewayServer,
-  prNumber: number
-): Promise<Response> {
-  const params = new URLSearchParams({
-    owner: "octo",
-    repo: "repo",
-    number: String(prNumber),
-    branchId: OCTO_REPO_BRANCH_ID,
-  });
-  return fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/comments?${params.toString()}`
-  );
 }
 
 function buildRelayEnvelope(
@@ -2251,6 +606,133 @@ test("uses closedloop-ai discovery file path by default", () => {
     server.getAddress().discoveryFilePath,
     path.join(os.homedir(), ".closedloop-ai", "electron-port")
   );
+});
+
+// PLN-1535 M5 deletion 2. The legacy local-`gh` PR data lane is retired: every
+// one of these routes had lost its client (the live-overlay lane went in M5
+// deletion 3, `/pr/comments` with FEA-2608, and `apps/mobile` — the last caller
+// that bypassed the `allowLiveOverlays` gate — in ISS-5284).
+//
+// They answer 410 ON PURPOSE, and are registered unconditionally: the gateway is
+// a cross-process contract served by an installed Desktop build that is never
+// upgraded in lockstep with the web app, so a version-skewed caller has to be
+// able to tell "this endpoint is gone for good" from "not built yet". Dropping
+// the routes instead would surface as this gateway's generic 501 `operation not
+// implemented` (router.ts) — which per root AGENTS.md means the opposite. The
+// previous `enableGithubDataRoutes` flag defaulted to serving the real handlers,
+// so nothing exercised this path in production.
+//
+// This server is built without `evaluateApproval`, so the request reaches the
+// dispatcher directly. In the app the auth/onboarding/approval gates run first
+// and can answer before the route does — the 410 is this lane's answer once a
+// request gets to it, not a guarantee about every caller.
+//
+// The route table is asserted EXPLICITLY here rather than imported from the
+// source module: importing the same array the implementation registers from
+// would pass even if that array were emptied by mistake.
+const RETIRED_GITHUB_DATA_REQUESTS = [
+  { method: "GET", path: "/api/gateway/git/pr/list?repo=/tmp/x" },
+  {
+    method: "GET",
+    path: "/api/gateway/git/pr/comments?owner=o&repo=r&number=1",
+  },
+  {
+    method: "GET",
+    path: "/api/gateway/git/pr/reviews?owner=o&repo=r&number=1",
+  },
+  { method: "POST", path: "/api/gateway/git/pr/reply" },
+  { method: "GET", path: "/api/gateway/git/pr/files?owner=o&repo=r&number=1" },
+  {
+    method: "GET",
+    path: "/api/gateway/git/pr/file-diff?owner=o&repo=r&number=1",
+  },
+  { method: "GET", path: "/api/gateway/git/pr/head-sha?repo=/tmp/x&pr=1" },
+  { method: "POST", path: "/api/gateway/git/pr/inline-comment" },
+] as const;
+
+test("retired local-gh PR data routes answer 410 with a stable reason", async () => {
+  const tmpDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "desktop-gateway-retired-")
+  );
+  tempPathsToClean.push(tmpDir);
+
+  const server = new DesktopGatewayServer({
+    host: "127.0.0.1",
+    preferredPort: 0,
+    fallbackPorts: [0],
+    webAppOrigin: "https://app.symphony.com",
+    getAllowedDirectories: () => [tmpDir],
+    machineName: "retired-routes-machine",
+    version: "0.1.0-test",
+    capabilities: EMPTY_CAPABILITIES,
+    discoveryFilePath: path.join(tmpDir, "electron-port"),
+  });
+  serversToClose.push(server);
+  await server.start();
+
+  for (const request of RETIRED_GITHUB_DATA_REQUESTS) {
+    const response = await fetch(
+      `http://127.0.0.1:${server.getActivePort()}${request.path}`,
+      { method: request.method }
+    );
+    assert.equal(
+      response.status,
+      410,
+      `${request.method} ${request.path} should be gone, not ${response.status}`
+    );
+    const body = (await response.json()) as {
+      error?: string;
+      message?: string;
+    };
+    // The machine-readable reason is the part a skewed client branches on.
+    assert.equal(body.error, "github_data_route_retired");
+    assert.ok(
+      body.message && body.message.length > 0,
+      `${request.path} should explain itself to a human reader`
+    );
+  }
+});
+
+// The write route that SURVIVES. Without this, emptying `registerGitPrRoutes`
+// entirely would leave the suite green.
+test("the PR create route is still registered after the data-lane retirement", async () => {
+  const tmpDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), "desktop-gateway-pr-create-")
+  );
+  tempPathsToClean.push(tmpDir);
+
+  const server = new DesktopGatewayServer({
+    host: "127.0.0.1",
+    preferredPort: 0,
+    fallbackPorts: [0],
+    webAppOrigin: "https://app.symphony.com",
+    getAllowedDirectories: () => [tmpDir],
+    machineName: "pr-create-machine",
+    version: "0.1.0-test",
+    capabilities: EMPTY_CAPABILITIES,
+    discoveryFilePath: path.join(tmpDir, "electron-port"),
+  });
+  serversToClose.push(server);
+  await server.start();
+
+  // The create route is registered at `/api/gateway/git/pr` — no `/create`
+  // suffix — and the dispatcher matches exactly (`^pattern$`), so a wrong path
+  // here would fall through to the gateway's generic 501 and quietly satisfy
+  // any not-404/not-410 assertion.
+  const response = await fetch(
+    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }
+  );
+  // Assert the POSITIVE: the handler ran and rejected the empty body on its own
+  // terms. A pair of not-equals would pass for an unregistered path too, which
+  // is exactly the vacuity this test exists to avoid.
+  assert.equal(response.status, 400);
+  const body = (await response.json()) as { error?: string };
+  assert.match(String(body.error), /required/i);
 });
 
 test("returns health contract with active port and CORS headers", async () => {
@@ -3255,40 +1737,6 @@ test("returns approval-required response when approval evaluator blocks gateway 
     operationId: "health_check",
     message: "Manual approval required for health_check (high)",
   });
-});
-
-test("supports async approval evaluation before dispatch", async () => {
-  const tmpDir = await fs.mkdtemp(
-    path.join(os.tmpdir(), "desktop-gateway-approval-async-")
-  );
-  tempPathsToClean.push(tmpDir);
-
-  const server = new DesktopGatewayServer({
-    host: "127.0.0.1",
-    preferredPort: 0,
-    fallbackPorts: [0],
-    webAppOrigin: "https://app.symphony.com",
-    getAllowedDirectories: () => [tmpDir],
-    machineName: "approval-async-machine",
-    version: "0.1.0-test",
-    capabilities: EMPTY_CAPABILITIES,
-    discoveryFilePath: path.join(tmpDir, "electron-port"),
-    getSymphonyDir: () => path.join(tmpDir, "symphony-home"),
-    evaluateApproval: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return { allow: true };
-    },
-  });
-  serversToClose.push(server);
-  await server.start();
-
-  const startedAt = Date.now();
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/symphony/sessions`
-  );
-  const durationMs = Date.now() - startedAt;
-  assert.equal(response.status, 200);
-  assert.ok(durationMs >= 25);
 });
 
 test("passes cloud approval headers into approval evaluator context", async () => {
@@ -5133,6 +3581,12 @@ test("classifies git repo policy, missing repo, and spawn failures", async () =>
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
   process.env.PATH = fakeBin;
+  // Hide the resolver's known-location tier for git so that, with the empty
+  // fake PATH, getResolvedGitPath() falls through to the bare "git" name and
+  // the spawn genuinely fails with ENOENT — exercising the SPAWN_FAILED branch.
+  // Without this the host's real /usr/bin/git would resolve and the spawn would
+  // succeed against a non-repo, yielding PROCESS_FAILED instead. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ git: [] });
   setShellPathForTest();
 
   const server = new DesktopGatewayServer({
@@ -5304,39 +3758,6 @@ test("validates git PR create request payload", async () => {
 
   assert.equal(response.status, 400);
   assert.deepEqual(await response.json(), { error: "repoPath is required" });
-});
-
-test("rejects disallowed repo for git PR list endpoint (AC-049)", async () => {
-  const tmpDir = await fs.mkdtemp(
-    path.join(os.tmpdir(), "desktop-gateway-git-pr-deny-")
-  );
-  tempPathsToClean.push(tmpDir);
-
-  const allowedDir = path.join(tmpDir, "allowed");
-  await fs.mkdir(allowedDir, { recursive: true });
-
-  const server = new DesktopGatewayServer({
-    host: "127.0.0.1",
-    preferredPort: 0,
-    fallbackPorts: [0],
-    webAppOrigin: "https://app.symphony.com",
-    getAllowedDirectories: () => [allowedDir],
-    machineName: "git-pr-deny-machine",
-    version: "0.1.0-test",
-    capabilities: EMPTY_CAPABILITIES,
-    discoveryFilePath: path.join(tmpDir, "electron-port"),
-  });
-  serversToClose.push(server);
-  await server.start();
-
-  const response = await fetch(
-    `http://127.0.0.1:${server.getActivePort()}/api/gateway/git/pr/list?repo=${encodeURIComponent(
-      path.join(tmpDir, "not-allowed", "repo")
-    )}`
-  );
-
-  assert.equal(response.status, 403);
-  assert.deepEqual(await response.json(), { error: "directory not allowed" });
 });
 
 test("returns empty work-directory result when no session or worktree exists", async () => {
@@ -7688,6 +6109,10 @@ test("claude-cli ENOENT with no foundAt: error is Not found, remediation mention
   // (e.g. /opt/homebrew/bin/claude on a developer Mac) cannot leak into the
   // foundAt[] list — this test is asserting the truly-not-installed state.
   _setKnownBinaryLocationsForTesting({ claude: [] });
+  // Same reason for the resolver's own known-location tier: without this, a
+  // real /opt/homebrew/bin/claude on the dev host would resolve and pass,
+  // never reaching the ENOENT "Not found" branch under test. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
   const { tmpDir, binDir, symphonyDir } = await createHealthCheckFixture(
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
@@ -7737,12 +6162,20 @@ test("claude-cli ENOENT with no foundAt: error is Not found, remediation mention
     `remediation should mention npm install, got: ${check.remediation}`
   );
   _setKnownBinaryLocationsForTesting(null);
+  _setKnownBinaryLocationsForResolverTest(null);
 });
 
 test("claude-cli ENOENT with foundAt: error mentions path, remediation mentions Add to PATH", async () => {
   const { tmpDir, binDir, symphonyDir } = await createHealthCheckFixture(
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
+
+  // Disable the resolver's own known-location tier for claude so this test
+  // exercises the "resolved off PATH -> spawn -> ENOENT -> collectBinaryDebug
+  // finds it at a known location" diagnostics path. Without this, the resolver
+  // would itself pick up the ~/.claude/local/claude binary below and the check
+  // would pass, bypassing the "found but not on PATH" branch under test. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
 
   // Remove claude from binDir (PATH) but place it in a known location (~/.claude/local/claude)
   await fs.rm(path.join(binDir, "claude"), { force: true });
@@ -7803,6 +6236,7 @@ test("claude-cli ENOENT with foundAt: error mentions path, remediation mentions 
     check.remediation?.includes("to PATH"),
     `remediation should mention 'to PATH', got: ${check.remediation}`
   );
+  _setKnownBinaryLocationsForResolverTest(null);
 });
 
 test("claude-cli ETIMEDOUT: error mentions Timed out, remediation mentions terminal", async () => {
@@ -7874,6 +6308,12 @@ test("KNOWN_CLAUDE_LOCATIONS probe: fake binary at known location appears in fou
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
 
+  // Disable the resolver's known-location tier so it does not itself resolve and
+  // spawn the ~/.volta/bin/claude binary below (which would make the check pass).
+  // This test asserts the separate collectBinaryDebug foundAt sweep, which still
+  // surfaces the volta path independent of the resolver tier. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
+
   // Remove claude from PATH
   await fs.rm(path.join(binDir, "claude"), { force: true });
 
@@ -7929,12 +6369,20 @@ test("KNOWN_CLAUDE_LOCATIONS probe: fake binary at known location appears in fou
     check.debug?.foundAt?.some((p) => p.includes(".volta")),
     `foundAt should include the volta path, got: ${JSON.stringify(check.debug?.foundAt)}`
   );
+  _setKnownBinaryLocationsForResolverTest(null);
 });
 
 test("claude-cli EACCES with foundAt: error mentions not executable, remediation mentions chmod +x", async () => {
   const { tmpDir, binDir, symphonyDir } = await createHealthCheckFixture(
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
+
+  // Disable the resolver's own known-location tier for claude so the resolver
+  // returns the non-executable PATH binary (EACCES on spawn) instead of falling
+  // through to the executable ~/.claude/local/claude below — which would make
+  // the check pass and skip the "not executable" diagnostics path under test.
+  // collectBinaryDebug still finds the known-location binary for foundAt. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
 
   // Make the claude binary on PATH non-executable so execFileAsync fails with EACCES.
   // Note: fs.writeFile({ mode }) only applies when creating a new file; since the fixture
@@ -8006,6 +6454,7 @@ test("claude-cli EACCES with foundAt: error mentions not executable, remediation
     !check.remediation?.includes(knownClaudePath),
     `remediation should not reference the working path ${knownClaudePath}, got: ${check.remediation}`
   );
+  _setKnownBinaryLocationsForResolverTest(null);
 });
 
 // ---- Telemetry dedupe integration tests ----
@@ -8018,7 +6467,10 @@ test("telemetry dedupe: ENOENT health-check emits healthcheck.failure_detected w
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
 
-  // Remove claude binary so ENOENT is triggered
+  // Remove claude binary so ENOENT is triggered. Also disable the resolver's
+  // known-location tier so a real host claude (e.g. /opt/homebrew/bin/claude on
+  // a dev Mac) can't resolve and pass, defeating the ENOENT case. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
   await fs.rm(path.join(binDir, "claude"), { force: true });
 
   process.env.HOME = path.join(tmpDir, "home");
@@ -8062,7 +6514,9 @@ test("telemetry dedupe: second identical ENOENT health-check emits no additional
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
 
-  // Remove claude binary so ENOENT is triggered
+  // Remove claude binary so ENOENT is triggered. Also disable the resolver's
+  // known-location tier so a real host claude can't resolve and pass. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
   await fs.rm(path.join(binDir, "claude"), { force: true });
 
   process.env.HOME = path.join(tmpDir, "home");
@@ -8119,7 +6573,9 @@ test("telemetry dedupe: health-check recovery emits healthcheck.recovered", asyn
     '#!/bin/sh\necho "Python 3.11.0"\n'
   );
 
-  // Start with no claude binary (ENOENT)
+  // Start with no claude binary (ENOENT). Disable the resolver's known-location
+  // tier so a real host claude can't resolve and pass before recovery. FEA-3742.
+  _setKnownBinaryLocationsForResolverTest({ claude: [] });
   const claudePath = path.join(binDir, "claude");
   await fs.rm(claudePath, { force: true });
 

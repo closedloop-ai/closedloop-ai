@@ -12,6 +12,7 @@
     "module": "ESNext",
     "moduleDetection": "force",
     "moduleResolution": "Bundler",
+    "noUncheckedSideEffectImports": false,
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,

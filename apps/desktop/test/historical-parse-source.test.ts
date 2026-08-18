@@ -167,8 +167,12 @@ test("parseHistoricalSource rejects a nonexistent source", async () => {
   );
 });
 
-test("parseHistoricalSource throws synchronously on an unknown harness", () => {
-  assert.throws(
+// ISS-5266: the guard still fires on an unknown harness; only its DELIVERY
+// moved from a synchronous throw to a rejection, because the function must now
+// await the parse to drain its side-report. Both call sites (`handleWorkerMessage`
+// and its outer `.catch`) already handle a rejection identically to a throw.
+test("parseHistoricalSource rejects an unknown harness", async () => {
+  await assert.rejects(
     () => parseHistoricalSource("bogus" as Harness, "/x.jsonl"),
     UNSUPPORTED_HARNESS_PATTERN
   );

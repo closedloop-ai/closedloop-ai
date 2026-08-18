@@ -3,7 +3,7 @@ import { closeSync, existsSync, openSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import { Observability } from "../../main/observability.js";
+import { Observability } from "../../main/telemetry/observability.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { validateOutboundUrlForSurface } from "../outbound-url-policy.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";

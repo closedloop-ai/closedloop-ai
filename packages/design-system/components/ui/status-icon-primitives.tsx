@@ -12,13 +12,18 @@ import {
   INNER_CIRCUMFERENCE,
   INNER_PATH_RADIUS,
   INNER_STROKE_WIDTH,
+  NO_MEASURE_DASH_COLOR,
+  NO_MEASURE_DASH_HALF_LENGTH,
   RADIUS,
   STROKE_WIDTH,
 } from "./internal/status-icon-shared";
 
+export { EMPTY_RING_TRACK_COLOR } from "./internal/status-icon-shared";
+
 /**
- * Generic, domain-agnostic building blocks for circular status icons: a
- * progress ring (`StatusRing`) and a filled glyph circle (`FilledStatusCircle`).
+ * Generic, domain-agnostic building blocks for status icons: a progress ring
+ * (`StatusRing`), a filled glyph circle (`FilledStatusCircle`), and a
+ * no-measure dash (`StatusDash`).
  *
  * These render only from visual props — they know nothing about Documents,
  * Features, or any other domain vocabulary. Domain status-icon components
@@ -186,6 +191,69 @@ export function FilledStatusCircle({
       {...props}
     >
       {STATUS_GLYPHS[glyph](fill)}
+    </svg>
+  );
+}
+
+interface StatusDashProps
+  extends Omit<React.SVGAttributes<SVGSVGElement>, "color"> {
+  /** Accessible label for the icon. Names what has nothing to measure. */
+  label: string;
+  /** Icon size in pixels (default 16). */
+  size?: 16 | 20;
+  /**
+   * Dash color. Defaults to the muted no-measure tone — the only tone this mark
+   * has needed so far. Exposed like `StatusRing.color` / `FilledStatusCircle.fill`
+   * so a caller that needs a different tone tunes THIS primitive instead of
+   * hand-rolling a second `<line>` next to it.
+   */
+  color?: string;
+}
+
+/**
+ * A single muted dash, centered in the same box a `StatusRing` occupies - the
+ * mark for a population with nothing to measure (a zero denominator), as
+ * opposed to a real zero.
+ *
+ * Why a dash and not another ring variant: every ring on this surface, dashed
+ * or solid, faint or muted, is the same silhouette. At 16px a dashed-vs-solid
+ * or faint-vs-muted delta is a texture difference the eye loses in a dense
+ * table, which leaves the tooltip carrying the meaning and the glyph as
+ * decoration. A dash reads as a different SHAPE at any size, in either theme,
+ * so it cannot be mistaken for a backlog ring or a 0% ring. It is also the more
+ * honest mark: a ring implies a measurable denominator, and there isn't one.
+ *
+ * Same viewBox and box size as the ring, so it drops into a ring's slot without
+ * reflowing the row.
+ */
+export function StatusDash({
+  label,
+  size = 16,
+  color = NO_MEASURE_DASH_COLOR,
+  className,
+  ...props
+}: StatusDashProps) {
+  return (
+    <svg
+      aria-label={label}
+      className={cn("shrink-0", className)}
+      data-slot="status-icon"
+      fill="none"
+      height={size}
+      role="img"
+      viewBox="0 0 20 20"
+      width={size}
+      {...props}
+    >
+      <line
+        stroke={color}
+        strokeLinecap="round"
+        strokeWidth={STROKE_WIDTH}
+        x1={CENTER - NO_MEASURE_DASH_HALF_LENGTH}
+        x2={CENTER + NO_MEASURE_DASH_HALF_LENGTH}
+        y1={CENTER}
+        y2={CENTER}
+      />
     </svg>
   );
 }

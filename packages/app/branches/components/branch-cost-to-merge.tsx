@@ -1,152 +1,162 @@
 "use client";
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
-import { formatCost } from "@repo/app/shared/lib/format-utils";
 import {
-  type PhaseSegment,
-  partitionBuildVsRework,
-  reconcilePhaseSegments,
-} from "../lib/branch-derivations";
+  BranchMetricAvailability,
+  type BranchMetricResult,
+} from "@repo/api/src/types/branch-metrics";
+import {
+  BranchVisibleLifecyclePhase,
+  type BranchVisibleLifecyclePhase as VisiblePhase,
+} from "@repo/api/src/types/branch-phase-attribution";
+import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
+import { formatCost } from "@repo/app/shared/lib/format-utils";
+import { largestRemainderPercents } from "@repo/app/shared/lib/percent-shares";
+import { getActivityPhaseDisplay } from "../lib/activity-taxonomy-display";
 
-/**
- * Cost-to-merge breakdown (Epic D / D4) — restyled to the design handoff's
- * `BQCostBreakdown`: a section head with the total, a segmented spend bar, and
- * per-phase rows. Segments come from the D3 SSOT (`partitionBuildVsRework`),
- * residualized to the branch total via `reconcilePhaseSegments`. v1 has no
- * per-session phase signal, so spend attributes to a single Build phase; the
- * extra phases (Subagents / Auto-review / Human-review / Rework) appear as the
- * data lands. A multi-PR branch can't attribute spend per phase, so the split is
- * replaced with a note.
- */
 export type BranchCostToMergeProps = {
   detail: BranchPageDetail;
+  /** @deprecated PR selection never suppresses Branch-lifetime phase costs. */
   suppressSplits?: boolean;
 };
 
-const PHASE_COLOR: Record<PhaseSegment["key"], string> = {
-  build: "#4F7DF0",
-  subagents: "#8B7CF0",
-  autoReview: "#D98A3D",
-  humanReview: "#8B5CF6",
-  rework: "#C0492B",
+const VISIBLE_PHASES: readonly VisiblePhase[] = [
+  BranchVisibleLifecyclePhase.Build,
+  BranchVisibleLifecyclePhase.Review,
+  BranchVisibleLifecyclePhase.Rework,
+];
+
+type CostRow = {
+  costUsd: number;
+  durationMs: number;
+  key: VisiblePhase;
+  label: string;
+  partial: boolean;
 };
 
-const PHASE_LABEL: Record<PhaseSegment["key"], string> = {
-  build: "Build",
-  subagents: "Delegated subagents",
-  autoReview: "Automated review (CI)",
-  humanReview: "Human review",
-  rework: "Rework from review",
-};
-
-export function BranchCostToMerge({
-  detail,
-  suppressSplits = false,
-}: BranchCostToMergeProps) {
-  const { build, rework } = partitionBuildVsRework(detail);
-  const total = detail.estimatedCostUsd;
-
-  const rawSegments: PhaseSegment[] = [
-    {
-      key: "build",
-      label: PHASE_LABEL.build,
-      costUsd: build.costUsd ?? 0,
-      firstRow: null,
-    },
-  ];
-  if ((rework.costUsd ?? 0) > 0) {
-    rawSegments.push({
-      key: "rework",
-      label: PHASE_LABEL.rework,
-      costUsd: rework.costUsd ?? 0,
-      firstRow: null,
-    });
-  }
-  const segments = reconcilePhaseSegments(total, rawSegments).filter(
-    (segment) => segment.costUsd > 0
-  );
-  const segmentTotal = segments.reduce((sum, s) => sum + s.costUsd, 0);
+/** Canonical Build / Review / Rework lifetime-cost presentation. */
+export function BranchCostToMerge({ detail }: BranchCostToMergeProps) {
+  const metrics = detail.canonicalMetrics;
+  const total = metricValue(metrics?.totalCostUsd);
+  const rows = metrics ? phaseRows(detail, metrics.phaseCostUsd) : null;
 
   return (
     <section className="bq-costbd">
       <div className="bq-sec-head">
-        <span className="bq-sec-title">
-          {detail.mergedAt ? "Cost to merge" : "Cost to date"}
-        </span>
+        <span className="bq-sec-title">Cost breakdown</span>
         <span className="bq-sec-count">
-          {total == null ? "—" : formatCost(total)}
+          {total
+            ? `${formatCost(total.value)}${total.partial ? "*" : ""}`
+            : "—"}
         </span>
       </div>
-
-      <CostBreakdownBody
-        segments={segments}
-        segmentTotal={segmentTotal}
-        suppressSplits={suppressSplits}
-      />
+      <CostBreakdownBody rows={rows} total={total} />
     </section>
   );
 }
 
-/**
- * The breakdown body below the section head: a multi-PR note, an empty state, or
- * the segmented spend bar + per-phase rows. Split out (with early returns) so the
- * three cases stay flat rather than a nested ternary.
- */
 function CostBreakdownBody({
-  segments,
-  segmentTotal,
-  suppressSplits,
+  rows,
+  total,
 }: {
-  segments: PhaseSegment[];
-  segmentTotal: number;
-  suppressSplits: boolean;
+  rows: CostRow[] | null;
+  total: MetricValue | null;
 }) {
-  if (suppressSplits) {
+  if (!(rows && total)) {
     return (
       <p className="bq-costbd-foot">
-        More than one linked pull request — spend can't be attributed per phase.
+        Build, Review, and Rework cost evidence is unavailable.
       </p>
     );
   }
-
-  if (segmentTotal <= 0) {
+  if (total.value <= 0) {
     return <p className="bq-costbd-foot">No priced spend recorded yet.</p>;
   }
+  const percents = largestRemainderPercents(
+    rows.map((row) => row.costUsd),
+    total.value
+  );
 
   return (
     <>
-      <div className="bq-cost-bar">
-        {segments.map((segment) => (
+      <div aria-hidden="true" className="bq-cost-bar">
+        {rows.map((row) => (
           <span
             className="bq-cost-seg"
-            key={segment.key}
+            key={row.key}
             style={{
-              width: `${(segment.costUsd / segmentTotal) * 100}%`,
-              background: PHASE_COLOR[segment.key],
+              width: `${(row.costUsd / total.value) * 100}%`,
+              background: getActivityPhaseDisplay(row.key).color,
             }}
-            title={`${segment.label} · ${formatCost(segment.costUsd)}`}
           />
         ))}
       </div>
       <div className="bq-costbd-rows">
-        {segments.map((segment) => (
-          <div className="bq-costbd-row" key={segment.key}>
+        {rows.map((row, index) => (
+          <div className="bq-costbd-row" key={row.key}>
             <span
               className="bq-cost-sw"
-              style={{ background: PHASE_COLOR[segment.key] }}
+              style={{ background: getActivityPhaseDisplay(row.key).color }}
             />
-            <span className="bq-costbd-name">{segment.label}</span>
+            <span className="bq-costbd-name">{row.label}</span>
             <span className="bq-costbd-val font-mono">
-              {formatCost(segment.costUsd)} ·{" "}
-              {Math.round((segment.costUsd / segmentTotal) * 100)}%
+              {formatDurationMs(row.durationMs)} · {formatCost(row.costUsd)}
+              {row.partial ? "*" : ""} · {percents[index]}%
             </span>
           </div>
         ))}
       </div>
-      <p className="bq-costbd-foot">
-        Per-phase split (subagents, review, rework) fills in as phase capture
-        lands.
-      </p>
+      {rows.some((row) => row.partial) || total.partial ? (
+        <p className="bq-costbd-foot">
+          * Calculated from available qualifying Session costs.
+        </p>
+      ) : null}
     </>
   );
+}
+
+function phaseRows(
+  detail: BranchPageDetail,
+  phaseCosts: Record<VisiblePhase, BranchMetricResult<number>>
+): CostRow[] | null {
+  const durations = new Map(
+    (detail.phaseAttribution?.rollups ?? []).map((rollup) => [
+      rollup.phase,
+      rollup.durationMs,
+    ])
+  );
+  const rows: CostRow[] = [];
+  for (const phase of VISIBLE_PHASES) {
+    const value = metricValue(phaseCosts[phase]);
+    if (!value) {
+      return null;
+    }
+    rows.push({
+      costUsd: value.value,
+      durationMs: durations.get(phase) ?? 0,
+      key: phase,
+      label: getActivityPhaseDisplay(phase).label,
+      partial: value.partial,
+    });
+  }
+  return rows;
+}
+
+type MetricValue = { partial: boolean; value: number };
+
+function metricValue(
+  result: BranchMetricResult<number> | undefined
+): MetricValue | null {
+  if (
+    !result ||
+    (result.state !== BranchMetricAvailability.Complete &&
+      result.state !== BranchMetricAvailability.Partial) ||
+    result.value === null
+  ) {
+    return null;
+  }
+  return {
+    partial: result.state === BranchMetricAvailability.Partial,
+    value: Math.max(0, result.value),
+  };
 }

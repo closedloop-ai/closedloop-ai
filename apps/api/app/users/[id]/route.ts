@@ -47,9 +47,13 @@ export const PUT = withAuth<User, "/users/[id]">(
         return parseError;
       }
 
-      const updatedUser = await usersService.update(id, body);
+      const updatedUser = await usersService.update(
+        id,
+        user.organizationId,
+        body
+      );
 
-      return successResponse(updatedUser as User);
+      return successResponse(updatedUser);
     } catch (error) {
       return errorResponse("Failed to update user", error);
     }

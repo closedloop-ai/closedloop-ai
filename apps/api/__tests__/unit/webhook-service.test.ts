@@ -4,7 +4,15 @@
  * Tests the following functions:
  * - validateRequest: validates webhook request by parsing body and headers
  */
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn(),
@@ -21,7 +29,14 @@ describe("validateRequest", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("extracts body, signature, and eventType from request", async () => {
+    vi.useFakeTimers();
+    const observedAt = new Date("2026-08-10T20:00:00.000Z");
+    vi.setSystemTime(observedAt);
     const requestBody = JSON.stringify({ action: "opened" });
     const request = new Request("http://localhost", {
       method: "POST",
@@ -38,6 +53,7 @@ describe("validateRequest", () => {
         const headerValues = {
           "x-hub-signature-256": "sha256=abcdef123456",
           "x-github-event": "pull_request",
+          "x-github-delivery": "delivery-123",
         };
         return headerValues[key as keyof typeof headerValues] || null;
       },
@@ -48,6 +64,8 @@ describe("validateRequest", () => {
     expect(result.body).toBe(requestBody);
     expect(result.signature).toBe("sha256=abcdef123456");
     expect(result.eventType).toBe("pull_request");
+    expect(result.deliveryId).toBe("delivery-123");
+    expect(result.observedAt).toEqual(observedAt);
   });
 
   it("returns null signature when header is missing", async () => {

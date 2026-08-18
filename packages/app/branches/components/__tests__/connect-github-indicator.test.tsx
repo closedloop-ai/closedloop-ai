@@ -38,7 +38,10 @@ describe("ConnectGitHubIndicator", () => {
     ).toHaveAttribute("href", "/api/integrations/github");
   });
 
-  it("prefers connectHref over onConnect when both are provided", () => {
+  it("prefers onConnect over connectHref when both are provided (FEA-3280)", () => {
+    // A surface that owns a connect action (desktop's GitHub-App connect IPC)
+    // must fire it, never fall back to the hard-navigation link — the desktop
+    // href store turns that link into an inert in-app navigation (a dead click).
     const onConnect = vi.fn();
     renderWithNavigation(
       <ConnectGitHubIndicator
@@ -47,9 +50,14 @@ describe("ConnectGitHubIndicator", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("link", { name: CONNECT_GITHUB_RE }));
+    // No inert connect link is rendered when a handler is available.
+    expect(
+      screen.queryByRole("link", { name: CONNECT_GITHUB_RE })
+    ).not.toBeInTheDocument();
 
-    expect(onConnect).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: CONNECT_GITHUB_RE }));
+
+    expect(onConnect).toHaveBeenCalledTimes(1);
   });
 
   it("keeps compact layout narrow-card friendly", () => {

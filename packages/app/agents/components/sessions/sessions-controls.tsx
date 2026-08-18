@@ -24,7 +24,7 @@ import { cn } from "@repo/design-system/lib/utils";
 import {
   ArrowDown,
   ArrowUp,
-  RefreshCw,
+  RefreshCcw,
   Search,
   Wifi,
   WifiOff,
@@ -146,7 +146,7 @@ export function SessionsControls({
             onClick={onRefresh}
             variant="outline"
           >
-            <RefreshCw className="size-4" />
+            <RefreshCcw className="size-4" />
             {controls.refreshLabel || "Refresh"}
           </Button>
         </div>

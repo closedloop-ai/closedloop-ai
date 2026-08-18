@@ -122,6 +122,22 @@ export const COMPONENT_ANATOMY: Record<ComponentKind, ComponentAnatomy> = {
   },
 };
 
+/**
+ * A frontmatter/config key the component's anatomy does not model, carried
+ * through parse → edit → serialize untouched so editing a known field never
+ * silently strips it (FEA-3164). `key` is the original (non-lowercased) key as
+ * authored; `raw` is the verbatim serialized value, so an unedited key re-emits
+ * byte-for-byte.
+ *
+ * - markdown kinds: `raw` is the text right of the first `:` on the frontmatter
+ *   line (its original quoting/spacing preserved).
+ * - config (JSON) kinds: `raw` is the top-level property's JSON value.
+ */
+export type UnknownField = {
+  key: string;
+  raw: string;
+};
+
 export type ComponentDraft = {
   name: string;
   description: string;
@@ -129,6 +145,11 @@ export type ComponentDraft = {
   fields: Record<string, string>;
   /** Markdown/prompt body (markdown kinds only). */
   body: string;
+  /**
+   * Frontmatter/config keys not modeled by the anatomy, preserved verbatim and
+   * in original order so editing a known field never drops them (FEA-3164).
+   */
+  unknownFields: UnknownField[];
 };
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -175,7 +196,24 @@ function toConfigObject(
     }
     obj[field.key] = field.type === "list" ? splitList(raw) : raw;
   }
+  // Carry unknown config keys through untouched (FEA-3164): re-parse each
+  // preserved JSON value so it round-trips as its original type, not a string.
+  for (const { key, raw } of draft.unknownFields ?? []) {
+    if (key in obj) {
+      continue;
+    }
+    obj[key] = parseUnknownJsonValue(raw);
+  }
   return obj;
+}
+
+/** Restore a preserved unknown config value, tolerating a non-JSON remnant. */
+function parseUnknownJsonValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
 }
 
 /**
@@ -192,7 +230,9 @@ export function assembleComponentContent(
     if (draft.description) {
       lines.push(`description: ${quote(draft.description)}`);
     }
+    const emittedKeys = new Set<string>(["name", "description"]);
     for (const field of anatomy.fields) {
+      emittedKeys.add(field.key.toLowerCase());
       const raw = (draft.fields[field.key] ?? "").trim();
       if (!raw) {
         continue;
@@ -202,6 +242,14 @@ export function assembleComponentContent(
       } else {
         lines.push(`${field.key}: ${quote(raw)}`);
       }
+    }
+    // Re-emit unknown frontmatter keys verbatim (FEA-3164), preserving the
+    // original key + raw value so an unedited key round-trips byte-for-byte.
+    for (const { key, raw } of draft.unknownFields ?? []) {
+      if (emittedKeys.has(key.toLowerCase())) {
+        continue;
+      }
+      lines.push(`${key}:${raw}`);
     }
     return `---\n${lines.join("\n")}\n---\n\n${draft.body.trim()}\n`;
   }
@@ -221,20 +269,32 @@ const EMPTY_DRAFT: ComponentDraft = {
   description: "",
   fields: {},
   body: "",
+  unknownFields: [],
 };
 
-/** Parse a frontmatter block into a lowercased key → raw-value map. */
-function parseFrontmatterBlock(block: string): Record<string, string> {
-  const fm: Record<string, string> = {};
+/** One parsed frontmatter line, keeping the original key casing and raw value. */
+type FrontmatterEntry = { key: string; value: string };
+
+/**
+ * Parse a frontmatter block into ordered entries, preserving each key's
+ * original casing and its raw value text. Order is preserved so unknown keys
+ * can be re-emitted in place (FEA-3164). Comment (`#`) and separator-less lines
+ * are skipped (they carry no key to round-trip).
+ */
+function parseFrontmatterBlock(block: string): FrontmatterEntry[] {
+  const entries: FrontmatterEntry[] = [];
   for (const rawLine of block.split(LINE_SPLIT_RE)) {
     const line = rawLine.trim();
     const sep = line.indexOf(":");
     if (!line || line.startsWith("#") || sep < 0) {
       continue;
     }
-    fm[line.slice(0, sep).trim().toLowerCase()] = line.slice(sep + 1);
+    entries.push({
+      key: line.slice(0, sep).trim(),
+      value: line.slice(sep + 1),
+    });
   }
-  return fm;
+  return entries;
 }
 
 function parseMarkdownContent(
@@ -242,28 +302,64 @@ function parseMarkdownContent(
   content: string
 ): ComponentDraft {
   const match = content.match(FRONTMATTER_RE);
-  const fm = match ? parseFrontmatterBlock(match[1]) : {};
+  const entries = match ? parseFrontmatterBlock(match[1]) : [];
   const body = match ? content.slice(match[0].length) : content;
+  // Case-insensitively dedupe the parsed lines so a key appears once. A later
+  // occurrence's raw value wins (last-occurrence-wins, matching the prior
+  // `fm[key] = value` reduce this rewrite replaced), while the first
+  // occurrence's authored casing and position are kept — so both known-field
+  // lookup and the unknown-field passthrough see a single, stable entry per
+  // key. Re-setting an existing Map key leaves its insertion order intact, so
+  // updating `raw` on a duplicate does not move it. (FEA-3164)
+  const byLowerKey = new Map<string, UnknownField>();
+  for (const entry of entries) {
+    const lower = entry.key.toLowerCase();
+    const existing = byLowerKey.get(lower);
+    byLowerKey.set(lower, {
+      key: existing?.key ?? entry.key,
+      raw: entry.value,
+    });
+  }
+  const knownKeys = new Set<string>([
+    "name",
+    "description",
+    ...anatomy.fields.map((field) => field.key.toLowerCase()),
+  ]);
   const fields: Record<string, string> = {};
   for (const field of anatomy.fields) {
-    const raw = fm[field.key];
-    if (raw !== undefined) {
+    const entry = byLowerKey.get(field.key.toLowerCase());
+    if (entry !== undefined) {
       fields[field.key] =
-        field.type === "list" ? parseListValue(raw) : unquote(raw);
+        field.type === "list" ? parseListValue(entry.raw) : unquote(entry.raw);
     }
   }
+  const unknownFields: UnknownField[] = [...byLowerKey.values()]
+    .filter((entry) => !knownKeys.has(entry.key.toLowerCase()))
+    .map((entry) => ({ key: entry.key, raw: entry.raw }));
+  const nameEntry = byLowerKey.get("name");
+  const descriptionEntry = byLowerKey.get("description");
   return {
-    name: fm.name ? unquote(fm.name) : "",
-    description: fm.description ? unquote(fm.description) : "",
+    name: nameEntry ? unquote(nameEntry.raw) : "",
+    description: descriptionEntry ? unquote(descriptionEntry.raw) : "",
     fields,
     body: body.trim(),
+    unknownFields,
   };
 }
 
-function parseConfigContent(
+/**
+ * Result of a tolerant parse attempt. `ok: false` means the raw content could
+ * not be parsed (invalid JSON for a config kind) — callers that must not lose a
+ * user's edits should surface an error rather than fall back to an empty draft.
+ */
+export type ParseComponentResult =
+  | { ok: true; draft: ComponentDraft }
+  | { ok: false };
+
+function tryParseConfigContent(
   anatomy: ComponentAnatomy,
   content: string
-): ComponentDraft {
+): ParseComponentResult {
   try {
     const obj = JSON.parse(content) as Record<string, unknown>;
     const fields: Record<string, string> = {};
@@ -275,31 +371,58 @@ function parseConfigContent(
         fields[field.key] = String(value);
       }
     }
+    const knownKeys = new Set<string>([
+      "name",
+      "description",
+      ...anatomy.fields.map((field) => field.key),
+    ]);
+    // Preserve any top-level config keys the anatomy doesn't model (FEA-3164),
+    // in their original order, serialized back verbatim on assemble.
+    const unknownFields: UnknownField[] = Object.keys(obj)
+      .filter((key) => !knownKeys.has(key))
+      .map((key) => ({ key, raw: JSON.stringify(obj[key]) }));
     return {
-      name: typeof obj.name === "string" ? obj.name : "",
-      description: typeof obj.description === "string" ? obj.description : "",
-      fields,
-      body: "",
+      ok: true,
+      draft: {
+        name: typeof obj.name === "string" ? obj.name : "",
+        description: typeof obj.description === "string" ? obj.description : "",
+        fields,
+        body: "",
+        unknownFields,
+      },
     };
   } catch {
-    return { ...EMPTY_DRAFT };
+    return { ok: false };
   }
+}
+
+/**
+ * Parse a component's stored `content` back into editor state, reporting parse
+ * failure instead of silently discarding it. Markdown kinds always succeed
+ * (frontmatter parsing is tolerant); config (JSON) kinds fail on invalid JSON.
+ */
+export function tryParseComponentContent(
+  kind: ComponentKind,
+  content: string | null | undefined
+): ParseComponentResult {
+  if (!content) {
+    return { ok: true, draft: { ...EMPTY_DRAFT } };
+  }
+  const anatomy = COMPONENT_ANATOMY[kind];
+  return anatomy.bodyMode === "markdown"
+    ? { ok: true, draft: parseMarkdownContent(anatomy, content) }
+    : tryParseConfigContent(anatomy, content);
 }
 
 /**
  * Parse a component's stored `content` back into editor state. Tolerant of
  * hand-authored files: unknown frontmatter keys are dropped, missing fields
- * default to empty.
+ * default to empty, and unparseable config content yields an empty draft.
  */
 export function parseComponentContent(
   kind: ComponentKind,
   content: string | null | undefined
 ): ComponentDraft {
-  if (!content) {
-    return { ...EMPTY_DRAFT };
-  }
-  const anatomy = COMPONENT_ANATOMY[kind];
-  return anatomy.bodyMode === "markdown"
-    ? parseMarkdownContent(anatomy, content)
-    : parseConfigContent(anatomy, content);
+  const result = tryParseComponentContent(kind, content);
+  return result.ok ? result.draft : { ...EMPTY_DRAFT };
 }

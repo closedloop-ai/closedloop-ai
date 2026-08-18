@@ -9,10 +9,29 @@
  * beat-for-beat: a marker table with an mtime + version high-water mark, a
  * version-bump full re-scan, one atomic prisma.write($transaction) per session,
  * cooperating with the desktop stop/close lifecycle.
+ *
+ * SCOPE (FEA-4184): this classifier-version backfill only enumerates
+ * BUILTIN_TRANSCRIPT_SOURCES, which is Claude/Codex/Cursor — the JSONL
+ * file-per-session harnesses. Copilot (dual on-disk format) and OpenCode (batch
+ * SQLite store) do not fit the file-list+per-file-parse `TranscriptSource` shape
+ * and are NOT re-tiled here, so a lone ACTIVITY_CLASSIFIER_VERSION bump would
+ * leave their sessions on the previous version. Those two harnesses re-derive
+ * instead through the collector-driven DATA_REVISION rebuild
+ * (`data-revision-rebuild.ts` → `rebuildSessionFromParse`, which re-runs
+ * `classifyActivitySegments` at the current version): OpenCode via its
+ * `listSourcesForRebuild` fingerprint bypass, Copilot via the unmapped-source
+ * reparse. A classifier bump that must reach every harness therefore pairs with a
+ * DATA_REVISION bump (see `data-revision.ts` rev 41).
  */
 import { statSync } from "node:fs";
+import { upsertActivityMetricsRollup } from "../../database/activity-metrics.js";
 import type { Prisma } from "../../database/generated/client.js";
 import type { DesktopPrisma } from "../../database/prisma-client.js";
+import { stampSegmentWorkItemRefs } from "../../database/segment-work-item-stamp.js";
+import {
+  bumpSessionsUpdatedAt,
+  chunkWatermark,
+} from "../../database/session-sync-watermark.js";
 import { persistActivitySegments } from "../../database/write-core.js";
 import { sessionIdFromTranscriptPath as claudeSessionId } from "../claude/claude-home.js";
 import { parseSessionFile as parseClaudeSession } from "../claude/claude-parser.js";
@@ -27,6 +46,7 @@ import {
   BUILTIN_TRANSCRIPT_SOURCES,
   collectTranscriptEntries,
 } from "./transcript-sources.js";
+import { extractWorkItemOccurrences } from "./work-item-occurrences.js";
 
 const ACTIVITY_BACKFILL_WRITE_PAUSE_MS = 50;
 
@@ -36,6 +56,30 @@ export type ActivitySegmentBackfillResult = {
   skipped: number;
   errors: number;
 };
+
+/**
+ * FEA-2273: best-effort refresh of one session's activity-metrics rollup after a
+ * segment re-tile, in its OWN transaction. Decoupled from the re-tile so a metrics
+ * failure never rolls the re-tile back or counts as a re-tile error; the
+ * version-aware boot backfill (backfillActivityMetrics) re-derives it if this
+ * fails.
+ */
+async function refreshActivityMetricsBestEffort(
+  prisma: DesktopPrisma,
+  sessionId: string,
+  now: string,
+  log: (message: string) => void
+): Promise<void> {
+  try {
+    await prisma.write((client) =>
+      client.$transaction((tx) =>
+        upsertActivityMetricsRollup(tx, sessionId, now)
+      )
+    );
+  } catch {
+    log(`activity-segment backfill: metrics refresh failed for ${sessionId}`);
+  }
+}
 
 /**
  * Whether a backfill summary changed the session projection payload (any session
@@ -180,6 +224,11 @@ export async function backfillActivitySegmentsFromTranscripts(
     seenBySession = new Map();
   }
 
+  // FEA-3568: monotonic counter for staggering the per-session sync-dirty bump
+  // (chunkWatermark) so a version-bump full re-scan never collapses the sync
+  // cursor's top-group onto a single timestamp.
+  let syncBumpIndex = 0;
+
   for (const {
     filePath,
     sessionId,
@@ -253,14 +302,38 @@ export async function backfillActivitySegmentsFromTranscripts(
       return result;
     }
 
+    const syncWatermark = chunkWatermark(now, syncBumpIndex);
     try {
       await prisma.write((client) =>
         client.$transaction(async (tx) => {
           await persistActivitySegments(tx, sessionId, segments, now);
+          // FEA-2272: a re-tile writes work_item_ref = NULL, so re-stamp the just
+          // -written segments from the session's persisted links (a no-op when it
+          // has none) to keep the optional label across classifier-version bumps.
+          // The mention stream comes from the same parsed session the re-tile used,
+          // so AA-10's per-segment resolution is identical on this path and import.
+          await stampSegmentWorkItemRefs(
+            tx,
+            sessionId,
+            extractWorkItemOccurrences(session)
+          );
           await markActivitySegmentSeen(tx, sessionId, filePath, mtimeMs);
+          // FEA-3568: the re-tile replaced this session's segments, but segment
+          // writes don't touch the session row — so bump updated_at inside the
+          // same transaction to re-enqueue the session on the metadata sync lane
+          // (see write-core's SYNC INVARIANT). Staggered per re-tiled session so a
+          // version-bump full re-scan can't collapse the sync cursor's top-group.
+          await bumpSessionsUpdatedAt(tx, [sessionId], syncWatermark);
         })
       );
       result.captured += 1;
+      syncBumpIndex += 1;
+      // FEA-2273: the re-tile just changed this session's segments (possibly at a
+      // new ACTIVITY_CLASSIFIER_VERSION), so refresh its metrics rollup — in a
+      // SEPARATE best-effort transaction, decoupled from the re-tile above so a
+      // metrics failure can neither roll the re-tile back nor count as a re-tile
+      // error. The version-aware boot backfill is the safety net if this fails.
+      await refreshActivityMetricsBestEffort(prisma, sessionId, now, log);
     } catch {
       // The previous segments + seen marker stay transactionally intact; retry
       // on a later sweep.

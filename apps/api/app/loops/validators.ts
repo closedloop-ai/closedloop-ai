@@ -18,6 +18,7 @@ import {
   LOOP_SUMMARIES_MAX_DOCUMENT_IDS,
   LoopStatus,
   MAX_ADDITIONAL_REPOS,
+  MAX_CONTEXT_REFS,
   ManualLoopEventType,
 } from "@repo/api/src/types/loop";
 import { z } from "zod";
@@ -61,9 +62,26 @@ export const createLoopValidator = z.object({
   command: LoopCommandSchema,
   harness: z.enum([HarnessType.Claude, HarnessType.Codex]).optional(),
   documentId: uuidOrSlug().optional(),
+  /**
+   * Which desktop machine this loop record belongs to. `CreateLoopRequest` and
+   * `loopsService.create` have always carried it through to the row, but this
+   * validator used to omit it — so a caller pinning a machine got a 2xx and a
+   * loop with `computeTargetId: null`, silently rerouted to the ECS provider
+   * for the whole of its lifecycle (`resolveProvider`), including which
+   * ingestion path its completion takes. Accepting it here closes that silent
+   * drop; the route checks ownership before it reaches the service.
+   *
+   * This creates the record only and never dispatches, so unlike the
+   * `run-loop` launch path there is deliberately no online-ness requirement.
+   */
+  computeTargetId: z.uuid().optional(),
   prompt: z.string().max(100_000).optional(),
   repo: repoSchema.optional(),
   additionalRepos: additionalReposSchema,
+  // Capped like additionalRepos above. This bounds the persisted array shape;
+  // the pool guarantee for the context-pack read is the bounded fan-out in
+  // lib/loops/loop-context-pack.ts, since any cap above the pool size bounds no
+  // resource (FEA-3299).
   contextRefs: z
     .array(
       z.object({
@@ -72,6 +90,7 @@ export const createLoopValidator = z.object({
         include: z.enum(["full", "summary"]),
       })
     )
+    .max(MAX_CONTEXT_REFS)
     .optional(),
 });
 
@@ -122,7 +141,6 @@ function buildEventPayloadValidators(typeSchema: z.ZodType<string>) {
 }
 
 const runnerEventValidators = buildEventPayloadValidators(loopEventType);
-export const loopEventValidator = runnerEventValidators.envelopeValidator;
 export const loopEventPayloadValidator = runnerEventValidators.payloadValidator;
 
 /**
@@ -233,7 +251,7 @@ export const listLoopsQueryValidator = z.object({
   status: LoopStatusSchema.optional(),
   command: LoopCommandSchema.optional(),
   documentId: uuidOrSlug().optional(),
-  projectId: z.uuid().optional(),
+  projectId: uuidOrSlug().optional(),
   limit: z.coerce.number().min(1).max(200).default(50).optional(),
   offset: z.coerce.number().min(0).default(0).optional(),
 });

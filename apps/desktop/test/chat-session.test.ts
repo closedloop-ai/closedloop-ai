@@ -150,7 +150,7 @@ class FakeProvider implements ChatProvider {
 type FetchCall = { url: string; init: RequestInit };
 
 type MockResponse =
-  | { status: number; body?: unknown }
+  | { status: number; body?: unknown; throw?: undefined }
   | { status: 0; throw: Error };
 
 const originalFetch = globalThis.fetch;
@@ -166,7 +166,7 @@ function installFetch(responses: MockResponse[]): void {
     if (!response) {
       throw new Error(`unexpected extra fetch call to ${url}`);
     }
-    if ("throw" in response && response.throw) {
+    if (response.throw) {
       throw response.throw;
     }
     const bodyText =
@@ -901,7 +901,7 @@ describe("ClaudeProvider", () => {
   });
 
   test("passes injected Claude Code OTel env to spawnStreaming", async () => {
-    let capturedEnv: Record<string, string> | undefined;
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
     const spawnStreaming = async (
       options: StreamingSpawnOptions
     ): Promise<StreamingProcessHandle> => {

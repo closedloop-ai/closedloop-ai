@@ -1,0 +1,39 @@
+-- FEA-3001: storage-reconcile bookkeeping for the DB-row-side orphan sweep.
+--
+-- `attachmentRowReconcileService` deletes `file_attachments` rows whose S3
+-- object does not exist. Two properties it cannot have without persisted
+-- per-row state:
+--
+--   1. TWO-OBSERVATION DELETION. A presigned PUT's expiry gates the START of the
+--      transfer, not its duration, so an upload begun a second before expiry can
+--      still be in flight — and HeadObject returns 404 for that whole window —
+--      long after the URL lapsed. `reconcile_absent` records that a run observed
+--      the object missing; deletion additionally requires a LATER run to observe
+--      it missing again, by which point any in-flight PUT has either landed (the
+--      row is cleared) or is long dead.
+--   2. FULL-TABLE COVERAGE ACROSS RUNS. The sweep is capped per run, so a scan
+--      that always started at the same end of the table would rescan the same
+--      prefix nightly and never reach the rows behind it. `reconciled_at` is the
+--      work queue: candidates are taken least-recently-reconciled first and
+--      stamped as they are examined, so successive runs walk the whole table and
+--      wrap naturally, with no separate cursor to persist or lose.
+--
+-- Both columns are owned exclusively by that sweep. No upload, download, list,
+-- or delete path reads or writes them, and neither is mapped into an API
+-- response.
+--
+-- ADDITIVE AND NON-REWRITING. Both are NOT NULL with a non-volatile default, so
+-- PostgreSQL records the default in the catalog instead of rewriting the table
+-- (fast-path ADD COLUMN, PG 11+); the ACCESS EXCLUSIVE lock is held only for the
+-- catalog update. Existing rows read back as `reconcile_absent = false`
+-- ("no absence recorded", the safe default — a row can never be deleted on the
+-- strength of a backfilled value) and `reconciled_at = <migration time>`, which
+-- simply places them together at the front of the queue.
+--
+-- The index that serves the sweep's two queries lands separately in
+-- 20260811120100_fea3001_file_attachment_reconcile_queue_index, so the
+-- non-transactional CREATE INDEX CONCURRENTLY stays in a file of its own.
+
+-- AlterTable
+ALTER TABLE "file_attachments" ADD COLUMN "reconciled_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE "file_attachments" ADD COLUMN "reconcile_absent" BOOLEAN NOT NULL DEFAULT false;

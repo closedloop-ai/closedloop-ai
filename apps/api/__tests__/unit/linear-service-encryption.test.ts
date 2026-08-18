@@ -691,3 +691,108 @@ describe("Linear service encryption paths", () => {
     });
   });
 });
+
+/**
+ * ISS-6319. Both Linear integration writes pin `select: { id: true }` so
+ * Postgres RETURNINGs one primary-key cell instead of every column — the row
+ * carries four `@db.Text` token columns whose values are discarded by both
+ * call sites.
+ *
+ * The source gate cannot see the shape of a write issued inside a `withDb`
+ * callback, and the encryption suite above reads only `data`/`create`/`update`.
+ * Without these two assertions either site can drop its `select` and silently
+ * go back to `RETURNING *` with every existing test still green.
+ */
+describe("Linear service discarded-write narrowing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("RETURNINGs only the id from the OAuth-callback upsert", async () => {
+    mockExchangeCodeForTokens.mockResolvedValue({
+      accessToken: "raw-access-token",
+      refreshToken: "raw-refresh-token",
+      expiresIn: 3600,
+      tokenType: "Bearer",
+      scope: [],
+    });
+    mockGetViewer.mockResolvedValue({
+      id: "linear-org-1",
+      name: "Test Org",
+    });
+    mockCreateLinearClient.mockReturnValue({});
+    mockEncryptTokenPair.mockResolvedValueOnce({
+      encryptedAccessToken: "encrypted-access-token",
+      encryptedRefreshToken: "encrypted-refresh-token",
+    });
+
+    const mockDb = {
+      linearIntegration: {
+        upsert: vi.fn().mockResolvedValue({ id: "integ-1" }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    const result = await linearService.completeOAuthCallback(
+      "auth-code",
+      "code-verifier",
+      "https://app.example.com/callback",
+      ORG_ID,
+      "clerk-user-1"
+    );
+
+    expect(result).toEqual({ success: true });
+    expect(mockDb.linearIntegration.upsert.mock.calls[0][0].select).toEqual({
+      id: true,
+    });
+  });
+
+  it("RETURNINGs only the id from the token-refresh update", async () => {
+    mockResolveIntegrationToken.mockResolvedValueOnce(
+      "decrypted-refresh-token"
+    );
+    mockRefreshAccessToken.mockResolvedValue({
+      accessToken: "new-access-token",
+      refreshToken: "new-refresh-token",
+      expiresIn: 3600,
+      tokenType: "Bearer",
+      scope: [],
+    });
+    mockEncryptTokenPair.mockResolvedValueOnce({
+      encryptedAccessToken: "new-encrypted-access-token",
+      encryptedRefreshToken: "new-encrypted-refresh-token",
+    });
+    mockGetTeams.mockResolvedValue([]);
+    mockCreateLinearClient.mockReturnValue({});
+
+    const mockDb = {
+      linearIntegration: {
+        findUnique: vi.fn().mockResolvedValue({
+          id: "integ-1",
+          organizationId: ORG_ID,
+          accessToken: "old-plaintext-access-token",
+          refreshToken: "old-plaintext-refresh-token",
+          accessTokenEncrypted: "old-encrypted-access-token",
+          refreshTokenEncrypted: "old-encrypted-refresh-token",
+          tokenExpiresAt: new Date(Date.now() - 3_600_000),
+          linearOrgId: "linear-org-1",
+          linearOrgName: "Test Org",
+          defaultTeamId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }),
+        update: vi.fn().mockResolvedValue({ id: "integ-1" }),
+      },
+    };
+    mockWithDbCall(mockDb);
+
+    await linearService.getIntegrationStatus(ORG_ID);
+
+    expect(mockRefreshAccessToken).toHaveBeenCalledWith(
+      "decrypted-refresh-token"
+    );
+    expect(mockDb.linearIntegration.update.mock.calls[0][0].select).toEqual({
+      id: true,
+    });
+  });
+});

@@ -1,9 +1,4 @@
 import {
-  BranchViewLocalErrorCode,
-  BranchViewLocalGatewayPath,
-  BranchViewLocalHeader,
-} from "@repo/api/src/types/branch-view-local";
-import {
   BROWSER_KEY_APPROVAL_REQUEST_OPERATION_ID,
   BROWSER_KEY_APPROVAL_REQUEST_PATH,
   BROWSER_KEY_REVOCATION_OPERATION_ID,
@@ -25,9 +20,10 @@ import type { AuthContext } from "@/lib/auth/with-auth";
 import { enforceRegisteredBrowserPublicKey } from "@/lib/browser-command-public-key-enforcement";
 import {
   COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR,
-  COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_REASON,
   CommandSigningEligibilityStatus,
+  CommandSigningRequirementStatus,
   isComputeTargetSigningEligible,
+  resolveCommandSigningRequirement,
 } from "@/lib/compute-target-signing-eligibility";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
 import { relayEventBus } from "@/lib/relay-event-bus";
@@ -66,27 +62,6 @@ vi.mock("@/app/compute-targets/service", async (importOriginal) => {
   };
 });
 
-vi.mock("@/app/users/service", () => ({
-  usersService: {
-    findById: vi.fn().mockResolvedValue({
-      id: "user-1",
-      active: true,
-      githubUsername: "octocat",
-    }),
-  },
-}));
-
-vi.mock("@/lib/resolve-pr-context", () => ({
-  resolvePrContext: vi.fn().mockResolvedValue({
-    owner: "acme",
-    repo: "widget",
-    pullNumber: 42,
-    branch: { branchName: "feature" },
-    gitHubPullRequest: { number: 42, headBranch: "feature" },
-    externalLink: { createdBy: { githubUsername: "octocat" } },
-  }),
-}));
-
 vi.mock("@/lib/relay-event-bus", async (importOriginal) => {
   const original =
     await importOriginal<typeof import("@/lib/relay-event-bus")>();
@@ -124,6 +99,11 @@ vi.mock("@/lib/compute-target-signing-eligibility", async (importOriginal) => {
   return {
     ...original,
     isComputeTargetSigningEligible: vi.fn(),
+    // The commands route now derives its effective signing policy through the
+    // shared resolver (FEA-4164). Enforcing-capability tests drive this seam;
+    // the resolver's own identity-threading + Unknown parity is covered in
+    // lib/__tests__/compute-target-signing-eligibility.test.ts.
+    resolveCommandSigningRequirement: vi.fn(),
   };
 });
 
@@ -216,6 +196,11 @@ beforeEach(() => {
     status: CommandSigningEligibilityStatus.Ineligible,
     reason: "no_active_managed_key",
   });
+  // Default: signing not required (mirrors the Ineligible eligibility default).
+  // Enforcing tests override this to Required/Unknown.
+  vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+    status: CommandSigningRequirementStatus.NotRequired,
+  });
   mockIsFeatureEnabled.mockResolvedValue(true);
   vi.mocked(computeTargetsService.findById).mockResolvedValue({
     ...mockTarget,
@@ -228,42 +213,6 @@ beforeEach(() => {
     } as any,
   });
 });
-
-function branchViewLocalCommandBody() {
-  return {
-    operationId: "git_local_changes",
-    method: "GET",
-    path: BranchViewLocalGatewayPath.List,
-    headers: {
-      [BranchViewLocalHeader.ExternalLinkId]: "branch-link-1",
-      [BranchViewLocalHeader.RepoFullName]: "acme/widget",
-      [BranchViewLocalHeader.HeadBranch]: "feature",
-      [BranchViewLocalHeader.PrNumber]: "42",
-    },
-    streaming: false,
-  };
-}
-
-function branchViewLocalOperationBody() {
-  return {
-    operationId: "op-local",
-    operation: "engineer_http_request",
-    params: {
-      request: {
-        method: "GET",
-        path: BranchViewLocalGatewayPath.List,
-        headers: {
-          [BranchViewLocalHeader.ExternalLinkId]: "branch-link-1",
-          [BranchViewLocalHeader.RepoFullName]: "acme/widget",
-          [BranchViewLocalHeader.HeadBranch]: "feature",
-          [BranchViewLocalHeader.PrNumber]: "42",
-        },
-        body: { kind: "none" },
-      },
-    },
-    streaming: false,
-  };
-}
 
 describe("POST /compute-targets/:id/operations", () => {
   it("rejects dispatch when target is offline", async () => {
@@ -386,33 +335,6 @@ describe("POST /compute-targets/:id/operations", () => {
     expect(desktopCommandStore.createFromRelayOperation).not.toHaveBeenCalled();
     expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
   });
-
-  it("rejects local-content operations before command creation when branch-pr is not explicitly enabled", async () => {
-    mockIsFeatureEnabled.mockResolvedValue(false);
-    vi.mocked(computeTargetsService.markStaleTargetsOffline).mockResolvedValue(
-      0
-    );
-    vi.mocked(computeTargetsService.findOwnedById).mockResolvedValue(
-      mockTarget as any
-    );
-
-    const response = await dispatchPOST(
-      createMockRequest({
-        method: "POST",
-        body: branchViewLocalOperationBody(),
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      success: false,
-      error: BranchViewLocalErrorCode.FeatureDisabled,
-      code: BranchViewLocalErrorCode.FeatureDisabled,
-    });
-    expect(desktopCommandStore.createFromRelayOperation).not.toHaveBeenCalled();
-    expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
-  });
 });
 
 describe("POST /compute-targets/:id/commands", () => {
@@ -494,50 +416,14 @@ describe("POST /compute-targets/:id/commands", () => {
     );
   });
 
-  it.each([
-    ["disabled", async () => false],
-    ["missing", async () => undefined],
-    ["unresolved", async () => null],
-    [
-      "thrown",
-      () => {
-        throw new Error("flag unavailable");
-      },
-    ],
-  ])("rejects local-content command creation when branch-pr is %s", async (_label, flagImpl) => {
-    mockIsFeatureEnabled.mockImplementation(flagImpl);
-    vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue(
-      mockTarget as any
-    );
-
-    const response = await commandsPOST(
-      createMockRequest({
-        method: "POST",
-        body: branchViewLocalCommandBody(),
-      }),
-      createMockRouteContext({ id: "target-1" })
-    );
-
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toMatchObject({
-      success: false,
-      error: BranchViewLocalErrorCode.FeatureDisabled,
-      code: BranchViewLocalErrorCode.FeatureDisabled,
+  it("requires signing for shared targets when the shared resolver returns Required", async () => {
+    // The owner-vs-requester identity threading into isComputeTargetSigningEligible
+    // is asserted directly against the real resolver in
+    // lib/__tests__/compute-target-signing-eligibility.test.ts; here we drive the
+    // route's behavior off the resolver's Required outcome.
+    vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+      status: CommandSigningRequirementStatus.Required,
     });
-    expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
-    expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
-  });
-
-  it("requires signing for shared targets using the target owner's feature flag identity", async () => {
-    vi.mocked(isComputeTargetSigningEligible).mockImplementation(
-      async (identity) =>
-        identity.userId === "owner-1"
-          ? { status: CommandSigningEligibilityStatus.Eligible }
-          : {
-              status: CommandSigningEligibilityStatus.Ineligible,
-              reason: "no_active_managed_key",
-            }
-    );
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,
       userId: "owner-1",
@@ -573,19 +459,22 @@ describe("POST /compute-targets/:id/commands", () => {
       success: false,
       error: "Command signing is required for this compute target",
     });
-    expect(isComputeTargetSigningEligible).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      userId: "owner-1",
-      clerkUserId: "clerk-owner-1",
-      gatewayId: "gateway-owner-1",
-    });
+    // The route derived its policy through the shared resolver, threading the
+    // target owner identity + gateway.
+    expect(resolveCommandSigningRequirement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: "org-1",
+        targetUserId: "owner-1",
+        targetGatewayId: "gateway-owner-1",
+        targetOwnerClerkUserId: "clerk-owner-1",
+      })
+    );
     expect(desktopCommandStore.createCommand).not.toHaveBeenCalled();
   });
 
   it("fails closed before command creation when signing eligibility is unknown", async () => {
-    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
-      status: CommandSigningEligibilityStatus.Unknown,
-      reason: COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_REASON,
+    vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+      status: CommandSigningRequirementStatus.Unknown,
     });
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,
@@ -617,9 +506,8 @@ describe("POST /compute-targets/:id/commands", () => {
   });
 
   it("fails closed on unknown signing eligibility even when signature fields are present", async () => {
-    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
-      status: CommandSigningEligibilityStatus.Unknown,
-      reason: COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_REASON,
+    vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+      status: CommandSigningRequirementStatus.Unknown,
     });
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,
@@ -651,16 +539,12 @@ describe("POST /compute-targets/:id/commands", () => {
     expect(relayEventBus.publishOperation).not.toHaveBeenCalled();
   });
 
-  it("does not force signing from the viewer's flag when the shared target owner is disabled", async () => {
-    vi.mocked(isComputeTargetSigningEligible).mockImplementation(
-      async (identity) =>
-        identity.userId === "user-1"
-          ? { status: CommandSigningEligibilityStatus.Eligible }
-          : {
-              status: CommandSigningEligibilityStatus.Ineligible,
-              reason: "no_active_managed_key",
-            }
-    );
+  it("does not force signing when the shared resolver returns NotRequired for a shared target whose owner is disabled", async () => {
+    // Owner-disabled → the resolver returns NotRequired (the identity selection
+    // that produces this is asserted against the real resolver in the lib test).
+    vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+      status: CommandSigningRequirementStatus.NotRequired,
+    });
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,
       userId: "owner-1",
@@ -696,12 +580,12 @@ describe("POST /compute-targets/:id/commands", () => {
 
     expect(response.status).toBe(200);
     expect(desktopCommandStore.createCommand).toHaveBeenCalled();
-    expect(isComputeTargetSigningEligible).toHaveBeenCalledWith({
-      organizationId: "org-1",
-      userId: "owner-1",
-      clerkUserId: "clerk-owner-1",
-      gatewayId: "gateway-owner-1",
-    });
+    expect(resolveCommandSigningRequirement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetUserId: "owner-1",
+        targetGatewayId: "gateway-owner-1",
+      })
+    );
   });
 
   it.each([
@@ -911,8 +795,8 @@ describe("POST /compute-targets/:id/commands", () => {
   });
 
   it("expires signed commands when relay delivery reports the target offline", async () => {
-    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
-      status: CommandSigningEligibilityStatus.Eligible,
+    vi.mocked(resolveCommandSigningRequirement).mockResolvedValue({
+      status: CommandSigningRequirementStatus.Required,
     });
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       ...mockTarget,

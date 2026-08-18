@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
+import {
+  AgentSessionSyncMode,
+  type SyncedActivitySegmentRow,
+} from "@repo/api/src/types/agent-session";
 import type {
   AgentSessionSyncTransportPayload,
   SyncedAgentSession,
-} from "../src/main/agent-session-sync-contract.js";
+} from "../src/main/agent-sync/agent-session-sync-contract.js";
 import {
   syncTraceCommentParentSessionPayloads,
   type TraceCommentParentSessionSyncResult,
-} from "../src/main/trace-comment-parent-session-cloud-sync.js";
+} from "../src/main/trace-comments/trace-comment-parent-session-cloud-sync.js";
 
 const TOO_LARGE_FOR_CLOUD_SYNC_PATTERN = /too large for cloud sync/;
 const EVENT_HEAVY_COUNT = 4000;
 const UNCHUNKABLE_AGENT_COUNT = 5000;
+const TILING_HEAVY_COUNT = 2000;
 
 test("trace-comment parent-session sync posts one whole-session payload", async () => {
   const payloads: AgentSessionSyncTransportPayload[] = [];
@@ -72,6 +76,60 @@ test("trace-comment parent-session sync rejects a session too large to chunk", a
   assert.deepEqual(payloads, []);
 });
 
+test("P1 #10: recovery path paginates an oversized tiling ONLY when activity chunking is supported", async () => {
+  // With the capability ON, an oversized activity tiling paginates across parts
+  // (the full tiling ships). This proves the capability is threaded from the
+  // recovery caller into prepareAgentSessionPayload — pre-fix (2-arg call) this
+  // path never paginated the tiling regardless of the negotiated capability.
+  const supportedPayloads: AgentSessionSyncTransportPayload[] = [];
+  await syncTraceCommentParentSessionPayloads(
+    makeTilingHeavySession(),
+    (payload): Promise<TraceCommentParentSessionSyncResult> => {
+      supportedPayloads.push(payload);
+      return Promise.resolve({ synced: true });
+    },
+    /* activityChunkingSupported */ true
+  );
+  const deliveredSegments = supportedPayloads.reduce(
+    (sum, payload) =>
+      sum + (payload.sessions[0].activitySegmentRows?.length ?? 0),
+    0
+  );
+  assert.equal(
+    deliveredSegments,
+    TILING_HEAVY_COUNT,
+    "the full tiling must reach the wire, paginated across parts"
+  );
+
+  // With the capability OFF (default), the tiling rides the base whole and is
+  // too large to fit under the cap. The P1 #1 bounded fallback ships the session
+  // with the tiling OMITTED (the rest of the session syncs; the tiling defers)
+  // instead of dead-lettering the whole session — never a silent partial tiling.
+  const unsupportedPayloads: AgentSessionSyncTransportPayload[] = [];
+  await syncTraceCommentParentSessionPayloads(
+    makeTilingHeavySession(),
+    (payload): Promise<TraceCommentParentSessionSyncResult> => {
+      unsupportedPayloads.push(payload);
+      return Promise.resolve({ synced: true });
+    }
+    // activityChunkingSupported omitted ⇒ false (skew-safe default)
+  );
+  assert.ok(
+    unsupportedPayloads.length > 0,
+    "the session must still sync (bounded fallback), not dead-letter"
+  );
+  const unsupportedTilingRows = unsupportedPayloads.reduce(
+    (sum, payload) =>
+      sum + (payload.sessions[0].activitySegmentRows?.length ?? 0),
+    0
+  );
+  assert.equal(
+    unsupportedTilingRows,
+    0,
+    "the oversized tiling is omitted (deferred), never shipped as a partial"
+  );
+});
+
 function baseSession(): SyncedAgentSession {
   return {
     externalSessionId: "trace-parent-session",
@@ -112,6 +170,27 @@ function makeEventHeavySession(): SyncedAgentSession {
       createdAt: "2026-06-08T12:00:30.000Z",
     })),
   };
+}
+
+function makeTilingHeavySession(): SyncedAgentSession {
+  // A tiling too large to fit the base whole under the 256 KiB cap, so it must
+  // paginate (when supported) or dead-letter (when not). Distinct startMs per
+  // row so each is a natural split boundary and the receiver keys idempotency on
+  // startMs.
+  const activitySegmentRows: SyncedActivitySegmentRow[] = Array.from(
+    { length: TILING_HEAVY_COUNT },
+    (_, index) => ({
+      phase: "implement",
+      startMs: index * 1000,
+      endMs: index * 1000 + 999,
+      confidence: 0.9,
+      evidenceLayers: ["structural"],
+      version: 7,
+      workItemRef: "x".repeat(80),
+      subagentId: null,
+    })
+  );
+  return { ...baseSession(), activitySegmentRows };
 }
 
 function makeUnchunkableSession(): SyncedAgentSession {

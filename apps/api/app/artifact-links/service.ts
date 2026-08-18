@@ -7,7 +7,11 @@ import type {
   BatchMoveArtifactsResult,
   CreateArtifactLinkInput,
 } from "@repo/api/src/types/artifact";
-import { LinkDirection, LinkType } from "@repo/api/src/types/artifact";
+import {
+  LinkDirection,
+  LinkType,
+  normalizeArtifactSubtype,
+} from "@repo/api/src/types/artifact";
 import type {
   ChecksStatus,
   ReviewDecision,
@@ -510,6 +514,13 @@ function toArtifactLinkEndpoint(
 ): ArtifactLinkEndpoint {
   return {
     ...artifact,
+    // FEA-3956: normalize the persisted subtype to the canonical API set. Rows
+    // never store the canonical `ISSUE` (map-in-code, PRD-560 dec. 2), but the
+    // generated Prisma enum now includes it; mapping keeps a skewed value
+    // resolving to `FEATURE` instead of leaking `ISSUE` into the link contract.
+    subtype: artifact.subtype
+      ? normalizeArtifactSubtype(artifact.subtype)
+      : null,
     branch: artifact.branch
       ? {
           branchName: artifact.branch.branchName,

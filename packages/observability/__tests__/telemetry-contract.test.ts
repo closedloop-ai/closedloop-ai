@@ -35,6 +35,9 @@ describe("telemetry contract observability adapter", () => {
       ...SpanTelemetrySchema.parse(spanPayload()),
       [ReservedLoggerMetadataKey.Origin]: "spoofed",
       [ReservedLoggerMetadataKey.Level]: "error",
+      // `status` is Datadog's reserved severity attribute, so a payload
+      // carrying one would decide the emitted log's severity (ISS-6341).
+      [ReservedLoggerMetadataKey.Status]: "error",
     } as SpanTelemetry;
 
     emit(TelemetrySchemaName.Span, {
@@ -53,5 +56,6 @@ describe("telemetry contract observability adapter", () => {
     const metadata = info.mock.calls[0]?.[1];
     expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Origin);
     expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Level);
+    expect(metadata).not.toHaveProperty(ReservedLoggerMetadataKey.Status);
   });
 });

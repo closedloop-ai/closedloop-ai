@@ -1,6 +1,6 @@
 {
   "name": "@closedloop-ai/telemetry-contract",
-  "version": "0.10.0",
+  "version": "0.13.0",
   "type": "module",
   "repository": {
     "type": "git",
@@ -203,8 +203,9 @@
     "check:collector-tail-sampling": "tsx scripts/check-collector-tail-sampling.ts",
     "verify:collector-tail-sampling": "tsx scripts/verify-collector-tail-sampling.ts",
     "copy:samples": "tsx scripts/copy-samples.ts",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=src/**/*.{ts,tsx}' '--coverage.include=collector/**/*.{ts,tsx}'",
     "test:types": "tsc --noEmit --project tsconfig.type-tests.json",
     "test:samples:source": "tsx scripts/test-perf-jsonl-sample.ts --mode source",
     "test:samples": "pnpm run build:artifacts && tsx scripts/test-perf-jsonl-sample.ts --mode dist",
@@ -222,7 +223,7 @@
     "ajv": "^8.18.0",
     "tsup": "^8.5.1",
     "tsx": "^4.19.4",
-    "typescript": "^5.9.3",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
     "vitest": "^4.0.18",
     "yaml": ">=2.8.3",
     "zod": "^4.3.6"

@@ -737,7 +737,8 @@ function renderBranchViewShell(input: Readonly<RenderBranchViewShellInput>) {
         onTogglePanel={input.handleHeaderTogglePanel}
         panelLabel={input.feedSidebarEnabled ? "Feed" : "Chat"}
       />
-      <main className="flex min-h-0 flex-1">
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex min-h-0 flex-1">
         <div
           className={cn(
             "min-w-0 flex-1 border-border border-r",
@@ -817,7 +818,7 @@ function renderBranchViewShell(input: Readonly<RenderBranchViewShellInput>) {
           showFilesystemNotice: input.showFilesystemNotice,
           worktreePath: input.routeableLocalState.worktreePath,
         })}
-      </main>
+      </div>
     </div>
   );
 }
@@ -1006,8 +1007,8 @@ function buildUnavailableActions(input: {
   if (input.details.featureSlug) {
     actions.push(
       <Button asChild key="feature" size="sm" variant="outline">
-        <Link href={`/${input.orgSlug}/features/${input.details.featureSlug}`}>
-          View feature
+        <Link href={`/${input.orgSlug}/issues/${input.details.featureSlug}`}>
+          View issue
         </Link>
       </Button>
     );

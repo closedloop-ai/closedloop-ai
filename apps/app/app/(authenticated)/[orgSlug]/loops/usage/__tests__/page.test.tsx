@@ -5,6 +5,14 @@
  * `loops-usage-page` feature flag (FEA-2713) — not just the Usage link on the
  * parent Loops page — so a user with the flag off cannot deep-link directly
  * into the Usage Dashboard.
+ *
+ * FEA-4228: the route now gates on `FeatureFlagRouteGate` (flag OFF ⇒
+ * notFound() ⇒ the in-shell "Page not found" recovery state) rather than
+ * `FeatureFlagged` with a blank `fallback={null}`. The flag-off/notFound and
+ * still-resolving branches are covered directly in
+ * `components/__tests__/feature-flag-route-gate.test.tsx`; this route test
+ * exercises the flag-ON pass-through, asserting the page wires the correct flag
+ * into the gate and renders the dashboard body.
  */
 
 import { LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
@@ -13,19 +21,16 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import LoopUsagePage from "../page";
 
-// Control variable — updated per test to simulate the flag state.
-let featureFlagEnabled = false;
-
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
-  FeatureFlagged: ({
-    flag,
+// Stub the gate to the flag-on pass-through and keep the `data-feature-flag`
+// anchor the wrapper-placement assertion reads.
+vi.mock("@/components/feature-flag-route-gate", () => ({
+  FeatureFlagRouteGate: ({
     children,
+    flag,
   }: {
-    flag: string;
     children: ReactNode;
-  }) => (
-    <div data-feature-flag={flag}>{featureFlagEnabled ? children : null}</div>
-  ),
+    flag: string;
+  }) => <div data-feature-flag={flag}>{children}</div>,
 }));
 
 vi.mock("../page-client", () => ({
@@ -38,22 +43,10 @@ describe("LoopUsagePage route gate", () => {
   });
 
   it("renders the dashboard behind the loops-usage-page feature flag when enabled", () => {
-    featureFlagEnabled = true;
-
     render(<LoopUsagePage />);
 
     expect(
       screen.getByTestId("loop-usage-dashboard").closest("[data-feature-flag]")
     ).toHaveAttribute("data-feature-flag", LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY);
-  });
-
-  it("does not render the dashboard when the flag is disabled (direct-route denial)", () => {
-    featureFlagEnabled = false;
-
-    render(<LoopUsagePage />);
-
-    expect(
-      screen.queryByTestId("loop-usage-dashboard")
-    ).not.toBeInTheDocument();
   });
 });

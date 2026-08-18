@@ -31,6 +31,7 @@ import { branchViewCommentOnError } from "@repo/app/github/lib/branch-view-comme
 import { projectTreeKeys } from "@repo/app/projects/hooks/use-project-tree";
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
+import { OWNS_AUTH_REJECTION_META_KEY } from "@repo/app/shared/query/auth-rejection-store";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { z } from "zod";
@@ -118,6 +119,18 @@ export function useBranchView(externalLinkId: string) {
     queryFn: () =>
       apiClient.get<BranchViewData>(`/branch-view/${externalLinkId}`),
     enabled: !!externalLinkId,
+    // A 401, or a bare 403, here means the viewer lacks access to THIS Branch
+    // View link — not that their session is dead. The container renders its own
+    // "Access required" panel (see `getBranchViewLoadState`), so opt out of the
+    // shared auth-rejection boundary (FEA-3940) and keep that per-resource
+    // authorization failure from being hijacked into the shell-wide
+    // session-expired surface. A response the server TAGGED with an
+    // `AuthErrorCode` deliberately OVERRIDES this opt-out (ISS-5095, widened by
+    // ISS-5118 to any tagged code rather than only the 403 `OrgForbidden`):
+    // "Access required" would be a per-resource claim about a session-level
+    // failure, with a Retry that can never clear it. See
+    // `publishAuthRejectionForQuery`.
+    meta: { [OWNS_AUTH_REJECTION_META_KEY]: true },
     refetchInterval: (query) => {
       if (query.state.status === "error") {
         return false;
@@ -176,6 +189,12 @@ export function useBranchViewFileDiff(
       );
     },
     enabled: !!externalLinkId && !!path,
+    // Same per-link authorization scope as `useBranchView`: a 401 or a bare 403
+    // is "no access to this Branch View", not a session failure, so it must not
+    // trip the shell-wide re-auth surface (FEA-3940). A response carrying an
+    // `AuthErrorCode` overrides the opt-out for the reason spelled out there
+    // (ISS-5095, any tagged code since ISS-5118).
+    meta: { [OWNS_AUTH_REJECTION_META_KEY]: true },
   });
 }
 

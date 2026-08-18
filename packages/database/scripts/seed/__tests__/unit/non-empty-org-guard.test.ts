@@ -27,150 +27,12 @@ import {
   SeedOrgPreflightStatus,
 } from "../../non-empty-org-guard";
 import { BASELINE_ORG_ID } from "../fixtures/baseline-org";
-import { createMockPrisma } from "../fixtures/mock-prisma";
-
-// Shorthand to access mock call records without fighting Prisma's fluent types.
-type AnyDelegate = any;
-
-/**
- * Builds a mock PrismaClient where no integrations exist and all
- * entity counts are zero — representing a clean, empty org.
- */
-function buildEmptyOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
-
-  // No integrations
-  p.gitHubInstallation.findUnique.mockResolvedValue(null);
-  p.linearIntegration.findUnique.mockResolvedValue(null);
-  p.slackIntegration.findUnique.mockResolvedValue(null);
-
-  // No entity rows
-  p.project.count.mockResolvedValue(0);
-  p.team.count.mockResolvedValue(0);
-
-  return prisma;
-}
-
-/**
- * Builds a mock PrismaClient where all 6 models have pre-existing data —
- * representing a fully non-empty org.
- */
-function buildFullyConflictedOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
-
-  p.gitHubInstallation.findUnique.mockResolvedValue({ id: "gh-install-1" });
-  p.linearIntegration.findUnique.mockResolvedValue({ id: "linear-1" });
-  p.slackIntegration.findUnique.mockResolvedValue({ id: "slack-1" });
-  p.project.count.mockResolvedValue(3);
-  p.team.count.mockResolvedValue(2);
-
-  return prisma;
-}
-
-function buildSeedOwnedOrgMock() {
-  const prisma = createMockPrisma();
-  const p = prisma as AnyDelegate;
-
-  p.gitHubInstallation.findUnique.mockResolvedValue({
-    id: deterministicUuid(`github-installation:${BASELINE_ORG_ID}:seed`),
-  });
-  p.linearIntegration.findUnique.mockResolvedValue({
-    id: deterministicUuid(`linear-integration:${BASELINE_ORG_ID}:seed`),
-  });
-  p.slackIntegration.findUnique.mockResolvedValue({
-    id: deterministicUuid(`slack-integration:${BASELINE_ORG_ID}:seed`),
-  });
-  p.project.count.mockResolvedValue(2);
-  p.project.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`project:${BASELINE_ORG_ID}:platform-foundation`),
-      slug: "platform-foundation",
-    },
-    {
-      id: deterministicUuid(`project:${BASELINE_ORG_ID}:developer-experience`),
-      slug: "developer-experience",
-    },
-  ]);
-  p.team.count.mockResolvedValue(1);
-  p.team.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`team:${BASELINE_ORG_ID}:default`),
-      slug: "default",
-    },
-  ]);
-  p.artifact.count.mockResolvedValue(4);
-  p.artifact.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`artifact:document:${BASELINE_ORG_ID}:prd`),
-      slug: "seed-doc-prd-001",
-    },
-    {
-      id: deterministicUuid(
-        `artifact:branch:${BASELINE_ORG_ID}:seed-feature-branch`
-      ),
-      slug: `seed-branch-${BASELINE_ORG_ID.slice(0, 8)}`,
-    },
-    {
-      id: deterministicUuid(
-        `artifact:deployment:${BASELINE_ORG_ID}:seed-preview`
-      ),
-      slug: `seed-deployment-${BASELINE_ORG_ID.slice(0, 8)}`,
-    },
-    {
-      id: deterministicUuid(`artifact:session:${BASELINE_ORG_ID}:seed-session`),
-      slug: `seed-session-${BASELINE_ORG_ID.slice(0, 8)}`,
-    },
-  ]);
-  p.loop.count.mockResolvedValue(1);
-  p.loop.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`loop:${BASELINE_ORG_ID}:plan-generation`),
-      prompt: "Generate an implementation plan for the seed workstream",
-    },
-  ]);
-  p.comment.count.mockResolvedValue(5);
-  p.comment.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`comment:${BASELINE_ORG_ID}:seed`),
-      plainText: "Seed baseline comment",
-    },
-    {
-      id: deterministicUuid(`comment:${BASELINE_ORG_ID}:native`),
-      plainText: "Initial feedback on this document.",
-    },
-    {
-      id: deterministicUuid(`comment:${BASELINE_ORG_ID}:native-reply`),
-      plainText: "Follow-up: looks good after review.",
-    },
-    {
-      id: deterministicUuid(`comment:${BASELINE_ORG_ID}:liveblocks`),
-      plainText: "Liveblocks collaborative comment.",
-    },
-    {
-      id: deterministicUuid(`comment:${BASELINE_ORG_ID}:github`),
-      plainText:
-        "GitHub PR review comment — please address the naming convention.",
-    },
-  ]);
-  p.customField.count.mockResolvedValue(1);
-  p.customField.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`custom-field:${BASELINE_ORG_ID}:notes`),
-      name: "Notes",
-    },
-  ]);
-  p.artifactEvaluation.count.mockResolvedValue(1);
-  p.artifactEvaluation.findMany.mockResolvedValue([
-    {
-      id: deterministicUuid(`artifact-evaluation:${BASELINE_ORG_ID}:plan`),
-      reportId: `seed-report-plan-${BASELINE_ORG_ID}`,
-    },
-  ]);
-
-  return prisma;
-}
+import {
+  type AnyDelegate,
+  buildEmptyOrgMock,
+  buildFullyConflictedOrgMock,
+  buildSeedOwnedOrgMock,
+} from "../fixtures/org-guard-mocks";
 
 // ---------------------------------------------------------------------------
 // Suite: clean org → no conflicts
@@ -229,8 +91,9 @@ describe("detectOrgConflicts — seed-owned idempotent org", () => {
 
     expect(result.conflicts).toHaveLength(0);
     expect(result.seedOwnedRows).toEqual([
+      // No LinearIntegration entry: the seed never creates one, so a seeded
+      // org has no such row for the guard to recognise.
       "GitHubInstallation (seed-owned)",
-      "LinearIntegration (seed-owned)",
       "SlackIntegration (seed-owned)",
       "Project (2 rows)",
       "Team (1 row)",

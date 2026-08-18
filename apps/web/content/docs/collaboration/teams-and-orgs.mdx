@@ -1,0 +1,50 @@
+---
+title: Teams & Organizations
+description: 'Organizations, teams, roles, and member invitations'
+---
+
+Everyone in Closedloop belongs to an **organization**. Within an organization,
+**teams** group people and the repositories and projects they work on.
+
+## Organizations
+
+An organization is the top-level account boundary. All projects, artifacts, and
+integrations are scoped to it. When you sign up you create or join an
+organization; every user belongs to exactly one.
+
+## Inviting members
+
+Organization admins can invite teammates:
+
+1. In the web app, open the organization's member settings.
+2. Invite a teammate by email.
+3. When they accept, they join your **existing** organization as a member —
+   accepting an invite adds them to your org rather than creating a new one.
+
+Invitations can be sent over the API. Only an org admin or owner can invite, and
+the target organization is always derived from the authenticated caller's
+session — never from the request body — so you can only invite into an org you
+administer.
+
+## Teams and roles
+
+Teams let you scope work and membership within an organization. A team member
+holds one of three roles:
+
+| Role | Capabilities |
+|------|--------------|
+| `OWNER` | Full control of the team, including membership and settings. |
+| `ADMIN` | Manage the team's members and repositories. |
+| `MEMBER` | Participate in the team's work. |
+
+Manage team membership from the **web app**: open the team's settings, add a
+teammate, and pick their role. You can update a member's role or remove them
+there as well. Team management is a session-authenticated action, so unlike the
+document and loop APIs it is not exposed to `sk_live_*` API keys. Teams can also
+be assigned repositories and projects, so the right people see the right work.
+
+## Next
+
+<Card title="Custom Fields" href="./custom-fields">
+  Extend projects and documents with your own structured fields.
+</Card>

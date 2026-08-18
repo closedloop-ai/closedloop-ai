@@ -4,7 +4,11 @@ import type {
   JudgeFeedbackItem,
   JudgesFeedbackResponse,
 } from "@repo/api/src/types/evaluation";
-import { type UseQueryResult, useQuery } from "@tanstack/react-query";
+import {
+  type UseQueryOptions,
+  type UseQueryResult,
+  useQuery,
+} from "@tanstack/react-query";
 import { useApiClient } from "../../shared/api/use-api-client";
 
 // Query keys
@@ -21,7 +25,13 @@ function makeJudgesFeedbackHook(
   getEndpoint: (id: string) => string,
   keyFn: (id: string) => readonly unknown[]
 ) {
-  return (documentId: string): UseQueryResult<JudgeFeedbackItem[] | null> => {
+  return (
+    documentId: string,
+    options?: Omit<
+      UseQueryOptions<JudgeFeedbackItem[] | null>,
+      "queryKey" | "queryFn"
+    >
+  ): UseQueryResult<JudgeFeedbackItem[] | null> => {
     const apiClient = useApiClient();
     return useQuery({
       queryKey: keyFn(documentId),
@@ -33,6 +43,7 @@ function makeJudgesFeedbackHook(
       },
       enabled: !!documentId,
       staleTime: 10 * 60 * 1000,
+      ...options,
     });
   };
 }

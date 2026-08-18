@@ -28,7 +28,8 @@ export const fallbackAdapter: HarnessAdapter = {
         kind: DeclaredKind.Skill,
         name: tool.skillName,
         timestamp: tool.timestamp,
-        category: ToolCategory.DeclaredIntent,
+        // Inert placeholder — `collectDeclared` owns the classification.
+        category: ToolCategory.DeclaredUtility,
       };
     }
     return mcpDeclaredFromTool(tool);

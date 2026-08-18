@@ -2,7 +2,35 @@
 "use client";
 
 import * as d3 from "d3";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { GRAPH_RESET_EVENT } from "./graph-events";
+
+// Fallback dimensions used before the ResizeObserver reports the real container
+// box (and in non-DOM environments). The graph sizes to its parent so it stays
+// inside the enclosing card instead of computing an unbounded height (FEA-3622).
+const FALLBACK_WIDTH = 640;
+const FALLBACK_HEIGHT = 340;
+const MIN_GRAPH_HEIGHT = 180;
+
+/**
+ * Resolve the graph's box from an observed container `contentRect`, keeping it
+ * bounded by that container (FEA-3622). A non-positive dimension (observer fired
+ * before layout) falls back to the current size; a positive height is floored at
+ * `MIN_GRAPH_HEIGHT` so a very short card still renders a usable canvas.
+ */
+export function resolveGraphSize(
+  observed: { width: number; height: number },
+  current: { width: number; height: number }
+): { width: number; height: number } {
+  const width = observed.width > 0 ? observed.width : current.width;
+  const height =
+    observed.height > 0
+      ? Math.max(MIN_GRAPH_HEIGHT, observed.height)
+      : current.height;
+  return width === current.width && height === current.height
+    ? current
+    : { width, height };
+}
 
 type GraphNode = {
   id: string;
@@ -87,13 +115,13 @@ function clampTooltip(
   let nextLeft = left + 14;
   let nextTop = top + 14;
 
-  if (nextLeft + width > window.innerWidth - margin) {
-    nextLeft = window.innerWidth - width - margin;
+  if (nextLeft + width > globalThis.window.innerWidth - margin) {
+    nextLeft = globalThis.window.innerWidth - width - margin;
   }
   if (nextLeft < margin) {
     nextLeft = margin;
   }
-  if (nextTop + height > window.innerHeight - margin) {
+  if (nextTop + height > globalThis.window.innerHeight - margin) {
     nextTop = top - height - 14;
   }
   if (nextTop < margin) {
@@ -116,28 +144,28 @@ function renderTooltip(
 ) {
   tooltip.textContent = "";
 
-  const titleElement = document.createElement("p");
+  const titleElement = globalThis.document.createElement("p");
   titleElement.style.cssText =
     "font-size:12px;font-weight:600;color:#e2e8f0;margin:0 0 2px";
   titleElement.textContent = title;
   tooltip.appendChild(titleElement);
 
-  const subtitleElement = document.createElement("p");
+  const subtitleElement = globalThis.document.createElement("p");
   subtitleElement.style.cssText =
     "font-size:10px;color:#64748b;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.05em";
   subtitleElement.textContent = subtitle;
   tooltip.appendChild(subtitleElement);
 
   for (const row of rows) {
-    const rowElement = document.createElement("div");
+    const rowElement = globalThis.document.createElement("div");
     rowElement.style.cssText =
       "display:flex;justify-content:space-between;gap:16px;font-size:11px;line-height:1.6";
 
-    const labelElement = document.createElement("span");
+    const labelElement = globalThis.document.createElement("span");
     labelElement.style.color = "#64748b";
     labelElement.textContent = row.label;
 
-    const valueElement = document.createElement("span");
+    const valueElement = globalThis.document.createElement("span");
     valueElement.style.cssText =
       "color:#cbd5e1;font-weight:500;font-variant-numeric:tabular-nums";
     valueElement.textContent = row.value;
@@ -148,7 +176,7 @@ function renderTooltip(
   }
 
   if (description) {
-    const descriptionElement = document.createElement("p");
+    const descriptionElement = globalThis.document.createElement("p");
     descriptionElement.style.cssText =
       "font-size:11px;color:#94a3b8;line-height:1.45;margin:8px 0 0;padding-top:8px;border-top:1px solid #2a2a4a";
     descriptionElement.textContent = description;
@@ -174,6 +202,19 @@ export function Graph({
   const simulationRef = useRef<d3.Simulation<SimulationNode, SimulationLink> | null>(
     null
   );
+  // Clears the bespoke tooltip + hover highlight back to their resting state.
+  // Populated by the d3 effect (which owns the selections) and invoked when a
+  // `GRAPH_RESET_EVENT` fires — i.e. when this graph's DOM node is relocated or
+  // moved without a `mouseleave` (widget expand/collapse, keyboard-driven), so a
+  // frozen tooltip/highlight cannot survive the transition. See `graph-events`.
+  const resetInteractionRef = useRef<(() => void) | null>(null);
+  // The rendered SVG box, tracked from the flex-1 container so the force layout
+  // fills its card without overflowing it. Both dimensions come from the parent;
+  // the graph never derives its own height (FEA-3622).
+  const [size, setSize] = useState({
+    width: FALLBACK_WIDTH,
+    height: FALLBACK_HEIGHT,
+  });
 
   const graphData = useMemo(() => {
     const nodeMap = new Map<string, GraphNode>();
@@ -214,6 +255,52 @@ export function Graph({
     };
   }, [links, nodes]);
 
+  // Track the flex-1 container box so the graph fills its card without
+  // overflowing it (FEA-3622). Keyed on `isEmpty` so the observer (re)attaches
+  // once the graph DOM mounts — the empty state early-returns before the
+  // container ref exists, so a `[]`-deps effect would never observe it.
+  useEffect(() => {
+    const element = containerRef.current;
+    if (
+      !element ||
+      graphData.isEmpty ||
+      typeof ResizeObserver === "undefined"
+    ) {
+      return;
+    }
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) {
+        return;
+      }
+      const observed = {
+        width: Math.floor(entry.contentRect.width),
+        height: Math.floor(entry.contentRect.height),
+      };
+      setSize((current) => resolveGraphSize(observed, current));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [graphData.isEmpty]);
+
+  // Reset the tooltip + hover highlight when a host relocates this graph (widget
+  // expand/collapse) or moves it via a keyboard action that never crosses the
+  // pointer out of the SVG, since neither fires the `mouseleave` that would
+  // otherwise clear them. `resetInteractionRef` is populated by the d3 effect;
+  // the `?.()` guard makes this a no-op while the graph is empty or not yet
+  // built. Mounted once and torn down on unmount so no listener leaks.
+  useEffect(() => {
+    if (globalThis.document === undefined) {
+      return;
+    }
+    const handleReset = () => {
+      resetInteractionRef.current?.();
+    };
+    globalThis.document.addEventListener(GRAPH_RESET_EVENT, handleReset);
+    return () =>
+      globalThis.document.removeEventListener(GRAPH_RESET_EVENT, handleReset);
+  }, []);
+
   useEffect(() => {
     const svg = svgRef.current;
     const container = containerRef.current;
@@ -225,8 +312,11 @@ export function Graph({
 
     simulationRef.current?.stop();
 
-    const width = container.clientWidth;
-    const height = Math.max(440, Math.min(680, width * 0.68));
+    // Size to the observed container box so the graph is bounded by its card
+    // (FEA-3622) — no width-derived height that can exceed the card and overlap
+    // the widget below it.
+    const width = size.width;
+    const height = size.height;
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
     svg.style.width = `${width}px`;
     svg.style.height = `${height}px`;
@@ -341,9 +431,21 @@ export function Graph({
         return label.length > 16 ? `${label.slice(0, 14)}...` : label;
       });
 
-    const hideTooltip = () => {
+    // Full return to the resting state: hide the tooltip AND clear every hover
+    // highlight (link stroke-opacity/width, edge-label opacity, node
+    // stroke-width). This is the shared body of both `mouseleave` handlers, and
+    // is also what a `GRAPH_RESET_EVENT` invokes when the graph is relocated or
+    // moved with no `mouseleave` (widget expand/collapse, keyboard-driven), so a
+    // frozen tooltip/highlight can't survive that transition.
+    const resetInteraction = () => {
+      linkElements
+        .attr("stroke-opacity", 0.55)
+        .attr("stroke-width", (link) => Math.max(1.5, strokeScale(link.weight)));
+      edgeLabels.attr("fill-opacity", 1);
+      nodeElements.selectAll("circle").attr("stroke-width", 2);
       tooltip.style.opacity = "0";
     };
+    resetInteractionRef.current = resetInteraction;
 
     hitTargets
       .on("mouseenter", (event: MouseEvent, link) => {
@@ -373,11 +475,7 @@ export function Graph({
         clampTooltip(tooltip, event.clientX, event.clientY);
       })
       .on("mouseleave", () => {
-        linkElements
-          .attr("stroke-opacity", 0.55)
-          .attr("stroke-width", (link) => Math.max(1.5, strokeScale(link.weight)));
-        edgeLabels.attr("fill-opacity", 1);
-        hideTooltip();
+        resetInteraction();
       });
 
     nodeElements
@@ -407,10 +505,7 @@ export function Graph({
         clampTooltip(tooltip, event.clientX, event.clientY);
       })
       .on("mouseleave", () => {
-        linkElements.attr("stroke-opacity", 0.55);
-        edgeLabels.attr("fill-opacity", 1);
-        nodeElements.selectAll("circle").attr("stroke-width", 2);
-        hideTooltip();
+        resetInteraction();
       });
 
     const drag = d3
@@ -510,6 +605,10 @@ export function Graph({
     simulationRef.current = simulation;
     return () => {
       simulation.stop();
+      // Drop the reset closure so a `GRAPH_RESET_EVENT` between this teardown and
+      // the next rebuild (e.g. the graph going empty) doesn't touch detached d3
+      // selections; the effect reassigns it on every rebuild.
+      resetInteractionRef.current = null;
     };
   }, [
     getLinkDescription,
@@ -519,30 +618,40 @@ export function Graph({
     graphData.isEmpty,
     graphData.links,
     graphData.nodes,
+    size,
   ]);
 
   if (graphData.isEmpty) {
     return (
-      <div className="flex min-h-[320px] items-center justify-center text-sm text-muted-foreground">
+      <div className="flex h-full min-h-[180px] items-center justify-center text-sm text-muted-foreground">
         {emptyMessage}
       </div>
     );
   }
 
   return (
-    <div className="relative w-full" ref={containerRef}>
-      <svg
-        aria-label={ariaLabel}
-        onMouseLeave={() => {
-          const tooltip = tooltipRef.current;
-          if (tooltip) {
-            tooltip.style.opacity = "0";
-          }
-        }}
-        ref={svgRef}
-        role="img"
-        style={{ display: "block", width: "100%", background: "transparent" }}
-      />
+    <div className="relative flex h-full w-full flex-col overflow-hidden">
+      {/* The SVG fills the flexible region; the ResizeObserver on this box
+          drives `size`, keeping the graph inside its card (FEA-3622). */}
+      <div className="relative min-h-0 flex-1 overflow-hidden" ref={containerRef}>
+        <svg
+          aria-label={ariaLabel}
+          onMouseLeave={() => {
+            const tooltip = tooltipRef.current;
+            if (tooltip) {
+              tooltip.style.opacity = "0";
+            }
+          }}
+          ref={svgRef}
+          role="img"
+          style={{
+            display: "block",
+            width: "100%",
+            height: size.height,
+            background: "transparent",
+          }}
+        />
+      </div>
       <div
         aria-hidden="true"
         className="fixed z-50 rounded-lg border border-[#2a2a4a] bg-[#12121f] px-3 py-2 shadow-2xl pointer-events-none"
@@ -556,7 +665,7 @@ export function Graph({
           transition: "opacity 120ms ease-out",
         }}
       />
-      <div className="mt-3 flex flex-wrap items-center gap-3 px-1">
+      <div className="mt-3 flex shrink-0 flex-wrap items-center gap-3 px-1">
         <span className="text-[10px] font-medium uppercase tracking-widest text-muted-foreground">
           {legendLabel}
         </span>

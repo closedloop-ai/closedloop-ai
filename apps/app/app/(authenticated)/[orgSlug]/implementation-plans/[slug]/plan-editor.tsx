@@ -10,13 +10,13 @@ import {
 } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
 import { BackendMismatchModal } from "@repo/app/compute/components/backend-mismatch-modal";
+import { DocumentEditorScaffold } from "@repo/app/documents/components/document-editor-scaffold";
 import { EvaluationSection } from "@repo/app/documents/components/evaluation-section";
 import { FeedArtifactType } from "@repo/app/documents/components/feed-sidebar/types";
-import { GenerationStatusBanner } from "@repo/app/documents/components/generation-status-banner";
 import { BranchesSection } from "@repo/app/documents/components/relationships/branches-section";
 import { PreviewSection } from "@repo/app/documents/components/relationships/preview-section";
+import { useCommentPermalinkBuilder } from "@repo/app/documents/components/use-comment-permalink-builder";
 import {
-  useDismissDocumentGenerationStatus,
   useDocumentGenerationStatus,
   useDocumentPullRequest,
 } from "@repo/app/documents/hooks/use-documents";
@@ -27,8 +27,11 @@ import {
 } from "@repo/app/judges-analytics/hooks/use-judges";
 import { useInitialAdditionalRepos } from "@repo/app/loops/hooks/use-loops";
 import { useCallback } from "react";
-import { DocumentChatTab } from "@/components/document-editor/document-chat-tab";
-import { DocumentEditorScaffold } from "@/components/document-editor/document-editor-scaffold";
+import { ArtifactRunInFlightSlot } from "@/components/document-editor/artifact-run-in-flight-slot";
+import {
+  renderDocumentChatPanelSlot,
+  renderDocumentChatTabSlot,
+} from "@/components/document-editor/document-editor-chat-slots";
 import { FloatingTargetPicker } from "@/components/engineer/floating-target-picker";
 import { usePlanActions } from "@/hooks/document-editing/use-plan-actions";
 import { useOrgSlug } from "@/hooks/use-org-slug";
@@ -71,12 +74,12 @@ export function PlanEditor({
   const { data: judgesReport } = usePlanJudgesFeedback(plan.id);
   const { data: codeJudgesReport } = useCodeJudgesFeedback(plan.id);
 
-  const {
-    data: generationStatus,
-    isLoading: generationStatusLoading,
-    invalidateCache: invalidateArtifactCache,
-  } = useDocumentGenerationStatus(plan.id, { polling: true });
-  const dismissGenerationStatus = useDismissDocumentGenerationStatus();
+  // ISS-5474: generation status no longer renders anywhere on this surface. It
+  // is still fetched because the header's run actions are disabled while a run
+  // is in flight (`isCommandDisabled`) and the Build section disables "Start
+  // Building" mid-execute — action gating, not run-state presentation.
+  const { data: generationStatus, isLoading: generationStatusLoading } =
+    useDocumentGenerationStatus(plan.id, { polling: true });
 
   const canEvaluateCode = isPrEvaluatable(primaryPr);
   const evaluateCodeHandler = useCallback(() => {
@@ -94,6 +97,11 @@ export function PlanEditor({
   }, [modals.regenerate.openModal]);
 
   const redirectPath = getPlanRedirectPath(plan, orgSlug);
+  const buildPermalinkUrl = useCommentPermalinkBuilder({
+    documentType: plan.type,
+    documentSlug: plan.slug,
+    orgSlug,
+  });
 
   const extraPending =
     planActions.isApproving ||
@@ -104,19 +112,7 @@ export function PlanEditor({
 
   return (
     <DocumentEditorScaffold
-      banner={() => (
-        <GenerationStatusBanner
-          generationStatus={generationStatus}
-          isDismissFailurePending={dismissGenerationStatus.isPending}
-          onDismissFailure={(runKey) => {
-            dismissGenerationStatus.mutate({
-              documentId: plan.id,
-              runKey,
-            });
-          }}
-          onGenerationComplete={invalidateArtifactCache}
-        />
-      )}
+      buildPermalinkUrl={buildPermalinkUrl}
       currentVersion={currentVersion}
       deleteDialogTitle="Implementation Plan"
       detailsSections={() => (
@@ -138,7 +134,6 @@ export function PlanEditor({
           <PlanMetadataPanel
             additionalRepos={initialAdditionalRepos}
             codeJudgeItems={codeJudgesReport ?? null}
-            generationStatus={generationStatus ?? null}
             plan={plan}
           />
         </>
@@ -159,33 +154,46 @@ export function PlanEditor({
       )}
       onVersionChange={onVersionChange}
       redirectPath={redirectPath}
-      renderChatTab={(ctx) => <DocumentChatTab document={ctx.document} />}
-      renderHeader={(ctx) => (
-        <PlanEditorHeader
-          canShowPanel={ctx.chatEnabled || ctx.feedEnabled}
+      renderChatPanel={renderDocumentChatPanelSlot}
+      renderChatTab={renderDocumentChatTabSlot}
+      renderEmptyContent={() => (
+        <ArtifactRunInFlightSlot
           generationStatus={generationStatus}
-          generationStatusLoading={generationStatusLoading}
-          isApproved={ctx.metadata.status === DocumentStatus.Approved}
-          isDraft={ctx.metadata.status === DocumentStatus.Draft}
-          isExecuting={planActions.isExecuting}
-          isPending={ctx.isPending}
-          onApprove={planActions.handleApprove}
-          onCopyMarkdown={ctx.actions.handleCopy}
-          onDelete={ctx.chrome.openDeleteDialog}
-          onEvaluateCode={canEvaluateCode ? evaluateCodeHandler : undefined}
-          onEvaluatePlan={planActions.handleEvaluatePlan}
-          onExecute={modals.execute.openModal}
-          onExportMarkdown={ctx.actions.handleDownload}
-          onExportToLinear={modals.linearExport.openModal}
-          onMove={ctx.chrome.openMoveDialog}
-          onRegenerate={handleRegenerate}
-          onRequestChanges={modals.requestChanges.openModal}
-          onRestoreVersion={ctx.contentController.restoreVersion}
-          onToggleMetadataPanel={ctx.chrome.toggleMetadataPanel}
-          plan={plan}
-          pullRequests={pullRequests}
-          showRestore={ctx.session.isViewingHistorical}
+          variant="panel"
         />
+      )}
+      renderHeader={(ctx) => (
+        <>
+          <PlanEditorHeader
+            canShowPanel={ctx.chatEnabled || ctx.feedEnabled}
+            generationStatus={generationStatus}
+            generationStatusLoading={generationStatusLoading}
+            isApproved={ctx.metadata.status === DocumentStatus.Approved}
+            isDraft={ctx.metadata.status === DocumentStatus.Draft}
+            isExecuting={planActions.isExecuting}
+            isPending={ctx.isPending}
+            onApprove={planActions.handleApprove}
+            onCopyMarkdown={ctx.actions.handleCopy}
+            onDelete={ctx.chrome.openDeleteDialog}
+            onEvaluateCode={canEvaluateCode ? evaluateCodeHandler : undefined}
+            onEvaluatePlan={planActions.handleEvaluatePlan}
+            onExecute={modals.execute.openModal}
+            onExportMarkdown={ctx.actions.handleDownload}
+            onExportToLinear={modals.linearExport.openModal}
+            onMove={ctx.chrome.openMoveDialog}
+            onRegenerate={handleRegenerate}
+            onRequestChanges={modals.requestChanges.openModal}
+            onRestoreVersion={ctx.contentController.restoreVersion}
+            onToggleMetadataPanel={ctx.chrome.toggleMetadataPanel}
+            plan={plan}
+            pullRequests={pullRequests}
+            showRestore={ctx.session.isViewingHistorical}
+          />
+          <ArtifactRunInFlightSlot
+            generationStatus={generationStatus}
+            variant="banner"
+          />
+        </>
       )}
       resizableAutoSaveId="plan-editor"
     />

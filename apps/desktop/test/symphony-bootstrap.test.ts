@@ -274,7 +274,13 @@ describe("runBootstrapIfNeeded", () => {
     assert.match(result.stderrTail, /API_TOKEN=\[redacted-secret\]/);
   });
 
-  test("returns timed-out without waiting for child and grandchild descendants", async () => {
+  // Explicit 5 s budget, not a wall-clock assertion. The fake claude script's
+  // foreground command is `sleep 20`, so a regression that honors the 100 ms
+  // timeout but still waits for the child would resolve `timed-out` after ~20 s
+  // — well inside the runner's 120 s cap, and therefore invisible without this.
+  test("returns timed-out without waiting for child and grandchild descendants", {
+    timeout: 5000,
+  }, async () => {
     const dir = makeTempDir();
     const homeDir = makeTempDir();
     process.env.HOME = homeDir;
@@ -300,12 +306,14 @@ describe("runBootstrapIfNeeded", () => {
       ].join("\n")
     );
 
-    const startedAt = Date.now();
     const result = await runBootstrapIfNeeded(dir, "loop-timeout");
-    const elapsed = Date.now() - startedAt;
 
+    // No wall-clock bound. The configured timeout is asserted exactly (an upper
+    // bound of 2 s was equally satisfied by any fallback under 2 s), and the
+    // "without waiting" half of this test's name is carried by the explicit
+    // test timeout above rather than by a load-sensitive assertion.
+    assert.equal(resolveBootstrapTimeoutMs(), 100);
     assert.equal(result.status, "timed-out");
-    assert.ok(elapsed < 2000, `timeout resolution took ${elapsed}ms`);
     await assert.doesNotReject(
       waitForPidsGone([childPidFile, grandchildPidFile]),
       "expected bootstrap process group cleanup to kill child and grandchild"

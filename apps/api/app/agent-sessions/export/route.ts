@@ -4,7 +4,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { forbiddenResponse, parseQueryParams } from "@/lib/route-utils";
 import {
   authorizeAgentSessionTeamScope,
-  getAgentSessionViewerScope,
+  resolveDisplayedStatusParity,
 } from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
@@ -56,14 +56,8 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
       return errorResponse;
     }
 
-    const viewerScope = await getAgentSessionViewerScope({
-      userId: user.id,
-      clerkUserId,
-    });
-    if (!viewerScope.monitoringEnabled) {
-      return forbiddenResponse();
-    }
-
+    // FEA-4155: no `monitoringEnabled` flag gate (see the sibling list route).
+    // Org/team RBAC still applies via `authorizeAgentSessionTeamScope`.
     const teamScopeAllowed = await authorizeAgentSessionTeamScope({
       organizationId: user.organizationId,
       userId: user.id,
@@ -77,6 +71,14 @@ export const GET = withAnyAuth<never, "/agent-sessions/export">(
 
     const { rows, orgSlug } = await agentSessionsService.findExportRows({
       organizationId: user.organizationId,
+      // FEA-3534: enforce `viewerScope=self` for Me-scoped CSV exports.
+      viewerId: user.id,
+      // ISS-4556 / ISS-4559: the export must ship the same cohort the table
+      // shows, so it resolves the same Status-facet gate.
+      displayedStatusParity: await resolveDisplayedStatusParity({
+        userId: user.id,
+        clerkUserId,
+      }),
       filters,
     });
 

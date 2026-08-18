@@ -133,6 +133,13 @@ export class DesktopComputeProvider implements ComputeProvider {
       }
       if (computeTargetId) {
         try {
+          // Since ISS-6046 this kill checks delivery and replays, so it spends
+          // up to ~15s on top of the launch's own spent budget -- ~28s worst
+          // case against `LAUNCH_REQUEST_BUDGET_SECONDS`. Safe to sit here:
+          // `failLoopAfterLaunchFailure` has already written the durable FAILED
+          // status, and an undelivered kill leaves its command row non-terminal
+          // for the desktop's reconnect replay, so a request killed at its
+          // ceiling loses nothing this call would have added.
           await stopDesktopLoop(loopId, computeTargetId);
         } catch (killError) {
           log.warn(

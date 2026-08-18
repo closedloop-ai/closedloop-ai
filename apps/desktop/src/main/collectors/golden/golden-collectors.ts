@@ -2,7 +2,7 @@
  * @file golden-collectors.ts
  * @description Golden-mode corpus staging + collector construction (FEA-2648).
  *
- * The frozen golden corpus is human-owned and must never be opened in place: a
+ * The frozen golden corpus must never be opened in place: a
  * read of a WAL-mode SQLite store creates `-wal`/`-shm` siblings, and the
  * opencode loader opens read-write. So golden mode first STAGES every dossier's
  * raw inputs into a throwaway tree under the golden profile, then points the
@@ -13,7 +13,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { canonicalizePathForPolicy } from "../../../server/security.js";
-import { pathsOverlap } from "../../golden-mode.js";
+import { pathsOverlap } from "../../settings/golden-mode.js";
 import { createClaudeCollector } from "../claude/claude-collector.js";
 import { createCodexCollector } from "../codex/codex-collector.js";
 import { createOpencodeCollector } from "../opencode/opencode-collector.js";

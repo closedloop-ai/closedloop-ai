@@ -22,7 +22,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createClient } from "@libsql/client";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
 
 const BUSY_TIMEOUT_MS = 15_000;

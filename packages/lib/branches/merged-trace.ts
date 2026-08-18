@@ -1,5 +1,5 @@
 import type { TurnItem } from "@repo/api/src/types/agent-session";
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 
 /**
  * Idle threshold for the cross-session merged trace: a gap this long or longer
@@ -65,7 +65,14 @@ export function mapTurnItemToTrace(
         tMs: item.tMs,
         sub: item.sub,
         model: item.model,
+        // FEA-4178: `costUsd` stays the fixed-2dp label parse for
+        // legacy/compatibility consumers, but carry the EXACT `costDelta` (and
+        // running `cum`) the projection attributed so the branch merge never
+        // loses precision to the `$0.00` label — the adapter prefers these and
+        // falls back to the label parse only for older producers that omit them.
         costUsd: parseSubagentCostUsd(item.cost),
+        costDeltaUsd: item.costDelta ?? null,
+        cumCostUsd: item.cum,
       };
     case "event":
       return {

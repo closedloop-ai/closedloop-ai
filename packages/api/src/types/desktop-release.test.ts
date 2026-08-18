@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  DesktopPackagingValidationContext,
+  DesktopPublicMirrorRepo,
   DesktopReleaseChannel,
   DesktopReleaseMetadataAssetName,
   DesktopReleaseOwner,
   DesktopReleaseRepo,
   DesktopReleaseUpdaterMetadataAssetName,
+  DesktopTestValidationContext,
   getDesktopReleaseDmgAssetName,
   getDesktopReleaseLegacyDmgAssetName,
   getDesktopReleaseLegacyZipAssetName,
@@ -14,6 +17,7 @@ import {
   getDesktopReleaseUpdaterZipAssetNameFromMetadata,
   getDesktopReleaseZipAssetName,
   getHighestDesktopReleaseVersion,
+  getPublicDesktopReleaseDownloadUrl,
   isAcceptedDesktopReleaseDmgAssetName,
   isAcceptedDesktopReleaseZipAssetName,
   isAllowedDesktopReleaseAssetRedirectUrl,
@@ -33,6 +37,8 @@ const VALID_DOWNLOAD_URL = `https://github.com/${DesktopReleaseOwner}/${DesktopR
 const LEGACY_DMG_ASSET = getDesktopReleaseLegacyDmgAssetName(VERSION);
 const LEGACY_ZIP_ASSET = getDesktopReleaseLegacyZipAssetName(VERSION);
 const LEGACY_DOWNLOAD_URL = `https://github.com/${DesktopReleaseOwner}/${DesktopReleaseRepo}/releases/download/${RELEASE_TAG}/${LEGACY_DMG_ASSET}`;
+// Public mirror of the signed DMG — the login-free download URL (FEA-3372).
+const MIRROR_DOWNLOAD_URL = `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${RELEASE_TAG}/${DMG_ASSET}`;
 
 describe("isDesktopReleaseUpdaterZipAssetName", () => {
   it("allows the supported macOS updater ZIP asset basename", () => {
@@ -260,6 +266,49 @@ describe("isAllowedDesktopReleaseDownloadUrl", () => {
     expect(isAllowedDesktopReleaseDownloadUrl(LEGACY_DOWNLOAD_URL)).toBe(true);
   });
 
+  it("allows the public mirror DMG asset (FEA-3372)", () => {
+    expect(isAllowedDesktopReleaseDownloadUrl(MIRROR_DOWNLOAD_URL)).toBe(true);
+  });
+
+  it("allows a pre-rename ClosedLoop-* asset name on the public mirror", () => {
+    // The asset-name guard is casing-blind, so this URL shape validates even
+    // though the mirror only ever publishes current-cased assets. Pinned so a
+    // future FEA-2101 cleanup sees the behavior rather than discovering it.
+    expect(
+      isAllowedDesktopReleaseDownloadUrl(
+        `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${RELEASE_TAG}/${LEGACY_DMG_ASSET}`
+      )
+    ).toBe(true);
+  });
+
+  it("round-trips getPublicDesktopReleaseDownloadUrl through the guard", () => {
+    const url = getPublicDesktopReleaseDownloadUrl(VERSION);
+
+    expect(url).toBe(MIRROR_DOWNLOAD_URL);
+    expect(isAllowedDesktopReleaseDownloadUrl(url)).toBe(true);
+  });
+
+  it.each([
+    [
+      "public mirror URL with a non-Desktop release tag",
+      `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/v${VERSION}/${DMG_ASSET}`,
+    ],
+    [
+      "public mirror URL with a mismatched asset version",
+      `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${RELEASE_TAG}/Closedloop-9.9.9-universal.dmg`,
+    ],
+    [
+      "public mirror zip asset",
+      `https://github.com/${DesktopReleaseOwner}/${DesktopPublicMirrorRepo}/releases/download/${RELEASE_TAG}/${ZIP_ASSET}`,
+    ],
+    [
+      "third repo under the allowed owner",
+      `https://github.com/${DesktopReleaseOwner}/closedloop-ai-evil/releases/download/${RELEASE_TAG}/${DMG_ASSET}`,
+    ],
+  ])("rejects %s (FEA-3372 widened surface)", (_name, candidateUrl) => {
+    expect(isAllowedDesktopReleaseDownloadUrl(candidateUrl)).toBe(false);
+  });
+
   it.each([
     [
       "old closedloop-electron repo",
@@ -480,5 +529,17 @@ describe("resolveDesktopReleaseVersion", () => {
         shaReleasedVersion: null,
       })
     ).toEqual({ version: "0.16.76" });
+  });
+});
+
+describe("commit-status validation contexts (FEA-3902)", () => {
+  it("pins the desktop-test/validated context and keeps it distinct from packaging", () => {
+    // SSOT for the producing workflow (desktop-test-validation.yml) and the
+    // consumer (the per-episode alerter now, a release gate later). Must never
+    // collide with the packaging context or the two backstops' verdicts merge.
+    expect(DesktopTestValidationContext).toBe("desktop-test/validated");
+    expect(DesktopTestValidationContext).not.toBe(
+      DesktopPackagingValidationContext
+    );
   });
 });

@@ -9,6 +9,10 @@ import {
   JUDGES_ANALYTICS_CHART_COLOR_TOKEN_COUNT,
   JUDGES_ANALYTICS_LATEST_RADAR_COLOR,
 } from "@repo/app/judges-analytics/lib/judges-analytics";
+import {
+  type ChartConfig,
+  ChartContainer,
+} from "@repo/design-system/components/ui/chart";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { Label } from "@repo/design-system/components/ui/label";
 import { useState } from "react";
@@ -18,7 +22,6 @@ import {
   PolarRadiusAxis,
   Radar,
   RadarChart as RechartsRadarChart,
-  ResponsiveContainer,
   Tooltip,
 } from "recharts";
 import { TooltipRow, TooltipShell } from "../../components/chart-tooltip";
@@ -46,10 +49,21 @@ function getOverlayColor(index: number): string {
 
 const AXIS_LABELS_ORDERED = Object.values(AxisLabels);
 
-function buildAxesData(axes: RadarAxes | null) {
-  if (!axes) {
-    return AXIS_LABELS_ORDERED.map((axis) => ({ axis, latest: 0 }));
-  }
+// FEA-4149 (FEA-3961 pattern): host Recharts through the shared design-system
+// `ChartContainer` (not a raw `ResponsiveContainer`). ChartContainer floors the
+// laid-out box with `min-h-40` and matches that on its inner ResponsiveContainer,
+// so a parent that momentarily resolves to 0 (a tab/panel reveal, a
+// `display:none → visible` transition, or a grid cell before its track settles)
+// still measures real pixels and never logs `width(-1) and height(-1) ... should
+// be greater than 0` or renders an invisible chart. It also carries the
+// `.recharts-polar-grid [stroke='#ccc'] → stroke-border` token so the grid uses
+// the border token instead of Recharts' hardcoded light grey. `h-64` matches the
+// sibling judge chart's height scale.
+const RADAR_CHART_CONFIG: ChartConfig = {
+  latest: { label: "Latest", color: JUDGES_ANALYTICS_LATEST_RADAR_COLOR },
+};
+
+function buildAxesData(axes: RadarAxes) {
   return AXIS_LABELS_ORDERED.map((axis) => ({
     axis,
     latest: axes[AXIS_KEY_BY_LABEL[axis]],
@@ -105,14 +119,21 @@ export function JudgeRadarChart({
   promptVersions,
 }: JudgeRadarChartProps) {
   const [selectedVersionIds, setSelectedVersionIds] = useState<string[]>([]);
-  const insufficientData = radarAxes === null;
   const selectedVersions = selectedVersionIds
     .map((versionId) =>
       promptVersions.find((version) => version.promptId === versionId)
     )
     .filter((version): version is JudgePromptVersion => version !== undefined);
 
-  const baseData = buildAxesData(insufficientData ? null : radarAxes);
+  // When there are no scores yet, the parent CharacteristicsPanel already
+  // renders the single "Insufficient data" Alert. Rendering an all-zero radar
+  // under a duplicate scrim here would both say it twice and read as "every
+  // score is zero" rather than "no data yet", so render nothing at all.
+  if (radarAxes === null) {
+    return null;
+  }
+
+  const baseData = buildAxesData(radarAxes);
 
   // Merge selected version data into chart data
   const chartData = baseData.map((point) => {
@@ -139,49 +160,43 @@ export function JudgeRadarChart({
 
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <ResponsiveContainer height={300} width="100%">
-          <RechartsRadarChart data={chartData}>
-            <PolarGrid />
-            <PolarAngleAxis dataKey="axis" />
-            <PolarRadiusAxis domain={[0, 1]} tick={false} />
-            <Tooltip
-              content={<RadarAxisTooltip selectedVersions={selectedVersions} />}
-              cursor={false}
-            />
-            <Radar
-              dataKey="latest"
-              fill={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
-              fillOpacity={0.2}
-              name="Latest"
-              stroke={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
-              strokeWidth={2}
-            />
-            {selectedVersions.map((version, index) => {
-              const color = getOverlayColor(index);
-              return (
-                <Radar
-                  dataKey={`v${version.version}`}
-                  fill={color}
-                  fillOpacity={0.1}
-                  key={version.promptId}
-                  name={`v${version.version}`}
-                  stroke={color}
-                  strokeDasharray="4 4"
-                  strokeWidth={2}
-                />
-              );
-            })}
-          </RechartsRadarChart>
-        </ResponsiveContainer>
-        {insufficientData && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-            <p className="font-medium text-muted-foreground text-sm">
-              Insufficient data
-            </p>
-          </div>
-        )}
-      </div>
+      <ChartContainer
+        className="aspect-auto h-64 w-full"
+        config={RADAR_CHART_CONFIG}
+      >
+        <RechartsRadarChart data={chartData}>
+          <PolarGrid />
+          <PolarAngleAxis dataKey="axis" />
+          <PolarRadiusAxis domain={[0, 1]} tick={false} />
+          <Tooltip
+            content={<RadarAxisTooltip selectedVersions={selectedVersions} />}
+            cursor={false}
+          />
+          <Radar
+            dataKey="latest"
+            fill={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
+            fillOpacity={0.2}
+            name="Latest"
+            stroke={JUDGES_ANALYTICS_LATEST_RADAR_COLOR}
+            strokeWidth={2}
+          />
+          {selectedVersions.map((version, index) => {
+            const color = getOverlayColor(index);
+            return (
+              <Radar
+                dataKey={`v${version.version}`}
+                fill={color}
+                fillOpacity={0.1}
+                key={version.promptId}
+                name={`v${version.version}`}
+                stroke={color}
+                strokeDasharray="4 4"
+                strokeWidth={2}
+              />
+            );
+          })}
+        </RechartsRadarChart>
+      </ChartContainer>
 
       {promptVersions.length > 0 && (
         <div className="space-y-2">

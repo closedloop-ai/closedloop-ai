@@ -163,6 +163,20 @@ describe("InMemoryTargetRegistry", () => {
     const result = await registry.refreshTtl("target-1", "owner-token-1");
     expect(result).toBe(true);
   });
+
+  it("reclaim creates a missing entry and reports it", async () => {
+    const meta = makeTargetMetadata();
+    expect(await registry.reclaim("target-1", meta)).toBe(true);
+    expect(await registry.lookup("target-1")).toEqual(meta);
+  });
+
+  it("reclaim never clobbers an existing entry", async () => {
+    const original = makeTargetMetadata();
+    await registry.register("target-1", original);
+    const usurper = { ...makeTargetMetadata(), ownerToken: "other-owner" };
+    expect(await registry.reclaim("target-1", usurper)).toBe(false);
+    expect(await registry.lookup("target-1")).toEqual(original);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -196,12 +210,23 @@ describe("RedisTargetRegistry", () => {
       );
     });
 
-    it("does not throw on Redis error", async () => {
+    it("reports failure instead of throwing on Redis error", async () => {
       mockRedis.set.mockRejectedValue(new Error("connection lost"));
+
+      // Resolving `false` rather than rejecting is the contract that lets the
+      // caller LOG a lost registration: a rejection would never reach it,
+      // because registration must not throw at a mid-handshake caller.
+      await expect(
+        registry.register("target-1", makeTargetMetadata())
+      ).resolves.toBe(false);
+    });
+
+    it("reports success when Redis accepts the write", async () => {
+      mockRedis.set.mockResolvedValue("OK");
 
       await expect(
         registry.register("target-1", makeTargetMetadata())
-      ).resolves.toBeUndefined();
+      ).resolves.toBe(true);
     });
   });
 
@@ -289,6 +314,38 @@ describe("RedisTargetRegistry", () => {
       const result = await registry.refreshTtl("target-1", "owner-token-1");
       expect(result).toBe(false);
     });
+
+    describe("reclaim", () => {
+      // ISS-5811: SET NX so only a genuinely ABSENT key is written -- an entry
+      // owned by a newer connection elsewhere must survive a stale socket's heal.
+      it("re-creates via SET NX with the full metadata and TTL", async () => {
+        mockRedis.set.mockResolvedValue("OK");
+        const meta = makeTargetMetadata();
+
+        const result = await registry.reclaim("target-1", meta);
+        expect(result).toBe(true);
+
+        expect(mockRedis.set).toHaveBeenCalledWith(
+          "target:target-1",
+          JSON.stringify(meta),
+          "PX",
+          300_000,
+          "NX"
+        );
+      });
+
+      it("reports false when the key already exists (NX refused)", async () => {
+        mockRedis.set.mockResolvedValue(null);
+        const result = await registry.reclaim("target-1", makeTargetMetadata());
+        expect(result).toBe(false);
+      });
+
+      it("degrades to false on a Redis failure instead of throwing", async () => {
+        mockRedis.set.mockRejectedValue(new Error("connection lost"));
+        const result = await registry.reclaim("target-1", makeTargetMetadata());
+        expect(result).toBe(false);
+      });
+    });
   });
 
   describe("deregisterAllByInstance", () => {
@@ -318,6 +375,26 @@ describe("RedisTargetRegistry", () => {
 
       const count = await registry.deregisterAllByInstance("inst-1");
       expect(count).toBe(0);
+    });
+
+    it("skips a key whose GET returns null (SCAN/GET race: key expired between scan and get)", async () => {
+      const matchingMeta = makeTargetMetadata({ instanceId: "inst-1" });
+      // Two keys in the scan result; the first one vanishes before GET.
+      mockRedis.scan.mockResolvedValueOnce([
+        "0",
+        ["relay:target:t1", "relay:target:t2"],
+      ]);
+      mockRedis.get
+        .mockResolvedValueOnce(null) // t1 vanished — null data arm
+        .mockResolvedValueOnce(JSON.stringify(matchingMeta)); // t2 still present
+      mockRedis.del.mockResolvedValue(1);
+
+      const count = await registry.deregisterAllByInstance("inst-1");
+
+      // Only t2 was deleted; t1 was skipped because GET returned null.
+      expect(count).toBe(1);
+      expect(mockRedis.del).toHaveBeenCalledWith("target:t2");
+      expect(mockRedis.del).not.toHaveBeenCalledWith("target:t1");
     });
   });
 

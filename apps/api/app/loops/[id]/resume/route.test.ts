@@ -34,6 +34,12 @@ vi.mock("@/lib/loops/loop-orchestrator", () => ({
   launchLoop: vi.fn(),
 }));
 
+// The real `buildMissingAnthropicApiKeyResponse` runs; only its outbound edge
+// is stubbed, so the route's Cloud-vs-Local decision is the production one.
+vi.mock("@/app/settings/api-key-service", () => ({
+  apiKeyService: { resolveApiKey: vi.fn() },
+}));
+
 vi.mock("@vercel/functions", () => ({
   waitUntil: vi.fn(),
 }));
@@ -51,8 +57,10 @@ vi.mock("@repo/observability/log", () => ({
 
 import { LoopStatus } from "@repo/api/src/types/loop";
 import { NextResponse } from "next/server";
+import { apiKeyService } from "@/app/settings/api-key-service";
 import { resolveComputeTargetForRoute } from "@/lib/loops/compute-target-route-helpers";
 import { isExplicitComputeSelectionRequired } from "@/lib/loops/explicit-compute-selection";
+import { MISSING_ANTHROPIC_API_KEY_MESSAGE } from "@/lib/loops/loop-dispatch-utils";
 import { launchLoop } from "@/lib/loops/loop-orchestrator";
 import {
   createMockRequest,
@@ -99,6 +107,9 @@ beforeEach(() => {
 
   // Default: launchLoop resolves with a task ARN string
   vi.mocked(launchLoop).mockResolvedValue("mock-task-arn");
+
+  // Default: the Cloud pre-flight finds a key, so it never short-circuits.
+  vi.mocked(apiKeyService.resolveApiKey).mockResolvedValue("sk-ant-test");
 });
 
 describe("POST /loops/[id]/resume", () => {
@@ -119,6 +130,61 @@ describe("POST /loops/[id]/resume", () => {
 
     expect(response.status).toBe(200);
     expect(resolveComputeTargetForRoute).not.toHaveBeenCalled();
+  });
+
+  it("refuses a keyless Cloud resume before it creates the child loop", async () => {
+    // The side effect, not the status code, is the point: the dispatch below
+    // would surface the missing key anyway, but only checking first stops every
+    // retry inserting another child loop purely to cancel it a moment later.
+    // `loopsService.resume` persists `computeTargetId ?? null`, so an
+    // unresolved target here really is an ECS child that needs a cloud key.
+    vi.mocked(apiKeyService.resolveApiKey).mockResolvedValue(null);
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      success: false,
+      error: MISSING_ANTHROPIC_API_KEY_MESSAGE,
+    });
+    expect(apiKeyService.resolveApiKey).toHaveBeenCalledWith(USER_ID, ORG_ID);
+    expect(loopsService.resume).not.toHaveBeenCalled();
+    expect(launchLoop).not.toHaveBeenCalled();
+  });
+
+  it("does not run the cloud key pre-flight for a Local resume", async () => {
+    // Positive control for the assertion above: Local runs resolve the key on
+    // the desktop machine, so blocking them on a cloud-side key would be wrong.
+    // Without this, a pre-flight that refused *everything* would still pass the
+    // keyless test.
+    vi.mocked(apiKeyService.resolveApiKey).mockResolvedValue(null);
+    vi.mocked(loopsService.findById).mockResolvedValue({
+      id: LOOP_ID,
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    } as any);
+    vi.mocked(resolveComputeTargetForRoute).mockResolvedValue({
+      computeTargetId: VALID_COMPUTE_TARGET_UUID,
+    });
+
+    const response = await POST(
+      createMockRequest({
+        url: `http://localhost:3002/loops/${LOOP_ID}/resume`,
+        method: "POST",
+        body: {},
+      }),
+      createMockRouteContext({ id: LOOP_ID })
+    );
+
+    expect(response.status).toBe(200);
+    expect(apiKeyService.resolveApiKey).not.toHaveBeenCalled();
+    expect(loopsService.resume).toHaveBeenCalledTimes(1);
   });
 
   it("validates inherited compute target and passes it to resume", async () => {
@@ -187,7 +253,11 @@ describe("POST /loops/[id]/resume", () => {
       {},
       undefined
     );
-    expect(launchLoop).toHaveBeenCalledWith("new-id", ORG_ID);
+    // The resume route now dispatches through `dispatchAndClassify`, which
+    // forwards a third `LaunchLoopOptions` argument. Resume passes none, so it
+    // arrives as `undefined` — asserted explicitly so a future route change
+    // that starts sending real options cannot slip past this expectation.
+    expect(launchLoop).toHaveBeenCalledWith("new-id", ORG_ID, undefined);
   });
 
   it("returns the resolver error when inherited compute target is inaccessible and explicit selection is enabled", async () => {

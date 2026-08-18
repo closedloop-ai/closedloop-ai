@@ -38,6 +38,26 @@ import { defineConfig } from "electron-vite";
 //     collectors deep-import its harness parser cores as `@repo/lib/harness/...`
 //     (FEA-2717), the same runtime specifier shape that made the inline+alias
 //     mandatory here, or a packaged-app boot hits `ERR_MODULE_NOT_FOUND`.
+//   - @repo/crewd — the portable night-crew scheduler + cascade core (FEA-3813 /
+//     FEA-3847). Same shape as @repo/shared-platform/@closedloop-ai/loops-api: its
+//     `exports` map resolves to `.ts` source (no pre-built `dist`), so an
+//     external specifier — `@repo/crewd` (scheduler host, reached from the
+//     db-host-worker) and `@repo/crewd/harness` + `@repo/crewd/passes/audit`
+//     (AuditService, pulled into the MAIN boot graph via startup.ts) — would
+//     resolve to a `.ts` file the packaged main process (plain Node, no tsx)
+//     cannot load, crashing boot for every window. Inlining bundles it from
+//     source; no alias needed (its `exports` map resolves the subpaths).
+//   - @repo/cost — the canonical token-cost engine (genai-cost +
+//     harness-cost-parity). Same shape as @closedloop-ai/loops-api/@repo/crewd: its
+//     `exports` map resolves to `.ts` source (never published), reached from the
+//     main process via the `@repo/cost/*` re-export shim in
+//     `src/shared/token-cost.ts` and directly by the cost/reconciliation code, so
+//     it must be inlined from source. No alias needed. Its runtime dep
+//     `@pydantic/genai-prices` is NOT carried by this inline — an inlined
+//     workspace package is bundled from source and never installed, so its own
+//     `dependencies` are not honored at runtime; genai-prices resolves from
+//     packaged node_modules because `apps/desktop` declares it as a direct
+//     dependency (keep that declaration or packaged main hits ERR_MODULE_NOT_FOUND).
 // Workspace packages that keep a pre-built `dist` AND stay external, namely
 // @closedloop-ai/telemetry-contract (still published), ship through the staged
 // runtime closure. Native modules (electron, @libsql/client, better-sqlite3,
@@ -48,6 +68,8 @@ const WORKSPACE_INLINE = [
   "@repo/lib",
   "@repo/shared-platform",
   "@closedloop-ai/loops-api",
+  "@repo/crewd",
+  "@repo/cost",
 ];
 
 const workspaceAlias: Record<string, string> = {
@@ -74,6 +96,10 @@ const MAIN_WORKER_ENTRIES: Record<string, string> = {
   ),
   "historical-parse-worker": resolve(
     "src/main/collectors/engine/historical-parse-worker.ts"
+  ),
+  "pack-scan-worker": resolve("src/main/packs/pack-scan-worker.ts"),
+  "opencode-materialize-worker": resolve(
+    "src/main/transcript-sync/opencode-materialize-worker.ts"
   ),
 };
 

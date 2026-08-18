@@ -1,14 +1,7 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
+import { useResponsiveModal } from "@repo/design-system/hooks/use-responsive-modal";
 import { Loader2Icon } from "lucide-react";
 
 type ConfirmationDialogProps = {
@@ -34,6 +27,11 @@ export function ConfirmationDialog({
   isPending = false,
   variant = "default",
 }: Readonly<ConfirmationDialogProps>) {
+  // Dialog on desktop, bottom Sheet below `sm` — one markup tree, the hook
+  // swaps the catalog primitive family and keeps focus trap / Escape / a11y.
+  const { Root, Content, Header, Footer, Title, Description } =
+    useResponsiveModal();
+
   const handleConfirm = async () => {
     try {
       await onConfirm();
@@ -47,13 +45,13 @@ export function ConfirmationDialog({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
+    <Root onOpenChange={onOpenChange} open={open}>
+      <Content>
+        <Header>
+          <Title>{title}</Title>
+          <Description>{description}</Description>
+        </Header>
+        <Footer>
           <Button
             disabled={isPending}
             onClick={() => onOpenChange(false)}
@@ -75,8 +73,8 @@ export function ConfirmationDialog({
               confirmLabel
             )}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </Footer>
+      </Content>
+    </Root>
   );
 }

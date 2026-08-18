@@ -6,9 +6,9 @@
 // resolution / edge-type exclusion for us. Run from apps/desktop:
 //   depcruise src --config scripts/dependency-cruiser.config.cjs
 
-const OTEL_RUNTIME_ENTRIES = String.raw`^src/(main/(app-otel-runtime|app-otel-runtime-lifecycle|renderer-otel-ipc)|shared/(exception-sanitizer|renderer-otel-bridge-constants|renderer-otel-bridge-utils|renderer-otel-bridge))\.ts$`;
+const OTEL_RUNTIME_ENTRIES = String.raw`^src/(main/(telemetry/app-otel-runtime|telemetry/app-otel-runtime-lifecycle|ipc/renderer-otel-ipc)|shared/(exception-sanitizer|renderer-otel-bridge-constants|renderer-otel-bridge-utils|renderer-otel-bridge))\.ts$`;
 const BOOT_ENTRIES = String.raw`^src/main/(index|startup|app|window)\.ts$`;
-const DESIGN_SYSTEM_RUNTIME = String.raw`^src/main/(agent-dashboard-design-system-runtime|agent-monitor-listener|otlp-http-receiver)\.ts$|^src/main/(otlp|collectors|database)/`;
+const DESIGN_SYSTEM_RUNTIME = String.raw`^src/main/(dashboard/agent-dashboard-design-system-runtime|agent-monitor/agent-monitor-listener|telemetry/otlp-http-receiver)\.ts$|^src/main/(otlp|collectors|database)/`;
 
 /** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
@@ -82,6 +82,32 @@ module.exports = {
       severity: "error",
       from: { path: String.raw`^src/renderer/app-otel-runtime\.ts$` },
       to: { dependencyTypes: ["core"] },
+    },
+    {
+      name: "transcript-sync-factory-no-inline-materialize",
+      comment:
+        "ISS-5337: the OpenCode materialize pass re-derives the whole corpus synchronously (foreign SQLite read + per-session serialize + byte-compare), so the transcript sync factory must not import the materializer and call it in-process — that puts it back on the main event loop. Only `opencode-materialize-worker.ts`, which nothing statically imports, may reach it.",
+      severity: "error",
+      from: {
+        path: String.raw`^src/main/transcript-sync/desktop-transcript-sync-factory\.ts$`,
+      },
+      to: {
+        path: String.raw`^src/main/transcript-sync/opencode-materializer\.ts$`,
+      },
+    },
+  ],
+  required: [
+    {
+      name: "transcript-sync-materializes-off-main",
+      comment:
+        "ISS-5337: the transcript sync factory must keep a static dependency on the utilityProcess materialize runner — deleting it is how the pass would come back on-main. Note this pair of rules covers the STATIC forms only: `options.exclude.dynamic` keeps `import()` edges out of this graph, so a re-added lazy import of the materializer is review-owned, not gated here.",
+      severity: "error",
+      module: {
+        path: String.raw`^src/main/transcript-sync/desktop-transcript-sync-factory\.ts$`,
+      },
+      to: {
+        path: String.raw`^src/main/transcript-sync/utility-process-opencode-materialize-runner\.ts$`,
+      },
     },
   ],
   options: {

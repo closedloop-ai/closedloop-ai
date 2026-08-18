@@ -11,6 +11,10 @@ import {
   toResolverTeamRepo,
   useTeamRepositoriesUnion,
 } from "@repo/app/teams/hooks/use-team-repositories-union";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import { Label } from "@repo/design-system/components/ui/label";
@@ -43,7 +47,11 @@ export function RepoOverridePicker({
   enabled = true,
 }: Readonly<RepoOverridePickerProps>) {
   const teamIds = useMemo(() => teams.map((t) => t.id), [teams]);
-  const { repositories, isLoading } = useTeamRepositoriesUnion({
+  const {
+    repositories,
+    isLoading,
+    error: loadError,
+  } = useTeamRepositoriesUnion({
     teamIds,
     enabled,
   });
@@ -150,6 +158,16 @@ export function RepoOverridePicker({
         <LoaderIcon className="h-4 w-4 animate-spin" />
         Loading team repositories...
       </div>
+    );
+  }
+
+  // Before the empty branch: a failed read also yields an empty union, and the
+  // empty copy would assert the team curated nothing (ISS-5095).
+  if (loadError) {
+    return (
+      <Alert variant="error">
+        <AlertDescription>{loadError}</AlertDescription>
+      </Alert>
     );
   }
 

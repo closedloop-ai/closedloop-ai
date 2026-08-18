@@ -16,6 +16,10 @@ export default defineConfig({
       // `@repo`: both are source-consumed (resolve to `.../src/*`), so the
       // generic `@repo` → `packages` mapping would drop the `/src` and fail.
       ...sharedPlatformAliases,
+      "@repo/cost": path.resolve(
+        import.meta.dirname,
+        "../../packages/cost/src"
+      ),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../../packages/loops-api/src"

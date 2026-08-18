@@ -8,6 +8,7 @@ import {
 } from "@repo/design-system/components/ui/comment-thread";
 import {
   FeedRail,
+  type FeedRailMode,
   FeedRailTab,
 } from "@repo/design-system/components/ui/feed-rail";
 import type { Meta, StoryObj } from "@storybook/react";
@@ -40,7 +41,7 @@ const feedItems = [
   },
 ] as const;
 
-function FeedRailStory() {
+function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
   const [activeTab, setActiveTab] = useState<FeedRailTab>(FeedRailTab.Feed);
   const [width, setWidth] = useState(380);
 
@@ -114,6 +115,7 @@ function FeedRailStory() {
           </>
         }
         hasChat
+        mode={mode}
         onClose={() => undefined}
         onTabChange={setActiveTab}
         onWidthChange={setWidth}
@@ -135,3 +137,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+/**
+ * FEA-3865: the mobile bottom-sheet layout. Below the `sm` breakpoint the
+ * adaptive `inline` mode resolves to this on its own; forcing `mode="sheet"`
+ * shows it at any width. The pointer resize handle is gone (a sheet has no
+ * draggable edge) and the panel opens from the bottom with a scrim + Escape.
+ */
+export const Sheet: Story = {
+  render: () => <FeedRailStory mode="sheet" />,
+};

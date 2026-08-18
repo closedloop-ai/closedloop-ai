@@ -1,3 +1,4 @@
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
 const databaseMocks = vi.hoisted(() => {
@@ -119,6 +120,32 @@ describe("normalizeExternalGitHubAuthor", () => {
       isGhost: true,
     });
   });
+
+  it("prefers canonical actor type and never infers from a bot-looking login", () => {
+    const canonical = normalizeExternalGitHubAuthor(
+      githubAuthor({
+        actorType: GitHubActorType.Bot,
+        type: GitHubActorType.User,
+      }),
+      SOURCE
+    );
+    const noEvidence = normalizeExternalGitHubAuthor(
+      githubAuthor({ login: "automation[bot]" }),
+      SOURCE
+    );
+
+    expect(canonical.actorType).toBe(GitHubActorType.Bot);
+    expect(noEvidence).not.toHaveProperty("actorType");
+  });
+
+  it("classifies a present unsupported raw type as unknown", () => {
+    expect(
+      normalizeExternalGitHubAuthor(
+        githubAuthor({ type: "ServiceAccount" }),
+        SOURCE
+      ).actorType
+    ).toBe(GitHubActorType.Unknown);
+  });
 });
 
 describe("resolveExternalGitHubAuthor", () => {
@@ -129,13 +156,30 @@ describe("resolveExternalGitHubAuthor", () => {
       user: linkedUser,
     });
     db.externalCommentAuthor.upsert.mockResolvedValue(
-      makeExternalAuthor({ userId: linkedUser.id, user: linkedUser })
+      makeExternalAuthor({
+        providerDetail: {
+          actorType: GitHubActorType.Bot,
+          retained: "linked-sibling",
+        },
+        userId: linkedUser.id,
+        user: linkedUser,
+      })
     );
+    db.externalCommentAuthor.findUnique.mockResolvedValue({
+      providerDetail: {
+        actorType: GitHubActorType.User,
+        retained: "linked-sibling",
+      },
+    });
     installDb(db);
 
     const result = await resolveExternalGitHubAuthor({
       organizationId: ORGANIZATION_ID,
-      author: githubAuthor({ id: 123, login: "OctoCat" }),
+      author: githubAuthor({
+        id: 123,
+        login: "OctoCat",
+        actorType: GitHubActorType.Bot,
+      }),
       source: SOURCE,
     });
 
@@ -151,6 +195,32 @@ describe("resolveExternalGitHubAuthor", () => {
       select: { user: { select: expect.any(Object) } },
     });
     expect(db.user.upsert).not.toHaveBeenCalled();
+    expect(db.externalCommentAuthor.findUnique).toHaveBeenCalledWith({
+      where: {
+        organizationId_provider_providerUserId: {
+          organizationId: ORGANIZATION_ID,
+          provider: ExternalCommentProvider.GITHUB,
+          providerUserId: "123",
+        },
+      },
+      select: { providerDetail: true },
+    });
+    expect(db.externalCommentAuthor.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          providerDetail: {
+            actorType: GitHubActorType.Bot,
+            retained: "linked-sibling",
+          },
+        }),
+        update: expect.objectContaining({
+          providerDetail: {
+            actorType: GitHubActorType.Bot,
+            retained: "linked-sibling",
+          },
+        }),
+      })
+    );
   });
 
   it("creates a deterministic inactive shadow user when no trusted match exists", async () => {
@@ -422,6 +492,145 @@ describe("resolveExternalGitHubAuthor", () => {
     );
   });
 
+  it("merges actor type into provider detail without erasing sibling keys", async () => {
+    const existingUser = makeShadowUser("123", "octocat");
+    const existingAuthor = makeExternalAuthor({
+      providerDetail: {
+        actorType: GitHubActorType.User,
+        source: "projection",
+      },
+      userId: existingUser.id,
+      user: existingUser,
+    });
+    const db = makeMockDb();
+    db.externalCommentAuthor.findUnique.mockResolvedValue(existingAuthor);
+    db.externalCommentAuthor.upsert.mockResolvedValue({
+      ...existingAuthor,
+      providerDetail: {
+        actorType: GitHubActorType.Organization,
+        source: "projection",
+      },
+    });
+    installDb(db);
+
+    const result = await resolveExternalGitHubAuthor({
+      organizationId: ORGANIZATION_ID,
+      author: githubAuthor({ type: GitHubActorType.Organization }),
+      source: SOURCE,
+    });
+
+    const expectedProviderDetail = {
+      actorType: GitHubActorType.Organization,
+      source: "projection",
+    };
+    expect(db.externalCommentAuthor.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          providerDetail: expectedProviderDetail,
+        }),
+        update: expect.objectContaining({
+          providerDetail: expectedProviderDetail,
+        }),
+      })
+    );
+    expect(result.externalAuthor.providerDetail).toEqual(
+      expectedProviderDetail
+    );
+  });
+
+  it("persists unknown for present unsupported actor evidence", async () => {
+    const existingUser = makeShadowUser("123", "octocat");
+    const existingAuthor = makeExternalAuthor({
+      providerDetail: { retained: "projection" },
+      userId: existingUser.id,
+      user: existingUser,
+    });
+    const db = makeMockDb();
+    db.externalCommentAuthor.findUnique.mockResolvedValue(existingAuthor);
+    db.externalCommentAuthor.upsert.mockResolvedValue({
+      ...existingAuthor,
+      providerDetail: {
+        actorType: GitHubActorType.Unknown,
+        retained: "projection",
+      },
+    });
+    installDb(db);
+
+    await resolveExternalGitHubAuthor({
+      organizationId: ORGANIZATION_ID,
+      author: githubAuthor({ type: "ServiceAccount" }),
+      source: SOURCE,
+    });
+
+    expect(db.externalCommentAuthor.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          providerDetail: {
+            actorType: GitHubActorType.Unknown,
+            retained: "projection",
+          },
+        }),
+      })
+    );
+  });
+
+  it("does not erase existing provider detail when actor evidence is missing", async () => {
+    const existingUser = makeShadowUser("123", "octocat");
+    const existingAuthor = makeExternalAuthor({
+      providerDetail: { actorType: GitHubActorType.Mannequin },
+      userId: existingUser.id,
+      user: existingUser,
+    });
+    const db = makeMockDb();
+    db.externalCommentAuthor.findUnique.mockResolvedValue(existingAuthor);
+    db.externalCommentAuthor.upsert.mockResolvedValue(existingAuthor);
+    installDb(db);
+
+    await resolveExternalGitHubAuthor({
+      organizationId: ORGANIZATION_ID,
+      author: githubAuthor({}),
+      source: SOURCE,
+    });
+
+    const upsert = db.externalCommentAuthor.upsert.mock.calls[0]?.[0];
+    expect(upsert.create).not.toHaveProperty("providerDetail");
+    expect(upsert.update).not.toHaveProperty("providerDetail");
+  });
+
+  it("repairs malformed provider detail when current evidence is authoritative", async () => {
+    const existingUser = makeShadowUser("123", "octocat");
+    const existingAuthor = makeExternalAuthor({
+      providerDetail: ["legacy"],
+      userId: existingUser.id,
+      user: existingUser,
+    });
+    const db = makeMockDb();
+    db.externalCommentAuthor.findUnique.mockResolvedValue(existingAuthor);
+    db.externalCommentAuthor.upsert.mockResolvedValue({
+      ...existingAuthor,
+      providerDetail: { actorType: GitHubActorType.EnterpriseUserAccount },
+    });
+    installDb(db);
+
+    await resolveExternalGitHubAuthor({
+      organizationId: ORGANIZATION_ID,
+      author: githubAuthor({
+        actorType: GitHubActorType.EnterpriseUserAccount,
+      }),
+      source: SOURCE,
+    });
+
+    expect(db.externalCommentAuthor.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({
+          providerDetail: {
+            actorType: GitHubActorType.EnterpriseUserAccount,
+          },
+        }),
+      })
+    );
+  });
+
   it("repoints existing inactive real-user authors to deterministic shadow users", async () => {
     const inactiveRealUser = makeUser({
       id: "inactive-real-user",
@@ -576,6 +785,7 @@ function makeExternalAuthor(
     displayName: string;
     avatarUrl: string | null;
     profileUrl: string | null;
+    providerDetail: unknown;
     userId: string;
     user: ReturnType<typeof makeUser> | null;
   }> = {}
@@ -591,6 +801,7 @@ function makeExternalAuthor(
     displayName: "octocat",
     avatarUrl: "https://avatars.example/user.png",
     profileUrl: "https://github.com/octocat",
+    providerDetail: null,
     userId: "user-1",
     user: null,
     ...overrides,

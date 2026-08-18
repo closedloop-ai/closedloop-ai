@@ -19,8 +19,10 @@ import { useAgentSessionsDataSource } from "./provider";
  * {@link useLiveQueryBridge} hook (shared with BranchesLiveBridge); this
  * component supplies only the session-specific change-id extraction and the
  * invalidation policy:
- * - **List + usage always move** — any session change can shift the visible page
- *   and the aggregate summary.
+ * - **List + usage + combined page-data always move** — any session change can
+ *   shift the visible page and the aggregate summary, and FEA-4157 routes the
+ *   Sessions views' list + summary through the combined `pageData` read, so it
+ *   must invalidate alongside the standalone list/usage keys.
  * - **Details** — a `{ sessionId }` change refreshes that one `detail` (keyed by
  *   the active source's scope, FEA-1771); a `{}` change (import/rebuild/backfill)
  *   refreshes all open details.
@@ -43,10 +45,17 @@ export function AgentSessionsLiveBridge() {
     subscribe: dataSource.subscribe,
     getChangeId: (change) => change.sessionId,
     flush: ({ broad, ids }) => {
-      // List + usage always move; analytics is intentionally never invalidated
-      // (off the Sessions page; one-shot-on-load per PLN-941 §5/§11).
+      // List + usage + the combined page-data read always move; analytics is
+      // intentionally never invalidated (off the Sessions page; one-shot-on-load
+      // per PLN-941 §5/§11). FEA-4157/FEA-4177: the web Sessions page reads its
+      // list + summary through the standalone `list`/`usage` keys while the
+      // desktop view still reads the combined `pageData`, so all three prefixes
+      // must invalidate or a live event would leave a visible table/cards stale.
       queryClient.invalidateQueries({ queryKey: agentSessionKeys.lists() });
       queryClient.invalidateQueries({ queryKey: agentSessionKeys.usages() });
+      queryClient.invalidateQueries({
+        queryKey: agentSessionKeys.pageDataRoot(),
+      });
 
       if (broad) {
         // A `{}` event (import/rebuild/backfill) can touch any session, so

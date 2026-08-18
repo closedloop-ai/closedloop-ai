@@ -1,54 +1,37 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
-import { afterEach, describe, mock, test } from "node:test";
-import { AgentSessionSyncMode } from "@repo/api/src/types/agent-session";
-import {
-  buildRelayValidationPopHeaders,
-  type CloudSocketOptions,
-  CloudSocketService,
-  parseDesktopAgentSessionsAck,
-  parseDesktopHelloAck,
-  parseServerCapabilities,
-  refreshRelayValidationPopHeadersForSocket,
-} from "../src/main/cloud-socket.js";
+import { afterEach, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import ts from "typescript6";
 import {
   DESKTOP_POP_GATEWAY_ID_HEADER,
   DESKTOP_POP_SIGNATURE_HEADER,
   DESKTOP_POP_TIMESTAMP_HEADER,
   DesktopPopUnavailableError,
   RELAY_API_KEY_VERIFY_PATH,
-} from "../src/main/desktop-pop.js";
-import { gatewayLog } from "../src/main/gateway-logger.js";
+} from "../src/main/auth/desktop-pop.js";
+import {
+  buildRelayValidationPopHeaders,
+  CloudSocketService,
+  parseDesktopHelloAck,
+  parseServerCapabilities,
+  refreshRelayValidationPopHeadersForSocket,
+} from "../src/main/cloud/cloud-socket.js";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { buildCommandSigningCapabilities } from "../src/shared/command-signing-policy.js";
 import { GATEWAY_PROTOCOL_VERSION } from "../src/shared/contracts.js";
+import {
+  createStubOptions,
+  FakeSocket,
+} from "./helpers/cloud-socket-fixtures.js";
+import { forEachNode, parseTypeScriptFile } from "./helpers/ts-ast.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-const HELLO_ACK_TIMEOUT_RESET_PATTERN =
-  /socket\.on\("desktop\.hello\.ack",[\s\S]*?this\.helloAckTimeoutCount = 0;/;
-
-function createStubOptions(
-  overrides?: Partial<CloudSocketOptions>
-): CloudSocketOptions {
-  return {
-    getRelayOrigin: () => "https://relay.example.com",
-    getApiKey: () => "test-key",
-    getAllowedDirectories: () => ["/tmp"],
-    getMaxInFlightCommands: () => 5,
-    getEnabledOperations: () => ["test_op"],
-    machineName: "test-machine",
-    pluginVersion: "1.0.0-test",
-    desktopClientVersion: "0.13.9-test",
-    gatewayProtocolVersion: "0.1.0",
-    ...overrides,
-  };
-}
-
 afterEach(() => {
-  mock.timers.reset();
+  nodeTestTimers.reset();
   gatewayLog.clear();
   gatewayLog.setVerbose(false);
 });
@@ -263,32 +246,6 @@ describe("T-3.1: GATEWAY_PROTOCOL_VERSION constant", () => {
 // T-3.1: desktop.hello payload version fields
 // ---------------------------------------------------------------------------
 
-/**
- * Minimal fake socket that records events emitted via socket.emit().
- * We inject this into the CloudSocketService's private `socket` field
- * so we can capture the desktop.hello payload without a real Socket.IO
- * server connection.
- */
-class FakeSocket extends EventEmitter {
-  connected = true;
-  readonly emittedEvents: Array<{ name: string; payload: unknown }> = [];
-
-  emit(name: string, ...args: unknown[]): boolean {
-    this.emittedEvents.push({ name, payload: args[0] });
-    return super.emit(name, ...args);
-  }
-
-  disconnect(): this {
-    this.connected = false;
-    return this;
-  }
-
-  removeAllListeners(event?: string): this {
-    super.removeAllListeners(event);
-    return this;
-  }
-}
-
 describe("T-3.1: hello payload version fields", () => {
   test("CloudSocketService emits version fields and local capabilities in desktop.hello", () => {
     const service = new CloudSocketService(
@@ -429,6 +386,42 @@ describe("T-3.1: hello payload version fields", () => {
       undefined
     );
     assert.equal(parseServerCapabilities(undefined), undefined);
+    // FEA-4138: the compression capability parses only on explicit true, and a
+    // non-true value must NOT enable it (opposite branch fails the assertion).
+    assert.deepEqual(
+      parseServerCapabilities({ agentSessionSyncCompression: true }),
+      { agentSessionSyncCompression: true }
+    );
+    assert.equal(
+      parseServerCapabilities({ agentSessionSyncCompression: "true" }),
+      undefined
+    );
+    assert.equal(
+      parseServerCapabilities({ agentSessionSyncCompression: false }),
+      undefined
+    );
+    // ISS-4541: the activity-chunking capability parses only on explicit true;
+    // a non-true value must NOT enable it (opposite branch fails the assertion).
+    assert.deepEqual(
+      parseServerCapabilities({ agentSessionSyncActivityChunking: true }),
+      { agentSessionSyncActivityChunking: true }
+    );
+    assert.equal(
+      parseServerCapabilities({ agentSessionSyncActivityChunking: "true" }),
+      undefined
+    );
+    assert.equal(
+      parseServerCapabilities({ agentSessionSyncActivityChunking: false }),
+      undefined
+    );
+    assert.deepEqual(
+      parseServerCapabilities({ agentSessionSyncMonitoredActivity: true }),
+      { agentSessionSyncMonitoredActivity: true }
+    );
+    assert.equal(
+      parseServerCapabilities({ agentSessionSyncMonitoredActivity: "true" }),
+      undefined
+    );
   });
 
   test("parseDesktopHelloAck ignores identity fields owned by server analytics", () => {
@@ -482,40 +475,6 @@ describe("T-3.1: hello payload version fields", () => {
       undefined
     );
   });
-
-  test("parseDesktopAgentSessionsAck keeps malformed payloads retryable", () => {
-    assert.deepEqual(parseDesktopAgentSessionsAck({ accepted: true }), {
-      accepted: true,
-    });
-    assert.deepEqual(
-      parseDesktopAgentSessionsAck({ reason: "feature_disabled" }),
-      {
-        accepted: false,
-        reason: "feature_disabled",
-      }
-    );
-    assert.deepEqual(parseDesktopAgentSessionsAck({ reason: "bogus" }), {
-      accepted: false,
-      reason: "rate_limited",
-    });
-  });
-
-  test("sendAgentSessions keeps batches retryable until the relay is ready", async () => {
-    const service = new CloudSocketService(createStubOptions());
-
-    const ack = await service.sendAgentSessions({
-      schemaVersion: 1,
-      batchId: "batch-1",
-      syncMode: AgentSessionSyncMode.Incremental,
-      sessionCount: 0,
-      sessions: [],
-    });
-
-    assert.deepEqual(ack, {
-      accepted: false,
-      reason: "rate_limited",
-    });
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -524,7 +483,7 @@ describe("T-3.1: hello payload version fields", () => {
 
 describe("FEA-1404: hello-ack timeout recovery", () => {
   test("first hello-ack timeout re-emits hello on same socket; second timeout forces reconnect", () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
+    nodeTestTimers.enable(["setTimeout"]);
 
     const service = new CloudSocketService(
       createStubOptions({
@@ -549,7 +508,7 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
     assert.equal(fakeSocket.emittedEvents.length, 1, "initial hello emitted");
 
     // Tick to first timeout (10s).
-    mock.timers.tick(10_000);
+    nodeTestTimers.tick(10_000);
 
     // After the first timeout, hello must have been re-emitted on the same
     // socket (cumulative 2 emits) — the socket must still be connected.
@@ -573,7 +532,7 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
     // Tick to second timeout (another 10s). This is the MAX; the supervisor
     // must NOT re-emit hello on the same socket — instead it disconnects so
     // the existing 'disconnect' listener can schedule a fresh handshake.
-    mock.timers.tick(10_000);
+    nodeTestTimers.tick(10_000);
 
     assert.equal(
       fakeSocket.emittedEvents.length,
@@ -608,7 +567,7 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
   });
 
   test("hello-ack timeout log includes socketId, computeTargetId, gatewayId, and versions", () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
+    nodeTestTimers.enable(["setTimeout"]);
     gatewayLog.setVerbose(false);
     gatewayLog.clear();
 
@@ -630,7 +589,7 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
       (...args: unknown[]) => void
     >;
     proto.scheduleHelloAckTimeout.call(service);
-    mock.timers.tick(10_000);
+    nodeTestTimers.tick(10_000);
 
     const entries = gatewayLog.getEntries();
     const timeoutEntry = entries.find(
@@ -678,88 +637,63 @@ describe("FEA-1404: hello-ack timeout recovery", () => {
     );
   });
 
-  test("source contains a reset of helloAckTimeoutCount on the desktop.hello.ack listener", () => {
+  test("desktop.hello.ack listener resets helloAckTimeoutCount to 0", () => {
     // Belt-and-suspenders: the desktop.hello.ack listener is attached only
     // inside connect() against a live Socket.IO instance, so it's not
-    // ergonomic to drive from a unit test. Pin the reset via a source check
+    // ergonomic to drive from a unit test. Pin the reset via an AST assertion
     // so a future refactor that removes it fails this test.
-    const source = readFileSync(
-      new URL("../src/main/cloud-socket.ts", import.meta.url),
-      "utf8"
+    const listener = findFirstNode(parseCloudSocketSource(), (node) =>
+      isSocketEventListener(node, "desktop.hello.ack")
     );
-    assert.match(
-      source,
-      HELLO_ACK_TIMEOUT_RESET_PATTERN,
+    assert.ok(
+      listener,
+      "cloud-socket.ts must attach a socket.on('desktop.hello.ack', ...) listener"
+    );
+    assert.ok(
+      hasNode(listener, isHelloAckTimeoutCountReset),
       "desktop.hello.ack listener must reset helloAckTimeoutCount to 0"
     );
   });
 
-  test("source contains the defensive restart() fallback when socket is null at MAX timeouts", () => {
+  test("MAX-timeout recovery keeps the defensive restart() fallback for a null socket", () => {
     // Belt-and-suspenders for the otherwise-unreachable else branch in
     // scheduleHelloAckTimeout: if a future refactor relaxes the short-circuit
     // guards at the top of the callback (`this.stopped || !this.awaitingHelloAck`)
     // such that the timeout body can reach the MAX path with `this.socket === null`,
     // the supervisor must still drive recovery via restart() rather than
     // silently no-op into the 60s RECOVERY_TIMEOUT_MS path. Pin the branch
-    // via source inspection.
-    const source = readFileSync(
-      new URL("../src/main/cloud-socket.ts", import.meta.url),
-      "utf8"
+    // via an AST assertion.
+    const method = findFirstNode(parseCloudSocketSource(), (node) =>
+      isMethodNamed(node, "scheduleHelloAckTimeout")
     );
-    const forcingReconnectSection = source.match(
-      /Forcing reconnect after[\s\S]{0,1500}?\}\s*return;/
+    assert.ok(method, "cloud-socket.ts must declare scheduleHelloAckTimeout");
+
+    // Anchored to the threshold guard, not just to the method: searching the
+    // whole method body would stay green if the recovery were moved OUT of the
+    // `consecutive >= MAX` path, which is the branch this test exists to pin.
+    const thresholdGuard = findFirstNode(method, isConsecutiveThresholdGuard);
+    assert.ok(
+      thresholdGuard && ts.isIfStatement(thresholdGuard),
+      `scheduleHelloAckTimeout must gate recovery on consecutive >= ${MAX_TIMEOUTS_CONST}`
     );
     assert.ok(
-      forcingReconnectSection,
-      "forcing-reconnect block must exist in cloud-socket.ts"
-    );
-    // The connected/half-open path uses socket.disconnect() + scheduleSocketReconnect.
-    assert.match(
-      forcingReconnectSection[0],
-      /if \(socket\) \{[\s\S]{0,400}socket\.disconnect\(\);[\s\S]{0,200}this\.scheduleSocketReconnect\(socket\);[\s\S]{0,200}\} else \{[\s\S]{0,500}this\.restart\(\);/,
-      "MAX-timeout block must include both the socket-present recovery and the defensive restart() fallback for the socket-null case"
+      hasNode(thresholdGuard.thenStatement, isMaxTimeoutRecoveryBranch),
+      "MAX-timeout block must include both the socket-present recovery (socket.disconnect() + this.scheduleSocketReconnect(socket)) and the defensive this.restart() fallback for the socket-null case"
     );
   });
-});
 
-describe("agent-session ack timing", () => {
-  test("sendAgentSessions waits for the longer relay ack window before timing out", async () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-
-    const service = new CloudSocketService(createStubOptions());
-    const fakeSocket = new FakeSocket();
-    (service as unknown as Record<string, unknown>).socket = fakeSocket;
-    (service as unknown as Record<string, unknown>).stopped = false;
-    (service as unknown as Record<string, unknown>).targetId = "target-1";
-
-    const ackPromise = service.sendAgentSessions({
-      schemaVersion: 1,
-      batchId: "batch-1",
-      syncMode: AgentSessionSyncMode.Incremental,
-      sessionCount: 0,
-      sessions: [],
-    });
-
-    mock.timers.tick(29_999);
-    await Promise.resolve();
-
-    let settled = false;
-    void ackPromise.then(() => {
-      settled = true;
-    });
-    await Promise.resolve();
-    assert.equal(
-      settled,
-      false,
-      "agent-session acks must remain pending before the full 30s window elapses"
+  test("the threshold anchor rejects a guard on an unrelated counter", () => {
+    // The mutation the anchor must survive: recovery moved under some other
+    // counter's `>= MAX` guard while the per-socket `consecutive` path loses it.
+    const onConsecutive = thresholdGuardIn(
+      `if (${CONSECUTIVE_BINDING} >= ${MAX_TIMEOUTS_CONST}) { r(); }`
+    );
+    const onOtherCounter = thresholdGuardIn(
+      `if (otherCounter >= ${MAX_TIMEOUTS_CONST}) { r(); }`
     );
 
-    mock.timers.tick(1);
-    const ack = await ackPromise;
-    assert.deepEqual(ack, {
-      accepted: false,
-      reason: "ack_timeout",
-    });
+    assert.ok(onConsecutive);
+    assert.equal(onOtherCounter, undefined);
   });
 });
 
@@ -816,3 +750,184 @@ describe("T-6.2: capability flags loopRunnerRefreshSupported and loopRunnerHeart
     service.stop();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Domain AST predicates for the two structural cloud-socket guards above.
+// The parse + walk plumbing is shared in ./helpers/ts-ast.js.
+// ---------------------------------------------------------------------------
+
+const CLOUD_SOCKET_MODULE = "src/main/cloud/cloud-socket.ts";
+const THIS_RECEIVER = "this";
+const SOCKET_RECEIVER = "socket";
+const MAX_TIMEOUTS_CONST = "MAX_HELLO_ACK_TIMEOUTS_PER_SOCKET";
+/** The per-socket timeout tally the recovery branch must be gated on. */
+const CONSECUTIVE_BINDING = "consecutive";
+
+function parseCloudSocketSource(): ts.SourceFile {
+  return parseTypeScriptFile(
+    fileURLToPath(new URL(`../${CLOUD_SOCKET_MODULE}`, import.meta.url))
+  );
+}
+
+/** Depth-first search for the first node the predicate accepts. */
+function findFirstNode(
+  root: ts.Node,
+  predicate: (node: ts.Node) => boolean
+): ts.Node | undefined {
+  let found: ts.Node | undefined;
+  forEachNode(root, (node) => {
+    if (found === undefined && predicate(node)) {
+      found = node;
+    }
+  });
+  return found;
+}
+
+function hasNode(
+  root: ts.Node,
+  predicate: (node: ts.Node) => boolean
+): boolean {
+  return findFirstNode(root, predicate) !== undefined;
+}
+
+/** `this` when `receiver` is "this", otherwise a plain identifier match. */
+function isReceiver(expression: ts.Expression, receiver: string): boolean {
+  if (receiver === THIS_RECEIVER) {
+    return expression.kind === ts.SyntaxKind.ThisKeyword;
+  }
+  return ts.isIdentifier(expression) && expression.text === receiver;
+}
+
+/** `<receiver>.<method>(...)`. */
+function isMethodCall(
+  node: ts.Node,
+  receiver: string,
+  method: string
+): boolean {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.name.text === method &&
+    isReceiver(node.expression.expression, receiver)
+  );
+}
+
+/** `socket.on("<event>", handler)`. */
+function isSocketEventListener(node: ts.Node, event: string): boolean {
+  if (!(ts.isCallExpression(node) && isMethodCall(node, "socket", "on"))) {
+    return false;
+  }
+  const [eventArgument] = node.arguments;
+  return (
+    eventArgument !== undefined &&
+    ts.isStringLiteralLike(eventArgument) &&
+    eventArgument.text === event
+  );
+}
+
+function isMethodNamed(node: ts.Node, name: string): boolean {
+  return (
+    ts.isMethodDeclaration(node) &&
+    ts.isIdentifier(node.name) &&
+    node.name.text === name
+  );
+}
+
+/** `this.helloAckTimeoutCount = 0;`. */
+function isHelloAckTimeoutCountReset(node: ts.Node): boolean {
+  return (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+    ts.isPropertyAccessExpression(node.left) &&
+    node.left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    node.left.name.text === "helloAckTimeoutCount" &&
+    ts.isNumericLiteral(node.right) &&
+    node.right.text === "0"
+  );
+}
+
+/**
+ * `if (socket) { … socket.disconnect(); … this.scheduleSocketReconnect(socket); }
+ *  else { … this.restart(); }` — both halves of the MAX-timeout recovery.
+ *
+ * The reconnect argument is checked, not just the call: recycling some OTHER
+ * socket would leave the stuck one in place, and an argument-blind match would
+ * not notice.
+ */
+function isMaxTimeoutRecoveryBranch(node: ts.Node): boolean {
+  if (!ts.isIfStatement(node) || node.elseStatement === undefined) {
+    return false;
+  }
+  if (!isReceiver(node.expression, SOCKET_RECEIVER)) {
+    return false;
+  }
+  const connectedRecovery =
+    hasNode(node.thenStatement, (child) =>
+      isMethodCall(child, SOCKET_RECEIVER, "disconnect")
+    ) &&
+    hasNode(node.thenStatement, (child) =>
+      isMethodCallWithIdentifierArgument(
+        child,
+        THIS_RECEIVER,
+        "scheduleSocketReconnect",
+        SOCKET_RECEIVER
+      )
+    );
+  return (
+    connectedRecovery &&
+    hasNode(node.elseStatement, (child) =>
+      isMethodCall(child, THIS_RECEIVER, "restart")
+    )
+  );
+}
+
+/** `this.<method>(<identifier>)` — the call AND its first argument. */
+function isMethodCallWithIdentifierArgument(
+  node: ts.Node,
+  receiver: string,
+  method: string,
+  argumentName: string
+): boolean {
+  if (!isMethodCall(node, receiver, method)) {
+    return false;
+  }
+  const [first] = (node as ts.CallExpression).arguments;
+  return (
+    first !== undefined && ts.isIdentifier(first) && first.text === argumentName
+  );
+}
+
+/**
+ * `if (consecutive >= MAX_HELLO_ACK_TIMEOUTS_PER_SOCKET) { … }`.
+ *
+ * BOTH operands are pinned. Accepting any left operand let an unrelated
+ * `if (otherCounter >= MAX_HELLO_ACK_TIMEOUTS_PER_SOCKET)` satisfy the anchor
+ * while the real per-socket counter lost its recovery path.
+ */
+function isConsecutiveThresholdGuard(node: ts.Node): boolean {
+  if (!ts.isIfStatement(node)) {
+    return false;
+  }
+  const condition = node.expression;
+  return (
+    ts.isBinaryExpression(condition) &&
+    condition.operatorToken.kind === ts.SyntaxKind.GreaterThanEqualsToken &&
+    ts.isIdentifier(condition.left) &&
+    condition.left.text === CONSECUTIVE_BINDING &&
+    ts.isIdentifier(condition.right) &&
+    condition.right.text === MAX_TIMEOUTS_CONST
+  );
+}
+
+/** The first threshold guard the anchor accepts in `body`, if any. */
+function thresholdGuardIn(body: string): ts.Node | undefined {
+  return findFirstNode(
+    ts.createSourceFile(
+      CLOUD_SOCKET_MODULE,
+      body,
+      ts.ScriptTarget.Latest,
+      false
+    ),
+    isConsecutiveThresholdGuard
+  );
+}

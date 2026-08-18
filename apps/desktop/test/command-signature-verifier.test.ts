@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import test from "node:test";
 import { stableStringify } from "@closedloop-ai/loops-api/stable-stringify";
-import type { AuthorizedCommandKeyStore } from "../src/main/authorized-command-key-store.js";
-import type { DesktopCommandEvent } from "../src/main/cloud-protocol.js";
-import { CommandSignatureVerifier } from "../src/main/command-signature-verifier.js";
+import type { DesktopCommandEvent } from "../src/main/cloud/cloud-protocol.js";
+import type { AuthorizedCommandKeyStore } from "../src/main/command-signing/authorized-command-key-store.js";
+import { CommandSignatureVerifier } from "../src/main/command-signing/command-signature-verifier.js";
 import { COMMAND_SIGNING_REJECTION_REASONS } from "../src/shared/contracts.js";
 
 const ED25519_SPKI_PREFIX_LENGTH = Buffer.from(

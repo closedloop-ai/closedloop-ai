@@ -1,45 +1,30 @@
 import {
-  type BranchViewComment,
   CommentKind,
-  GitHubDiffSide,
-  PRReviewCommentState,
   PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
 import { describe, expect, test } from "vitest";
-import { ReviewFindingPriority } from "@/lib/engineer/review-finding-priority";
+import {
+  ReviewFindingPriority,
+  ReviewFindingSeverity,
+} from "@/lib/engineer/review-finding-priority";
 import { FileSection } from "../../types";
 import {
+  type BranchReviewFinding,
   BranchReviewFindingAnchorStatus,
   classifyBranchReviewFindingAnchor,
+  getBranchReviewFindingAnchorStatusLabel,
+  getBranchReviewFindingMarkerLabel,
+  getBranchReviewFindingSeverityClassName,
+  getBranchReviewFindingSeverityLabel,
+  isBranchReviewFinding,
   MAX_REVIEW_FINDING_PARSE_CHARS,
   parseBranchReviewFinding,
 } from "../branch-review-findings";
+import {
+  COMMITTED_FILES,
+  comment,
+} from "./branch-review-finding-anchor-fixture";
 import { buildCommentBody } from "./review-comment-body-fixture";
-
-const COMMITTED_FILES = [{ path: "src/app.tsx", previousPath: null }];
-
-function comment(
-  overrides: Partial<BranchViewComment> = {}
-): BranchViewComment {
-  return {
-    author: "closedloop-ai[bot]",
-    authorAvatar: null,
-    authorKind: PrCommentAuthorKind.Bot,
-    body: "**[P2]** Avoid stale state\n\n> **Suggestion:** Use the latest cache.",
-    createdAt: "2026-05-21T12:00:00.000Z",
-    githubCommentId: "123",
-    htmlUrl: "https://github.com/acme/repo/pull/1#discussion_r123",
-    id: "123",
-    inReplyToId: null,
-    kind: CommentKind.ReviewComment,
-    line: 2,
-    path: "src/app.tsx",
-    reviewId: "review-1",
-    side: GitHubDiffSide.Right,
-    state: PRReviewCommentState.Pending,
-    ...overrides,
-  };
-}
 
 describe("parseBranchReviewFinding", () => {
   test("recognizes actual posted priority and suggestion body format", () => {
@@ -177,6 +162,200 @@ describe("parseBranchReviewFinding", () => {
       severity: "critical",
       title: "Unsafe markdown",
     });
+  });
+
+  test("returns null when the body has no meaningful (non-whitespace) content", () => {
+    expect(
+      parseBranchReviewFinding(comment({ body: "   \n\t\n   " }))
+    ).toBeNull();
+  });
+
+  test("returns null when hidden metadata is present but no title line follows it", () => {
+    expect(
+      parseBranchReviewFinding(
+        comment({
+          body: "<!-- closedloop-review-finding priority=P1 severity=critical -->\n   \n",
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("ignores an HTML comment whose tag does not match the finding metadata tag", () => {
+    expect(
+      parseBranchReviewFinding(
+        comment({
+          body: "<!-- some-other-tag priority=P1 severity=critical -->\nUnrelated title line",
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("skips malformed and unrecognized metadata assignments while still resolving known keys", () => {
+    const finding = parseBranchReviewFinding(
+      comment({
+        body: "<!-- closedloop-review-finding malformedtoken foo=bar priority=P2 severity=warning -->\nRace condition in cache read",
+      })
+    );
+
+    expect(finding).toMatchObject({
+      priority: ReviewFindingPriority.P2,
+      severity: ReviewFindingSeverity.Warning,
+    });
+  });
+
+  test("derives severity from priority when hidden metadata omits an explicit severity", () => {
+    const finding = parseBranchReviewFinding(
+      comment({
+        body: "<!-- closedloop-review-finding priority=P0 -->\nRace condition in cache read",
+      })
+    );
+
+    expect(finding).toMatchObject({
+      priority: ReviewFindingPriority.P0,
+      severity: ReviewFindingSeverity.Critical,
+    });
+  });
+
+  test("returns null when hidden metadata resolves to no usable priority or severity", () => {
+    expect(
+      parseBranchReviewFinding(
+        comment({
+          body: "<!-- closedloop-review-finding priority=P9 -->\nRace condition in cache read",
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("derives severity from a visible severity marker without a priority marker or hidden metadata", () => {
+    const finding = parseBranchReviewFinding(
+      comment({ body: "Critical: Race condition in cache read" })
+    );
+
+    expect(finding).toMatchObject({
+      priority: null,
+      severity: ReviewFindingSeverity.Critical,
+      title: "Race condition in cache read",
+    });
+  });
+
+  test("extracts confidence and LOC-savings metadata lines that have a single capture group", () => {
+    const finding = parseBranchReviewFinding(
+      comment({
+        body: [
+          "**[P2]** Avoid stale state",
+          "Confidence: high",
+          "LOC savings: 12 lines",
+        ].join("\n"),
+      })
+    );
+
+    expect(finding).toMatchObject({
+      confidence: "high",
+      locSavings: "12 lines",
+    });
+  });
+
+  test("falls back to the generic finding title when a heading-only title strips to nothing", () => {
+    const finding = parseBranchReviewFinding(
+      comment({
+        body: "<!-- closedloop-review-finding priority=P1 severity=critical -->\n###",
+      })
+    );
+
+    expect(finding?.title).toBe("AI review finding");
+  });
+});
+
+describe("isBranchReviewFinding", () => {
+  test("returns true for a parseable first-party review finding", () => {
+    expect(isBranchReviewFinding(comment())).toBe(true);
+  });
+
+  test("returns false for a comment that does not parse as a finding", () => {
+    expect(isBranchReviewFinding(comment({ body: "Regular bot update" }))).toBe(
+      false
+    );
+  });
+});
+
+describe("getBranchReviewFindingAnchorStatusLabel", () => {
+  test.each([
+    [BranchReviewFindingAnchorStatus.Current, "Current"],
+    [BranchReviewFindingAnchorStatus.StaleCommit, "Outdated commit"],
+    [
+      BranchReviewFindingAnchorStatus.HeadCacheSkew,
+      "Diff cache behind branch head",
+    ],
+    [BranchReviewFindingAnchorStatus.MissingAnchor, "Missing anchor"],
+    [BranchReviewFindingAnchorStatus.MissingFile, "Missing file"],
+    [BranchReviewFindingAnchorStatus.LineNotRenderable, "Line not visible"],
+    [BranchReviewFindingAnchorStatus.NotCommittedDiff, "Not on committed diff"],
+  ])("maps %s to %s", (status, expected) => {
+    expect(getBranchReviewFindingAnchorStatusLabel(status)).toBe(expected);
+  });
+});
+
+describe("getBranchReviewFindingSeverityLabel", () => {
+  test.each([
+    [ReviewFindingSeverity.Critical, "Critical"],
+    [ReviewFindingSeverity.Warning, "Warning"],
+    [ReviewFindingSeverity.Success, "Success"],
+    [ReviewFindingSeverity.Info, "Info"],
+  ])("maps %s to %s", (severity, expected) => {
+    expect(getBranchReviewFindingSeverityLabel(severity)).toBe(expected);
+  });
+});
+
+describe("getBranchReviewFindingSeverityClassName", () => {
+  test.each([
+    [
+      ReviewFindingSeverity.Critical,
+      "border-destructive/50 bg-destructive/10 text-destructive",
+    ],
+    [
+      ReviewFindingSeverity.Warning,
+      "border-warning/50 bg-warning/12 text-warning-foreground",
+    ],
+    [
+      ReviewFindingSeverity.Success,
+      "border-success/50 bg-success/10 text-success",
+    ],
+    [ReviewFindingSeverity.Info, "border-info/50 bg-info/10 text-info"],
+  ])("maps %s to %s", (severity, expected) => {
+    expect(getBranchReviewFindingSeverityClassName(severity)).toBe(expected);
+  });
+});
+
+describe("getBranchReviewFindingMarkerLabel", () => {
+  function finding(
+    overrides: Partial<BranchReviewFinding> = {}
+  ): BranchReviewFinding {
+    return {
+      comment: comment(),
+      confidence: null,
+      id: "finding-1",
+      isMetadataTruncated: false,
+      locSavings: null,
+      priority: null,
+      severity: ReviewFindingSeverity.Warning,
+      suggestion: null,
+      title: "Avoid stale state",
+      ...overrides,
+    };
+  }
+
+  test("includes the priority prefix when a priority is present", () => {
+    expect(
+      getBranchReviewFindingMarkerLabel(
+        finding({ priority: ReviewFindingPriority.P2 })
+      )
+    ).toBe("P2 Warning: Avoid stale state");
+  });
+
+  test("omits the priority prefix when no priority was parsed", () => {
+    expect(getBranchReviewFindingMarkerLabel(finding({ priority: null }))).toBe(
+      "Warning: Avoid stale state"
+    );
   });
 });
 
@@ -344,6 +523,41 @@ describe("classifyBranchReviewFindingAnchor", () => {
 
     expect(result.status).toBe(
       BranchReviewFindingAnchorStatus.NotCommittedDiff
+    );
+  });
+
+  test("resolves a committed file via its previous path when the comment targets a renamed file's old path", () => {
+    const result = classifyBranchReviewFindingAnchor({
+      comment: comment({ anchorCommitSha: "cache-sha", path: "src/app.tsx" }),
+      committedFiles: [
+        { path: "src/renamed.tsx", previousPath: "src/app.tsx" },
+      ],
+      fileCacheHeadSha: "cache-sha",
+      headSha: "cache-sha",
+      newContent: "one\ntwo\nthree",
+      oldContent: "one\ntwo\nthree",
+      selectedFilePath: "src/renamed.tsx",
+      selectedFileSection: FileSection.Committed,
+    });
+
+    expect(result.status).toBe(BranchReviewFindingAnchorStatus.Current);
+  });
+
+  test("reports missing file with a selected-file-specific reason when the finding is anchored elsewhere", () => {
+    const result = classifyBranchReviewFindingAnchor({
+      comment: comment({ anchorCommitSha: "cache-sha" }),
+      committedFiles: COMMITTED_FILES,
+      fileCacheHeadSha: "cache-sha",
+      headSha: "cache-sha",
+      newContent: "one\ntwo\nthree",
+      oldContent: "one\ntwo\nthree",
+      selectedFilePath: "src/other-file.tsx",
+      selectedFileSection: FileSection.Committed,
+    });
+
+    expect(result.status).toBe(BranchReviewFindingAnchorStatus.MissingFile);
+    expect(result.reasonLabel).toBe(
+      "This finding is not anchored to the selected file."
     );
   });
 });

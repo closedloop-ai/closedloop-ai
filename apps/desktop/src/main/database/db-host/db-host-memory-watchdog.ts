@@ -38,6 +38,13 @@ import {
   getHeapStatistics,
   writeHeapSnapshot,
 } from "node:v8";
+import {
+  defaultProfilingClock,
+  type ProfilingClock,
+  type ProfilingDbOpRow,
+  type ProfilingSink,
+  readMonotonicMs,
+} from "../../../shared/profiling.js";
 
 const GIB = 1024 * 1024 * 1024;
 const MIB = 1024 * 1024;
@@ -85,7 +92,27 @@ function mib(bytes: number): string {
   return `${Math.round(bytes / MIB)} MB`;
 }
 
-export type MemoryPressureLevel = "ok" | "high";
+/**
+ * ISS-4823 — the pressure levels the db-host publishes to the parent. A const
+ * object (not a bare union) so the wire boundary can validate against the SAME
+ * value set the producer emits: `isDbHostResponse` rejects a `memory-pressure`
+ * message whose level is not one of these, which keeps a malformed publication
+ * from evicting a valid cached sample.
+ */
+export const MemoryPressureLevel = {
+  Ok: "ok",
+  High: "high",
+} as const;
+
+export type MemoryPressureLevel =
+  (typeof MemoryPressureLevel)[keyof typeof MemoryPressureLevel];
+
+/** True when `value` is a level this build knows how to act on. */
+export function isMemoryPressureLevel(
+  value: unknown
+): value is MemoryPressureLevel {
+  return value === MemoryPressureLevel.Ok || value === MemoryPressureLevel.High;
+}
 
 export type MemoryPressure = {
   level: MemoryPressureLevel;
@@ -111,7 +138,9 @@ export function getMemoryPressure(
   const heapHigh = opts?.warnHeapBytes ?? DEFAULT_WARN_HEAP_BYTES;
   const rssHigh = opts?.rssHighWaterBytes ?? DEFAULT_RSS_HIGH_WATER_BYTES;
   const level: MemoryPressureLevel =
-    sample.heapUsed >= heapHigh || sample.rss >= rssHigh ? "high" : "ok";
+    sample.heapUsed >= heapHigh || sample.rss >= rssHigh
+      ? MemoryPressureLevel.High
+      : MemoryPressureLevel.Ok;
   return { level, heapUsed: sample.heapUsed, rss: sample.rss };
 }
 
@@ -187,6 +216,33 @@ export type HeapWatchdogOptions = {
   snapshotDir?: string;
   warnHeapBytes?: number;
   sampleIntervalMs?: number;
+  /**
+   * ISS-4823: publish the ACTUATING memory-pressure level (the same
+   * {@link getMemoryPressure} signal the heavy-op gate and the backfill yield
+   * consume in this process) so a main-process consumer can act on it too. The
+   * DATA_REVISION rebuild runs in the MAIN process and its adaptive write-pause
+   * gate declares a db-host-pressure arm, but `getMemoryPressure()` reads THIS
+   * worker's `process.memoryUsage()` — main cannot call it. This sampling loop is
+   * already the process's pressure observer, so it is the natural publisher; the
+   * worker forwards each report over the reverse channel.
+   *
+   * Reporting policy (deliberately not pure edge-triggered): fires on EVERY
+   * sample while the level is `"high"`, and once on the falling edge back to
+   * `"ok"`. A consumer therefore treats a `"high"` older than a few sample
+   * intervals as stale rather than as live pressure, so a crashed or wedged
+   * worker can never leave main throttling forever on a value nobody is
+   * refreshing. While `"ok"` (the overwhelmingly common state) it is silent.
+   */
+  onPressureChange?: (level: MemoryPressureLevel) => void;
+  /**
+   * ISS-4823 — sampling seams, injectable ONLY so a test can drive the real
+   * publisher deterministically (quiet tick, repeated high, falling edge, and
+   * that no tick survives `stop()`) instead of asserting the loop from outside.
+   * Production leaves all three at their process/global defaults.
+   */
+  readMemoryUsage?: () => { heapUsed: number; rss: number };
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
 };
 
 export type HeapWatchdog = {
@@ -235,16 +291,46 @@ function writeHeapSnapshotSafely(
  * when `CLOSEDLOOP_DBHOST_HEAP_SNAPSHOT=1`. Idempotent per crossing: it logs on
  * the rising edge and re-arms once the heap drops back below the threshold, so a
  * sustained-high heap doesn't spam the log.
+ *
+ * ISS-4823: when `onPressureChange` is supplied the same per-tick sample also
+ * publishes the {@link getMemoryPressure} level (see that option's note for the
+ * reporting policy and why it is not purely edge-triggered).
  */
 export function startHeapWatchdog(options: HeapWatchdogOptions): HeapWatchdog {
   const warn = options.warnHeapBytes ?? DEFAULT_WARN_HEAP_BYTES;
   const intervalMs = options.sampleIntervalMs ?? DEFAULT_SAMPLE_INTERVAL_MS;
   const snapshotEnabled = process.env[HEAP_SNAPSHOT_ENV] === "1";
+  const readMemoryUsage =
+    options.readMemoryUsage ?? (() => process.memoryUsage());
+  const setIntervalFn = options.setIntervalFn ?? setInterval;
+  const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
   let over = false;
   let snapshotWritten = false;
+  // ISS-4823: last level handed to `onPressureChange`, so the falling edge back
+  // to "ok" is reported exactly once instead of on every subsequent quiet sample.
+  let lastReportedPressure: MemoryPressureLevel = MemoryPressureLevel.Ok;
 
-  const timer = setInterval(() => {
-    const { heapUsed, rss } = process.memoryUsage();
+  const timer = setIntervalFn(() => {
+    // ONE sample per tick, reused for the pressure report and the heap-warn
+    // logging below (mirrors `measureOp`'s single-snapshot discipline).
+    const { heapUsed, rss } = readMemoryUsage();
+    // Evaluate pressure BEFORE the heap-warn early return: the level is "high"
+    // on `heapUsed` OR `rss`, and the RSS/page-cache arm (the WAL-pinning path
+    // this signal exists for) can be high while `heapUsed` sits under `warn`.
+    // Reading it after the early return would silently drop exactly that case.
+    if (options.onPressureChange) {
+      const { level } = getMemoryPressure(
+        { heapUsed, rss },
+        { warnHeapBytes: warn }
+      );
+      if (
+        level === MemoryPressureLevel.High ||
+        lastReportedPressure === MemoryPressureLevel.High
+      ) {
+        lastReportedPressure = level;
+        options.onPressureChange(level);
+      }
+    }
     if (heapUsed < warn) {
       over = false;
       return;
@@ -264,7 +350,7 @@ export function startHeapWatchdog(options: HeapWatchdogOptions): HeapWatchdog {
 
   return {
     stop(): void {
-      clearInterval(timer);
+      clearIntervalFn(timer);
     },
   };
 }
@@ -275,19 +361,37 @@ export function startHeapWatchdog(options: HeapWatchdogOptions): HeapWatchdog {
  * that NAMES the leaking op in production logs. The measurement is cheap
  * (`process.memoryUsage()` before/after); it never changes the op's result or
  * error behavior — a throw propagates unchanged after logging.
+ *
+ * ISS-4430: when `opts.profiling` is supplied (only while
+ * `CLOSEDLOOP_PROFILE_DIR` is set) the same wrapper also records the op's WALL
+ * time. It is the one place every db-host op already funnels through, so a
+ * parallel wrapper would be both redundant and less complete. The wall-time
+ * capture is strictly additive: it reads the clock around the existing call,
+ * records inside the SAME `finally` (so a throwing op is timed and still
+ * rethrows), and swallows any sink/clock failure.
  */
 export async function measureOp<T>(
   label: string,
   log: Logger,
   run: () => Promise<T>,
-  opts?: { opDeltaWarnBytes?: number; warnHeapBytes?: number }
+  opts?: MeasureOpOptions
 ): Promise<T> {
   const deltaWarn = opts?.opDeltaWarnBytes ?? DEFAULT_OP_DELTA_WARN_BYTES;
   const heapWarn = opts?.warnHeapBytes ?? DEFAULT_WARN_HEAP_BYTES;
+  const profiling = opts?.profiling;
+  const clock = profiling?.clock ?? defaultProfilingClock;
+  // `null` both when profiling is off and when the clock itself failed, so the
+  // record step below has exactly one "no usable start stamp" condition.
+  const startedAt = profiling ? readMonotonicMs(clock) : null;
   const before = process.memoryUsage().heapUsed;
   try {
     return await run();
   } finally {
+    // Record wall time BEFORE the heap snapshot so the duration reflects the op
+    // rather than the op plus this probe's own `memoryUsage()` call.
+    if (profiling && startedAt !== null) {
+      recordOpDuration(profiling, clock, label, startedAt);
+    }
     // Single post-op snapshot reused for heapUsed + rss (review: avoid a 3rd
     // memoryUsage() call on the per-invoke hot path).
     const after = process.memoryUsage();
@@ -299,5 +403,40 @@ export async function measureOp<T>(
         )} (rss ${mib(after.rss)})`
       );
     }
+  }
+}
+
+/**
+ * ISS-4430 — the wall-time capture {@link measureOp} performs when profiling is
+ * on. Injected (sink + clock) rather than read from a module global so the
+ * timing contract is testable with a controlled clock and a recording sink.
+ */
+export type MeasureOpProfiling = {
+  sink: ProfilingSink<ProfilingDbOpRow>;
+  clock?: ProfilingClock;
+};
+
+/** Options accepted by {@link measureOp}. */
+export type MeasureOpOptions = {
+  opDeltaWarnBytes?: number;
+  warnHeapBytes?: number;
+  /** Absent in production; present only under `CLOSEDLOOP_PROFILE_DIR`. */
+  profiling?: MeasureOpProfiling;
+};
+
+function recordOpDuration(
+  profiling: MeasureOpProfiling,
+  clock: ProfilingClock,
+  op: string,
+  startedAt: number
+): void {
+  try {
+    profiling.sink.append({
+      op,
+      ms: clock.nowMs() - startedAt,
+      ts: clock.nowEpochMs(),
+    });
+  } catch {
+    // Fail-open: instrumentation never affects the instrumented operation.
   }
 }

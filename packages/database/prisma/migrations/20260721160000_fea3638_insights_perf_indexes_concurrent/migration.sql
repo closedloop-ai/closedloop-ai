@@ -1,0 +1,113 @@
+-- FEA-3638 (dashboard insights aggregation perf), Tier-1 indexes — RE-LAND as
+-- CONCURRENTLY (zero-lock prod apply).
+--
+-- WHY THIS REPLACES 20260721120000_fea3638_insights_perf_tier1_indexes:
+-- That earlier migration (#3293) used plain `CREATE INDEX`, which takes an
+-- ACCESS EXCLUSIVE-adjacent write lock on each table for the full duration of
+-- the build. `pull_request_detail` and `session_detail` are hot, high-write
+-- tables in prod, so a plain build would block writes and stall the app. The
+-- plain migration was reverted (sanctioned one-time immutability exception,
+-- FEA-3638) and re-landed here so both indexes build with
+-- `CREATE INDEX CONCURRENTLY`, which holds only a SHARE UPDATE EXCLUSIVE lock —
+-- concurrent INSERT/UPDATE/DELETE proceed while the index builds. Zero
+-- write-blocking on prod's hot tables.
+--
+-- NON-TRANSACTIONAL BY DESIGN — WHY THIS FILE IS ONLY BARE `CREATE INDEX
+-- CONCURRENTLY` STATEMENTS: `CREATE INDEX CONCURRENTLY` cannot run inside a
+-- transaction block (Postgres SQLSTATE 25001). `prisma migrate deploy` (the
+-- prod/stage/CI apply path — scripts/migrate.ts and pr-test.yml both shell out
+-- to it) runs each migration file by splitting it into per-statement simple
+-- queries, so a file that contains ONLY bare top-level statements executes each
+-- CONCURRENTLY create outside any transaction and succeeds. But Prisma's
+-- statement splitter is naive: any statement whose body carries embedded
+-- semicolons or dollar-quoting — a `DO $$ ... $$` block, a `DROP INDEX
+-- CONCURRENTLY`, a multi-statement function body — defeats it, and Prisma
+-- falls back to wrapping the WHOLE file in a single transaction. That fallback
+-- then fails the remaining CONCURRENTLY statements with 25001. An earlier
+-- revision of this migration prefixed each create with a `DO $$ ... $$`
+-- invalid-remnant guard and hit exactly that: `migrate deploy` wrapped the file
+-- and every environment (CI + prod) failed with
+-- "CREATE INDEX CONCURRENTLY cannot run inside a transaction block". So: keep
+-- this file to bare top-level `CREATE INDEX CONCURRENTLY IF NOT EXISTS`
+-- statements only. Do NOT add a BEGIN/COMMIT, a `DO` block, or a
+-- `DROP INDEX CONCURRENTLY` here — any of them re-triggers the whole-file
+-- transaction wrap and breaks the apply.
+--
+-- IDEMPOTENT (`IF NOT EXISTS`): safe to run against an environment where the
+-- reverted plain migration already created these indexes (see the per-env
+-- operator notes below). On such an env this migration is a no-op.
+--
+-- INVALID-REMNANT RECOVERY IS OPERATOR-DRIVEN (not in-file): a
+-- `CREATE INDEX CONCURRENTLY` that is cancelled or crashes mid-build leaves an
+-- INVALID index of the same name behind (Postgres ignores it for planning until
+-- it is dropped and rebuilt). On a retry, a bare `CREATE INDEX CONCURRENTLY
+-- IF NOT EXISTS` would see the same-named invalid index and silently skip the
+-- rebuild — leaving a permanently-unusable perf index recorded as applied. The
+-- in-file `DO`-block guard that would auto-fix this cannot ship (it forces the
+-- whole-file transaction wrap described above and makes the migration fail
+-- unconditionally), so this case is instead handled by an operator: a mid-build
+-- failure surfaces as P3018 and scripts/migrate.ts resolves it as rolled-back
+-- and retries. If the retry no-ops over an INVALID remnant, an operator drops it
+-- once and re-runs the migrate step (the plain `DROP INDEX` on an unused invalid
+-- index is instant and non-blocking; schema-qualify or set search_path to match
+-- the target schema, e.g. the shared-instance `preview_*` schemas):
+--       DROP INDEX IF EXISTS "pull_request_detail_organization_id_pr_state_merged_at_idx";
+--       DROP INDEX IF EXISTS "session_detail_artifact_id_session_started_at_idx";
+--   then re-run `prisma migrate deploy`, which rebuilds both CONCURRENTLY.
+--   (A mid-build cancel is rare — the common path is a clean single-pass apply.)
+--
+-- Purely additive: index-only, no data mutation, no result change (indexes
+-- alter plan choice only). Index names/columns match the schema.prisma
+-- `@@index([organizationId, prState, mergedAt])` (pull_request_detail) and
+-- `@@index([artifactId, sessionStartedAt])` (session_detail) declarations, so
+-- the Prisma drift check stays green.
+--
+-- ─────────────────────────────────────────────────────────────────────────────
+-- PER-ENVIRONMENT OPERATOR NOTES (state as of this re-land):
+--
+-- • PROD (public schema): the reverted plain migration 20260721120000 was NEVER
+--   applied (prod was at 20260721000000_add_definition_version_registry). This
+--   migration applies cleanly and builds both indexes CONCURRENTLY with zero
+--   write lock. No pre-step required.
+--
+-- • STAGE (public schema): stage auto-deploys every push to main, so it likely
+--   ALREADY APPLIED the plain 20260721120000 hours ago — its `_prisma_migrations`
+--   table holds a record for the now-deleted migration. `prisma migrate deploy`
+--   TOLERATES an applied-but-locally-absent migration (unlike `migrate dev`),
+--   so the next stage deploy still applies THIS migration, which is a no-op
+--   (`IF NOT EXISTS` — the indexes already exist). If a given deploy runner is
+--   configured to fail on the orphan record, an operator clears the history
+--   row ONCE. Note the orphan is a SUCCESSFULLY-APPLIED migration, so
+--   `prisma migrate resolve --rolled-back` does NOT apply here — Prisma errors
+--   P3012 ("migrate resolve --rolled-back" only works on a FAILED migration),
+--   and `--applied` would merely re-mark it applied, leaving the orphan. Per
+--   packages/database/CLAUDE.md ("clear drift from an already-applied
+--   migration … DELETE its `_prisma_migrations` row"), delete the row directly:
+--       cd packages/database && \
+--       psql "$DATABASE_URL" -c \
+--         "DELETE FROM \"_prisma_migrations\" \
+--          WHERE migration_name = '20260721120000_fea3638_insights_perf_tier1_indexes';"
+--   (run against the stage `public` schema BEFORE that deploy's migrate step;
+--   schema-qualify the table or set `search_path` if the runner's connection
+--   does not already target `public`.) This only removes the history row; it
+--   does NOT drop the indexes, so this migration's `IF NOT EXISTS` create
+--   remains a correct no-op afterward.
+--
+-- • PREVIEW (preview_* schemas on the shared stage instance): the deploy runner
+--   (scripts/migrate.ts) auto-resets a preview schema on P3005/P3009/P3018 drift,
+--   so any orphan-record drift self-heals on the next preview deploy. No manual
+--   step.
+-- ─────────────────────────────────────────────────────────────────────────────
+
+-- CreateIndex
+-- Serves the delivery endpoint's dominant PR query (fetchMergedPrs) plus its
+-- exact counts (countMergedPrsInRange / countMergedPrs) and the PR
+-- _min(merged_at) in earliestRecord: prState = MERGED + a merged_at window.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "pull_request_detail_organization_id_pr_state_merged_at_idx" ON "pull_request_detail"("organization_id", "pr_state", "merged_at");
+
+-- CreateIndex
+-- Serves the org-scope session/cost/runtime/tool aggregations (and the
+-- token-usage two-hop via session_detail) that join session_detail → artifacts
+-- and window on session_started_at. Lets the planner drive from the org's
+-- artifacts (artifact_id is the PK) with the session_started_at range co-located.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "session_detail_artifact_id_session_started_at_idx" ON "session_detail"("artifact_id", "session_started_at");

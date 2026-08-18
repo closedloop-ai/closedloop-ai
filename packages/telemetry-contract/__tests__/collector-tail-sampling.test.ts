@@ -39,8 +39,14 @@ type ParsedPolicy = {
 
 const parseFragment = (
   source: string
-): { decision_wait: string; policies: ParsedPolicy[] } =>
-  YAML.parse(source).tail_sampling;
+): {
+  decision_wait: string;
+  decision_cache: {
+    sampled_cache_size: number;
+    non_sampled_cache_size: number;
+  };
+  policies: ParsedPolicy[];
+} => YAML.parse(source).tail_sampling;
 
 const policyByName = (policies: ParsedPolicy[], name: string): ParsedPolicy => {
   const match = policies.find((policy) => policy.name === name);
@@ -62,7 +68,7 @@ describe("collector tail-sampling codegen", () => {
     expect(policies.map((policy) => policy.type)).toEqual([
       "status_code",
       "numeric_attribute",
-      "latency",
+      "numeric_attribute",
       "probabilistic",
     ]);
   });
@@ -89,16 +95,39 @@ describe("collector tail-sampling codegen", () => {
     expect(serverErrors.probabilistic).toBeUndefined();
   });
 
-  it("retains slow/p99 traces at 100% via the latency threshold", () => {
+  it("retains slow/p99 traces at 100% via child duration_ms, not root duration", () => {
     const { policies } = parseFragment(renderCollectorTailSamplingFragment());
     const slow = policyByName(
       policies,
       CollectorTailSamplingPolicy.policyNames.slow
     );
-    expect(slow.latency?.threshold_ms).toBe(
-      CollectorTailSamplingPolicy.slowLatencyThresholdMs
-    );
+    expect(slow.numeric_attribute).toEqual({
+      key: CollectorTailSamplingPolicy.slowLatencyAttributeKey,
+      min_value: CollectorTailSamplingPolicy.slowLatencyThresholdMs,
+      max_value: CollectorTailSamplingPolicy.slowLatencyMaxMs,
+    });
+    expect(slow.numeric_attribute?.max_value).toBe(86_400_000);
+    expect(slow.latency).toBeUndefined();
     expect(slow.probabilistic).toBeUndefined();
+  });
+
+  it("sizes the decision buffer for the decision wait and expected trace rate", () => {
+    expect(CollectorTailSamplingPolicy.numTraces).toBeGreaterThanOrEqual(
+      CollectorTailSamplingPolicy.decisionWaitSeconds *
+        CollectorTailSamplingPolicy.expectedNewTracesPerSec
+    );
+  });
+
+  it("configures decision cache for late activity-root spans", () => {
+    const { decision_cache } = parseFragment(
+      renderCollectorTailSamplingFragment()
+    );
+    expect(decision_cache).toEqual({
+      sampled_cache_size:
+        CollectorTailSamplingPolicy.decisionCache.sampledCacheSize,
+      non_sampled_cache_size:
+        CollectorTailSamplingPolicy.decisionCache.nonSampledCacheSize,
+    });
   });
 
   it("samples the remainder via exactly one probabilistic baseline policy", () => {
@@ -155,7 +184,24 @@ describe("collector tail-sampling policy validation", () => {
       withPolicy({ baselineSamplingPercentage: 101 }),
     ],
     ["negative latency threshold", withPolicy({ slowLatencyThresholdMs: -1 })],
+    [
+      "inverted slow latency range",
+      withPolicy({ slowLatencyThresholdMs: 10, slowLatencyMaxMs: 9 }),
+    ],
     ["zero num_traces", withPolicy({ numTraces: 0 })],
+    [
+      "undersized decision buffer",
+      withPolicy({ decisionWaitSeconds: 310, numTraces: 61_999 }),
+    ],
+    [
+      "zero sampled decision cache",
+      withPolicy({
+        decisionCache: {
+          ...CollectorTailSamplingPolicy.decisionCache,
+          sampledCacheSize: 0,
+        },
+      }),
+    ],
     [
       "inverted server-error range",
       withPolicy({ serverErrorStatusRange: { min: 599, max: 500 } }),

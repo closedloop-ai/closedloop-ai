@@ -2,9 +2,13 @@
 
 import type { User } from "@repo/api/src/types/user";
 import { ApproverRole } from "@repo/api/src/types/user";
-import { AUDIENCE, verifyChatRunnerToken } from "@repo/auth/chat-runner-jwt";
+import {
+  AUDIENCE,
+  DEFAULT_TTL_SECONDS,
+  verifyChatRunnerToken,
+} from "@repo/auth/chat-runner-jwt";
 import type { NextRequest } from "next/server";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const mockAuth = vi.fn();
 
@@ -30,6 +34,9 @@ process.env.CLOSEDLOOP_RUNNER_JWT_SECRET =
   "test-chat-runner-secret-abcdefghijklmnopqrstuvwxyz-0123456789";
 
 const FAILURE_MESSAGE_REGEX = /resolve|mint/i;
+// A whole second, so the token's floored `exp` claim and the response's
+// unfloored `expiresAt` land on the same millisecond.
+const PINNED_NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
 
 const { POST } = await import("../route");
 
@@ -82,6 +89,10 @@ describe("POST /api/chat/runner-token", () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test("mints a token for a first-time user (find-or-create succeeds)", async () => {
     const user = makeMockUser({
       id: "user-uuid-first-time",
@@ -92,6 +103,11 @@ describe("POST /api/chat/runner-token", () => {
       getToken: vi.fn().mockResolvedValueOnce("clerk-token"),
     });
     mockMeSuccess(user);
+
+    // Only `Date` is faked: the route's TTL math becomes exact, while jose and
+    // the mocked fetch keep real timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(PINNED_NOW_MS);
 
     const response = await POST(createMockRequest({ chatKey: "chat-1" }));
 
@@ -104,7 +120,11 @@ describe("POST /api/chat/runner-token", () => {
     expect(typeof body.token).toBe("string");
     expect(body.token.length).toBeGreaterThan(0);
     expect(body.apiBaseUrl).toBe("http://localhost:3002");
-    expect(new Date(body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    // Exact, not "in the future" — and it must agree with the minted token's
+    // own `exp` claim, which the route computes on a separate code path.
+    expect(Date.parse(body.expiresAt)).toBe(
+      PINNED_NOW_MS + DEFAULT_TTL_SECONDS * 1000
+    );
 
     // /me was called once with the Clerk bearer token.
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -120,6 +140,7 @@ describe("POST /api/chat/runner-token", () => {
     expect(claims.userId).toBe("user-uuid-first-time");
     expect(claims.organizationId).toBe("org-uuid-first-time");
     expect(claims.chatKey).toBe("chat-1");
+    expect(claims.expiresAt * 1000).toBe(Date.parse(body.expiresAt));
   });
 
   test("mints a token for an existing user", async () => {

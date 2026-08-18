@@ -11,16 +11,29 @@
  * BEFORE `pnpm build`, so this constant equals the released version and is immune
  * to the runtime `app.getVersion()` quirks (Electron `"0.0"` sentinel, Electron
  * version bleed) that polluted the fleet `version` facet.
+ *
+ * This file is the shell: it resolves paths, shells out to git and reads
+ * package.json. The render and the content-aware write live in
+ * `write-build-info-lib.mjs` so they can be driven directly by tests.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  renderBuildInfoSource,
+  resolveAppVersion,
+  writeBuildInfoIfChanged,
+} from "./write-build-info-lib.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.join(scriptDir, "..");
 const outFile = path.join(appDir, "src", "shared", "build-info.ts");
 const packageJsonFile = path.join(appDir, "package.json");
+
+// Posix-separated on purpose: this is the console line, not a path the script
+// resolves, and the original message is what the prebuild logs on every launch.
+const outDisplayPath = "src/shared/build-info.ts";
 
 const commitHash = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: appDir,
@@ -28,17 +41,16 @@ const commitHash = execFileSync("git", ["rev-parse", "HEAD"], {
 }).trim();
 
 const packageJson = JSON.parse(readFileSync(packageJsonFile, "utf8"));
-const appVersion =
-  typeof packageJson.version === "string" ? packageJson.version : "";
 
-const contents = `// AUTO-GENERATED — do not edit
-export const BUILD_COMMIT_HASH = "${commitHash}";
-export const BUILD_APP_VERSION = "${appVersion}";
-`;
+const contents = renderBuildInfoSource({
+  commitHash,
+  appVersion: resolveAppVersion(packageJson),
+});
 
-if (existsSync(outFile) && readFileSync(outFile, "utf8") === contents) {
-  process.stdout.write("write-build-info: unchanged\n");
-} else {
-  writeFileSync(outFile, contents, "utf8");
-  process.stdout.write("write-build-info: wrote src/shared/build-info.ts\n");
-}
+const result = writeBuildInfoIfChanged({
+  outFile,
+  contents,
+  displayPath: outDisplayPath,
+});
+
+process.stdout.write(result.message);

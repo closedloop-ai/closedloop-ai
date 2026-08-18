@@ -102,7 +102,11 @@ type Scenario = {
   results: RepoExecutionResult[];
   ctx?: IngestionContext;
   /** One entry per withDb() call in order. null = repo not found. */
-  repoLookups?: Array<null | { id: string }>;
+  repoLookups?: Array<null | {
+    id: string;
+    fullName: string;
+    installation: { installationId: string };
+  }>;
   /** One entry per withDb.tx() call in order. Defaults to all "success". */
   txBehaviors?: TxBehavior[];
   options?: Parameters<typeof ingestRepoExecutionResults>[2];
@@ -116,7 +120,11 @@ async function invokeScenario(s: Scenario): Promise<void> {
     s.repoLookups ??
     s.results
       .filter((r) => r.status === "success")
-      .map((_, i) => ({ id: `install-repo-${i + 1}` }));
+      .map((result, i) => ({
+        id: `install-repo-${i + 1}`,
+        fullName: result.fullName,
+        installation: { installationId: `installation-${i + 1}` },
+      }));
   let dbIdx = 0;
   mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
     callback({
@@ -177,7 +185,6 @@ const scenarios: Scenario[] = [
         {
           organizationId: "org-1",
           documentId: "doc-1",
-          prUrl: "https://github.com/org/repo/pull/42",
           prNumber: 42,
         },
       ],
@@ -202,10 +209,7 @@ const scenarios: Scenario[] = [
     expect: {
       txCalls: 2,
       linkageCalls: 2,
-      linkageArgs: [
-        { prNumber: 10, prUrl: "https://github.com/org/repo-a/pull/10" },
-        { prNumber: 20, prUrl: "https://github.com/org/repo-b/pull/20" },
-      ],
+      linkageArgs: [{ prNumber: 10 }, { prNumber: 20 }],
     },
   },
   {
@@ -235,7 +239,14 @@ const scenarios: Scenario[] = [
         prUrl: "https://github.com/org/repo-found/pull/2",
       }),
     ],
-    repoLookups: [null, { id: "install-repo-found" }],
+    repoLookups: [
+      null,
+      {
+        id: "install-repo-found",
+        fullName: "org/repo-found",
+        installation: { installationId: "installation-found" },
+      },
+    ],
     expect: { txCalls: 1, linkageCalls: 1 },
   },
   {
@@ -256,9 +267,7 @@ const scenarios: Scenario[] = [
     expect: {
       txCalls: 2,
       linkageCalls: 1,
-      linkageArgs: [
-        { prNumber: 2, prUrl: "https://github.com/org/repo-ok/pull/2" },
-      ],
+      linkageArgs: [{ prNumber: 2 }],
     },
   },
   {
@@ -366,7 +375,6 @@ describe("ingestRepoExecutionResults", () => {
       e.linkageArgs.forEach((args, i) => {
         expect(mockEnsurePrLinkageRecords).toHaveBeenNthCalledWith(
           i + 1,
-          expect.anything(),
           expect.objectContaining(args)
         );
       });
@@ -422,7 +430,11 @@ describe("ingestRepoExecutionResults", () => {
         try {
           return await callback({
             gitHubInstallationRepository: {
-              findFirst: vi.fn().mockResolvedValue({ id: "install-repo" }),
+              findFirst: vi.fn().mockResolvedValue({
+                id: "install-repo",
+                fullName: "org/repo",
+                installation: { installationId: "installation-1" },
+              }),
             },
           });
         } finally {

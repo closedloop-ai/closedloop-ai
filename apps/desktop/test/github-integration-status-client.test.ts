@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { GitHubOAuthRequiredReason } from "@repo/api/src/types/github";
-import { fetchGitHubIntegrationStatus } from "../src/main/github-integration-status-client.js";
+import { vi } from "vitest";
+import { fetchGitHubIntegrationStatus } from "../src/main/github/github-integration-status-client.js";
 
 test("fetches GitHub integration status with the signed-in Desktop user token", async () => {
   const requests: Array<{ authorization: string | null; url: string }> = [];
-  const getAccessToken = mock.fn(() =>
-    Promise.resolve("desktop-access-user-b")
-  );
+  const getAccessToken = vi.fn(() => Promise.resolve("desktop-access-user-b"));
   const fetchImpl: typeof fetch = (input, init) => {
     requests.push({
       authorization: new Headers(init?.headers).get("Authorization"),
@@ -37,7 +36,7 @@ test("fetches GitHub integration status with the signed-in Desktop user token", 
     getApiOrigin: () => "https://api.example.test",
   });
 
-  assert.equal(getAccessToken.mock.callCount(), 1);
+  assert.equal(getAccessToken.mock.calls.length, 1);
   assert.equal(
     requests[0]?.url,
     "https://api.example.test/integrations/github"

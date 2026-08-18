@@ -16,10 +16,12 @@ export function isGitHubConfigured(): boolean {
  * Validate and parse incoming GitHub webhook request.
  */
 export async function validateRequest(request: Request) {
+  const observedAt = new Date();
   const body = await request.text();
   const headerPayload = await headers();
   const signature = headerPayload.get("x-hub-signature-256");
   const eventType = headerPayload.get("x-github-event");
+  const deliveryId = headerPayload.get("x-github-delivery");
 
-  return { body, signature, eventType };
+  return { body, deliveryId, eventType, observedAt, signature };
 }

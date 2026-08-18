@@ -24,8 +24,23 @@ const badgeVariants = cva(
         info: "border-info/25 bg-info/12 text-info [a&]:hover:bg-info/18",
         accent:
           "border-primary/20 bg-primary/10 text-primary [a&]:hover:bg-primary/16",
+        // FEA-4035: the agentic/AI tone, reading the theme's `--ai` /
+        // `--ai-foreground` pair. Added so the loop-command tones — which are
+        // `ai` on nine of fourteen commands — can route through this one
+        // variant vocabulary instead of a hand-maintained className map beside
+        // it. The fill/border/text triple is byte-for-byte the `COLOR_AI`
+        // literal `status-badge.tsx` maintained separately before this variant
+        // existed, so every existing AI-toned badge renders unchanged.
+        ai: "border-ai/30 bg-ai/10 text-ai-foreground [a&]:hover:bg-ai/16",
         muted:
           "border-border bg-muted/70 text-muted-foreground [a&]:hover:bg-muted",
+        // FEA-4035: the neutral OUTLINED pill — a bordered, filled-with-`input`
+        // chip whose text stays the plain foreground. Distinct from `default`
+        // (a solid primary chip) and from `outline` (no fill at all). It exists
+        // because `ToneBadge` shipped exactly these three utilities as its own
+        // `default` row, which is the drift this ticket collapses: that row is
+        // now this variant rather than a fourth parallel tone map.
+        neutral: "border-input-border bg-input text-foreground",
         outline:
           "text-foreground [a&]:hover:bg-accent [a&]:hover:text-accent-foreground",
       },

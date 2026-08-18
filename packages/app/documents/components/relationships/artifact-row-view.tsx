@@ -27,7 +27,7 @@ type ArtifactRowViewProps = {
   slug: string;
   typeIcon: ReactNode;
   typeLabel: string;
-  /** Rendered status icon (e.g. DocumentStatusIcon / FeatureStatusIcon). */
+  /** Rendered status icon (e.g. DocumentStatusIcon / IssueStatusIcon). */
   statusIcon: ReactNode;
   statusLabel: string;
   priority?: ComponentProps<typeof PriorityIcon>["priority"] | null;

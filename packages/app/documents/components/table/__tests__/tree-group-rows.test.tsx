@@ -1,4 +1,5 @@
 import { fireEvent } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "./render-with-nav";
 
@@ -45,20 +46,20 @@ function renderTreeGroup(
   options: {
     isGroupExpanded?: (key: string) => boolean;
     toggleGroup?: (key: string) => void;
-    handleMoreMenu?: (item: DocumentRowItem, anchor: HTMLElement) => void;
+    renderMoreMenu?: (item: DocumentRowItem) => ReactNode;
     rankInteractionMode?: RankInteractionMode;
   } = {}
 ) {
   const isGroupExpanded = options.isGroupExpanded ?? (() => false);
   const toggleGroup = options.toggleGroup ?? vi.fn();
-  const handleMoreMenu = options.handleMoreMenu;
+  const renderMoreMenu = options.renderMoreMenu;
   const result = render(
     <TreeGroupRows
       group={group}
-      handleMoreMenu={handleMoreMenu}
       isGroupExpanded={isGroupExpanded}
       parentMap={new Map()}
       rankInteractionMode={options.rankInteractionMode}
+      renderMoreMenu={renderMoreMenu}
       toggleGroup={toggleGroup}
       visibleColumns={[Col.Type]}
     />
@@ -311,12 +312,6 @@ function makeBranchItem(id: string): DocumentRowItem {
   return { kind: "branch", data };
 }
 
-function findEllipsisButtons(container: HTMLElement): HTMLButtonElement[] {
-  return Array.from(
-    container.querySelectorAll<HTMLButtonElement>("button")
-  ).filter((btn) => btn.querySelector("svg.lucide-ellipsis") !== null);
-}
-
 function getRows(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>("div.group\\/row"));
 }
@@ -420,11 +415,13 @@ describe("TreeGroupRows — group-internal borders", () => {
   });
 });
 
-describe("TreeGroupRows — branch row more menu", () => {
-  it("opens the shared more menu for a branch row (delete entry point in the tree)", () => {
-    // Regression guard (PR #1385 follow-up): branch rows used to get
-    // `onMoreMenu: undefined`, leaving the row ellipsis inert — the tree
-    // view's only path to deleting a branch artifact was unreachable.
+describe("TreeGroupRows — per-row more menu", () => {
+  it("renders each row's own overflow menu via renderMoreMenu (delete entry point in the tree)", () => {
+    // Regression guard (PR #1385 follow-up, FEA-4242): every tree row — the
+    // root plan and the nested branch — must render its OWN overflow menu, so
+    // the tree view's path to deleting a branch artifact stays reachable. The
+    // menu is now per-row (`renderMoreMenu`), not a shared view-level menu, so
+    // `renderMoreMenu` is invoked once per rendered row item.
     const root: DocumentRowItem = {
       kind: "document",
       data: makePlanArtifact({ id: "plan-1", slug: "PLAN-1" }),
@@ -435,20 +432,25 @@ describe("TreeGroupRows — branch row more menu", () => {
       root,
       children: [branch],
     };
-    const handleMoreMenu = vi.fn();
+    const renderMoreMenu = vi.fn((item: DocumentRowItem) => (
+      <button data-item-id={item.data.id} type="button">
+        More actions
+      </button>
+    ));
 
-    const { container } = renderTreeGroup(group, {
-      handleMoreMenu,
+    const { getAllByRole } = renderTreeGroup(group, {
+      renderMoreMenu,
       isGroupExpanded: () => true,
     });
 
-    const ellipsisButtons = findEllipsisButtons(container);
-    expect(ellipsisButtons).toHaveLength(2);
-
-    const [, branchEllipsis] = ellipsisButtons;
-    fireEvent.click(branchEllipsis);
-
-    expect(handleMoreMenu).toHaveBeenCalledTimes(1);
-    expect(handleMoreMenu).toHaveBeenCalledWith(branch, branchEllipsis);
+    // One menu trigger per row (root + branch child), each built from that
+    // row's own item.
+    const triggers = getAllByRole("button", { name: "More actions" });
+    expect(triggers).toHaveLength(2);
+    expect(renderMoreMenu).toHaveBeenCalledWith(root);
+    expect(renderMoreMenu).toHaveBeenCalledWith(branch);
+    expect(
+      triggers.some((t) => t.getAttribute("data-item-id") === branch.data.id)
+    ).toBe(true);
   });
 });

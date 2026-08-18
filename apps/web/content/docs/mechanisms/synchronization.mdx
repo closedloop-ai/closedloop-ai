@@ -1,0 +1,126 @@
+---
+title: Synchronization
+description: How the desktop client syncs session metadata and transcripts to the cloud — the sync contract, error codes, byte ceilings, cursors, retries, and eventual consistency.
+---
+
+The desktop client ingests and stores your AI coding sessions locally. Synchronization is how a bounded, sanitized projection of that local data reaches the cloud control plane so the web app can show org-wide Insights, attribution, and collaboration. It is a one-way, outbound push from the device — the [cloud relay](./cloud-relay) carries live command traffic, while the sync lanes carry accumulated session data.
+
+## Two independent lanes
+
+Sync is split into two lanes that share nothing, so a failure in one never blocks the other:
+
+| Lane | What it carries | Where it goes |
+|---|---|---|
+| Metadata lane | The compacted session projection: tokens, cost, timing, tool use, agent hierarchy, and artifact links. | `POST /desktop/agent-sessions/sync` on the API server. |
+| Transcript lane | The raw transcript files themselves, archived for replay. | Object storage, keyed per file. |
+
+Keeping them separate is deliberate: a transcript upload that fails or is throttled never touches the metadata lane, and vice versa. The two run on their own tickers with their own queues and backoff.
+
+## The metadata sync contract
+
+Every metadata batch is one JSON envelope carrying a pinned schema version, a batch id, the sync mode (`backfill` or `incremental`), a session count, and the session payloads themselves. A batch carries at most 200 sessions, and the declared `sessionCount` must equal the actual array length — a mismatch is rejected rather than silently truncated.
+
+**The schema version is pinned, not negotiated.** The current value is `2`, and the server pins acceptance to that exact literal. A desktop build on an older version is rejected outright rather than silently ingesting a stale payload shape — a deploy skew is loud and immediate instead of quietly lossy.
+
+The route bounds and decodes the request first — it streams the body under the byte cap, decompresses it, parses it to JSON, and resolves compute-target ownership — and only then hands the decoded payload to the ingest handler. Inside that handler the checks run cheapest-and-most-abusable first: rate limit, then schema parse, then the org's sync policy, then the feature gate, and only then the upsert. Rate limiting runs *before* the O(payload) schema parse and sanitize so a misbehaving device does not make the handler pay that cost for every rejected batch. The org policy is fail-closed — an organization that has not enabled session sync is treated as disabled, not as unset.
+
+### Event fragments are retired
+
+Earlier builds could split one session's events across multiple envelopes and continue the sequence with a `pendingFragments` field on the response. That transport is gone: slim events always fit a single envelope, so a batch either fully syncs or is rejected. On success the route wraps the result in the standard API envelope — the HTTP body is `{ "success": true, "data": { "synced": true } }`, with `synced: true` as the inner value and no continuation field — and the `schemaVersion` value the fragment transport used to occupy is now free and reused by the current contract.
+
+Retiring fragments came with a payload diet on the metadata lane. Per-turn and per-tool text (the `summary` and `data` fields on an event) are removed from the *metadata envelope* and the cloud database: the desktop stops sending them on this lane, the ingest schema strips them from a stale client's payload, and the cloud columns that held them are dropped. This does not mean per-turn or per-tool text never leaves the device — the transcript lane still stages secret-redacted transcript bytes for the archive upload, and that archive is what the web renders turn and tool detail from. The redaction removes secrets, not ordinary per-turn text. So those fields still exist locally (the desktop renders its own trace from its own SQLite), still reach the cloud through the archived transcript, and are simply no longer carried by the metadata envelope — the cloud database keeps only columnar event metadata.
+
+### Compression and byte ceilings
+
+Both ends bound the request before anything is parsed:
+
+| Bound | Value | Enforced where |
+|---|---|---|
+| Request body (compressed or not) | 256 KiB | Streamed and capped at the route; the reader is cancelled and the request is refused with `413` rather than buffered. |
+| Decompressed gzip body | 4 MiB | `gunzipSync`'s `maxOutputLength`, so a zip bomb throws before it can allocate. |
+| Sessions per batch | 200 | Ingest schema. |
+| Requests per device | 120 per 60 s | Fixed-window limiter, keyed by organization, user, and compute target. |
+| Server function duration | 60 s | Route `maxDuration`. |
+| Client request timeout | 30 s | Desktop HTTP transport abort. |
+
+Compression is capability-gated, not assumed. The desktop only gzips a body after the server has advertised the `agentSessionSyncCompression` capability in its hello-ack; otherwise it posts plain JSON. The wire signal is the `Content-Encoding: gzip` **header**, not the envelope's `encoding` field — the compressed body is opaque bytes, so the field inside it cannot be read until after the body has already been decoded. Both skew directions degrade to the uncompressed path: an old server never receives gzip, and an old desktop never emits it.
+
+The client timeout sits deliberately *below* the server's function ceiling. A slow-but-successful upsert still commits server-side, and the client's retry lands on the idempotent upsert rather than duplicating work.
+
+The device's own chunker bounds **both** dimensions before it sends. Bounding only the compressed size would let a highly compressible payload slip under the 256 KiB wire cap and then blow the 4 MiB decompressed ceiling on the server, so the splitter measures the decompressed length too.
+
+### Oversized sessions are chunked
+
+A session too large for one envelope is split into an ordered chunk sequence, each chunk stamped with its 0-based `index` and the sequence `total`. An unchunked session is implicitly chunk 0 of 1.
+
+Chunking is designed so a half-applied sequence is repairable rather than deceptive. The cloud fires the events delete-and-replace only on the **first** chunk of a differing data revision, and commits the new data revision only on the **last**. A sequence interrupted in the middle therefore leaves the stored revision at its prior value, so a later resync's first chunk still sees a differing revision and fully repairs the session instead of masquerading as complete.
+
+## Sync error codes
+
+The REST transport names its failure reason in a machine-readable `code` on the error envelope where status alone is ambiguous. The ambiguous case is `403`: it is both "the org turned this capability off" and "that compute target isn't yours", so the desktop reads the `code` there to split `feature_disabled` from `target_not_owned`. For every other outcome the desktop classifies on **status**: `400`/`413` → validation, `429` → rate-limited, and any other non-2xx (including `500`) → the bounded ingestion-failure path. The route-level `400`/`413` failures raised before the sync service runs carry no `code` at all, so the contract is "code only where a shared status is ambiguous", not "code plus status on every case".
+
+| Code | HTTP | Meaning | Desktop reaction |
+|---|---|---|---|
+| `validation_failed` | 400 | The sync service's Zod parse rejected the payload. Only service-level Zod failures carry this code — the earlier route-level `400`/`413` (unparseable JSON, undecodable gzip, byte cap exceeded) return an *uncoded* envelope, and the desktop classifies those by status. | Defer 30 s and re-fetch/re-sanitize the session; dead-letter after 3 consecutive. |
+| `feature_disabled` | 403 | The org's sync capability is off. | Stop the sync ticker entirely — the lane pauses until readiness is regained rather than polling a door that is closed. |
+| `target_not_owned` | 403 | The presented compute-target id is not owned by the authenticated identity. | Defer 30 s **without burning retry budget** — waiting cannot fix a wrong id; identity re-resolves through the normal hello/refresh path. |
+| `rate_limited` | 429 | Server-side throttle. | Defer 30 s; dead-letter after 5 consecutive. |
+| `ingestion_failed` | 500 | Transient server-side rejection during upsert. | Defer 30 s; dead-letter after 5 consecutive. |
+| `internal_error` | 500 | Unexpected server exception. | Treated as an ingestion failure — bounded and live-recoverable. |
+
+Anything the client cannot taxonomize — an unrecognized 5xx, or a `404` from a deploy skew — also folds into the bounded ingestion-failure path rather than crashing the lane. A `403` with no code at all is read as `target_not_owned`, not as `feature_disabled`, so a server predating the coded envelope can never park the whole lane as capability-off.
+
+Four further outcomes are **client-only**: they never appear on the wire because the server never produced them. A request the device abandons at its own deadline becomes `transport_timeout`; a missing or rejected session token becomes `unauthenticated`; a transport that is not ready becomes `transport_unavailable`; and a server that answers `408` becomes `ack_timeout`. Authentication loss pauses the lane with every retry budget intact — it is never a payload problem, so it must never dead-letter good sessions.
+
+`transport_timeout` gets the same protection for the same reason. When the device's network stalls, the session lane, the component lane, and the cloud socket's own liveness ping all time out together — that is the machine's connection failing, not a verdict on whichever batch happened to be in flight. So an abort taken while the device already knows it has lost the connection defers with its budget untouched, and any budget spent before it noticed is handed back the moment it does. Only an abort on a connection the device still believes is healthy counts against a session, and even then it is bounded: a batch that genuinely cannot be delivered inside the deadline is eventually set aside rather than retried forever.
+
+A dropped network connection is not translated at all: it is thrown, so the service's thrown-transport budget applies unchanged (bounded at 5 consecutive). A local serialization failure is the one case that dead-letters immediately — retrying a payload the device cannot even serialize would never succeed.
+
+## Cursors and eventual consistency
+
+The metadata lane is cursor-driven. A durable cursor tracks how far the device has synced, keyed off the session store's update timestamp. The watermark it stores is the highest **contiguously accepted** timestamp, never a merely-discovered candidate, so a gap in the middle of a batch cannot be skipped past. The invariant that makes this safe is the cursor *plus* durable per-session outbox and dead-letter state, not an acknowledged-only watermark: the cursor can legitimately sit ahead of what has been sent, because every session it advanced past is either already acked or still tracked as pending work in the outbox. The initial full-corpus backfill relies on exactly that — it advances (and persists) the cursor as soon as the complete outbox seed commits, *before* any batch is acknowledged or either queue drains, so a cold restart resumes from the durable outbox instead of re-walking the whole corpus. The incremental steady state then sends a bounded batch of candidate sessions after the cursor and lets the outbox and ack path carry the durability. A session whose derived data changes — a new artifact ref, a re-parse under a new data revision — is re-selected on the next pass, so the cloud converges on the device's current state over time rather than requiring a single atomic push.
+
+The cursor is scoped to the compute target, and a change of signed-in identity clears the cursor and everything derived from it. A new account on the same machine never inherits the previous account's watermark and quietly skips its own history.
+
+The lane ticks every 5 seconds. An incremental pass carries up to 10 sessions and will not re-run more often than every 30 seconds; a backfill pass carries 3 at a time, because backfill payloads are the fat ones.
+
+Because the cursor is durable, the device can be closed for days and still catch up on next launch: the cursor is where it left off, and a startup discovery sweep re-enqueues anything worked while the app was closed. The transcript lane runs its own periodic full-discovery sweep for the same reason — on first connect, that sweep *is* the historical backfill.
+
+## Retries, backoff, and dead-lettering
+
+Both lanes are built to survive a flaky network and a busy server without ever spinning forever on one bad record:
+
+- The two lanes back off differently. The **transcript lane** climbs an exponential-backoff ladder off its retry count. The **metadata lane** does not use exponential send backoff: ack timeouts and thrown transport errors simply retry on the next 5-second sync tick, while the deferring rejections (rate-limit, validation, ingestion failure, unauthenticated, target-not-owned, transport-unavailable) hold the session for a fixed 30-second window before the tick re-tries it. The one exponential ladder on the metadata lane governs *dead-letter* re-attempts, not the ordinary send path.
+- Each lane tracks failures at the identity it actually retries — the session id on the metadata lane, the file on the transcript lane — so one stuck record does not corrupt the retry accounting of its neighbors.
+- After a bounded number of consecutive failures of the same kind, the record is **dead-lettered** so it stops blocking the queue behind it. The thresholds differ by failure kind: 3 consecutive ack timeouts or validation rejections, 5 consecutive rate-limit rejections, ingestion failures, or transport errors. Rate-limit rejections are given more attempts than timeouts because they are more legitimately transient.
+- Authentication and ownership failures are deliberately **not budgeted**. They are never a payload problem, so the batch defers with its failure budgets intact and can never dead-letter on them — it waits until the credential or ownership check recovers. A transport that was never ready is treated the same way: it defers without counting, because the server never saw the batch.
+- Dead-lettering is not a grave, but *how* a dead-letter comes back depends on why it failed. A **transient** dead-letter (a recoverable class — ack timeouts, rate-limit, ingestion failure) is retried after a timed window that starts at 5 minutes and doubles on each successive dead-letter of the same id, capped at 24 hours — so a one-off transient failure recovers fast while an id that keeps re-tripping escalates toward the long window instead of hammering the retry path. A **deterministic** dead-letter (a non-recoverable class — a local serialization failure, or a payload that stays oversize after chunking) does *not* get a timed window at all: it is set aside with an effectively infinite deadline and never re-attempted by the timed recovery pass, because retrying the identical payload would fail identically. Those return only through the separate cold-restart re-backfill (or an idle-cycle live recovery pass over the finite-deadline set), never through the doubling ladder. The dead-letter set is bounded at 1,000 ids and evicted oldest-first, so it cannot grow without limit; an evicted id is simply forgotten as "set aside", never re-uploaded incorrectly.
+- Progress is durable, not just in-memory. Each session has an outbox row that is removed only once its batch is acknowledged, so a crash mid-batch re-enqueues the un-acked work on the next launch. The escalation counter itself is in-memory and re-derives from the base window after a cold restart; the durable outbox is what guarantees every dead-lettered session an eventual path to the cloud across restarts.
+
+Memory is bounded the same way. The backfill hydrates only a small batch of full sessions at a time, sends them, and releases them before the next batch, so peak retained hydration is one small batch rather than the whole backlog — which matters because the sync work shares the database-host process with SQLite and import.
+
+## What crosses the boundary
+
+The metadata lane sends a sanitized projection, not the full local record. Beyond the retired turn and tool text, the device strips the heavy fields that are only useful locally — the per-turn token series is removed before sync, while timestamped token events are kept — before the batch is serialized. The cloud upsert promotes the trace fields it needs into real columns while storing the compacted blob verbatim.
+
+Only additive, optional fields cross the boundary, and **omission is meaningful**. An omitted optional array or rollup means "no replacement data" and leaves whatever the cloud already stored untouched; it never clears a previously synced value. That is what makes it safe for an older desktop build, which simply does not know about a newer field, to keep syncing against a newer server.
+
+A few fields are gated cloud-side rather than desktop-side. The locally computed session-frustration signal, for example, is persisted only when the org has opted into that setting; when it is off the value is dropped at ingest and the column stays null.
+
+## Live triggers
+
+The transcript lane also accepts hook-driven enqueue so an active session stays fresh in the cloud: terminal events (session end, stop, sub-agent stop) flush immediately, while ordinary activity events flush on a debounce so an in-progress session's archived object stays recent without uploading on every single tool call.
+
+## Related reading
+
+<Cards>
+  <Card title="Cloud relay" href="./cloud-relay">
+    The live command transport that runs alongside the sync lanes.
+  </Card>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    The pipeline that produces the local session data these lanes sync.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    What the cloud does with the synced metadata.
+  </Card>
+</Cards>

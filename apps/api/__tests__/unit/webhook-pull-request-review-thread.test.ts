@@ -12,7 +12,9 @@ const {
   mockCommentsService,
   mockFetchReviewThreadResolutionByNodeId,
   mockFindGitHubReviewThreadResolutionProjection,
+  mockGetInstallationOctokit,
   mockLoadPrContextForCommentWebhook,
+  mockOctokit,
   mockResolveExternalGitHubAuthorInTransaction,
   mockResolveGitHubCommentOwner,
 } = vi.hoisted(() => {
@@ -56,7 +58,9 @@ const {
     },
     mockFetchReviewThreadResolutionByNodeId: vi.fn(),
     mockFindGitHubReviewThreadResolutionProjection: vi.fn(),
+    mockGetInstallationOctokit: vi.fn(),
     mockLoadPrContextForCommentWebhook: vi.fn(),
+    mockOctokit: { marker: "installation-octokit" },
     mockResolveExternalGitHubAuthorInTransaction: vi.fn(),
     mockResolveGitHubCommentOwner: vi.fn(),
   };
@@ -75,6 +79,15 @@ vi.mock("@repo/github/review-thread-lookup", () => ({
   ReviewThreadResolutionTerminalReason:
     MockReviewThreadResolutionTerminalReason,
   fetchReviewThreadResolutionByNodeId: mockFetchReviewThreadResolutionByNodeId,
+}));
+
+vi.mock("@repo/github/installation-auth", () => ({
+  // Spy wrapper (not a bare vi.fn implementation) so restore/reset passes can
+  // never strip the marker client the handler passes to the thread lookup.
+  // Mint-failure tests inject a one-shot rejection through the spy; any
+  // non-undefined spy result wins over the resolved marker client fallback.
+  getInstallationOctokit: (installationId: string) =>
+    mockGetInstallationOctokit(installationId) ?? Promise.resolve(mockOctokit),
 }));
 
 vi.mock("@/app/comments/service", () => ({
@@ -103,6 +116,16 @@ vi.mock("@/app/webhooks/github/handlers/pr-comment-context", () => ({
   loadPrContextForCommentWebhook: mockLoadPrContextForCommentWebhook,
 }));
 
+vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
+  GitHubBranchActivityEventName: {
+    PullRequestReviewThread: "pull_request_review_thread",
+  },
+  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
+    status: "no_write",
+    reason: "missing_authoritative_timestamp",
+  }),
+}));
+
 import {
   ReviewThreadResolutionResultStatus,
   ReviewThreadResolutionRetryableReason,
@@ -113,10 +136,16 @@ import {
   type GitHubReviewThreadResolutionAttribution,
   GitHubReviewThreadResolutionAttributionKind,
 } from "@/app/comments/service";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handlePullRequestReviewThread } from "@/app/webhooks/github/handlers/pull-request-review-thread-handler";
 
 const REVIEW_THREAD_ATTRIBUTION_SOURCE =
   "pull_request_review_thread" satisfies GitHubReviewThreadResolutionAttribution["source"];
+const mockPersistGitHubBranchActivity =
+  persistGitHubBranchActivity as ReturnType<typeof vi.fn>;
 
 let mockTx: {
   workstreamEvent: { create: ReturnType<typeof vi.fn> };
@@ -198,6 +227,7 @@ describe("handlePullRequestReviewThread", () => {
     expect(response.status).toBe(200);
     expect(mockFetchReviewThreadResolutionByNodeId).not.toHaveBeenCalled();
     expect(mockCommentsService.resolveThread).not.toHaveBeenCalled();
+    expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
   });
 
   it("does not call the provider for a wrong-scope review thread", async () => {
@@ -299,6 +329,20 @@ describe("handlePullRequestReviewThread", () => {
     expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
   });
 
+  it("delegates client acquisition to the lookup so its deadline covers the token exchange", async () => {
+    await handlePullRequestReviewThread(reviewThreadPayload());
+
+    // An awaited client here would put the token exchange outside the lookup's
+    // confirmation timeout; the unawaited promise is what keeps a slow mint
+    // bounded by the same deadline (packages/github pins the resulting
+    // RetryableError/Timeout, which this handler turns into the 502 above).
+    const [passedClient] = mockFetchReviewThreadResolutionByNodeId.mock
+      .calls[0] as [unknown];
+    expect(passedClient).toBeInstanceOf(Promise);
+    await expect(passedClient).resolves.toBe(mockOctokit);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
+  });
+
   it("acknowledges provider terminal and stale replay states without writing", async () => {
     mockFetchReviewThreadResolutionByNodeId.mockResolvedValueOnce({
       status: ReviewThreadResolutionResultStatus.Terminal,
@@ -385,9 +429,34 @@ describe("handlePullRequestReviewThread", () => {
   });
 
   it("resolves locally and emits one minimal workstream event on transition", async () => {
-    const response = await handlePullRequestReviewThread(reviewThreadPayload());
+    const payload = reviewThreadPayload();
+    const response = await handlePullRequestReviewThread(payload, {
+      deliveryId: "review-thread-delivery-1",
+      observedAt: new Date("2026-08-12T14:00:00.000Z"),
+    });
 
     expect(response.status).toBe(200);
+    // Provider confirmation uses the client minted for the event's
+    // installation (PLN-1525: caller mints, lookup awaits it under its own
+    // deadline).
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("123");
+    expect(mockFetchReviewThreadResolutionByNodeId).toHaveBeenCalledWith(
+      expect.any(Promise),
+      "PRRT_thread"
+    );
+    expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+      eventName: GitHubBranchActivityEventName.PullRequestReviewThread,
+      deliveryId: "review-thread-delivery-1",
+      payload: {
+        ...payload,
+        thread: { ...payload.thread, comments: [] },
+      },
+      attribution: {
+        organizationId: "org-1",
+        branchArtifactId: "branch-1",
+        pullRequestDetailId: "pr-detail-1",
+      },
+    });
     expect(mockCommentsService.resolveThread).toHaveBeenCalledWith(
       "org-1",
       "github-pr-thread:pr-detail-1:review-thread:PRRT_thread",

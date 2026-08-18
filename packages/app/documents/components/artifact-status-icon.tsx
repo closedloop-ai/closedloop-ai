@@ -3,60 +3,47 @@
 import {
   type ArtifactStatus,
   DocumentStatus,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import type * as React from "react";
 import { DocumentStatusIcon } from "./document-status-icon";
-import { FeatureStatusIcon } from "./feature-status-icon";
+import { IssueStatusIcon } from "./issue-status-icon";
 
 interface ArtifactStatusIconProps extends React.SVGAttributes<SVGSVGElement> {
   /** A Document or Feature status string (the two vocabularies are disjoint). */
   status: ArtifactStatus;
   /** Icon size in pixels (default 16). */
   size?: 16 | 20;
-  /** Show the spinning arc while an AI generation run is active. */
-  thinking?: boolean;
 }
 
-const FEATURE_STATUSES = new Set<string>(Object.values(FeatureStatus));
+const ISSUE_STATUSES = new Set<string>(Object.values(IssueStatus));
 const DOCUMENT_STATUSES = new Set<string>(Object.values(DocumentStatus));
 
 /**
  * Renders the correct domain status icon for a raw status string when the
  * artifact type is not singular — status-grouped headers, mixed filter chips,
- * and multi-type pickers that span both Documents and Features. Prefer
- * {@link DocumentStatusIcon} / {@link FeatureStatusIcon} directly wherever the
+ * and multi-type pickers that span both Documents and Issues. Prefer
+ * {@link DocumentStatusIcon} / {@link IssueStatusIcon} directly wherever the
  * artifact type is known.
  *
  * `IN_REVIEW` belongs to both vocabularies; for these mixed surfaces it renders
- * the Feature (75%) form canonically (PRD-495).
+ * the Issue (75%) form canonically (PRD-495).
  */
 export function ArtifactStatusIcon({
   status,
   size = 16,
-  thinking = false,
   ...props
 }: ArtifactStatusIconProps) {
   // IN_REVIEW is shared by both vocabularies — render one canonical form.
-  if (status === FeatureStatus.InReview) {
+  if (status === IssueStatus.InReview) {
     return (
-      <FeatureStatusIcon
-        size={size}
-        status={FeatureStatus.InReview}
-        thinking={thinking}
-        {...props}
-      />
+      <IssueStatusIcon size={size} status={IssueStatus.InReview} {...props} />
     );
   }
-  if (FEATURE_STATUSES.has(status)) {
+  if (ISSUE_STATUSES.has(status)) {
     return (
-      <FeatureStatusIcon
-        size={size}
-        status={status as FeatureStatus}
-        thinking={thinking}
-        {...props}
-      />
+      <IssueStatusIcon size={size} status={status as IssueStatus} {...props} />
     );
   }
   if (DOCUMENT_STATUSES.has(status)) {
@@ -64,7 +51,6 @@ export function ArtifactStatusIcon({
       <DocumentStatusIcon
         size={size}
         status={status as DocumentStatus}
-        thinking={thinking}
         {...props}
       />
     );

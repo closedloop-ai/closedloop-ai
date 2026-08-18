@@ -3,12 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   backfillSessionAnalytics,
   recomputeHeadlessSessionAnalytics,
-  upsertSessionAnalyticsRollup,
-} from "../src/main/database/write-core.js";
+  recomputeHeadlessTurnBuckets,
+  recomputeImportedAgentTurnAnalytics,
+} from "../src/main/database/session-analytics-maintenance.js";
+import { upsertSessionAnalyticsRollup } from "../src/main/database/session-analytics-rollup.js";
+import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { ROLLUP_OPTS } from "./rollup-options-test-utils.js";
 
 type SqliteDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
 
@@ -179,10 +182,10 @@ async function readRollups(db: SqliteDb): Promise<{
   const rollups: Record<string, Record<string, unknown>> = {};
   const updatedAtTypes: Record<string, string> = {};
   for (const row of analytics) {
-    // `updated_at` is stamped with each path's own wall-clock `now` (the boot
-    // backfill uses its internal `new Date()`), so it is intentionally dropped
-    // from the behavior-preservation comparison; the test asserts on
-    // `updatedAtTypes` that it is a present string.
+    /* `updated_at` is stamped with each path's own wall-clock `now` (the boot
+       backfill uses its internal `new Date()`), so it is intentionally dropped
+       from the behavior-preservation comparison; the test asserts on
+       `updatedAtTypes` that it is a present string. */
     const { updated_at, ...rest } = row;
     updatedAtTypes[`analytics:${String(row.session_id)}`] = typeof updated_at;
     rollups[`analytics:${String(row.session_id)}`] = rest;
@@ -196,8 +199,8 @@ async function readRollups(db: SqliteDb): Promise<{
 test("batched backfill produces identical rollups to the per-session path", async () => {
   const { db, dir } = await openTempDb();
   try {
-    // The boot-time backfill is fire-and-forget; wipe any rows it may have
-    // written so we control the comparison from a clean slate.
+    /* The boot-time backfill is fire-and-forget; wipe any rows it may have
+       written so we control the comparison from a clean slate. */
     await db.run("DELETE FROM session_analytics");
     await db.run("DELETE FROM session_tool_analytics");
 
@@ -207,7 +210,7 @@ test("batched backfill produces identical rollups to the per-session path", asyn
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
         for (const session of SESSIONS) {
-          await upsertSessionAnalyticsRollup(tx, session.id, NOW);
+          await upsertSessionAnalyticsRollup(tx, session.id, NOW, ROLLUP_OPTS);
         }
       })
     );
@@ -258,6 +261,22 @@ test("batched backfill produces identical rollups to the per-session path", asyn
       `expected completion log, got: ${logs.join(" | ")}`
     );
 
+    /* SYNC NOTE (FEA-3485): the unbounded backfill deliberately does NOT bump
+       `sessions.updated_at` (a whole-corpus single-`now` bump would collapse
+       every session onto one sync-cursor watermark). The seed `updated_at = NOW`
+       is therefore preserved untouched. */
+    const backfilledWatermarks = await db.prisma.client.$queryRawUnsafe<
+      { id: string; updated_at: string }[]
+    >("SELECT id, updated_at FROM sessions");
+    assert.equal(backfilledWatermarks.length, SESSIONS.length);
+    for (const row of backfilledWatermarks) {
+      assert.equal(
+        row.updated_at,
+        NOW,
+        `expected ${row.id} watermark to be untouched, got ${row.updated_at}`
+      );
+    }
+
     // Idempotent: a second run finds nothing missing and leaves rows untouched.
     await backfillSessionAnalytics(db.prisma, () => undefined);
     assert.deepEqual((await readRollups(db)).rollups, golden.rollups);
@@ -303,7 +322,7 @@ test("FEA-2641: valid $.messages with 3 role:human entries → transcript path, 
 
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
-        await upsertSessionAnalyticsRollup(tx, sid, NOW);
+        await upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS);
       })
     );
 
@@ -360,7 +379,7 @@ test("FEA-2641: $.messages with 0 human entries overrides 5 hook events → tran
 
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
-        await upsertSessionAnalyticsRollup(tx, sid, NOW);
+        await upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS);
       })
     );
 
@@ -402,7 +421,7 @@ test("FEA-2641: NULL metadata with 2 user/prompt events → hook fallback, human
 
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
-        await upsertSessionAnalyticsRollup(tx, sid, NOW);
+        await upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS);
       })
     );
 
@@ -444,7 +463,7 @@ test("FEA-2641: valid JSON without $.messages key and 3 user/prompt events → h
 
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
-        await upsertSessionAnalyticsRollup(tx, sid, NOW);
+        await upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS);
       })
     );
 
@@ -496,7 +515,7 @@ test("FEA-2641: $.messages with primitive elements and non-human objects → onl
 
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
-        await upsertSessionAnalyticsRollup(tx, sid, NOW);
+        await upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS);
       })
     );
 
@@ -598,7 +617,7 @@ test("FEA-3143 (D6): recomputeAnalyticsRollups byte-budgeted chunking matches pe
     await db.prisma.write((client) =>
       client.$transaction(async (tx) => {
         for (const id of allIds) {
-          await upsertSessionAnalyticsRollup(tx, id, NOW);
+          await upsertSessionAnalyticsRollup(tx, id, NOW, ROLLUP_OPTS);
         }
       })
     );
@@ -651,7 +670,7 @@ test("FEA-2870: a headless session is marked is_human=0 even with human turns an
 
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, "sess-headless", NOW)
+        upsertSessionAnalyticsRollup(tx, "sess-headless", NOW, ROLLUP_OPTS)
       )
     );
 
@@ -731,10 +750,427 @@ test("FEA-2870: recomputeHeadlessSessionAnalytics flips mis-marked headless rows
       )
     );
 
-    // Idempotent: nothing left mis-marked, so a second pass is a no-op (no log).
+    // SYNC INVARIANT (FEA-3485): the heal advances the healed session's sync
+    // watermark (`sessions.updated_at` drives listUpdatedSessionCursorRows) so an
+    // install that already uploaded the mis-marked `is_human` re-syncs the flip;
+    // the untouched human session keeps its cursor position.
+    const readWatermarks = async () =>
+      new Map(
+        (
+          await db.prisma.client.$queryRawUnsafe<
+            { id: string; updated_at: string }[]
+          >("SELECT id, updated_at FROM sessions")
+        ).map((r) => [r.id, r.updated_at])
+      );
+    const watermarks = await readWatermarks();
+    assert.ok(
+      (watermarks.get("sess-headless-old") ?? "") > "2026-06-20T08:00:00.000Z",
+      `expected healed session watermark to advance, got ${watermarks.get("sess-headless-old")}`
+    );
+    assert.equal(watermarks.get("sess-real-human"), "2026-06-20T09:00:00.000Z");
+
+    // Idempotent: nothing left mis-marked, so a second pass is a no-op (no log)
+    // and the watermark is not re-bumped.
     const logs2: string[] = [];
     await recomputeHeadlessSessionAnalytics(db.prisma, (m) => logs2.push(m));
     assert.equal(logs2.length, 0);
+    const watermarksAfter = await readWatermarks();
+    assert.equal(
+      watermarksAfter.get("sess-headless-old"),
+      watermarks.get("sess-headless-old")
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3266: recomputeHeadlessTurnBuckets re-derives stale 'human' buckets for a below-threshold headless session the is_human heal skips", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    // Quiesce the boot chain BEFORE seeding: it also runs
+    // recomputeHeadlessTurnBuckets, and if its pass lands after the seeds it
+    // heals them first — the direct call below then finds nothing and never
+    // emits the "complete" log this test asserts on. The race phase shifts
+    // with any awaited boot-path change (surfaced by FEA-3591's floor heal).
+    await db.whenBootMaintenanceSettled();
+    await db.run("DELETE FROM session_turn_bucket");
+
+    const TS = "2026-06-20T08:00:00.000Z";
+    // A newly-headless session (entrypoint carries an `exec` token) with a SINGLE
+    // human turn — so it stays below SESSION_ANALYTICS_HUMAN_TURN_THRESHOLD (2)
+    // and is_human=0, which means recomputeHeadlessSessionAnalytics (WHERE
+    // is_human=1) NEVER selects it and so never rebuilds its buckets. Before the
+    // classifier broadened it was NOT headless, so its persisted per-turn bucket
+    // classified that lone turn as 'human'.
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+       VALUES ('sess-exec', 'completed', 'claude_code', $1, $1, $2)`,
+      TS,
+      // FEA-3597: seeded WITH a tokenSeries so this case still exercises both
+      // halves. Agent rows now come from the parent-attributed token series, so
+      // a headless session with no tokenSeries would derive to `[]` and the
+      // assertion below would degenerate into a vacuous empty-array check,
+      // silently dropping the FEA-3266 regression coverage.
+      `{"entrypoint":"claude-codex-exec","messages":[{"role":"human","timestamp":"${TS}"}],"tokenSeries":[{"timestamp":"${TS}","model":"m","input":1,"output":1}]}`
+    );
+    // A genuine interactive human session (no headless signal) that ALSO has a
+    // human bucket — it must be left untouched.
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+       VALUES ('sess-human', 'completed', 'claude_code', $1, $1, $2)`,
+      TS,
+      `{"messages":[{"role":"human","timestamp":"${TS}"}]}`
+    );
+    // Seed the STALE pre-broadening buckets: both sessions have a 'human' bucket.
+    for (const id of ["sess-exec", "sess-human"]) {
+      await db.run(
+        `INSERT INTO session_turn_bucket (session_id, ts, turn_kind, turn_count)
+         VALUES ($1, $2, 'human', 1)`,
+        id,
+        TS
+      );
+    }
+
+    const logs: string[] = [];
+    await recomputeHeadlessTurnBuckets(db.prisma, (m) => logs.push(m));
+
+    const buckets = async (id: string) =>
+      await db.prisma.client.$queryRawUnsafe<
+        { turn_kind: string; turn_count: number }[]
+      >(
+        "SELECT turn_kind, turn_count FROM session_turn_bucket WHERE session_id = $1",
+        id
+      );
+    // FEA-3266 intent, re-expressed for FEA-3597: the stale 'human' bucket is
+    // GONE (it would misreport a headless turn as human-steered on the Insights
+    // autonomy trend + activity heatmap). What changed is HOW it goes — the pass
+    // used to CONVERT that row to 'agent'; agent rows now come from the
+    // parent-attributed $.tokenSeries instead, so the human row is DELETED and
+    // the agent row is derived from the token series this session seeds.
+    assert.deepEqual(await buckets("sess-exec"), [
+      { turn_kind: "agent", turn_count: 1 },
+    ]);
+    // The genuine human session is not headless, so it is never selected.
+    assert.deepEqual(await buckets("sess-human"), [
+      { turn_kind: "human", turn_count: 1 },
+    ]);
+    assert.ok(
+      logs.some((m) => m.includes("headless turn-bucket recompute complete"))
+    );
+
+    // Convergent: sess-exec no longer has a 'human' bucket, so a second pass
+    // selects nothing and logs nothing.
+    const logs2: string[] = [];
+    await recomputeHeadlessTurnBuckets(db.prisma, (m) => logs2.push(m));
+    assert.equal(logs2.length, 0);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3485: a multi-chunk headless heal staggers updated_at per chunk (bounded sync-cursor top group)", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await db.run("DELETE FROM session_analytics");
+    await db.run("DELETE FROM session_tool_analytics");
+
+    // Six mis-marked headless sessions. Run with chunkSize=1 so each session is
+    // its OWN chunk — the worst case for the cursor-group blow-up this guards.
+    const staleIds = Array.from({ length: 6 }, (_, i) => `sess-headless-${i}`);
+    for (const id of staleIds) {
+      await db.run(
+        `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+         VALUES ($1, 'completed', 'claude_code', $2, $2, $3)`,
+        id,
+        "2026-06-20T08:00:00.000Z",
+        '{"permissionMode":"bypassPermissions"}'
+      );
+      for (const type of ["user", "prompt"]) {
+        await db.run(
+          `INSERT INTO events (id, session_id, event_type, created_at)
+           VALUES ($1, $2, $3, $4)`,
+          `mc-evt-${id}-${type}`,
+          id,
+          type,
+          "2026-06-20T08:00:00.000Z"
+        );
+      }
+      await db.run(
+        `INSERT INTO session_analytics (session_id, started_at, human_turns, is_human)
+         VALUES ($1, '2026-06-20T08:00:00.000Z', 2, 1)`,
+        id
+      );
+    }
+
+    await recomputeHeadlessSessionAnalytics(db.prisma, () => undefined, 1);
+
+    const watermarks = (
+      await db.prisma.client.$queryRawUnsafe<
+        { id: string; updated_at: string }[]
+      >("SELECT id, updated_at FROM sessions WHERE id LIKE 'sess-headless-%'")
+    ).map((r) => r.updated_at);
+
+    // Every healed session advanced past the seed watermark.
+    for (const w of watermarks) {
+      assert.ok(
+        w > "2026-06-20T08:00:00.000Z",
+        `expected healed watermark to advance, got ${w}`
+      );
+    }
+    // CURSOR-GROUP BOUND: the six chunks land on DISTINCT updated_at values, so
+    // the sync cursor's top-timestamp group (observedIdsAtTopUpdatedAt) is one
+    // chunk (here a single session), never the whole O(stale-corpus) set. A
+    // regression to one shared `now` would collapse these to a single value.
+    const distinct = new Set(watermarks);
+    assert.equal(
+      distinct.size,
+      staleIds.length,
+      `expected ${staleIds.length} distinct per-chunk watermarks, got ${distinct.size}: ${[...distinct].join(", ")}`
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3226: transcript-first agent-turn counting
+// The importer's top-level $.assistantMessages count takes priority over the
+// event-name heuristic; the visible $.messages rows are NEVER counted.
+// ---------------------------------------------------------------------------
+
+test("FEA-3226: $.assistantMessages=7 with only importer event types → transcript path, agent_turns=7", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    const sid = "fea3226-transcript-7";
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, ended_at, updated_at, metadata)
+       VALUES ($1, 'completed', 'claude_code', '2026-06-20T08:00:00.000Z', '2026-06-20T08:05:00.000Z', $2, $3)`,
+      sid,
+      NOW,
+      '{"assistantMessages":7,"userMessages":3}'
+    );
+    // Only importer-written event types — none contain "assistant", so the
+    // pre-fix heuristic scored 0 here. The count must come from metadata.
+    for (const [i, type] of [
+      "Stop",
+      "PreToolUse",
+      "PostToolUse",
+      "TurnDuration",
+    ].entries()) {
+      await db.run(
+        `INSERT INTO events (id, session_id, event_type, created_at)
+         VALUES ($1, $2, $3, '2026-06-20T08:00:01.000Z')`,
+        `fea3226-t1-evt${i}`,
+        sid,
+        type
+      );
+    }
+
+    await db.prisma.write((client) =>
+      client.$transaction((tx) =>
+        upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS)
+      )
+    );
+
+    const [row] = await db.prisma.client.$queryRawUnsafe<
+      { agent_turns: number }[]
+    >("SELECT agent_turns FROM session_analytics WHERE session_id = $1", sid);
+    assert.equal(
+      Number(row.agent_turns),
+      7,
+      "transcript path: $.assistantMessages wins over the 0-scoring heuristic"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3226: $.assistantMessages=0 overrides 3 assistant-named events → transcript-wins-at-zero, agent_turns=0", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    const sid = "fea3226-zero-wins";
+    // A present count wins even at 0 (e.g. a cancelled Codex session whose
+    // parser reports no billable round-trips, FEA-3125) — the heuristic must
+    // NOT resurrect a phantom count from event names.
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, ended_at, updated_at, metadata)
+       VALUES ($1, 'completed', 'codex', '2026-06-20T09:00:00.000Z', '2026-06-20T09:05:00.000Z', $2, $3)`,
+      sid,
+      NOW,
+      '{"assistantMessages":0}'
+    );
+    for (let i = 1; i <= 3; i++) {
+      await db.run(
+        `INSERT INTO events (id, session_id, event_type, created_at)
+         VALUES ($1, $2, 'assistant', '2026-06-20T09:00:01.000Z')`,
+        `fea3226-t2-evt${i}`,
+        sid
+      );
+    }
+
+    await db.prisma.write((client) =>
+      client.$transaction((tx) =>
+        upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS)
+      )
+    );
+
+    const [row] = await db.prisma.client.$queryRawUnsafe<
+      { agent_turns: number }[]
+    >("SELECT agent_turns FROM session_analytics WHERE session_id = $1", sid);
+    assert.equal(
+      Number(row.agent_turns),
+      0,
+      "transcript returns 0 → overrides heuristic count 3"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3226: no $.assistantMessages key → heuristic fallback counts events, NEVER the visible $.messages rows", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    const sid = "fea3226-hook-fallback";
+    // Hook-only-shaped metadata: no $.assistantMessages, but a $.messages
+    // array with FOUR assistant-role rows. Visible rows split one billable
+    // turn across text/tool_use blocks, so counting them would overcount —
+    // the fallback must be the event-name heuristic (2), never the rows (4).
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, ended_at, updated_at, metadata)
+       VALUES ($1, 'completed', 'claude_code', '2026-06-20T10:00:00.000Z', '2026-06-20T10:05:00.000Z', $2, $3)`,
+      sid,
+      NOW,
+      JSON.stringify({
+        messages: [
+          { role: "assistant", text: "a" },
+          { role: "assistant", text: "b" },
+          { role: "assistant", text: "c" },
+          { role: "assistant", text: "d" },
+        ],
+      })
+    );
+    for (let i = 1; i <= 2; i++) {
+      await db.run(
+        `INSERT INTO events (id, session_id, event_type, created_at)
+         VALUES ($1, $2, 'assistant', '2026-06-20T10:00:01.000Z')`,
+        `fea3226-t3-evt${i}`,
+        sid
+      );
+    }
+
+    await db.prisma.write((client) =>
+      client.$transaction((tx) =>
+        upsertSessionAnalyticsRollup(tx, sid, NOW, ROLLUP_OPTS)
+      )
+    );
+
+    const [row] = await db.prisma.client.$queryRawUnsafe<
+      { agent_turns: number }[]
+    >("SELECT agent_turns FROM session_analytics WHERE session_id = $1", sid);
+    assert.equal(
+      Number(row.agent_turns),
+      2,
+      "no $.assistantMessages → event heuristic (2), never the 4 visible assistant rows"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3226: recomputeImportedAgentTurnAnalytics heals frozen zeros, skips agreeing and hook-only rows, converges", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await db.run("DELETE FROM session_analytics");
+    await db.run("DELETE FROM session_tool_analytics");
+
+    // A pre-fix imported session whose rollup froze agent_turns=0, an
+    // already-agreeing session, and a hook-only session (no metadata blob)
+    // whose heuristic-derived count must not be touched.
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+       VALUES ('sess-agt-stale', 'completed', 'claude_code', $1, $1, $2)`,
+      "2026-06-20T08:00:00.000Z",
+      '{"assistantMessages":5}'
+    );
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+       VALUES ('sess-agt-ok', 'completed', 'claude_code', $1, $1, $2)`,
+      "2026-06-20T09:00:00.000Z",
+      '{"assistantMessages":3}'
+    );
+    await db.run(
+      `INSERT INTO sessions (id, status, harness, started_at, updated_at, metadata)
+       VALUES ('sess-agt-hookonly', 'completed', 'claude_code', $1, $1, NULL)`,
+      "2026-06-20T10:00:00.000Z"
+    );
+    const SENTINEL = "2026-06-20T11:00:00.000Z";
+    for (const [id, agentTurns] of [
+      ["sess-agt-stale", 0],
+      ["sess-agt-ok", 3],
+      ["sess-agt-hookonly", 2],
+    ] as const) {
+      await db.run(
+        `INSERT INTO session_analytics (session_id, started_at, agent_turns, updated_at)
+         VALUES ($1, '2026-06-20T08:00:00.000Z', $2, $3)`,
+        id,
+        agentTurns,
+        SENTINEL
+      );
+    }
+
+    const logs: string[] = [];
+    await recomputeImportedAgentTurnAnalytics(db.prisma, (m) => logs.push(m));
+
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { session_id: string; agent_turns: number; updated_at: string }[]
+    >("SELECT session_id, agent_turns, updated_at FROM session_analytics");
+    const byId = new Map(rows.map((r) => [r.session_id, r]));
+    // The frozen zero healed to the metadata count...
+    assert.equal(Number(byId.get("sess-agt-stale")?.agent_turns), 5);
+    assert.notEqual(byId.get("sess-agt-stale")?.updated_at, SENTINEL);
+    // ...while the agreeing and hook-only rows were not rewritten at all.
+    assert.equal(Number(byId.get("sess-agt-ok")?.agent_turns), 3);
+    assert.equal(byId.get("sess-agt-ok")?.updated_at, SENTINEL);
+    assert.equal(Number(byId.get("sess-agt-hookonly")?.agent_turns), 2);
+    assert.equal(byId.get("sess-agt-hookonly")?.updated_at, SENTINEL);
+    assert.ok(
+      logs.some((m) =>
+        m.includes("imported agent-turn recompute complete (FEA-3226): 1/1")
+      ),
+      `expected completion log, got: ${logs.join(" | ")}`
+    );
+
+    // SYNC INVARIANT: the heal advances the healed session's sync watermark
+    // (`sessions.updated_at` drives listUpdatedSessionCursorRows) so an
+    // install that already uploaded the frozen zero re-syncs the corrected
+    // count; untouched sessions keep their cursor position.
+    const sessionRows = await db.prisma.client.$queryRawUnsafe<
+      { id: string; updated_at: string }[]
+    >("SELECT id, updated_at FROM sessions");
+    const sessById = new Map(sessionRows.map((r) => [r.id, r.updated_at]));
+    assert.ok(
+      (sessById.get("sess-agt-stale") ?? "") > "2026-06-20T08:00:00.000Z",
+      `expected healed session watermark to advance, got ${sessById.get("sess-agt-stale")}`
+    );
+    assert.equal(sessById.get("sess-agt-ok"), "2026-06-20T09:00:00.000Z");
+    assert.equal(sessById.get("sess-agt-hookonly"), "2026-06-20T10:00:00.000Z");
+
+    // Convergent: the healed row now agrees with metadata, so a second pass
+    // selects nothing (no log) and the watermark is not re-bumped.
+    const logs2: string[] = [];
+    await recomputeImportedAgentTurnAnalytics(db.prisma, (m) => logs2.push(m));
+    assert.equal(logs2.length, 0);
+    const staleAfterFirstPass = sessById.get("sess-agt-stale");
+    const rebumped = await db.prisma.client.$queryRawUnsafe<
+      { updated_at: string }[]
+    >("SELECT updated_at FROM sessions WHERE id = 'sess-agt-stale'");
+    assert.equal(rebumped[0]?.updated_at, staleAfterFirstPass);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

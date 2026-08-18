@@ -7,7 +7,13 @@ import {
   XmlElement,
   XmlText,
 } from "yjs";
-import { anchorThreadToText, hashOfJSON } from "../server/yjs-anchor";
+import {
+  ANCHOR_TEXT_NOT_FOUND_ERROR,
+  anchorThreadToText,
+  findAnchorText,
+  hashOfJSON,
+  isAnchorValidationError,
+} from "../server/yjs-anchor";
 
 const MARK_KEY_PATTERN = /^liveblocksCommentMark--[A-Za-z0-9+/=]{8}$/;
 
@@ -118,6 +124,95 @@ describe("hashOfJSON", () => {
   });
 });
 
+describe("isAnchorValidationError", () => {
+  it.each([
+    null,
+    "provider failed",
+    {},
+    { message: ANCHOR_TEXT_NOT_FOUND_ERROR },
+    { message: ANCHOR_TEXT_NOT_FOUND_ERROR, status: 401 },
+    { status: 400 },
+    { message: 123, status: 400 },
+    { message: "unrelated", status: 400 },
+  ])("rejects non-anchor error shape %#", (error) => {
+    expect(isAnchorValidationError(error)).toBe(false);
+  });
+
+  it("accepts not-found and canonical duplicate anchor errors", () => {
+    expect(
+      isAnchorValidationError({
+        message: ANCHOR_TEXT_NOT_FOUND_ERROR,
+        status: 400,
+      })
+    ).toBe(true);
+    expect(
+      isAnchorValidationError({
+        message:
+          'Anchor text "same" appears 2 times in the document; use more specific text',
+        status: 400,
+      })
+    ).toBe(true);
+  });
+});
+
+describe("findAnchorText", () => {
+  it("validates a unique match without sending a Yjs update", async () => {
+    const ydoc = buildDoc({ tag: "paragraph", textSegments: ["Unique text"] });
+    const mockLiveblocks = createMockLiveblocks(ydoc);
+
+    await expect(
+      findAnchorText(mockLiveblocks, "room-unique", "Unique text")
+    ).resolves.toBeUndefined();
+    expect(mockLiveblocks.getYjsDocumentAsBinaryUpdate).toHaveBeenCalledWith(
+      "room-unique"
+    );
+    expect(mockLiveblocks.sendYjsBinaryUpdate).not.toHaveBeenCalled();
+  });
+
+  it("returns the same structured failures used by anchoring", async () => {
+    const ydoc = buildDoc({
+      tag: "paragraph",
+      textSegments: ["repeat and repeat"],
+    });
+    const mockLiveblocks = createMockLiveblocks(ydoc);
+
+    await expect(
+      findAnchorText(mockLiveblocks, "room-duplicate", "missing")
+    ).rejects.toEqual({ message: ANCHOR_TEXT_NOT_FOUND_ERROR, status: 400 });
+    await expect(
+      findAnchorText(mockLiveblocks, "room-duplicate", "repeat")
+    ).rejects.toMatchObject({
+      message:
+        'Anchor text "repeat" appears 2 times in the document; use more specific text',
+      status: 400,
+    });
+  });
+
+  it("finds text in nested leaf blocks while ignoring top-level text nodes", async () => {
+    const ydoc = buildNestedDoc();
+    const mockLiveblocks = createMockLiveblocks(ydoc);
+
+    await expect(
+      findAnchorText(mockLiveblocks, "room-nested", "Nested target")
+    ).resolves.toBeUndefined();
+    await expect(
+      findAnchorText(mockLiveblocks, "room-nested", "ignored top level")
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("propagates Liveblocks document fetch failures", async () => {
+    const ydoc = buildDoc({ tag: "paragraph", textSegments: ["Unique text"] });
+    const mockLiveblocks = createMockLiveblocks(ydoc);
+    vi.mocked(
+      mockLiveblocks.getYjsDocumentAsBinaryUpdate
+    ).mockRejectedValueOnce(new Error("Yjs unavailable"));
+
+    await expect(
+      findAnchorText(mockLiveblocks, "room-failed", "Unique text")
+    ).rejects.toThrow("Yjs unavailable");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // anchorThreadToText
 // ---------------------------------------------------------------------------
@@ -200,6 +295,33 @@ describe("anchorThreadToText", () => {
       // All mark keys should be the same key (same thread)
       const uniqueKeys = [...new Set(markKeys)];
       expect(uniqueKeys).toHaveLength(1);
+    });
+
+    it("marks only the overlapping ranges when the match starts and ends mid-node", async () => {
+      const ydoc = buildDoc({
+        tag: "paragraph",
+        textSegments: ["before anchor ", "middle", " after"],
+      });
+      const mockLiveblocks = createMockLiveblocks(ydoc);
+
+      await anchorThreadToText(
+        mockLiveblocks,
+        "room-1",
+        "th_partial",
+        "anchor middle"
+      );
+
+      const resultDoc = applyDiff(ydoc, mockLiveblocks);
+      const paragraph = resultDoc
+        .getXmlFragment("default")
+        .get(0) as XmlElement;
+      const firstNode = paragraph.get(0) as XmlText;
+      const middleNode = paragraph.get(1) as XmlText;
+      const lastNode = paragraph.get(2) as XmlText;
+
+      expect(markedText(firstNode)).toEqual(["anchor "]);
+      expect(markedText(middleNode)).toEqual(["middle"]);
+      expect(markedText(lastNode)).toEqual([]);
     });
   });
 
@@ -296,6 +418,18 @@ describe("anchorThreadToText", () => {
     });
   });
 
+  it("propagates failures while sending the computed update", async () => {
+    const ydoc = buildDoc({ tag: "paragraph", textSegments: ["Hello world"] });
+    const mockLiveblocks = createMockLiveblocks(ydoc);
+    vi.mocked(mockLiveblocks.sendYjsBinaryUpdate).mockRejectedValueOnce(
+      new Error("Yjs write failed")
+    );
+
+    await expect(
+      anchorThreadToText(mockLiveblocks, "room-1", "th_failed", "Hello world")
+    ).rejects.toThrow("Yjs write failed");
+  });
+
   describe("multi-block document", () => {
     it("succeeds when anchor text appears only in the second block", async () => {
       const ydoc = buildDoc(
@@ -350,3 +484,34 @@ describe("anchorThreadToText", () => {
     });
   });
 });
+
+function buildNestedDoc(): Doc {
+  const ydoc = new Doc();
+  const fragment = ydoc.getXmlFragment("default");
+  ydoc.transact(() => {
+    const topLevelText = new XmlText();
+    topLevelText.insert(0, "ignored top level");
+    const blockquote = new XmlElement("blockquote");
+    const paragraph = new XmlElement("paragraph");
+    const nestedText = new XmlText();
+    nestedText.insert(0, "Nested target");
+    paragraph.insert(0, [nestedText]);
+    blockquote.insert(0, [paragraph]);
+    fragment.insert(0, [topLevelText, blockquote]);
+  });
+  return ydoc;
+}
+
+function markedText(node: XmlText): string[] {
+  const delta = node.toDelta() as {
+    insert: string;
+    attributes?: Record<string, unknown>;
+  }[];
+  return delta
+    .filter((entry) =>
+      Object.keys(entry.attributes ?? {}).some((key) =>
+        key.startsWith("liveblocksCommentMark--")
+      )
+    )
+    .map((entry) => entry.insert);
+}

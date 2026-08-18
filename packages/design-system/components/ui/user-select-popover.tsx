@@ -48,6 +48,21 @@ interface UserSelectPopoverProps {
   disabled?: boolean;
   /** Additional class name for trigger */
   className?: string;
+  /** Trigger element id, so a sibling `<Label htmlFor>` can point at it. */
+  id?: string;
+  /**
+   * Accessible field label for the default trigger. When set, the trigger
+   * announces e.g. "Assignee: Ada Lovelace" instead of just the value, so a
+   * screen reader knows which field the control sets. The colon form matches
+   * the sibling Status/Priority pills in the metadata bar.
+   */
+  ariaLabel?: string;
+  /**
+   * The user list is still loading. Swaps the empty-state copy so the picker
+   * reads "Loading…" instead of falsely claiming there are no users while the
+   * fetch is in flight.
+   */
+  isLoading?: boolean;
 }
 
 /**
@@ -76,8 +91,19 @@ function UserSelectPopover({
   trigger,
   disabled = false,
   className,
+  id,
+  ariaLabel,
+  isLoading = false,
 }: UserSelectPopoverProps) {
   const [open, setOpen] = React.useState(false);
+
+  // Field-labeled accessible name so a screen reader announces which field the
+  // control sets (e.g. "Assignee: Ada Lovelace") rather than the value alone.
+  // The colon form matches the sibling Status/Priority metadata-bar pills.
+  const currentValueLabel = value?.name ?? placeholder;
+  const triggerAriaLabel = ariaLabel
+    ? `${ariaLabel}: ${currentValueLabel}`
+    : undefined;
 
   const handleSelect = (user: User) => {
     onSelect(user);
@@ -91,8 +117,10 @@ function UserSelectPopover({
 
   const defaultTrigger = iconOnly ? (
     <Button
+      aria-label={triggerAriaLabel}
       variant="ghost"
       size="icon"
+      id={id}
       className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", className)}
       disabled={disabled}
     >
@@ -101,9 +129,11 @@ function UserSelectPopover({
     </Button>
   ) : (
     <Button
+      aria-label={triggerAriaLabel}
       variant="outline"
       role="combobox"
       aria-expanded={open}
+      id={id}
       className={cn("w-[200px] justify-start", className)}
       disabled={disabled}
     >
@@ -130,7 +160,9 @@ function UserSelectPopover({
         <Command label="Search users">
           <CommandInput placeholder="Search users..." />
           <CommandList>
-            <CommandEmpty>No users found.</CommandEmpty>
+            <CommandEmpty>
+              {isLoading ? "Loading…" : "No users found."}
+            </CommandEmpty>
             <CommandGroup>
               {value && (
                 <CommandItem

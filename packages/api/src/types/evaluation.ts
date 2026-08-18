@@ -38,6 +38,76 @@ export const EVALUATION_REPORT_TYPE_OPTIONS = [
   EvaluationReportType.Feature,
 ] as const;
 
+/**
+ * Canonical `ISSUE` input alias for the persisted `FEATURE` evaluation report
+ * type (FEA-3956, PRD-560 Phase 3). Parallels `ArtifactSubtypeAlias.Issue` and
+ * `DocumentTypeAlias.Issue`: the product renamed Features → Issues, but the
+ * persisted evaluation discriminator stays `FEATURE`. A skewed newer client
+ * that emits the canonical `ISSUE` report type normalizes to the persisted
+ * `FEATURE` via {@link normalizeEvaluationReportType}; `ISSUE` never persists.
+ * Additive and skew-safe.
+ */
+export const EvaluationReportTypeAlias = {
+  Issue: "ISSUE",
+} as const;
+export type EvaluationReportTypeAlias =
+  (typeof EvaluationReportTypeAlias)[keyof typeof EvaluationReportTypeAlias];
+
+/**
+ * The accepted *input* evaluation-report-type vocabulary: every persisted
+ * {@link EvaluationReportType} plus the `ISSUE` alias (FEA-3956). Boundary
+ * consumers accept this superset; the value is normalized to a persisted
+ * {@link EvaluationReportType} with {@link normalizeEvaluationReportType}.
+ */
+export const EvaluationReportTypeInput = {
+  ...EvaluationReportType,
+  ...EvaluationReportTypeAlias,
+} as const;
+export type EvaluationReportTypeInput =
+  (typeof EvaluationReportTypeInput)[keyof typeof EvaluationReportTypeInput];
+
+/**
+ * Accepted *input* tuple for report-type query validation: the canonical
+ * {@link EVALUATION_REPORT_TYPE_OPTIONS} plus the `ISSUE` alias (FEA-3956).
+ * Boundary validators (e.g. judges-analytics) accept this superset and then
+ * normalize with {@link normalizeEvaluationReportType} so a skewed newer client
+ * sending `ISSUE` queries the persisted `FEATURE` evaluations instead of 400ing.
+ */
+export const EVALUATION_REPORT_TYPE_INPUT_OPTIONS = [
+  ...EVALUATION_REPORT_TYPE_OPTIONS,
+  EvaluationReportTypeAlias.Issue,
+] as const;
+
+/**
+ * Maps every accepted input evaluation report type
+ * ({@link EvaluationReportTypeInput}) to the persisted
+ * {@link EvaluationReportType}. Only the `ISSUE` alias is remapped (→
+ * `FEATURE`); every canonical value maps to itself. Exhaustive `Record` so the
+ * compiler forces a mapping decision when a new input value is added (FEA-3956).
+ */
+export const EVALUATION_REPORT_TYPE_INPUT_TO_CANONICAL: Record<
+  EvaluationReportTypeInput,
+  EvaluationReportType
+> = {
+  [EvaluationReportType.Plan]: EvaluationReportType.Plan,
+  [EvaluationReportType.Code]: EvaluationReportType.Code,
+  [EvaluationReportType.Prd]: EvaluationReportType.Prd,
+  [EvaluationReportType.Feature]: EvaluationReportType.Feature,
+  // FEA-3956: the canonical `ISSUE` report type resolves to persisted `FEATURE`.
+  [EvaluationReportTypeAlias.Issue]: EvaluationReportType.Feature,
+};
+
+/**
+ * Normalizes an accepted input evaluation report type to its persisted
+ * {@link EvaluationReportType}. `ISSUE` → `FEATURE`; every other value is
+ * returned unchanged (FEA-3956).
+ */
+export function normalizeEvaluationReportType(
+  reportType: EvaluationReportTypeInput
+): EvaluationReportType {
+  return EVALUATION_REPORT_TYPE_INPUT_TO_CANONICAL[reportType];
+}
+
 /** Statistics for a single metric produced by a judge run. */
 export type MetricStatistics = {
   metric_name: string;
@@ -74,6 +144,14 @@ export type JudgeFeedbackItem = {
   finalStatus: EvalStatus;
   promptName: string | null;
   metricName: string;
+  /**
+   * ISO-8601 creation time of the owning `ArtifactEvaluation`. Optional and
+   * additive: producers that don't populate it degrade to the legacy
+   * non-empty-array freshness check. The feature-judges refetch uses it to tell
+   * a just-completed run's feedback apart from a prior run's stale scores
+   * returned during the ingestion gap (FEA-3899).
+   */
+  evaluationCreatedAt?: string;
 };
 
 /**

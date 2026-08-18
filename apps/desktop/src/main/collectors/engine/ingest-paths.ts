@@ -29,3 +29,14 @@ export function ingestOpencodeFingerprintPath(stateDir: string): string {
 export function ingestCodexLinkageCachePath(stateDir: string): string {
   return path.join(stateDir, "ingest-codex-linkage-cache.json");
 }
+
+/**
+ * ISS-5161: absolute path to the persisted BATCH resume cursor. A batch harness
+ * (OpenCode) has no per-file catchup cache to checkpoint against — its only
+ * durable marker is the all-or-nothing store fingerprint — so the session ids a
+ * mid-source quantum already imported are persisted here instead, letting an
+ * interrupted backfill resume across a restart rather than replay the corpus.
+ */
+export function ingestBatchResumeCursorPath(stateDir: string): string {
+  return path.join(stateDir, "ingest-batch-resume-cursor.json");
+}

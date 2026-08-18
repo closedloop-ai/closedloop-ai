@@ -1,9 +1,9 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { LoopEventType } from "@closedloop-ai/loops-api/events";
-import { gatewayLog } from "../../main/gateway-logger.js";
-import { withTokenRefreshRetry } from "../../main/loop-refresh.js";
-import type { LoopTokenStore } from "../../main/loop-token-store.js";
-import { resolveClaudeOutputPath } from "../../main/token-usage.js";
+import { resolveClaudeOutputPath } from "../../main/cost/token-usage.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
+import { withTokenRefreshRetry } from "../../main/loop/loop-refresh.js";
+import type { LoopTokenStore } from "../../main/loop/loop-token-store.js";
 import { isRecord } from "../../shared/type-guards.js";
 import { type LoopHttpResult, postLoopEvent } from "./loop-http.js";
 

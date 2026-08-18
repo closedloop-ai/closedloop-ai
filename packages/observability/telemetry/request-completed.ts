@@ -3,7 +3,6 @@ import { TelemetryEmitMetadataKey } from "@closedloop-ai/telemetry-contract/emit
 import { TelemetrySchemaName } from "@closedloop-ai/telemetry-contract/schema-name";
 import { SpanTelemetrySchema } from "@closedloop-ai/telemetry-contract/span";
 import { log } from "../log";
-import { emit } from "./contract";
 
 const CONTROL_CHARACTER_MAX_CODE = 0x1f;
 const DELETE_CHARACTER_CODE = 0x7f;
@@ -21,9 +20,31 @@ export type RequestCompletedSpanInput = {
   durationMs: number;
 };
 
-export function emitRequestCompletedSpan(
+/**
+ * Build the schema-validated contract attributes for a completed request, for
+ * the caller to merge into its own `request_completed` log line.
+ *
+ * ISS-5039: this used to `emit()` a second `request_completed.contract` log
+ * line carrying the same four values under their OTel names. Every deployed
+ * log call is ingested twice — once via the Vercel Log Drain (`source:vercel`)
+ * and once via the agentless HTTP intake in `log.ts` (`source:nodejs`) — so a
+ * second line cost two more billed events per request, measured at 500,580
+ * events over three days on `cl-api` alone. Nothing consumed it: Datadog's
+ * phrase query `"request_completed"` does not match the token sequence in
+ * `request_completed.contract`, so the `api.requests.*` log-based metrics and
+ * the `cl-api` log monitors all matched only the plain line.
+ *
+ * Returning the attributes instead keeps them on the single line, under the
+ * same keys and alongside the same `telemetry.schema_name` marker, so a
+ * contract consumer still finds them by attribute rather than by event name.
+ *
+ * Returns `undefined` when the values do not satisfy the span schema, so the
+ * caller emits its own line unchanged rather than an attribute set that never
+ * validated.
+ */
+export function buildRequestCompletedContractAttributes(
   input: RequestCompletedSpanInput
-): void {
+): Record<string, unknown> | undefined {
   try {
     const attributesResult = SpanTelemetrySchema.safeParse({
       [TelemetryAttribute.HttpRequestMethod]: input.method,
@@ -36,15 +57,16 @@ export function emitRequestCompletedSpan(
 
     if (!attributesResult.success) {
       logRequestCompletedContractFailure("schema_validation_failed");
-      return;
+      return undefined;
     }
 
-    emit(TelemetrySchemaName.Span, {
-      name: REQUEST_COMPLETED_CONTRACT_EVENT_NAME,
-      attributes: attributesResult.data,
-    });
+    return {
+      ...attributesResult.data,
+      [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,
+    };
   } catch (error) {
-    logRequestCompletedContractFailure("emit_failed", error);
+    logRequestCompletedContractFailure("build_failed", error);
+    return undefined;
   }
 }
 
@@ -104,11 +126,11 @@ function containsControlCharacter(value: string): boolean {
 }
 
 function logRequestCompletedContractFailure(
-  reason: "emit_failed" | "schema_validation_failed",
+  reason: "build_failed" | "schema_validation_failed",
   error?: unknown
 ): void {
   try {
-    log.warn("request_completed.contract emit skipped", {
+    log.warn("request_completed.contract build skipped", {
       reason,
       ...(error !== undefined && { error }),
       [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,

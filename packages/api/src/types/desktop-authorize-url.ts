@@ -22,7 +22,49 @@ export const DESKTOP_AUTHORIZE_QUERY_PARAMS = {
   gatewayPublicKey: "gateway_public_key",
   deviceName: "device_name",
   platform: "platform",
+  /**
+   * ISS-5112: which social provider the person picked in the DESKTOP UI, so the
+   * signed-out detour lands them on that provider's consent screen instead of a
+   * second chooser they already answered once.
+   *
+   * OPTIONAL in both directions, deliberately. An older desktop build omits it
+   * and the page behaves exactly as before; an older web build receives it and
+   * ignores an unknown param, falling back to the chooser. Neither side may
+   * treat its absence as an error, and the value is a HINT only — it selects a
+   * sign-in strategy and carries no authority, so it is never an input to the
+   * PKCE/PoP checks that actually gate the mint.
+   */
+  provider: "provider",
 } as const;
+
+/**
+ * Social providers the desktop UI can pre-select. Email is deliberately absent:
+ * it is a magic-link flow with no OAuth consent screen to skip, so there is
+ * nothing for the hint to do.
+ *
+ * No Zod here on purpose — this module is dependency-free so bundling it into
+ * the Electron main process pulls in nothing else (see the file header). The
+ * validating boundary is the IPC handler, which does use Zod.
+ */
+export const DesktopSignInProvider = {
+  GitHub: "github",
+  Google: "google",
+} as const;
+export type DesktopSignInProvider =
+  (typeof DesktopSignInProvider)[keyof typeof DesktopSignInProvider];
+
+const DESKTOP_AUTH_PROVIDERS: readonly string[] = Object.values(
+  DesktopSignInProvider
+);
+
+/** Narrow an untrusted query-string value to a known provider; null otherwise. */
+export function parseDesktopSignInProvider(
+  value: string | null | undefined
+): DesktopSignInProvider | null {
+  return value && DESKTOP_AUTH_PROVIDERS.includes(value)
+    ? (value as DesktopSignInProvider)
+    : null;
+}
 
 /**
  * The `gateway_public_key` value is a multi-line SPKI PEM: it carries spaces

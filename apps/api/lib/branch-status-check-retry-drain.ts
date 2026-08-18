@@ -13,6 +13,7 @@ import {
   settleRetryableCheckRunFailure,
 } from "@/lib/branch-status-check-retry";
 import { persistBranchStatusChecksFromRollup } from "@/lib/branch-status-checks";
+import { readWithInstallationClient } from "@/lib/github/installation-client";
 import { githubAppGraphqlFetchProvenance } from "@/lib/github-fetch-provenance";
 
 export type CheckRunRetryDrainSummary = {
@@ -39,11 +40,18 @@ export async function drainDueCheckRunRetries(
   const summary = emptyDrainSummary(claims.length);
 
   for (const claim of claims) {
-    const providerResult = await queryStatusCheckRollupWithProviderResult(
+    // A failed client acquisition is classified as this claim's own provider
+    // failure, so one claim's auth failure settles that claim instead of
+    // aborting the batch.
+    const providerResult = await readWithInstallationClient(
       claim.installationId,
-      claim.owner,
-      claim.repo,
-      claim.headSha
+      (octokit) =>
+        queryStatusCheckRollupWithProviderResult(
+          octokit,
+          claim.owner,
+          claim.repo,
+          claim.headSha
+        )
     );
 
     if (providerResult.status === GitHubProviderResultStatus.Success) {

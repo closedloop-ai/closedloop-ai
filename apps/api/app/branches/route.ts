@@ -10,9 +10,11 @@ import {
   branchListQuerySchema,
   branchReadService,
 } from "./branch-read-service";
+import { branchTagPermissionsForAuth } from "./branch-tag-projection";
 
 export const GET = withAnyAuth<BranchListResponse, "/branches">(
-  async ({ user }, request) => {
+  async (authContext, request) => {
+    const { user } = authContext;
     const { params, errorResponse: parseErrorResponse } = parseQueryParams(
       request,
       branchListQuerySchema
@@ -23,7 +25,8 @@ export const GET = withAnyAuth<BranchListResponse, "/branches">(
     try {
       const response = await branchReadService.listBranches(
         user.organizationId,
-        params as BranchListQuery
+        params as BranchListQuery,
+        branchTagPermissionsForAuth(authContext)
       );
       return successResponse(response);
     } catch (error) {

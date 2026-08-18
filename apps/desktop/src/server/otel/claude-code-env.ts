@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import { getShellEnv } from "../shell-path.js";
 
 export const ClaudeCodeOtelEnvVar = {

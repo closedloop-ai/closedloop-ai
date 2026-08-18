@@ -26,6 +26,11 @@ type DocumentEditorDetailsProps = {
  * subtype. Hosts the per-subtype relationships/evaluation stack via
  * `children`, then appends feature-flagged comments and the version info
  * footer so the trailing rows are identical across PRD/Plan/Feature.
+ *
+ * Owns the rule separating the document body from the detail stack. It lives
+ * here rather than on the editor shell above so the divider spans the same
+ * 900px measure as the content on either side of it, instead of running
+ * full-bleed past both.
  */
 export function DocumentEditorDetails({
   documentId,
@@ -33,10 +38,15 @@ export function DocumentEditorDetails({
   children,
 }: Readonly<DocumentEditorDetailsProps>) {
   return (
-    <div className="mx-auto w-full max-w-[900px] space-y-6 px-5 py-6">
+    <div
+      className="mx-auto w-full max-w-[900px] space-y-6 border-t px-5 py-6"
+      data-testid={DOCUMENT_EDITOR_DETAILS_TEST_ID}
+    >
       {children}
       <FeatureFlagged flag="the-one-flag">
-        <CommentsSection documentId={documentId} />
+        {/* key={documentId} resets the section's local draft/open state when the
+            page swaps to a different document without unmounting (FEA-3910). */}
+        <CommentsSection documentId={documentId} key={documentId} />
       </FeatureFlagged>
       <DocumentActivitySection
         createdAt={activity.createdAt}
@@ -70,3 +80,10 @@ export function getDocumentActivityMetadata(
     createdBy: document.createdBy ?? null,
   };
 }
+
+/**
+ * Marks the detail stack so `e2e/document-editor-scroll.spec.ts` can prove the
+ * document's single scroll container is the page region that owns both the
+ * body and these sections, rather than some inner editor wrapper.
+ */
+export const DOCUMENT_EDITOR_DETAILS_TEST_ID = "document-editor-details";

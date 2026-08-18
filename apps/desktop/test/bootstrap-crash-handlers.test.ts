@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CRASH_DIALOG_TITLE } from "../src/main/error-handlers.js";
+import { CRASH_DIALOG_TITLE } from "../src/main/lifecycle/error-handlers.js";
 
 /**
  * Validates that the bootstrap pattern in index.ts correctly handles
@@ -45,7 +45,9 @@ test("bootstrap uncaughtException handler shows dialog and exits", () => {
 test("bootstrap handler survives dialog.showErrorBox throwing", () => {
   let exitCode: number | undefined;
 
-  const showErrorBox = () => {
+  // Same (title, body) arity as the real `dialog.showErrorBox` the bootstrap
+  // calls — a zero-arg stub would let the call site drift without failing.
+  const showErrorBox = (_title: string, _body: string): void => {
     throw new Error("dialog not ready");
   };
   const exit = (code: number) => {

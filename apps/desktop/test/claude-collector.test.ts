@@ -129,3 +129,47 @@ test("extraMtime ignores files that are not agent-*.jsonl", () => {
   // Only agent-1.jsonl counts, so the result equals its mtime exactly.
   assert.equal(claudeExtraMtime(main), statSync(agent).mtimeMs);
 });
+
+test("extraMtime folds in the sidecar's agent-*.meta.json sibling", () => {
+  const root = makeTempDir("claude-coll-");
+  const main = path.join(root, "ses-1.jsonl");
+  writeFileSync(main, "{}", "utf8");
+  const subagentsDir = path.join(root, "ses-1", "subagents");
+  mkdirSync(subagentsDir, { recursive: true });
+  const agent = path.join(subagentsDir, "agent-1.jsonl");
+  const meta = path.join(subagentsDir, "agent-1.meta.json");
+  writeFileSync(agent, "{}", "utf8");
+  writeFileSync(meta, "{}", "utf8");
+  // ISS-4592: the meta sibling is a load-bearing delegation-kickoff source, so
+  // a meta-only write AFTER the transcript's last change must still move the
+  // fingerprint — otherwise the parent session's enrichment stays stale until
+  // an unrelated edit or a DATA_REVISION bump forces a re-import.
+  utimesSync(
+    agent,
+    new Date("2026-01-01T00:00:00Z"),
+    new Date("2026-01-01T00:00:00Z")
+  );
+  utimesSync(
+    meta,
+    new Date("2026-02-01T00:00:00Z"),
+    new Date("2026-02-01T00:00:00Z")
+  );
+  assert.equal(claudeExtraMtime(main), statSync(meta).mtimeMs);
+});
+
+test("extraMtime ignores a .meta.json with no matching agent transcript", () => {
+  const root = makeTempDir("claude-coll-");
+  const main = path.join(root, "ses-1.jsonl");
+  writeFileSync(main, "{}", "utf8");
+  const subagentsDir = path.join(root, "ses-1", "subagents");
+  mkdirSync(subagentsDir, { recursive: true });
+  // Meta files are reached only as siblings of a walked transcript — they are
+  // never enumerated in their own right, so an orphan cannot resurrect a
+  // session that has no subagent transcripts at all.
+  writeFileSync(
+    path.join(subagentsDir, "agent-orphan.meta.json"),
+    "{}",
+    "utf8"
+  );
+  assert.equal(claudeExtraMtime(main), null);
+});

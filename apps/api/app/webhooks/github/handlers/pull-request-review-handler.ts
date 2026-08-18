@@ -17,12 +17,17 @@ import {
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 
-import { bumpBranchActivity } from "@/app/branches/branch-push-state";
+import { persistLatestGitHubPRReview } from "@/app/integrations/github/pr-review-projection";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import {
   gitHubFetchProvenanceData,
   githubAppWebhookFetchProvenance,
 } from "@/lib/github-fetch-provenance";
 import { recomputeAndUpdateAggregate } from "@/lib/review-decision-utils";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import {
   type GitHubDirtyScopePublicationInput,
   publishGitHubDirtyScopes,
@@ -95,37 +100,18 @@ async function handleSubmittedReview(
   const fetchProvenance = gitHubFetchProvenanceData(
     githubAppWebhookFetchProvenance()
   );
-  await tx.gitHubPRReview.upsert({
-    where: {
-      pullRequestId_authorLogin: {
-        pullRequestId: existingPr.id,
-        authorLogin: reviewerLogin,
-      },
-    },
-    create: {
-      pullRequestId: existingPr.id,
-      githubReviewId: String(review.id),
-      authorLogin: reviewerLogin,
-      authorAvatarUrl: review.user?.avatar_url ?? null,
-      state: reviewDecision,
-      body: review.body ?? null,
-      htmlUrl: review.html_url,
-      submittedAt: review.submitted_at
-        ? new Date(review.submitted_at)
-        : new Date(),
-      ...fetchProvenance,
-    },
-    update: {
-      githubReviewId: String(review.id),
-      authorAvatarUrl: review.user?.avatar_url ?? null,
-      state: reviewDecision,
-      body: review.body ?? null,
-      htmlUrl: review.html_url,
-      submittedAt: review.submitted_at
-        ? new Date(review.submitted_at)
-        : new Date(),
-      ...fetchProvenance,
-    },
+  await persistLatestGitHubPRReview(tx, {
+    pullRequestId: existingPr.id,
+    githubReviewId: String(review.id),
+    authorLogin: reviewerLogin,
+    authorAvatarUrl: review.user?.avatar_url ?? null,
+    state: reviewDecision,
+    body: review.body ?? null,
+    htmlUrl: review.html_url,
+    submittedAt: review.submitted_at
+      ? new Date(review.submitted_at)
+      : new Date(),
+    ...fetchProvenance,
   });
 
   const aggregateDecision = await recomputeAndUpdateAggregate(
@@ -133,7 +119,7 @@ async function handleSubmittedReview(
     existingPr.id
   );
 
-  log.info(
+  log.debug(
     "[handlePullRequestReview] Updated per-reviewer and aggregate review decision",
     {
       prNumber: pull_request.number,
@@ -166,28 +152,18 @@ async function handleDismissedReview(
     const fetchProvenance = gitHubFetchProvenanceData(
       githubAppWebhookFetchProvenance()
     );
-    await tx.gitHubPRReview.upsert({
-      where: {
-        pullRequestId_authorLogin: {
-          pullRequestId: existingPr.id,
-          authorLogin: reviewerLogin,
-        },
-      },
-      create: {
-        pullRequestId: existingPr.id,
-        githubReviewId: String(review.id),
-        authorLogin: reviewerLogin,
-        authorAvatarUrl: review.user?.avatar_url ?? null,
-        state: ReviewDecision.Dismissed,
-        body: review.body ?? null,
-        htmlUrl: review.html_url,
-        submittedAt: new Date(),
-        ...fetchProvenance,
-      },
-      update: {
-        state: ReviewDecision.Dismissed,
-        ...fetchProvenance,
-      },
+    await persistLatestGitHubPRReview(tx, {
+      pullRequestId: existingPr.id,
+      githubReviewId: String(review.id),
+      authorLogin: reviewerLogin,
+      authorAvatarUrl: review.user?.avatar_url ?? null,
+      state: ReviewDecision.Dismissed,
+      body: review.body ?? null,
+      htmlUrl: review.html_url,
+      submittedAt: review.submitted_at
+        ? new Date(review.submitted_at)
+        : new Date(),
+      ...fetchProvenance,
     });
   }
 
@@ -196,7 +172,7 @@ async function handleDismissedReview(
     existingPr.id
   );
 
-  log.info("[handlePullRequestReview] Review dismissed", {
+  log.debug("[handlePullRequestReview] Review dismissed", {
     prNumber: pull_request.number,
     reviewerLogin,
     previousAggregate: existingPr.reviewDecision,
@@ -220,14 +196,15 @@ async function handleDismissedReview(
  * CHANGES_REQUESTED > APPROVED > COMMENTED > null
  */
 export async function handlePullRequestReview(
-  event: HandledPullRequestReviewEvent
+  event: HandledPullRequestReviewEvent,
+  observationContext?: GitHubWebhookObservationContext
 ): Promise<Response> {
   const { action, review, pull_request, repository } = event;
   const installationId = event.installation?.id;
 
   // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
-    log.info("[handlePullRequestReview] Skipping unhandled action", {
+    log.debug("[handlePullRequestReview] Skipping unhandled action", {
       action,
       prNumber: pull_request.number,
       repositoryFullName: repository.full_name,
@@ -238,12 +215,11 @@ export async function handlePullRequestReview(
     });
   }
 
-  log.info("[handlePullRequestReview] Processing pull_request_review event", {
+  log.debug("[handlePullRequestReview] Processing pull_request_review event", {
     action,
     reviewId: review.id,
     reviewState: review.state,
     prNumber: pull_request.number,
-    prTitle: pull_request.title,
     repositoryId: repository.id,
   });
 
@@ -348,13 +324,6 @@ export async function handlePullRequestReview(
 
     if (action === "submitted") {
       await handleSubmittedReview(tx, review, pull_request, existingPr);
-      // PLN-1034: a submitted review is genuine branch activity. Monotonic bump
-      // keyed on the branch artifact (not the PR-detail id used above).
-      await bumpBranchActivity(
-        tx,
-        prDetail.branchArtifactId,
-        review.submitted_at ? new Date(review.submitted_at) : new Date()
-      );
     } else if (action === "dismissed") {
       await handleDismissedReview(tx, review, pull_request, existingPr);
     }
@@ -362,6 +331,16 @@ export async function handlePullRequestReview(
     if (!organizationId) {
       return null;
     }
+    await persistGitHubBranchActivity({
+      eventName: GitHubBranchActivityEventName.PullRequestReview,
+      deliveryId: observationContext?.deliveryId,
+      payload: event,
+      attribution: {
+        organizationId,
+        branchArtifactId: prDetail.branchArtifactId,
+        pullRequestDetailId: prDetail.id,
+      },
+    });
     return buildPullRequestReviewDirtyScopePublication({
       review,
       pullRequest: pull_request,
@@ -374,7 +353,7 @@ export async function handlePullRequestReview(
     await publishGitHubDirtyScopes(publication);
   }
 
-  log.info(
+  log.debug(
     "[handlePullRequestReview] Successfully processed pull_request_review event",
     {
       action,

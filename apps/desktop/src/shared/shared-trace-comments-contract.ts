@@ -1,4 +1,5 @@
 import type {
+  BranchTraceCommentCollectionQuery,
   TraceComment,
   TraceCommentDeleteResult,
   TraceCommentDraft,
@@ -27,6 +28,10 @@ export type SharedTraceCommentsIpcChannel =
   (typeof SHARED_TRACE_COMMENTS_IPC_CHANNEL_LIST)[number];
 
 export type SharedTraceCommentTarget = TraceCommentTarget;
+export type SharedTraceCommentCollectionQuery =
+  BranchTraceCommentCollectionQuery;
+export type SharedTraceCommentStoreTarget = TraceCommentTarget &
+  BranchTraceCommentCollectionQuery;
 export type SharedTraceCommentDraft = TraceCommentDraft;
 export type SharedTraceCommentReplyDraft = TraceCommentReplyDraft;
 export type SharedTraceCommentUpdate = TraceCommentUpdate;

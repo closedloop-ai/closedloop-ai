@@ -45,6 +45,11 @@ function makeMultiBranchSession() {
     endedAt: "2026-06-07T10:10:00.000Z",
     toolUses: [
       {
+        // The normalized row id and provider id can differ. The invocation
+        // materializer anchors on the provider id while the legacy event id
+        // still uses the normalized id, so the rollup must correlate both.
+        id: "normalized-bash-a-1",
+        providerToolUseId: "toolu_bash_a_1",
         name: "Bash",
         timestamp: "2026-06-07T10:01:00.000Z",
         input: { command: "ls" },

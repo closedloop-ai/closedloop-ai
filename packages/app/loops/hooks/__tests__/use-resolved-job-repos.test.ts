@@ -58,6 +58,7 @@ type Setup = {
   projectSettings?: Record<string, unknown>;
   teamCount?: number;
   pool?: ReturnType<typeof makePool>;
+  poolError?: string | null;
   inherited?: { additionalRepos: Array<{ fullName: string; branch: string }> };
 };
 
@@ -74,7 +75,7 @@ function configure(setup: Setup) {
   mockUseTeamRepositoriesUnion.mockReturnValue({
     repositories: setup.pool ?? [],
     isLoading: false,
-    error: null,
+    error: setup.poolError ?? null,
   });
   mockUseInheritedAdditionalRepos.mockReturnValue({
     data: setup.inherited
@@ -90,6 +91,25 @@ function configure(setup: Setup) {
 describe("useResolvedJobRepos (PLN-529)", () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  // ISS-5095. The consumers key their empty-vs-failed branch off this field;
+  // dropping it is what let a 403 render as "No repositories curated".
+  it("propagates a failed pool read so consumers can tell it apart from an empty pool", () => {
+    configure({ pool: makePool([]), poolError: "boom" });
+    const { result } = renderHook(() =>
+      useResolvedJobRepos({ projectId: "p1" })
+    );
+    expect(result.current.poolError).toBe("boom");
+    expect(result.current.pool).toEqual([]);
+  });
+
+  it("reports no pool error when the reads succeeded", () => {
+    configure({ pool: makePool([]) });
+    const { result } = renderHook(() =>
+      useResolvedJobRepos({ projectId: "p1" })
+    );
+    expect(result.current.poolError).toBeNull();
   });
 
   it("returns null primary when the project has no resolution data", () => {

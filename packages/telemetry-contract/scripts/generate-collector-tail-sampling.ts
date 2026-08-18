@@ -55,6 +55,10 @@ function buildTailSamplingConfig(
       decision_wait: `${policy.decisionWaitSeconds}s`,
       num_traces: policy.numTraces,
       expected_new_traces_per_sec: policy.expectedNewTracesPerSec,
+      decision_cache: {
+        sampled_cache_size: policy.decisionCache.sampledCacheSize,
+        non_sampled_cache_size: policy.decisionCache.nonSampledCacheSize,
+      },
       policies: [
         {
           name: policy.policyNames.errorStatus,
@@ -72,8 +76,12 @@ function buildTailSamplingConfig(
         },
         {
           name: policy.policyNames.slow,
-          type: "latency",
-          latency: { threshold_ms: policy.slowLatencyThresholdMs },
+          type: "numeric_attribute",
+          numeric_attribute: {
+            key: policy.slowLatencyAttributeKey,
+            min_value: policy.slowLatencyThresholdMs,
+            max_value: policy.slowLatencyMaxMs,
+          },
         },
         {
           name: policy.policyNames.baseline,
@@ -98,7 +106,7 @@ export function renderCollectorTailSamplingFragment(
     "# (cross-repo) and regenerate from @closedloop-ai/telemetry-contract on any",
     "# policy change (FEA-1992):",
     `#   ${REGENERATE_COMMAND}`,
-    "# Keeps every error (span status ERROR or HTTP 5xx) and slow/p99-latency",
+    "# Keeps every error (span status ERROR or HTTP 5xx) and slow child operation",
     "# trace at 100%; samples the rest at the baseline rate (OR semantics).",
   ].join("\n");
   const body = YAML.stringify(buildTailSamplingConfig(policy), { indent: 2 });

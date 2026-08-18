@@ -3,7 +3,7 @@ import type { DocumentWithProject } from "@repo/api/src/types/document";
 import {
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import type { BasicUser } from "@repo/api/src/types/user";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
@@ -84,7 +84,7 @@ describe("groupByMode — status", () => {
       kind: "document",
       data: {
         id: "f",
-        status: FeatureStatus.InProgress,
+        status: IssueStatus.InProgress,
         priority: null,
         assignee: null,
         title: "Feature",

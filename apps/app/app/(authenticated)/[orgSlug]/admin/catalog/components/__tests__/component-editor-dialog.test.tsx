@@ -24,6 +24,8 @@ vi.mock("@repo/app/agents/hooks/use-catalog", () => ({
 }));
 
 const RE_NAME = /Name/;
+const RE_VALID_JSON = /valid JSON/i;
+const RE_EVENT = /Event/;
 
 describe("ComponentEditorDialog", () => {
   beforeEach(() => {
@@ -97,6 +99,104 @@ describe("ComponentEditorDialog", () => {
         content: expect.stringContaining("Updated prompt"),
       })
     );
+  });
+
+  it("preserves raw edits when switching back to form fields (FEA-3163)", async () => {
+    render(
+      <ComponentEditorDialog
+        existing={makeCatalogItem({
+          targetKind: "agent",
+          name: "Original Agent",
+          description: "Original description",
+          content:
+            "---\nname: Original Agent\ndescription: Original description\n---\n\nOriginal prompt\n",
+        })}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        open
+        parentPackId="pack-1"
+      />
+    );
+
+    // Enter raw mode and hand-author content the form fields don't cover.
+    fireEvent.click(screen.getByRole("button", { name: "Edit raw" }));
+    fireEvent.change(screen.getByLabelText("Raw content"), {
+      target: {
+        value:
+          "---\nname: Original Agent\ndescription: Original description\ntools: [Read, Write]\n---\n\nHand-edited prompt body\n",
+      },
+    });
+
+    // Switch back to form mode: the raw edits must survive, not be discarded.
+    fireEvent.click(screen.getByRole("button", { name: "Use form fields" }));
+    expect(
+      (screen.getByLabelText("System prompt (.md)") as HTMLTextAreaElement)
+        .value
+    ).toBe("Hand-edited prompt body");
+    expect((screen.getByLabelText("Tools") as HTMLInputElement).value).toBe(
+      "Read, Write"
+    );
+
+    // Saving from form mode persists the recovered edits.
+    fireEvent.click(screen.getByRole("button", { name: "Save component" }));
+    await waitFor(() => expect(mocks.updateCatalogItem).toHaveBeenCalled());
+    expect(mocks.updateCatalogItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "item-1",
+        content: expect.stringContaining("Hand-edited prompt body"),
+      })
+    );
+    expect(mocks.updateCatalogItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("Read, Write"),
+      })
+    );
+  });
+  it("keeps raw edits and surfaces an error when switching to form with invalid JSON (FEA-3163)", () => {
+    render(
+      <ComponentEditorDialog
+        existing={makeCatalogItem({
+          targetKind: "hook",
+          name: "Original Hook",
+          description: "Original description",
+          content:
+            '{\n  "name": "Original Hook",\n  "event": "PreToolUse",\n  "command": "echo hi"\n}\n',
+        })}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+        open
+        parentPackId="pack-1"
+      />
+    );
+
+    // Enter raw mode and leave the JSON in a malformed (truncated) state.
+    fireEvent.click(screen.getByRole("button", { name: "Edit raw" }));
+    fireEvent.change(screen.getByLabelText("Raw content"), {
+      target: { value: '{ "event": "PreToolUse", ' },
+    });
+
+    // Switching back to form must NOT silently wipe fields: the toggle is
+    // blocked, the raw edits survive, and a validation error is shown.
+    fireEvent.click(screen.getByRole("button", { name: "Use form fields" }));
+    expect(
+      screen.getByRole("button", { name: "Use form fields" })
+    ).toBeDefined();
+    expect(
+      (screen.getByLabelText("Raw content") as HTMLTextAreaElement).value
+    ).toBe('{ "event": "PreToolUse", ');
+    expect(screen.getByText(RE_VALID_JSON)).toBeDefined();
+
+    // Correcting the JSON lets the toggle succeed and clears the error.
+    fireEvent.change(screen.getByLabelText("Raw content"), {
+      target: {
+        value: '{ "name": "Original Hook", "event": "PostToolUse" }',
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Use form fields" }));
+    expect((screen.getByLabelText(RE_EVENT) as HTMLInputElement).value).toBe(
+      "PostToolUse"
+    );
+    expect(screen.queryByText(RE_VALID_JSON)).toBeNull();
   });
 });
 

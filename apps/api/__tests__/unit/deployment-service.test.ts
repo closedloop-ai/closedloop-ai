@@ -40,13 +40,34 @@ describe("deploymentService", () => {
   });
 
   describe("recordDeployment", () => {
-    it("rejects a null projectId — only SESSION artifacts may be projectless", async () => {
-      // No DB mock on purpose: the guard must fail before any query runs.
+    it("records an unparented deployment when projectId is null (FEA-1749)", async () => {
+      // Was: "rejects a null projectId — only SESSION artifacts may be
+      // projectless". That guard is gone: a deployment of an unparented branch
+      // has no project to inherit, and storage does not get a vote on whether an
+      // artifact may be unparented.
+      const created = { id: "dep-1", deployment: { artifactId: "dep-1" } };
+      const mockDb = {
+        artifact: {
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue(created),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
       const result = await deploymentService.recordDeployment(
         baseInput({ projectId: null })
       );
 
-      expect(result).toEqual({ ok: false, error: Status.BadRequest });
+      expect(result).toEqual({ ok: true, value: created });
+      expect(mockDb.artifact.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          type: ArtifactType.DEPLOYMENT,
+          organizationId: ORG_ID,
+          projectId: null,
+        }),
+        include: expect.any(Object),
+      });
     });
 
     it("creates a new artifact + detail when no row exists for externalUrl", async () => {
@@ -131,6 +152,39 @@ describe("deploymentService", () => {
         include: { deployment: true },
       });
       expect(result).toEqual({ ok: true, value: updated });
+    });
+
+    it("acquires a per-(org, externalUrl) advisory lock before the dedup read (FEA-3466)", async () => {
+      // The findFirst-then-create dedup is not concurrency-safe on its own
+      // (READ COMMITTED + no unique index on external_url), so redelivered
+      // webhooks must serialize on a transaction-scoped advisory lock taken
+      // before the existence check.
+      const callOrder: string[] = [];
+      const executeRaw = vi.fn((..._args: unknown[]) => {
+        callOrder.push("lock");
+        return Promise.resolve(0);
+      });
+      const mockDb = {
+        $executeRaw: executeRaw,
+        artifact: {
+          findFirst: vi.fn(() => {
+            callOrder.push("findFirst");
+            return Promise.resolve(null);
+          }),
+          create: vi.fn().mockResolvedValue({ id: "dep-1", deployment: null }),
+          update: vi.fn(),
+        },
+      };
+      mockWithDbTx(mockDb);
+
+      await deploymentService.recordDeployment(baseInput());
+
+      expect(executeRaw).toHaveBeenCalledTimes(1);
+      // Interpolated params land in the tagged-template values array.
+      expect(executeRaw.mock.calls[0][1]).toBe(
+        `deployment:${ORG_ID}:${PREVIEW_URL}`
+      );
+      expect(callOrder).toEqual(["lock", "findFirst"]);
     });
 
     it("connects branchArtifact when branchArtifactId is supplied", async () => {

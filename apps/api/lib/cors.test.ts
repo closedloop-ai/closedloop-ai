@@ -28,6 +28,29 @@ describe("getCorsHeaders", () => {
     expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
     expect(headers["Access-Control-Allow-Credentials"]).toBeUndefined();
   });
+
+  // ISS-4659: the RUM SDK attaches W3C trace context to app→api requests. These
+  // headers are not CORS-safelisted, so if they fall out of the allowlist the
+  // browser preflight blocks every instrumented request — a total app outage,
+  // not a degraded trace. This test is the guard against that regression.
+  it("advertises the W3C trace-context request headers", () => {
+    const allowed = allowedRequestHeaders(null);
+    expect(allowed).toContain("traceparent");
+    expect(allowed).toContain("tracestate");
+  });
+
+  it("grants Timing-Allow-Origin to a trusted origin so RUM sees resource timing", () => {
+    const trustedOrigin = "http://localhost:3000";
+    const headers = getCorsHeaders(trustedOrigin);
+    expect(headers["Timing-Allow-Origin"]).toBe(trustedOrigin);
+  });
+
+  it("withholds Timing-Allow-Origin from an untrusted origin", () => {
+    const headers = getCorsHeaders("https://evil.example.com");
+    expect(headers["Timing-Allow-Origin"]).toBeUndefined();
+    // Guard the pairing too: timing detail must never outlive the ACAO grant.
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
+  });
 });
 
 describe("addCorsHeaders", () => {

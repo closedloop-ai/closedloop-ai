@@ -1,0 +1,62 @@
+-- PRD-536 G7: orgId-prefixed composite index for the transcript identity lookup.
+--
+-- The transcript identity read (apps/api transcript-read-service and the
+-- agent-sessions service, both via `sessionTranscriptIdentityWhere`) filters on
+-- (organization_id, compute_target_id, external_session_id) and orders by
+-- file_key. The only matching index — the unique key
+-- (compute_target_id, external_session_id, file_key) — does NOT lead with
+-- organization_id, so the org-scoped read cannot org-prefix and large orgs pay a
+-- scan. The single-column organization_id index doesn't co-locate the rest of the
+-- predicate either. This composite leads with organization_id and carries the
+-- full predicate + sort (file_key) so the read is index-served.
+--
+-- BUILT CONCURRENTLY (matches 20260721160000_fea3638_insights_perf_indexes_concurrent):
+-- `session_transcript` is a hot, high-write table (every desktop transcript
+-- sync/complete upserts rows). A plain `CREATE INDEX` takes a lock that blocks
+-- writes for the whole build; `CREATE INDEX CONCURRENTLY` holds only a SHARE
+-- UPDATE EXCLUSIVE lock so concurrent INSERT/UPDATE/DELETE proceed. Zero
+-- write-blocking on prod's hot table.
+--
+-- NON-TRANSACTIONAL BY DESIGN — keep this file to a single bare top-level
+-- `CREATE INDEX CONCURRENTLY` statement only. `CREATE INDEX CONCURRENTLY` cannot
+-- run inside a transaction block (Postgres SQLSTATE 25001); `prisma migrate
+-- deploy` splits a bare-statement file into per-statement simple queries so the
+-- create runs outside any transaction. Do NOT add BEGIN/COMMIT, a `DO $$ ... $$`
+-- block, or a `DROP INDEX CONCURRENTLY` here — any of them re-triggers Prisma's
+-- whole-file transaction wrap and breaks the apply (the FEA-3638 precedent hit
+-- exactly this and removed its in-file guard for the same reason).
+--
+-- PLAIN CREATE — NO `IF NOT EXISTS` (fail-closed on an INVALID remnant):
+-- a `CREATE INDEX CONCURRENTLY` that is cancelled or times out AFTER Postgres
+-- wrote the catalog entry but BEFORE the build finished leaves an INVALID index
+-- of this exact name behind (Postgres ignores it for planning until it is
+-- dropped and rebuilt). If this statement carried `IF NOT EXISTS`, the
+-- non-preview deploy retry (scripts/migrate.ts resolves the failed migration as
+-- rolled-back and re-runs) would see the same-named invalid index, silently skip
+-- the rebuild, and record the migration APPLIED with a permanently-unusable
+-- index. Because this is a BRAND-NEW index (unlike the FEA-3638 re-land, which
+-- kept `IF NOT EXISTS` precisely because stage had legitimately already created
+-- those indexes via the reverted plain migration), there is NO legitimate
+-- pre-existing object to no-op over — so the create is plain and fail-closed:
+-- on a retry over an invalid remnant it raises SQLSTATE 42P07 (relation already
+-- exists), which the runner diagnoses as a `partial_committed_ddl_artifact` and
+-- STOPS for operator verification (packages/database/AGENTS.md, "Deploy-time
+-- migration concurrency"), instead of silently applying without the index. The
+-- drop-first idiom (`DROP INDEX CONCURRENTLY IF EXISTS` before the create) would
+-- auto-clean the remnant but CANNOT ship here — it defeats Prisma's statement
+-- splitter and forces the whole-file transaction wrap described above. So
+-- operator recovery is: verify the object, then drop the invalid remnant ONCE
+-- (a plain `DROP INDEX` on an unused invalid index is instant and non-blocking;
+-- schema-qualify / set search_path for the target schema, e.g. shared-instance
+-- `preview_*`):
+--       DROP INDEX IF EXISTS "session_transcript_organization_id_compute_target_id_extern_idx";
+--   then re-run `prisma migrate deploy`, which rebuilds it CONCURRENTLY.
+--   (A mid-build cancel is rare — the common path is a clean single-pass apply.)
+--
+-- Purely additive: index-only, no data mutation, no result change (indexes alter
+-- plan choice only). The index name/columns match the schema.prisma
+-- `@@index([organizationId, computeTargetId, externalSessionId, file_key])`
+-- declaration (Prisma-truncated name), so the Prisma drift check stays green.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "session_transcript_organization_id_compute_target_id_extern_idx" ON "session_transcript"("organization_id", "compute_target_id", "external_session_id", "file_key");

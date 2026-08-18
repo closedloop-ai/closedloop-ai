@@ -93,6 +93,9 @@ describe("reset helpers", () => {
         preferredComputeTargetId: null,
       },
     });
+    // ISS-6317 narrowed this discarded write: same single-row `update` on the
+    // same `where` (so a missing org still raises P2025), now returning only the
+    // primary key instead of every Organization column.
     expect(p.organization.update).toHaveBeenCalledWith({
       where: { id: BASELINE_ORG_ID },
       data: {
@@ -100,6 +103,7 @@ describe("reset helpers", () => {
         claudeApiKeyLastFour: null,
         claudeApiKeySetAt: null,
       },
+      select: { id: true },
     });
     expect(p.oAuthRevokedToken.deleteMany).not.toHaveBeenCalled();
     expect(p.oAuthRateLimit.deleteMany).not.toHaveBeenCalled();

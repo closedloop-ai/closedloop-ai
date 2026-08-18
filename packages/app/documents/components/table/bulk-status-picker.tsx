@@ -3,7 +3,7 @@
 import {
   type ArtifactStatus,
   DOCUMENT_STATUS_OPTIONS,
-  FEATURE_STATUS_OPTIONS,
+  ISSUE_STATUS_OPTIONS,
 } from "@repo/api/src/types/document";
 import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
 import { useBatchUpdateStatus } from "@repo/app/documents/hooks/use-documents";
@@ -37,7 +37,7 @@ export function BulkStatusPicker({
   const statusOptions = [
     ...new Set<ArtifactStatus>([
       ...DOCUMENT_STATUS_OPTIONS,
-      ...FEATURE_STATUS_OPTIONS,
+      ...ISSUE_STATUS_OPTIONS,
     ]),
   ];
 

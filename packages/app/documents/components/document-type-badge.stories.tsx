@@ -20,6 +20,7 @@ export const Compact: Story = {
       <DocumentTypeBadge type={DocumentType.ImplementationPlan} />
       <DocumentTypeBadge type={DocumentType.Template} />
       <DocumentTypeBadge type={DocumentType.Feature} />
+      <DocumentTypeBadge type={DocumentType.Doc} />
     </div>
   ),
 };
@@ -34,6 +35,7 @@ export const Pill: Story = {
       />
       <DocumentTypeBadge appearance="pill" type={DocumentType.Template} />
       <DocumentTypeBadge appearance="pill" type={DocumentType.Feature} />
+      <DocumentTypeBadge appearance="pill" type={DocumentType.Doc} />
     </div>
   ),
 };

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, test } from "node:test";
-import { gatewayLog } from "../src/main/gateway-logger.js";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import {
   _resetMutexForTesting,

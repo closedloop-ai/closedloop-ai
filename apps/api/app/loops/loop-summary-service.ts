@@ -1,3 +1,4 @@
+import { normalizeArtifactSubtype } from "@repo/api/src/types/artifact";
 import type {
   LoopSummariesResponse,
   LoopSummary,
@@ -65,9 +66,16 @@ function toEntry(
   childSubtypeMap: Map<string, ArtifactSubtype | null>
 ): LoopSummaryEntry {
   const isDirectLoop = loop.artifactId === rootId;
-  const childSubtype = isDirectLoop
+  const rawChildSubtype = isDirectLoop
     ? null
     : (childSubtypeMap.get(loop.artifactId ?? "") ?? null);
+  // FEA-3956: normalize the persisted subtype to the API contract's canonical
+  // set. Rows never store the canonical `ISSUE` (map-in-code, PRD-560 dec. 2),
+  // but the generated Prisma enum now includes it; mapping keeps a skewed value
+  // resolving to `FEATURE` instead of leaking `ISSUE` into the wire contract.
+  const childSubtype = rawChildSubtype
+    ? normalizeArtifactSubtype(rawChildSubtype)
+    : null;
   return {
     loopId: loop.id,
     command: loop.command,

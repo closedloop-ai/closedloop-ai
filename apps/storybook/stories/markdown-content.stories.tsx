@@ -25,3 +25,16 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
+
+export const RawHtmlVisible: Story = {
+  args: {
+    text: "Visible text <!-- automation marker --> <span>raw tag</span>",
+  },
+};
+
+export const RawHtmlSkipped: Story = {
+  args: {
+    skipHtml: true,
+    text: "Visible text <!-- automation marker --> <span>raw tag</span>",
+  },
+};

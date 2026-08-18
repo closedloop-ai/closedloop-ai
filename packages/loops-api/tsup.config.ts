@@ -28,6 +28,8 @@ export default defineConfig({
     "src/session-status.ts",
     "src/stable-stringify.ts",
     "src/stream-types.ts",
+    "src/currency.ts",
+    "src/secret-value-pattern.ts",
   ],
   format: ["esm", "cjs"],
   dts: true,

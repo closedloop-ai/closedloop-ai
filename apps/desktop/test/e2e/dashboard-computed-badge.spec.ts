@@ -57,7 +57,15 @@ test.describe("Dashboard computed badge", () => {
         timeout: 20_000,
       });
       await expect(page.getByText(ANALYZING_LOCALLY_TEXT)).toHaveCount(0);
-      await expect(page.locator("body")).not.toContainText(
+      // The removed badge lived in the dashboard header action bar, beside the
+      // time-range controls (FEA-2412) — scope the absence check to that bar,
+      // the badge's original home. A body-wide check would collide with the
+      // first-launch import splash, which legitimately shows a "Computed on
+      // this device" privacy line elsewhere in the tree (FEA-4057); the desktop
+      // keeps that splash mounted-but-hidden under keep-alive, so it is still in
+      // the DOM here.
+      const dashboardActionBar = dateRange.locator("xpath=..");
+      await expect(dashboardActionBar).not.toContainText(
         REMOVED_COMPUTED_BADGE_TEXT
       );
       expect(pageErrors).toEqual([]);

@@ -20,6 +20,14 @@ import {
 } from "./cancel-signing-helpers";
 
 /**
+ * This route awaits a desktop kill that replays a not-delivered answer
+ * (ISS-6046), so it cannot run on the platform default. Literal because
+ * route-segment config must be statically analysable; pinned to
+ * `CANCEL_REQUEST_BUDGET_SECONDS` by `../../cancel-route-max-duration.test.ts`.
+ */
+export const maxDuration = 60;
+
+/**
  * POST /loops/[id]/cancel — Cancel a running loop (write scope).
  *
  * Provides a write-scoped cancel action for MCP sessions that don't hold

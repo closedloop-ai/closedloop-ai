@@ -1,6 +1,7 @@
 "use client";
 
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import type { NavigationAdapter } from "@repo/navigation/navigation-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
 import {
   QueryClient,
@@ -37,6 +38,16 @@ type AppCoreStoryProvidersProps = {
   apiRoutes?: FixtureRoute[];
   /** Feature flags reported as enabled (all flags default to disabled). */
   enabledFlags?: readonly string[];
+  /**
+   * Navigation adapter to mount instead of this harness's own memory adapter.
+   *
+   * The Storybook preview mounts this harness globally and owns a single
+   * navigation port for every story (design-system stories included), so it
+   * passes its adapter here. Leaving this undefined keeps the previous
+   * behaviour — a private memory adapter scoped to `org-test` — so the stories
+   * and tests that wrap themselves directly are unaffected.
+   */
+  navigationAdapter?: NavigationAdapter;
 };
 
 export function AppCoreStoryProviders({
@@ -44,6 +55,7 @@ export function AppCoreStoryProviders({
   queryData = [],
   apiRoutes,
   enabledFlags,
+  navigationAdapter,
 }: AppCoreStoryProvidersProps) {
   const [apiAdapter] = useState<ApiAdapter>(() => ({
     resolveApiOrigin: () => "http://storybook.invalid",
@@ -63,16 +75,17 @@ export function AppCoreStoryProviders({
     }
     return client;
   });
-  const [memoryNavigation] = useState(() =>
+  const [ownNavigation] = useState(() =>
     createMemoryNavigation({ orgSlug: "org-test" })
   );
+  const navigation = navigationAdapter ?? ownNavigation.adapter;
   const [featureFlagAdapter] = useState(() =>
     createStaticFeatureFlagAdapter({ enabledFlags })
   );
 
   return (
     <QueryClientProvider client={queryClient}>
-      <NavigationProvider adapter={memoryNavigation.adapter}>
+      <NavigationProvider adapter={navigation}>
         <AuthAdapterProvider adapter={createStaticAuthAdapter()}>
           <FeatureFlagAdapterProvider adapter={featureFlagAdapter}>
             <ApiAdapterProvider adapter={apiAdapter}>

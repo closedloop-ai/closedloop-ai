@@ -9,6 +9,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@repo/cost": path.resolve(import.meta.dirname, "../cost/src"),
       "@closedloop-ai/loops-api": path.resolve(
         import.meta.dirname,
         "../loops-api/src"

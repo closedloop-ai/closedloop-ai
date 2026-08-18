@@ -5,7 +5,7 @@
  * expressed as capability flags rather than forked components. A surface picks a
  * `mode` (which seeds sensible defaults) and may override individual flags — e.g.
  * a desktop build enables `showTeamUsage` only once the multiplayer overlay is
- * available, and any surface flips `showExtendedContentKinds` from a feature flag.
+ * available.
  */
 
 export const PacksMode = {
@@ -38,8 +38,17 @@ export type PacksCapabilities = {
   showActivity: boolean;
   /** Show the Performance tab. */
   showPerformance: boolean;
-  /** Show the extended content kinds (plugin, tool) beyond the prototype five. */
-  showExtendedContentKinds: boolean;
+  /**
+   * Show the member per-machine install-state block on pack detail (FEA-4077):
+   * one honest `PackInstallState` row per (compute target × harness) the member
+   * has, rendered from the FEA-4072a `installMatrix`. On DESKTOP this reflects
+   * local install state (this machine, via `desktopApi.db.catalog*`); on the web
+   * MEMBER surface it reflects the member's registered nodes (a READ; the
+   * ACT/dispatch path is the separate self-service-install slice). Off for the
+   * admin surface, which manages roll-out through the org-wide Distribution tab
+   * instead.
+   */
+  showMemberTargets: boolean;
 };
 
 export type PacksContext = {
@@ -55,7 +64,8 @@ const CAPABILITY_DEFAULTS: Record<PacksMode, PacksCapabilities> = {
     showTeamUsage: false,
     showActivity: false,
     showPerformance: false,
-    showExtendedContentKinds: false,
+    // Desktop reflects local install state on "this machine".
+    showMemberTargets: true,
   },
   [PacksMode.DesktopTeam]: {
     installLocally: true,
@@ -64,7 +74,7 @@ const CAPABILITY_DEFAULTS: Record<PacksMode, PacksCapabilities> = {
     showTeamUsage: true,
     showActivity: true,
     showPerformance: true,
-    showExtendedContentKinds: false,
+    showMemberTargets: true,
   },
   [PacksMode.WebAdmin]: {
     installLocally: false,
@@ -73,7 +83,9 @@ const CAPABILITY_DEFAULTS: Record<PacksMode, PacksCapabilities> = {
     showTeamUsage: true,
     showActivity: true,
     showPerformance: true,
-    showExtendedContentKinds: false,
+    // Admin manages roll-out through the org-wide Distribution tab, not a
+    // personal per-machine block.
+    showMemberTargets: false,
   },
   [PacksMode.WebMember]: {
     // Read-only browse: web has no local FS to install to, and members cannot
@@ -87,14 +99,16 @@ const CAPABILITY_DEFAULTS: Record<PacksMode, PacksCapabilities> = {
     showTeamUsage: true,
     showActivity: false,
     showPerformance: true,
-    showExtendedContentKinds: false,
+    // Reflects the member's own registered nodes (READ). Self-service install to
+    // those nodes is the deferred dispatch slice.
+    showMemberTargets: true,
   },
 };
 
 /**
  * Build a `PacksContext` for a surface, starting from the mode's defaults and
- * applying any explicit capability overrides (e.g. a feature-flag-driven
- * `showExtendedContentKinds`, or turning on the multiplayer overlay on desktop).
+ * applying any explicit capability overrides (e.g. turning on the multiplayer
+ * overlay on desktop).
  */
 export function createPacksContext(
   mode: PacksMode,

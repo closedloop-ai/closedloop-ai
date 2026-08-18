@@ -25,8 +25,42 @@ const HEX_COLOR_PATTERN =
   /^#(?<short>[0-9a-f]{3,4})$|^#(?<long>[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const OKLCH_COLOR_PATTERN =
   /^oklch\(\s*(?<l>[\d.]+%?)\s+(?<c>[\d.]+)\s+(?<h>[\d.]+|none)(?:\s*\/\s*(?<alpha>[\d.]+%?))?\s*\)$/i;
+// Chromium resolves `color-mix(in oklab, …)` — what Tailwind's opacity modifier
+// (`bg-card/95`) compiles to — and serializes the computed value back out as
+// `oklab()`, so any element styled that way reaches this parser in OKLab form.
+const OKLAB_COLOR_PATTERN =
+  /^oklab\(\s*(?<l>none|-?[\d.]+%?)\s+(?<a>none|-?[\d.]+%?)\s+(?<b>none|-?[\d.]+%?)(?:\s*\/\s*(?<alpha>none|[\d.]+%?))?\s*\)$/i;
+/**
+ * CIE Lab — which is the form the PRODUCTION stylesheet actually delivers every
+ * theme token in, so this is not an exotic case.
+ *
+ * `globals.css` authors the palette in `oklch()`, but Tailwind v4 runs the
+ * bundle through Lightning CSS, which downlevels each token to a hex fallback
+ * followed by a `lab()` declaration and emits no `oklch()` at all. A dev server
+ * and Storybook serve the authored form, so a browser reading a computed token
+ * THERE reports `oklch(0.989 0 0)` — while the same read against a `next build`,
+ * which is what the Playwright suite runs, reports `lab(98.724 0 0)`. Both have
+ * to parse, or a spec is green locally and red in CI (ISS-5365).
+ *
+ * Note the anchors: `oklab()`/`oklch()` are matched by their own patterns and
+ * cannot fall through to this one.
+ */
+const LAB_COLOR_PATTERN =
+  /^lab\(\s*(?<l>none|-?[\d.]+%?)\s+(?<a>none|-?[\d.]+%?)\s+(?<b>none|-?[\d.]+%?)(?:\s*\/\s*(?<alpha>none|-?[\d.]+%?))?\s*\)$/i;
 const RGB_COLOR_PATTERN = /^rgba?\((?<body>.*)\)$/i;
 const WHITESPACE_PATTERN = /\s+/;
+/** CSS maps an OKLab `a`/`b` percentage of 100% onto 0.4. */
+const OKLAB_AXIS_PERCENT_REFERENCE = 0.4;
+/** CSS maps a CIE Lab lightness percentage of 100% onto 100. */
+const LAB_LIGHTNESS_PERCENT_REFERENCE = 100;
+/** CSS maps a CIE Lab `a`/`b` percentage of 100% onto 125. */
+const LAB_AXIS_PERCENT_REFERENCE = 125;
+/** The CIE standard's `κ` and `ε`, exact rather than rounded. */
+const LAB_KAPPA = 24_389 / 27;
+const LAB_EPSILON = 216 / 24_389;
+/** CSS resolves `lab()` against D50, not the D65 that sRGB is defined on. */
+const LAB_WHITE_POINT_X = 0.964_295_676_4;
+const LAB_WHITE_POINT_Z = 0.825_104_602_5;
 
 export function assertContrastPair({
   background,
@@ -87,6 +121,21 @@ export function themeBackground(theme: A11yTheme) {
 
 export function themeForeground(theme: A11yTheme) {
   return themeTokenColor(theme, "--foreground");
+}
+
+/**
+ * Flatten a translucent colour onto the surface behind it (ISS-5362).
+ *
+ * `contrastRatio` composites its own foreground, but a translucent BACKGROUND —
+ * a donut slice drawn at partial alpha over the card, say — has to be resolved
+ * before anything can claim a ratio against it, or the claim is made against a
+ * colour nothing on screen is showing.
+ */
+export function compositeColorOver(
+  foreground: RgbColor,
+  background: RgbColor
+): RgbColor {
+  return compositeOver(foreground, background);
 }
 
 export function contrastRatio(foreground: RgbColor, background: RgbColor) {
@@ -152,6 +201,29 @@ export function parseCssColor(value: string): RgbColor {
     });
   }
 
+  const oklabMatch = trimmed.match(OKLAB_COLOR_PATTERN);
+  if (oklabMatch?.groups) {
+    return oklabToRgb({
+      a: parseLabComponent(oklabMatch.groups.a, OKLAB_AXIS_PERCENT_REFERENCE),
+      alpha: clampAlpha(parseLabComponent(oklabMatch.groups.alpha ?? "1", 1)),
+      b: parseLabComponent(oklabMatch.groups.b, OKLAB_AXIS_PERCENT_REFERENCE),
+      lightness: parseLabComponent(oklabMatch.groups.l, 1),
+    });
+  }
+
+  const labMatch = trimmed.match(LAB_COLOR_PATTERN);
+  if (labMatch?.groups) {
+    return labToRgb({
+      a: parseLabComponent(labMatch.groups.a, LAB_AXIS_PERCENT_REFERENCE),
+      alpha: clampAlpha(parseLabComponent(labMatch.groups.alpha ?? "1", 1)),
+      b: parseLabComponent(labMatch.groups.b, LAB_AXIS_PERCENT_REFERENCE),
+      lightness: parseLabComponent(
+        labMatch.groups.l,
+        LAB_LIGHTNESS_PERCENT_REFERENCE
+      ),
+    });
+  }
+
   throw new Error(`Unsupported CSS color: ${value}`);
 }
 
@@ -208,8 +280,32 @@ function oklchToRgb({
   }
 
   const hueRadians = (hue * Math.PI) / 180;
-  const a = chroma * Math.cos(hueRadians);
-  const b = chroma * Math.sin(hueRadians);
+
+  return oklabToRgb({
+    a: chroma * Math.cos(hueRadians),
+    alpha,
+    b: chroma * Math.sin(hueRadians),
+    lightness,
+  });
+}
+
+function oklabToRgb({
+  a,
+  alpha,
+  b,
+  lightness,
+}: {
+  a: number;
+  alpha: number;
+  b: number;
+  lightness: number;
+}): RgbColor {
+  if (
+    !(Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(lightness))
+  ) {
+    throw new Error("OKLab channels must be finite numbers");
+  }
+
   const lPrime = lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
   const mPrime = lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
   const sPrime = lightness - 0.089_484_177_5 * a - 1.291_485_548 * b;
@@ -231,8 +327,80 @@ function oklchToRgb({
   };
 }
 
+/**
+ * CIE Lab (D50, which is the white point CSS defines `lab()` on) → sRGB.
+ *
+ * Lab → XYZ is the CIE inverse transfer function; XYZ → linear sRGB is the one
+ * matrix that folds the Bradford D50→D65 adaptation into the D65 XYZ →
+ * linear-sRGB matrix, i.e. the standard ICC sRGB-D50 matrix.
+ *
+ * Checked against the hex fallbacks Lightning CSS emits for its OWN `lab()`
+ * output, which makes the build itself the oracle: `lab(98.724% 0 0)` → `#fbfbfb`
+ * and `lab(13.5333% .104085 -3.00337)` → `#212327`, both exact.
+ */
+function labToRgb({
+  a,
+  alpha,
+  b,
+  lightness,
+}: {
+  a: number;
+  alpha: number;
+  b: number;
+  lightness: number;
+}): RgbColor {
+  if (
+    !(Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(lightness))
+  ) {
+    throw new Error("CIE Lab channels must be finite numbers");
+  }
+
+  const fy = (lightness + 16) / 116;
+  const fx = fy + a / 500;
+  const fz = fy - b / 200;
+  const x =
+    (fx ** 3 > LAB_EPSILON ? fx ** 3 : (116 * fx - 16) / LAB_KAPPA) *
+    LAB_WHITE_POINT_X;
+  const y =
+    lightness > LAB_KAPPA * LAB_EPSILON ? fy ** 3 : lightness / LAB_KAPPA;
+  const z =
+    (fz ** 3 > LAB_EPSILON ? fz ** 3 : (116 * fz - 16) / LAB_KAPPA) *
+    LAB_WHITE_POINT_Z;
+
+  return {
+    alpha,
+    b: linearSrgbToByte(
+      0.071_955_379_9 * x - 0.228_976_826_4 * y + 1.405_386_058_3 * z
+    ),
+    g: linearSrgbToByte(
+      -0.978_795_502_9 * x + 1.916_254_567_3 * y + 0.033_442_731_2 * z
+    ),
+    r: linearSrgbToByte(
+      3.134_135_957 * x - 1.617_386_332_2 * y - 0.490_661_946 * z
+    ),
+  };
+}
+
 function parseCssNumberOrPercent(value: string): number {
   return value.endsWith("%") ? Number(value.slice(0, -1)) / 100 : Number(value);
+}
+
+/**
+ * Resolves one Lab-family component, for both `oklab()` and CIE `lab()`. Each
+ * axis has its own percentage reference — OKLab `a`/`b` at 100% = 0.4, CIE Lab
+ * `a`/`b` at 100% = 125, CIE lightness at 100% = 100, OKLab lightness and both
+ * alphas at 100% = 1 — so the caller supplies it. A missing component (`none`)
+ * resolves to 0, which is CSS's own rule and keeps a `… / none` layer from being
+ * composited as opaque.
+ */
+function parseLabComponent(value: string, percentReference: number): number {
+  if (value.toLowerCase() === "none") {
+    return 0;
+  }
+  return (
+    parseCssNumberOrPercent(value) *
+    (value.endsWith("%") ? percentReference : 1)
+  );
 }
 
 function parseRgbChannel(value: string): number {
@@ -313,6 +481,91 @@ function clampAlpha(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
 
+/**
+ * The dichromacies WCAG colour choices most often fall down on (ISS-5362).
+ *
+ * Both collapse the red-green axis, and they collapse it DIFFERENTLY — a pair
+ * that survives one can vanish under the other — so a palette claim is only
+ * worth making when it has been checked against both.
+ */
+export const ColorVisionDeficiency = {
+  Protanopia: "protanopia",
+  Deuteranopia: "deuteranopia",
+} as const;
+
+export type ColorVisionDeficiency =
+  (typeof ColorVisionDeficiency)[keyof typeof ColorVisionDeficiency];
+
+/**
+ * Re-render a colour as a dichromat sees it, so a contrast claim can be made
+ * about the vision the claim is FOR rather than about typical vision.
+ *
+ * Brettel/Viénot (1999): convert to the LMS cone space, zero out the missing
+ * cone by re-deriving its response from the two that remain, convert back. The
+ * matrices are the published Viénot–Brettel–Mollon values.
+ *
+ * Alpha is carried through untouched — a deficiency changes which wavelengths
+ * are resolved, not how much light gets through — so the result still composites
+ * over its background exactly as the input would have.
+ */
+export function simulateColorVisionDeficiency(
+  color: RgbColor,
+  deficiency: ColorVisionDeficiency
+): RgbColor {
+  const linear = [color.r, color.g, color.b].map(byteToLinearSrgb);
+  const cones = applyMatrix(SRGB_TO_LMS, linear);
+  const collapsed = applyMatrix(CONE_COLLAPSE[deficiency], cones);
+  const [r, g, b] = applyMatrix(LMS_TO_SRGB, collapsed).map(linearSrgbToByte);
+
+  return { alpha: color.alpha, b, g, r };
+}
+
+const SRGB_TO_LMS = [
+  [17.8824, 43.5161, 4.119_35],
+  [3.455_65, 27.1554, 3.867_14],
+  [0.029_956_6, 0.184_309, 1.467_09],
+];
+
+const LMS_TO_SRGB = [
+  [0.080_944_447_9, -0.130_504_409, 0.116_721_066],
+  [-0.010_248_533_5, 0.054_019_326_6, -0.113_614_708],
+  [-0.000_365_296_938, -0.004_121_614_69, 0.693_511_405],
+];
+
+/**
+ * Re-derives the absent cone's response from the two surviving ones. Protanopia
+ * loses L, deuteranopia loses M, so each matrix rewrites exactly that row and
+ * leaves the others as identity.
+ */
+const CONE_COLLAPSE: Record<ColorVisionDeficiency, number[][]> = {
+  [ColorVisionDeficiency.Protanopia]: [
+    [0, 2.023_44, -2.525_81],
+    [0, 1, 0],
+    [0, 0, 1],
+  ],
+  [ColorVisionDeficiency.Deuteranopia]: [
+    [1, 0, 0],
+    [0.494_207, 0, 1.248_27],
+    [0, 0, 1],
+  ],
+};
+
+function applyMatrix(matrix: number[][], vector: number[]): number[] {
+  return matrix.map((row) =>
+    row.reduce((sum, cell, index) => sum + cell * vector[index], 0)
+  );
+}
+
+/** The sRGB transfer function, inverted — the same curve `relativeLuminance` uses. */
+function byteToLinearSrgb(channel: number): number {
+  const normalized = channel / 255;
+  if (normalized <= 0.039_28) {
+    return normalized / 12.92;
+  }
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+/** Mirrors `packages/design-system/styles/globals.css` for the tokens tests assert on. */
 const themeTokens = {
   [A11yTheme.Light]: {
     "--background": "oklch(0.989 0 0)",
@@ -320,6 +573,11 @@ const themeTokens = {
     "--muted": "oklch(0.7 0 0 / 0.12)",
     "--muted-foreground": "oklch(0.466 0 0)",
     "--border": "oklch(0.5 0.008 267 / 0.1)",
+    "--card": "oklch(0.989 0 0)",
+    "--destructive": "oklch(0.62 0.22 29.2)",
+    "--success": "oklch(0.629 0.144 155.113)",
+    "--info": "oklch(0.6 0.15 250)",
+    "--chart-4": "oklch(0.902 0.128 87.8)",
   },
   [A11yTheme.Dark]: {
     "--background": "oklch(0.24 0.005 270)",
@@ -327,8 +585,55 @@ const themeTokens = {
     "--muted": "oklch(1 0.003 270 / 0.04)",
     "--muted-foreground": "oklch(0.759 0 0)",
     "--border": "oklch(1 0.005 270 / 0.06)",
+    "--card": "oklch(0.255 0.008 270)",
+    "--destructive": "oklch(0.62 0.22 29.2)",
+    "--success": "oklch(0.6626 0.1659 148.11)",
+    "--info": "oklch(0.55 0.12 250)",
+    "--chart-4": "oklch(0.8 0.17 119)",
   },
 } as const;
+
+const VAR_REFERENCE_PATTERN = /^var\(\s*(?<token>--[\w-]+)\s*\)$/;
+const COLOR_MIX_PATTERN =
+  /^color-mix\(\s*in\s+[\w-]+\s*,\s*(?<color>.+?)\s+(?<percent>[\d.]+)%\s*,\s*transparent\s*\)$/i;
+
+/**
+ * Resolve a THEME-authored colour into something `parseCssColor` understands
+ * (ISS-5362, #4514 review).
+ *
+ * The palettes under test are written the way a stylesheet writes them —
+ * `var(--destructive)`, or a `color-mix(…, transparent)` that weakens a token
+ * without inventing a bespoke value — so a test that wants to make a contrast
+ * claim about a SHIPPED palette has to read the shipped strings rather than a
+ * restated copy of their resolved values. Only the two forms the product
+ * actually uses are handled; anything else falls through to `parseCssColor`,
+ * which throws on input it does not recognise rather than guessing.
+ */
+export function resolveThemeColor(theme: A11yTheme, value: string): RgbColor {
+  const trimmed = value.trim();
+
+  const variable = trimmed.match(VAR_REFERENCE_PATTERN)?.groups?.token;
+  if (variable) {
+    const tokens: Readonly<Record<string, string>> = themeTokens[theme];
+    if (!Object.hasOwn(tokens, variable)) {
+      throw new Error(
+        `Unknown theme token ${variable} — add it from globals.css`
+      );
+    }
+    return resolveThemeColor(theme, tokens[variable]);
+  }
+
+  const mix = trimmed.match(COLOR_MIX_PATTERN)?.groups;
+  if (mix) {
+    // Mixing toward `transparent` is alpha, not a hue shift: the result is the
+    // same colour at `percent` opacity, which is what the ring composites over
+    // the card.
+    const base = resolveThemeColor(theme, mix.color);
+    return { ...base, alpha: base.alpha * (Number(mix.percent) / 100) };
+  }
+
+  return parseCssColor(trimmed);
+}
 
 function themeTokenColor(
   theme: A11yTheme,

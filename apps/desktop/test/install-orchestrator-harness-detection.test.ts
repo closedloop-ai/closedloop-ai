@@ -6,15 +6,15 @@ import { afterEach, describe, test } from "node:test";
 import {
   buildAllowedChildEnv,
   isHarnessInstalled,
-  pickSingleInstallCommand,
-} from "../src/main/packs/install-orchestrator.js";
+} from "../src/main/packs/install-child-env.js";
+import { pickSingleInstallCommand } from "../src/main/packs/install-command-resolver.js";
 import {
   getShellPathSync,
   resetShellPathCache,
   setShellPathForTest,
   withShellPathEnvForTest,
 } from "../src/server/shell-path.js";
-import type { CatalogEntry } from "../src/shared/agent-db-contract.js";
+import { makeCatalogEntry } from "./support/catalog-entry-fixture.js";
 
 const tempDirs: string[] = [];
 const trackedEnvKeys = ["PATH", "SHELL"] as const;
@@ -146,44 +146,6 @@ function makeFakeShell(prefix: string): string {
   return shellPath;
 }
 
-function makeSingleInstallCatalogEntry(): CatalogEntry {
-  return {
-    category: null,
-    contents: null,
-    contentsCache: null,
-    description: null,
-    descriptionLive: null,
-    detectionPatterns: null,
-    displayName: "GStack",
-    forks: null,
-    githubUrl: "https://github.com/example/gstack",
-    harnessAgnostic: false,
-    harnesses: ["claude", "codex"],
-    history: [],
-    installCommands: {
-      claude: "claude install",
-      codex: "codex install",
-    },
-    installNotes: null,
-    installedHarnesses: [],
-    lastRelease: null,
-    marketplaceUrl: null,
-    packId: "gstack",
-    pinOrder: null,
-    placeholderReason: null,
-    postInstall: null,
-    projectScoped: false,
-    readmeExcerpt: null,
-    seedVersion: 1,
-    singleInstall: true,
-    skillCount: 0,
-    stars: null,
-    uninstallCommands: {},
-    usageCount: 0,
-    verified: true,
-  };
-}
-
 function saveEnvVars(keys: readonly string[]): Map<string, string | undefined> {
   return new Map(keys.map((key) => [key, process.env[key]]));
 }
@@ -196,4 +158,15 @@ function restoreEnvVars(saved: Map<string, string | undefined>): void {
     }
     process.env[key] = value;
   }
+}
+
+function makeSingleInstallCatalogEntry() {
+  return makeCatalogEntry({
+    displayName: "GStack",
+    githubUrl: "https://github.com/example/gstack",
+    harnesses: ["claude", "codex"],
+    installCommands: { claude: "claude install", codex: "codex install" },
+    packId: "gstack",
+    singleInstall: true,
+  });
 }

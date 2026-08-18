@@ -13,6 +13,7 @@
     "code.function.name",
     "code.line.number",
     "deployment.environment.name",
+    "device.id",
     "duration_ms",
     "error.type",
     "exception.message",
@@ -30,6 +31,11 @@
     "harness.name",
     "http.request.method",
     "http.response.status_code",
+    "import.event",
+    "import.group_failed_count",
+    "import.group_label",
+    "import.sessions_incomplete",
+    "import.sessions_pending_revision",
     "ipc.operation",
     "ipc.payload_bytes",
     "ipc.result_count",
@@ -40,6 +46,7 @@
     "sync.latency_ms",
     "sync.outcome",
     "sync.payload_bytes",
+    "sync.reason",
     "url.path"
   ]
 }

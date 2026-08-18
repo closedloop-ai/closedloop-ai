@@ -12,7 +12,7 @@ import {
   UPDATE_BLOCKED_DIALOG_TITLE,
   UPDATE_BLOCKED_LATER_BUTTON,
   UPDATE_BLOCKED_MOVE_BUTTON,
-} from "../src/main/update-install-blocked.js";
+} from "../src/main/update/update-install-blocked.js";
 
 const TRANSLOCATED_EXEC_PATH =
   "/private/var/folders/zd/fz0vybgn72921mzm4y311nw40000gn/T/AppTranslocation/1A77CB6F-BA60-44E6-B001-2EBF85F96647/d/Closedloop.app/Contents/MacOS/Closedloop";

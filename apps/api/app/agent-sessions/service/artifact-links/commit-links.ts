@@ -89,14 +89,25 @@ export async function persistSessionCommitRefs(
     return;
   }
 
+  // ISS-4440: resolve every ref's branch artifact id in ONE org-scoped read
+  // instead of a per-ref findFirst N+1 (those round-trips serialize inside the
+  // agent-session upsert transaction, which runs under the 30s
+  // AGENT_SESSION_UPSERT_TX_TIMEOUT_MS override — not Prisma's 5s default). The
+  // per-ref reconcile writes below stay per-commit — they are genuinely
+  // distinct rows.
+  const branchArtifactIdByKey = await resolveBranchArtifactIds(
+    tx,
+    organizationId,
+    commitRefs
+  );
+
   const unresolved: UnresolvedCommitRef[] = [];
   for (const ref of commitRefs) {
     const repositoryFullName = normalizeRepoFullName(ref.repositoryFullName);
-    const branch = await tx.branchDetail.findFirst({
-      where: { organizationId, repositoryFullName, branchName: ref.branchName },
-      select: { artifactId: true },
-    });
-    if (branch === null) {
+    const branchArtifactId = branchArtifactIdByKey.get(
+      branchResolutionKey(repositoryFullName, ref.branchName)
+    );
+    if (branchArtifactId === undefined) {
       unresolved.push({
         repositoryFullName: ref.repositoryFullName,
         branchName: ref.branchName,
@@ -108,7 +119,7 @@ export async function persistSessionCommitRefs(
       organizationId,
       repositoryFullName,
       sha: ref.sha,
-      branchArtifactId: branch.artifactId,
+      branchArtifactId,
       source: CommitProvenanceSource.DesktopSync,
       message: ref.message ?? null,
       committedAt: ref.committedAt ? new Date(ref.committedAt) : null,
@@ -121,4 +132,69 @@ export async function persistSessionCommitRefs(
   if (unresolved.length > 0) {
     await storeUnresolvedCommitRefs(tx, sessionArtifactId, unresolved);
   }
+}
+
+/**
+ * Map key for branch resolution: the (normalized repo full name, branch name)
+ * pair that uniquely identifies a branch within the already-scoped org (PRD-510
+ * D2 `@@unique([organizationId, repositoryFullName, branchName])`).
+ *
+ * The encoding must be STRUCTURALLY unambiguous — repo full names and branch
+ * names are only length-checked upstream, never validated against a separator
+ * character, so a plain-separator join (`repo + "\n" + branch`) could collapse
+ * two distinct pairs onto one key if either field contained the separator
+ * (e.g. `("a\nb", "c")` and `("a", "b\nc")` both → `"a\nb\nc"`), silently
+ * attaching a commit to the WRONG branch artifact. `JSON.stringify` of the
+ * tuple escapes every field and frames the boundary unambiguously, so distinct
+ * pairs can never collide regardless of field contents.
+ */
+function branchResolutionKey(
+  repositoryFullName: string,
+  branchName: string
+): string {
+  return JSON.stringify([repositoryFullName, branchName]);
+}
+
+/**
+ * Batch the commit lane's branch-artifact resolution (ISS-4440). Collect the
+ * distinct (normalized repo, branch) pairs across `commitRefs`, fetch them with
+ * ONE org-scoped `findMany`, and index the resolved artifact ids by
+ * `branchResolutionKey` for O(1) lookup — replacing N serialized `findFirst`
+ * round-trips with one. Absent branches are simply missing from the map, so the
+ * caller defers those refs exactly as before.
+ */
+async function resolveBranchArtifactIds(
+  tx: AgentSessionUpsertTx,
+  organizationId: string,
+  commitRefs: SyncedCommitArtifactRef[]
+): Promise<Map<string, string>> {
+  const pairByKey = new Map<
+    string,
+    { repositoryFullName: string; branchName: string }
+  >();
+  for (const ref of commitRefs) {
+    const repositoryFullName = normalizeRepoFullName(ref.repositoryFullName);
+    pairByKey.set(branchResolutionKey(repositoryFullName, ref.branchName), {
+      repositoryFullName,
+      branchName: ref.branchName,
+    });
+  }
+
+  const branches = await tx.branchDetail.findMany({
+    where: { organizationId, OR: [...pairByKey.values()] },
+    select: {
+      artifactId: true,
+      repositoryFullName: true,
+      branchName: true,
+    },
+  });
+
+  const idByKey = new Map<string, string>();
+  for (const branch of branches) {
+    idByKey.set(
+      branchResolutionKey(branch.repositoryFullName, branch.branchName),
+      branch.artifactId
+    );
+  }
+  return idByKey;
 }

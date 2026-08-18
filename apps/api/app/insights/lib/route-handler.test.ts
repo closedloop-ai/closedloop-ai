@@ -1,11 +1,15 @@
-import { InsightsPeriod, InsightsScope } from "@repo/api/src/types/insights";
+import {
+  InsightsPeriod,
+  InsightsScope,
+  InsightsSection,
+} from "@repo/api/src/types/insights";
 import { ApproverRole } from "@repo/api/src/types/user";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   findById: vi.fn(),
-  isAgentMonitoringEnabledForUser: vi.fn(),
+  logError: vi.fn(),
   isInsightsEnabledForUser: vi.fn(),
   isMember: vi.fn(),
   isOrgAdmin: vi.fn(),
@@ -18,8 +22,16 @@ vi.mock("@/app/teams/service", () => ({
   },
 }));
 
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentMonitoringEnabledForUser: mocks.isAgentMonitoringEnabledForUser,
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    error: mocks.logError,
+    flush: vi.fn().mockResolvedValue(undefined),
+    info: vi.fn(),
+  },
+}));
+
+vi.mock("@vercel/functions", () => ({
+  waitUntil: vi.fn(),
 }));
 
 vi.mock("@/lib/insights-feature", () => ({
@@ -57,7 +69,6 @@ describe("createInsightsHandler team scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findById.mockResolvedValue({ id: TEAM_ID });
-    mocks.isAgentMonitoringEnabledForUser.mockResolvedValue(true);
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
     mocks.isMember.mockResolvedValue(true);
     mocks.isOrgAdmin.mockResolvedValue(false);
@@ -67,6 +78,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -82,7 +94,6 @@ describe("createInsightsHandler team scope", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -91,6 +102,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -106,7 +118,6 @@ describe("createInsightsHandler team scope", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -115,6 +126,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -150,6 +162,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -183,6 +196,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -207,6 +221,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -222,30 +237,6 @@ describe("createInsightsHandler team scope", () => {
     );
 
     expect(response.status).toBe(403);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("denies disabled monitoring before section service access", async () => {
-    mocks.isAgentMonitoringEnabledForUser.mockResolvedValueOnce(false);
-    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
-    const handler = createInsightsHandler({
-      fetch,
-      errorMessage: "Failed to load insights",
-    });
-
-    const response = await handler(
-      {
-        user: USER,
-        clerkOrgId: "org_clerk_1",
-        clerkUserId: "user_clerk_1",
-      },
-      request(
-        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
-      )
-    );
-
-    expect(response.status).toBe(403);
-    expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -253,6 +244,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -268,10 +260,6 @@ describe("createInsightsHandler team scope", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.isAgentMonitoringEnabledForUser).toHaveBeenCalledWith({
-      clerkUserId: "user_clerk_1",
-      userId: USER.id,
-    });
     expect(mocks.findById).toHaveBeenCalledWith(TEAM_ID, USER.organizationId);
     expect(fetch).toHaveBeenCalledWith(
       {
@@ -288,6 +276,7 @@ describe("createInsightsHandler team scope", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -303,7 +292,6 @@ describe("createInsightsHandler team scope", () => {
     );
 
     expect(response.status).toBe(400);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -313,7 +301,6 @@ describe("createInsightsHandler insights feature flag", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.findById.mockResolvedValue({ id: TEAM_ID });
-    mocks.isAgentMonitoringEnabledForUser.mockResolvedValue(true);
     mocks.isInsightsEnabledForUser.mockResolvedValue(true);
     mocks.isMember.mockResolvedValue(true);
     mocks.isOrgAdmin.mockResolvedValue(false);
@@ -323,6 +310,7 @@ describe("createInsightsHandler insights feature flag", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -347,6 +335,7 @@ describe("createInsightsHandler insights feature flag", () => {
     const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
     const handler = createInsightsHandler({
       fetch,
+      section: InsightsSection.Delivery,
       errorMessage: "Failed to load insights",
     });
 
@@ -362,7 +351,6 @@ describe("createInsightsHandler insights feature flag", () => {
     );
 
     expect(response.status).toBe(403);
-    expect(mocks.isAgentMonitoringEnabledForUser).not.toHaveBeenCalled();
     expect(mocks.findById).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -372,6 +360,162 @@ describe("createInsightsHandler insights feature flag", () => {
   // throw/return null. At this route-handler level `isInsightsEnabledForUser`
   // is mocked, so an "unavailable" case is indistinguishable from "disabled"
   // (both resolve `false`) — a duplicate of the test above, removed here.
+});
+
+describe("createInsightsHandler failure logging", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.findById.mockResolvedValue({ id: TEAM_ID });
+    mocks.isInsightsEnabledForUser.mockResolvedValue(true);
+    mocks.isMember.mockResolvedValue(true);
+    mocks.isOrgAdmin.mockResolvedValue(false);
+  });
+
+  it("logs a section failure with the team-scope correlation", async () => {
+    const error = new Error("insights service unavailable");
+    const fetch = vi.fn().mockRejectedValue(error);
+    const handler = createInsightsHandler({
+      fetch,
+      section: InsightsSection.Utilization,
+      errorMessage: "Failed to load insights",
+    });
+
+    const response = await handler(
+      {
+        user: USER,
+        clerkOrgId: "org_clerk_1",
+        clerkUserId: "user_clerk_1",
+      },
+      request(
+        `/insights/utilization?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
+      )
+    );
+
+    expect(response.status).toBe(500);
+    expect(mocks.logError).toHaveBeenCalledWith("insights.utilization_failed", {
+      error,
+      organizationId: USER.organizationId,
+      userId: USER.id,
+      scope: InsightsScope.Team,
+      teamId: TEAM_ID,
+    });
+  });
+
+  it("correlates a failure raised by team-scope authorization, before the service call", async () => {
+    const error = new Error("team scope authorization exploded");
+    // Non-member falls through to the org-admin check, which is what throws.
+    mocks.isMember.mockResolvedValue(false);
+    mocks.isOrgAdmin.mockRejectedValue(error);
+    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
+    const handler = createInsightsHandler({
+      fetch,
+      section: InsightsSection.Agents,
+      errorMessage: "Failed to load insights",
+    });
+
+    const response = await handler(
+      {
+        user: USER,
+        clerkOrgId: "org_clerk_1",
+        clerkUserId: "user_clerk_1",
+      },
+      request(
+        `/insights/agents?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Team}&teamId=${TEAM_ID}`
+      )
+    );
+
+    expect(response.status).toBe(500);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mocks.logError).toHaveBeenCalledWith("insights.agents_failed", {
+      error,
+      organizationId: USER.organizationId,
+      userId: USER.id,
+      scope: InsightsScope.Team,
+      teamId: TEAM_ID,
+    });
+  });
+
+  it("omits teamId from the correlation outside team scope", async () => {
+    const error = new Error("insights service unavailable");
+    const fetch = vi.fn().mockRejectedValue(error);
+    const handler = createInsightsHandler({
+      fetch,
+      section: InsightsSection.Delivery,
+      errorMessage: "Failed to load insights",
+    });
+
+    const response = await handler(
+      {
+        user: USER,
+        clerkOrgId: "org_clerk_1",
+        clerkUserId: "user_clerk_1",
+      },
+      request(
+        `/insights/delivery?period=${InsightsPeriod.Quarter}&scope=${InsightsScope.Org}`
+      )
+    );
+
+    expect(response.status).toBe(500);
+    expect(mocks.logError).toHaveBeenCalledWith("insights.delivery_failed", {
+      error,
+      organizationId: USER.organizationId,
+      userId: USER.id,
+      scope: InsightsScope.Org,
+      teamId: undefined,
+    });
+  });
+});
+
+describe("createInsightsHandler unsupported query params (ISS-4505)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.isInsightsEnabledForUser.mockResolvedValue(true);
+    mocks.isMember.mockResolvedValue(true);
+    mocks.isOrgAdmin.mockResolvedValue(false);
+  });
+
+  it("rejects unsupported query params on the default path", async () => {
+    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
+    const handler = createInsightsHandler({
+      fetch,
+      section: InsightsSection.Delivery,
+      errorMessage: "Failed to load insights",
+    });
+
+    const response = await handler(
+      {
+        user: USER,
+        clerkOrgId: "org_clerk_1",
+        clerkUserId: "user_clerk_1",
+      },
+      request("/insights/delivery?unknownFilter=value")
+    );
+
+    expect(response.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported query params via the legacy teamId transform path", async () => {
+    mocks.findById.mockResolvedValue({ id: TEAM_ID });
+    const fetch = vi.fn().mockResolvedValue({ kpis: [], charts: {} });
+    const handler = createInsightsHandler({
+      fetch,
+      section: InsightsSection.Delivery,
+      errorMessage: "Failed to load insights",
+    });
+
+    const response = await handler(
+      {
+        user: USER,
+        clerkOrgId: "org_clerk_1",
+        clerkUserId: "user_clerk_1",
+      },
+      request(`/insights/delivery?teamId=${TEAM_ID}&unknownFilter=value`)
+    );
+
+    expect(response.status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 function request(path: string): NextRequest {

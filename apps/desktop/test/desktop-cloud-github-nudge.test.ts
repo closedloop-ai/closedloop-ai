@@ -12,13 +12,13 @@ import type {
   DesktopCommandAckEvent,
   DesktopCommandEvent,
   DesktopCommandStreamEvent,
-} from "../src/main/cloud-protocol.js";
-import { resolveGitHubResyncBranchIds } from "../src/main/github-resync-branch-resolution.js";
+} from "../src/main/cloud/cloud-protocol.js";
+import { resolveGitHubResyncBranchIds } from "../src/main/github/github-resync-branch-resolution.js";
 import {
   classifyGitHubResyncNudgeCommand,
   GITHUB_RESYNC_NUDGE_TARGET_CONTEXT_MISMATCH_REASON,
   handleGitHubResyncNudgeCommand,
-} from "../src/main/github-resync-nudge.js";
+} from "../src/main/github/github-resync-nudge.js";
 
 const TARGET_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_TARGET_ID = "22222222-2222-4222-8222-222222222222";

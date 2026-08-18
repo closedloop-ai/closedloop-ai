@@ -16,6 +16,7 @@ import {
   type SyncedAgentSessionAgent,
   type SyncedAgentSessionEvent,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
@@ -97,7 +98,7 @@ function makeAgent(
     externalAgentId,
     name: `Agent ${externalAgentId}`,
     type: "main",
-    status: "completed",
+    status: SESSION_STATUS.INACTIVE,
     ...overrides,
   };
 }
@@ -128,6 +129,49 @@ function findEvents(agentSessionId: string) {
       where: { agentSessionId },
       orderBy: { eventCreatedAt: "asc" },
       select: { externalEventId: true, eventType: true },
+    })
+  );
+}
+
+// FEA-3477 (D4): the regression-guarded columns — session time fields plus the
+// parent artifact's free-form status.
+function findGuardedFields(computeTargetId: string, externalSessionId: string) {
+  return withDb((db) =>
+    db.sessionDetail.findUnique({
+      where: {
+        computeTargetId_externalSessionId: {
+          computeTargetId,
+          externalSessionId,
+        },
+      },
+      select: {
+        artifactId: true,
+        sessionStartedAt: true,
+        sessionUpdatedAt: true,
+        sessionEndedAt: true,
+        inputTokens: true,
+        outputTokens: true,
+        cacheReadTokens: true,
+        cacheWriteTokens: true,
+        estimatedCost: true,
+        artifact: { select: { status: true } },
+      },
+    })
+  );
+}
+
+// FEA-3477 (D5): the per-model token table the rollup columns must agree with.
+function sumPerModelTokenUsage(agentSessionId: string) {
+  return withDb((db) =>
+    db.agentSessionTokenUsage.aggregate({
+      where: { agentSessionId },
+      _sum: {
+        inputTokens: true,
+        outputTokens: true,
+        cacheReadTokens: true,
+        cacheWriteTokens: true,
+        estimatedCost: true,
+      },
     })
   );
 }
@@ -461,6 +505,215 @@ describeIfDb("revision-gated replace-on-resync (FEA-1787)", () => {
       // Counts must reflect the new event set, not the old one.
       expect(detail?.toolUseCount).toBe(1);
       expect(detail?.errorCount).toBe(0);
+    });
+  });
+
+  // FEA-3477 AC-4: replay an OLDER batch after a NEWER one. Status must never
+  // regress from a terminal value, and no session timestamp may move backward.
+  it("never regresses status or timestamps when an older batch replays after a newer one", async () => {
+    await autoRollbackTransaction(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      const newerStarted = new Date("2026-06-10T10:00:00.000Z");
+      const newerUpdated = new Date("2026-06-10T12:00:00.000Z");
+      const newerEnded = new Date("2026-06-10T12:30:00.000Z");
+      const olderStarted = new Date("2026-06-10T09:00:00.000Z");
+      const olderUpdated = new Date("2026-06-10T09:30:00.000Z");
+
+      // Newer batch: the run has COMPLETED with an end timestamp.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            status: SESSION_STATUS.INACTIVE,
+            startedAt: newerStarted.toISOString(),
+            updatedAt: newerUpdated.toISOString(),
+            endedAt: newerEnded.toISOString(),
+          }),
+        ])
+      );
+
+      const afterNewer = await findGuardedFields(
+        computeTarget.id,
+        "ext-session-rev"
+      );
+      // ISS-5648: the retired `completed` spelling is accepted from the payload
+      // but folded to the canonical `inactive` before it is stored. It is still
+      // TERMINAL either way, which is what this guard turns on.
+      expect(afterNewer?.artifact.status).toBe(SESSION_STATUS.INACTIVE);
+      expect(afterNewer?.sessionEndedAt).toEqual(newerEnded);
+
+      // Older batch replays: still "active", older timestamps, no end. This is
+      // the late-retry-of-an-older-batch case the guards defend against.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            status: SESSION_STATUS.ACTIVE,
+            startedAt: olderStarted.toISOString(),
+            updatedAt: olderUpdated.toISOString(),
+            endedAt: undefined,
+          }),
+        ])
+      );
+
+      const afterOlder = await findGuardedFields(
+        computeTarget.id,
+        "ext-session-rev"
+      );
+      // Status stays terminal — never regressed to "active". ISS-5648: the
+      // stored spelling is the folded `inactive`, and the terminal-wins guard
+      // still returns it rather than the older batch's `active`.
+      expect(afterOlder?.artifact.status).toBe(SESSION_STATUS.INACTIVE);
+      // Timestamps never moved backward; the end was never nulled out.
+      expect(afterOlder?.sessionStartedAt).toEqual(newerStarted);
+      expect(afterOlder?.sessionUpdatedAt).toEqual(newerUpdated);
+      expect(afterOlder?.sessionEndedAt).toEqual(newerEnded);
+    });
+  });
+
+  // FEA-3477 AC-4 (continued): a genuinely newer batch still advances the row.
+  it("advances status and timestamps when a newer batch follows an older one", async () => {
+    await autoRollbackTransaction(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      const olderStarted = new Date("2026-06-10T09:00:00.000Z");
+      const olderUpdated = new Date("2026-06-10T09:30:00.000Z");
+      const newerStarted = new Date("2026-06-10T10:00:00.000Z");
+      const newerUpdated = new Date("2026-06-10T12:00:00.000Z");
+      const newerEnded = new Date("2026-06-10T12:30:00.000Z");
+
+      // Older, still-active batch first.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            status: SESSION_STATUS.ACTIVE,
+            startedAt: olderStarted.toISOString(),
+            updatedAt: olderUpdated.toISOString(),
+          }),
+        ])
+      );
+
+      // Newer batch: run completed, later timestamps, end recorded.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            status: SESSION_STATUS.INACTIVE,
+            startedAt: newerStarted.toISOString(),
+            updatedAt: newerUpdated.toISOString(),
+            endedAt: newerEnded.toISOString(),
+          }),
+        ])
+      );
+
+      const detail = await findGuardedFields(
+        computeTarget.id,
+        "ext-session-rev"
+      );
+      // ISS-5648: stored as the folded `inactive`; the newer batch still won.
+      expect(detail?.artifact.status).toBe(SESSION_STATUS.INACTIVE);
+      expect(detail?.sessionUpdatedAt).toEqual(newerUpdated);
+      expect(detail?.sessionEndedAt).toEqual(newerEnded);
+    });
+  });
+
+  // FEA-3477 AC-5: an empty token payload after a non-empty one must leave the
+  // rollup columns equal to the per-model table — never overwrite them with
+  // zeros while the per-model rows are (correctly) preserved.
+  it("keeps the rollup columns in sync with the per-model table when a later payload omits token usage", async () => {
+    await autoRollbackTransaction(async () => {
+      const organizationId = await createTestOrganization();
+      const user = await createTestUser(organizationId);
+      const computeTarget = await createComputeTarget(organizationId, user.id);
+      const ctx = {
+        organizationId,
+        userId: user.id,
+        computeTargetId: computeTarget.id,
+      };
+
+      // First sync carries per-model token usage.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            tokenUsageByModel: [
+              {
+                model: "claude-opus-4",
+                inputTokens: 100,
+                outputTokens: 200,
+                cacheReadTokens: 300,
+                cacheWriteTokens: 400,
+                estimatedCostUsd: 1.25,
+              },
+            ],
+          }),
+        ])
+      );
+
+      const afterFirst = await findGuardedFields(
+        computeTarget.id,
+        "ext-session-rev"
+      );
+      expect(Number(afterFirst?.inputTokens)).toBe(100);
+      expect(Number(afterFirst?.estimatedCost)).toBe(1.25);
+
+      // Second sync omits token usage entirely (empty array). The per-model
+      // delete+recreate is skipped (omission never clears), so the rollup
+      // columns must be skipped too — otherwise they'd be zeroed while the
+      // per-model rows survive, and the two would disagree.
+      await agentSessionsService.upsertSessions(
+        ctx,
+        buildPayload([
+          buildSyncedSession({
+            tokenUsageByModel: [],
+          }),
+        ])
+      );
+
+      const afterSecond = await findGuardedFields(
+        computeTarget.id,
+        "ext-session-rev"
+      );
+      const perModel = await sumPerModelTokenUsage(
+        afterSecond?.artifactId ?? ""
+      );
+
+      // Per-model rows preserved (omission never clears).
+      expect(Number(perModel._sum.inputTokens)).toBe(100);
+      expect(Number(perModel._sum.estimatedCost)).toBe(1.25);
+
+      // Rollup columns preserved AND equal to the per-model table.
+      expect(Number(afterSecond?.inputTokens)).toBe(
+        Number(perModel._sum.inputTokens)
+      );
+      expect(Number(afterSecond?.outputTokens)).toBe(
+        Number(perModel._sum.outputTokens)
+      );
+      expect(Number(afterSecond?.cacheReadTokens)).toBe(
+        Number(perModel._sum.cacheReadTokens)
+      );
+      expect(Number(afterSecond?.cacheWriteTokens)).toBe(
+        Number(perModel._sum.cacheWriteTokens)
+      );
+      expect(Number(afterSecond?.estimatedCost)).toBe(
+        Number(perModel._sum.estimatedCost)
+      );
     });
   });
 });

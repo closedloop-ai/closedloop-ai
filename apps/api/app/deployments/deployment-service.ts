@@ -57,6 +57,31 @@ const deploymentInclude = { deployment: true } as const;
  */
 const DEPLOYMENT_LIST_MAX_LIMIT = 100;
 
+/**
+ * Transaction bound for `recordDeployment`. The dedup runs under a
+ * `pg_advisory_xact_lock` (see below), so a redelivered/concurrent webhook for
+ * the same preview URL may block on the lock while a sibling transaction
+ * commits. Raise the timeout above Prisma's 5s default so a legitimate lock
+ * wait cannot trip the interactive-transaction limit.
+ */
+const RECORD_DEPLOYMENT_TX_TIMEOUT_MS = 15_000;
+
+export const recordDeploymentTxOptions = {
+  timeout: RECORD_DEPLOYMENT_TX_TIMEOUT_MS,
+} as const;
+
+/**
+ * Advisory-lock key that serializes `recordDeployment` calls sharing the same
+ * `(organizationId, externalUrl)` — the tuple the dedup keys on. Namespaced so
+ * it cannot collide with other advisory locks in the same keyspace.
+ */
+function deploymentLockKey(
+  organizationId: string,
+  externalUrl: string
+): string {
+  return `deployment:${organizationId}:${externalUrl}`;
+}
+
 function buildDeploymentDetailCreate(
   input: RecordDeploymentInput
 ): Prisma.DeploymentDetailCreateWithoutArtifactInput {
@@ -150,14 +175,24 @@ async function createDeployment(
 function recordDeployment(
   input: RecordDeploymentInput
 ): Promise<Result<ArtifactWithDeploymentDetail, StatusCode>> {
-  // Artifact.projectId is nullable at the schema level solely for SESSION
-  // artifacts (FEA-1699). Deployment artifacts must stay project-parented, so
-  // fail closed rather than record a projectless deployment when an upstream
-  // resolution unexpectedly yields null.
-  if (input.projectId === null) {
-    return Promise.resolve(Result.err(Status.BadRequest));
-  }
+  // FEA-1749: a null projectId is legitimate, not a resolution failure — a
+  // deployment of an unparented branch has no project to inherit. `createDeployment`
+  // already accepts `string | null`; the storage layer does not get a vote on
+  // whether an artifact may be unparented.
   return withDb.tx(async (db) => {
+    // FEA-3466: `artifact.external_url` has no unique constraint and `withDb.tx`
+    // runs at READ COMMITTED, so the findFirst-then-create dedup below is not
+    // concurrency-safe on its own: two overlapping runs (a redelivered
+    // `deployment_status` webhook, or Vercel re-firing `success` for a reused
+    // preview URL) both read "no row" and both insert, stacking duplicate
+    // DEPLOYMENT artifacts. Serialize same-`(organizationId, externalUrl)` runs
+    // on a transaction-scoped advisory lock so the later waiter sees the
+    // committed row and takes the update-in-place branch. The lock is released
+    // automatically on commit/rollback.
+    await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${deploymentLockKey(
+      input.organizationId,
+      input.externalUrl
+    )}))`;
     const existing = await db.artifact.findFirst({
       where: {
         organizationId: input.organizationId,
@@ -170,7 +205,7 @@ function recordDeployment(
       return Result.ok(await updateExistingDeployment(db, existing.id, input));
     }
     return Result.ok(await createDeployment(db, input));
-  });
+  }, recordDeploymentTxOptions);
 }
 
 /**

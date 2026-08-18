@@ -1,3 +1,4 @@
+import { Status } from "@repo/api/src/types/result";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -56,13 +57,18 @@ vi.mock("@/lib/public-github-repos-feature", () => ({
   isPublicGithubReposEnabled: isPublicGithubReposEnabledMock,
 }));
 
-vi.mock("./service", () => ({
-  publicRepositoryService: {
-    addPublicRepository: addPublicRepositoryMock,
-    removePublicRepository: removePublicRepositoryMock,
-  },
-}));
+vi.mock("./service", async () => {
+  const actual = await vi.importActual<typeof import("./service")>("./service");
+  return {
+    AddPublicRepositoryErrorCode: actual.AddPublicRepositoryErrorCode,
+    publicRepositoryService: {
+      addPublicRepository: addPublicRepositoryMock,
+      removePublicRepository: removePublicRepositoryMock,
+    },
+  };
+});
 
+const { AddPublicRepositoryErrorCode } = await import("./service");
 const { DELETE, POST } = await import("./route");
 
 const EMPTY_CONTEXT = { params: Promise.resolve({}) };
@@ -159,8 +165,45 @@ describe("public-repositories route feature gating", () => {
       expect(response.status).toBe(200);
       expect(addPublicRepositoryMock).toHaveBeenCalledWith(
         "org-1",
+        "user-1",
         "https://example.com/repo"
       );
+    });
+
+    it("tells the user a private repository must be public", async () => {
+      addPublicRepositoryMock.mockResolvedValue({
+        ok: false,
+        error: AddPublicRepositoryErrorCode.RepositoryNotPublic,
+      });
+
+      const response = await POST(
+        postRequest("https://github.com/acme/secret-repo"),
+        EMPTY_CONTEXT
+      );
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({
+        success: false,
+        error:
+          "This repository is private. Only public repositories can be added.",
+      });
+    });
+
+    it("keeps reporting an unusable URL as an invalid repository URL", async () => {
+      addPublicRepositoryMock.mockResolvedValue({
+        ok: false,
+        error: Status.BadRequest,
+      });
+
+      const response = await POST(postRequest("not-a-repo-url"), EMPTY_CONTEXT);
+      const body = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(body).toMatchObject({
+        success: false,
+        error: "Invalid GitHub repository URL",
+      });
     });
 
     it("allows DELETE to remove a public repository", async () => {

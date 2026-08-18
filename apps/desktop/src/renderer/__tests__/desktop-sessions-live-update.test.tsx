@@ -3,6 +3,7 @@ import type {
   AgentSessionDetail,
   AgentSessionListItem,
   AgentSessionListResponse,
+  AgentSessionsPageData,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -135,11 +136,15 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
       await waitFor(() => {
         expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
       });
-      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      // FEA-4157: the org view reads list + summary through the combined
+      // `pageData` IPC call, so that is the read gated on source readiness.
+      expect(
+        window.desktopApi.agentSessionsApi.pageData
+      ).not.toHaveBeenCalled();
       expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
       expect(screen.getByText("Loading sessions...")).toBeDefined();
       expect(screen.queryByText("No sessions found")).toBeNull();
-      expect(totalSessionsMetricValue()).toBe("...");
+      expect(summaryCardsAreLoading()).toBe(true);
 
       agentMonitorUrl = readyAgentMonitorUrl();
       act(() => {
@@ -148,7 +153,7 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
 
       expect(await findRendererText("Alpha Session")).toBeDefined();
       await waitFor(() => {
-        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalled();
+        expect(window.desktopApi.agentSessionsApi.pageData).toHaveBeenCalled();
       });
       await waitFor(() => {
         expect(totalSessionsMetricValue()).toBe("1");
@@ -165,14 +170,19 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
 
       renderDesktopApp("#/sessions");
 
-      expect(await findRendererText("No sessions found")).toBeDefined();
+      // FEA-4181: a hydrated, unfiltered, zero-row source is the genuine
+      // "No sessions yet" onboarding zero-state (not the old "No sessions found"
+      // that couldn't tell a filtered-away scope from a genuinely-empty one).
+      expect(await findRendererText("No sessions yet")).toBeDefined();
       expect(
-        screen.getByText("No synced sessions match your current filters yet.")
+        screen.getByText(
+          "Sessions appear here once your connected compute targets sync their agent history."
+        )
       ).toBeDefined();
       await waitFor(() => {
-        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
-          1
-        );
+        expect(
+          window.desktopApi.agentSessionsApi.pageData
+        ).toHaveBeenCalledTimes(1);
       });
       await waitFor(() => {
         expect(totalSessionsMetricValue()).toBe("0");
@@ -181,40 +191,41 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
     rendererTestTimeoutMs
   );
 
-  it.each([
-    LOCAL_SESSION_SOURCE_STATUSES.disabled,
-    LOCAL_SESSION_SOURCE_STATUSES.unavailable,
-  ])(
-    "renders unavailable without list or usage reads when the source is %s",
-    async (localSessionSourceStatus) => {
+  it(
+    "renders unavailable without list or usage reads when the source is unavailable",
+    async () => {
       agentMonitorUrl = {
         ...readyAgentMonitorUrl(),
-        enabled:
-          localSessionSourceStatus !== LOCAL_SESSION_SOURCE_STATUSES.disabled,
-        localSessionSourceStatus,
+        localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.unavailable,
         ready: false,
       };
       installDesktopApi();
 
       renderDesktopApp("#/sessions");
 
+      // FEA-4181 (review cid 3653690775): a not-yet-hydrated local source is
+      // syncing, not broken — the quiet holding message, no error chrome/Retry.
       expect(
-        await findRendererText("Sessions are temporarily unavailable.")
+        await findRendererText("Getting your sessions ready")
       ).toBeDefined();
-      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(
+        window.desktopApi.agentSessionsApi.pageData
+      ).not.toHaveBeenCalled();
       expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
-      expect(screen.queryByText("No sessions found")).toBeNull();
-      expect(totalSessionsMetricValue()).toBe("Unavailable");
-      expect(totalTokensMetricValue()).toBe("Unavailable");
+      expect(screen.queryByText("No sessions yet")).toBeNull();
+      // FEA-3937: the source-unavailable state renders the shared bar's error
+      // placeholder — every card value is "—", not the desktop's prior
+      // "Unavailable" headline.
+      expect(totalSessionsMetricValue()).toBe("—");
+      expect(totalTokensMetricValue()).toBe("—");
     },
     rendererTestTimeoutMs
   );
 
   it(
-    "supports legacy omitted local-session status payloads without enabling disabled reads",
+    "supports legacy omitted local-session status payloads by mapping ready→reads",
     async () => {
       agentMonitorUrl = {
-        enabled: true,
         planExtractionEnabled: true,
         ready: true,
         url: "http://127.0.0.1:0",
@@ -225,34 +236,17 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
 
       expect(await findRendererText("Alpha Session")).toBeDefined();
       await waitFor(() => {
-        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
-          1
-        );
-        expect(window.desktopApi.agentSessionsApi.usage).toHaveBeenCalledTimes(
-          1
-        );
+        // FEA-4157: the combined list + summary read is `pageData`.
+        expect(
+          window.desktopApi.agentSessionsApi.pageData
+        ).toHaveBeenCalledTimes(1);
       });
-
-      for (const navigation of activeNavigations) {
-        navigation.dispose();
-      }
-      activeNavigations.clear();
-      cleanup();
-
-      agentMonitorUrl = {
-        enabled: false,
-        planExtractionEnabled: true,
-        ready: false,
-        url: null,
-      } as AgentMonitorUrl;
-      installDesktopApi();
-
-      renderDesktopApp("#/sessions");
-
-      expect(
-        await findRendererText("Sessions are temporarily unavailable.")
-      ).toBeDefined();
-      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      // FEA-4177: on the no-facet / all-quality default path the standalone
+      // facet-option `usage` read is deduped — its scope equals the combined
+      // read's facet-unfiltered `pageData.usage`, so the toolbar reuses that
+      // half and the separate read stays disabled. It only fires once a facet
+      // goes active or quality narrows the set (covered elsewhere). Assert the
+      // deduped default: `pageData` settles the view, `usage` never fires.
       expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
     },
     rendererTestTimeoutMs
@@ -272,10 +266,12 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
       await waitFor(() => {
         expect(window.desktopApi.getAgentMonitorUrl).toHaveBeenCalled();
       });
-      expect(window.desktopApi.agentSessionsApi.list).not.toHaveBeenCalled();
+      expect(
+        window.desktopApi.agentSessionsApi.pageData
+      ).not.toHaveBeenCalled();
       expect(window.desktopApi.agentSessionsApi.usage).not.toHaveBeenCalled();
       expect(screen.queryByText("Alpha Session")).toBeNull();
-      expect(totalSessionsMetricValue()).toBe("...");
+      expect(summaryCardsAreLoading()).toBe(true);
     },
     rendererTestTimeoutMs
   );
@@ -292,8 +288,7 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
 
       agentMonitorUrl = {
         ...readyAgentMonitorUrl(),
-        enabled: false,
-        localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.disabled,
+        localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.unavailable,
         ready: false,
         url: null,
       };
@@ -301,12 +296,16 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
         emitDbChange({});
       });
 
+      // FEA-4181 (review cid 3653690775): terminal-unavailable local source is
+      // syncing (not errored) — the quiet holding message, no cached rows.
       expect(
-        await findRendererText("Sessions are temporarily unavailable.")
+        await findRendererText("Getting your sessions ready")
       ).toBeDefined();
       expect(screen.queryByText("Alpha Session")).toBeNull();
-      expect(totalSessionsMetricValue()).toBe("Unavailable");
-      expect(totalTokensMetricValue()).toBe("Unavailable");
+      // FEA-3937: terminal-unavailable renders the shared bar's error
+      // placeholder ("—") rather than the desktop's prior "Unavailable" text.
+      expect(totalSessionsMetricValue()).toBe("—");
+      expect(totalTokensMetricValue()).toBe("—");
     },
     rendererTestTimeoutMs
   );
@@ -319,16 +318,17 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
       expect(await findRendererText("Alpha Session")).toBeDefined();
 
       // The live refetch fails transiently (the local source maps it to a
-      // sanitized 500, so there is no retry storm — one attempt).
+      // sanitized 500, so there is no retry storm — one attempt). The failing
+      // read is now the combined `pageData` scan.
       listShouldFail = true;
       act(() => {
         emitDbChange({});
       });
 
       await waitFor(() => {
-        expect(window.desktopApi.agentSessionsApi.list).toHaveBeenCalledTimes(
-          2
-        );
+        expect(
+          window.desktopApi.agentSessionsApi.pageData
+        ).toHaveBeenCalledTimes(2);
       });
 
       // Graceful degrade (PLN-941 §5): the last-good row stays rendered — no
@@ -407,19 +407,58 @@ describe.sequential("Desktop Sessions live updates (FEA-1834)", () => {
   );
 });
 
-// Reads the live value rendered in the "Total Sessions" metric card, which now
-// carries the session-count summary that the page title/subtext used to show.
+// Reads the live value rendered in the shared summary bar's "Sessions" metric
+// card (FEA-3937: the hoisted composite renamed the desktop's "Total Sessions"
+// card to the ratified "Sessions" label).
 function totalSessionsMetricValue(): string | null {
-  return metricValue("Total Sessions");
+  return metricValue("Sessions");
 }
 
 function totalTokensMetricValue(): string | null {
   return metricValue("Total Tokens");
 }
 
+// True while the shared summary bar is in its whole-row loading state.
+//
+// ISS-5366: this used to be "the Sessions card label is absent", which held
+// while the loading strip painted five bare `Skeleton` slabs carrying no labels
+// at all. Those slabs reserved a hardcoded height that did not track the card's
+// real one, so the strip settled when the data landed; the loading slots are now
+// real `MetricCard` shells, which DO render their labels. An absent label
+// therefore no longer means "pending" — it means the strip has not mounted.
+//
+// What still separates pending from settled is the VALUE: `MetricCard loading`
+// renders a Skeleton in the value slot, so the card title carries no text, where
+// a settled card reads "1" and a failed read reads the em-dash. Both of those
+// are non-empty, so this stays a real discriminator rather than a check that
+// passes on any render.
+function summaryCardsAreLoading(): boolean {
+  if (findMetricCardLabel("Sessions") === null) {
+    return true;
+  }
+  return (metricValue("Sessions") ?? "").trim() === "";
+}
+
+// Finds the MetricCard `card-description` element whose text matches the given
+// summary-card label. The "Sessions" and "Total Tokens" strings also appear in
+// the desktop sidebar nav, so match strictly within a metric card header
+// (`[data-slot='card-description']`) rather than anywhere in the document.
+function findMetricCardLabel(labelText: string): Element | null {
+  const descriptions = Array.from(
+    document.querySelectorAll("[data-slot='card-description']")
+  );
+  return (
+    descriptions.find(
+      (description) => description.textContent?.trim() === labelText
+    ) ?? null
+  );
+}
+
 function metricValue(labelText: string): string | null {
-  const label = screen.getByText(labelText);
-  const value = label.parentElement?.querySelector("[data-slot='card-title']");
+  const label = findMetricCardLabel(labelText);
+  const value = label
+    ?.closest("[data-slot='card-header']")
+    ?.querySelector("[data-slot='card-title']");
   return value?.textContent ?? null;
 }
 
@@ -449,17 +488,22 @@ function installDesktopApi() {
         detail: vi.fn((id: string) =>
           Promise.resolve(fixtureDetails.get(id) ?? null)
         ),
-        list: vi.fn((request: { limit?: number; offset?: number } = {}) => {
+        list: vi.fn((request: { limit?: number; offset?: number } = {}) =>
+          listResponseFor(request)
+        ),
+        // FEA-4157: the org Sessions view reads the list + summary through ONE
+        // combined `pageData` IPC call. Serve it from the same mutable fixture as
+        // `list`, paired with the usage aggregate, so a live refetch reflects new
+        // rows/totals in both the table and the cards. The list-only `list`
+        // method stays for the self page + active-runs panel.
+        pageData: vi.fn((request: { limit?: number; offset?: number } = {}) => {
           if (listShouldFail) {
             return Promise.reject(new Error("transient source failure"));
           }
-          const offset = request.offset ?? 0;
-          const limit = request.limit ?? fixtureItems.length;
           return Promise.resolve({
-            items: fixtureItems.slice(offset, offset + limit),
-            total: fixtureItems.length,
-            viewerScope: "self",
-          } satisfies AgentSessionListResponse);
+            list: listPageFor(request),
+            usage: agentSessionUsage(fixtureItems.length),
+          } satisfies AgentSessionsPageData);
         }),
         usage: vi.fn(() =>
           Promise.resolve(agentSessionUsage(fixtureItems.length))
@@ -485,7 +529,6 @@ function installDesktopApi() {
 
 function readyAgentMonitorUrl(): AgentMonitorUrl {
   return {
-    enabled: true,
     localSessionSourceStatus: LOCAL_SESSION_SOURCE_STATUSES.ready,
     planExtractionEnabled: true,
     ready: true,
@@ -504,6 +547,7 @@ function agentSessionListItem(id: string, name: string): AgentSessionListItem {
     computeTarget: {
       id: "local-desktop",
       isOnline: true,
+      lastAgentSessionSyncAt: timestamp,
       lastSeenAt: timestamp,
       machineName: "Local Desktop",
     },
@@ -516,6 +560,7 @@ function agentSessionListItem(id: string, name: string): AgentSessionListItem {
     id,
     inputTokens: 10,
     lastActivityAt: timestamp,
+    lastSyncedAt: timestamp,
     model: "gpt-test",
     name,
     outputTokens: 20,
@@ -617,4 +662,29 @@ function agentSessionAnalytics(): AgentSessionAnalytics {
     byTool: [],
     viewerScope: "self",
   };
+}
+
+// The paginated list slice the `list` and `pageData` mocks both serve from the
+// mutable fixture, so a live refetch observes new rows/totals through either.
+function listPageFor(request: {
+  limit?: number;
+  offset?: number;
+}): AgentSessionListResponse {
+  const offset = request.offset ?? 0;
+  const limit = request.limit ?? fixtureItems.length;
+  return {
+    items: fixtureItems.slice(offset, offset + limit),
+    total: fixtureItems.length,
+    viewerScope: "self",
+  };
+}
+
+function listResponseFor(request: {
+  limit?: number;
+  offset?: number;
+}): Promise<AgentSessionListResponse> {
+  if (listShouldFail) {
+    return Promise.reject(new Error("transient source failure"));
+  }
+  return Promise.resolve(listPageFor(request));
 }

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
-import { ActivityLogStore } from "../src/main/activity-log-store.js";
+import { ActivityLogStore } from "../src/main/diagnostics/activity-log-store.js";
 
 const tempDirs: string[] = [];
 

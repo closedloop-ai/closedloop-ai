@@ -2,13 +2,15 @@ import { deleteObjects, listObjects } from "@repo/aws";
 import { keys as awsKeys } from "@repo/aws/keys";
 import { withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { getSafeAttachmentStorageErrorMessage } from "./attachment-storage-key-redaction";
 import { ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS } from "./attachments-service";
 
 /**
  * S3 key prefix under which every document file attachment is stored
- * (`attachments/{org}/{document}/{id}` — see `requestUpload`). Scoping the
- * sweep to this prefix guarantees it only ever touches attachment objects, even
- * if `FILE_ATTACHMENTS_BUCKET` is shared with other object families.
+ * (`attachments/{org}/{document}/{id}` — see `requestUpload` and
+ * `createInlineImageAttachment`). Scoping the sweep to this prefix guarantees
+ * it only ever touches attachment objects, even if `FILE_ATTACHMENTS_BUCKET` is
+ * shared with other object families.
  */
 const ATTACHMENT_KEY_PREFIX = "attachments/";
 
@@ -57,7 +59,8 @@ export const attachmentReconcileService = {
    * Reconciles the `FILE_ATTACHMENTS_BUCKET` against the `fileAttachment` table,
    * deleting S3 objects that have no backing row (ORPHANED_OBJECT). These arise
    * when `deleteAttachment` commits the row delete but the best-effort S3 delete
-   * throws, leaving the object stranded in the bucket forever.
+   * throws, or when an inline image upload succeeds in S3 but DB persistence is
+   * known not to have produced a row.
    *
    * Objects younger than `ATTACHMENT_UPLOAD_SIGNED_URL_EXPIRY_SECONDS` are left
    * alone: an upload may still be legitimately in flight against its presigned
@@ -65,8 +68,8 @@ export const attachmentReconcileService = {
    * are reconsidered on the next sweep once past that window.
    *
    * The reciprocal direction — `fileAttachment` rows pointing at a missing
-   * object (abandoned client-side uploads) — is reconciled separately on the
-   * DB-row side and is intentionally out of scope here.
+   * object (abandoned client-side uploads) — is reconciled separately by
+   * `attachmentRowReconcileService` and is intentionally out of scope here.
    *
    * Returns a structured summary; `exitCode` is 1 when the sweep errored so the
    * cron route can alert and return 500.
@@ -135,7 +138,7 @@ export const attachmentReconcileService = {
         exitCode: 0,
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = getSafeAttachmentStorageErrorMessage(err);
       log.error("[reconcile-attachments] reconcile sweep failed", {
         error: message,
         scanned,

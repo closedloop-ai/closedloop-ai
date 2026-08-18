@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, test } from "node:test";
-import { type RetrySpawnDeps, retrySpawn } from "../src/main/spawn-retry.js";
+import {
+  type RetrySpawnDeps,
+  retrySpawn,
+} from "../src/main/util/spawn-retry.js";
 
 function makeEnoentError(cmd: string): NodeJS.ErrnoException {
   const err = new Error(`spawn ${cmd} ENOENT`) as NodeJS.ErrnoException;
@@ -10,17 +13,26 @@ function makeEnoentError(cmd: string): NodeJS.ErrnoException {
   return err;
 }
 
-function makeStubDeps(overrides?: Partial<RetrySpawnDeps>): RetrySpawnDeps & {
+/**
+ * The stub's own surface: the real dependency contract plus the mutable
+ * `shuttingDown` knob and the call log the tests assert on. Named rather than
+ * inlined because the object literal below must be annotated with it:
+ * `isShuttingDown` reads `state.shuttingDown` back off the object being built,
+ * and a self-referential initializer has no inferable type.
+ */
+type StubRetrySpawnDeps = RetrySpawnDeps & {
   calls: Record<string, unknown[][]>;
   shuttingDown: boolean;
-} {
+};
+
+function makeStubDeps(overrides?: Partial<RetrySpawnDeps>): StubRetrySpawnDeps {
   const calls: Record<string, unknown[][]> = {};
   const record = (name: string, ...args: unknown[]) => {
     calls[name] ??= [];
     calls[name].push(args);
   };
 
-  const state = {
+  const state: StubRetrySpawnDeps = {
     calls,
     shuttingDown: false,
     log: (level: string, msg: string) => record("log", level, msg),

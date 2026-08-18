@@ -99,6 +99,6 @@ Set by the `just desktop-golden` launch recipe to boot the app against the froze
 
 ## Required GitHub Secrets
 
-- `SLACK_GITHUB_REPO_WEBHOOK_URL` -- Slack incoming webhook for release notifications
+- `SLACK_BOT_TOKEN` -- Slack bot token for release notifications, posted with `chat.postMessage` to the channel in the `SLACK_GITHUB_REPO_CHANNEL_ID` repo variable. The bot must be a member of that channel.
 
 The `GITHUB_TOKEN` (automatic in Actions) handles GitHub Releases publishing. If the repo has restricted default token permissions, ensure `contents: write` is allowed (Settings > Actions > General).

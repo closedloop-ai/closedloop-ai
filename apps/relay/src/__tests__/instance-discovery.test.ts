@@ -113,6 +113,32 @@ describe("resolveInstanceId", () => {
 
     expect(id).toMatch(LOCAL_ID_PATTERN);
   });
+
+  it("falls back to random ID when TaskARN ends with a slash (pop returns empty string)", async () => {
+    // TaskARN.split("/").pop() returns "" when the ARN ends with "/".
+    // The empty string is falsy → the if(taskId) branch is skipped → random ID.
+    vi.stubEnv("RELAY_INSTANCE_ID", "");
+    vi.stubEnv(
+      "ECS_CONTAINER_METADATA_URI_V4",
+      "http://169.254.170.2/v4/abc123"
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            TaskARN: "arn:aws:ecs:us-east-1:123456789012:task/cluster/",
+          }),
+      })
+    );
+
+    const { resolveInstanceId } = await importModule();
+    const id = await resolveInstanceId();
+
+    expect(id).toMatch(LOCAL_ID_PATTERN);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -159,6 +185,26 @@ describe("resolvePrivateIp", () => {
 
   it("returns null when ECS metadata is not available", async () => {
     vi.stubEnv("ECS_CONTAINER_METADATA_URI_V4", "");
+
+    const { resolvePrivateIp } = await importModule();
+    const ip = await resolvePrivateIp();
+
+    expect(ip).toBeNull();
+  });
+
+  it("returns null when ECS container metadata returns a non-ok response", async () => {
+    vi.stubEnv(
+      "ECS_CONTAINER_METADATA_URI_V4",
+      "http://169.254.170.2/v4/abc123"
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+      })
+    );
 
     const { resolvePrivateIp } = await importModule();
     const ip = await resolvePrivateIp();

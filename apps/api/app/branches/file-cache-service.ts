@@ -15,6 +15,7 @@ import {
   GitHubProviderResultStatus,
 } from "@repo/github";
 import { log } from "@repo/observability/log";
+import { readWithInstallationClient } from "@/lib/github/installation-client";
 import {
   markBranchSyncCompleted,
   markBranchSyncFailed,
@@ -139,12 +140,19 @@ export async function refreshBranchFileChangeCache(
     locallyAcquiredStartedAt = startedAt;
   }
 
-  const filesResult = await compareBranchFileChangesWithProviderResult(
+  // A failed client acquisition classifies as the same provider result the
+  // compare read would produce, so cache refresh always settles (throttle or
+  // marked failure) instead of rejecting.
+  const filesResult = await readWithInstallationClient(
     repository.installation.installationId,
-    repository.owner,
-    repository.name,
-    baseBranch,
-    headSha
+    (octokit) =>
+      compareBranchFileChangesWithProviderResult(
+        octokit,
+        repository.owner,
+        repository.name,
+        baseBranch,
+        headSha
+      )
   );
 
   if (filesResult.status === GitHubProviderResultStatus.ProviderRateLimit) {

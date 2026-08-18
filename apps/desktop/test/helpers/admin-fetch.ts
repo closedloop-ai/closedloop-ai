@@ -10,7 +10,7 @@
 import type {
   AdminFetchLike,
   AdminFetchResponse,
-} from "../../src/main/admin-billing.js";
+} from "../../src/main/cost/admin-billing.js";
 
 export type RecordedCall = {
   url: string;

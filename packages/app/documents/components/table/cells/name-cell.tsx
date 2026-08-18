@@ -3,22 +3,27 @@
 import type {
   ArtifactStatus,
   DocumentStatus,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import {
   DOCUMENT_STATUS_OPTIONS,
   DocumentType,
-  FEATURE_STATUS_OPTIONS,
-  isActiveGenerationStatus,
+  ISSUE_STATUS_OPTIONS,
 } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { TruncatedTitle } from "@repo/app/documents/components/table/cells/cell-tooltip";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { RowEditContext } from "@repo/app/documents/components/table/row-edit-context";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
-import { ARTIFACT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import {
+  ARTIFACT_STATUS_LABELS,
+  formatProjectCompletionSummary,
+  PROJECT_COMPLETION_EMPTY_SUMMARY,
+} from "@repo/app/projects/lib/project-constants";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import {
   DropdownMenu,
@@ -115,9 +120,11 @@ function SelectionCheckbox({
     <div
       className={cn(
         "flex h-7 w-7 shrink-0 items-center justify-center transition-opacity",
+        // FEA-3866: revealed on row-hover for a mouse, but always visible on a
+        // touch pointer (`touch:opacity-100`) — there is no hover to reveal it.
         isSelected || selectMode
           ? "opacity-100"
-          : "opacity-0 group-hover/row:opacity-100"
+          : "opacity-0 touch:opacity-100 group-hover/row:opacity-100"
       )}
     >
       <Checkbox
@@ -159,6 +166,31 @@ function ProjectNameCell({
 }: Omit<NameCellProps, "item"> & {
   item: Extract<DocumentRowItem, { kind: "project" }>;
 }) {
+  // `completionPopulationEmpty` (additive, ISS-4679) means the population is
+  // empty (no documents/issues), which the ring slot shows as a muted dash
+  // (ISS-4835) rather than any ring, so it separates from both a solid 0% and
+  // the Backlog dashed ring on the issue rows directly below it. The wire keeps
+  // `completionPercentage` numeric
+  // for version-skew safety, so the empty case is carried by the flag, not by a
+  // null percentage. One string drives both the visible tooltip and the icon's
+  // accessible name, so a screen reader hears the same population the sighted
+  // user reads.
+  //
+  // ISS-4792 (ISS-4779 closed-by-default): the empty-population state is gated on
+  // the `project-completion-empty-state` flag (default OFF). With it off, an
+  // empty population falls through to the PRIOR behavior — a solid 0% ring named
+  // "0% of documents and issues complete" — so the surface is unchanged. Uses the
+  // optional flag hook so a mount site without a flag provider (Storybook,
+  // mini-table tests) degrades to OFF rather than crashing.
+  const emptyStateEnabled = useFeatureFlagEnabledOptional(
+    PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY
+  );
+  const completionPercentage = item.data.completionPercentage;
+  const isEmpty =
+    emptyStateEnabled === true && item.data.completionPopulationEmpty === true;
+  const completionSummary = isEmpty
+    ? PROJECT_COMPLETION_EMPTY_SUMMARY
+    : formatProjectCompletionSummary(completionPercentage);
   return (
     <div className={NAME_CELL_CLASS_NAME}>
       {rankSlot}
@@ -174,16 +206,25 @@ function ProjectNameCell({
       </span>
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          {/*
+            Focusable (button, no action) so the tooltip opens on keyboard focus
+            and tap, not hover alone — the ring is the only place this population
+            is named, and a plain div reaches neither a keyboard nor a touch
+            user. The accessible name stays on the ring itself (`label`), so this
+            wrapper carries none and is not a second name.
+          */}
+          <button
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            type="button"
+          >
             <StatusPercentageIcon
+              label={completionSummary}
               size={16}
-              value={item.data.completionPercentage}
+              value={isEmpty ? null : completionPercentage}
             />
-          </div>
+          </button>
         </TooltipTrigger>
-        <TooltipContent>
-          {Math.round(item.data.completionPercentage)}% of artifacts complete
-        </TooltipContent>
+        <TooltipContent>{completionSummary}</TooltipContent>
       </Tooltip>
       <NameLink href={href} text={item.data.name} />
     </div>
@@ -207,9 +248,6 @@ function DocumentNameCell({
   item: Extract<DocumentRowItem, { kind: "document" }>;
 }) {
   const { onUpdateStatus } = useContext(RowEditContext);
-  const thinking =
-    item.data.generationStatus != null &&
-    isActiveGenerationStatus(item.data.generationStatus.status);
 
   return (
     <div className={NAME_CELL_CLASS_NAME}>
@@ -233,11 +271,7 @@ function DocumentNameCell({
       <span className="mr-1.5 inline-block min-w-[7ch] shrink-0 font-mono text-muted-foreground text-xs">
         {isDisplayableSlug(item.data.slug) ? item.data.slug : null}
       </span>
-      <DocumentStatusControl
-        item={item}
-        onUpdateStatus={onUpdateStatus}
-        thinking={thinking}
-      />
+      <DocumentStatusControl item={item} onUpdateStatus={onUpdateStatus} />
       <NameLink href={href} text={item.data.title} />
     </div>
   );
@@ -250,24 +284,14 @@ function DocumentNameCell({
 function RowStatusIcon({
   isFeature,
   status,
-  thinking,
 }: {
   isFeature: boolean;
   status: ArtifactStatus;
-  thinking?: boolean;
 }) {
   return isFeature ? (
-    <FeatureStatusIcon
-      size={16}
-      status={status as FeatureStatus}
-      thinking={thinking}
-    />
+    <IssueStatusIcon size={16} status={status as IssueStatus} />
   ) : (
-    <DocumentStatusIcon
-      size={16}
-      status={status as DocumentStatus}
-      thinking={thinking}
-    />
+    <DocumentStatusIcon size={16} status={status as DocumentStatus} />
   );
 }
 
@@ -275,52 +299,41 @@ function RowStatusIcon({
 function DocumentStatusControl({
   item,
   onUpdateStatus,
-  thinking,
 }: {
   item: Extract<DocumentRowItem, { kind: "document" }>;
   onUpdateStatus?: (id: string, status: ArtifactStatus) => void;
-  thinking: boolean;
 }) {
   const isFeature = item.data.type === DocumentType.Feature;
+  const label = ARTIFACT_STATUS_LABELS[item.data.status];
 
   if (!onUpdateStatus) {
     return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="flex h-7 w-7 shrink-0 items-center justify-center">
-            <RowStatusIcon
-              isFeature={isFeature}
-              status={item.data.status}
-              thinking={thinking}
-            />
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>
-          {ARTIFACT_STATUS_LABELS[item.data.status]}
-        </TooltipContent>
-      </Tooltip>
+      <ArtifactStatusTooltip label={label}>
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center">
+          <RowStatusIcon isFeature={isFeature} status={item.data.status} />
+        </div>
+      </ArtifactStatusTooltip>
     );
   }
   // Offer the vocabulary that matches this row's artifact kind (PRD-495).
   // Features expose the full set including TRIAGE — humans may move a row to any
   // status; TRIAGE is only excluded as the human-create default, not as an option.
   const statusOptions = isFeature
-    ? FEATURE_STATUS_OPTIONS
+    ? ISSUE_STATUS_OPTIONS
     : DOCUMENT_STATUS_OPTIONS;
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
-          type="button"
-        >
-          <RowStatusIcon
-            isFeature={isFeature}
-            status={item.data.status}
-            thinking={thinking}
-          />
-        </button>
-      </DropdownMenuTrigger>
+      <ArtifactStatusTooltip label={label}>
+        <DropdownMenuTrigger asChild>
+          <button
+            aria-label={label}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"
+            type="button"
+          >
+            <RowStatusIcon isFeature={isFeature} status={item.data.status} />
+          </button>
+        </DropdownMenuTrigger>
+      </ArtifactStatusTooltip>
       <DropdownMenuContent align="start">
         {statusOptions.map((value) => (
           <DropdownMenuItem
@@ -402,6 +415,11 @@ function ArtifactNameCell({
   );
 }
 
+/**
+ * Shared hover tooltip for every status icon in the table: document rows
+ * (read-only and the editable dropdown trigger) and branch/session rows.
+ * Renders children unwrapped when no label is available.
+ */
 function ArtifactStatusTooltip({
   children,
   label,

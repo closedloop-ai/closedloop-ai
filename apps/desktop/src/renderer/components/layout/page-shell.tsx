@@ -25,6 +25,13 @@ export const DASHBOARD_METRIC_CARD_CLASS_NAME =
 export const DASHBOARD_GRID_CLASS_NAME =
   "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4";
 
+// Two-card KPI row (e.g. the Sessions list: "Total Sessions" + "Total Tokens").
+// Deliberately omits `DASHBOARD_GRID_CLASS_NAME`'s `xl:grid-cols-4` expansion:
+// at `xl` a 4-column grid holding only 2 cards leaves two empty columns on the
+// right (FEA-3433). Two columns fill the row at every breakpoint from `sm` up.
+export const DASHBOARD_GRID_TWO_COL_CLASS_NAME =
+  "grid grid-cols-1 gap-3 sm:grid-cols-2";
+
 export const DASHBOARD_TABLE_CLASS_NAME =
   "w-full border-separate border-spacing-0 text-sm";
 

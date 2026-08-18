@@ -1,5 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// index.ts routes its allowlist warnings/errors through @repo/observability/log
+// (FEA-3661). The logger captures console refs at module-init, so a console spy
+// installed after import can't observe them — assert on the mocked logger.
+const { logWarn, logError } = vi.hoisted(() => ({
+  logWarn: vi.fn(),
+  logError: vi.fn(),
+}));
+vi.mock("@repo/observability/log", () => ({
+  log: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: logWarn,
+    error: logError,
+    flush: vi.fn(),
+  },
+}));
+
 vi.mock("../api-client.js", () => {
   return {
     verifyApiKey: vi.fn(),
@@ -33,15 +50,14 @@ describe.sequential("OAuth config", () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     process.env.WEBAPP_ENV = "stage";
     process.env.MCP_OAUTH_REDIRECT_URIS = "";
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    logWarn.mockClear();
     const mod = await import("../index.js");
     expect(() =>
       mod.__testables.requireRedirectAllowlistForEnvironment()
     ).not.toThrow();
-    expect(warnSpy).toHaveBeenCalledWith(
+    expect(logWarn).toHaveBeenCalledWith(
       expect.stringContaining("MCP_OAUTH_REDIRECT_URIS is empty")
     );
-    warnSpy.mockRestore();
   });
 
   it("allows startup in production when redirect allowlist is set", async () => {
@@ -59,16 +75,15 @@ describe.sequential("OAuth config", () => {
     process.env.INTERNAL_API_SECRET = "test-internal-secret";
     process.env.WEBAPP_ENV = "stage";
     process.env.MCP_INTERNAL_ALLOWED_IPS = "";
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logError.mockClear();
     const mod = await import("../index.js");
     expect(() =>
       mod.__testables.requireInternalAllowlistForEnvironment()
     ).not.toThrow();
-    expect(errorSpy).toHaveBeenCalledWith(
+    expect(logError).toHaveBeenCalledWith(
       expect.stringContaining("[SECURITY WARNING]")
     );
     expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
-    errorSpy.mockRestore();
   });
 
   it("supports exact IP and CIDR entries in internal allowlist", async () => {
@@ -83,6 +98,81 @@ describe.sequential("OAuth config", () => {
     expect(mod.__testables.isInternalAddressAllowed("192.168.1.11")).toBe(
       false
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // isAddressInCidr — malformed CIDR entries (L1107, L1111, L1117)
+  //
+  // isAddressInCidr is reachable through isInternalAddressAllowed when
+  // MCP_INTERNAL_ALLOWED_IPS contains a CIDR entry (one with "/").  These
+  // tests exercise the three early-return guard branches.
+  // -------------------------------------------------------------------------
+
+  it("returns false for a CIDR with empty prefix length (trailing slash only)", async () => {
+    // "10.0.0.0/" → split gives prefixLengthRaw = "" (falsy) → L1107 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
+  });
+
+  it("returns false for a CIDR with a non-integer prefix length", async () => {
+    // "10.0.0.0/abc" → parseInt("abc") = NaN → !isFinite → L1111 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/abc";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
+  });
+
+  it("returns false for a CIDR with a negative prefix length", async () => {
+    // "10.0.0.0/-1" → prefixLength < 0 → L1111 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/-1";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
+  });
+
+  it("returns false for a CIDR with a prefix length greater than 32", async () => {
+    // "10.0.0.0/33" → prefixLength > 32 → L1111 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/33";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
+  });
+
+  it("returns false when the CIDR base address is not a valid IPv4 address", async () => {
+    // "not-an-ip/24" → ipv4ToNumber("not-an-ip") = null → L1117 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "not-an-ip/24";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
+  });
+
+  it("returns false when checking a non-IPv4 address against a valid CIDR", async () => {
+    // IPv6 address "::1" → ipv4ToNumber("::1") = null → L1117 branch.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "10.0.0.0/24";
+    const mod = await import("../index.js");
+    expect(mod.__testables.isInternalAddressAllowed("::1")).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // isInternalAddressAllowed — loopback fallback in local environment (L1155)
+  //
+  // When no allowlist is configured and NODE_ENV=test (set by Vitest),
+  // loopback addresses are the only ones accepted.
+  // -------------------------------------------------------------------------
+
+  it("allows localhost, 127.0.0.1, and ::1 when no allowlist is configured and env is local", async () => {
+    // NODE_ENV=test (set by Vitest) + no WEBAPP_ENV → isLocalOauthEnvironment() = true.
+    process.env.INTERNAL_API_SECRET = "test-internal-secret";
+    process.env.MCP_INTERNAL_ALLOWED_IPS = "";
+    const mod = await import("../index.js");
+
+    expect(mod.__testables.isInternalAddressAllowed("localhost")).toBe(true);
+    expect(mod.__testables.isInternalAddressAllowed("127.0.0.1")).toBe(true);
+    expect(mod.__testables.isInternalAddressAllowed("::1")).toBe(true);
+    expect(mod.__testables.isInternalAddressAllowed("10.0.0.1")).toBe(false);
   });
 });
 

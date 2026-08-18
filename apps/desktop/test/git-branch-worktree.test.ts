@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
-import { resolveOperationId } from "../src/main/approval-operations.js";
+import { resolveOperationId } from "../src/main/approvals/approval-operations.js";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import { registerGitBranchWorktreeRoutes } from "../src/server/operations/git-branch-worktree.js";
 

@@ -1,4 +1,5 @@
 import { type TransactionClient, withDb } from "@repo/database";
+import { getInstallationOctokit } from "@repo/github/installation-auth";
 import {
   fetchReviewThreadResolutionByNodeId,
   ReviewThreadResolutionResultStatus,
@@ -15,7 +16,12 @@ import {
   type GitHubReviewThreadResolutionAttribution,
   GitHubReviewThreadResolutionAttributionKind,
 } from "@/app/comments/service";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import { loadPrContextForCommentWebhook } from "./pr-comment-context";
 import {
   type PullRequestReviewThreadPayload,
@@ -49,6 +55,8 @@ type PullRequestReviewThreadEligibilityStatus =
 type EligibleReviewThread = {
   status: typeof PullRequestReviewThreadEligibilityStatus.Eligible;
   organizationId: string;
+  branchArtifactId: string;
+  pullRequestDetailId: string;
   documentId: string | null;
   documentSlug: string | null;
   threadExternalId: string;
@@ -69,7 +77,8 @@ type ReviewThreadEligibility = EligibleReviewThread | TerminalEligibility;
  * eligibility before provider confirmation and a separate write revalidation.
  */
 export async function handlePullRequestReviewThread(
-  rawPayload: unknown
+  rawPayload: unknown,
+  observationContext?: GitHubWebhookObservationContext
 ): Promise<Response> {
   const receivedAt = new Date();
   const payload = parsePullRequestReviewThreadPayload(rawPayload);
@@ -95,7 +104,7 @@ export async function handlePullRequestReviewThread(
 
   const action = handledReviewThreadAction(payload.action);
   if (!action) {
-    log.info("[handlePullRequestReviewThread] Skipping unhandled action", {
+    log.debug("[handlePullRequestReviewThread] Skipping unhandled action", {
       action: payload.action,
       prNumber: payload.pull_request.number,
       repositoryFullName: payload.repository.full_name,
@@ -110,7 +119,7 @@ export async function handlePullRequestReviewThread(
   if (
     eligibility.status !== PullRequestReviewThreadEligibilityStatus.Eligible
   ) {
-    log.info("[handlePullRequestReviewThread] Local eligibility no-write", {
+    log.debug("[handlePullRequestReviewThread] Local eligibility no-write", {
       status: eligibility.status,
       action,
       reviewThreadId: payload.thread.node_id,
@@ -118,9 +127,11 @@ export async function handlePullRequestReviewThread(
     });
     return NextResponse.json({ message: "Event ignored", ok: true });
   }
-
+  // The client promise is passed unawaited so the lookup's own deadline covers
+  // the token exchange as well as the GraphQL read; a slow or failing mint
+  // becomes the same RetryableError, and the 502 below makes GitHub redeliver.
   const providerResult = await fetchReviewThreadResolutionByNodeId(
-    eligibility.installationId,
+    getInstallationOctokit(eligibility.installationId),
     payload.thread.node_id
   );
   if (
@@ -142,7 +153,7 @@ export async function handlePullRequestReviewThread(
   }
 
   if (providerResult.status === ReviewThreadResolutionResultStatus.Terminal) {
-    log.info("[handlePullRequestReviewThread] Provider terminal no-write", {
+    log.debug("[handlePullRequestReviewThread] Provider terminal no-write", {
       action,
       reason: providerResult.reason,
       reviewThreadId: payload.thread.node_id,
@@ -155,7 +166,7 @@ export async function handlePullRequestReviewThread(
     providerResult.isResolved !==
     (action === PullRequestReviewThreadAction.Resolved)
   ) {
-    log.info(
+    log.debug(
       "[handlePullRequestReviewThread] Provider state mismatch no-write",
       {
         action,
@@ -179,6 +190,17 @@ export async function handlePullRequestReviewThread(
   ) {
     return NextResponse.json({ message: "Event ignored", ok: true });
   }
+
+  await persistGitHubBranchActivity({
+    eventName: GitHubBranchActivityEventName.PullRequestReviewThread,
+    deliveryId: observationContext?.deliveryId,
+    payload,
+    attribution: {
+      organizationId: eligibility.organizationId,
+      branchArtifactId: eligibility.branchArtifactId,
+      pullRequestDetailId: eligibility.pullRequestDetailId,
+    },
+  });
 
   return NextResponse.json({
     message: "Event processed successfully",
@@ -218,7 +240,7 @@ async function loadReviewThreadEligibility(
       action,
       logPrefix: "[handlePullRequestReviewThread]",
     });
-    if (!prContext) {
+    if (!prContext || prContext.isCurrentPullRequest === false) {
       return {
         status:
           PullRequestReviewThreadEligibilityStatus.MissingOrStalePrContext,
@@ -242,6 +264,8 @@ async function loadReviewThreadEligibility(
     return {
       status: PullRequestReviewThreadEligibilityStatus.Eligible,
       organizationId: ownerResolution.organizationId,
+      branchArtifactId: prContext.branchArtifactId,
+      pullRequestDetailId: prContext.id,
       documentId: prContext.documentId,
       documentSlug: prContext.document?.slug ?? null,
       threadExternalId: projection.threadExternalId,
@@ -358,6 +382,8 @@ function sameEligibleReviewThreadScope(
 ): boolean {
   return (
     revalidated.organizationId === initial.organizationId &&
+    revalidated.branchArtifactId === initial.branchArtifactId &&
+    revalidated.pullRequestDetailId === initial.pullRequestDetailId &&
     revalidated.documentId === initial.documentId &&
     revalidated.documentSlug === initial.documentSlug &&
     revalidated.threadExternalId === initial.threadExternalId &&

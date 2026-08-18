@@ -5,19 +5,21 @@ import type {
   ResolveInlineImagesResponse,
 } from "@repo/api/src/types/attachment.js";
 import type { DocumentDetail } from "@repo/api/src/types/document.js";
+import { log } from "@repo/observability/log";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { McpApiError } from "../api-error.js";
 import {
   asRecord,
-  buildDocumentUrlFromRecord,
   DOCUMENT_DOC_HELP,
   describeIdOrSlug,
   encodePathSegment,
+  type McpUrlBuilder,
   PARENT_ARTIFACT_METADATA_HELP,
   type ParentArtifactProjectionInput,
   readNumber,
   readString,
+  readTagSummaries,
   truncateString,
   withErrorHandling,
   withParentArtifactProjection,
@@ -121,11 +123,13 @@ export function shapeGetDocumentPayload(
     status: readString(row.status),
     projectId: readString(row.projectId),
     priority: readString(row.priority),
+    dueDate: readString(row.dueDate),
     fileName: readString(row.fileName),
     assigneeId: readString(row.assigneeId),
     assignee: row.assignee ?? null,
     approverId: readString(row.approverId),
     approver: row.approver ?? null,
+    tags: readTagSummaries(row.tags),
     // Immutable per-document repository record, set at creation (PLN-602).
     repositorySnapshot: row.repositorySnapshot ?? null,
     // Stack-rank position within the project (PRD-421); lower sorts first,
@@ -389,7 +393,7 @@ async function fetchInlineImageBlocks(
         error instanceof Error ? error.message : String(error),
         image.url
       );
-      console.warn(
+      log.warn(
         `[mcp] get-document: failed to fetch inline image attachment ${image.attachmentId} (${image.filename}) for document ${documentId} from ${describeInlineImageUrl(image.url)}: ${detail}. The presigned image URL may have expired (expiresAt ${image.expiresAt}); re-fetch the document to refresh inline image URLs.`
       );
       skipped.push({
@@ -442,7 +446,8 @@ async function fetchParentProjection(
 
 async function buildGetDocumentToolResult(
   apiClient: ApiClient,
-  input: GetDocumentToolInput
+  input: GetDocumentToolInput,
+  urls: McpUrlBuilder
 ) {
   const response = await apiClient.get<JsonDocumentDetail>(
     `/documents/${encodePathSegment(input.documentId)}`
@@ -496,7 +501,7 @@ async function buildGetDocumentToolResult(
       : undefined,
   });
 
-  const webUrl = buildDocumentUrlFromRecord(row);
+  const webUrl = urls.buildDocumentUrlFromRecord(row);
   const contentBlocks: (
     | { type: "text"; text: string }
     | { type: "image"; data: string; mimeType: string }
@@ -520,7 +525,8 @@ async function buildGetDocumentToolResult(
  */
 export function registerGetDocument(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "get-document",
@@ -568,6 +574,8 @@ export function registerGetDocument(
       },
     },
     (input) =>
-      withErrorHandling(() => buildGetDocumentToolResult(apiClient, input))
+      withErrorHandling(() =>
+        buildGetDocumentToolResult(apiClient, input, urls)
+      )
   );
 }

@@ -1,6 +1,7 @@
 import { useAuthSnapshot } from "@repo/app/shared/auth/use-auth-snapshot";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { DESKTOP_AUTH_TOKEN_SENTINEL } from "../../shared/cloud-api-fetch-contract";
 import {
   DesktopAuthProvider,
   useDesktopAuth,
@@ -33,7 +34,6 @@ function setupDesktopApi(initial: DesktopAuthState) {
     beginDesktopSignIn: vi.fn(() => Promise.resolve({ ok: true as const })),
     cancelDesktopSignIn: vi.fn(() => Promise.resolve()),
     signOutDesktop: vi.fn(() => Promise.resolve()),
-    getDesktopAccessToken: vi.fn(() => Promise.resolve("access-token")),
   };
   Object.defineProperty(window, "desktopApi", {
     configurable: true,
@@ -85,8 +85,8 @@ describe("DesktopAuthProvider", () => {
     expect(result.current.auth.state.status).toBe("authenticated");
   });
 
-  it("getToken proxies to the main-process access token", async () => {
-    const { api } = setupDesktopApi(AUTHENTICATED);
+  it("getToken resolves the sentinel while authenticated — never the credential", async () => {
+    setupDesktopApi(AUTHENTICATED);
     const { result } = renderHook(useCombined, {
       wrapper: DesktopAuthProvider,
     });
@@ -94,10 +94,24 @@ describe("DesktopAuthProvider", () => {
       expect(result.current.auth.state.status).toBe("authenticated")
     );
 
+    // The real access token has no renderer IPC path (PLN-1138 D-G): the
+    // snapshot surfaces only the opaque sentinel, and the main-process
+    // cloud-api-fetch bridge attaches the genuine credential itself.
     await expect(result.current.snapshot.getToken()).resolves.toBe(
-      "access-token"
+      DESKTOP_AUTH_TOKEN_SENTINEL
     );
-    expect(api.getDesktopAccessToken).toHaveBeenCalled();
+  });
+
+  it("getToken resolves null when signed out", async () => {
+    setupDesktopApi(SIGNED_OUT);
+    const { result } = renderHook(useCombined, {
+      wrapper: DesktopAuthProvider,
+    });
+    await waitFor(() =>
+      expect(result.current.auth.state.status).toBe("signed_out")
+    );
+
+    await expect(result.current.snapshot.getToken()).resolves.toBeNull();
   });
 
   it("sign-in/cancel/sign-out actions delegate to the bridge", async () => {

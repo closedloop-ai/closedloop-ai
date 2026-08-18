@@ -1,6 +1,7 @@
 import "server-only";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
+import { boundedFetch } from "./bounded-fetch";
 import { keys } from "./keys";
 
 type InstallationTokenCacheEntry = {
@@ -10,6 +11,7 @@ type InstallationTokenCacheEntry = {
 
 const INSTALLATION_TOKEN_EXPIRY_SKEW_MS = 60_000;
 const INSTALLATION_AUTH_CACHE_MAX_ENTRIES = 500;
+
 const installationTokenCache = new Map<string, InstallationTokenCacheEntry>();
 const installationOctokitCache = new Map<
   string,
@@ -32,7 +34,10 @@ export async function getInstallationOctokit(
     return cached.octokit;
   }
 
-  const octokit = new Octokit({ auth: token });
+  const octokit = new Octokit({
+    auth: token,
+    request: { fetch: boundedFetch },
+  });
   installationOctokitCache.set(installationId, { token, octokit });
   pruneOldestCacheEntries(installationOctokitCache);
   return octokit;
@@ -83,6 +88,11 @@ function getAppAuth() {
   appAuth = createAppAuth({
     appId: config.GITHUB_APP_ID,
     privateKey: config.GITHUB_APP_PRIVATE_KEY,
+    // The token exchange must be bounded too. Wiring `boundedFetch` into the
+    // minted Octokit only covers reads made *with* the token; without this the
+    // POST that obtains it inherits fetch's absent default timeout, so a hung
+    // token endpoint stalls the caller past its own deadline.
+    request: new Octokit({ request: { fetch: boundedFetch } }).request,
   });
   return appAuth;
 }

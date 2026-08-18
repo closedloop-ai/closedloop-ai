@@ -478,6 +478,13 @@ describe("handleSocketHello — command-signing capability behavior", () => {
 
     expect(getHelloAck(socket).serverCapabilities).toEqual({
       agentSessionSync: true,
+      // FEA-4138: the sync lane advertises gzip decompression whenever sync
+      // itself is supported (a server-version capability, not a per-org gate).
+      agentSessionSyncCompression: true,
+      // ISS-4541/ISS-4578: the sync lane also advertises additive multi-part
+      // activity-tiling merge alongside sync (same server-version gate).
+      agentSessionSyncActivityChunking: true,
+      agentSessionSyncMonitoredActivity: true,
     });
   });
 });

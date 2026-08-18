@@ -8,13 +8,17 @@
     "analyze": "node scripts/ensure-prisma-client.mjs",
     "prebuild": "tsx scripts/migrate.ts",
     "build": "node scripts/ensure-prisma-client.mjs",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false",
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
     "generate:rds-ca": "tsx scripts/generate-rds-ca-bundle.ts",
     "check:rds-ca": "tsx scripts/generate-rds-ca-bundle.ts --check",
     "seed": "tsx scripts/seed.ts",
+    "backfill:definition-versions": "tsx scripts/backfill-definition-versions.ts",
+    "backfill:pack-definition-versions": "tsx scripts/backfill-pack-definition-versions.ts",
+    "backfill:search-documents": "tsx scripts/backfill-search-documents.ts",
     "pretest": "node scripts/ensure-prisma-client.mjs",
     "test": "pnpm test:unit",
+    "test:coverage": "pnpm test:unit --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.ts'",
     "test:unit": "vitest run --exclude '**/integration/**'",
     "test:integration": "vitest run --config vitest.config.integration.ts --no-file-parallelism"
   },
@@ -38,7 +42,8 @@
     "dotenv": "^17.4.2",
     "prisma": "~7.8.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
+    "typescript6": "npm:@typescript/typescript6@6.0.2",
     "vitest": "^4.1.9"
   }
 }

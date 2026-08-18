@@ -1,4 +1,4 @@
-import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document";
+import { DocumentStatus, IssueStatus } from "@repo/api/src/types/document";
 
 /**
  * Combined display order for the mixed documents table (Documents + Features in
@@ -7,16 +7,16 @@ import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document";
  */
 export const STATUS_DISPLAY_ORDER: string[] = [
   DocumentStatus.Draft,
-  FeatureStatus.Triage,
-  FeatureStatus.Backlog,
-  FeatureStatus.Todo,
-  FeatureStatus.InProgress,
+  IssueStatus.Triage,
+  IssueStatus.Backlog,
+  IssueStatus.Todo,
+  IssueStatus.InProgress,
   DocumentStatus.InReview,
   DocumentStatus.ChangesRequested,
-  FeatureStatus.Blocked,
+  IssueStatus.Blocked,
   DocumentStatus.Approved,
   DocumentStatus.Executed,
-  FeatureStatus.Done,
-  FeatureStatus.Canceled,
+  IssueStatus.Done,
+  IssueStatus.Canceled,
   DocumentStatus.Obsolete,
 ];

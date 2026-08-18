@@ -8,31 +8,49 @@
  * Ported from the old sidecar's install-orchestrator.js + catalog-action-handler.js
  * into a single first-party Electron ESM module.
  *
+ * ISS-5138 split this module by responsibility. What remains here is the
+ * ORCHESTRATION shell — pre-flight gates, the audit row, spawning, and the IPC
+ * output stream. Its two collaborators:
+ *  - `install-child-env.ts` — the child process's execution context (env
+ *    allowlist, cwd validation, harness-CLI detection on that env's PATH)
+ *  - `install-command-resolver.ts` — turning a catalog entry plus a requested
+ *    harness into the concrete command text to run
+ *
  * Safeguards:
  *  - Hard timeout (default 10 min) — subprocess killed if it overruns
  *  - Concurrent-install guard: refuses if a run for the same pack is still
- *    in-flight (ended_at IS NULL)
+ *    in-flight — an open `pack_install_runs` row whose child this process is
+ *    still holding (see `liveRunIds`)
  *  - ANSI escape codes stripped from stored tails (full output stays in the
  *    live IPC stream)
  *  - Security-hardened minimal env for child processes (no leaked tokens)
  */
 
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
-import { homedir } from "node:os";
-import path from "node:path";
 import type { BrowserWindow } from "electron";
-import {
-  type BinaryName,
-  getShellPathSync,
-  resolveExecutablesOnPathSync,
-} from "../../server/shell-path.js";
+import { getShellPathSync } from "../../server/shell-path.js";
 import type { CatalogEntry } from "../../shared/agent-db-contract.js";
+import {
+  HARNESS_AUTO,
+  StreamRunErrorCode,
+  type StreamRunResult,
+} from "../../shared/install-run-contract.js";
+import { redriveOnDbHostExit } from "../database/db-host/db-host-exit-redrive.js";
+import { dropOnDbHostLifecycleError } from "../database/db-host/db-host-fire-and-forget.js";
 import type { DbHostAgentDatabase } from "../database/sqlite.js";
-import { stripAnsi } from "../diagnostics-helpers.js";
-import { gatewayLog } from "../gateway-logger.js";
-import { sendToRendererWindow } from "../renderer-ipc.js";
+import { stripAnsi } from "../diagnostics/diagnostics-helpers.js";
+import { sendToRendererWindow } from "../ipc/renderer-ipc.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
 import { getCatalog, inFlightInstallRun } from "./catalog-store.js";
+import {
+  buildAllowedChildEnv,
+  looksProjectRelative,
+  resolveSpawnCwd,
+} from "./install-child-env.js";
+import {
+  type InstallAction,
+  resolveAutoCommand,
+} from "./install-command-resolver.js";
 
 // streamRun runs in the MAIN process, so it takes the proxied agentDatabase
 // (NOT the raw `prisma`): clone-safe `prisma.client` reads plus the clone-safe
@@ -50,9 +68,30 @@ type StreamRunDb = Pick<
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const TAIL_BYTES = 4096;
+/** Placeholder runId for error events sent before a DB row exists. */
+const ERROR_RUN_ID = -1;
+/** Grace period between SIGTERM and SIGKILL when a run overruns its timeout. */
+const SIGKILL_GRACE_MS = 2000;
 
 const TRUSTED_ACTION_HEADER = "x-agent-dashboard-trusted-action";
 const TRUSTED_ACTION_VALUE = "catalog-mutate";
+
+/**
+ * Run ids this process spawned and has not yet seen exit.
+ *
+ * `pack_install_runs` cannot answer "is a run in flight" on its own. A row is
+ * closed by ONE best-effort write in `child.on("close")`, and both a db-host
+ * lifecycle event and an app shutdown can lose it — nothing ever reopens the
+ * row afterwards. Treating every `ended_at IS NULL` row as a running process
+ * therefore collapses "never observed to end" into "still running" and rejects
+ * every later install/uninstall of that pack as `in_flight`, permanently.
+ *
+ * A run is in flight only while the process that spawned it still holds the
+ * child, which is exactly what this set tracks. Bounded by construction: one
+ * entry per spawn, deleted unconditionally on `close`, and the guard already
+ * forbids a second concurrent run for the same pack.
+ */
+const liveRunIds = new Set<number>();
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,289 +113,50 @@ export type InstallOutputChunk = {
 export type StreamRunOptions = {
   pack_id: string;
   harness: string;
-  action: "install" | "uninstall";
+  action: InstallAction;
   cwd?: string;
   getWindow: () => BrowserWindow | null;
   onComplete?: (result: { exit_code: number; killed: boolean }) => void;
   timeoutMs?: number;
 };
 
-export type StreamRunResult = {
-  started: boolean;
-  runId?: number;
-  error?: { code: string; message: string };
+/**
+ * The command text a run resolved to, or the reason it could not resolve. A
+ * discriminated union so a caller cannot read `command` without having handled
+ * the failure.
+ */
+type RunCommandResolution =
+  | {
+      /** The script to spawn: one command, or the joined multi-step form. */
+      command: string;
+      /**
+       * The individual commands behind `command`. For a joined multi-harness
+       * run these are the steps; for every other path it is the single command.
+       * The project-scoped guard surfaces THESE to the user, never the joined
+       * aggregate, which would be an unusable paste.
+       */
+      commands: string[];
+      /**
+       * The concrete harnesses this run covers. Recorded on the audit row so
+       * `pack_install_runs.harness` says what was actually installed rather
+       * than the `"auto"` sentinel the caller asked for.
+       */
+      harnesses: string[];
+      failure?: undefined;
+    }
+  | {
+      command?: undefined;
+      commands?: undefined;
+      harnesses?: undefined;
+      failure: { code: StreamRunErrorCode; message: string; reason: string };
+    };
+
+/** A pre-flight rejection: the closed error code plus its IPC `complete` reason. */
+type RunFailure = {
+  code: StreamRunErrorCode;
+  message: string;
+  reason: string;
 };
-
-// ---------------------------------------------------------------------------
-// Tail helpers (ANSI stripping uses the canonical stripAnsi from
-// diagnostics-helpers, which also handles 8-bit CSI sequences)
-// ---------------------------------------------------------------------------
-
-function tailBytes(buffer: string): string | null {
-  if (!buffer) {
-    return null;
-  }
-  const stripped = stripAnsi(buffer);
-  if (stripped.length <= TAIL_BYTES) {
-    return stripped;
-  }
-  return `\u2026${stripped.slice(stripped.length - TAIL_BYTES)}`;
-}
-
-// ---------------------------------------------------------------------------
-// IPC send helper (replaces SSE)
-// ---------------------------------------------------------------------------
-
-function sendIpc(
-  getWindow: () => BrowserWindow | null,
-  runId: number,
-  type: InstallOutputChunk["type"],
-  data: unknown
-): void {
-  const chunk: InstallOutputChunk = { runId, type, data };
-  sendToRendererWindow(getWindow(), "desktop:pack:install-output", chunk);
-}
-
-// ---------------------------------------------------------------------------
-// Environment & CWD helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal env passed to child install processes.
- *
- * Only an allowlist of variables needed for sane CLI execution (PATH for
- * binary lookup, HOME / USER for ~/ expansion, LANG / TERM for proper
- * rendering, SHELL for `sh -c`) is passed through. Callers that already
- * resolved a shell PATH can pass `pathOverride` so command selection and child
- * execution use the same lookup path. A malicious or compromised catalog entry
- * cannot exfiltrate Closedloop tokens, PostHog keys, API keys, or shell
- * credentials.
- */
-export function buildAllowedChildEnv(
-  parentEnv: Record<string, string | undefined> = process.env,
-  cwd: string | null = null,
-  pathOverride: string | null = null
-): Record<string, string> {
-  const allowed = [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
-    "TMPDIR",
-    "HOMEBREW_PREFIX",
-    "HOMEBREW_CELLAR",
-    "HOMEBREW_REPOSITORY",
-    "PYTHONUNBUFFERED",
-  ];
-  const out: Record<string, string> = {};
-  const childPath =
-    typeof pathOverride === "string" && pathOverride.length > 0
-      ? pathOverride
-      : parentEnv.PATH;
-  for (const key of allowed) {
-    const val = key === "PATH" ? childPath : parentEnv[key];
-    if (typeof val === "string" && val.length > 0) {
-      out[key] = val;
-    }
-  }
-  if (!out.HOME) {
-    out.HOME = homedir();
-  }
-  if (cwd) {
-    out.INIT_CWD = cwd;
-    out.PWD = cwd;
-  }
-  return out;
-}
-
-/**
- * Heuristic for catalog commands that operate on the current directory and
- * must NOT be run without an explicit, validated project cwd. Only matches
- * unambiguous "writes to cwd" signals:
- *   --directory .   (npx-style)
- *   --directory=.   (gnu-arg-style)
- *    -C .           (make / git -C style)
- */
-const PROJECT_RELATIVE_HINTS = ["--directory .", "--directory=.", " -C ."];
-
-export function looksProjectRelative(command: string): boolean {
-  if (typeof command !== "string") {
-    return false;
-  }
-  return PROJECT_RELATIVE_HINTS.some((hint) => command.includes(hint));
-}
-
-/**
- * Validate and resolve a requested CWD for subprocess spawning.
- * Throws with `.code = "EBADCWD"` on invalid input.
- */
-export function resolveSpawnCwd(
-  requestedCwd: string | undefined | null
-): string | null {
-  if (typeof requestedCwd !== "string" || requestedCwd.trim().length === 0) {
-    return null;
-  }
-
-  const trimmed = requestedCwd.trim();
-  if (!path.isAbsolute(trimmed)) {
-    const err = new Error("cwd must be an absolute path") as Error & {
-      code: string;
-    };
-    err.code = "EBADCWD";
-    throw err;
-  }
-
-  const abs = path.resolve(trimmed);
-  let stat: ReturnType<typeof statSync>;
-  try {
-    stat = statSync(abs);
-  } catch {
-    const err = new Error(`cwd does not exist: ${abs}`) as Error & {
-      code: string;
-    };
-    err.code = "EBADCWD";
-    throw err;
-  }
-  if (!stat.isDirectory()) {
-    const err = new Error(`not a directory: ${abs}`) as Error & {
-      code: string;
-    };
-    err.code = "EBADCWD";
-    throw err;
-  }
-  if (abs === "/" || abs === path.parse(abs).root) {
-    const err = new Error("refusing to spawn at filesystem root") as Error & {
-      code: string;
-    };
-    err.code = "EBADCWD";
-    throw err;
-  }
-  return abs;
-}
-
-// ---------------------------------------------------------------------------
-// Harness detection
-// ---------------------------------------------------------------------------
-
-const HARNESS_CLI_BINARIES: Record<string, BinaryName> = {
-  claude: "claude",
-  codex: "codex",
-};
-
-/**
- * Probe whether a harness CLI is installed on PATH. Used by `single_install`
- * packs so we install only for the harnesses the user actually has. Reads
- * `childEnv.PATH` so detection stays consistent with install subprocess lookup.
- * Best-effort and short-timeout — never blocks long.
- */
-export function isHarnessInstalled(
-  harness: string,
-  childEnv: Record<string, string | undefined> = buildAllowedChildEnv(
-    process.env,
-    null,
-    getShellPathSync()
-  )
-): boolean {
-  const bin = HARNESS_CLI_BINARIES[harness];
-  if (!bin) {
-    return false;
-  }
-  try {
-    return resolveExecutablesOnPathSync(bin, childEnv.PATH ?? "").length > 0;
-  } catch {
-    return false;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Command selection for single_install packs
-// ---------------------------------------------------------------------------
-
-/**
- * Join independent cleanup commands so each runs regardless of whether
- * prior ones fail, but the aggregate exit code reflects any failure.
- */
-export function joinIndependentCleanupCommands(commands: string[]): string {
-  const failureVar = "__closedloop_uninstall_failed";
-  return [
-    `${failureVar}=0`,
-    ...commands.map(
-      (command) => `if ! ( ${command} ); then ${failureVar}=1; fi`
-    ),
-    `exit $${failureVar}`,
-  ].join("; ");
-}
-
-/**
- * For `single_install` packs (gstack), pick the command to run for install
- * or uninstall.
- *
- * INSTALL — pick the SUPERSET command. By convention the codex install
- * command is a superset of the claude install command. Running it once
- * installs for all detected CLIs.
- *
- * UNINSTALL — run all uninstall commands independently but aggregate
- * failures. Runs for ALL listed harnesses (not just CLIs on PATH) because
- * on-disk artifacts may outlive the CLI install.
- *
- * Returns { command, registerHarnesses }.
- */
-export function pickSingleInstallCommand(
-  entry: CatalogEntry,
-  action: "install" | "uninstall",
-  childEnv: Record<string, string | undefined> = buildAllowedChildEnv(
-    process.env,
-    null,
-    getShellPathSync()
-  )
-): { command: string | null; registerHarnesses: string[] } {
-  const cmdMap =
-    action === "uninstall" ? entry.uninstallCommands : entry.installCommands;
-  const harnesses = Array.isArray(entry.harnesses) ? entry.harnesses : [];
-
-  if (action === "uninstall") {
-    // Run ALL listed harnesses' uninstall commands independently.
-    const cmds = harnesses
-      .map((h) => cmdMap?.[h])
-      .filter((c): c is string => Boolean(c));
-    if (cmds.length === 0) {
-      return { command: null, registerHarnesses: [] };
-    }
-    return {
-      command: joinIndependentCleanupCommands(cmds),
-      registerHarnesses: harnesses,
-    };
-  }
-
-  // Install path — only consider harnesses whose CLI is actually present.
-  const installed = harnesses.filter((h) => isHarnessInstalled(h, childEnv));
-  if (installed.length === 0) {
-    return { command: null, registerHarnesses: [] };
-  }
-  // Prefer codex command when codex is present (superset convention).
-  const codexFirst = ["codex", "claude"];
-  for (const h of codexFirst) {
-    if (installed.includes(h) && cmdMap?.[h]) {
-      return { command: cmdMap[h], registerHarnesses: installed };
-    }
-  }
-  // Last resort: any command for any installed harness.
-  for (const h of installed) {
-    if (cmdMap?.[h]) {
-      return { command: cmdMap[h], registerHarnesses: installed };
-    }
-  }
-  return { command: null, registerHarnesses: [] };
-}
-
-// ---------------------------------------------------------------------------
-// Origin / trusted-action validation (ported from catalog-action-handler.js)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Core: streamRun
@@ -376,81 +176,31 @@ export async function streamRun(
   db: StreamRunDb,
   opts: StreamRunOptions
 ): Promise<StreamRunResult> {
-  const { pack_id, harness, action, getWindow, onComplete } = opts;
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const { pack_id, harness, action, getWindow } = opts;
   const requestedCwd = typeof opts.cwd === "string" ? opts.cwd.trim() : "";
-
-  // Placeholder runId for error events sent before a DB row exists
-  const errorRunId = -1;
 
   const entry = await getCatalog(db.prisma, pack_id);
   if (!entry) {
-    sendIpc(getWindow, errorRunId, "error", {
+    return failRun(getWindow, {
+      code: StreamRunErrorCode.NotFound,
       message: `pack_id not in catalog: ${pack_id}`,
-    });
-    sendIpc(getWindow, errorRunId, "complete", {
-      exit_code: -1,
       reason: "not_found",
     });
-    return {
-      started: false,
-      error: {
-        code: "ENOTFOUND",
-        message: `pack_id not in catalog: ${pack_id}`,
-      },
-    };
   }
 
   const childPath = getShellPathSync();
 
-  // For `single_install` packs, the catalog UI sends harness="auto" and we
-  // pick the command that covers all installed CLIs in one run.
-  let command: string | null | undefined;
-  // resolvedHarnesses tracks which CLIs this run covers (used by callers for
-  // pack scanner registration after successful install).
-  let _resolvedHarnesses: string[] = [harness];
-
-  if (entry.singleInstall && harness === "auto") {
-    const picked = pickSingleInstallCommand(
-      entry,
-      action,
-      buildAllowedChildEnv(process.env, null, childPath)
-    );
-    command = picked.command;
-    _resolvedHarnesses = picked.registerHarnesses;
-    if (!command) {
-      const noCommandMessage =
-        action === "uninstall"
-          ? `pack '${pack_id}' is single_install but no uninstall commands are configured for any listed harness.`
-          : `pack '${pack_id}' is single_install but no supported CLI is on PATH. ` +
-            "Install Claude Code or Codex first, then try again.";
-      sendIpc(getWindow, errorRunId, "error", { message: noCommandMessage });
-      sendIpc(getWindow, errorRunId, "complete", {
-        exit_code: -1,
-        reason: action === "uninstall" ? "no_command" : "no_cli_detected",
-      });
-      return {
-        started: false,
-        error: {
-          code: action === "uninstall" ? "ENOCOMMAND" : "ENOCLI",
-          message: noCommandMessage,
-        },
-      };
-    }
-  } else {
-    const commandMap =
-      action === "uninstall" ? entry.uninstallCommands : entry.installCommands;
-    command = commandMap?.[harness];
-    if (!command) {
-      const msg = `no ${action} command for harness '${harness}' on pack '${pack_id}'`;
-      sendIpc(getWindow, errorRunId, "error", { message: msg });
-      sendIpc(getWindow, errorRunId, "complete", {
-        exit_code: -1,
-        reason: "no_command",
-      });
-      return { started: false, error: { code: "ENOCOMMAND", message: msg } };
-    }
+  const resolved = resolveRunCommand(
+    entry,
+    pack_id,
+    harness,
+    action,
+    childPath
+  );
+  if (resolved.failure) {
+    return failRun(getWindow, resolved.failure);
   }
+  const { command, commands: resolvedCommands, harnesses } = resolved;
 
   // Validate CWD
   let resolvedCwd: string | null = null;
@@ -458,56 +208,68 @@ export async function streamRun(
     resolvedCwd = resolveSpawnCwd(requestedCwd);
   } catch (error: unknown) {
     const errObj = error as Error & { code?: string };
-    const code = errObj.code ?? "EBADCWD";
+    // resolveSpawnCwd only ever throws `.code = "EBADCWD"`; anything else is
+    // still a bad-cwd class of failure at this boundary.
+    const code = StreamRunErrorCode.BadCwd;
     const message = errObj.message ?? "invalid cwd";
-    sendIpc(getWindow, errorRunId, "error", { code, message });
-    sendIpc(getWindow, errorRunId, "complete", {
-      exit_code: -1,
-      reason: "invalid_cwd",
-    });
-    return { started: false, error: { code, message } };
+    return failRun(
+      getWindow,
+      { code, message, reason: "invalid_cwd" },
+      { code }
+    );
   }
 
-  // Concurrency guard
+  // Concurrency guard. An open row only blocks while THIS process still holds
+  // the child — see `liveRunIds` for why the row alone cannot be trusted.
   const inFlight = await inFlightInstallRun(db.prisma, pack_id);
+  if (inFlight && liveRunIds.has(inFlight.id)) {
+    return failRun(
+      getWindow,
+      {
+        code: StreamRunErrorCode.InFlight,
+        message: `another run for ${pack_id} is already in-flight (started ${inFlight.started_at})`,
+        reason: "in_flight",
+      },
+      { in_flight_run_id: inFlight.id }
+    );
+  }
   if (inFlight) {
-    const msg = `another run for ${pack_id} is already in-flight (started ${inFlight.started_at})`;
-    sendIpc(getWindow, errorRunId, "error", {
-      message: msg,
-      in_flight_run_id: inFlight.id,
-    });
-    sendIpc(getWindow, errorRunId, "complete", {
-      exit_code: -1,
-      reason: "in_flight",
-    });
-    return { started: false, error: { code: "EINFLIGHT", message: msg } };
+    // Not fabricating an end for it: `ended_at IS NULL` is the truth — this run
+    // was never observed to finish. Only the INFERENCE that it is still running
+    // is wrong, and it is the one thing corrected here.
+    gatewayLog.warn(
+      "[install-orchestrator]",
+      `pack install run ${inFlight.id} (${pack_id}, started ${inFlight.started_at}) has no recorded end and is not running in this process; not treating it as in-flight`
+    );
   }
 
   // Project-scoped guard
   const requiresProjectCwd =
     entry.projectScoped || looksProjectRelative(command);
   if (requiresProjectCwd && !resolvedCwd) {
-    sendIpc(getWindow, errorRunId, "copy_command", {
+    sendIpc(getWindow, ERROR_RUN_ID, "copy_command", {
       pack_id,
-      command,
+      // The runnable step(s), not the `if ! ( … ); then …` aggregate.
+      command: resolvedCommands.join("\n"),
+      commands: resolvedCommands,
       reason: entry.projectScoped ? "project_scoped" : "looks_project_relative",
     });
-    const msg =
-      `pack '${pack_id}' is project-scoped (command operates on cwd). ` +
-      "Provide an explicit `cwd` for the install — otherwise it would " +
-      `run in the app's launch directory, not your project.`;
-    sendIpc(getWindow, errorRunId, "error", { message: msg });
-    sendIpc(getWindow, errorRunId, "complete", {
-      exit_code: -1,
+    return failRun(getWindow, {
+      code: StreamRunErrorCode.CwdRequired,
+      message:
+        `pack '${pack_id}' is project-scoped (command operates on cwd). ` +
+        "Provide an explicit `cwd` for the install — otherwise it would " +
+        "run in the app's launch directory, not your project.",
       reason: "cwd_required",
     });
-    return { started: false, error: { code: "ECWDREQUIRED", message: msg } };
   }
 
   // Record the run and start streaming
   const runId = await db.recordPackInstallRunStart({
     pack_id,
-    harness,
+    // ISS-5027: the resolved harness(es), so the audit row is actionable. The
+    // sentinel would have said `"auto"` for a run that covered claude+codex.
+    harness: harnesses.join(","),
     action,
     command,
   });
@@ -516,6 +278,166 @@ export async function streamRun(
     command,
     cwd: resolvedCwd,
   });
+
+  spawnAndStream(db, {
+    command,
+    cwd: resolvedCwd,
+    entry,
+    opts,
+    runId,
+    shellPath: childPath,
+  });
+
+  return { started: true, runId };
+}
+
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
+export { TRUSTED_ACTION_HEADER, TRUSTED_ACTION_VALUE };
+
+// ---------------------------------------------------------------------------
+// Tail helpers (ANSI stripping uses the canonical stripAnsi from
+// diagnostics-helpers, which also handles 8-bit CSI sequences)
+// ---------------------------------------------------------------------------
+
+function tailBytes(buffer: string): string | null {
+  if (!buffer) {
+    return null;
+  }
+  const stripped = stripAnsi(buffer);
+  if (stripped.length <= TAIL_BYTES) {
+    return stripped;
+  }
+  return `…${stripped.slice(stripped.length - TAIL_BYTES)}`;
+}
+
+// ---------------------------------------------------------------------------
+// IPC send helper (replaces SSE)
+// ---------------------------------------------------------------------------
+
+function sendIpc(
+  getWindow: () => BrowserWindow | null,
+  runId: number,
+  type: InstallOutputChunk["type"],
+  data: unknown
+): void {
+  const chunk: InstallOutputChunk = { runId, type, data };
+  sendToRendererWindow(getWindow(), "desktop:pack:install-output", chunk);
+}
+
+/**
+ * Emit the `error` + `complete` pair every pre-flight rejection sends, and hand
+ * back the matching rejected {@link StreamRunResult}.
+ *
+ * `errorExtra` carries the few rejection-specific fields (the bad-cwd `code`,
+ * the in-flight run id). `message` is spread last so an extra field can never
+ * clobber it.
+ */
+function failRun(
+  getWindow: () => BrowserWindow | null,
+  failure: RunFailure,
+  errorExtra?: Record<string, unknown>
+): StreamRunResult {
+  const { code, message, reason } = failure;
+  sendIpc(getWindow, ERROR_RUN_ID, "error", { ...errorExtra, message });
+  sendIpc(getWindow, ERROR_RUN_ID, "complete", { exit_code: -1, reason });
+  return { started: false, error: { code, message } };
+}
+
+/**
+ * Resolve the requested harness to runnable command text.
+ *
+ * ISS-5027: `harness === "auto"` means "main resolves the concrete harness(es)",
+ * and EVERY caller without an explicit user choice sends it — the renderer
+ * install action, the opt-in banner, and the distribution auto-installer. It
+ * used to be honored only for `single_install` packs, so any other pack fell
+ * through to a command-map lookup keyed by the sentinel and failed with
+ * `no install command for harness 'auto'`, i.e. the whole class of pack was
+ * unreachable through the distribution path.
+ */
+function resolveRunCommand(
+  entry: CatalogEntry,
+  packId: string,
+  harness: string,
+  action: InstallAction,
+  shellPath: string
+): RunCommandResolution {
+  if (harness === HARNESS_AUTO) {
+    return resolveAutoRunCommand(entry, packId, action, shellPath);
+  }
+
+  const commandMap =
+    action === "uninstall" ? entry.uninstallCommands : entry.installCommands;
+  // `typeof === "string"`, not a bare truthiness check (ISS-5248). Of the three
+  // command gates this is the one an EXTERNALLY-supplied `harness` reaches —
+  // cloud → relay → the local gateway's member-pack install — so a name like
+  // "constructor" is attacker-adjacent input. `stringRecordOrNull` builds the
+  // map null-prototype, which is the real fix; this is the instance-level
+  // backstop so the spawn path does not rely on that alone.
+  const command = commandMap?.[harness];
+  if (typeof command !== "string" || command.length === 0) {
+    return {
+      failure: {
+        code: StreamRunErrorCode.NoCommand,
+        message: `no ${action} command for harness '${harness}' on pack '${packId}'`,
+        reason: "no_command",
+      },
+    };
+  }
+  return { command, commands: [command], harnesses: [harness] };
+}
+
+/** The `HARNESS_AUTO` branch of {@link resolveRunCommand}. */
+function resolveAutoRunCommand(
+  entry: CatalogEntry,
+  packId: string,
+  action: InstallAction,
+  shellPath: string
+): RunCommandResolution {
+  const picked = resolveAutoCommand(
+    entry,
+    packId,
+    action,
+    buildAllowedChildEnv(process.env, null, shellPath)
+  );
+  if (picked.unavailable) {
+    const { code, message } = picked.unavailable;
+    return {
+      failure: {
+        code,
+        message,
+        reason:
+          code === StreamRunErrorCode.NoCli ? "no_cli_detected" : "no_command",
+      },
+    };
+  }
+  return {
+    command: picked.command,
+    commands: picked.commands,
+    harnesses: picked.registerHarnesses,
+  };
+}
+
+/**
+ * Spawn the resolved command, stream its output to the renderer, enforce the
+ * hard timeout, and close out the audit row when the child exits.
+ */
+function spawnAndStream(
+  db: StreamRunDb,
+  params: {
+    command: string;
+    cwd: string | null;
+    entry: CatalogEntry;
+    opts: StreamRunOptions;
+    runId: number;
+    shellPath: string;
+  }
+): void {
+  const { command, cwd, entry, opts, runId, shellPath } = params;
+  const { action, getWindow, onComplete } = opts;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   let stdoutBuf = "";
   let stderrBuf = "";
@@ -527,13 +449,14 @@ export async function streamRun(
     cwd?: string;
   } = {
     stdio: ["ignore", "pipe", "pipe"],
-    env: buildAllowedChildEnv(process.env, resolvedCwd, childPath),
+    env: buildAllowedChildEnv(process.env, cwd, shellPath),
   };
-  if (resolvedCwd) {
-    spawnOpts.cwd = resolvedCwd;
+  if (cwd) {
+    spawnOpts.cwd = cwd;
   }
 
   const child = spawn("sh", ["-c", command], spawnOpts);
+  liveRunIds.add(runId);
 
   const timer = setTimeout(() => {
     killed = true;
@@ -551,7 +474,7 @@ export async function streamRun(
         } catch {
           /* already dead */
         }
-      }, 2000);
+      }, SIGKILL_GRACE_MS);
     } catch {
       /* already dead */
     }
@@ -580,12 +503,36 @@ export async function streamRun(
 
   child.on("close", (code: number | null, signal: string | null) => {
     clearTimeout(timer);
+    liveRunIds.delete(runId);
     const exitCode = code ?? -1;
-    void db.recordPackInstallRunEnd(runId, {
-      exit_code: killed ? -1 : exitCode,
-      stdout_tail: tailBytes(stdoutBuf),
-      stderr_tail: tailBytes(stderrBuf),
-    });
+    const guardOptions = {
+      label: `pack install run ${runId} end`,
+      log: (message: string) =>
+        gatewayLog.warn("[install-orchestrator]", message),
+    };
+    // ISS-6164: a `child.on("close")` handler has no error path, so an
+    // unguarded `void` here let a db-host bounce reach
+    // handleUnhandledRejection — which exits the app.
+    //
+    // Re-drive before dropping: this completion is an idempotent `updateMany`
+    // on one row, so replaying it against the replacement host is safe, and it
+    // is the only write that ever closes the run out. Dropping it outright
+    // would leave `ended_at` null for good. `dropOnDbHostLifecycleError` stays
+    // as the outer guard for the exits the re-drive deliberately does not
+    // replay (a shutdown, an exit with no replacement scheduled) and for an
+    // exhausted attempt bound.
+    dropOnDbHostLifecycleError(
+      redriveOnDbHostExit(
+        () =>
+          db.recordPackInstallRunEnd(runId, {
+            exit_code: killed ? -1 : exitCode,
+            stdout_tail: tailBytes(stdoutBuf),
+            stderr_tail: tailBytes(stderrBuf),
+          }),
+        guardOptions
+      ),
+      guardOptions
+    );
 
     // On successful install: surface the pack's post_install block before the
     // complete event so the client can render a "next steps" screen.
@@ -600,41 +547,37 @@ export async function streamRun(
 
     sendIpc(getWindow, runId, "complete", {
       exit_code: killed ? -1 : exitCode,
-      reason: killed ? "timeout" : signal ? `signal:${signal}` : "exit",
+      reason: completionReason(killed, signal),
       run_id: runId,
     });
 
-    if (typeof onComplete === "function") {
-      try {
-        onComplete({ exit_code: exitCode, killed });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        gatewayLog.warn(
-          "[install-orchestrator] onComplete callback failed:",
-          msg
-        );
-      }
-    }
+    runOnComplete(onComplete, { exit_code: exitCode, killed });
   });
-
-  return { started: true, runId };
 }
 
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
+/** How a finished run is reported: timed out, signalled, or a plain exit. */
+function completionReason(killed: boolean, signal: string | null): string {
+  if (killed) {
+    return "timeout";
+  }
+  if (signal) {
+    return `signal:${signal}`;
+  }
+  return "exit";
+}
 
-export { TRUSTED_ACTION_HEADER, TRUSTED_ACTION_VALUE };
-
-// Test-only internals (mirrors the old _internals export for unit tests)
-export const _internals = {
-  buildAllowedChildEnv,
-  looksProjectRelative,
-  resolveSpawnCwd,
-  stripAnsi,
-  tailBytes,
-  isHarnessInstalled,
-  joinIndependentCleanupCommands,
-  pickSingleInstallCommand,
-  sendIpc,
-};
+/** The caller's rescan hook — best-effort; a throwing hook must not escape. */
+function runOnComplete(
+  onComplete: StreamRunOptions["onComplete"],
+  result: { exit_code: number; killed: boolean }
+): void {
+  if (typeof onComplete !== "function") {
+    return;
+  }
+  try {
+    onComplete(result);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    gatewayLog.warn("[install-orchestrator] onComplete callback failed:", msg);
+  }
+}

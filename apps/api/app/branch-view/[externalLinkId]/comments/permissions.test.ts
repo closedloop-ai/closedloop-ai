@@ -6,7 +6,8 @@ import {
   type BranchViewCommentAction as BranchViewCommentActionType,
   CommentKind,
 } from "@repo/api/src/types/branch-view";
-import { describe, expect, it } from "vitest";
+import { API_KEY_SCOPES_UNRESOLVABLE_EVENT } from "@repo/api/src/utils/api-key-scope-resolution";
+import { describe, expect, it, vi } from "vitest";
 import {
   type BranchViewCommentGithubIdentity,
   type BranchViewCommentPermissionAuth,
@@ -15,6 +16,12 @@ import {
   canPerformBranchViewCommentAction,
   getRequiredBranchViewCommentApiKeyScopes,
 } from "./permissions";
+
+const { logError } = vi.hoisted(() => ({ logError: vi.fn() }));
+
+vi.mock("@repo/observability/log", () => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: logError },
+}));
 
 const ORG_ID = "org-1";
 const OTHER_ORG_ID = "org-2";
@@ -176,14 +183,58 @@ describe("canPerformBranchViewCommentAction", () => {
       { authMethod: "api_key", apiKeyScopes: ["delete"] },
       BranchViewCommentActionResultCode.Success,
     ],
+    // ISS-4905: an api key whose scope set is absent, empty, or entirely
+    // unrecognized is missing data, not a grant. It used to inherit a hardcoded
+    // ["read","write","delete"] fallback, which made the least-specified
+    // credential the most privileged one.
     [
-      "legacy api key without explicit scopes keeps full-access fallback",
+      "api key without an explicit scope list fails closed",
       BranchViewCommentAction.Delete,
       { authMethod: "api_key", apiKeyScopes: undefined },
-      BranchViewCommentActionResultCode.Success,
+      BranchViewCommentActionResultCode.UnauthorizedCommentAction,
+    ],
+    [
+      "api key with an empty scope array fails closed",
+      BranchViewCommentAction.CreateConversation,
+      { authMethod: "api_key", apiKeyScopes: [] },
+      BranchViewCommentActionResultCode.UnauthorizedCommentAction,
+    ],
+    [
+      "api key with only unrecognized scopes fails closed",
+      BranchViewCommentAction.CreateConversation,
+      {
+        authMethod: "api_key",
+        apiKeyScopes: ["superuser"] as unknown as ApiKeyScope[],
+      },
+      BranchViewCommentActionResultCode.UnauthorizedCommentAction,
     ],
   ])("%s", (_label, action, auth, expectedCode) => {
     expect(permissionCode({ action, auth })).toBe(expectedCode);
+  });
+
+  it.each<[string, ApiKeyScope[] | undefined, string]>([
+    ["absent", undefined, "absent"],
+    ["empty", [], "empty"],
+    [
+      "all-unrecognized",
+      ["superuser"] as unknown as ApiKeyScope[],
+      "all_unrecognized",
+    ],
+  ])("reports an %s api-key scope set on the shared monitor", (_label, apiKeyScopes, expectedReason) => {
+    logError.mockReset();
+
+    permissionCode({
+      action: BranchViewCommentAction.CreateConversation,
+      auth: { authMethod: "api_key", apiKeyScopes },
+    });
+
+    expect(logError).toHaveBeenCalledWith(
+      API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+      expect.objectContaining({
+        surface: "branch_view_comment_permissions",
+        reason: expectedReason,
+      })
+    );
   });
 
   it("denies actions outside the caller organization", () => {

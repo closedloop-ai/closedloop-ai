@@ -4,8 +4,8 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildLoopUrl,
   describeIdOrSlug,
+  type McpUrlBuilder,
   readString,
   withErrorHandling,
 } from "./tool-utils.js";
@@ -16,7 +16,8 @@ import {
  */
 export function registerCreateLoop(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "create-loop",
@@ -83,7 +84,7 @@ export function registerCreateLoop(
         const result = await apiClient.post<unknown>("/loops", body);
         const record = asRecord(result);
         const resolvedId = readString(record.id) ?? readString(record.loopId);
-        const webUrl = resolvedId ? buildLoopUrl(resolvedId) : null;
+        const webUrl = resolvedId ? urls.buildLoopUrl(resolvedId) : null;
         return {
           content: [
             {

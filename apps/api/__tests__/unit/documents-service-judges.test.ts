@@ -72,6 +72,8 @@ const MOCK_JUDGE_SCORE_ROW = createMockJudgeScoreRow({
   prompt: null,
 });
 
+const EVAL_CREATED_AT = new Date("2026-07-23T18:00:00.000Z");
+
 const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
   {
     judgeScoreId: "judge-score-123",
@@ -82,6 +84,7 @@ const EXPECTED_FEEDBACK_ITEMS: JudgeFeedbackItem[] = [
     justification: "Test justification",
     finalStatus: EvalStatus.Passed,
     promptName: null,
+    evaluationCreatedAt: EVAL_CREATED_AT.toISOString(),
   },
 ];
 
@@ -101,7 +104,9 @@ function buildEvalRow(overrides?: {
     entityId: overrides?.artifactId,
     organizationId: overrides?.organizationId,
     reportType: overrides?.reportType,
-    createdAt: overrides?.createdAt,
+    // Always a Date: the real column is non-null (@default(now())), and the
+    // feedback mapper reads evaluation.createdAt.toISOString().
+    createdAt: overrides?.createdAt ?? EVAL_CREATED_AT,
   });
   // After cutover, only artifactId exists (no entityId/entityType).
   return {
@@ -142,6 +147,7 @@ const SCENARIO_REGISTRY: ScenarioConfig[] = [
                 id: "eval-123",
                 artifactId: "artifact-123",
                 organizationId: "org-123",
+                createdAt: EVAL_CREATED_AT,
               }),
               judgeScores: [MOCK_JUDGE_SCORE_ROW],
             }),
@@ -220,6 +226,7 @@ describe("documentEvaluationService.getEvaluationFeedback (PLAN)", () => {
         id: "eval-123",
         artifactId: "artifact-123",
         organizationId: "org-123",
+        createdAt: EVAL_CREATED_AT,
       }),
       judgeScores: [MOCK_JUDGE_SCORE_ROW],
     });

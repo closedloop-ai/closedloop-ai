@@ -5,12 +5,12 @@ import {
   ipcErrorTypeName,
   ipcSessionCount,
   measureIpcResult,
-} from "../src/main/agent-dashboard-ipc-perf.js";
+} from "../src/main/dashboard/agent-dashboard-ipc-perf.js";
+import type { SqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import {
   DesktopIpcOperation,
   type DesktopIpcPerfEventInput,
-} from "../src/main/app-otel-runtime.js";
-import type { SqliteAgentDatabase } from "../src/main/database/sqlite.js";
+} from "../src/main/telemetry/app-otel-runtime.js";
 
 // `instrumentIpcPerf` reads two `performance.now()` samples (start, end) to
 // compute the handler duration; stub them so the head-sampler's slow/fast

@@ -236,6 +236,25 @@ function ColorDot({ color }: Readonly<{ color: string }>) {
   );
 }
 
+// Shared remove control for the pill lists (multi-enum + people). Keeps a
+// focusable target with a visible focus ring and a rounded hit area rather than
+// a bare opacity-hover glyph.
+function RemoveValueButton({
+  label,
+  onRemove,
+}: Readonly<{ label: string; onRemove: () => void }>) {
+  return (
+    <button
+      className="ml-0.5 rounded-sm p-0.5 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      onClick={onRemove}
+      type="button"
+    >
+      <XIcon className="size-3" />
+      <span className="sr-only">Remove {label}</span>
+    </button>
+  );
+}
+
 function EnumFieldEditor({
   fieldId,
   entityType,
@@ -348,7 +367,20 @@ function MultiEnumFieldEditor({
     mutation.mutate({ fieldId, value: next });
   };
 
-  const selectedOptions = activeOptions.filter((o) => selected.includes(o.id));
+  // Derive pills from the full options list (not activeOptions) so a value that
+  // references a now-disabled option still renders a removable pill. Building
+  // from activeOptions leaves such an id in `selected` with no pill and no
+  // checkbox — an un-removable "ghost" selection.
+  const selectedOptions = options.filter((o) => selected.includes(o.id));
+
+  // Ids in the stored value that resolve to no option at all — e.g. an option
+  // hard-deleted from the field. Single-enum SetNulls via its FK, but
+  // multiEnumValueIds is a plain array with no referential integrity, so an
+  // orphaned id would otherwise inflate the "N selected" count with no pill and
+  // no way to remove it. Render them as removable "Unknown option" pills so the
+  // count always matches the pills shown and every stored id can be cleared.
+  const optionIds = new Set(options.map((o) => o.id));
+  const orphanedIds = selected.filter((id) => !optionIds.has(id));
 
   return (
     <div className="flex flex-col gap-2">
@@ -393,7 +425,7 @@ function MultiEnumFieldEditor({
         </PopoverContent>
       </Popover>
 
-      {selectedOptions.length > 0 && (
+      {(selectedOptions.length > 0 || orphanedIds.length > 0) && (
         <div className="flex flex-wrap gap-1">
           {selectedOptions.map((opt) => (
             <Badge
@@ -403,14 +435,23 @@ function MultiEnumFieldEditor({
             >
               <ColorDot color={opt.color} />
               <span>{opt.name}</span>
-              <button
-                className="ml-0.5 hover:opacity-70"
-                onClick={() => removeValue(opt.id)}
-                type="button"
-              >
-                <XIcon className="size-3" />
-                <span className="sr-only">Remove {opt.name}</span>
-              </button>
+              <RemoveValueButton
+                label={opt.name}
+                onRemove={() => removeValue(opt.id)}
+              />
+            </Badge>
+          ))}
+          {orphanedIds.map((id) => (
+            <Badge
+              className="flex items-center gap-1 pr-1"
+              key={id}
+              variant="secondary"
+            >
+              <span className="text-muted-foreground">Unknown option</span>
+              <RemoveValueButton
+                label="unknown option"
+                onRemove={() => removeValue(id)}
+              />
             </Badge>
           ))}
         </div>
@@ -503,14 +544,10 @@ function PeopleFieldEditor({
           variant="secondary"
         >
           <span>{getUserDisplayName(user)}</span>
-          <button
-            className="ml-0.5 hover:opacity-70"
-            onClick={() => removeUser(user.id)}
-            type="button"
-          >
-            <XIcon className="size-3" />
-            <span className="sr-only">Remove {getUserDisplayName(user)}</span>
-          </button>
+          <RemoveValueButton
+            label={getUserDisplayName(user)}
+            onRemove={() => removeUser(user.id)}
+          />
         </Badge>
       ))}
     </div>

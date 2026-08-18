@@ -29,6 +29,13 @@ vi.mock("next/image", () => ({
   default: () => null,
 }));
 
+// ISS-4477 gave the page a <Header> (SidebarTrigger + breadcrumb), which calls
+// useSidebar and would throw outside a SidebarProvider. These tests assert only
+// the summary-card grid, so stub the chrome to keep the render provider-free.
+vi.mock("@/app/(authenticated)/components/header", () => ({
+  Header: () => null,
+}));
+
 import { useLoopUsage } from "@repo/app/loops/hooks/use-loops";
 import LoopUsagePage from "@/app/(authenticated)/[orgSlug]/loops/usage/page-client";
 

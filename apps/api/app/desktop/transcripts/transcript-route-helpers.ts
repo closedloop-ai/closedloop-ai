@@ -24,6 +24,10 @@ export function transcriptErrorResponse(
   switch (reason) {
     case TranscriptSyncErrorReason.Forbidden:
       return forbiddenResponse();
+    // FEA-4169: org session-sync policy is OFF for this org — a denial (403),
+    // not a client re-plan. Same 403 family as ownership `Forbidden`.
+    case TranscriptSyncErrorReason.PolicyDisabled:
+      return forbiddenResponse();
     case TranscriptSyncErrorReason.RateLimited:
       return NextResponse.json(failure("Rate limited"), {
         status: 429,

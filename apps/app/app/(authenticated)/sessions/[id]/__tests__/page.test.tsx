@@ -1,107 +1,73 @@
-import { DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY } from "@repo/api/src/types/agent-session";
-import { createAgentSessionDetailFixture } from "@repo/app/agents/components/detail/agent-session-detail-fixtures";
-import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import SessionDetailPage from "../page";
 
-const {
-  headerMock,
-  routeParamsMock,
-  sharedDetailViewMock,
-  useAgentSessionDetailMock,
-} = vi.hoisted(() => ({
-  headerMock: vi.fn(),
-  routeParamsMock: vi.fn(),
-  sharedDetailViewMock: vi.fn(),
-  useAgentSessionDetailMock: vi.fn(),
+// FEA-4155: the legacy non-org `/sessions/[id]` detail (still `<FeatureFlagged>`
+// on the winding-down `DESKTOP_AGENT_SESSION_SYNC` flag) was collapsed into a
+// server-side redirect to the canonical `/{orgSlug}/sessions/[id]` route,
+// preserving the query string so transcript-file / invocation-anchor deep links
+// survive. This suite proves the redirect target, not the old rendered detail.
+
+const mocks = vi.hoisted(() => ({
+  auth: vi.fn(),
+  redirect: vi.fn(),
 }));
 
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
-  FeatureFlagged: ({
-    children,
-    flag,
-  }: {
-    children: ReactNode;
-    flag: string;
-  }) => <div data-feature-flag={flag}>{children}</div>,
+vi.mock("@repo/auth/server", () => ({
+  auth: mocks.auth,
 }));
 
-vi.mock("@repo/app/agents/components/detail/agent-session-detail-view", () => ({
-  AgentSessionDetailView: sharedDetailViewMock,
+vi.mock("next/navigation", () => ({
+  redirect: mocks.redirect,
 }));
 
-vi.mock("@repo/app/agents/hooks/use-agent-sessions", () => ({
-  useAgentSessionDetail: useAgentSessionDetailMock,
-}));
+import LegacySessionDetailRedirect from "../page";
 
-vi.mock("@repo/navigation/use-route-params", () => ({
-  useRouteParams: routeParamsMock,
-}));
+const ORG_SLUG = "acme";
+const SESSION_ID = "session-detail-1";
 
-vi.mock("@/app/(authenticated)/components/header", () => ({
-  Header: headerMock,
-}));
+function invoke(
+  searchParams: Record<string, string | string[] | undefined> = {}
+) {
+  return LegacySessionDetailRedirect({
+    params: Promise.resolve({ id: SESSION_ID }),
+    searchParams: Promise.resolve(searchParams),
+  });
+}
 
-describe("non-org session detail wrapper", () => {
+describe("legacy /sessions/[id] redirect (FEA-4155)", () => {
   beforeEach(() => {
-    headerMock.mockReset();
-    routeParamsMock.mockReset();
-    sharedDetailViewMock.mockReset();
-    useAgentSessionDetailMock.mockReset();
-    routeParamsMock.mockReturnValue({ id: "session-detail-1" });
-    useAgentSessionDetailMock.mockReturnValue({
-      data: createAgentSessionDetailFixture(),
-      isFetching: false,
-      isLoading: false,
-      refetch: vi.fn(),
-    });
-    headerMock.mockReturnValue(<div data-testid="header" />);
-    sharedDetailViewMock.mockReturnValue(<div data-testid="shared-detail" />);
+    vi.clearAllMocks();
   });
 
-  it("keeps feature flag, Header breadcrumbs, route id, and body prop ownership", () => {
-    render(<SessionDetailPage />);
+  it("redirects to the org detail route for a valid org slug", async () => {
+    mocks.auth.mockResolvedValue({ orgSlug: ORG_SLUG });
 
-    expect(
-      screen.getByTestId("shared-detail").closest("[data-feature-flag]")
-    ).toHaveAttribute(
-      "data-feature-flag",
-      DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY
-    );
-    expect(useAgentSessionDetailMock).toHaveBeenCalledWith("session-detail-1");
-    expect(headerMock).toHaveBeenCalledWith(
-      {
-        afterBreadcrumbs: expect.anything(),
-        breadcrumbs: [
-          { label: "Sessions", href: "/sessions" },
-          { label: "Desktop implementation session" },
-        ],
-        children: expect.anything(),
-        moreMenu: expect.anything(),
-      },
-      undefined
-    );
-    expect(sharedDetailViewMock).toHaveBeenCalledWith(
-      expect.not.objectContaining({ breadcrumbsHref: expect.anything() }),
-      undefined
-    );
-    expect(sharedDetailViewMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        backHref: "/sessions",
-        commentsRailOpen: true,
-        isLoading: false,
-        session: expect.objectContaining({ id: "session-detail-1" }),
-      }),
-      undefined
+    await invoke();
+
+    expect(mocks.redirect).toHaveBeenCalledWith(
+      `/${ORG_SLUG}/sessions/${SESSION_ID}`
     );
   });
 
-  it("coerces absent route ids to the disabled hook id", () => {
-    routeParamsMock.mockReturnValue({});
+  it("preserves the query string (transcript file / invocation anchor deep links)", async () => {
+    mocks.auth.mockResolvedValue({ orgSlug: ORG_SLUG });
 
-    render(<SessionDetailPage />);
+    await invoke({ file: "subagent-2", invocationAnchor: '{"kind":"event"}' });
 
-    expect(useAgentSessionDetailMock).toHaveBeenCalledWith("");
+    const target = mocks.redirect.mock.calls[0]?.[0] as string;
+    expect(target.startsWith(`/${ORG_SLUG}/sessions/${SESSION_ID}?`)).toBe(
+      true
+    );
+    expect(target).toContain("file=subagent-2");
+    expect(target).toContain(
+      `invocationAnchor=${encodeURIComponent('{"kind":"event"}')}`
+    );
+  });
+
+  it("falls back to the non-org detail path when no org slug is present", async () => {
+    mocks.auth.mockResolvedValue({ orgSlug: null });
+
+    await invoke();
+
+    expect(mocks.redirect).toHaveBeenCalledWith(`/sessions/${SESSION_ID}`);
   });
 });

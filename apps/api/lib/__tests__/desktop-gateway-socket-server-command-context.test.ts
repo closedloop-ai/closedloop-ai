@@ -63,12 +63,13 @@ vi.mock("../relay-event-bus", () => ({
   },
 }));
 
-vi.mock("../compute-target-signing-eligibility", () => ({
-  CommandSigningEligibilityStatus: {
-    Eligible: "eligible",
-    Ineligible: "ineligible",
-    Unknown: "unknown",
-  },
+// Only the function is faked: the real `CommandSigningEligibilityStatus` is
+// spread through so the mocked module cannot drift from the shape production
+// actually produces.
+vi.mock("../compute-target-signing-eligibility", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../compute-target-signing-eligibility")
+  >()),
   isDirectDesktopAuthSigningEligible: mockIsDirectDesktopAuthSigningEligible,
 }));
 
@@ -98,6 +99,7 @@ vi.mock("../desktop-telemetry-handler", () => ({
   handleTelemetryEvent: vi.fn().mockReturnValue({ ok: true, emits: [] }),
 }));
 
+import { CommandSigningEligibilityStatus } from "../compute-target-signing-eligibility";
 import { handleSocketConnection } from "../desktop-gateway-socket-server";
 
 type SocketHandler = (...args: unknown[]) => unknown;
@@ -140,7 +142,7 @@ describe("handleSocketConnection command telemetry context", () => {
     mockClearOperationBacklog.mockReturnValue(undefined);
     mockHeartbeat.mockResolvedValue(undefined);
     mockIsDirectDesktopAuthSigningEligible.mockResolvedValue({
-      status: "ineligible",
+      status: CommandSigningEligibilityStatus.Ineligible,
       reason: "missing_gateway",
     });
     mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(false);
@@ -207,7 +209,7 @@ describe("handleSocketConnection command telemetry context", () => {
   it("preserves server capabilities on direct sequence-gap hello acks", async () => {
     const { handlers, socket } = makeSocket();
     mockIsDirectDesktopAuthSigningEligible.mockResolvedValue({
-      status: "eligible",
+      status: CommandSigningEligibilityStatus.Eligible,
     });
     mockIsAgentSessionSyncSupportedForUser.mockResolvedValue(true);
     handleSocketConnection(socket as never);

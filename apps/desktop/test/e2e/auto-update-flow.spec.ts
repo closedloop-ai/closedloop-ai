@@ -11,7 +11,7 @@
  *   - A localhost fixture server (helpers/fake-update-feed) serves crafted
  *     electron-updater channel metadata advertising a newer version.
  *   - The app is launched with CL_DESKTOP_FAKE_UPDATE_FEED set (see
- *     src/main/fake-update-feed.ts), which (a) forces the packaged updater path
+ *     src/main/update/fake-update-feed.ts), which (a) forces the packaged updater path
  *     on in this unpackaged build, (b) points electron-updater's generic
  *     provider at the fixture, and (c) stubs the real `quitAndInstall` binary
  *     swap — which cannot apply an unsigned build and would itself hang.
@@ -31,12 +31,12 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { FAKE_UPDATE_HANDOFF_MARKER } from "../../src/main/fake-update-feed.js";
-import { launchDesktopApp } from "./helpers/desktop-app";
+import { FAKE_UPDATE_HANDOFF_MARKER } from "../../src/main/update/fake-update-feed.js";
+import { launchDesktopApp } from "./helpers/desktop-app.js";
 import {
   FAKE_FEED_UPDATE_VERSION,
   startFakeUpdateFeed,
-} from "./helpers/fake-update-feed";
+} from "./helpers/fake-update-feed.js";
 
 /** Bounded ceiling for the whole check → apply → handoff → exit sequence. */
 const HANDOFF_DEADLINE_MS = 30_000;

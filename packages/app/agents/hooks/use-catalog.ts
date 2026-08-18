@@ -8,6 +8,7 @@ import type {
   UpdateCatalogItemRequest,
 } from "@repo/api/src/types/distribution";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { LONG_RUNNING_API_TIMEOUT_MS } from "../../shared/api/api-timeout";
 import { useApiClient } from "../../shared/api/use-api-client";
 
 /**
@@ -192,11 +193,22 @@ export function useImportPackZip() {
 
   return useMutation({
     mutationFn: (packId: string) =>
+      // Long-running by design: the route downloads and parses a Pack zip of
+      // up to ZIP_MAX_BYTES and creates every child component before it
+      // responds, so it needs more than the default client deadline.
       apiClient.post<ImportPackZipResponse>(
         `/catalog/${packId}/import-zip`,
-        {}
+        {},
+        { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
       ),
-    onSuccess: (_, packId) => {
+    // ISS-5013: invalidate on SETTLED, not only on success. The import is
+    // server-side idempotent and commits under a per-pack advisory lock, so a
+    // client deadline can abandon a request whose children already landed. On
+    // `onSuccess` alone the pack would keep rendering its pre-import child count
+    // beside a toast about the same import — two claims about one pack, one of
+    // them false. `onSettled` does not replace the shared default error toast
+    // the way an `onError` override would.
+    onSettled: (_data, _error, packId) => {
       queryClient.invalidateQueries({ queryKey: catalogKeys.detail(packId) });
       queryClient.invalidateQueries({ queryKey: catalogKeys.lists() });
     },
@@ -216,11 +228,17 @@ export function useImportPackRepo() {
       packId,
       ...body
     }: ImportPackRepoRequest & { packId: string }) =>
+      // Long-running by design: the route walks the repo tree and fetches up
+      // to MAX_COMPONENT_FILES blobs at BLOB_FETCH_CONCURRENCY before it
+      // responds, so it needs more than the default client deadline.
       apiClient.post<ImportPackZipResponse>(
         `/catalog/${packId}/import-repo`,
-        body
+        body,
+        { timeoutMs: LONG_RUNNING_API_TIMEOUT_MS }
       ),
-    onSuccess: (_, { packId }) => {
+    // Settled, not success — see `useImportPackZip` for why a client deadline
+    // must still reconcile the pack's child count.
+    onSettled: (_data, _error, { packId }) => {
       queryClient.invalidateQueries({ queryKey: catalogKeys.detail(packId) });
       queryClient.invalidateQueries({ queryKey: catalogKeys.lists() });
     },

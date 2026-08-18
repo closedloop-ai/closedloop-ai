@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  type LoopBranchMaterializationEntry,
+  type LoopBranchMaterializationEnvelope,
+  LoopBranchMaterializationRole,
+} from "@closedloop-ai/loops-api/desktop-request";
 import { BRANCH_NAME_REGEX } from "@closedloop-ai/loops-api/execution-result";
 import {
   getMultiRepoPolicy,
@@ -6,11 +11,6 @@ import {
 } from "@closedloop-ai/loops-api/multi-repo-policy";
 import { BRANCH_NAME_MAX_LENGTH } from "@repo/api/src/types/artifact";
 import { type AdditionalRepoRef, LoopCommand } from "@repo/api/src/types/loop";
-import {
-  type LoopBranchMaterializationEntry,
-  type LoopBranchMaterializationEnvelope,
-  LoopBranchMaterializationRole,
-} from "@repo/api/src/types/loop-body";
 import { z } from "zod";
 
 type BranchRepoRef = {
@@ -24,30 +24,55 @@ const SLUG_TRIM_DASHES_REGEX = /^-+|-+$/g;
 const BRANCH_HASH_SEPARATOR = "\0";
 const BRANCH_SLUG_MAX_LENGTH = 50;
 
+/**
+ * Field validators for one materialization entry, kept as a standalone literal
+ * so the keys-covered guard below can see them.
+ *
+ * `satisfies Record<keyof LoopBranchMaterializationEntry, z.ZodTypeAny>` is the
+ * compile-time guard (FEA-3701, root AGENTS.md). The entry type is owned by
+ * `@closedloop-ai/loops-api/desktop-request` and crosses a process boundary — this
+ * server builds the envelope, Desktop carries it, and the branch-artifact
+ * callback route re-validates it here. Because this schema is `.strict()`, a
+ * field added to the shared type and emitted by `buildLoopBranchMaterialization`
+ * without being taught here would make the callback reject the ENTIRE envelope,
+ * losing every branch on the loop rather than the one new field. `satisfies`
+ * turns that into a `tsc` failure instead.
+ */
+const branchMaterializationEntryShape = {
+  role: z.enum(LoopBranchMaterializationRole),
+  repositoryFullName: z.string().trim().min(1),
+  baseBranch: z
+    .string()
+    .trim()
+    .min(1)
+    .max(BRANCH_NAME_MAX_LENGTH)
+    .regex(BRANCH_NAME_REGEX),
+  branchName: z
+    .string()
+    .trim()
+    .min(1)
+    .max(BRANCH_NAME_MAX_LENGTH)
+    .regex(BRANCH_NAME_REGEX),
+} satisfies Record<keyof LoopBranchMaterializationEntry, z.ZodTypeAny>;
+
 export const branchMaterializationEntrySchema = z
-  .object({
-    role: z.enum(LoopBranchMaterializationRole),
-    repositoryFullName: z.string().trim().min(1),
-    baseBranch: z
-      .string()
-      .trim()
-      .min(1)
-      .max(BRANCH_NAME_MAX_LENGTH)
-      .regex(BRANCH_NAME_REGEX),
-    branchName: z
-      .string()
-      .trim()
-      .min(1)
-      .max(BRANCH_NAME_MAX_LENGTH)
-      .regex(BRANCH_NAME_REGEX),
-  })
+  .object(branchMaterializationEntryShape)
   .strict();
 
+/**
+ * Envelope field validators, standalone for the same keys-covered guard as
+ * {@link branchMaterializationEntryShape}. A field added to
+ * `LoopBranchMaterializationEnvelope` — the shape
+ * `buildLoopBranchMaterialization` returns — must be taught here or this
+ * `.strict()` boundary rejects the whole envelope.
+ */
+const branchMaterializationEnvelopeShape = {
+  schemaVersion: z.literal(1),
+  branches: z.array(branchMaterializationEntrySchema).min(1),
+} satisfies Record<keyof LoopBranchMaterializationEnvelope, z.ZodTypeAny>;
+
 export const branchMaterializationEnvelopeSchema = z
-  .object({
-    schemaVersion: z.literal(1),
-    branches: z.array(branchMaterializationEntrySchema).min(1),
-  })
+  .object(branchMaterializationEnvelopeShape)
   .strict();
 
 /**

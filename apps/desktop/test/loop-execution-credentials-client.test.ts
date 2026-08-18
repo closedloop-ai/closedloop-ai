@@ -5,12 +5,12 @@ import {
   DESKTOP_POP_SIGNATURE_HEADER,
   DESKTOP_POP_TIMESTAMP_HEADER,
   DesktopPopUnavailableError,
-} from "../src/main/desktop-pop.js";
+} from "../src/main/auth/desktop-pop.js";
 import {
   type FetchLoopExecutionCredentialsOptions,
   fetchLoopExecutionCredentials,
-} from "../src/main/loop-execution-credentials-client.js";
-import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/signed-loop-launch-error.js";
+} from "../src/main/loop/loop-execution-credentials-client.js";
+import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/loop/signed-loop-launch-error.js";
 
 const originalFetch = globalThis.fetch;
 

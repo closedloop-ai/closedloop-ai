@@ -3,13 +3,17 @@ import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildLoopUrl,
   encodePathSegment,
+  type McpUrlBuilder,
   readString,
   withErrorHandling,
 } from "./tool-utils.js";
 
-export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
+export function registerGetLoop(
+  server: McpServer,
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
+): void {
   server.registerTool(
     "get-loop",
     {
@@ -26,7 +30,7 @@ export function registerGetLoop(server: McpServer, apiClient: ApiClient): void {
         );
         const record = asRecord(loop);
         const resolvedId = readString(record.id) ?? loopId;
-        const webUrl = buildLoopUrl(resolvedId);
+        const webUrl = urls.buildLoopUrl(resolvedId);
         return {
           content: [
             {

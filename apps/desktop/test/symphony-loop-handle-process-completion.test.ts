@@ -5,8 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { JobStore, type LocalJob } from "../src/main/job-store.js";
-import { LoopTokenStore } from "../src/main/loop-token-store.js";
+import { JobStore, type LocalJob } from "../src/main/jobs/job-store.js";
+import { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
 import type { NativeLoopObservabilitySession } from "../src/server/operations/observability/native-loop-observability.js";
 import { handleProcessCompletion } from "../src/server/operations/symphony-loop.js";
 import { createTestLoopTokenSafeStorage } from "./loop-token-test-utils.js";
@@ -206,7 +206,8 @@ test("handleProcessCompletion uploads support bundle for failed loops without Jo
       command: LoopCommand.Execute,
       closedLoopAuthToken: "token",
       s3StateKey: "org-1/loops/loop-1/run-1",
-    } as Parameters<typeof handleProcessCompletion>[1],
+      artifacts: [],
+    },
     "http://127.0.0.1:12345",
     null,
     claudeWorkDir,

@@ -4,6 +4,7 @@ import { Priority } from "@repo/api/src/types/common";
 import type { DocumentWithProject } from "@repo/api/src/types/document";
 import { DocumentStatus, DocumentType } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
@@ -92,8 +93,12 @@ function makeSessionItem(id: string, status: string): DocumentRowItem {
 }
 
 const SESSION_ACTIVE = makeSessionItem("s1", "active");
-const SESSION_COMPLETED = makeSessionItem("s2", "completed");
-const SESSION_FAILED = makeSessionItem("s3", "failed");
+const SESSION_COMPLETED = makeSessionItem("s2", SESSION_STATUS.INACTIVE);
+// ISS-5592: the canonical failed spelling is `error` (it renders "Failed").
+// This fixture used the retired `failed`, which is incidental here — the cases
+// below want A terminal session, not that particular word, and since the
+// substring arms went it is no longer terminal at all.
+const SESSION_FAILED = makeSessionItem("s3", SESSION_STATUS.ERROR);
 
 const ALL_SESSION_ITEMS = [SESSION_ACTIVE, SESSION_COMPLETED, SESSION_FAILED];
 
@@ -630,12 +635,20 @@ describe("useTableFilters — document-only filters vs non-document rows", () =>
 
 describe("useTableFilters — hide-completed terminal-session variants", () => {
   // Hide-completed and the registry's status-icon mapping share one terminal
-  // definition (isTerminalSessionStatus), so pattern-matched variants like
-  // "execution_failed" are hidden, not just the exact strings.
-  test("hides pattern-matched terminal session statuses", () => {
+  // definition (`isTerminalSessionStatus`).
+  //
+  // ISS-5592: that definition is now the CANONICAL fold, and this case asserted
+  // the substring behaviour that preceded it — `execution_failed` and
+  // `timeout_error` were hidden because they contain "fail"/"error". The
+  // expectation moved with the code. Hiding them was the anomaly: an
+  // unrecognised spelling folds to `active` and renders Active/Unknown on every
+  // other surface, so this filter alone was making finished-looking rows vanish
+  // from a table that had no other way to say why.
+  test("keeps unrecognised session spellings visible, hides canonical terminals", () => {
     const failedVariant = makeSessionItem("s9", "execution_failed");
     const errorVariant = makeSessionItem("s10", "timeout_error");
-    const items = [SESSION_ACTIVE, failedVariant, errorVariant];
+    const canonicalError = makeSessionItem("s11", SESSION_STATUS.ERROR);
+    const items = [SESSION_ACTIVE, failedVariant, errorVariant, canonicalError];
     const { result } = renderHook(() => useTableFilters({ items }));
 
     expect(result.current.filters.hideCompletedItems).toBe(true);
@@ -643,7 +656,10 @@ describe("useTableFilters — hide-completed terminal-session variants", () => {
     const filtered = result.current.applyFilters(items);
 
     expect(filtered).toContain(SESSION_ACTIVE);
-    expect(filtered).not.toContain(failedVariant);
-    expect(filtered).not.toContain(errorVariant);
+    expect(filtered).toContain(failedVariant);
+    expect(filtered).toContain(errorVariant);
+    // The canonical terminal is still hidden — this is a narrowing of what
+    // counts as terminal, not a removal of the filter.
+    expect(filtered).not.toContain(canonicalError);
   });
 });

@@ -13,6 +13,7 @@ import {
 } from "@repo/app/documents/components/table/sort-keys";
 import { SortableTreeGroup } from "@repo/app/documents/components/table/sortable-tree-group";
 import type { DocumentColumn } from "@repo/app/shared/hooks/use-column-visibility";
+import { ariaPresentationProps } from "@repo/design-system/lib/grid-table-aria";
 import type { ReactNode } from "react";
 
 type TreeGroupRowsProps = {
@@ -22,7 +23,12 @@ type TreeGroupRowsProps = {
   toggleGroup: (key: string) => void;
   selectedIds?: Set<string>;
   handleSelectionChange?: (id: string, checked: boolean) => void;
-  handleMoreMenu?: (item: DocumentRowItem, anchor: HTMLElement) => void;
+  /**
+   * Build the per-row overflow ("More actions") menu for a given row item
+   * (FEA-4242). Each row renders its own self-contained menu via
+   * `DocumentRow`'s `moreMenuContent`, so there is no shared view-level menu.
+   */
+  renderMoreMenu?: (item: DocumentRowItem) => ReactNode;
   parentMap: Map<string, { title: string; href: string | null }>;
   visibleColumns: DocumentColumn[];
   showCheckbox?: boolean;
@@ -33,6 +39,19 @@ type TreeGroupRowsProps = {
    * columns. Pass `undefined` outside the stack-rank surface.
    */
   rankInteractionMode?: RankInteractionMode;
+  /**
+   * ISS-4761: render this group's rows with the shared `GridTable` ARIA table
+   * semantics (`role="row"` plus per-track `role="cell"`).
+   *
+   * This group's wrapper is `presentation`, NOT a `rowgroup`: a rowgroup here
+   * would nest inside the grouped-section rowgroup the view already declares
+   * (which is invalid), and this wrapper carries no header row of its own to put
+   * in the reading order. Marking it presentational removes it from the
+   * accessibility tree entirely, so the rows below are owned by the
+   * `role="table"` above outright rather than by traversal through a generic
+   * container.
+   */
+  insideAriaTable?: boolean;
 };
 
 export function TreeGroupRows({
@@ -42,11 +61,12 @@ export function TreeGroupRows({
   toggleGroup,
   selectedIds,
   handleSelectionChange,
-  handleMoreMenu,
+  renderMoreMenu,
   parentMap,
   visibleColumns,
   showCheckbox = false,
   rankInteractionMode,
+  insideAriaTable = false,
 }: TreeGroupRowsProps) {
   const { root, children } = group;
   // Every group — Plans included — honors its stored expansion state so any
@@ -91,8 +111,8 @@ export function TreeGroupRows({
       ? showChevron && isGroupExpanded(item.data.id)
       : showChevron && isOpen;
     // Edit handlers operate on document fields, so only document rows receive
-    // them. Every row still gets the shared ellipsis menu via `onMoreMenu`;
-    // the menu host gates per-row actions by type (e.g. the registry's
+    // them. Every row still gets its own overflow menu via `renderMoreMenu`;
+    // that menu gates per-row actions by type (e.g. the registry's
     // `deletable`), which is how branch artifacts are deleted from the tree.
     const itemEditHandlers = isDocumentRowItem(item) ? editHandlers : undefined;
     const onToggleExpand = buildToggleHandler(
@@ -109,7 +129,7 @@ export function TreeGroupRows({
       isExpanded: showChevron ? itemIsExpanded : undefined,
       isSelected: selectedIds?.has(item.data.id) ?? false,
       item,
-      onMoreMenu: handleMoreMenu,
+      moreMenuContent: renderMoreMenu?.(item),
       onSelectionChange: handleSelectionChange,
       onToggleExpand,
       parentHref: parentMap.get(item.data.id)?.href,
@@ -124,6 +144,7 @@ export function TreeGroupRows({
       showBottomBorder: isLastRowOfGroup,
       showCheckbox,
       visibleColumns,
+      insideAriaTable,
     };
     return renderTreeRow(commonProps, isChild, rankInteractionMode, dragHandle);
   };
@@ -140,6 +161,7 @@ export function TreeGroupRows({
     return (
       <SortableTreeGroup
         id={root.data.id}
+        insideAriaTable={insideAriaTable}
         renderRoot={(dragHandle) =>
           renderRow(root, 0, rootIsLastRow, dragHandle)
         }
@@ -150,7 +172,7 @@ export function TreeGroupRows({
   }
 
   return (
-    <div>
+    <div {...ariaPresentationProps(insideAriaTable)}>
       {renderRow(root, 0, rootIsLastRow)}
       {childRows}
     </div>

@@ -15,3 +15,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+/**
+ * With `max`, a count above the cap renders as `<max>+` so the pill never
+ * misstates the number, while an accessible `label` still announces the true
+ * count.
+ */
+export const Capped: Story = {
+  args: {
+    count: 412,
+    max: 9,
+    label: "412 recently completed sessions",
+  },
+};

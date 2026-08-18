@@ -35,7 +35,7 @@ export function registerCreateBranchArtifact(
           .nullable()
           .optional()
           .describe(
-            "Repository default branch, used to reject default-branch materialization"
+            "Legacy optional repository-default assertion; cloud authority controls eligibility"
           ),
         baseBranch: z
           .string()

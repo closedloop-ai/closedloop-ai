@@ -24,11 +24,11 @@ import { test } from "node:test";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
-} from "../src/main/database/baseline-schema.js";
+} from "../src/main/database/migration/baseline-schema.js";
 import {
   openMigrationDatabase,
   type SqliteClient,
-} from "../src/main/database/migration-executor.js";
+} from "../src/main/database/migration/migration-executor.js";
 import { snapshotSchema } from "./helpers/schema-snapshot.js";
 
 const MIGRATIONS_DIR = path.join(

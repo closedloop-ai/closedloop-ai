@@ -1,34 +1,20 @@
+import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
-import {
-  createSseResponse,
-  createSseStream,
-  encodeSseData,
-} from "@/lib/sse-stream";
+import { createSseResponse, createSseStream } from "@/lib/sse-stream";
 import { computeTargetsService } from "../service";
+import {
+  emitChanges,
+  nextPollDelayMs,
+  remainingStreamDurationMs,
+  type StatusSnapshot,
+} from "./poll-helpers";
 
-const POLL_INTERVAL_MS = 5000;
-
-type StatusSnapshot = Map<string, boolean>;
-type SendFn = (chunk: Uint8Array) => void;
-
-function emitChanges(
-  lastSnapshot: StatusSnapshot,
-  current: StatusSnapshot,
-  send: SendFn
-): void {
-  for (const [targetId, isOnline] of current) {
-    if (lastSnapshot.get(targetId) !== isOnline) {
-      send(encodeSseData({ targetId, isOnline }));
-    }
-  }
-
-  // Detect removed targets (went offline / deleted)
-  for (const [targetId] of lastSnapshot) {
-    if (!current.has(targetId)) {
-      send(encodeSseData({ targetId, isOnline: false }));
-    }
-  }
-}
+/**
+ * Platform ceiling this stream runs under. Declared rather than inherited so
+ * `MAX_STREAM_DURATION_MS` can be pinned below it by a test instead of by a
+ * comment — the stream must always close itself before the function is killed.
+ */
+export const maxDuration = 300;
 
 /**
  * GET /compute-targets/status-stream
@@ -36,14 +22,26 @@ function emitChanges(
  * clients whenever a compute target's online state changes for the
  * authenticated org. Uses DB polling instead of an in-process bus so it
  * works correctly on Vercel serverless (each invocation is isolated).
+ *
+ * The poll cadence is adaptive (FEA-3302): `POLL_INTERVAL_MS` while targets are
+ * changing, widening to `IDLE_POLL_INTERVAL_MS` once the stream has been quiet,
+ * and snapping back the moment a change or a failed read is seen.
+ *
+ * The stream's lifetime is budgeted against an absolute deadline taken at
+ * request entry, because the platform's `maxDuration` clock starts there while
+ * the stream's own timer cannot start until auth and the initial snapshot have
+ * resolved. See `remainingStreamDurationMs`.
  */
 export async function GET(request: Request): Promise<Response> {
-  const authContext = await resolveAnyAuthContext(request, {
+  const startedAt = Date.now();
+
+  const authResult = await resolveAnyAuthContext(request, {
     requiredScopes: ["read"],
   });
-  if (!authContext) {
-    return new Response("Unauthorized", { status: 401 });
+  if (!authResult.ok) {
+    return authContextFailureResponse(authResult.failure);
   }
+  const authContext = authResult.context;
 
   let lastSnapshot: StatusSnapshot;
   try {
@@ -56,31 +54,64 @@ export async function GET(request: Request): Promise<Response> {
 
   const stream = createSseStream(
     ({ send }) => {
-      let polling = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let disposed = false;
+      // When this stream last saw a change or a failed read. Drives the cadence
+      // via `nextPollDelayMs`; only a clean, unchanged poll lets it age.
+      let lastActivityAt = Date.now();
 
-      const timer = setInterval(async () => {
-        if (polling) {
+      const scheduleNextPoll = () => {
+        if (disposed) {
           return;
         }
-        polling = true;
+        if (timer) {
+          clearTimeout(timer);
+        }
+        timer = setTimeout(poll, nextPollDelayMs(Date.now() - lastActivityAt));
+      };
+
+      // Self-rescheduling rather than a fixed interval: the delay is recomputed
+      // per tick, and scheduling the successor only once the previous read has
+      // settled keeps exactly one query per stream in flight against the pool.
+      async function poll(): Promise<void> {
+        timer = null;
+        if (disposed) {
+          return;
+        }
         try {
           const current = await computeTargetsService.getStatusSnapshot(
             authContext.organizationId
           );
-          emitChanges(lastSnapshot, current, send);
+          if (disposed) {
+            return;
+          }
+          if (emitChanges(lastSnapshot, current, send)) {
+            lastActivityAt = Date.now();
+          }
           lastSnapshot = current;
         } catch {
           // Swallow transient DB errors; keepalive will maintain connection.
+          // A failed read is not a quiet stream, so hold the base cadence — a
+          // lane that cannot reach the database must not be rewarded with a
+          // slower retry. Making these failures observable is FEA-3301.
+          lastActivityAt = Date.now();
         } finally {
-          polling = false;
+          scheduleNextPoll();
         }
-      }, POLL_INTERVAL_MS);
+      }
+
+      scheduleNextPoll();
 
       return () => {
-        clearInterval(timer);
+        disposed = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
       };
     },
     {
+      maxDurationMs: remainingStreamDurationMs(startedAt),
       logContext: { organizationId: authContext.organizationId },
     }
   );

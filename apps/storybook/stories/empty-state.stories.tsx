@@ -38,3 +38,24 @@ export const WithAction: Story = {
     ),
   },
 };
+
+// The compact size caps vertical padding at the DS `py-6` step across all
+// breakpoints, for a zero-state that sits inside a panel/card alongside other
+// content rather than owning the whole screen.
+export const Compact: Story = {
+  args: {
+    size: "compact",
+  },
+};
+
+// `titleAs` promotes the title from the default styled `div` to a real heading,
+// for the case where the empty state IS the page (a full-page 404 or
+// unavailable screen) rather than a zero-state inside a panel that already has
+// its own heading. Purely semantic: Tailwind preflight resets `h1`-`h6` to
+// inherit font-size and weight, so this renders identically to `Default` while
+// giving screen-reader users a heading to navigate to (ISS-5011).
+export const AsPageHeading: Story = {
+  args: {
+    titleAs: "h1",
+  },
+};

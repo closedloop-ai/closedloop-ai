@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { promisify } from "node:util";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { additionalRepoDisambiguator } from "../src/server/operations/symphony-loop.js";
@@ -15,9 +13,12 @@ import {
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import {
+  createRepoWithOrigin,
+  remoteBranchSha,
+  runGitFixture,
+} from "./helpers/git-fixture.js";
 import { createFakeRunLoopScript } from "./symphony-test-utils.js";
-
-const execFileAsync = promisify(execFile);
 
 type RecordedRequest = {
   method: string;
@@ -177,42 +178,6 @@ async function startBranchApi(options?: {
   return { port: address.port, requests, waitForRequest, server };
 }
 
-async function createRepoWithOrigin(
-  root: string,
-  name: string
-): Promise<{ repoPath: string; originPath: string; fullName: string }> {
-  const originPath = path.join(root, `${name}.git`);
-  const repoPath = path.join(root, name);
-  await execFileAsync("git", ["init", "--bare", "-b", "main", originPath]);
-  await execFileAsync("git", ["clone", originPath, repoPath]);
-  await execFileAsync("git", ["config", "user.email", "test@example.com"], {
-    cwd: repoPath,
-  });
-  await execFileAsync("git", ["config", "user.name", "Test User"], {
-    cwd: repoPath,
-  });
-  await fs.writeFile(path.join(repoPath, "README.md"), `# ${name}\n`);
-  await execFileAsync("git", ["add", "README.md"], { cwd: repoPath });
-  await execFileAsync("git", ["commit", "-m", "initial"], { cwd: repoPath });
-  await execFileAsync("git", ["push", "-u", "origin", "main"], {
-    cwd: repoPath,
-  });
-  const fullName = `org/${name}`;
-  await execFileAsync(
-    "git",
-    ["remote", "set-url", "origin", `git@github.com:${fullName}.git`],
-    { cwd: repoPath }
-  );
-  await execFileAsync(
-    "git",
-    ["remote", "set-url", "--push", "origin", originPath],
-    {
-      cwd: repoPath,
-    }
-  );
-  return { repoPath, originPath, fullName };
-}
-
 async function setupLoopRuntime(tmpDir: string): Promise<void> {
   process.env.HOME = tmpDir;
   process.env.CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE = "1";
@@ -268,6 +233,9 @@ async function startGateway(
     capabilities: EMPTY_CAPABILITIES,
     discoveryFilePath: path.join(tmpDir, "electron-port"),
     getApiOrigin: () => `http://127.0.0.1:${apiPort}`,
+    getBinaryPaths: () => ({
+      claude: path.join(tmpDir, "fake-bin", "claude"),
+    }),
     getGatewayId: () => "test-gateway-id",
   });
   serversToClose.push(server);
@@ -308,30 +276,16 @@ function branchMaterialization(
   };
 }
 
-async function assertRemoteBranch(
-  originPath: string,
-  branchName: string
-): Promise<string> {
-  const result = await execFileAsync(
-    "git",
-    ["--git-dir", originPath, "rev-parse", branchName],
-    { encoding: "utf8" }
-  );
-  return String(result.stdout).trim();
-}
-
 async function createWorktreeForBranch(
   repoPath: string,
   worktreeDir: string,
   branchName: string
 ): Promise<void> {
   await fs.mkdir(path.dirname(worktreeDir), { recursive: true });
-  await execFileAsync(
-    "git",
+  // `worktree add` fires `post-checkout`, so it must be hermetic too (ISS-5836).
+  await runGitFixture(
     ["worktree", "add", "-B", branchName, worktreeDir, "main"],
-    {
-      cwd: repoPath,
-    }
+    repoPath
   );
 }
 
@@ -388,7 +342,7 @@ test("fresh PLAN pushes expected primary branch and records branch artifact", as
   );
   assert.equal(typeof payload.headSha, "string");
   assert.equal(
-    await assertRemoteBranch(repo.originPath, branchName),
+    await remoteBranchSha(repo.originPath, branchName),
     payload.headSha
   );
 });
@@ -437,7 +391,7 @@ test("fresh PLAN matches branch materialization repository names case-insensitiv
   );
   assert.equal(typeof payload.headSha, "string");
   assert.equal(
-    await assertRemoteBranch(repo.originPath, branchName),
+    await remoteBranchSha(repo.originPath, branchName),
     payload.headSha
   );
 });
@@ -473,7 +427,7 @@ test("fresh PLAN rejects mismatched local origin before push or branch record", 
   const body = (await response.json()) as { error: string };
   assert.match(body.error, /does not match local origin/);
   assert.equal(branchArtifactRequests(api.requests, loopId).length, 0);
-  await assert.rejects(assertRemoteBranch(repo.originPath, branchName));
+  await assert.rejects(remoteBranchSha(repo.originPath, branchName));
 });
 
 test("git push failure reports BranchCreateFailed without callback or secret leakage", async () => {
@@ -517,7 +471,7 @@ test("git push failure reports BranchCreateFailed without callback or secret lea
   assert.equal(eventBody.code, LoopErrorCode.BranchCreateFailed);
   assert.ok(!String(eventBody.message).includes("secret-token"));
   assert.ok(!String(eventBody.message).includes("sk-abcdefghijklmnop"));
-  await assert.rejects(assertRemoteBranch(repo.originPath, branchName));
+  await assert.rejects(remoteBranchSha(repo.originPath, branchName));
 });
 
 test("fresh PLAN removes stale deterministic directory before branch record", async () => {
@@ -554,8 +508,8 @@ test("fresh PLAN removes stale deterministic directory before branch record", as
   assert.equal(response.status, 200, await response.text());
   await api.waitForRequest(`/loops/${loopId}/branch-artifact`);
   assert.equal(
-    await assertRemoteBranch(repo.originPath, branchName),
-    await assertRemoteBranch(repo.originPath, "main")
+    await remoteBranchSha(repo.originPath, branchName),
+    await remoteBranchSha(repo.originPath, "main")
   );
   await assert.rejects(fs.access(path.join(worktreeDir, "stale.txt")));
 });
@@ -625,8 +579,8 @@ test("fresh EXECUTE and REQUEST_CHANGES record branches; reused EXECUTE does not
   assert.equal(response.status, 200, await response.text());
   await api.waitForRequest(`/loops/${requestChangesLoopId}/branch-artifact`);
   assert.equal(
-    await assertRemoteBranch(repo.originPath, requestChangesBranch),
-    await assertRemoteBranch(repo.originPath, "main")
+    await remoteBranchSha(repo.originPath, requestChangesBranch),
+    await remoteBranchSha(repo.originPath, "main")
   );
 });
 
@@ -702,8 +656,8 @@ test("fresh GENERATE_PRD removes stale deterministic directory before branch rec
   assert.equal(response.status, 200, await response.text());
   await api.waitForRequest(`/loops/${loopId}/branch-artifact`);
   assert.equal(
-    await assertRemoteBranch(repo.originPath, branchName),
-    await assertRemoteBranch(repo.originPath, "main")
+    await remoteBranchSha(repo.originPath, branchName),
+    await remoteBranchSha(repo.originPath, "main")
   );
   await assert.rejects(
     fs.access(path.join(worktreeDir, "node_modules", "pkg", "stale.txt"))

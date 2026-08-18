@@ -4,24 +4,31 @@ import type {
   InstallationSuspendEvent,
   InstallationUnsuspendEvent,
 } from "@octokit/webhooks-types";
+import { RepositoryDefaultSource } from "@repo/api/src/types/repository-default-identity";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { NextResponse } from "next/server";
 import { githubService } from "@/app/integrations/github/service";
+import type { RepositoryInput } from "@/app/integrations/github/service/repository-sync";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
+import { mapGitHubWebhookRepositoryDefaultAuthority } from "@/lib/github/repository-default-authority";
 
 /**
  * Convert webhook repository data to RepositoryInput format.
  */
 export function toRepositoryInput(
-  repo: { id: number; full_name: string; name: string; private: boolean },
-  fallbackOwner: string
-): {
-  githubRepoId: string;
-  fullName: string;
-  name: string;
-  owner: string;
-  private: boolean;
-} {
+  repo: {
+    id: number;
+    full_name: string;
+    name: string;
+    private: boolean;
+    default_branch?: unknown;
+  },
+  fallbackOwner: string,
+  authorityContext?: {
+    observation: GitHubWebhookObservationContext | undefined;
+  }
+): RepositoryInput {
   const [owner] = repo.full_name.split("/");
   return {
     githubRepoId: String(repo.id),
@@ -29,6 +36,15 @@ export function toRepositoryInput(
     name: repo.name,
     owner: owner || fallbackOwner,
     private: repo.private,
+    ...(authorityContext
+      ? {
+          defaultAuthority: mapGitHubWebhookRepositoryDefaultAuthority(
+            repo,
+            RepositoryDefaultSource.InstallationWebhook,
+            authorityContext.observation
+          ),
+        }
+      : {}),
   };
 }
 
@@ -37,17 +53,10 @@ export function toRepositoryInput(
  * Upserts installation record and syncs repositories.
  */
 export async function handleInstallationCreated(
-  event: InstallationCreatedEvent
+  event: InstallationCreatedEvent,
+  observation?: GitHubWebhookObservationContext
 ): Promise<void> {
   const { installation, repositories = [], sender } = event;
-
-  log.info("[handleInstallationCreated] Processing installation", {
-    installationId: installation.id,
-    accountLogin: installation.account.login,
-    accountType: installation.target_type,
-    repositoryCount: repositories.length,
-    senderLogin: sender.login,
-  });
 
   // Upsert installation record
   // On reinstall, preserve organizationId only if the installation is still ACTIVE (Q-003)
@@ -82,16 +91,12 @@ export async function handleInstallationCreated(
     }
   );
 
-  log.info("[handleInstallationCreated] Upserted installation", {
-    installationId: upsertedInstallation.id,
-    status: upsertedInstallation.status,
-    organizationId: upsertedInstallation.organizationId,
-  });
-
   // Sync repositories
   if (repositories.length > 0) {
     const repositoryInputs = repositories.map((repo) =>
-      toRepositoryInput(repo, installation.account.login)
+      toRepositoryInput(repo, installation.account.login, {
+        observation,
+      })
     );
 
     await githubService.syncRepositories(
@@ -109,11 +114,6 @@ export async function handleInstallationDeleted(
   event: InstallationDeletedEvent
 ): Promise<void> {
   const { installation } = event;
-
-  log.info("[handleInstallationDeleted] Processing installation deletion", {
-    installationId: installation.id,
-    accountLogin: installation.account.login,
-  });
 
   const existingInstallation =
     await githubService.findInstallationByInstallationId(
@@ -136,13 +136,9 @@ export async function handleInstallationDeleted(
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
       },
+      select: { id: true },
     })
   );
-
-  log.info("[handleInstallationDeleted] Marked installation as uninstalled", {
-    installationId: existingInstallation.id,
-    organizationId: existingInstallation.organizationId,
-  });
 }
 
 /**
@@ -153,12 +149,6 @@ export async function handleInstallationSuspended(
   event: InstallationSuspendEvent
 ): Promise<void> {
   const { installation, sender } = event;
-
-  log.info("[handleInstallationSuspended] Processing installation suspension", {
-    installationId: installation.id,
-    accountLogin: installation.account.login,
-    suspendedBy: sender.login,
-  });
 
   const existingInstallation =
     await githubService.findInstallationByInstallationId(
@@ -190,14 +180,6 @@ export async function handleInstallationUnsuspended(
   event: InstallationUnsuspendEvent
 ): Promise<void> {
   const { installation } = event;
-
-  log.info(
-    "[handleInstallationUnsuspended] Processing installation unsuspension",
-    {
-      installationId: installation.id,
-      accountLogin: installation.account.login,
-    }
-  );
 
   const existingInstallation =
     await githubService.findInstallationByInstallationId(
@@ -238,17 +220,17 @@ export async function handleInstallationUnsuspended(
  * Main handler for installation events.
  * Routes to the appropriate handler based on the event action.
  */
-export async function handleInstallation(event: {
-  action: string;
-}): Promise<Response> {
-  log.info("[webhook/github] Received installation event", {
-    action: event.action,
-  });
-
+export async function handleInstallation(
+  event: {
+    action: string;
+  },
+  observation?: GitHubWebhookObservationContext
+): Promise<Response> {
   switch (event.action) {
     case "created":
       await handleInstallationCreated(
-        event as unknown as InstallationCreatedEvent
+        event as unknown as InstallationCreatedEvent,
+        observation
       );
       return NextResponse.json({
         message: "Installation created successfully",

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { JsonValue } from "./common";
 
 export const DESKTOP_ANALYTICS_SOCKET_EVENT = "desktop.analytics" as const;
@@ -56,3 +57,38 @@ export type DesktopAnalyticsPayload = {
   properties: Record<string, JsonValue>;
   occurredAt: string;
 };
+
+/**
+ * FEA-3425: success payload of `POST /desktop/analytics`. Not `.strict()`:
+ * Desktop and API deploy independently and are version-skewed, so an additive
+ * server field must degrade gracefully (ignored) rather than fail parsing and
+ * silently drop the whole capture on a skewed client.
+ */
+export const desktopAnalyticsCaptureResponseValidator = z.object({
+  captured: z.literal(true),
+});
+export type DesktopAnalyticsCaptureResponse = z.infer<
+  typeof desktopAnalyticsCaptureResponseValidator
+>;
+
+/**
+ * FEA-3425: full `ApiResult` envelope of `POST /desktop/analytics`. The success
+ * arm is not `.strict()` (see {@link desktopAnalyticsCaptureResponseValidator})
+ * so additive server fields degrade gracefully; the error arm stays
+ * `.passthrough()` so the `code` metadata survives.
+ */
+export const desktopAnalyticsCaptureApiResultValidator = z.union([
+  z.object({
+    success: z.literal(true),
+    data: desktopAnalyticsCaptureResponseValidator,
+  }),
+  z
+    .object({
+      success: z.literal(false),
+      error: z.string(),
+    })
+    .passthrough(),
+]);
+export type DesktopAnalyticsCaptureApiResult = z.infer<
+  typeof desktopAnalyticsCaptureApiResultValidator
+>;

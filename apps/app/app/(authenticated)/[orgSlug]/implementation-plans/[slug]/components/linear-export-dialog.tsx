@@ -67,15 +67,28 @@ export function LinearExportDialog({
     }
   }, [open, refetch]);
 
-  // Auto-select default team or first team
+  // Auto-select the default team (or the first) — but only when the user has no
+  // valid selection of their own.
+  //
+  // ISS-5976: this effect keys on `status`, the query object, and the shared
+  // client now refetches on window focus. A refetch hands back a NEW status
+  // object carrying the same teams, so an unconditional re-select would silently
+  // snap the dropdown back to the default the moment the user tabbed away and
+  // back — discarding a team they had deliberately picked, with the export
+  // button still armed. The functional updater keeps a still-valid choice and
+  // only fills in when there is nothing to preserve (first load) or when the
+  // selected team no longer exists in the refreshed list.
   useEffect(() => {
-    if (status?.connected && status.teams && status.teams.length > 0) {
-      if (status.defaultTeamId) {
-        setSelectedTeamId(status.defaultTeamId);
-      } else {
-        setSelectedTeamId(status.teams[0].id);
-      }
+    const teams = status?.connected ? status.teams : undefined;
+    if (!teams?.length) {
+      return;
     }
+    setSelectedTeamId((current) => {
+      if (current && teams.some((team) => team.id === current)) {
+        return current;
+      }
+      return status?.defaultTeamId ?? teams[0].id;
+    });
   }, [status]);
 
   const handleExport = async () => {

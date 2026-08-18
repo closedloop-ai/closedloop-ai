@@ -1,7 +1,7 @@
 /**
  * @file cost-reconciliation-service.test.ts
  * @description Unit tests for the production wiring of nightly cost
- * reconciliation (FEA-1435/1436), src/main/cost-reconciliation-service.ts.
+ * reconciliation (FEA-1435/1436), src/main/cost/cost-reconciliation-service.ts.
  *
  * Reviewed invariants:
  *   (1) getAdminKeyStatuses exposes ONLY existence (vendor + hasKey), never the
@@ -22,8 +22,8 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { VendorBilledEntry } from "../src/main/admin-billing.js";
-import type { AdminKeyVendor } from "../src/main/admin-key-store.js";
+import type { VendorBilledEntry } from "../src/main/cost/admin-billing.js";
+import type { AdminKeyVendor } from "../src/main/cost/admin-key-store.js";
 import {
   type AdminKeyStoreLike,
   type AnthropicCostClient,
@@ -31,9 +31,9 @@ import {
   INITIAL_RECONCILIATION_DELAY_MS,
   type OpenAiCostClient,
   RECONCILIATION_INTERVAL_MS,
-} from "../src/main/cost-reconciliation-service.js";
-import type { ReconciliationRow } from "../src/main/reconciliation-store.js";
-import type { MeteredUsageRow } from "../src/main/reconciliation-worker.js";
+} from "../src/main/cost/cost-reconciliation-service.js";
+import type { ReconciliationRow } from "../src/main/cost/reconciliation-store.js";
+import type { MeteredUsageRow } from "../src/main/cost/reconciliation-worker.js";
 
 const FIXED_NOW = () => new Date("2026-05-28T00:00:00Z");
 
@@ -457,7 +457,14 @@ test("listRows delegates to the store", () => {
 });
 
 test("a manual run that races an in-flight run is a no-op (skippedBusy)", async () => {
-  let release: (() => void) | null = null;
+  // Seeded with a throwing default rather than `null`: TS cannot see that a
+  // Promise executor runs synchronously, so a `| null` seed narrows to `null`
+  // here and the release below degrades to an optional call. That call silently
+  // no-ops if the resolver were ever not captured, and the test then hangs on
+  // `await first` instead of failing. This fails loudly at the same line.
+  let release = (): void => {
+    throw new Error("gate resolver was never captured");
+  };
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
@@ -487,7 +494,7 @@ test("a manual run that races an in-flight run is a no-op (skippedBusy)", async 
   assert.equal(second.skippedBusy, true);
   assert.equal(second.computedAt, null);
 
-  release?.();
+  release();
   const firstSummary = await first;
   assert.equal(firstSummary.skippedBusy, false);
   assert.deepEqual(firstSummary.vendorsReconciled, ["anthropic"]);

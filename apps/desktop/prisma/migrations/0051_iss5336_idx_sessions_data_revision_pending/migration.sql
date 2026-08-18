@@ -1,0 +1,36 @@
+-- ISS-5336: covering index for the ISS-5103 import-health probe.
+--
+-- `listImportPendingSessionIds` samples the DATA_REVISION_IMPORT_PENDING
+-- sentinel every 5 minutes, forever, on a db-host reader connection that
+-- self-serializes its statements — so it sits ahead of any other read dispatched
+-- to that reader. `sessions` had no index on `data_revision`, so each tick
+-- full-scanned the table — every column of every row, including the unindexed
+-- `metadata` JSON blob — just to return the healthy answer of zero rows. That is
+-- worst on exactly the installs it matters on: a large local history.
+--
+-- Partial on the sentinel itself. The sentinel is -1 and no real revision is
+-- ever negative, so the index holds an entry only while a row is genuinely
+-- parked for re-derivation — empty at rest on a healthy install. That is not
+-- zero write amplification: the ISOLATED import path stamps the sentinel at the
+-- gate and clears it at the revision seal (write-core.ts, ISS-4572), so every
+-- import whose gate actually writes `data_revision` costs one index insert plus
+-- one index delete. (A no-op re-import writes neither — it never stamps, so it
+-- never seals. The ATOMIC rebuild path stamps the real DATA_REVISION in one
+-- transaction and never enters the index at all, beyond clearing an entry for a
+-- row that was already parked.) What the partial predicate buys over a full
+-- index on (data_revision, id) is the entry that index would carry for EVERY
+-- session row, forever — resident pages to hold, and per-row maintenance on
+-- every session insert, delete, and revision write, parked or not.
+--
+-- SQLite reaches a partial index only where it can prove the query's WHERE
+-- clause implies the index's, and it proves that here from the probe's BOUND
+-- `data_revision` value; the plan is pinned by
+-- test/import-pending-sentinel-scan.test.ts — which EXPLAINs the statement it
+-- CAPTURES from a real `listImportPendingSessionIds` call — because a partial
+-- index that stops being reachable is a silent return to the full scan.
+--
+-- Keyed on `id` alone: `data_revision` is constant across every row the index
+-- can contain, so (id) both covers the `SELECT id` and supplies the `ORDER BY id
+-- ASC` for free. Mirrors the partial-index convention on the sibling session
+-- indexes (idx_sessions_status_ended_at, idx_sessions_cwd, …).
+CREATE INDEX IF NOT EXISTS "idx_sessions_data_revision_pending" ON "sessions"("id") WHERE data_revision = -1;

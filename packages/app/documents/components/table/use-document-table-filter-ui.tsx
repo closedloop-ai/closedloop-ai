@@ -4,7 +4,7 @@ import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactStatus,
   DOCUMENT_STATUS_OPTIONS,
-  FEATURE_STATUS_OPTIONS,
+  ISSUE_STATUS_OPTIONS,
 } from "@repo/api/src/types/document";
 import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
 import type { TableFiltersReturn } from "@repo/app/documents/hooks/use-table-filters";
@@ -97,10 +97,10 @@ export function useDocumentTableFilterUi({
         statuses: DOCUMENT_STATUS_OPTIONS,
       }),
       ...buildStatusOptions({
-        sectionLabel: "Feature Status",
+        sectionLabel: "Issue Status",
         seenStatuses,
         statusCounts: filtersReturn.statusCounts,
-        statuses: FEATURE_STATUS_OPTIONS,
+        statuses: ISSUE_STATUS_OPTIONS,
       }),
     ];
 

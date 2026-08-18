@@ -10,7 +10,11 @@ import {
   type LocalJobCommand,
   type LocalJobStatus,
   type TaskProgress,
-} from "../../main/job-store.js";
+} from "../../main/jobs/job-store.js";
+import type {
+  ActivityJobSnapshot,
+  AssertAssignable,
+} from "../../shared/activity-panel-contract.js";
 import { readPlanProgress } from "./agent-utils.js";
 import { hasPendingLoopExit } from "./symphony-loop-lifecycle.js";
 import { isProcessRunning } from "./symphony-utils.js";
@@ -24,6 +28,15 @@ export type JobSnapshot = LocalJob & {
   taskProgress?: TaskProgress;
   currentTaskId?: string;
 };
+
+// Compile-time guard: the running-jobs IPC payload must remain assignable to
+// the renderer-facing ActivityJobSnapshot contract, so the ActivityPanel can
+// render a JobSnapshot through the shared type without importing this
+// server-only module.
+export type _JobSnapshotSatisfiesContract = AssertAssignable<
+  JobSnapshot,
+  ActivityJobSnapshot
+>;
 
 // ---------------------------------------------------------------------------
 // Effective status / phase from state.json

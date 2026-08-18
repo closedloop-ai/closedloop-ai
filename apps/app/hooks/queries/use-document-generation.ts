@@ -175,6 +175,189 @@ export function useCreateAndGenerateDocument() {
 }
 
 /**
+ * Create a DRAFT PRD seeded from an evergreen Document (DocumentType.Doc) in a
+ * chosen project, then launch the existing GENERATE_PRD engine against it.
+ *
+ * Two server calls, mirroring the CreateDocumentModal "Generate PRD" flow:
+ *   1. POST /documents/:id/generate-prd-from-doc — server seeds the PRD with the
+ *      source Document's content and writes the RelatesTo provenance link.
+ *   2. postRunLoop(RunLoopCommand.GeneratePrd) — the run-loop endpoint picks up
+ *      that seeded content as the primary artifact in the context pack.
+ *
+ * The seed and the launch are two separate writes. When the launch conflicts on
+ * compute target, the seeded PRD is held in `multiTargetState` and only the
+ * launch is replayed via `selectTarget` — never the seed. Re-running the whole
+ * mutation on every target pick would create a duplicate DRAFT PRD per pick and
+ * strand the earlier one (mirrors `useCreateAndGenerateDocument`).
+ *
+ * `selectTarget` routes replay through `refreshComputeTargetForReplay` before
+ * `postRunLoop` so signing reads a fresh full-target snapshot, not the cold or
+ * stale conflict hint.
+ *
+ * Stays in apps/app (not @repo/app) for the same reason as the other launch
+ * hooks: `postRunLoop` reaches the local-only Engineer compute-target signing
+ * path, which is not surface-agnostic.
+ */
+export function useGeneratePrdFromDocument() {
+  const apiClient = useApiClient();
+  const queryClient = useQueryClient();
+
+  const [multiTargetState, setMultiTargetState] = useState<{
+    availableTargets: ComputeTargetConflictBody["availableTargets"];
+    pendingArtifact: Document;
+  } | null>(null);
+
+  // Invalidate the create-owned caches as soon as the seed commits, so the new
+  // DRAFT PRD is visible in lists and the project tree even if the subsequent
+  // launch throws or waits on target selection.
+  const invalidateAfterSeed = useCallback(
+    (artifact: Document) => {
+      queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
+      queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
+      queryClient.invalidateQueries({
+        queryKey: documentKeys.generationStatus(artifact.id),
+      });
+      if (artifact.projectId) {
+        queryClient.invalidateQueries({
+          queryKey: projectTreeKeys.detail(artifact.projectId),
+        });
+      }
+    },
+    [queryClient]
+  );
+
+  const mutation = useMutation({
+    meta: { suppressDefaultErrorToast: true },
+    mutationFn: async ({
+      documentId,
+      projectId,
+      title,
+      computeTargetId,
+    }: {
+      documentId: string;
+      projectId: string;
+      title?: string;
+      computeTargetId?: string | null;
+    }): Promise<GeneratePrdLaunchResult> => {
+      let artifact: Document;
+      try {
+        artifact = await apiClient.post<Document>(
+          `/documents/${documentId}/generate-prd-from-doc`,
+          { projectId, ...(title ? { title } : {}) }
+        );
+      } catch (error) {
+        toast.error(getErrorMessage(error));
+        throw error;
+      }
+
+      // Seed committed — surface it in the caches immediately.
+      invalidateAfterSeed(artifact);
+
+      try {
+        await postRunLoop(apiClient, {
+          documentId: artifact.id,
+          command: RunLoopCommand.GeneratePrd,
+          ...(computeTargetId === undefined ? {} : { computeTargetId }),
+        });
+        return { artifact, status: "launched" };
+      } catch (error) {
+        let availableTargets:
+          | ComputeTargetConflictBody["availableTargets"]
+          | undefined;
+        let handled = false;
+
+        handleRunLoopResponse(error, {
+          onMultipleTargets: (conflict) => {
+            availableTargets = conflict.availableTargets;
+            handled = true;
+          },
+          onBackendMismatch: () => {
+            toast.error(getErrorMessage(error));
+            handled = true;
+          },
+          onSuccess: () => {
+            // unreachable: catch only receives thrown errors
+          },
+        });
+
+        if (availableTargets) {
+          // Hold the already-seeded PRD so target selection replays only the
+          // launch, never a second seed POST.
+          setMultiTargetState({
+            availableTargets,
+            pendingArtifact: artifact,
+          });
+          return {
+            artifact,
+            availableTargets,
+            status: "pending_target_selection",
+          };
+        }
+        // The seed PRD already committed, so a generic launch failure would
+        // otherwise strand it with no feedback (the global error toast is
+        // suppressed for this mutation). Surface it before re-throwing, unless
+        // a specific handler above already toasted.
+        if (!handled) {
+          toast.error(getErrorMessage(error));
+        }
+        throw error;
+      }
+    },
+    onSuccess: () => {
+      // Seed-owned caches were already invalidated in `invalidateAfterSeed`;
+      // once the launch settles, refresh the loop list too.
+      queryClient.invalidateQueries({ queryKey: loopKeys.all });
+    },
+  });
+
+  const selectTarget = useCallback(
+    // `null` is the pre-loop gate's "run this on Cloud" verdict (ISS-5171),
+    // not an absent selection: there is no local target to refresh, and the
+    // launch must carry the null through rather than fall back to a machine
+    // the gate just found unreachable.
+    async (targetId: string | null) => {
+      if (!multiTargetState) {
+        return;
+      }
+      const { pendingArtifact } = multiTargetState;
+      try {
+        if (targetId !== null) {
+          await refreshComputeTargetForReplay(apiClient, queryClient, targetId);
+        }
+        await postRunLoop(apiClient, {
+          documentId: pendingArtifact.id,
+          command: RunLoopCommand.GeneratePrd,
+          computeTargetId: targetId,
+        });
+        // Clear only after the replay launch succeeds — keeping the pending
+        // state until then leaves the target picker mounted so the user can
+        // re-pick if this launch fails.
+        setMultiTargetState(null);
+        queryClient.invalidateQueries({
+          queryKey: documentKeys.generationStatus(pendingArtifact.id),
+        });
+        queryClient.invalidateQueries({ queryKey: loopKeys.all });
+        return { artifact: pendingArtifact, status: "launched" } as const;
+      } catch (retryError) {
+        toast.error(
+          retryError instanceof Error
+            ? retryError.message
+            : "Failed to start PRD generation"
+        );
+        return undefined;
+      }
+    },
+    [multiTargetState, apiClient, queryClient]
+  );
+
+  const clearTargetSelection = useCallback(() => {
+    setMultiTargetState(null);
+  }, []);
+
+  return { ...mutation, clearTargetSelection, multiTargetState, selectTarget };
+}
+
+/**
  * Launches PRD generation for a newly-created artifact through a dedicated
  * mutation so component call sites can use mutate callbacks instead of
  * `mutateAsync` try/catch flows.

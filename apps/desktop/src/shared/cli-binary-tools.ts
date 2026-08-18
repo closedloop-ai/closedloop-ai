@@ -22,3 +22,23 @@ export const CLI_BINARY_TOOLS = [
   "python3",
   "git",
 ] as const;
+
+/**
+ * How the binary resolver arrived at its result — the single source of truth
+ * for this union. Lives in this framework-free shared module (no Node imports)
+ * so both the main-process resolver (`server/shell-path.ts`'s
+ * `BinaryResolveResult`) and the renderer Settings panel can reference it
+ * without the renderer's browser typecheck pulling in Node-only server code.
+ *
+ * - `override`: a valid, executable manual override path was used.
+ * - `override_invalid`: an override was set but is missing / not executable.
+ * - `path`: found on the login-shell PATH.
+ * - `known_location`: not on PATH, but found at a probed known install location.
+ * - `fallback`: not found anywhere; the bare logical name is returned.
+ */
+export type BinaryResolveSource =
+  | "override"
+  | "override_invalid"
+  | "path"
+  | "known_location"
+  | "fallback";

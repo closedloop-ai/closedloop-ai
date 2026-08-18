@@ -2,7 +2,8 @@ import { LoopHarness } from "@closedloop-ai/loops-api/desktop-request";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { json } from "./response-utils.js";
 
-type BinaryPaths = {
+/** The gateway's binary-path override map. Canonical shape — do not re-declare. */
+export type BinaryPaths = {
   claude?: string;
   gh?: string;
   codex?: string;
@@ -11,7 +12,7 @@ type BinaryPaths = {
   python3?: string;
   git?: string;
 };
-type BinaryPathKey =
+export type BinaryPathKey =
   | "claude"
   | "gh"
   | "codex"

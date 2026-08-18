@@ -20,7 +20,11 @@ import { refreshComputeTargetForReplay } from "@/hooks/queries/compute-target-re
 import { useRunLoop } from "@/hooks/queries/use-loops";
 import { useApiClient } from "@/hooks/use-api-client";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-import { PreLoopCommand } from "@/lib/system-check/pre-loop-health-check";
+import type { PreLoopExecutionContext } from "@/lib/system-check/pre-loop-health-check";
+import {
+  PreLoopCommand,
+  resolvePreLoopComputeTargetId,
+} from "@/lib/system-check/pre-loop-health-check";
 import { useOptionalPreLoopSystemCheckGate } from "@/lib/system-check/pre-loop-system-check-provider";
 
 type UseArtifactRunLoopConfig = {
@@ -146,7 +150,7 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           const label = getCommandLabels(payload.command).noun;
           toast.error(`${label} is already running on this document`, {
             action: {
-              label: "View Loop",
+              label: "View run",
               onClick: () => {
                 navigation.navigate(`/${orgSlug}/loops/${payload.loopId}`);
               },
@@ -170,7 +174,10 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   );
 
   const runLoopMutationWithOptionalPreLoopCheck = useCallback(
-    (params: RunLoopMutationParams, execute: () => void): boolean => {
+    (
+      params: RunLoopMutationParams,
+      execute: (context: PreLoopExecutionContext) => void
+    ): boolean => {
       if (
         params.command !== RunLoopCommand.Execute ||
         !preLoopGate ||
@@ -266,7 +273,17 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           : undefined;
         const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
           replayParams,
-          () => replayRunLoop(replayParams, restorePreviousConflictState)
+          (context) =>
+            replayRunLoop(
+              {
+                ...replayParams,
+                computeTargetId: resolvePreLoopComputeTargetId(
+                  context,
+                  replayParams.computeTargetId
+                ),
+              },
+              restorePreviousConflictState
+            )
         );
         if (!queuedPreLoopCheck) {
           replayRunLoop(replayParams, restorePreviousConflictState);
@@ -292,7 +309,17 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
           : undefined;
         const queuedPreLoopCheck = runLoopMutationWithOptionalPreLoopCheck(
           replayParams,
-          () => replayRunLoop(replayParams, restorePreviousConflictState)
+          (context) =>
+            replayRunLoop(
+              {
+                ...replayParams,
+                computeTargetId: resolvePreLoopComputeTargetId(
+                  context,
+                  replayParams.computeTargetId
+                ),
+              },
+              restorePreviousConflictState
+            )
         );
         if (!queuedPreLoopCheck) {
           replayRunLoop(replayParams, restorePreviousConflictState);
@@ -426,8 +453,17 @@ export function useDocumentRunLoop({ documentId }: UseArtifactRunLoopConfig) {
   const runLoopWithPreLoopSystemCheck = useCallback(
     (params: RunLoopMutationParams, options?: RunLoopMutationOptions): void => {
       if (
-        runLoopMutationWithOptionalPreLoopCheck(params, () =>
-          runLoop.mutate(params, options)
+        runLoopMutationWithOptionalPreLoopCheck(params, (context) =>
+          runLoop.mutate(
+            {
+              ...params,
+              computeTargetId: resolvePreLoopComputeTargetId(
+                context,
+                params.computeTargetId
+              ),
+            },
+            options
+          )
         )
       ) {
         return;

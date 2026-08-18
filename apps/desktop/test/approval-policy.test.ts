@@ -1,15 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  HEALTH_CHECK_REPAIR_OPERATION_ID,
+  HEALTH_CHECK_REPAIR_PATH,
+} from "@repo/api/src/types/compute-target";
+import {
+  MEMBER_PACK_INSTALL_OPERATION_ID,
+  MEMBER_PACK_INSTALL_PATH,
+} from "@repo/api/src/types/member-pack-install";
+import {
   resolveOperationId,
   SUPPORTED_OPERATION_IDS,
-} from "../src/main/approval-operations.js";
+} from "../src/main/approvals/approval-operations.js";
 import {
   FORCE_INTERACTIVE_OPERATIONS,
   OPERATION_RISK_TIERS,
   riskTierOrder,
   shouldAutoApprove,
-} from "../src/main/approval-policy.js";
+} from "../src/main/approvals/approval-policy.js";
 import {
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_PATH,
@@ -135,6 +143,16 @@ test("resolveOperationId maps known paths correctly", () => {
     BROWSER_COMMAND_KEY_APPROVAL_REQUEST_OPERATION_ID
   );
   assert.equal(
+    resolveOperationId(MEMBER_PACK_INSTALL_PATH),
+    MEMBER_PACK_INSTALL_OPERATION_ID
+  );
+  assert.ok(
+    (SUPPORTED_OPERATION_IDS as readonly string[]).includes(
+      MEMBER_PACK_INSTALL_OPERATION_ID
+    ),
+    "member_pack_install must be advertised so the node accepts the cloud command and getEnabledOperations lists it"
+  );
+  assert.equal(
     resolveOperationId("/api/gateway/git/local-changes"),
     "git_local_changes"
   );
@@ -196,4 +214,40 @@ test("update_and_restart is in FORCE_INTERACTIVE_OPERATIONS", () => {
 
 test("update_and_restart is included in SUPPORTED_OPERATION_IDS", () => {
   assert.ok(SUPPORTED_OPERATION_IDS.includes("update_and_restart"));
+});
+
+// --- System Check Repair (ISS-5389) ---
+
+test("the System Check Repair path resolves to its own operation id", () => {
+  // Without this the local GatewayServer's ApprovalEvaluator resolves nothing
+  // for the POST and rejects it as an unmapped operation, so Repair could never
+  // run in production (ISS-5389 review).
+  assert.equal(
+    resolveOperationId(HEALTH_CHECK_REPAIR_PATH),
+    HEALTH_CHECK_REPAIR_OPERATION_ID
+  );
+  assert.ok(SUPPORTED_OPERATION_IDS.includes(HEALTH_CHECK_REPAIR_OPERATION_ID));
+});
+
+test("Repair does not ride on the read-only health_check operation", () => {
+  // Repair mutates the machine, so it must not inherit health_check's low tier
+  // or its auto-approval rule.
+  assert.notEqual(HEALTH_CHECK_REPAIR_OPERATION_ID, "health_check");
+  assert.equal(resolveOperationId("/api/gateway/health-check"), "health_check");
+  assert.equal(OPERATION_RISK_TIERS.health_check, "low");
+  assert.equal(
+    OPERATION_RISK_TIERS[HEALTH_CHECK_REPAIR_OPERATION_ID],
+    "medium"
+  );
+  // A "low" auto-approve threshold lets the read-only check through but not the
+  // repair, which is the whole point of giving it its own id.
+  assert.equal(shouldAutoApprove("health_check", "low", false), true);
+  assert.equal(
+    shouldAutoApprove(HEALTH_CHECK_REPAIR_OPERATION_ID, "low", false),
+    false
+  );
+  assert.equal(
+    shouldAutoApprove(HEALTH_CHECK_REPAIR_OPERATION_ID, "medium", false),
+    true
+  );
 });

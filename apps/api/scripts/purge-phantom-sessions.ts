@@ -5,6 +5,14 @@
  *
  * Signature: event span < 5 seconds, ≥ 20 events, zero token usage rows.
  *
+ * NOTE (FEA-3286): the GENERAL, scheduled phantom purge now lives in
+ * `app/agent-sessions/phantom-retention-service.ts` (the daily
+ * `/cron/cleanup-phantom-sessions` sweep), which covers the broader
+ * 0-turn / 0-token / no-tool-use / aged-abandoned population via the FEA-3284
+ * `SESSION_IDLE_WHERE` SSOT with a late-chunk age guard and a no-PR guard. This
+ * script is retained only as a narrow, manual, dry-run-first escape hatch for
+ * the specific Codex-burst signature above.
+ *
  * Usage:
  *   cd apps/api
  *   DATABASE_URL=<url> npx tsx scripts/purge-phantom-sessions.ts

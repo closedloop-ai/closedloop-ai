@@ -13,6 +13,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { handleBuildStepExit, handleElectronExit } from "./dev-launch-exit.mjs";
 
 const RENDERER_URL_ARG_PREFIX = "--closedloop-renderer-url=";
 
@@ -71,16 +72,24 @@ electronProcess.on("error", async (error) => {
   throw error;
 });
 
-electronProcess.on("exit", async (code, signal) => {
-  await viteServer?.close();
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
-  }
-  process.exit(code ?? 0);
+electronProcess.on("exit", (code, signal) => {
+  // ISS-4474: exit cleanly with a conventional status rather than re-raising a
+  // fatal signal on ourselves. A signal death here (e.g. a SIGHUP when the TTY
+  // goes away while the db-host is bouncing mid-backfill) must not cascade into
+  // a fatal `just desktop-dev` termination — the db-host bounce is already
+  // contained by the DbHostClient supervisor.
+  handleElectronExit(code, signal, {
+    cleanup: () => viteServer?.close(),
+    exit: (status) => process.exit(status),
+  });
 });
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
+// ISS-4474: SIGHUP is included so a TTY disconnect delivered DIRECTLY to the
+// non-detached launcher (not only via the Electron child's exit) is contained
+// too — we forward it to the child and exit CLEANLY here rather than letting
+// Node's default disposition terminate the launcher BY SIGHUP, which would
+// re-raise the fatal-signal cascade to the `just` recipe.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, async () => {
     electronProcess.kill(signal);
     await viteServer?.close();
@@ -98,15 +107,13 @@ function runStep(command, args) {
 
     child.on("error", reject);
     child.on("exit", (code, signal) => {
-      if (signal) {
-        process.kill(process.pid, signal);
-        return;
-      }
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      process.exit(code ?? 1);
+      // ISS-4474: a build-step child dying to a signal exits the launcher
+      // cleanly with a conventional status instead of re-raising the fatal
+      // signal (which would cascade to the `just` recipe as a fatal crash).
+      handleBuildStepExit(code, signal, {
+        exit: (status) => process.exit(status),
+        resolve,
+      });
     });
   });
 }

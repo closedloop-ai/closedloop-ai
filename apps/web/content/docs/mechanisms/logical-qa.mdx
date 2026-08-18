@@ -1,0 +1,111 @@
+---
+title: Logical QA
+description: The read-only reconciliation pack that audits whether a rendered value tells the truth — its doctrine, the three finding outcomes, the dedup gate, and the shared filing contract.
+---
+
+Logical QA is a read-only investigation pack that audits whether the product's numbers mean what the screen says they mean. It is the reconciliation sibling of the [code review](./code-review) pack and of the visual-design pass: where a design review owns whether a screen *looks* right, this pack owns whether it *tells the truth* — does a rendered value reconcile against its own data and its own code, or does one screen contradict another, a summary fail to reconcile with the population it summarizes, a `0` lie about a load that never finished.
+
+It exists because these are precisely the defects a green test suite misses. A unit test asserts a fixture; it does not notice that a KPI card and the table beneath it were windowed on different timestamps.
+
+## Read-only is the law, not a default
+
+The pack investigates and reports. It never fixes bugs, edits production code, opens implementation pull requests, runs migrations or data repair, deploys, or otherwise remediates a finding — not once, not for a one-line fix, not to make a failing thing pass. If a task instructs it to fix something, it surfaces the conflict rather than complying.
+
+Two reasons that rule is absolute rather than advisory:
+
+- **A finding's value is that it is independent.** The moment the agent that reports a discrepancy also patches it, the report stops being an adjudicated observation and becomes an unreviewed change, and the human milestone review that is the whole governance model is gone.
+- **A read-only actor can be trusted with production-like data.** The pack explores authenticated, real or approved dogfood data. That access is safe to grant precisely because it does not write.
+
+**How the boundary is enforced is worth being precise about, because it is layered — part tool grant, part runtime sandbox, part discipline.** The pack's agents are granted only read, search, glob, and shell. The write and edit tools are *not* granted, so a source, test, or config edit through them is grant-blocked rather than merely prompt-discouraged. Shell access *is* granted — it is load-bearing, since the read-only live-app exploration and repo-path resolution both run through it. Two runtime layers narrow what the shell can then do: on the Codex runtime the agents run under `sandbox_mode = "read-only"`, which denies every filesystem write (including scratch paths); and the exploration harness installs an in-page `fetch`/XHR guard that throws on any non-GET request to the API host and asserts zero non-GET traffic after the run, so browser-driven writes are blocked outright. What is *not* yet sandbox-enforced is arbitrary shell reach on the Claude runtime — a `git commit` or a `curl -X POST` to some other host is still reachable there and is held off by the mandate rather than the sandbox. A narrower per-agent shell policy that closes that gap is tracked as a follow-up (ISS-4433). Until it lands, the pack treats any remaining ability to remediate as the convention's edge, never a loophole, and treats a write tool becoming available as itself a finding worth reporting.
+
+What that leaves the pack free to do is broad: navigate the app, exercise filters, date ranges, sorting, pagination, list-to-detail, related links and expansion states, read the API records behind a screen, read application code, derivations, contracts, and existing tests, and capture screenshots. The one thing it may author is its own evidence.
+
+## The four beats
+
+The pack investigates logical correctness, not visual polish and not whether the code compiles:
+
+| Beat | What it catches |
+|---|---|
+| **Parsing integrity** | A field that silently became undefined, a transcript fold that dropped a turn, a wire key the mapper never read. A value on screen is only as true as the parse under it. |
+| **Metric reconciliation** | A summary that does not reconcile with its population. A KPI windowed one way over a table windowed another. A count exceeding its parent population. A narrowed filter that grows an included count. |
+| **Cross-screen and cross-record consistency** | The same session or branch saying different things in list vs detail, sessions vs branches, web vs desktop. Records that reference each other disagreeing — a branch's session count against its own timeline, a PR status against the merge evidence under it. |
+| **UI-state common sense** | Loading, unavailable, not-applicable, unknown, and true-zero are five different claims about reality. Conflating them — a spinner that means "never fetched", a `0` that means "we don't know", a dash that means "doesn't apply" — is among the most common and most misleading logical defects there is. |
+
+The pack is scoped to any data or metric-correctness surface where a rendered value derives from parsed, collected, or projected data and could disagree with its source — the shared derivation and parsing libraries, the desktop collectors and session-trace store, the API layer's metric, cost, count, duration, and KPI projections, and the render layer on both web and desktop. Plumbing is deliberately carved out — auth, gateway and relay transport, IPC, window and updater chrome, webhooks, generated code, and the generic design-system packages — so the signal stays about numbers rather than chrome. Tests, stories, mocks, and snapshots never trigger it.
+
+## The evidence-package standard
+
+A candidate is not a finding until it is a package a stranger could reproduce and adjudicate without the investigator present. Every field is required, every time; a missing one is itself treated as a defect in the finding.
+
+- **Exact locus** — the full URL, the record ids, every active filter, the date range, the sort, the page or saved view, and which surface. "The sessions page" is not a locus.
+- **Repro steps** — a deterministic click path from a known start, so the owner either reproduces it or tells you what is different. No "sometimes".
+- **UI-claim vs conflicting evidence** — what the UI asserts, then the evidence contradicting it, each with its source named (another screen, the API record behind this one, the stored record), quoted as actual values rather than paraphrased.
+- **The violated invariant** — the rule that is broken. Either a provable invariant, or, when the expected behavior is a product judgment, the labeled basis being used. If neither settles it, that is said plainly and the finding routes as a judgment call rather than inventing a precedent.
+- **The likely code path** — where the discrepancy is most plausibly produced: the query, the derivation, the mapper, the cache key, the formatter. Traced by reading, never by editing.
+- **A labeled hypothesis, plus the alternatives** — one clearly-labeled root-cause hypothesis and the explanations that could not be ruled out. A guess is never laundered into a fact.
+- **Scope read** — isolated or systemic, and how far was actually checked. "Seen on one branch" and "reproduces on every branch with more than one PR" are different findings.
+- **Confidence and known limitations** — required on every finding, including the ones that get dropped.
+- **Suggested regression coverage, described but not written.** What a test *should* pin: the property, the fixture shape, the boundary case. Writing that test is a code change, so the pack describes it and hands it off.
+
+Confidence is split, not blended. An investigator can be high-confidence that two screens disagree (both values were observed) and low-confidence about the cause (the code was read, not run). Roughly: **high** means both sides were observed and the violated rule is an explicit provable invariant; **medium** means the discrepancy is observed but the expected behavior rests on a product-judgment call or a single external analogue; **low** means intent or cause is being inferred from code that was not executed, or it was seen once with no established scope. Known limitations name what was *not* checked and what would raise the confidence — a finding that hides its blind spots is worse than one that names them, because it invites the owner to over-trust it.
+
+## The three outcomes
+
+Every candidate resolves to exactly one of these. Nothing sits in limbo, and nothing gets remediated.
+
+1. **File a bug.** The evidence package is complete, the invariant or judgment basis is clear, confidence clears the threshold, and the duplicate search came back clean. It is filed idempotently with the full evidence package. If issue search is unavailable or incomplete, it is **not** filed — it is classified as pending deduplication review and handed to a human. If a matching bug already exists, the occurrence is appended to it rather than opening a parallel issue.
+2. **Ask the owner.** The discrepancy is real or plausibly real, but the *expected* behavior is a genuine product judgment that no invariant, analogue, or documented convention settles — or the analogues disagree with each other. The inquiry goes to the affected session with the evidence package and both candidate resolutions. This is asking, not asserting a defect.
+3. **Record and drop.** On investigation it holds up: the two values reconcile once the filter is accounted for, the zero is a true zero, the states are correctly distinguished. What was checked and why it is not a finding gets recorded so the next run does not re-chase it. A clean investigation that clears a suspicion is a real outcome, logged as one rather than padded into a bug.
+
+## The dedup gate
+
+No finding is filed without first passing a mandatory pre-filing gate. It has two jobs.
+
+**Never file a duplicate.** A single systemic defect surfaces on many sessions and branches with different record ids. Keying identity on those ids would file the same bug dozens of times, so the gate keys on a **durable fingerprint** instead and runs a multi-signal duplicate search across both open and recently-closed bugs. A re-observation augments the existing bug rather than opening a parallel one.
+
+**Never mislabel a regression.** A finding matching a *closed* bug is not automatically a regression. The trap is treating a done status, a merged PR, or a commit on the main branch as proof the fix is live in the environment being observed. The gate runs a chronology check and **fails safe to indeterminate** — routing to human review — whenever the deploy, version, or post-fix-processing evidence needed to place the observation *after* the fix reached that environment is missing.
+
+## The filing contract
+
+Filing reuses the platform's existing artifact-creation mechanics rather than defining a parallel path. The pipeline is a thin caller of the same contract the feature-creation flow already uses: a `POST /documents` against the ClosedLoop API with a `FEATURE` type, authenticated with an `sk_live_…` API key, assigned to the operator and filed into their default project unless one is named. It does not define its own endpoint, its own auth, or its own status vocabulary.
+
+Two details make that contract safe to call from an automated pipeline:
+
+- **Payload assembly is a pure, tested function that throws on an incomplete finding.** The request body is built from a structured finding object, rendering every evidence-package section plus the duplicate-search section, and it refuses to produce a payload when a required field is missing. An incomplete finding therefore cannot be filed at all.
+- **The create call carries a forward-looking idempotency signal.** `POST /documents` is not idempotent, so a response lost after the server committed would double-file on a naive retry. The helper derives a stable idempotency key from the finding's identity and sends it as an additive `Idempotency-Key` header on the create call. The route does not honor that header today, so it does not yet prevent a duplicate on retry; the header is sent now so that creation becomes idempotent the moment the server is taught to dedupe on it, and old servers ignore it harmlessly in the meantime.
+
+On a duplicate match, the new occurrence is posted to the existing artifact's thread rather than creating a new artifact. The matched slug is validated against the typed-slug shape and encoded as a single path segment before it reaches the URL, so a malformed or hostile "slug" cannot normalize onto a different endpoint. It never opens a parallel issue as a fallback.
+
+Two "cannot proceed" cases are distinct. When the **duplicate search itself could not run** (an `unavailable` dedup outcome), the pipeline does not file blind: it hands the complete, validated evidence package back for a human to review and file. When a match *was* found but the **append request fails at the HTTP layer**, the helper throws and the runner surfaces that append-failed status — it does not currently emit a ready-to-paste proposed update; recovering that occurrence is a manual step.
+
+## The flows
+
+| Flow | What it does |
+|---|---|
+| `/logical-qa <surface>` | The wide sweep. Explores a surface or a specific record read-only, detects candidates, investigates the code paths behind each, and routes every one to a single outcome. |
+| `/logical-review <finding-or-record>` | The reviewer front door. Given one filed bug, pending candidate, or record, it re-reads the evidence against the standard, verifies the claims before trusting them, and returns a verdict. Same investigator, narrower scope, adjudicating rather than hunting. |
+| `/logical-file-bug` | The **file a bug** outcome made concrete: the filing pipeline described above, called after a finding clears the dedup gate. |
+
+Three further pieces sit behind those front doors. An **exploration harness** authenticates against the live app and captures structured evidence — for every UI claim, the URL, the applied filters, the time range, the rendered values, a screenshot, and the underlying API record the value should reconcile against. A **precedent investigator** is used only when expected behavior is a genuine judgment call: it pins an analogous feature in a current external tool to an exact version, reads the code or docs that produce the behavior, and returns a labeled interpretation. It is explicitly an adjudication aid, never a source of truth. And the **dedup gate** runs on the filing path.
+
+Investigation itself is done by a lead investigator agent plus four specialists, one per beat: a parsing-integrity auditor, a metric-reconciliation auditor, a cross-surface consistency critic, and a UI-state critic. The lead assembles one evidence package per finding regardless of how many specialists contributed. Every one of them is read-only.
+
+## Both harnesses, one doctrine
+
+The pack runs on Claude Code and on Codex. In Claude Code the front doors are the slash commands above; in Codex they are the registered skill mentions `$logical-qa`, `$logical-review`, and `$logical-file-bug`. Both read the same canonical pack — the Codex agent descriptors and skill adapters are thin referrers that dispatch back to it, not a second copy of the doctrine. Same standard, same read-only mandate, same filing contract, regardless of harness.
+
+There is also a shift-left layer. A non-blocking hook fires after an edit to a data or metric-correctness surface and injects a reminder to run the pass before the turn ends. It is advisory only: it never denies an edit, it only adds context, and it deduplicates within a session so a multi-file refactor does not re-inject the same payload on every file. The reminder is not the audit — it is the prompt to run one.
+
+## Related reading
+
+<Cards>
+  <Card title="Code review" href="./code-review">
+    The multi-agent review pack this one is modeled alongside.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    The metric surfaces this pack most often reconciles.
+  </Card>
+  <Card title="Branches" href="./branches">
+    One of the surfaces the pack sweeps, and its reconciliation rules.
+  </Card>
+</Cards>

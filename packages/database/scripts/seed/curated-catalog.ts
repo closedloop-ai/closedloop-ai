@@ -99,6 +99,7 @@ export async function seedCuratedCatalogItems(
           coaching: true,
           coachingConfig: { signals: TOKEN_COACH_SIGNALS },
         },
+        select: { id: true },
       }),
     counts,
   });

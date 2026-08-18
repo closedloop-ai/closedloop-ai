@@ -15,6 +15,7 @@ import {
   useResolvedArtifactLinks,
 } from "@repo/app/documents/hooks/use-artifact-links";
 import { useDocumentsByProject } from "@repo/app/documents/hooks/use-documents";
+import { endpointToDocument } from "@repo/app/documents/lib/artifact-row-adapter";
 import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -61,8 +62,12 @@ export function PlanContextSection({
   const deleteLink = useDeleteArtifactLink();
 
   const parentLink = findParentSourceLink(resolvedLinks);
+  // Render the parent from the already-resolved link endpoint (available on
+  // load) rather than the `projectDocuments` fetch, which is gated on
+  // `pickerOpen` and empty until the picker opens — otherwise the existing
+  // link is invisible on initial load and users may link a duplicate.
   const parentDocument = parentLink
-    ? findDocumentForLink(parentLink, projectDocuments)
+    ? endpointToDocument(parentLink.source)
     : null;
 
   const candidates = useMemo(
@@ -182,10 +187,10 @@ function PlanContextBody({
             </Button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-80 p-0">
-            <Command label="Search features and PRDs">
-              <CommandInput placeholder="Search features and PRDs..." />
+            <Command label="Search issues and PRDs">
+              <CommandInput placeholder="Search issues and PRDs..." />
               <CommandList>
-                <CommandEmpty>No features or PRDs found.</CommandEmpty>
+                <CommandEmpty>No issues or PRDs found.</CommandEmpty>
                 <CommandGroup>
                   {candidates.map((doc) => {
                     const Icon = DOCUMENT_TYPE_ICONS[doc.type] ?? FileTextIcon;
@@ -225,17 +230,4 @@ function findParentSourceLink(
     }
   }
   return null;
-}
-
-/**
- * Look up the full Document for a link's source endpoint inside the current
- * project's document list. Cross-project parents fall back to null because the
- * picker only loads docs from the active project; the section then falls back
- * to its empty state until the user navigates to the parent's project.
- */
-function findDocumentForLink(
-  link: ArtifactLinkWithEndpoints,
-  projectDocuments: Document[]
-): Document | null {
-  return projectDocuments.find((doc) => doc.id === link.source.id) ?? null;
 }

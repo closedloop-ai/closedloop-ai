@@ -14,6 +14,8 @@ type MarkdownContentProps = {
   text: string;
   dense?: boolean;
   className?: string;
+  /** Drops raw HTML nodes instead of rendering or escaping author markup. */
+  skipHtml?: boolean;
   /**
    * Extra component overrides merged over the built-in defaults. Lets callers
    * customize how specific node types render (e.g. a domain-specific link
@@ -96,6 +98,7 @@ export function MarkdownContent({
   text,
   dense = false,
   className,
+  skipHtml = false,
   components,
   remarkPlugins,
 }: MarkdownContentProps) {
@@ -117,6 +120,7 @@ export function MarkdownContent({
       <ReactMarkdown
         components={mergedComponents}
         remarkPlugins={mergedRemarkPlugins}
+        skipHtml={skipHtml}
       >
         {text}
       </ReactMarkdown>

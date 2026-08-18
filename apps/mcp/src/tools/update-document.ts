@@ -1,26 +1,32 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Priority } from "@repo/api/src/types/common.js";
-import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document.js";
+import { DocumentStatus, IssueStatus } from "@repo/api/src/types/document.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildDocumentUrlFromRecord,
   describeIdOrSlug,
   encodePathSegment,
+  type McpUrlBuilder,
   pickDefined,
   withErrorHandling,
 } from "./tool-utils.js";
 
+const dueDateInput = z
+  .union([z.iso.date(), z.iso.datetime({ offset: true })])
+  .nullable()
+  .optional();
+
 export function registerUpdateDocument(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "update-document",
     {
       description:
-        "Update a document's editable fields — title, status, project, assignee, approver, priority, or fileName — by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.\n\nDocuments and Features have separate status vocabularies; the server rejects a status that doesn't belong to the target artifact's type.\nDocuments (PRD/PLN): DRAFT → IN_REVIEW → APPROVED (or CHANGES_REQUESTED, EXECUTED, OBSOLETE).\nFeatures (FEA): TRIAGE → BACKLOG → TODO → IN_PROGRESS → IN_REVIEW → DONE (or BLOCKED, CANCELED).\n\nRead-only fields cannot be updated and are rejected by the API: id, slug, tokenUsage, timestamps, createdBy metadata, latestVersion, and repositorySnapshot (repository context is fixed at creation).",
+        "Update a document's editable fields — title, status, project, assignee, approver, priority, dueDate, or fileName — by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim. Use create-document-version for content edits.\n\nDocuments and Features have separate status vocabularies; the server rejects a status that doesn't belong to the target artifact's type.\nDocuments (PRD/PLN): DRAFT → IN_REVIEW → APPROVED (or CHANGES_REQUESTED, EXECUTED, OBSOLETE).\nFeatures (FEA): TRIAGE → BACKLOG → TODO → IN_PROGRESS → IN_REVIEW → DONE (or BLOCKED, CANCELED).\n\nRead-only fields cannot be updated and are rejected by the API: id, slug, tokenUsage, timestamps, createdBy metadata, latestVersion, and repositorySnapshot (repository context is fixed at creation).",
       inputSchema: {
         documentId: z
           .string()
@@ -38,7 +44,7 @@ export function registerUpdateDocument(
         status: z
           // Accept either vocabulary; the server enforces the subset valid for
           // the target artifact's type (PRD-495).
-          .enum({ ...DocumentStatus, ...FeatureStatus })
+          .enum({ ...DocumentStatus, ...IssueStatus })
           .optional()
           .describe(
             "New status. Documents use DRAFT/IN_REVIEW/CHANGES_REQUESTED/APPROVED/EXECUTED/OBSOLETE; Features use TRIAGE/BACKLOG/TODO/IN_PROGRESS/IN_REVIEW/BLOCKED/DONE/CANCELED."
@@ -63,6 +69,9 @@ export function registerUpdateDocument(
           .enum(Priority)
           .optional()
           .describe("New priority: LOW, MEDIUM, HIGH, or URGENT."),
+        dueDate: dueDateInput.describe(
+          "New due date as ISO 8601 date (YYYY-MM-DD) or timezone-qualified datetime. Pass null to clear it."
+        ),
         fileName: z
           .string()
           .optional()
@@ -77,6 +86,7 @@ export function registerUpdateDocument(
       assigneeId,
       approverId,
       priority,
+      dueDate,
       fileName,
     }) =>
       withErrorHandling(async () => {
@@ -87,6 +97,7 @@ export function registerUpdateDocument(
           assigneeId,
           approverId,
           priority,
+          dueDate,
           fileName,
         });
 
@@ -96,7 +107,7 @@ export function registerUpdateDocument(
             body
           )
         );
-        const webUrl = buildDocumentUrlFromRecord(document);
+        const webUrl = urls.buildDocumentUrlFromRecord(document);
         return {
           content: [
             {

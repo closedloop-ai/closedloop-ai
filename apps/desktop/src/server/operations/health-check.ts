@@ -3,38 +3,80 @@ import fs, { constants } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { gatewayLog } from "../../main/gateway-logger.js";
-import { Observability } from "../../main/observability.js";
+import {
+  CheckSeverity,
+  isFailingRequiredCheck,
+} from "@closedloop-ai/loops-api/compute-target";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
+import { Observability } from "../../main/telemetry/observability.js";
 import type {
   PluginUpdateDiagnostics,
-  PluginUpdateFailureReason,
   PluginUpdateOutcome,
-} from "../../main/telemetry-protocol.js";
+} from "../../main/telemetry/telemetry-protocol.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import {
   getShellEnv,
+  KNOWN_BINARY_LOCATIONS,
   resolveBinaryFromLoginShell,
   resolveExecutablesOnPath,
 } from "../shell-path.js";
 import {
+  checkAppVersion,
+  classifyGatewayBuild,
+  compareStrictSemver,
+} from "./health-check-app-version.js";
+import {
+  applyClaudeCliBlockedChecks,
+  CLAUDE_CLI_CHECK_ID,
+} from "./health-check-blocked.js";
+import {
+  type McpCheckResult,
+  type McpRepairRequest,
+  resolveMcpServers,
+} from "./health-check-mcp-repair.js";
+import {
+  applyPluginEnableChecks,
+  CLOSEDLOOP_USER_PLUGINS,
+  type CommandError,
+  type PluginEnableRuntime,
+  type PluginInventoryResult,
+  type PluginRemediationDeadline,
+  type PluginUpdateCommandResult,
+  resolvePostUpdateOutcome,
+} from "./health-check-plugin-enable.js";
+import {
+  checkPlugin,
+  type PluginInventoryRuntime,
+  readClaudePluginInventory,
+  readClaudePluginList,
+} from "./health-check-plugin-inventory.js";
+import {
+  fetchPluginManifests,
+  type PluginManifestRuntime,
+} from "./health-check-plugin-manifests.js";
+import {
+  annotateRepairability,
+  type BinaryPathsSnapshot,
+} from "./health-check-repairability.js";
+import {
+  type GatewayCheckResult as CheckResult,
+  CLOSEDLOOP_MARKETPLACE_NAME,
+  CODEX_CLI_CHECK_ID,
+  PLUGIN_CHECK_ID_PREFIX,
+  pluginCheckId,
+} from "./health-check-types.js";
+import { checkWorktreeDir } from "./health-check-worktree-dir.js";
+import {
   detectMcpAvailability,
   type McpDetectionResult,
 } from "./mcp-detection.js";
-import {
-  type ClaudePluginInventoryEntry,
-  getInstalledPluginVersions,
-  getPluginInstallStatus,
-  parseClaudePluginListJson,
-  parseClaudePluginListText,
-  toPluginInventoryMap,
-} from "./plugin-cache.js";
+import { getInstalledPluginVersions } from "./plugin-cache.js";
 import { json } from "./response-utils.js";
 
 const execFileAsync = promisify(execFile);
 const VERSION_REGEX = /(\d+\.\d+[\w.-]*)/;
 const VERSION_PREFIX_REGEX = /^[vV]/;
-const CLOSEDLOOP_MARKETPLACE_NAME = "closedloop-ai";
 const HEALTH_PROBE_COMMAND_TIMEOUT_MS = 3000;
 const PLUGIN_UPDATE_TIMEOUT_MS = 30_000;
 // Keep the full auto-remediation route under the app's 45s timeout.
@@ -46,113 +88,6 @@ const PLUGIN_AUTOUPDATE_DOCS_LINK = {
   label: "Update Closedloop plugins manually",
   url: "https://github.com/closedloop-ai/claude-plugins#quick-start",
 } as const;
-
-const CLOSEDLOOP_USER_PLUGINS = [
-  {
-    folder: "code",
-    key: "code@closedloop-ai",
-    label: "Symphony Plugin",
-    required: true,
-  },
-  {
-    folder: "platform",
-    key: "platform@closedloop-ai",
-    label: "Platform Plugin",
-    required: true,
-  },
-  {
-    folder: "judges",
-    key: "judges@closedloop-ai",
-    label: "Judges Plugin",
-    required: true,
-  },
-  {
-    folder: "code-review",
-    key: "code-review@closedloop-ai",
-    label: "Code Review Plugin",
-    required: true,
-  },
-  {
-    folder: "self-learning",
-    key: "self-learning@closedloop-ai",
-    label: "Self-Learning Plugin",
-    required: true,
-  },
-] as const;
-
-type CheckResult = {
-  id: string;
-  label: string;
-  required: boolean;
-  passed: boolean;
-  version?: string;
-  error?: string;
-  remediation?: string;
-  enableAttempted?: boolean;
-  enableOutcome?: PluginUpdateOutcome;
-  enablePluginIds?: string[];
-  updateAttempted?: boolean;
-  updateOutcome?: PluginUpdateOutcome;
-  updatePluginIds?: string[];
-  remediationLinks?: Array<{ label: string; url: string }>;
-  debug?: {
-    errorCode?: string; // "ENOENT" | "EACCES" | "ETIMEDOUT" | "EPERM" | other
-    stderr?: string; // trimmed, capped at 512 chars
-    resolvedPath?: string; // PATH string from getShellEnv(), truncated to 1 KiB
-    shell?: string; // basename of process.env.SHELL ("zsh" / "bash" / "fish")
-    platform?: NodeJS.Platform;
-    foundAt?: string[]; // executable locations where the binary was found (PATH sweep + known dirs)
-    nonExecutableAt?: string[]; // paths that exist but are not executable (drives EACCES diagnostics)
-    overrideUsed?: string; // populated when a manual override path was tried (see binary-paths settings)
-  };
-};
-
-type ReposConfig = {
-  repos?: Array<{ path: string; description?: string }>;
-  settings?: {
-    worktreeParentDir?: string;
-    worktreeParentDirConfirmed?: boolean;
-  };
-};
-
-type CommandError = {
-  code: string; // "ENOENT", "EACCES", "ETIMEDOUT", or "EUNKNOWN"
-  stderr: string;
-  message: string;
-};
-
-type PluginManifest = {
-  plugin: (typeof CLOSEDLOOP_USER_PLUGINS)[number];
-  latestVersion?: string;
-  error?: "manifest_unavailable";
-};
-
-type ClaudeMarketplaceListEntry = {
-  name?: unknown;
-  source?: unknown;
-  path?: unknown;
-  installLocation?: unknown;
-};
-
-type PluginUpdateCommandResult = {
-  outcome: PluginUpdateOutcome;
-  exitCode?: number;
-  stdout: string;
-  stderrTail?: string;
-  elapsedMs: number;
-  failureReason?: PluginUpdateFailureReason;
-};
-
-type PluginInventoryResult = {
-  source: "json" | "text" | "unavailable";
-  entries: Map<string, ClaudePluginInventoryEntry>;
-  error?: string;
-};
-
-type PluginRemediationDeadline = {
-  startedAt: number;
-  timeoutMs: number;
-};
 
 function getPluginUpdateOutputTail(
   output: string | Buffer | undefined
@@ -166,24 +101,8 @@ function shouldEnablePluginAutoUpdate(
 ): boolean {
   return (
     requested &&
-    checks.some((check) => check.id === "claude-cli" && check.passed)
+    checks.some((check) => check.id === CLAUDE_CLI_CHECK_ID && check.passed)
   );
-}
-
-function resolvePostUpdateOutcome(
-  current: boolean,
-  updateResult?: PluginUpdateCommandResult
-): PluginUpdateOutcome {
-  if (current) {
-    return "success";
-  }
-  if (
-    updateResult?.outcome === "timeout" ||
-    updateResult?.outcome === "skipped"
-  ) {
-    return updateResult.outcome;
-  }
-  return "failed";
 }
 
 export function registerHealthCheckRoutes(
@@ -201,120 +120,263 @@ export function registerHealthCheckRoutes(
     python3?: string;
     git?: string;
   },
-  getAppVersion?: () => string | undefined
+  getAppVersion?: () => string | undefined,
+  /**
+   * `app.isPackaged`. Absent when the host cannot report it, in which case the
+   * build stays unclassified and the version row asserts nothing (ISS-5369).
+   */
+  isPackagedBuild?: () => boolean
 ): void {
   const detectMcp = detectMcpOverride ?? detectMcpAvailability;
   const configDir = () => path.join(getSymphonyDir(), "config");
 
   dispatcher.register("GET", "/api/gateway/health-check", async (context) => {
-    const expectedMcpUrl =
-      context.query.get("expectedMcpUrl")?.trim() || undefined;
-    const requestedPluginAutoUpdate =
-      context.query.get("pluginAutoUpdate") === "1";
-    const paths = getBinaryPaths?.();
-    const pluginRemediationDeadline = requestedPluginAutoUpdate
-      ? createPluginRemediationDeadline()
-      : undefined;
-    const [pluginListJson, baseChecks, claudeMcp, codexMcp] = await Promise.all(
-      [
-        readClaudePluginListJson(paths?.claude, pluginRemediationDeadline),
-        Promise.all([
-          checkGit(processManager, paths?.git, pluginRemediationDeadline),
-          checkClaudeCli(
-            processManager,
-            paths?.claude,
-            pluginRemediationDeadline
-          ),
-          checkGhCli(processManager, paths?.gh, pluginRemediationDeadline),
-          checkGhAuth(processManager, paths?.gh, pluginRemediationDeadline),
-          checkWorktreeDir(configDir),
-          checkCodex(processManager, paths?.codex, pluginRemediationDeadline),
-          checkPython3(
-            processManager,
-            paths?.python3,
-            pluginRemediationDeadline
-          ),
-        ]),
-        detectMcpWithinDeadline(
-          detectMcp,
-          "claude",
-          expectedMcpUrl,
-          pluginRemediationDeadline
-        ),
-        detectMcpWithinDeadline(
-          detectMcp,
-          "codex",
-          expectedMcpUrl,
-          pluginRemediationDeadline
-        ),
-      ]
-    );
-    const pluginAutoUpdateEnabled = shouldEnablePluginAutoUpdate(
-      requestedPluginAutoUpdate,
-      baseChecks
-    );
-    const activePluginRemediationDeadline = pluginAutoUpdateEnabled
-      ? pluginRemediationDeadline
-      : undefined;
-    let pluginChecks = CLOSEDLOOP_USER_PLUGINS.map((plugin) =>
-      checkPlugin(plugin, pluginListJson, pluginAutoUpdateEnabled)
-    );
-    if (pluginAutoUpdateEnabled) {
-      pluginChecks = await applyPluginEnableChecks(pluginChecks, {
-        claudeOverride: paths?.claude,
-        remediationDeadline: activePluginRemediationDeadline,
-        readInventory: (timeoutMs) =>
-          readClaudePluginInventory(
-            paths?.claude,
-            activePluginRemediationDeadline,
-            timeoutMs
-          ),
-      });
-    }
-    let checks: CheckResult[] = [
-      ...baseChecks.slice(0, 4),
-      ...pluginChecks,
-      ...baseChecks.slice(4),
-    ];
-
-    // Check plugin versions if all plugins are installed
-    const allPluginsInstalled = checks
-      .filter((c) => c.id.startsWith("plugin-"))
-      .every((c) => c.passed);
-    if (allPluginsInstalled) {
-      const installed = getInstalledPluginVersions();
-      checks = await applyPluginVersionChecks(checks, installed, {
-        pluginAutoUpdateEnabled,
-        claudeOverride: paths?.claude,
-        remediationDeadline: activePluginRemediationDeadline,
-        readInstalledVersions: () => getInstalledPluginVersions(),
-      });
-    }
-
-    for (const check of checks) {
-      Observability.healthCheckResult(check);
-    }
-
-    const rawLatestVersion =
-      context.query.get("latestVersion")?.trim() || undefined;
-    const rawCurrentVersion = getAppVersion?.();
-    if (rawLatestVersion && rawCurrentVersion) {
-      const latestNorm = rawLatestVersion.replace(VERSION_PREFIX_REGEX, "");
-      const currentNorm = rawCurrentVersion.replace(VERSION_PREFIX_REGEX, "");
-      const appVersionResult = checkAppVersion(currentNorm, latestNorm);
-      checks.push(appVersionResult);
-      Observability.healthCheckResult(appVersionResult);
-    }
-
-    const allRequiredPassed = checks
-      .filter((check) => check.required)
-      .every((check) => check.passed);
-    const mcpServers = {
-      claude: claudeMcp,
-      codex: codexMcp,
-    };
-    json(context, 200, { checks, allRequiredPassed, mcpServers });
+    const response = await runHealthCheck({
+      processManager,
+      configDir,
+      detectMcp,
+      paths: getBinaryPaths?.(),
+      expectedMcpUrl: context.query.get("expectedMcpUrl")?.trim() || undefined,
+      requestedPluginAutoUpdate: context.query.get("pluginAutoUpdate") === "1",
+      latestVersion: context.query.get("latestVersion")?.trim() || undefined,
+      currentVersion: getAppVersion?.(),
+      isPackagedBuild,
+    });
+    json(context, 200, response);
   });
+}
+
+export type HealthCheckRunOptions = {
+  processManager: ProcessManager;
+  configDir: () => string;
+  detectMcp: (
+    provider: "claude" | "codex",
+    expectedMcpUrl?: string
+  ) => Promise<McpDetectionResult>;
+  paths?: BinaryPathsSnapshot;
+  expectedMcpUrl?: string;
+  requestedPluginAutoUpdate: boolean;
+  latestVersion?: string;
+  currentVersion?: string;
+  /**
+   * `app.isPackaged`. Absent when the host cannot report it, in which case the
+   * build stays unclassified and the version row asserts nothing (ISS-5369).
+   */
+  isPackagedBuild?: () => boolean;
+  /**
+   * Set ONLY by the Repair operation (ISS-5435). Its presence opts this sweep
+   * into registering a missing Closedloop MCP server, and each step it takes is
+   * handed to `recordStep`. The plain health-check route never passes it, so a
+   * read-only check can never write MCP config as a side effect — unlike
+   * `requestedPluginAutoUpdate`, which is also a user setting.
+   */
+  mcpRepair?: McpRepairRequest;
+};
+
+export type GatewayHealthCheckResponse = {
+  checks: CheckResult[];
+  allRequiredPassed: boolean;
+  mcpServers: {
+    claude: McpCheckResult;
+    codex: McpCheckResult;
+  };
+};
+
+/**
+ * Runs the full System Check sweep and returns the response body the
+ * `GET /api/gateway/health-check` route serves. Exported so the Repair
+ * operation can re-check in-process immediately after remediating, instead of
+ * making the browser fire a second round trip it might not survive (ISS-5389).
+ */
+export async function runHealthCheck(
+  options: HealthCheckRunOptions
+): Promise<GatewayHealthCheckResponse> {
+  const {
+    processManager,
+    configDir,
+    detectMcp,
+    paths,
+    expectedMcpUrl,
+    requestedPluginAutoUpdate,
+  } = options;
+  const pluginRemediationDeadline = requestedPluginAutoUpdate
+    ? createPluginRemediationDeadline()
+    : undefined;
+  const [pluginListRead, baseChecks, claudeMcp, codexMcp] = await Promise.all([
+    readClaudePluginList(
+      createPluginInventoryRuntime(),
+      paths?.claude,
+      pluginRemediationDeadline
+    ),
+    Promise.all([
+      checkGit(processManager, paths?.git, pluginRemediationDeadline),
+      checkClaudeCli(processManager, paths?.claude, pluginRemediationDeadline),
+      checkGhCli(processManager, paths?.gh, pluginRemediationDeadline),
+      checkGhAuth(processManager, paths?.gh, pluginRemediationDeadline),
+      checkWorktreeDir(configDir),
+      checkCodex(processManager, paths?.codex, pluginRemediationDeadline),
+      checkPython3(processManager, paths?.python3, pluginRemediationDeadline),
+    ]),
+    detectMcpWithinDeadline(
+      detectMcp,
+      "claude",
+      expectedMcpUrl,
+      pluginRemediationDeadline
+    ),
+    detectMcpWithinDeadline(
+      detectMcp,
+      "codex",
+      expectedMcpUrl,
+      pluginRemediationDeadline
+    ),
+  ]);
+  const pluginAutoUpdateEnabled = shouldEnablePluginAutoUpdate(
+    requestedPluginAutoUpdate,
+    baseChecks
+  );
+  const activePluginRemediationDeadline = pluginAutoUpdateEnabled
+    ? pluginRemediationDeadline
+    : undefined;
+  const claudeCliCheck = baseChecks.find(
+    (check) => check.id === CLAUDE_CLI_CHECK_ID
+  );
+  let pluginChecks = applyClaudeCliBlockedChecks(
+    CLOSEDLOOP_USER_PLUGINS.map((plugin) =>
+      checkPlugin(plugin, pluginListRead, pluginAutoUpdateEnabled)
+    ),
+    claudeCliCheck
+  );
+  if (pluginAutoUpdateEnabled) {
+    pluginChecks = await applyPluginEnableChecks(pluginChecks, {
+      claudeOverride: paths?.claude,
+      remediationDeadline: activePluginRemediationDeadline,
+      readInventory: (timeoutMs) =>
+        readClaudePluginInventory(
+          createPluginInventoryRuntime(),
+          paths?.claude,
+          activePluginRemediationDeadline,
+          timeoutMs
+        ),
+      runtime: createPluginEnableRuntime(),
+    });
+  }
+  let checks: CheckResult[] = [
+    ...baseChecks.slice(0, 4),
+    ...pluginChecks,
+    ...baseChecks.slice(4),
+  ];
+
+  // Check plugin versions if all plugins are installed
+  const allPluginsInstalled = checks
+    .filter((c) => c.id.startsWith(PLUGIN_CHECK_ID_PREFIX))
+    .every((c) => c.passed);
+  if (allPluginsInstalled) {
+    const installed = getInstalledPluginVersions();
+    checks = await applyPluginVersionChecks(checks, installed, {
+      pluginAutoUpdateEnabled,
+      claudeOverride: paths?.claude,
+      remediationDeadline: activePluginRemediationDeadline,
+      readInstalledVersions: () => getInstalledPluginVersions(),
+    });
+  }
+
+  for (const check of checks) {
+    Observability.healthCheckResult(check);
+  }
+
+  // The row is gated on knowing our OWN version, not on the release manifest.
+  // A source build never needs a manifest, and a packaged build without one
+  // should say "not verified" rather than have the Gateway Version row vanish
+  // from the panel entirely (ISS-5369).
+  if (options.currentVersion) {
+    const latestNorm = options.latestVersion?.replace(VERSION_PREFIX_REGEX, "");
+    const currentNorm = options.currentVersion.replace(
+      VERSION_PREFIX_REGEX,
+      ""
+    );
+    const appVersionResult = checkAppVersion(
+      currentNorm,
+      latestNorm,
+      classifyGatewayBuild(options.isPackagedBuild?.())
+    );
+    checks.push(appVersionResult);
+    Observability.healthCheckResult(appVersionResult);
+  }
+
+  // Through the SHARED predicate, never a local copy of `required && !passed`.
+  // The cloud gate read `passed` alone and so counted a row the gateway could
+  // not determine (`severity: "unknown" | "blocked"`) as a proven failure; that
+  // is what made every web→desktop command unlaunchable (ISS-5811). This
+  // gateway-side flag had the identical blindness, so it is derived from the
+  // same function rather than a second predicate that can drift (ISS-5868).
+  const allRequiredPassed = !checks.some(isFailingRequiredCheck);
+
+  const annotatedChecks = await annotateRepairability(checks, paths);
+  const mcpServers = await resolveMcpServers(
+    { claude: claudeMcp, codex: codexMcp },
+    { checks: annotatedChecks, expectedMcpUrl },
+    options.mcpRepair
+  );
+
+  return {
+    checks: annotatedChecks,
+    allRequiredPassed,
+    mcpServers,
+  };
+}
+
+/**
+ * The deadline-bounded primitives the plugin-enable runner needs, bound to this
+ * module's (test-overridable) command runners. Exported so the Repair operation
+ * drives the exact same runner the auto-remediating health check does, rather
+ * than a second copy that can drift.
+ */
+export function createPluginEnableRuntime(): PluginEnableRuntime {
+  return {
+    createDeadline: createPluginRemediationDeadline,
+    hasDeadlineExpired: hasPluginRemediationDeadlineExpired,
+    createTimeoutResult: () => createPluginRemediationTimeoutResult(),
+    runEnableWithinDeadline: (pluginKey, enableOptions, deadline) =>
+      runPluginCommandWithinDeadline(
+        (timeoutMs) =>
+          runPluginEnableCommand(pluginKey, {
+            claudeOverride: enableOptions.claudeOverride,
+            timeoutMs,
+          }),
+        deadline
+      ),
+    readInventoryWithinDeadline: readPluginInventoryWithinDeadline,
+    timeoutMessage: PLUGIN_REMEDIATION_TIMEOUT_MESSAGE,
+    getOutputTail: getPluginUpdateOutputTail,
+  };
+}
+
+/**
+ * The deadline-bounded primitives the manifest reader needs, bound to this
+ * module's (test-overridable) command runners — the same shape
+ * `createPluginEnableRuntime` uses, so neither extracted module imports back
+ * into this one.
+ */
+/**
+ * The primitives `health-check-plugin-inventory.ts` needs, bound to this
+ * module's (test-overridable) command runners — the same shape
+ * `createPluginEnableRuntime` uses, so the extracted module stays a leaf.
+ */
+export function createPluginInventoryRuntime(): PluginInventoryRuntime {
+  return {
+    resolveClaudeBinary: (override) =>
+      resolveBinaryFromLoginShell("claude", override),
+    runCommand: runCommandWithOptionalDeadline,
+  };
+}
+
+export function createPluginManifestRuntime(): PluginManifestRuntime {
+  return {
+    hasDeadlineExpired: hasPluginRemediationDeadlineExpired,
+    runCommandWithinDeadline: runCommandWithOptionalDeadline,
+    boundedTimeoutMs: getPluginRemediationBoundedTimeoutMs,
+    runValueWithinDeadline,
+  };
 }
 
 type RunCommand = (
@@ -350,27 +412,6 @@ const defaultRunCommand: RunCommand = async (cmd, args, options) => {
 };
 
 let runCommand: RunCommand = defaultRunCommand;
-
-async function readClaudePluginListJson(
-  claudeOverride?: string,
-  deadline?: PluginRemediationDeadline
-): Promise<string | null> {
-  const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
-  if (resolved.source === "override_invalid") {
-    return null;
-  }
-
-  try {
-    const { stdout } = await runCommandWithOptionalDeadline(
-      resolved.path,
-      ["plugin", "list", "--json"],
-      { deadline }
-    );
-    return stdout;
-  } catch {
-    return null;
-  }
-}
 
 async function detectMcpWithinDeadline(
   detectMcp: (
@@ -697,42 +738,15 @@ function parseVersion(output: string): string | undefined {
   return match?.[1];
 }
 
-const KNOWN_CLAUDE_LOCATIONS: string[] = [
-  "~/.claude/local/claude", // Anthropic native installer default
-  "/opt/homebrew/bin/claude", // Apple Silicon Homebrew
-  "/usr/local/bin/claude", // Intel Homebrew / pre-Apple-Silicon
-  "~/.bun/bin/claude",
-  "~/.volta/bin/claude",
-  "~/.local/bin/claude",
-  "/snap/bin/claude", // Linux snap
-];
-
-const KNOWN_GIT_LOCATIONS: string[] = [
-  "/usr/bin/git",
-  "/usr/local/bin/git",
-  "/opt/homebrew/bin/git",
-];
-
-const KNOWN_GH_LOCATIONS: string[] = [
-  "/opt/homebrew/bin/gh",
-  "/usr/local/bin/gh",
-  "~/.local/bin/gh",
-];
-
-const KNOWN_CODEX_LOCATIONS: string[] = [
-  "~/.volta/bin/codex",
-  "/opt/homebrew/bin/codex",
-  "/usr/local/bin/codex",
-  "~/.bun/bin/codex",
-  "~/.local/bin/codex",
-];
-
-const KNOWN_PYTHON3_LOCATIONS: string[] = [
-  "/usr/bin/python3",
-  "/usr/local/bin/python3",
-  "/opt/homebrew/bin/python3",
-  "~/.local/bin/python3",
-];
+// Canonical known-install-location lists live in shell-path.ts, where they
+// also drive the resolver's known-location tier (FEA-3742). Re-derive the
+// per-binary diagnostics arrays from that single source so the resolver and
+// the "found at X but not on PATH" diagnostics never drift.
+const KNOWN_CLAUDE_LOCATIONS: string[] = KNOWN_BINARY_LOCATIONS.claude ?? [];
+const KNOWN_GIT_LOCATIONS: string[] = KNOWN_BINARY_LOCATIONS.git ?? [];
+const KNOWN_GH_LOCATIONS: string[] = KNOWN_BINARY_LOCATIONS.gh ?? [];
+const KNOWN_CODEX_LOCATIONS: string[] = KNOWN_BINARY_LOCATIONS.codex ?? [];
+const KNOWN_PYTHON3_LOCATIONS: string[] = KNOWN_BINARY_LOCATIONS.python3 ?? [];
 
 function getInstallRemediation(
   binaryName: string,
@@ -974,7 +988,7 @@ async function checkClaudeCli(
   const resolved = await resolveBinaryFromLoginShell("claude", override);
   if (resolved.source === "override_invalid") {
     return {
-      id: "claude-cli",
+      id: CLAUDE_CLI_CHECK_ID,
       label: "Claude CLI",
       required: true,
       passed: false,
@@ -990,7 +1004,7 @@ async function checkClaudeCli(
       { deadline }
     );
     return {
-      id: "claude-cli",
+      id: CLAUDE_CLI_CHECK_ID,
       label: "Claude CLI",
       required: true,
       passed: true,
@@ -1007,7 +1021,7 @@ async function checkClaudeCli(
       debug.overrideUsed = override;
     }
     return {
-      id: "claude-cli",
+      id: CLAUDE_CLI_CHECK_ID,
       label: "Claude CLI",
       required: true,
       passed: false,
@@ -1108,304 +1122,6 @@ async function checkGhAuth(
   }
 }
 
-async function readClaudePluginInventory(
-  claudeOverride?: string,
-  deadline?: PluginRemediationDeadline,
-  timeoutMs?: number
-): Promise<PluginInventoryResult> {
-  const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
-  if (resolved.source === "override_invalid") {
-    return {
-      source: "unavailable",
-      entries: new Map(),
-      error: "Claude binary override path does not exist or is not executable",
-    };
-  }
-
-  let jsonFailure: string | undefined;
-  try {
-    const { stdout } = await runCommandWithOptionalDeadline(
-      resolved.path,
-      ["plugin", "list", "--json"],
-      { deadline, timeoutMs }
-    );
-    return {
-      source: "json",
-      entries: toPluginInventoryMap(parseClaudePluginListJson(stdout)),
-    };
-  } catch (error) {
-    jsonFailure =
-      error instanceof Error
-        ? error.message
-        : typeof error === "object" && error !== null && "message" in error
-          ? String((error as { message?: unknown }).message)
-          : "Unable to parse plugin JSON inventory";
-  }
-
-  try {
-    const { stdout } = await runCommandWithOptionalDeadline(
-      resolved.path,
-      ["plugin", "list"],
-      { deadline, timeoutMs }
-    );
-    const entries = parseClaudePluginListText(stdout);
-    if (entries.length > 0) {
-      return {
-        source: "text",
-        entries: toPluginInventoryMap(entries),
-      };
-    }
-  } catch {
-    // Fall through to the deterministic unavailable result below.
-  }
-
-  return {
-    source: "unavailable",
-    entries: new Map(),
-    error: jsonFailure,
-  };
-}
-
-function getClosedloopPluginByCheckId(
-  checkId: string
-): (typeof CLOSEDLOOP_USER_PLUGINS)[number] | undefined {
-  return CLOSEDLOOP_USER_PLUGINS.find(
-    (plugin) => checkId === `plugin-${plugin.folder}`
-  );
-}
-
-async function applyPluginEnableChecks(
-  checks: CheckResult[],
-  options: {
-    claudeOverride?: string;
-    remediationDeadline?: PluginRemediationDeadline;
-    readInventory: (timeoutMs?: number) => Promise<PluginInventoryResult>;
-  }
-): Promise<CheckResult[]> {
-  const disabledPlugins = checks.flatMap((check) => {
-    if (!(check.id.startsWith("plugin-") && check.error === "Disabled")) {
-      return [];
-    }
-    const plugin = getClosedloopPluginByCheckId(check.id);
-    return plugin ? [plugin] : [];
-  });
-
-  if (disabledPlugins.length === 0) {
-    return checks;
-  }
-
-  const pluginIds = disabledPlugins.map((plugin) => plugin.key);
-  const startedAt = Date.now();
-  gatewayLog.info(
-    "health-check",
-    `Starting Closedloop plugin enable attempt ${JSON.stringify({ pluginIds })}`
-  );
-
-  const enableResults = new Map<string, PluginUpdateCommandResult>();
-  const remediationDeadline =
-    options.remediationDeadline ?? createPluginRemediationDeadline();
-  for (const plugin of disabledPlugins) {
-    if (hasPluginRemediationDeadlineExpired(remediationDeadline)) {
-      enableResults.set(plugin.key, createPluginRemediationTimeoutResult());
-      continue;
-    }
-    const result = await runPluginCommandWithinDeadline(
-      (timeoutMs) =>
-        runPluginEnableCommand(plugin.key, {
-          claudeOverride: options.claudeOverride,
-          timeoutMs,
-        }),
-      remediationDeadline
-    );
-    enableResults.set(plugin.key, result);
-  }
-
-  const postInventory = await readPluginInventoryWithinDeadline(
-    options.readInventory,
-    remediationDeadline
-  );
-  const inventoryTimedOut =
-    postInventory.error === PLUGIN_REMEDIATION_TIMEOUT_MESSAGE;
-  const outcomes = Object.fromEntries(
-    disabledPlugins.map((plugin) => {
-      const postEntry = postInventory.entries.get(plugin.key);
-      const enabled = postEntry?.enabled === true;
-      return [
-        plugin.key,
-        inventoryTimedOut
-          ? "timeout"
-          : resolvePostUpdateOutcome(enabled, enableResults.get(plugin.key)),
-      ];
-    })
-  ) as Record<string, PluginUpdateOutcome>;
-  const failedResult = [...enableResults.values()].find(
-    (result) => result.outcome === "failed" || result.outcome === "timeout"
-  );
-
-  gatewayLog.info(
-    "health-check",
-    `Completed Closedloop plugin enable attempt ${JSON.stringify({
-      pluginIds,
-      outcomes,
-      durationMs: Date.now() - startedAt,
-      exitCode: failedResult?.exitCode,
-      stderrTail:
-        failedResult?.stderrTail ||
-        getPluginUpdateOutputTail(failedResult?.stdout),
-    })}`
-  );
-
-  return checks.map((check) => {
-    const plugin = getClosedloopPluginByCheckId(check.id);
-    if (!(plugin && pluginIds.includes(plugin.key))) {
-      return check;
-    }
-
-    const postEntry = postInventory.entries.get(plugin.key);
-    const enabled = postEntry?.enabled === true;
-    const outcome = outcomes[plugin.key] ?? "failed";
-    if (enabled) {
-      const { error: _error, remediation: _remediation, ...rest } = check;
-      return {
-        ...rest,
-        passed: true,
-        version: postEntry.version ?? check.version,
-        enableAttempted: true,
-        enableOutcome: "success",
-        enablePluginIds: pluginIds,
-      };
-    }
-
-    return {
-      ...check,
-      passed: false,
-      error:
-        outcome === "timeout" ? "Enable timed out" : "Automatic enable failed",
-      remediation: buildPluginInstallRemediation(plugin.key),
-      enableAttempted: true,
-      enableOutcome: outcome,
-      enablePluginIds: pluginIds,
-    };
-  });
-}
-
-function buildPluginInstallRemediation(pluginRef: string): string {
-  return `Run: claude plugin install ${pluginRef} --scope user, then claude plugin enable ${pluginRef} --scope user`;
-}
-
-function checkPlugin(
-  plugin: (typeof CLOSEDLOOP_USER_PLUGINS)[number],
-  pluginListJson: string | null,
-  pluginAutoUpdateEnabled: boolean
-): CheckResult {
-  const status = getPluginInstallStatus(
-    plugin.folder,
-    undefined,
-    pluginListJson
-  );
-  const base = {
-    id: `plugin-${plugin.folder}`,
-    label: plugin.label,
-    required: plugin.required,
-    ...(status.selectedUserVersion
-      ? { version: status.selectedUserVersion }
-      : {}),
-  };
-
-  if (status.hasValidUserScopedEntry) {
-    return { ...base, passed: true };
-  }
-
-  if (status.enabledStateUnverified) {
-    return {
-      ...base,
-      passed: false,
-      error: "Could not verify enabled state",
-      remediation: `Run: claude plugin enable ${status.pluginRef} --scope user, then rerun System Check`,
-      enableAttempted: false,
-      enablePluginIds: [status.pluginRef],
-      ...(pluginAutoUpdateEnabled ? {} : { enableOutcome: "skipped" as const }),
-    };
-  }
-
-  if (status.disabled) {
-    return {
-      ...base,
-      passed: false,
-      error: "Disabled",
-      remediation: `Run: claude plugin enable ${status.pluginRef} --scope user`,
-      enableAttempted: false,
-      enablePluginIds: [status.pluginRef],
-      ...(pluginAutoUpdateEnabled ? {} : { enableOutcome: "skipped" as const }),
-    };
-  }
-
-  if (!status.hasExistingUserInstallPath && status.hasProjectScopedEntry) {
-    return {
-      ...base,
-      passed: false,
-      error: "Installed at project scope",
-      remediation: `Run: claude plugin uninstall ${status.pluginRef} --scope project, then claude plugin install ${status.pluginRef} --scope user`,
-    };
-  }
-
-  if (status.hasUserScopedEntry && !status.hasExistingUserInstallPath) {
-    return {
-      ...base,
-      passed: false,
-      error: "Install path missing",
-      remediation: `Run: claude plugin install ${status.pluginRef} --scope user`,
-    };
-  }
-
-  return {
-    ...base,
-    passed: false,
-    error: "Not found",
-    remediation: `Run: claude plugin install ${status.pluginRef} --scope user`,
-  };
-}
-
-async function checkWorktreeDir(
-  getConfigDir: () => string
-): Promise<CheckResult> {
-  let configDir: string;
-  try {
-    configDir = getConfigDir();
-  } catch {
-    return {
-      id: "worktree-dir",
-      label: "Worktree Directory",
-      required: true,
-      passed: false,
-      error: "Not configured",
-      remediation:
-        "Set the parent directory where git worktrees will be created",
-    };
-  }
-  const config = await loadReposConfig(configDir);
-  const configuredDir = config.settings?.worktreeParentDir;
-  const confirmed = config.settings?.worktreeParentDirConfirmed;
-  if (configuredDir && confirmed) {
-    return {
-      id: "worktree-dir",
-      label: "Worktree Directory",
-      required: true,
-      passed: true,
-      version: configuredDir,
-    };
-  }
-
-  return {
-    id: "worktree-dir",
-    label: "Worktree Directory",
-    required: true,
-    passed: false,
-    error: "Not configured",
-    remediation: "Set the parent directory where git worktrees will be created",
-  };
-}
-
 async function checkCodex(
   _processManager: ProcessManager,
   override?: string,
@@ -1414,7 +1130,7 @@ async function checkCodex(
   const resolved = await resolveBinaryFromLoginShell("codex", override);
   if (resolved.source === "override_invalid") {
     return {
-      id: "codex",
+      id: CODEX_CLI_CHECK_ID,
       label: "Codex CLI",
       required: false,
       passed: false,
@@ -1431,7 +1147,7 @@ async function checkCodex(
       { deadline }
     );
     return {
-      id: "codex",
+      id: CODEX_CLI_CHECK_ID,
       label: "Codex CLI",
       required: false,
       passed: true,
@@ -1448,7 +1164,7 @@ async function checkCodex(
       debug.overrideUsed = override;
     }
     return {
-      id: "codex",
+      id: CODEX_CLI_CHECK_ID,
       label: "Codex CLI",
       required: false,
       passed: false,
@@ -1542,85 +1258,6 @@ async function checkPython3(
   }
 }
 
-function parseStrictSemver(
-  version: string
-): [number, number, number] | undefined {
-  const parts = version.split(".");
-  if (parts.length !== 3) {
-    return undefined;
-  }
-  const numericOnly = /^\d+$/;
-  const [majorStr, minorStr, patchStr] = parts;
-  if (
-    !(
-      numericOnly.test(majorStr) &&
-      numericOnly.test(minorStr) &&
-      numericOnly.test(patchStr)
-    )
-  ) {
-    return undefined;
-  }
-  return [Number(majorStr), Number(minorStr), Number(patchStr)];
-}
-
-function compareStrictSemver(
-  installed: string,
-  latest: string
-): boolean | undefined {
-  const installedTuple = parseStrictSemver(installed);
-  const latestTuple = parseStrictSemver(latest);
-  if (installedTuple === undefined || latestTuple === undefined) {
-    return undefined;
-  }
-  for (let i = 0; i < 3; i++) {
-    if (installedTuple[i] > latestTuple[i]) {
-      return true;
-    }
-    if (installedTuple[i] < latestTuple[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** Builds the gateway-version health-check row from normalized semver strings. */
-function checkAppVersion(
-  currentVersion: string,
-  latestVersion: string
-): CheckResult {
-  const isUpToDate = compareStrictSemver(currentVersion, latestVersion);
-  if (isUpToDate === undefined) {
-    return {
-      id: "app-version",
-      label: "Gateway Version",
-      required: true,
-      passed: true,
-      version: currentVersion,
-      error: `Version format unrecognized (installed: ${currentVersion}, latest: ${latestVersion})`,
-    };
-  }
-
-  if (isUpToDate) {
-    return {
-      id: "app-version",
-      label: "Gateway Version",
-      required: true,
-      passed: true,
-      version: currentVersion,
-    };
-  }
-
-  return {
-    id: "app-version",
-    label: "Gateway Version",
-    required: true,
-    passed: false,
-    version: currentVersion,
-    error: `Update available: ${latestVersion}`,
-    remediation: "Open the Closedloop Gateway app to update",
-  };
-}
-
 async function applyPluginVersionChecks(
   checks: CheckResult[],
   installed: Record<string, string>,
@@ -1636,6 +1273,7 @@ async function applyPluginVersionChecks(
     claudeOverride: options.claudeOverride,
     remediationDeadline: options.remediationDeadline,
     preferConfiguredMarketplace: options.preferConfiguredMarketplace ?? true,
+    runtime: createPluginManifestRuntime(),
   });
   const versionChecks = new Map<string, Partial<CheckResult>>();
   const outdatedPlugins: Array<{
@@ -1646,7 +1284,7 @@ async function applyPluginVersionChecks(
 
   for (const manifest of manifests) {
     const { plugin } = manifest;
-    const checkId = `plugin-${plugin.folder}`;
+    const checkId = pluginCheckId(plugin.folder);
     const installedVer = installed[plugin.key] ?? "";
 
     if (manifest.error || !manifest.latestVersion) {
@@ -1689,13 +1327,13 @@ async function applyPluginVersionChecks(
         options.remediationDeadline ?? createPluginRemediationDeadline(),
     });
     const finalInstalled = options.readInstalledVersions();
-    const affectedCheckIds = outdatedPlugins.map(
-      ({ plugin }) => `plugin-${plugin.folder}`
+    const affectedCheckIds = outdatedPlugins.map(({ plugin }) =>
+      pluginCheckId(plugin.folder)
     );
 
     for (const outdated of outdatedPlugins) {
       const { plugin, latestVersion } = outdated;
-      const checkId = `plugin-${plugin.folder}`;
+      const checkId = pluginCheckId(plugin.folder);
       const finalVersion =
         finalInstalled[plugin.key] ?? installed[plugin.key] ?? "";
       const current = compareStrictSemver(finalVersion, latestVersion) === true;
@@ -1731,236 +1369,15 @@ async function applyPluginVersionChecks(
   });
 }
 
-async function fetchPluginManifests(options: {
-  claudeOverride?: string;
-  remediationDeadline?: PluginRemediationDeadline;
-  preferConfiguredMarketplace: boolean;
-}): Promise<PluginManifest[]> {
-  if (
-    options.remediationDeadline &&
-    hasPluginRemediationDeadlineExpired(options.remediationDeadline)
-  ) {
-    return createUnavailablePluginManifests();
-  }
-  if (options.preferConfiguredMarketplace) {
-    const configuredMarketplaceManifests = options.remediationDeadline
-      ? await runValueWithinDeadline(
-          () =>
-            readConfiguredMarketplaceManifests(
-              options.claudeOverride,
-              options.remediationDeadline
-            ),
-          options.remediationDeadline,
-          createUnavailablePluginManifests,
-          options.remediationDeadline.timeoutMs
-        )
-      : await readConfiguredMarketplaceManifests(
-          options.claudeOverride,
-          options.remediationDeadline
-        );
-    if (configuredMarketplaceManifests) {
-      return configuredMarketplaceManifests;
-    }
-  }
-
-  const timeoutMs = getPluginRemediationBoundedTimeoutMs(
-    options.remediationDeadline,
-    3000
-  );
-  if (timeoutMs <= 0) {
-    return createUnavailablePluginManifests();
-  }
-
-  const results = await Promise.allSettled(
-    CLOSEDLOOP_USER_PLUGINS.map((plugin) =>
-      fetch(
-        `https://raw.githubusercontent.com/closedloop-ai/claude-plugins/main/plugins/${plugin.folder}/.claude-plugin/plugin.json`,
-        { signal: AbortSignal.timeout(timeoutMs) }
-      )
-    )
-  );
-
-  return Promise.all(
-    CLOSEDLOOP_USER_PLUGINS.map(
-      async (plugin, index): Promise<PluginManifest> => {
-        const result = results[index];
-        if (result.status === "rejected" || !result.value.ok) {
-          return { plugin, error: "manifest_unavailable" };
-        }
-        try {
-          const body = (await result.value.json()) as { version?: unknown };
-          return typeof body.version === "string"
-            ? { plugin, latestVersion: body.version }
-            : { plugin, error: "manifest_unavailable" };
-        } catch {
-          return { plugin, error: "manifest_unavailable" };
-        }
-      }
-    )
-  );
-}
-
-async function readConfiguredMarketplaceManifests(
-  claudeOverride?: string,
-  deadline?: PluginRemediationDeadline
-): Promise<PluginManifest[] | null> {
-  const root = await resolveConfiguredMarketplaceRoot(claudeOverride, deadline);
-  if (!root) {
-    return null;
-  }
-
-  let marketplacePlugins: Record<string, unknown>[];
-  try {
-    const marketplaceJson = JSON.parse(
-      await fs.readFile(
-        path.join(root, ".claude-plugin", "marketplace.json"),
-        "utf-8"
-      )
-    ) as { plugins?: unknown };
-    marketplacePlugins = Array.isArray(marketplaceJson.plugins)
-      ? marketplaceJson.plugins.filter(
-          (entry): entry is Record<string, unknown> =>
-            typeof entry === "object" && entry !== null
-        )
-      : [];
-  } catch {
-    return CLOSEDLOOP_USER_PLUGINS.map((plugin) => ({
-      plugin,
-      error: "manifest_unavailable",
-    }));
-  }
-
-  return Promise.all(
-    CLOSEDLOOP_USER_PLUGINS.map(async (plugin): Promise<PluginManifest> => {
-      const marketplaceEntry = marketplacePlugins.find(
-        (entry) => entry.name === plugin.folder
-      );
-      const source =
-        typeof marketplaceEntry?.source === "string"
-          ? marketplaceEntry.source
-          : undefined;
-      if (!source) {
-        return { plugin, error: "manifest_unavailable" };
-      }
-
-      try {
-        const pluginJsonPath = path.resolve(
-          root,
-          source,
-          ".claude-plugin",
-          "plugin.json"
-        );
-        const body = JSON.parse(await fs.readFile(pluginJsonPath, "utf-8")) as {
-          version?: unknown;
-        };
-        return typeof body.version === "string"
-          ? { plugin, latestVersion: body.version }
-          : { plugin, error: "manifest_unavailable" };
-      } catch {
-        return { plugin, error: "manifest_unavailable" };
-      }
-    })
-  );
-}
-
 /**
- * Marketplace source types that expose a local on-disk checkout we can read
- * plugin manifests from. `directory` marketplaces point straight at a folder;
- * `github`/`git` marketplaces are cloned locally to `installLocation`. For all
- * three, that local checkout is the exact source `claude plugin update` installs
- * from, so comparing against it keeps the staleness verdict actionable. (FEA-2751)
+ * The plugin is installed and enabled — only "is a newer version published?"
+ * could not be answered. Unknown is not out-of-date, so this stays passing and
+ * non-blocking (ISS-5369); the `unknown` severity carries the real state.
  */
-const MARKETPLACE_SOURCES_WITH_LOCAL_CHECKOUT = new Set([
-  "directory",
-  "github",
-  "git",
-]);
-
-/**
- * Resolve the local checkout path for the Closedloop marketplace, if one exists.
- * `directory` marketplaces expose it via `path`; cloned `github`/`git`
- * marketplaces expose it via `installLocation`.
- */
-function resolveMarketplaceCheckoutPath(
-  marketplace: ClaudeMarketplaceListEntry
-): string | undefined {
-  if (
-    typeof marketplace.source !== "string" ||
-    !MARKETPLACE_SOURCES_WITH_LOCAL_CHECKOUT.has(marketplace.source)
-  ) {
-    return undefined;
-  }
-  if (typeof marketplace.path === "string" && marketplace.path.length > 0) {
-    return marketplace.path;
-  }
-  if (
-    typeof marketplace.installLocation === "string" &&
-    marketplace.installLocation.length > 0
-  ) {
-    return marketplace.installLocation;
-  }
-  return undefined;
-}
-
-async function resolveConfiguredMarketplaceRoot(
-  claudeOverride?: string,
-  deadline?: PluginRemediationDeadline
-): Promise<string | null> {
-  const resolved = await resolveBinaryFromLoginShell("claude", claudeOverride);
-  if (resolved.source === "override_invalid") {
-    return null;
-  }
-
-  try {
-    const { stdout } = await runCommandWithOptionalDeadline(
-      resolved.path,
-      ["plugin", "marketplace", "list", "--json"],
-      { deadline }
-    );
-    const entries = JSON.parse(stdout) as unknown;
-    if (!Array.isArray(entries)) {
-      return null;
-    }
-
-    const marketplace = entries.find(
-      (entry): entry is ClaudeMarketplaceListEntry => {
-        if (typeof entry !== "object" || entry === null) {
-          return false;
-        }
-        const record = entry as ClaudeMarketplaceListEntry;
-        return record.name === CLOSEDLOOP_MARKETPLACE_NAME;
-      }
-    );
-    if (!marketplace) {
-      return null;
-    }
-
-    const checkoutRoot = resolveMarketplaceCheckoutPath(marketplace);
-    if (!(checkoutRoot && path.isAbsolute(checkoutRoot))) {
-      return null;
-    }
-
-    // Only treat the local checkout as authoritative when it actually exists.
-    // Otherwise return null so the caller falls back to the GitHub manifest
-    // fetch, rather than reporting an unverifiable version. (FEA-2751)
-    try {
-      await fs.access(
-        path.join(checkoutRoot, ".claude-plugin", "marketplace.json"),
-        constants.F_OK
-      );
-    } catch {
-      return null;
-    }
-
-    return checkoutRoot;
-  } catch {
-    return null;
-  }
-}
-
 function manifestUnavailableResult(): Partial<CheckResult> {
   return {
-    passed: false,
+    passed: true,
+    severity: CheckSeverity.Unknown,
     error: "Could not verify latest version",
     remediation: "Check your network connection and re-run System Check",
   };
@@ -2406,13 +1823,6 @@ function createMcpDetectionTimeoutResult(): McpDetectionResult {
   };
 }
 
-function createUnavailablePluginManifests(): PluginManifest[] {
-  return CLOSEDLOOP_USER_PLUGINS.map((plugin) => ({
-    plugin,
-    error: "manifest_unavailable",
-  }));
-}
-
 function getPluginCommandErrorMessage(error: unknown): string {
   return error instanceof Error && error.message.trim()
     ? error.message.trim().slice(-STDERR_TAIL_MAX_CHARS)
@@ -2424,14 +1834,4 @@ async function getPlainHealthPluginEnv(): Promise<Record<string, string>> {
   // user/session Claude Code spawn. Keep it independent from OTel receiver
   // readiness so diagnostics still work when telemetry collection is down.
   return getShellEnv();
-}
-
-async function loadReposConfig(configDir: string): Promise<ReposConfig> {
-  try {
-    const configPath = path.join(configDir, "repos.json");
-    const content = await fs.readFile(configPath, "utf-8");
-    return JSON.parse(content) as ReposConfig;
-  } catch {
-    return {};
-  }
 }

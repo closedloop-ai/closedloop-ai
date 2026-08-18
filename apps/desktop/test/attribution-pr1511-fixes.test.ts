@@ -10,7 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
-import { InvalidTokenCountError } from "../src/main/token-counts.js";
+import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 import {
   CODEX_UUID,
@@ -766,6 +766,7 @@ test("Hook path: token_events appended incrementally; empty extract never wipes"
       latestModel: "claude-sonnet-4-5",
       compactionCount: 0,
       records: currentRecords,
+      hasTrailingApiError: false,
     }),
   });
 

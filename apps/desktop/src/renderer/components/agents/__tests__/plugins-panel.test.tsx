@@ -35,6 +35,7 @@ import { PluginsPanel } from "../plugins-panel";
 // Feature-flag hook has no provider in this unit env; pin it deterministically.
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: () => false,
+  useFeatureFlagEnabledOptional: () => false,
 }));
 
 // Lightweight PacksWorkspace stub: renders the derived packs and exposes the

@@ -1,3 +1,4 @@
+import { isLocalTrustedAuthActive } from "@repo/auth/auth-mode";
 import { auth } from "@repo/auth/server";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
@@ -18,7 +19,18 @@ export default async function OrgSlugLayout({
     notFound();
   }
 
+  // ISS-4406: resolved here, on the server, per request — not from a
+  // `NEXT_PUBLIC_*` flag. `app` and `app-visual` in `e2e/compose.yml` share one
+  // built image and `NEXT_PUBLIC_*` is inlined at build time, so a build-arg
+  // flag would bake the bypass into the Clerk-gated service too. A server-
+  // computed prop keeps it per-service at runtime. Under real Clerk `AUTH_MODE`
+  // is unset, so this is always `false`.
   return (
-    <OrgIdentityProvider orgSlug={orgSlug}>{children}</OrgIdentityProvider>
+    <OrgIdentityProvider
+      bypassClientOrgGate={isLocalTrustedAuthActive()}
+      orgSlug={orgSlug}
+    >
+      {children}
+    </OrgIdentityProvider>
   );
 }

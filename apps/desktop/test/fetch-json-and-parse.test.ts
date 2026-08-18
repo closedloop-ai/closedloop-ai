@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { z } from "zod";
-import { unwrapApiEnvelope } from "../src/main/api-response-utils.js";
-import { fetchJsonAndParse } from "../src/main/fetch-json-and-parse.js";
+import { unwrapApiEnvelope } from "../src/main/util/api-response-utils.js";
+import { fetchJsonAndParse } from "../src/main/util/fetch-json-and-parse.js";
 
 const API_ORIGIN = "https://api.closedloop.test";
 const schema = z.object({ value: z.string() }).passthrough();

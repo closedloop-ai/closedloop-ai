@@ -1,16 +1,7 @@
 "use client";
 
-import {
-  AgentComponentGroupBy,
-  AgentMetricMode,
-} from "@repo/api/src/types/agent-component";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@repo/design-system/components/ui/select";
+import { AgentComponentGroupBy } from "@repo/api/src/types/agent-component";
+import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
 import {
   TableViewMenu,
   type TableViewMenuColumn,
@@ -27,18 +18,13 @@ import {
 const GROUP_BY_OPTIONS = [
   { value: AgentComponentGroupBy.None, label: "None" },
   { value: AgentComponentGroupBy.Type, label: "Type" },
-  { value: AgentComponentGroupBy.Owner, label: "Owner" },
+  // FEA-4098 (Slice 3): group by author, replacing Owner. FEA-4266: the visible
+  // label is "Authors"; the enum member/value (`collaborators`) is unchanged.
+  {
+    value: AgentComponentGroupBy.Collaborators,
+    label: AGENT_COMPONENT_AUTHORS_LABEL,
+  },
   { value: AgentComponentGroupBy.Harness, label: "Harness" },
-] as const;
-
-// ---------------------------------------------------------------------------
-// Metric-mode options — match the AgentMetricMode enum values exactly.
-// ---------------------------------------------------------------------------
-
-const METRIC_MODE_OPTIONS = [
-  { value: AgentMetricMode.KlocPerDollar, label: "KLOC / $" },
-  { value: AgentMetricMode.DollarPerKloc, label: "$ / KLOC" },
-  { value: AgentMetricMode.ValueIndex, label: "Value Index" },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -57,10 +43,6 @@ export type AgentsViewMenuProps = Readonly<{
   visibleColumns: ReadonlySet<string>;
   /** Called when the user toggles a column's visibility. */
   onToggleColumn: (id: AgentComponentColumnId) => void;
-  /** Current metric display mode. */
-  metricMode: AgentMetricMode;
-  /** Called when the user selects a different metric mode. */
-  onMetricModeChange: (mode: AgentMetricMode) => void;
   /** Called when the user clicks "Reset view". */
   onReset: () => void;
   /** Popover edge alignment forwarded to TableViewMenu. Defaults to "end". */
@@ -75,12 +57,19 @@ export type AgentsViewMenuProps = Readonly<{
  * T-3.3 — Agents workspace View menu adapter.
  *
  * Composes the real `@repo/design-system` `TableViewMenu` for Group-by /
- * Show-hide-columns / Reset, and adds a metric-mode `Select` (KLOC/$,
- * $/KLOC, Value Index) as a companion control.
+ * Show-hide-columns / Reset.
+ *
+ * ISS-4866 retired the metric-mode `Select` that used to sit beside it: its
+ * second option ("Value Index") rendered the identical value, and a control
+ * whose choice silently does nothing costs more trust than the control is
+ * worth. The Metric column header names the unit instead, and carries the
+ * what/how tooltip the picker used to stand in for. ISS-5366 removed the gate
+ * that was hiding the picker, making its absence unconditional; a second mode
+ * that actually computes something different brings its own control back.
  *
  * Wired to `useAgentComponentsViewState` — callers destructure
- * `{ groupBy, visibleColumns, toggleColumn, metricMode, setGroupBy,
- *   setMetricMode }` from the hook and thread them through the props here.
+ * `{ groupBy, visibleColumns, toggleColumn, setGroupBy }` from the hook and
+ * thread them through the props here.
  *
  * Do NOT import from `apps/prototypes` — the prototype stand-ins
  * (`agents-view-menu.tsx`, `column-view-menu.tsx`) are intentionally not ported.
@@ -90,8 +79,6 @@ export function AgentsViewMenu({
   onGroupByChange,
   visibleColumns,
   onToggleColumn,
-  metricMode,
-  onMetricModeChange,
   onReset,
   align = "end",
 }: AgentsViewMenuProps) {
@@ -104,41 +91,24 @@ export function AgentsViewMenu({
     })
   );
 
+  // The real design-system TableViewMenu: Group-by + Show/Hide columns + Reset.
+  // Returned directly, not wrapped: the `flex items-center gap-2` row existed to
+  // sit this menu beside the metric-mode Select, and with that control retired
+  // (ISS-4866/ISS-5366) a flex row with one child and a gap distributes nothing.
+  // The parent toolbar already owns the spacing.
   return (
-    <div className="flex items-center gap-2">
-      {/* Metric-mode selector — companion to TableViewMenu, not a slot inside it. */}
-      <Select
-        onValueChange={(value) => {
-          onMetricModeChange(value as AgentMetricMode);
-        }}
-        value={metricMode}
-      >
-        <SelectTrigger className="h-8 w-[130px] shadow-none" size="sm">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {METRIC_MODE_OPTIONS.map((option) => (
-            <SelectItem key={option.value} value={option.value}>
-              {option.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {/* Real design-system TableViewMenu: Group-by + Show/Hide columns + Reset. */}
-      <TableViewMenu
-        align={align}
-        columns={columns}
-        groupByOptions={[...GROUP_BY_OPTIONS]}
-        groupByValue={groupBy}
-        onChangeGroupBy={(value) => {
-          onGroupByChange(value as AgentComponentGroupBy);
-        }}
-        onResetView={onReset}
-        onToggleColumn={(id) => {
-          onToggleColumn(id as AgentComponentColumnId);
-        }}
-      />
-    </div>
+    <TableViewMenu
+      align={align}
+      columns={columns}
+      groupByOptions={[...GROUP_BY_OPTIONS]}
+      groupByValue={groupBy}
+      onChangeGroupBy={(value) => {
+        onGroupByChange(value as AgentComponentGroupBy);
+      }}
+      onResetView={onReset}
+      onToggleColumn={(id) => {
+        onToggleColumn(id as AgentComponentColumnId);
+      }}
+    />
   );
 }

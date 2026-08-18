@@ -1,0 +1,210 @@
+---
+title: Loop Management
+description: 'Track AI-driven and manual work with loops'
+---
+
+## Overview
+
+A loop is an automation run that tracks work execution in Closedloop. Loops provide real-time visibility into what an AI agent is working on, including progress events, final outcomes, and links to pull requests.
+
+Two categories of loops exist:
+
+- **Platform-managed loops**: created and controlled by the Closedloop platform when it orchestrates automated tasks.
+- **Manual loops**: created by an agent to report on locally-driven work (e.g. a Claude Code session implementing a feature).
+
+This guide focuses on manual loops, which are the ones agent code creates directly via MCP.
+
+---
+
+## When to Create a Manual Loop
+
+Create a manual loop whenever you begin work on a Closedloop document (`FEA-*`, `PLN-*`, or `PRD-*`) through a local agent session.
+
+**Before creating a loop**, check whether you are already inside a platform-managed loop:
+
+```bash
+echo $CLOSEDLOOP_LOOP_ID
+```
+
+If this variable returns a value, you are inside a managed loop. Do **not** create a manual loop in that case.
+
+---
+
+## The Full Loop Lifecycle
+
+The recommended workflow for a manual loop on a **Feature** (`FEA-*`) is:
+
+```
+1. update-document(status: "IN_PROGRESS")
+2. create-loop(documentId, repoFullName, repoBranch, prompt)
+3. add-loop-event(message: "Starting investigation...")
+4. ... do work ...
+5. add-loop-event(message: "Implementation complete, running tests")
+6. add-loop-event(message: "All tests pass")
+7. complete-loop(prUrl, branchName, summary)
+8. update-document(status: "IN_REVIEW")   ← or "DONE" if already merged
+```
+
+Status values are per artifact type. `IN_PROGRESS`/`DONE` are **Feature** statuses. For a document (`PLN-*`/`PRD-*`), use the document vocabulary instead — e.g. `DRAFT → IN_REVIEW → APPROVED` (`CHANGES_REQUESTED` on rework, `EXECUTED` once the plan has run).
+
+If work fails or is abandoned, call `fail-loop` or `cancel-loop` instead of `complete-loop`, then reset the document to a status valid for its type (see `fail-loop` below).
+
+---
+
+## Tool Reference
+
+### List Loops
+
+**Tool**: `list-loops`
+**Underlying API**: `GET /loops`
+
+```
+list-loops(
+  documentId?: string,   // Filter by document — slug (FEA-*, PLN-*, PRD-*) or UUID
+  status?: string,       // Filter by loop status
+  command?: string,      // Filter by loop command — one of PLAN, EXECUTE, CHAT, EXPLORE, REQUEST_CHANGES, REQUEST_PRD_CHANGES, DECOMPOSE, EVALUATE_PRD, GENERATE_PRD, EVALUATE_PLAN, EVALUATE_CODE, EVALUATE_FEATURE, BOOTSTRAP, MANUAL
+  projectId?: string,    // Filter by project — slug (PRO-*) or UUID
+  limit?: number,
+  offset?: number
+)
+```
+
+Returns a paginated list of loop records. Loops do not have slugs; they are identified by UUID only.
+
+### Get a Loop
+
+**Tool**: `get-loop`
+**Underlying API**: `GET /loops/:loopId`
+
+```
+get-loop(
+  loopId: string   // Loop UUID (no slug form)
+)
+```
+
+Returns the full loop record plus a `webUrl` to the Closedloop dashboard.
+
+### Create a Manual Loop
+
+**Tool**: `create-loop`
+**Underlying API**: `POST /loops`
+
+```
+create-loop(
+  documentId: string,      // FEA-*, PLN-*, PRD-*, or UUID
+  prompt?: string,         // Description of the work (e.g. "Implement FEA-653 per the plan")
+  repoFullName?: string,   // Repository in owner/repo format (e.g. "acme/symphony") — both or neither with repoBranch
+  repoBranch?: string      // Git branch name (e.g. "feature/fea-653") — both or neither with repoFullName
+)
+```
+
+`repoFullName` and `repoBranch` must be provided **together — both or neither**; passing only one is rejected. Always include both when working in a git repository so the loop links to the correct branch on the Closedloop dashboard.
+
+The response includes the loop `id` (UUID) and a `webUrl`. Retain the loop `id` for all subsequent calls.
+
+### Add a Progress Event
+
+**Tool**: `add-loop-event`
+**Underlying API**: `POST /loops/:loopId/manual-events`
+
+```
+add-loop-event(
+  loopId: string,   // Loop UUID from create-loop
+  message: string   // Human-readable status message
+)
+```
+
+Post events at meaningful milestones throughout the work — not just at the start and end. Good milestone messages:
+
+- `"Reading FEA-1035 spec and investigating codebase"`
+- `"Implementation complete, 3 files changed. Running tests."`
+- `"All 47 tests pass, lint clean."`
+- `"PR created: https://github.com/acme/symphony/pull/123"`
+- `"Blocked: upstream dependency needs upgrade first"`
+
+Keep messages concise and factual. Include file counts, test counts, or PR URLs where relevant.
+
+### Complete a Loop
+
+**Tool**: `complete-loop`
+**Underlying API**: `POST /loops/:loopId/manual-events` + `PATCH /loops/:loopId`
+
+```
+complete-loop(
+  loopId: string,       // Loop UUID from create-loop
+  summary?: string,     // What was accomplished (1–2 sentences)
+  prUrl?: string,       // Pull request URL
+  branchName?: string,  // Git branch used
+  tokensInput?: number, // Total input tokens (best-effort)
+  tokensOutput?: number // Total output tokens (best-effort)
+)
+```
+
+This sends a `completed` event and updates the loop metadata. Always provide `summary`, `prUrl` (if a PR was created), and `branchName`.
+
+After completing the loop, update the document status:
+- `IN_REVIEW` if a PR is open
+- `DONE` if the PR is already merged
+
+### Cancel a Loop
+
+**Tool**: `cancel-loop`
+**Underlying API**: `POST /loops/:loopId/cancel`
+
+```
+cancel-loop(
+  loopId: string   // Loop UUID
+)
+```
+
+Use when the work is being abandoned without failure — for example, the approach changed or the feature was deprioritized.
+
+### Fail a Loop
+
+**Tool**: `fail-loop`
+**Underlying API**: `POST /loops/:loopId/manual-events`
+
+```
+fail-loop(
+  loopId: string,       // Loop UUID
+  errorMessage: string  // Why the work failed
+)
+```
+
+Use when implementation fails or is being abandoned due to an error. Provide a clear `errorMessage` so the team has context. After failing a loop, reset the artifact status via `update-document` to one valid for its type: for a **Feature** (`FEA-*`) use `BLOCKED` (stuck) or `CANCELED` (abandoned); for a document (`PLN-*`/`PRD-*`) use `DRAFT` (or `CHANGES_REQUESTED`).
+
+---
+
+## Complete Example
+
+The following sequence shows a full manual loop for implementing a feature:
+
+```
+# 1. Mark the feature as in-progress
+update-document(documentId: "FEA-1035", status: "IN_PROGRESS")
+
+# 2. Create the loop
+create-loop(
+  documentId: "FEA-1035",
+  repoFullName: "acme/symphony",
+  repoBranch: "feature/fea-1035",
+  prompt: "Implement FEA-1035: bulk CSV export"
+)
+→ { id: "a1b2c3...", webUrl: "https://app.closedloop.ai/acme/loops/a1b2c3..." }
+
+# 3. Post progress events during work
+add-loop-event(loopId: "a1b2c3...", message: "Reading spec and investigating export pipeline")
+add-loop-event(loopId: "a1b2c3...", message: "Implementation complete. Running tests.")
+add-loop-event(loopId: "a1b2c3...", message: "All 61 tests pass. Creating PR.")
+
+# 4. Complete the loop
+complete-loop(
+  loopId: "a1b2c3...",
+  summary: "Implemented bulk CSV export with streaming. 4 files changed.",
+  prUrl: "https://github.com/acme/symphony/pull/456",
+  branchName: "feature/fea-1035"
+)
+
+# 5. Update document status
+update-document(documentId: "FEA-1035", status: "IN_REVIEW")
+```

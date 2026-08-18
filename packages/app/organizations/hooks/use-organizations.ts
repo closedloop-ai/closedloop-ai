@@ -1,6 +1,10 @@
 "use client";
 
 import type {
+  InviteMembersInput,
+  InviteMembersResponse,
+} from "@repo/api/src/types/onboarding";
+import type {
   Organization,
   UpdateOrganizationInput,
 } from "@repo/api/src/types/organization";
@@ -63,5 +67,28 @@ export function useUpdateOrganization() {
       });
       queryClient.invalidateQueries({ queryKey: organizationKeys.lists() });
     },
+  });
+}
+
+/**
+ * Invite teammates into the caller's current organization ("Invite your team",
+ * PRD-532 §5.4). Mints real Clerk org invitations via the BFF route
+ * `POST /organizations/invitations`; on accept, the Clerk membership webhook
+ * syncs a durable MEMBER into the existing org. Shared by the web onboarding
+ * invite step and the desktop sidebar affordance.
+ */
+export function useInviteMembers() {
+  const apiClient = useApiClient();
+
+  return useMutation({
+    mutationFn: (input: InviteMembersInput) =>
+      apiClient.post<InviteMembersResponse>(
+        "/organizations/invitations",
+        input
+      ),
+    // Both callers (the invite dialog and the onboarding step) run their own
+    // `catch { toast.error(...) }` — the step also captures analytics — so opt
+    // out of the global mutation error toast to avoid double-toasting failures.
+    meta: { suppressDefaultErrorToast: true },
   });
 }

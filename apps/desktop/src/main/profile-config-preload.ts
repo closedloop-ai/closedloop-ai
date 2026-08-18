@@ -1,5 +1,5 @@
 import type { SaveConfigPayload } from "../shared/contracts.js";
-import { ProfileConfigIpcChannel } from "./profile-config-ipc.js";
+import { ProfileConfigIpcChannel } from "./ipc/profile-config-ipc.js";
 
 type IpcInvokeLike = {
   invoke: (channel: string, ...args: unknown[]) => Promise<unknown>;

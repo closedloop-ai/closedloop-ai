@@ -22,6 +22,7 @@ import {
 } from "@repo/api/src/types/desktop-analytics";
 import { log } from "@repo/observability/log";
 import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
+import { flushLogsWithDeadline } from "@repo/observability/shutdown";
 import {
   ConnectionState,
   emitProtocolMetric,
@@ -46,6 +47,8 @@ import {
   isRateLimited,
   remove as removeRateLimit,
 } from "./rate-limiter";
+import { isLocalWorkerCurrentOwner } from "./registry-ownership.js";
+import { emitSocketEvents } from "./socket-emit.js";
 import {
   InMemoryTargetRegistry,
   type InstanceInfo,
@@ -53,6 +56,10 @@ import {
   type TargetMetadata,
   type TargetRegistry,
 } from "./target-registry.js";
+import {
+  startWorkerHeartbeat,
+  type WorkerContext,
+} from "./worker-heartbeat.js";
 
 const RELAY_PORT = Number(
   process.env.RELAY_PORT ?? process.env.MCP_PORT ?? "3020"
@@ -68,7 +75,6 @@ const HEARTBEAT_DEGRADED_THRESHOLD_MS = Number(
   process.env.HEARTBEAT_DEGRADED_THRESHOLD_MS ??
     String(HEARTBEAT_INTERVAL_MS * 2)
 );
-const SHUTDOWN_FLUSH_DEADLINE_MS = 5000;
 const MAX_BODY_SIZE = 1_048_576; // 1 MB
 const MAX_PENDING_BUFFER_SIZE = 100;
 const RELAY_RUNTIME_MODE = process.env.RELAY_RUNTIME_MODE ?? "inmemory";
@@ -130,20 +136,6 @@ if (!VERCEL_API_URL) {
 // ---------------------------------------------------------------------------
 // In-memory state — only socket mappings, no business data
 // ---------------------------------------------------------------------------
-
-type WorkerContext = {
-  socket: Socket;
-  targetId: string;
-  organizationId: string;
-  userId: string;
-  clerkUserId?: string;
-  heartbeatTimer: ReturnType<typeof setInterval> | null;
-  degradedTimer: ReturnType<typeof setTimeout> | null;
-  wasDegraded: boolean;
-  gatewaySessionId?: string;
-  pluginVersion?: string;
-  ownerToken?: string;
-};
 
 type DesktopPopHeaders = Partial<Record<DesktopPopHeaderName, string>>;
 
@@ -657,7 +649,17 @@ async function handleDispatch(
   // target. Emitting to that stale socket would double-route the command, so
   // when the registry attributes the target to another owner we proxy to the
   // registered owner (or report not connected) rather than emitting locally.
-  if (!(worker && (await isLocalWorkerCurrentOwner(targetId, worker)))) {
+  if (
+    !(
+      worker &&
+      (await isLocalWorkerCurrentOwner(
+        targetRegistry,
+        targetId,
+        worker,
+        relayInstanceId
+      ))
+    )
+  ) {
     const proxyResult = await tryProxyDispatch(targetId, operation);
     if (proxyResult) {
       jsonResponse(res, 200, proxyResult);
@@ -1007,86 +1009,26 @@ function registerWorker(
     pluginVersion,
   };
 
-  let lastHeartbeatSuccess = Date.now();
-
-  const heartbeatTimer = setInterval(() => {
-    const heartbeatSentAt = Date.now();
-    forwardSocketEvent(
-      "desktop.presence",
-      undefined,
-      auth,
-      targetId,
-      gatewaySessionId
-    )
-      .then(() => {
-        const now = Date.now();
-        const prev = lastHeartbeatAckAt.get(targetId);
-        lastHeartbeatSuccess = now;
-        lastHeartbeatAckAt.set(targetId, now);
-        if (workerContext.ownerToken) {
-          targetRegistry
-            .refreshTtl(targetId, workerContext.ownerToken)
-            .catch(() => {});
-        }
-        // heartbeat_freshness = elapsed ms since previous successful ack.
-        // Only emit once we have a previous ack to compare against.
-        if (prev !== undefined) {
-          emitProtocolMetric({
-            metric: "heartbeat_freshness",
-            origin: ORIGIN,
-            value: now - prev,
-            computeTargetId: targetId,
-            gatewaySessionId: gatewaySessionId ?? undefined,
-            timestamp: new Date(now).toISOString(),
-          });
-        }
-        // Cancel any pending degraded timer on success
-        if (workerContext.degradedTimer !== null) {
-          clearTimeout(workerContext.degradedTimer);
-          workerContext.degradedTimer = null;
-        }
-        // Emit recovery if connection was previously degraded
-        if (workerContext.wasDegraded) {
-          emitConnectionState(
-            ConnectionState.Online,
-            targetId,
-            gatewaySessionId
-          );
-          workerContext.wasDegraded = false;
-        }
-      })
-      .catch((error) => {
-        log.error("Heartbeat failed", {
-          targetId,
-          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-          error,
-        });
-        const heartbeatFreshness = heartbeatSentAt - lastHeartbeatSuccess;
-        log.warn("Connection stale heartbeat", {
-          category: TelemetryCategory.ConnectionStaleHeartbeat,
-          computeTargetId: targetId,
-          gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-          heartbeatFreshness,
-        });
-        // Schedule a degraded event if not already pending
-        workerContext.degradedTimer ??= setTimeout(() => {
-          workerContext.degradedTimer = null;
-          const freshness = Date.now() - lastHeartbeatSuccess;
-          log.warn("Connection degraded", {
-            category: TelemetryCategory.ConnectionDegraded,
-            computeTargetId: targetId,
-            gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
-            heartbeatFreshness: freshness,
-          });
-          emitConnectionState(
-            ConnectionState.Degraded,
-            targetId,
-            gatewaySessionId
-          );
-          workerContext.wasDegraded = true;
-        }, HEARTBEAT_DEGRADED_THRESHOLD_MS);
-      });
-  }, HEARTBEAT_INTERVAL_MS);
+  const heartbeatTimer = startWorkerHeartbeat({
+    workerContext,
+    targetId,
+    gatewaySessionId,
+    registry: targetRegistry,
+    lastHeartbeatAckAt,
+    intervalMs: HEARTBEAT_INTERVAL_MS,
+    degradedThresholdMs: HEARTBEAT_DEGRADED_THRESHOLD_MS,
+    sendPresence: () =>
+      forwardSocketEvent(
+        "desktop.presence",
+        undefined,
+        auth,
+        targetId,
+        gatewaySessionId
+      ),
+    isStillCurrentWorker: () =>
+      workersByTargetId.get(targetId) === workerContext && socket.connected,
+    emitConnectionState,
+  });
 
   workerContext.heartbeatTimer = heartbeatTimer;
 
@@ -1101,14 +1043,30 @@ function registerWorker(
 
   const token = `${relayInstanceId}:${socket.id}:${++ownerGeneration}`;
   workerContext.ownerToken = token;
+  const registryMetadata: TargetMetadata = {
+    instanceId: relayInstanceId,
+    socketId: socket.id,
+    ownerToken: token,
+    organizationId: auth.organizationId,
+    userId: auth.userId,
+    connectedAt: Date.now(),
+  };
+  workerContext.registryMetadata = registryMetadata;
   targetRegistry
-    .register(targetId, {
-      instanceId: relayInstanceId,
-      socketId: socket.id,
-      ownerToken: token,
-      organizationId: auth.organizationId,
-      userId: auth.userId,
-      connectedAt: Date.now(),
+    .register(targetId, registryMetadata)
+    .then((registered) => {
+      if (registered) {
+        return;
+      }
+      // Non-fatal by design, but never silent again: an unregistered target is
+      // invisible to every other relay instance, and until the heartbeat heal
+      // existed this state lasted until the desktop reconnected. `register`
+      // reports the refusal rather than throwing, so this is the only place the
+      // loss surfaces.
+      log.error("Target registration failed; heartbeat reclaim will retry", {
+        targetId,
+        gatewaySessionIdHash: redactGatewaySessionId(gatewaySessionId),
+      });
     })
     .catch(() => {});
 
@@ -1187,7 +1145,12 @@ namespace.on("connection", (socket) => {
       if (result.disconnect) {
         log.warn("desktop.hello rejected by API, disconnecting", {
           socketId: socket.id,
+          emitEvents: result.emit.map((e) => e.event),
         });
+        // ISS-6126: deliver the rejection BEFORE closing. A refused hello comes
+        // back as `{ emit: [desktop.hello.nack], disconnect: true }`, and
+        // returning early discarded the only frame that says why.
+        emitSocketEvents(socket, result.emit);
         drainPendingBuffer(socket);
         socket.disconnect(true);
         return;
@@ -1230,9 +1193,7 @@ namespace.on("connection", (socket) => {
       });
 
       // Emit all response events to the worker
-      for (const { event, payload: eventPayload } of result.emit) {
-        socket.emit(event, eventPayload);
-      }
+      emitSocketEvents(socket, result.emit);
     } catch (error) {
       log.error("Failed processing desktop.hello", {
         socketId: socket.id,
@@ -1282,9 +1243,7 @@ namespace.on("connection", (socket) => {
           targetId,
           gatewaySessionId
         );
-        for (const { event, payload: eventPayload } of result.emit) {
-          socket.emit(event, eventPayload);
-        }
+        emitSocketEvents(socket, result.emit);
       } catch (error) {
         log.error("Failed forwarding command event", {
           socketId: socket.id,
@@ -1386,9 +1345,7 @@ namespace.on("connection", (socket) => {
       gatewaySessionId
     )
       .then((result) => {
-        for (const { event, payload: ep } of result.emit) {
-          socket.emit(event, ep);
-        }
+        emitSocketEvents(socket, result.emit);
       })
       .catch((err) => {
         log.error("Failed forwarding desktop.telemetry", {
@@ -1681,15 +1638,7 @@ async function handleShutdown(): Promise<void> {
     // `isCurrentOwner` check fail-closed and skip the duplicate emission.
     workersByTargetId.clear();
 
-    // Drain the observability buffer within a 5-second wall-clock deadline.
-    // log.flush() calls flushToDatadog(), which chains subsequent batches via
-    // its .finally() handler, so one awaited call drains all pending entries.
-    await Promise.race([
-      log.flush(),
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, SHUTDOWN_FLUSH_DEADLINE_MS).unref?.();
-      }),
-    ]);
+    await flushLogsWithDeadline();
   } catch {
     // swallow — must still exit
   }
@@ -1752,7 +1701,7 @@ async function initializeTargetRegistry(): Promise<void> {
   } catch (error) {
     targetRegistry = new InMemoryTargetRegistry();
     log.warn("[relay] redis init failed, falling back to in-memory mode", {
-      error: error instanceof Error ? error.message : String(error),
+      error,
     });
   }
 }
@@ -1959,33 +1908,6 @@ export function isAllowedPeerInstance(info: InstanceInfo): boolean {
     );
   }
   return isRoutablePrivateIpv4(info.privateIp);
-}
-
-// Pure ownership decision: is the live local socket still the registry's owner
-// for this target? In Redis mode the shared registry is authoritative; a target
-// that re-registered on another instance leaves this instance holding a stale
-// socket that must not receive dispatches. A null registry entry (in-memory
-// miss, degraded Redis, or TTL lapse while connected) trusts the live socket.
-export function isCurrentRegistryOwner(
-  registered: TargetMetadata | null,
-  worker: Pick<WorkerContext, "ownerToken">,
-  instanceId: string
-): boolean {
-  if (!registered) {
-    return true;
-  }
-  return (
-    registered.instanceId === instanceId &&
-    registered.ownerToken === worker.ownerToken
-  );
-}
-
-async function isLocalWorkerCurrentOwner(
-  targetId: string,
-  worker: WorkerContext
-): Promise<boolean> {
-  const registered = await targetRegistry.lookup(targetId);
-  return isCurrentRegistryOwner(registered, worker, relayInstanceId);
 }
 
 if (process.env.NODE_ENV !== "test") {

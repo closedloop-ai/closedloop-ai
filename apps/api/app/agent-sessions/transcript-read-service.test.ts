@@ -136,6 +136,7 @@ describe("transcriptReadService.findTranscriptAccess", () => {
           rawSha256: null,
           uploadedAt: null,
           lastObservedAt: null,
+          permanentFailureReason: null,
         },
       ],
     });
@@ -170,6 +171,7 @@ describe("transcriptReadService.findTranscriptAccess", () => {
         rawSha256: null,
         uploadedAt: null,
         lastObservedAt: null,
+        permanentFailureReason: null,
       },
       expect.objectContaining({
         fileKey: "subagent:a",
@@ -205,6 +207,7 @@ describe("transcriptReadService.findTranscriptAccess", () => {
         rawSha256: "a".repeat(64),
         uploadedAt: UPLOADED_AT.toISOString(),
         lastObservedAt: UPLOADED_AT.toISOString(),
+        permanentFailureReason: null,
       },
     ]);
   });

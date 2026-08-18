@@ -4,7 +4,7 @@ import {
   PROFILE_CONFIG_IPC_CHANNELS,
   ProfileConfigIpcChannel,
   registerProfileConfigIpcHandlers,
-} from "../src/main/profile-config-ipc.js";
+} from "../src/main/ipc/profile-config-ipc.js";
 import { createProfileConfigDesktopApi } from "../src/main/profile-config-preload.js";
 
 type IpcHandler = (event: unknown, payload?: unknown) => unknown;
@@ -48,7 +48,12 @@ function makeProfileRegistrarHandlers(
           ...savedConfig,
           gatewayId: "gateway-1",
         }),
-      },
+        // FEA-4005: the SaveConfig/ApplyConfig handlers read the pre-change
+        // sandbox to decide whether to re-seed repos.json for the new scope root.
+        getSandboxBaseDirectory: () => "",
+      } as unknown as Parameters<
+        typeof registerProfileConfigIpcHandlers
+      >[1]["settingsStore"],
       apiKeyStore: {
         getStatus: () => ({ source: "none" }),
         getApiKey: () => null,
@@ -59,7 +64,9 @@ function makeProfileRegistrarHandlers(
         setApiKey: () => {},
         clearApiKey: () => {},
         deleteProfileKey: () => {},
-      },
+      } as unknown as Parameters<
+        typeof registerProfileConfigIpcHandlers
+      >[1]["apiKeyStore"],
       getGatewaySnapshot: () => ({
         gatewayPort: null,
         computeTarget: null,
@@ -69,7 +76,9 @@ function makeProfileRegistrarHandlers(
       onConfigDeleted: () => {},
       restartCloudSocket: () => {},
       isEncryptionAvailable: () => true,
-    } as Parameters<typeof registerProfileConfigIpcHandlers>[1]
+      // FEA-4005: re-seed repos for a changed sandbox scope root (best-effort).
+      seedReposConfig: () => Promise.resolve(),
+    }
   );
   return handlers;
 }

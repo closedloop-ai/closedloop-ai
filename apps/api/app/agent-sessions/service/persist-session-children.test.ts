@@ -1,35 +1,275 @@
-import { SessionPrLifecycleStatus } from "@repo/api/src/session-trace/derivation";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
+import { SessionPrLifecycleStatus } from "@repo/lib/session-trace/derivation";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionsService } from "../service";
 import {
   buildDefaultAgentSessionEventMocks,
   buildDefaultAgentSessionMocks,
-  buildSessionDetailRecord,
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
   SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
-} from "../service.test-harness";
-import { mocks } from "../service.test-mocks";
+} from "@/__tests__/support/agent-sessions/service.test-harness";
+import { mocks } from "@/__tests__/support/agent-sessions/service.test-mocks";
+import { agentSessionsService } from "../service";
+
+// Legacy single-arg hashtext() advisory lock (32-bit key), still emitted
+// alongside the new 64-bit hashtextextended() lock during the deploy window.
+const LEGACY_HASHTEXT_LOCK_RE = /pg_advisory_xact_lock\(hashtext\([^,)]*\)\)/;
 
 vi.mock("@repo/database", async () => {
-  const { databaseModuleMock } = await import("../service.test-mocks");
+  const { databaseModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return databaseModuleMock();
 });
 
 vi.mock("@repo/observability/telemetry/metrics", async () => {
-  const { telemetryModuleMock } = await import("../service.test-mocks");
+  const { telemetryModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return telemetryModuleMock();
 });
 
 describe("agentSessionsService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("bounds ingestion transactions to one session slice", async () => {
+    const sessionUpsert = vi
+      .fn()
+      .mockResolvedValue({ artifactId: "persisted-session-1" });
+    const computeTargetUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        updateMany: computeTargetUpdateMany,
+      },
+      slugCounter: buildSlugCounterMock(),
+      sessionDetail: buildDefaultAgentSessionMocks({ upsert: sessionUpsert }),
+      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
+      agentSessionTokenUsage: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+
+    await agentSessionsService.upsertSessions(
+      {
+        organizationId: "org-1",
+        userId: "user-1",
+        computeTargetId: "target-1",
+      },
+      {
+        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+        batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba101",
+        syncMode: AgentSessionSyncMode.Incremental,
+        sessionCount: 3,
+        sessions: [
+          buildSyncedSession({ externalSessionId: "sess-1" }),
+          buildSyncedSession({ externalSessionId: "sess-2" }),
+          buildSyncedSession({ externalSessionId: "sess-3" }),
+        ],
+      }
+    );
+
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(3);
+    expect(sessionUpsert).toHaveBeenCalledTimes(3);
+    expect(computeTargetUpdateMany).toHaveBeenCalledTimes(2);
+    expect(computeTargetUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: "target-1",
+        OR: [
+          { lastAgentSessionSyncAttemptAt: null },
+          { lastAgentSessionSyncAttemptAt: { lt: expect.any(Date) } },
+        ],
+      },
+      data: {
+        lastAgentSessionSyncAttemptAt: expect.any(Date),
+      },
+    });
+    expect(computeTargetUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: "target-1",
+        OR: [
+          { lastAgentSessionSyncAt: null },
+          { lastAgentSessionSyncAt: { lt: expect.any(Date) } },
+        ],
+      },
+      data: {
+        lastAgentSessionSyncAt: expect.any(Date),
+      },
+    });
+    expect(computeTargetUpdateMany.mock.invocationCallOrder[0]).toBeGreaterThan(
+      sessionUpsert.mock.invocationCallOrder.at(-1) ?? 0
+    );
+  });
+
+  it("keeps key transaction statements bounded across payload and component count", async () => {
+    const countsFor = async (sessionCount: number) => {
+      vi.clearAllMocks();
+      const sessionUpsert = vi
+        .fn()
+        .mockResolvedValue({ artifactId: "persisted-session-1" });
+      const componentDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
+      const componentUpsert = vi.fn();
+      const executeRaw = vi.fn().mockResolvedValue(0);
+
+      installDb({
+        $executeRaw: executeRaw,
+        computeTarget: {
+          findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+          update: vi.fn().mockResolvedValue({ id: "target-1" }),
+        },
+        slugCounter: buildSlugCounterMock(),
+        sessionDetail: buildDefaultAgentSessionMocks({ upsert: sessionUpsert }),
+        agentSessionEvent: buildDefaultAgentSessionEventMocks(),
+        agentSessionTokenUsage: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        agentComponentSessionUsage: {
+          deleteMany: componentDeleteMany,
+          upsert: componentUpsert,
+        },
+      });
+
+      await agentSessionsService.upsertSessions(
+        {
+          organizationId: "org-1",
+          userId: "user-1",
+          computeTargetId: "target-1",
+        },
+        {
+          schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+          batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba103",
+          syncMode: AgentSessionSyncMode.Incremental,
+          sessionCount,
+          sessions: Array.from({ length: sessionCount }, (_, index) =>
+            buildSyncedSession({
+              externalSessionId: `sess-${index + 1}`,
+              components: Array.from({ length: 25 }, (__, componentIndex) => ({
+                componentKind: "tool",
+                componentKey: `tool-${componentIndex + 1}`,
+                invocations: componentIndex + 1,
+                errorCount: 0,
+              })),
+            })
+          ),
+        }
+      );
+
+      return {
+        componentDeleteMany: componentDeleteMany.mock.calls.length,
+        componentRawUpsert: executeRaw.mock.calls.filter(([strings]) =>
+          (strings as TemplateStringsArray)
+            .join("")
+            .includes("agent_component_session_usage")
+        ).length,
+        componentUpsert: componentUpsert.mock.calls.length,
+        sessionUpsert: sessionUpsert.mock.calls.length,
+        tx: mocks.withDb.tx.mock.calls.length,
+      };
+    };
+
+    const small = await countsFor(2);
+    const large = await countsFor(5);
+
+    expect(small).toMatchObject({
+      componentDeleteMany: 2,
+      componentRawUpsert: 2,
+      componentUpsert: 0,
+      sessionUpsert: 2,
+      tx: 2,
+    });
+    expect(large).toMatchObject({
+      componentDeleteMany: 5,
+      componentRawUpsert: 5,
+      componentUpsert: 0,
+      sessionUpsert: 5,
+      tx: 5,
+    });
+  });
+
+  it("advances the target watermark for committed slices when a later slice fails", async () => {
+    const sessionUpsert = vi
+      .fn()
+      .mockResolvedValue({ artifactId: "persisted-session-1" });
+    const computeTargetUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
+
+    installDb({
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        updateMany: computeTargetUpdateMany,
+      },
+      slugCounter: buildSlugCounterMock(),
+      sessionDetail: buildDefaultAgentSessionMocks({ upsert: sessionUpsert }),
+      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
+      agentSessionTokenUsage: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+    let txCalls = 0;
+    const runTx = mocks.withDb.tx.getMockImplementation();
+    mocks.withDb.tx.mockImplementation(async (callback) => {
+      txCalls += 1;
+      const result = await runTx?.(callback);
+      if (txCalls === 2) {
+        throw new Error("slice_failed");
+      }
+      return result;
+    });
+
+    await expect(
+      agentSessionsService.upsertSessions(
+        {
+          organizationId: "org-1",
+          userId: "user-1",
+          computeTargetId: "target-1",
+        },
+        {
+          schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+          batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba102",
+          syncMode: AgentSessionSyncMode.Incremental,
+          sessionCount: 3,
+          sessions: [
+            buildSyncedSession({ externalSessionId: "sess-1" }),
+            buildSyncedSession({ externalSessionId: "sess-2" }),
+            buildSyncedSession({ externalSessionId: "sess-3" }),
+          ],
+        }
+      )
+    ).rejects.toThrow("slice_failed");
+
+    expect(mocks.withDb.tx).toHaveBeenCalledTimes(2);
+    expect(sessionUpsert).toHaveBeenCalledTimes(2);
+    expect(computeTargetUpdateMany).toHaveBeenCalledTimes(2);
+    expect(computeTargetUpdateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: "target-1",
+        OR: [
+          { lastAgentSessionSyncAttemptAt: null },
+          { lastAgentSessionSyncAttemptAt: { lt: expect.any(Date) } },
+        ],
+      },
+      data: { lastAgentSessionSyncAttemptAt: expect.any(Date) },
+    });
+    expect(computeTargetUpdateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: "target-1",
+        OR: [
+          { lastAgentSessionSyncAt: null },
+          { lastAgentSessionSyncAt: { lt: expect.any(Date) } },
+        ],
+      },
+      data: { lastAgentSessionSyncAt: expect.any(Date) },
+    });
   });
 
   it("persists sync trace fields without overwriting manual state", async () => {
@@ -121,6 +361,65 @@ describe("agentSessionsService", () => {
       expect.objectContaining({ metric: "agent_sessions.sync.completed" })
     );
   });
+  it("takes BOTH the legacy 32-bit and new 64-bit per-session advisory lock in separate sequential statements (PRD-536 D12)", async () => {
+    // The TOCTOU guard widens the lock key to 64 bits via
+    // hashtextextended(key, 0::bigint) so unrelated sessions no longer collide
+    // in the 32-bit hashtext space and serialize under load. During a rolling
+    // deploy we ALSO take the legacy single-arg hashtext(key) lock so the new
+    // release still mutually excludes in-flight previous-release handlers still
+    // keyed on the 32-bit value (transitional; see the DEPLOY-TRANSITION comment
+    // in service.ts). The two locks are acquired in separate statements so
+    // PostgreSQL cannot reorder them and cause deadlocks.
+    const executeRaw = vi.fn().mockResolvedValue(0);
+
+    installDb({
+      $executeRaw: executeRaw,
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
+        update: vi.fn().mockResolvedValue({ id: "target-1" }),
+      },
+      slugCounter: buildSlugCounterMock(),
+      sessionDetail: buildDefaultAgentSessionMocks(),
+      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
+      agentSessionTokenUsage: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    });
+
+    await agentSessionsService.upsertSessions(
+      {
+        organizationId: "org-1",
+        userId: "user-1",
+        computeTargetId: "target-1",
+      },
+      {
+        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
+        batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba002",
+        syncMode: AgentSessionSyncMode.Incremental,
+        sessionCount: 1,
+        sessions: [buildSyncedSession({ externalSessionId: "sess-lock-1" })],
+      }
+    );
+
+    const lockCalls = executeRaw.mock.calls.filter(([strings]) =>
+      (strings as TemplateStringsArray)
+        .join("")
+        .includes("pg_advisory_xact_lock")
+    );
+    expect(lockCalls).toHaveLength(2);
+    const legacySql = (lockCalls[0][0] as TemplateStringsArray).join("");
+    const newSql = (lockCalls[1][0] as TemplateStringsArray).join("");
+    // First statement: legacy 32-bit hashtext lock only.
+    expect(legacySql).toMatch(LEGACY_HASHTEXT_LOCK_RE);
+    expect(legacySql).not.toContain("hashtextextended");
+    expect(lockCalls[0].slice(1)).toContain("sess-lock-1");
+    // Second statement: new 64-bit hashtextextended lock.
+    expect(newSql).toContain("hashtextextended");
+    expect(newSql).toContain("0::bigint");
+    expect(lockCalls[1].slice(1)).toContain("sess-lock-1");
+  });
+
   it("coalesces duplicate per-model token usage before persisting session usage rows", async () => {
     const sessionUpsert = vi
       .fn()
@@ -213,6 +512,8 @@ describe("agentSessionsService", () => {
           outputTokens: 5,
           cacheReadTokens: 1,
           cacheWriteTokens: 2,
+          cacheWrite5mTokens: null,
+          cacheWrite1hTokens: null,
           estimatedCost: 0.03,
         },
         {
@@ -222,6 +523,8 @@ describe("agentSessionsService", () => {
           outputTokens: 4,
           cacheReadTokens: 3,
           cacheWriteTokens: 0,
+          cacheWrite5mTokens: null,
+          cacheWrite1hTokens: null,
           estimatedCost: 0.03,
         },
       ],
@@ -429,11 +732,28 @@ describe("agentSessionsService", () => {
   });
   it("upserts events into child table and recomputes counts from full event set", async () => {
     const executeRawUnsafe = vi.fn().mockResolvedValue(2);
-    // FEA-2913: the tool-use + error counts are recomputed in a single
-    // conditional-aggregation query returning bigint COUNTs.
-    const queryRawUnsafe = vi
-      .fn()
-      .mockResolvedValue([{ toolUseCount: 1n, errorCount: 1n }]);
+    // ISS-4439: the two raw calls now have DISTINCT shapes, so the mock returns
+    // DISTINCT rows per call rather than one SELECT-shaped row for both. If both
+    // calls returned the same row, the assertions below could pass even if the
+    // code never forwarded the SELECT's event-max into the UPDATE's $5 or read
+    // last_activity_at from the RETURNING row.
+    //   - counts SELECT (call 0): bigint tool-use/error COUNTs + the folded-in
+    //     MAX("event_created_at") activity timestamp.
+    //   - UPDATE ... RETURNING (call 1): the persisted last_activity_at.
+    const countsMaxEventAt = new Date("2026-05-20T18:30:00.000Z");
+    const returnedLastActivityAt = new Date("2026-05-20T19:00:00.000Z");
+    const queryRawUnsafe = vi.fn().mockImplementation((sql: string) => {
+      if (String(sql).includes(`UPDATE "session_detail"`)) {
+        return Promise.resolve([{ lastActivityAt: returnedLastActivityAt }]);
+      }
+      return Promise.resolve([
+        {
+          toolUseCount: 1n,
+          errorCount: 1n,
+          maxEventCreatedAt: countsMaxEventAt,
+        },
+      ]);
+    });
     const sessionUpdate = vi.fn().mockResolvedValue({});
 
     installDb({
@@ -537,8 +857,12 @@ describe("agentSessionsService", () => {
     // `tool_name`; the error FILTER mirrors ERROR_EVENT_PATTERN (/error|fail/i)
     // as `event_type ILIKE '%error%'`/`'%fail%'`, built from ERROR_EVENT_TERMS
     // so it stays in sync with the aggregateByTool classifier and the desktop
-    // countErrorEvents.
-    expect(queryRawUnsafe).toHaveBeenCalledTimes(1);
+    // countErrorEvents. ISS-4439: the same scan now also folds in
+    // MAX("event_created_at") (the latest-activity timestamp), and the counts +
+    // timestamp land via a single raw UPDATE ... GREATEST ... RETURNING — so
+    // persistSessionChildren issues exactly two round-trips (this counts SELECT
+    // and that UPDATE), not four.
+    expect(queryRawUnsafe).toHaveBeenCalledTimes(2);
     const [countsSql, ...countsParams] = queryRawUnsafe.mock.calls[0] ?? [];
     const countsSqlText = String(countsSql);
     expect(countsSqlText).toContain("COUNT(*) FILTER");
@@ -548,249 +872,38 @@ describe("agentSessionsService", () => {
     );
     expect(countsSqlText).toContain(`"event_type" ILIKE $2`);
     expect(countsSqlText).toContain(`"event_type" ILIKE $3`);
-    expect(countsParams).toEqual(["persisted-session-1", "%error%", "%fail%"]);
-    expect(sessionUpdate).toHaveBeenCalledWith({
-      where: { artifactId: "persisted-session-1" },
-      // PLN-1034: the same update also writes the derived lastActivityAt.
-      data: expect.objectContaining({ toolUseCount: 1, errorCount: 1 }),
-    });
-  });
-  it("FEA-2690: collapses duplicate externalEventIds (last-wins) so the ON CONFLICT upsert cannot crash", async () => {
-    // Two events sharing an externalEventId would otherwise make the single
-    // multi-row `INSERT ... ON CONFLICT DO UPDATE` abort with SQLSTATE 21000,
-    // rolling back the whole session upsert and dead-lettering the sync.
-    const executeRawUnsafe = vi.fn().mockResolvedValue(1);
-    const sessionUpdate = vi.fn().mockResolvedValue({});
-
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        update: vi.fn().mockResolvedValue({ id: "target-1" }),
-      },
-      slugCounter: buildSlugCounterMock(),
-      sessionDetail: buildDefaultAgentSessionMocks({ update: sessionUpdate }),
-      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
-      agentSessionTokenUsage: {
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-        createMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-      $executeRawUnsafe: executeRawUnsafe,
-    });
-
-    await agentSessionsService.upsertSessions(
-      {
-        organizationId: "org-1",
-        userId: "user-1",
-        computeTargetId: "target-1",
-      },
-      {
-        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-        batchId: "chunk-batch-dup",
-        syncMode: AgentSessionSyncMode.Backfill,
-        sessionCount: 1,
-        sessions: [
-          buildSyncedSession({
-            events: [
-              {
-                externalEventId: "dup-1",
-                agentExternalId: "agent-1",
-                eventType: "tool_use",
-                toolName: "Read",
-                summary: null,
-                createdAt: SESSION_STARTED_AT.toISOString(),
-              },
-              {
-                externalEventId: "dup-1",
-                agentExternalId: "agent-1",
-                eventType: "runtime_error",
-                toolName: null,
-                summary: null,
-                createdAt: SESSION_UPDATED_AT.toISOString(),
-              },
-            ],
-          }),
-        ],
-      }
-    );
-
-    // Exactly one INSERT, and it carries a single deduped row (1 SQL string +
-    // 6 bind params, FEA-2718: no more summary/data columns) whose values are
-    // the last occurrence — mirroring the `DO UPDATE SET ... = EXCLUDED` a
-    // re-sync would apply.
-    expect(executeRawUnsafe).toHaveBeenCalledTimes(1);
-    const call = executeRawUnsafe.mock.calls[0] ?? [];
-    expect(call).toHaveLength(7);
-    const insertSql = String(call[0] ?? "");
-    expect(insertSql.match(/gen_random_uuid\(\)/g)).toHaveLength(1);
-    expect(executeRawUnsafe).toHaveBeenCalledWith(
-      expect.stringContaining(`INSERT INTO "agent_session_events"`),
+    expect(countsSqlText).toContain(`MAX("event_created_at")`);
+    // ISS-4439 org-scoping: the counts scan is constrained to the session's
+    // parent artifact org via an EXISTS on "artifacts" ($4, appended after the
+    // error-term params), so a cross-org artifactId reads zero rows.
+    expect(countsSqlText).toContain(`"artifacts"."organization_id" = $4::uuid`);
+    expect(countsParams).toEqual([
       "persisted-session-1",
-      "dup-1",
-      "agent-1",
-      "runtime_error",
-      null,
-      SESSION_UPDATED_AT
+      "%error%",
+      "%fail%",
+      "org-1",
+    ]);
+    // ISS-4439: the counts + monotonic last_activity_at are persisted through a
+    // single raw UPDATE (GREATEST over the column's own value + session start +
+    // latest event) with RETURNING, replacing the prior findUnique + Prisma
+    // update pair — so sessionDetail.update is no longer used by this lane.
+    expect(sessionUpdate).not.toHaveBeenCalled();
+    const [updateSql, ...updateParams] = queryRawUnsafe.mock.calls[1] ?? [];
+    const updateSqlText = String(updateSql);
+    expect(updateSqlText).toContain(`UPDATE "session_detail"`);
+    expect(updateSqlText).toContain(
+      `GREATEST("last_activity_at", $4::timestamp, $5::timestamp)`
     );
-  });
-  it("persists synced branchDiffStats into dedicated columns and rehydrates it on detail", async () => {
-    let persistedRecord: Record<string, unknown> | null = null;
-    const branchColumns = [
-      "branchLinesAdded",
-      "branchLinesRemoved",
-      "branchFilesChanged",
-      "branchLocSource",
-    ];
-
-    const sessionUpsert = vi.fn().mockImplementation((args) => {
-      const data = (persistedRecord ? args.update : args.create) as Record<
-        string,
-        unknown
-      >;
-      persistedRecord = {
-        ...buildSessionDetailRecord(persistedRecord ?? {}),
-        artifactId: "persisted-session-1",
-      };
-      for (const column of branchColumns) {
-        if (Object.hasOwn(data, column)) {
-          persistedRecord[column] = data[column];
-        }
-      }
-      return { artifactId: "persisted-session-1" };
-    });
-
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        update: vi.fn().mockResolvedValue({ id: "target-1" }),
-      },
-      slugCounter: buildSlugCounterMock(),
-      sessionDetail: {
-        findUnique: vi.fn().mockResolvedValue(null),
-        upsert: sessionUpsert,
-        update: vi.fn().mockResolvedValue({}),
-        findFirst: vi.fn().mockImplementation(() => persistedRecord),
-      },
-      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
-      agentSessionTokenUsage: {
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-        createMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-    });
-
-    await agentSessionsService.upsertSessions(
-      {
-        organizationId: "org-1",
-        userId: "user-1",
-        computeTargetId: "target-1",
-      },
-      {
-        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-        batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba003",
-        syncMode: AgentSessionSyncMode.Incremental,
-        sessionCount: 1,
-        sessions: [
-          buildSyncedSession({
-            branchDiffStats: {
-              linesAdded: 42,
-              linesRemoved: 7,
-              filesChanged: 3,
-              source: "git",
-            },
-          }),
-        ],
-      }
-    );
-
-    // Branch LOC lands in its own columns, never colliding with the gitDiffStats
-    // scalars (which stay null here because the payload carried no git stats).
-    expect(sessionUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        create: expect.objectContaining({
-          branchLinesAdded: 42,
-          branchLinesRemoved: 7,
-          branchFilesChanged: 3,
-          branchLocSource: "git",
-        }),
-      })
-    );
-
-    const detail = await agentSessionsService.findSessionDetail({
-      id: "persisted-session-1",
-      organizationId: "org-1",
-    });
-
-    expect(detail?.branchDiffStats).toEqual({
-      linesAdded: 42,
-      linesRemoved: 7,
-      filesChanged: 3,
-      source: "git",
-    });
-    expect(detail?.gitDiffStats).toBeNull();
-  });
-  it("merges agents with existing session data by external ID", async () => {
-    const findUnique = vi.fn().mockResolvedValue({
-      agents: [
-        {
-          externalAgentId: "agent-1",
-          name: "main",
-          type: "main",
-          status: "active",
-        },
-      ],
-    });
-    const sessionUpsert = vi
-      .fn()
-      .mockResolvedValue({ artifactId: "persisted-session-1" });
-
-    installDb({
-      computeTarget: {
-        findFirst: vi.fn().mockResolvedValue({ id: "target-1" }),
-        update: vi.fn().mockResolvedValue({ id: "target-1" }),
-      },
-      slugCounter: buildSlugCounterMock(),
-      sessionDetail: buildDefaultAgentSessionMocks({
-        findUnique,
-        upsert: sessionUpsert,
-      }),
-      agentSessionEvent: buildDefaultAgentSessionEventMocks(),
-      agentSessionTokenUsage: {
-        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-        createMany: vi.fn().mockResolvedValue({ count: 0 }),
-      },
-    });
-
-    await agentSessionsService.upsertSessions(
-      {
-        organizationId: "org-1",
-        userId: "user-1",
-        computeTargetId: "target-1",
-      },
-      {
-        schemaVersion: AGENT_SESSION_SYNC_SCHEMA_VERSION,
-        batchId: "chunk-batch-2",
-        syncMode: AgentSessionSyncMode.Backfill,
-        sessionCount: 1,
-        sessions: [
-          buildSyncedSession({
-            agents: [
-              {
-                externalAgentId: "agent-2",
-                name: "subagent",
-                type: "subagent",
-                status: "completed",
-              },
-            ],
-          }),
-        ],
-      }
-    );
-
-    const updateArg = sessionUpsert.mock.calls[0][0].update;
-    expect(updateArg.agents).toHaveLength(2);
-    expect(
-      updateArg.agents.map(
-        (a: { externalAgentId: string }) => a.externalAgentId
-      )
-    ).toEqual(["agent-1", "agent-2"]);
+    expect(updateParams[0]).toBe("persisted-session-1");
+    expect(updateParams[1]).toBe(1);
+    expect(updateParams[2]).toBe(1);
+    // $4 = session start (floor), $5 = MAX(event_created_at). Both feed GREATEST.
+    expect(updateParams[3]).toEqual(SESSION_STARTED_AT);
+    // ISS-4439: $5 MUST be the non-null event-max the counts SELECT (call 0)
+    // returned — proving the collapse actually forwards MAX("event_created_at")
+    // into the UPDATE instead of running the old separate `_max` scan. With the
+    // reverted "identical SELECT rows for both calls" mock, call 0 carried no
+    // maxEventCreatedAt and $5 was null, so this assertion would fail.
+    expect(updateParams[4]).toEqual(countsMaxEventAt);
   });
 });

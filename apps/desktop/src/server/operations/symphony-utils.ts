@@ -20,7 +20,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { inspect, promisify } from "node:util";
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import { expandHomePath } from "../../shared/path-utils.js";
 import {
   type ClaudeCodeShellEnvProvider,
@@ -957,26 +957,26 @@ async function runBootstrapProcess(
       });
     });
 
-    child.on("exit", (exitCode, signal) => {
-      setImmediate(() => {
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-
-        if (exitCode === 0) {
-          settle({ status: "completed" });
-          return;
-        }
-
-        settle({
-          status: "failed",
-          exitCode,
-          signal,
-          stdoutTail: redactBootstrapDiagnosticTail(stdoutTail, worktreeDir),
-          stderrTail: redactBootstrapDiagnosticTail(stderrTail, worktreeDir),
-        });
-      });
+    // Settle the SUCCESS path on "exit": it fires as soon as the direct child
+    // exits, regardless of grandchildren. We capture no tails on success, so
+    // there is nothing to wait for the pipes to flush — and settling here means a
+    // leaked grandchild still holding a stdio pipe open (a backgrounded daemon /
+    // detached helper spawned during bootstrap) can never wedge a successful
+    // bootstrap until timeoutMs.
+    child.on("exit", (exitCode) => {
+      if (exitCode === 0) {
+        settle({ status: "completed" });
+      }
     });
 
+    // Settle the FAILURE path on "close": it fires only after the stdio pipes
+    // flush and close, so stdoutTail/stderrTail are complete. "exit" can fire
+    // while stdout data is still buffered in the pipe — settling the failure
+    // there (as the old code did, then destroying the streams) dropped short,
+    // fast diagnostic output and yielded an empty stdoutTail. A failed bootstrap
+    // whose grandchild leaks a pipe fd waits for the timer rather than reporting
+    // promptly — acceptable for the rare failure path, and the timer guarantees
+    // it degrades to "timed-out" instead of hanging forever.
     child.on("close", (exitCode, signal) => {
       if (exitCode === 0) {
         settle({ status: "completed" });

@@ -20,6 +20,11 @@ import {
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  buildDownloadArgs,
+  getArch,
+  getPlatformPath,
+} from "./ensure-electron-binary-lib.mjs";
 
 const appRequire = createRequire(import.meta.url);
 const electronPackageJsonPath = appRequire.resolve("electron/package.json");
@@ -29,44 +34,6 @@ const electronIndexPath = appRequire.resolve("electron");
 const electronPackage = JSON.parse(
   readFileSync(electronPackageJsonPath, "utf8")
 );
-
-function getPlatformPath(platform) {
-  const platformPaths = {
-    darwin: "Electron.app/Contents/MacOS/Electron",
-    freebsd: "electron",
-    linux: "electron",
-    mas: "Electron.app/Contents/MacOS/Electron",
-    openbsd: "electron",
-    win32: "electron.exe",
-  };
-  const platformPath = platformPaths[platform];
-  if (platformPath == null) {
-    throw new Error(
-      `Electron builds are not available on platform: ${platform}`
-    );
-  }
-  return platformPath;
-}
-
-function getArch(platform) {
-  if (process.env.npm_config_arch) {
-    return process.env.npm_config_arch;
-  }
-  if (
-    platform !== "darwin" ||
-    process.platform !== "darwin" ||
-    process.arch !== "x64"
-  ) {
-    return process.arch;
-  }
-
-  const translated = spawnSync("sysctl", ["-in", "sysctl.proc_translated"], {
-    encoding: "utf8",
-  });
-  return translated.status === 0 && translated.stdout.trim() === "1"
-    ? "arm64"
-    : process.arch;
-}
 
 function verifyInstalledBinary() {
   delete appRequire.cache[electronIndexPath];
@@ -117,15 +84,7 @@ function repairElectronBinary() {
   const downloadUrl = `https://github.com/electron/electron/releases/download/v${version}/${artifact}`;
 
   console.log(`Downloading ${artifact}`);
-  runChecked("curl", [
-    "--fail",
-    "--location",
-    "--retry",
-    "3",
-    "--output",
-    zipPath,
-    downloadUrl,
-  ]);
+  runChecked("curl", buildDownloadArgs(zipPath, downloadUrl));
 
   const actualChecksum = createHash("sha256")
     .update(readFileSync(zipPath))

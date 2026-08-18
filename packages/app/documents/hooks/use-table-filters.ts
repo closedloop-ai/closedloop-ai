@@ -4,7 +4,7 @@ import { Priority } from "@repo/api/src/types/common";
 import {
   type ArtifactStatus,
   DOCUMENT_STATUS_OPTIONS,
-  FEATURE_STATUS_OPTIONS,
+  ISSUE_STATUS_OPTIONS,
 } from "@repo/api/src/types/document";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
 import {
@@ -197,7 +197,7 @@ const PERSISTENCE_DEFAULT: TableFilters = {
 // Mixed table renders Documents and Features; accept either vocabulary (PRD-495).
 const VALID_STATUSES = new Set<string>([
   ...DOCUMENT_STATUS_OPTIONS,
-  ...FEATURE_STATUS_OPTIONS,
+  ...ISSUE_STATUS_OPTIONS,
 ]);
 const VALID_PRIORITIES = new Set<string>(Object.values(Priority));
 const VALID_DATE_FIELDS = new Set<string>(Object.values(DateFilterField));

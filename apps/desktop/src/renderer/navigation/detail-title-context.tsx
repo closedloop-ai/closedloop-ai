@@ -35,6 +35,16 @@ export type PublishedDetailTitle = {
   /** `detailTitleKey()` of the detail that published `title`, or null when none. */
   key: string | null;
   title: string | null;
+  /**
+   * ISS-4839 (codex review on PR #4266): whether the publishing view's read has
+   * SETTLED. A detail that resolves to not-found or a provider error publishes
+   * `title: null` exactly like one that is still loading, so a title-only signal
+   * cannot tell "no name yet" from "no name, ever" — and the breadcrumb's
+   * pending slot would skeleton indefinitely while the body renders "Session not
+   * found". Optional and defaulting to `false` (still loading) so a publisher
+   * that has not been taught to report it keeps the prior behavior.
+   */
+  settled?: boolean;
 };
 
 /**
@@ -54,7 +64,29 @@ export function resolveDetailTitle(
     : null;
 }
 
-const EMPTY_DETAIL_TITLE: PublishedDetailTitle = { key: null, title: null };
+/**
+ * Whether the ACTIVE detail's read has settled — the same key-match guard as
+ * {@link resolveDetailTitle}, so a settled flag published by a just-superseded
+ * detail can never mark the newly-opened one as settled. A detail that has not
+ * published yet reads as NOT settled, which is correct: its read is by
+ * definition still in flight.
+ */
+export function resolveDetailTitleSettled(
+  published: PublishedDetailTitle,
+  activeKey: string | null
+): boolean {
+  return (
+    activeKey !== null &&
+    published.key === activeKey &&
+    published.settled === true
+  );
+}
+
+const EMPTY_DETAIL_TITLE: PublishedDetailTitle = {
+  key: null,
+  settled: false,
+  title: null,
+};
 
 type DetailTitleContextValue = {
   detail: PublishedDetailTitle;
@@ -85,15 +117,24 @@ export function useDetailTitle(): PublishedDetailTitle {
  * it on unmount. Pass null for `title` while the name is still loading; the
  * Topbar shows a generic fallback ("Session"/"Branch") until a real value
  * arrives or the key matches the shown detail.
+ *
+ * `settled` reports whether the view's own read has finished, name or not. Pass
+ * it so the Topbar can tell a name that has not arrived YET from one that never
+ * will (not-found / provider error) — see {@link PublishedDetailTitle.settled}.
+ * It defaults to `false`, i.e. still loading.
  */
-export function usePublishDetailTitle(key: string, title: string | null): void {
+export function usePublishDetailTitle(
+  key: string,
+  title: string | null,
+  settled = false
+): void {
   const ctx = useContext(DetailTitleContext);
   const setDetail = ctx?.setDetail;
   useEffect(() => {
     if (!setDetail) {
       return;
     }
-    setDetail({ key, title });
+    setDetail({ key, settled, title });
     return () => setDetail(EMPTY_DETAIL_TITLE);
-  }, [setDetail, key, title]);
+  }, [setDetail, key, title, settled]);
 }

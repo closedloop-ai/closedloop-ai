@@ -1,7 +1,4 @@
-import {
-  computeTokenCost,
-  type TokenCostInput,
-} from "@closedloop-ai/loops-api/genai-cost";
+import { computeTokenCost, type TokenCostInput } from "@repo/cost/genai-cost";
 
 export type ExpectedTokenCost = TokenCostInput & {
   costUsd: number;

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { LoopSchedulerContext } from "../src/main/loop-scheduler-context.js";
+import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
 import { getActiveLoopPid } from "../src/server/operations/symphony-loop.js";
 import { isProcessRunning } from "../src/server/operations/symphony-utils.js";
 
@@ -25,10 +25,10 @@ async function waitForCondition(
 }
 
 import { afterEach, beforeEach, test } from "node:test";
-import { BootRecoveryService } from "../src/main/boot-recovery.js";
-import { JobStore, type LocalJob } from "../src/main/job-store.js";
-import { LoopTokenStore } from "../src/main/loop-token-store.js";
-import type { TelemetryEventPayload } from "../src/main/telemetry-protocol.js";
+import { JobStore, type LocalJob } from "../src/main/jobs/job-store.js";
+import { BootRecoveryService } from "../src/main/lifecycle/boot-recovery.js";
+import { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
+import type { TelemetryEventPayload } from "../src/main/telemetry/telemetry-protocol.js";
 import type { WorktreeProvider } from "../src/server/operations/symphony-loop.js";
 import { cleanupAdditionalWorktrees } from "../src/server/operations/symphony-loop.js";
 import { createLocalJob } from "./job-store-test-utils.js";
@@ -159,6 +159,15 @@ function createLoopTokenStore(name: string): LoopTokenStore {
   });
 }
 
+/**
+ * The plan artifact a finalized PLAN must have produced. Every fixture below
+ * writes the same file, and since ISS-5872 its presence is what makes a
+ * COMPLETED PLAN honest rather than a run that produced nothing.
+ */
+async function writePlanFixture(dir: string): Promise<void> {
+  await fs.writeFile(path.join(dir, "plan.json"), JSON.stringify({ ok: true }));
+}
+
 function createJob(overrides?: Partial<LocalJob>): LocalJob {
   const repoDir = path.join(tempRoot, "repo");
   return createLocalJob({
@@ -173,10 +182,7 @@ test("finalizes dead CANCEL_PENDING jobs to CANCELLED without loop events", asyn
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-cancel-pending-tokens"
   );
@@ -216,10 +222,7 @@ test("finalizes dead jobs without promoting UNKNOWN status to completed", async 
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   const loopTokenStore = createLoopTokenStore("boot-recovery-dead-loop-tokens");
   loopTokenStore.setLoopToken("loop-1", { token: "loop-token" });
 
@@ -327,10 +330,7 @@ test("finalizes dead jobs using LoopTokenStore and clears token after UNKNOWN re
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore("boot-recovery-loop-tokens");
   loopTokenStore.setLoopToken("loop-1", { token: "loop-token" });
@@ -375,10 +375,7 @@ test("retries cloud finalization across boots and resumes from partial progress"
   await fs.mkdir(claudeWorkDir, { recursive: true });
   // plan.json and open-questions.md are present in claudeWorkDir but there is NO statePath on
   // the job, so the new RUNNING-no-snapshot logic defaults to FAILED regardless.
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   await fs.writeFile(path.join(claudeWorkDir, "open-questions.md"), "none");
 
   const loopTokenStore = createLoopTokenStore(
@@ -439,10 +436,7 @@ test("gives up after three retryable failures and stops future attempts", async 
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore("boot-recovery-retry-cap-tokens");
   loopTokenStore.setLoopToken("loop-1", { token: "loop-token" });
@@ -496,10 +490,7 @@ test("skips dead job finalization when loop token is missing", async () => {
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-dead-missing-token"
@@ -532,10 +523,7 @@ test("starts dead job finalization in the background", async () => {
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-background-dead-finalize-tokens"
   );
@@ -603,14 +591,8 @@ test("dispose stops queued dead-job finalization after in-flight request", async
   const secondWorkDir = path.join(repoDir, "workdir-2");
   await fs.mkdir(firstWorkDir, { recursive: true });
   await fs.mkdir(secondWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(firstWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
-  await fs.writeFile(
-    path.join(secondWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(firstWorkDir);
+  await writePlanFixture(secondWorkDir);
 
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-dispose-dead-finalize-tokens"
@@ -914,6 +896,12 @@ test("preserves COMPLETED status when terminal snapshot is available during boot
   await fs.mkdir(claudeWorkDir, { recursive: true });
   const statePath = path.join(claudeWorkDir, "state.json");
   await fs.writeFile(statePath, JSON.stringify({ status: "COMPLETED" }));
+  // The PLAN actually produced its plan, which is what makes COMPLETED the
+  // honest outcome here. Without it the missing-artifact guard (ISS-5872)
+  // correctly downgrades the job to FAILED, and this test would be asserting
+  // that a snapshot can launder an empty run into a success — a different and
+  // wrong contract from the status resolution it means to cover.
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-live-completed-snapshot-tokens"
@@ -1114,10 +1102,7 @@ test("replays EXECUTE completion from persisted execution-result artifacts durin
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   await fs.writeFile(
     path.join(claudeWorkDir, "claude-output.jsonl"),
     `${JSON.stringify({
@@ -1579,10 +1564,7 @@ test("finalizeDeadJobs skips finalization and sets cloudFinalizedAt when cloud r
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore(
     "boot-recovery-dead-timed-out-tokens"
@@ -1917,10 +1899,7 @@ test("AC-004: per-request provider resolution uses token at call time, not at co
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
   await fs.writeFile(path.join(claudeWorkDir, "open-questions.md"), "none");
 
   const loopTokenStore = createLoopTokenStore(
@@ -2008,10 +1987,7 @@ test("AC-007 regression: RUNNING job with dead PID at boot is finalized as UNKNO
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore("boot-recovery-ac007-tokens");
   loopTokenStore.setLoopToken(loopId, { token: "loop-token" });
@@ -2441,7 +2417,7 @@ test("T-3.3 PLN-757: USER_CREATED loop — no PoP heartbeat attempted, terminal 
 //        the job is finalized as terminal/UNKNOWN.
 // ---------------------------------------------------------------------------
 
-// Table-driven over the two transient heartbeat shapes (CLAUDE.md test harness
+// Table-driven over the two transient heartbeat shapes (AGENTS.md test harness
 // convention). Each case supplies the heartbeat handler that produces the
 // transient signal; assertions are identical (conservative reattach).
 const transientPopHeartbeatCases: ReadonlyArray<{
@@ -2556,10 +2532,7 @@ test("T-3.5 PR#256: dead-PID DESKTOP_MANAGED loop never attempts PoP revival and
   const repoDir = path.join(tempRoot, "repo");
   const claudeWorkDir = path.join(repoDir, "workdir-pop-dead");
   await fs.mkdir(claudeWorkDir, { recursive: true });
-  await fs.writeFile(
-    path.join(claudeWorkDir, "plan.json"),
-    JSON.stringify({ ok: true })
-  );
+  await writePlanFixture(claudeWorkDir);
 
   const loopTokenStore = createLoopTokenStore("boot-recovery-pop-dead-tokens");
   loopTokenStore.setLoopToken(loopId, { token: "stale-jwt" });

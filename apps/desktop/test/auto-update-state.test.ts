@@ -6,7 +6,7 @@ import {
   mergePackagedUpdateState,
   PACKAGED_UPDATE_NOT_DOWNLOADED_MESSAGE,
   toPackagedUpdateStatusPayload,
-} from "../src/main/packaged-update-state.js";
+} from "../src/main/update/packaged-update-state.js";
 import { PackagedUpdateInstallBlockedReason } from "../src/shared/packaged-update-install-blocked-reason.js";
 
 describe("packaged update readiness state", () => {

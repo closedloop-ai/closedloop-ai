@@ -2,33 +2,42 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
-import { useBranches } from "../../hooks/use-branches";
+import { makeBranchAnalytics } from "../../components/branch-analytics-fixtures";
+import { useBranchesPageData } from "../../hooks/use-branches";
 import type { BranchesDataSource } from "../branches-data-source";
 import { BranchesDataSourceProvider } from "../provider";
 
 const MISSING_ADAPTER_RE = /AdapterProvider/;
+const ANALYTICS_FIXTURE = makeBranchAnalytics();
 
 /**
- * A minimal non-HTTP data source. Only `list` is exercised here; the other
- * reads reject so any accidental call surfaces loudly. `scope` is what isolates
- * this source's cache entries from another's.
+ * A minimal non-HTTP data source. Only `pageData` is exercised here; the
+ * other reads reject so any accidental call surfaces loudly. `scope` is what
+ * isolates this source's cache entries from another's.
  */
 function fakeSource(scope: string, total: number): BranchesDataSource {
   return {
     scope,
-    list: () => Promise.resolve({ items: [], total, viewerScope: "self" }),
+    list: () => Promise.reject(new Error("list unused")),
     detail: () => Promise.reject(new Error("detail unused")),
     comments: () => Promise.reject(new Error("comments unused")),
     trace: () => Promise.reject(new Error("trace unused")),
     usage: () => Promise.reject(new Error("usage unused")),
     analytics: () => Promise.reject(new Error("analytics unused")),
+    pageData: () =>
+      Promise.resolve({
+        list: { items: [], total, viewerScope: "self" },
+        analytics: ANALYTICS_FIXTURE,
+      }),
   };
 }
 
 function ListTotalProbe({ testId }: { testId: string }) {
-  const { data } = useBranches({});
+  const { data } = useBranchesPageData({});
   return (
-    <span data-testid={testId}>{data ? `total:${data.total}` : "loading"}</span>
+    <span data-testid={testId}>
+      {data ? `total:${data.list.total}` : "loading"}
+    </span>
   );
 }
 

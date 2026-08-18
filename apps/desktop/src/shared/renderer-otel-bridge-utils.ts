@@ -1,8 +1,21 @@
-import type { Attributes, AttributeValue, HrTime } from "@opentelemetry/api";
+import {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
+import {
+  type Attributes,
+  type AttributeValue,
+  type HrTime,
+  SpanKind as OTelSpanKind,
+  SpanStatusCode as OTelSpanStatusCode,
+} from "@opentelemetry/api";
 import {
   type DesktopOtelInstrumentationScope,
+  type DesktopOtelSpanStatus,
+  type RendererOtelBridgeRecord,
   RendererOtelExportFailureReason,
   type RendererOtelExportResult,
+  type RendererOtelGenericBridgeRecord,
 } from "./renderer-otel-bridge-constants.js";
 
 // Shared, dependency-light helpers used by both the main-process
@@ -73,6 +86,60 @@ export function normalizeInstrumentationScope(scope: {
 
 export function hrTimeToUnixNanoString(hrTime: HrTime): string {
   return (BigInt(hrTime[0]) * 1_000_000_000n + BigInt(hrTime[1])).toString();
+}
+
+export function hasSpanIdentity(
+  record: RendererOtelBridgeRecord
+): record is RendererOtelGenericBridgeRecord & {
+  spanId: string;
+  traceId: string;
+} {
+  return "traceId" in record && Boolean(record.traceId && record.spanId);
+}
+
+export function normalizeSpanKind(kind: OTelSpanKind): SpanKind {
+  switch (kind) {
+    case OTelSpanKind.SERVER:
+      return SpanKind.Server;
+    case OTelSpanKind.CLIENT:
+      return SpanKind.Client;
+    case OTelSpanKind.PRODUCER:
+      return SpanKind.Producer;
+    case OTelSpanKind.CONSUMER:
+      return SpanKind.Consumer;
+    case OTelSpanKind.INTERNAL:
+      return SpanKind.Internal;
+    default:
+      return SpanKind.Internal;
+  }
+}
+
+export function normalizeSpanStatus(status: {
+  code: OTelSpanStatusCode;
+  message?: string;
+}): DesktopOtelSpanStatus {
+  switch (status.code) {
+    case OTelSpanStatusCode.OK:
+      return {
+        code: SpanStatusCode.Ok,
+        ...(status.message ? { message: status.message } : {}),
+      };
+    case OTelSpanStatusCode.ERROR:
+      return {
+        code: SpanStatusCode.Error,
+        ...(status.message ? { message: status.message } : {}),
+      };
+    case OTelSpanStatusCode.UNSET:
+      return {
+        code: SpanStatusCode.Unset,
+        ...(status.message ? { message: status.message } : {}),
+      };
+    default:
+      return {
+        code: SpanStatusCode.Unset,
+        ...(status.message ? { message: status.message } : {}),
+      };
+  }
 }
 
 export function isTerminalRendererOtelResult(

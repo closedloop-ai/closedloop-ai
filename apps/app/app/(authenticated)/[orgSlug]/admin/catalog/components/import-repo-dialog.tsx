@@ -14,6 +14,7 @@ import {
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { useState } from "react";
+import { ImportResultSummary } from "./import-result-summary";
 
 type Props = {
   open: boolean;
@@ -111,16 +112,7 @@ export function ImportRepoDialog({
             />
           </div>
 
-          {result ? (
-            <p className="text-sm">
-              Imported {result.created} component
-              {result.created === 1 ? "" : "s"}
-              {result.skipped > 0
-                ? `, skipped ${result.skipped} already present`
-                : ""}
-              .
-            </p>
-          ) : null}
+          {result ? <ImportResultSummary result={result} /> : null}
           {error ? <p className="text-destructive text-sm">{error}</p> : null}
         </div>
 

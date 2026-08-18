@@ -1,9 +1,21 @@
 import type {
   BranchAnalytics,
+  BranchesPageData,
   BranchListResponse,
   BranchPageDetail,
   BranchUsageSummary,
 } from "@repo/api/src/types/branch";
+import type { BranchAnalyticsCohortResponse } from "@repo/api/src/types/branch-analytics-cohort";
+import {
+  BranchMetricAvailability,
+  BranchMetricComparisonLabel,
+  BranchMetricPeriod,
+} from "@repo/api/src/types/branch-metrics";
+import {
+  BranchTraceCompletenessState,
+  BranchTraceUnavailableReason,
+  unavailableBranchTraceResult,
+} from "@repo/api/src/types/branch-trace";
 import { GitHubDirtyScopeKind } from "@repo/api/src/types/github-dirty-scope-constants";
 import { ReadSource } from "@repo/api/src/types/read-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
@@ -19,6 +31,7 @@ const LIST: BranchListResponse = { items: [], total: 3, viewerScope: "self" };
 const USAGE = { totalBranches: 3 } as unknown as BranchUsageSummary;
 const ANALYTICS = { viewerScope: "self" } as unknown as BranchAnalytics;
 const DETAIL = { id: "repo%2Fowner::main" } as unknown as BranchPageDetail;
+const PAGE_DATA: BranchesPageData = { list: LIST, analytics: ANALYTICS };
 
 type BranchesApi = DesktopApi["branchesApi"];
 
@@ -34,6 +47,7 @@ function fakeDesktopApi(
       trace: vi.fn(async () => []),
       usage: vi.fn(async () => USAGE),
       analytics: vi.fn(async () => ANALYTICS),
+      pageData: vi.fn(async () => PAGE_DATA),
       ...overrides,
     },
     onDbChanged,
@@ -44,6 +58,57 @@ function fakeDesktopApi(
 describe("createLocalBranchesDataSource", () => {
   it("identifies as the local scope", () => {
     expect(createLocalBranchesDataSource(fakeDesktopApi()).scope).toBe("local");
+  });
+
+  it("normalizes a legacy raw trace array without inferring complete membership", async () => {
+    const source = createLocalBranchesDataSource(fakeDesktopApi());
+
+    await expect(source.trace("branch-1")).resolves.toMatchObject({
+      items: [],
+      qualifyingSessionCount: null,
+      completeness: {
+        state: BranchTraceCompletenessState.Unavailable,
+        reason: BranchTraceUnavailableReason.LegacyResponse,
+      },
+    });
+  });
+
+  it("preserves a current typed trace result and degrades IPC failure explicitly", async () => {
+    const current = unavailableBranchTraceResult(
+      [],
+      BranchTraceUnavailableReason.Permission
+    );
+    const currentSource = createLocalBranchesDataSource(
+      fakeDesktopApi({ trace: vi.fn(async () => current) })
+    );
+    await expect(currentSource.trace("branch-1")).resolves.toEqual(current);
+
+    const failedSource = createLocalBranchesDataSource(
+      fakeDesktopApi({
+        trace: vi.fn(() => Promise.reject(new Error("private path"))),
+      })
+    );
+    await expect(failedSource.trace("branch-1")).resolves.toMatchObject({
+      items: [],
+      completeness: {
+        state: BranchTraceCompletenessState.Unavailable,
+        reason: BranchTraceUnavailableReason.Unknown,
+      },
+    });
+  });
+
+  it("propagates request cancellation without serializing the signal over IPC", async () => {
+    const abortError = Object.assign(new Error("cancelled"), {
+      name: "AbortError",
+    });
+    const trace = vi.fn(() => Promise.reject(abortError));
+    const source = createLocalBranchesDataSource(fakeDesktopApi({ trace }));
+    const controller = new AbortController();
+
+    await expect(
+      source.trace("branch-1", { signal: controller.signal })
+    ).rejects.toBe(abortError);
+    expect(trace).toHaveBeenCalledWith("branch-1");
   });
 
   it("forwards filters to the IPC reads and returns their payloads", async () => {
@@ -64,6 +129,117 @@ describe("createLocalBranchesDataSource", () => {
     });
     expect(api.branchesApi.usage).toHaveBeenCalledWith({ status: "merged" });
     expect(api.branchesApi.analytics).toHaveBeenCalledWith({});
+  });
+
+  it("forwards exact cohorts and degrades an older preload without the method", async () => {
+    const cohortResponse = cohortAnalyticsResponse();
+    const cohortAnalytics = vi.fn(async () => cohortResponse);
+    const current = createLocalBranchesDataSource(
+      fakeDesktopApi({ cohortAnalytics })
+    );
+
+    await expect(
+      current.cohortAnalytics?.({ branchIds: ["branch-1"] })
+    ).resolves.toEqual(cohortResponse);
+    expect(cohortAnalytics).toHaveBeenCalledWith({ branchIds: ["branch-1"] });
+
+    const legacy = createLocalBranchesDataSource(fakeDesktopApi());
+    await expect(
+      legacy.cohortAnalytics?.({ branchIds: ["branch-1"] })
+    ).resolves.toBeNull();
+  });
+
+  it("forwards and parses the complete 101-branch cohort over IPC", async () => {
+    const branchIds = makeBranchIds(101);
+    const response = cohortAnalyticsResponse(branchIds);
+    const cohortAnalytics = vi.fn(async () => response);
+    const source = createLocalBranchesDataSource(
+      fakeDesktopApi({ cohortAnalytics })
+    );
+
+    await expect(source.cohortAnalytics?.({ branchIds })).resolves.toEqual(
+      response
+    );
+    expect(cohortAnalytics).toHaveBeenCalledWith({ branchIds });
+  });
+
+  it("maps a cohort IPC rejection to the sanitized source error", async () => {
+    const source = createLocalBranchesDataSource(
+      fakeDesktopApi({
+        cohortAnalytics: vi.fn(() => Promise.reject(new Error("ipc failed"))),
+      })
+    );
+
+    await expect(
+      source.cohortAnalytics?.({ branchIds: ["branch-1"] })
+    ).rejects.toMatchObject({
+      code: SHARED_BRANCHES_SOURCE_ERROR_CODE,
+      status: 500,
+    });
+  });
+
+  it("rejects a malformed cohort IPC success payload", async () => {
+    const api = fakeDesktopApi();
+    Object.defineProperty(api.branchesApi, "cohortAnalytics", {
+      value: vi.fn(() => Promise.resolve({ matchedBranchIds: [] })),
+    });
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(
+      source.cohortAnalytics?.({ branchIds: ["branch-1"] })
+    ).rejects.toMatchObject({
+      code: SHARED_BRANCHES_SOURCE_ERROR_CODE,
+      status: 500,
+    });
+  });
+
+  it("degrades a newer AI-spend state without discarding understood IPC metrics", async () => {
+    const response = cohortAnalyticsResponse();
+    const api = fakeDesktopApi();
+    Object.defineProperty(api.branchesApi, "cohortAnalytics", {
+      value: vi.fn(() =>
+        Promise.resolve({
+          ...response,
+          canonicalMetrics: {
+            ...response.canonicalMetrics,
+            aiSpendUsd: {
+              current: { state: "future_pending", value: null },
+            },
+          },
+        })
+      ),
+    });
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(
+      source.cohortAnalytics?.({ branchIds: ["branch-1"] })
+    ).resolves.toEqual({
+      ...response,
+      canonicalMetrics: {
+        ...response.canonicalMetrics,
+        aiSpendUsd: {
+          current: {
+            state: BranchMetricAvailability.Unavailable,
+            value: null,
+          },
+        },
+      },
+    });
+  });
+
+  // FEA-3056 follow-up: the combined list + analytics read forwards through,
+  // same as the standalone `list`/`analytics` reads above — including the
+  // FEA-3120 `readSource: local` stamp on the nested list (same contract as
+  // the standalone `list` read, so the ReadSourceBadge still renders).
+  it("forwards filters to the combined page-data read and stamps the nested list local", async () => {
+    const api = fakeDesktopApi();
+    const source = createLocalBranchesDataSource(api);
+
+    await expect(source.pageData({ repo: "x/y" })).resolves.toEqual({
+      ...PAGE_DATA,
+      list: { ...LIST, readSource: ReadSource.Local },
+    });
+    expect(api.branchesApi.pageData).toHaveBeenCalledWith({ repo: "x/y" });
   });
 
   it("forwards forced list refresh requests to the IPC contract", async () => {
@@ -254,6 +430,35 @@ describe("createLocalBranchesDataSource", () => {
     expect(source.subscribe).toBeUndefined();
   });
 });
+
+function cohortAnalyticsResponse(
+  branchIds: string[] = ["branch-1"]
+): BranchAnalyticsCohortResponse {
+  const noData = {
+    state: BranchMetricAvailability.NoData,
+    value: null,
+  } as const;
+  const value = { current: noData };
+  return {
+    matchedBranchIds: branchIds,
+    canonicalMetrics: {
+      period: BranchMetricPeriod.All,
+      label: BranchMetricComparisonLabel.AllTime,
+      window: { startAt: null, endAt: "2026-08-05T00:00:00.000Z" },
+      cohortSize: branchIds.length,
+      lastActiveAt: noData,
+      activeBranches: value,
+      locPerDollar: value,
+      medianPrSize: value,
+      aiSpendUsd: value,
+      mergeRatePct: value,
+    },
+  };
+}
+
+function makeBranchIds(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `branch-${index + 1}`);
+}
 
 type GitHubResyncNudgeCallback = Parameters<
   NonNullable<DesktopApi["onGitHubResyncNudge"]>

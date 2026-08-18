@@ -418,6 +418,13 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
 
     expect(ack.serverCapabilities).toEqual({
       agentSessionSync: true,
+      // FEA-4138: the sync lane advertises gzip decompression whenever sync
+      // itself is supported (a server-version capability, not a per-org gate).
+      agentSessionSyncCompression: true,
+      // ISS-4541/ISS-4578: the sync lane also advertises additive multi-part
+      // activity-tiling merge alongside sync (same server-version gate).
+      agentSessionSyncActivityChunking: true,
+      agentSessionSyncMonitoredActivity: true,
     });
   });
 
@@ -469,6 +476,12 @@ describe("relay dispatchSocketEvent desktop.hello — command-signing capability
         resumeFromSequence: { "cmd-relay-gap": 11 },
         serverCapabilities: {
           agentSessionSync: true,
+          // FEA-4138: sync lane advertises gzip decompression alongside sync.
+          agentSessionSyncCompression: true,
+          // ISS-4541/ISS-4578: sync lane advertises multi-part activity-tiling
+          // merge alongside sync.
+          agentSessionSyncActivityChunking: true,
+          agentSessionSyncMonitoredActivity: true,
           computeTargetSigning: true,
         },
       })

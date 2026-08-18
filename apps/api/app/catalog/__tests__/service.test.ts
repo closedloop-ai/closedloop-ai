@@ -42,6 +42,14 @@ const mocks = vi.hoisted(() => ({
   getPrismaErrorCode: vi.fn().mockReturnValue(undefined),
   parsePackZip: vi.fn(),
   fetchRepoComponents: vi.fn(),
+  // FEA-3909: the F1 registry writer, mocked to return a synthetic version id.
+  registerDefinitionVersion: vi.fn().mockResolvedValue("dv-test"),
+  // FEA-4011 Slice A: the fail-open, post-commit search index hooks. The
+  // catalog write paths flush accumulated projections through the BATCH hook
+  // (`indexManyAfterCommit`) — one multi-row upsert instead of a per-row
+  // fan-out (FEA-3299) — so that is the hook the catalog service calls.
+  indexManyAfterCommit: vi.fn(),
+  removeAfterCommit: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -49,7 +57,48 @@ vi.mock("@repo/database", () => ({
   // The repo-import path builds a where-clause referencing this enum, so the
   // mock must expose it (otherwise `GitHubInstallationStatus.ACTIVE` throws).
   GitHubInstallationStatus: { ACTIVE: "ACTIVE" },
+  // FEA-3909: the pack-member F4 link path references these registry enums.
+  SourceOccurrenceType: {
+    local: "local",
+    repository: "repository",
+    pack: "pack",
+  },
+  SourceAccessState: { accessible: "accessible", inaccessible: "inaccessible" },
+  // `getCatalogItemDetail` resolves child content with a raw DISTINCT ON query
+  // (FEA-3299), so the tagged-template helper must exist. Capture the
+  // interpolated values so tests can assert what was bound.
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+  },
 }));
+
+// FEA-3909: the catalog service now calls the F1 registry writer when it creates
+// a content-bearing pack member. Mock it to a spy that returns a synthetic
+// definitionVersionId so these catalog tests stay DB-free and focused on the
+// catalog write shape; the registry writer's own semantics are proven in
+// app/definition-registry/__tests__/service.test.ts.
+vi.mock("@/app/definition-registry/service", () => ({
+  registerDefinitionVersion: mocks.registerDefinitionVersion,
+}));
+
+// FEA-4011 Slice A: the catalog write paths that materialize agent_components
+// rows now also index them into unified search after the tx commits. Keep the
+// real `agentComponentProjection` mapper (so tests assert the exact projection
+// input) but stub the fail-open index hooks so these catalog tests stay DB-free.
+vi.mock("@/app/search/search-index-service", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/app/search/search-index-service")>();
+  return {
+    ...actual,
+    searchIndexService: {
+      indexManyAfterCommit: mocks.indexManyAfterCommit,
+      removeAfterCommit: mocks.removeAfterCommit,
+    },
+  };
+});
 
 vi.mock("@/lib/db-utils", () => ({
   getPrismaErrorCode: mocks.getPrismaErrorCode,
@@ -112,7 +161,9 @@ vi.mock("@repo/aws", () => ({
 // ---------------------------------------------------------------------------
 
 import { computeComponentUuid } from "@repo/api/src/component-identity";
+import { AgentComponentKind } from "@repo/api/src/types/agent-component";
 import { CatalogItemSource } from "@repo/api/src/types/distribution";
+import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
 import {
   CatalogAssetTooLargeError,
   catalogAssetKey,
@@ -121,7 +172,9 @@ import {
   getCatalogAssetUploadUrl,
   headCatalogAsset,
 } from "@repo/aws";
+import { SourceOccurrenceType } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { agentComponentProjection } from "@/app/search/search-index-service";
 import { RepoTreeTruncatedError } from "../pack-repo-import";
 import { PackZipTooLargeError, parsePackZip } from "../pack-zip-import";
 import {
@@ -713,7 +766,19 @@ describe("createCatalogItem", () => {
       targetKind: "agent",
       name: "My Agent",
     });
-    const agentComponentUpsert = vi.fn().mockResolvedValue({});
+    // FEA-4011: the upsert echoes the materialized component row so the
+    // post-commit search projection can read its id/name/etc.
+    const agentComponentUpsert = vi.fn().mockResolvedValue({
+      id: "ac-cat-agent-1",
+      organizationId: ORG_ID,
+      componentKind: "subagent",
+      name: "My Agent",
+      componentKey: "My Agent",
+      externalComponentId: "cloud:agent:cat-agent-1",
+      description: "Does things",
+      updatedAt: NOW,
+      uninstalledAt: null,
+    });
     const computeTargetCreate = vi.fn().mockResolvedValue({ id: "sentinel-1" });
     setupWithDbTx({
       catalogItem: { create: vi.fn().mockResolvedValue(row) },
@@ -758,6 +823,49 @@ describe("createCatalogItem", () => {
     // No agentSlug on the admin-create path → componentKey falls back to name.
     expect(upsertArg.create.componentKey).toBe("My Agent");
     expect(upsertArg.create.name).toBe("My Agent");
+
+    // FEA-4011 Slice A: the materialized component is indexed into unified
+    // search AFTER the tx commits, in one BATCH upsert, with the exact mapper
+    // output.
+    expect(mocks.indexManyAfterCommit).toHaveBeenCalledTimes(1);
+    expect(mocks.indexManyAfterCommit).toHaveBeenCalledWith([
+      agentComponentProjection({
+        id: "ac-cat-agent-1",
+        organizationId: ORG_ID,
+        componentKind: "subagent",
+        name: "My Agent",
+        componentKey: "My Agent",
+        externalComponentId: "cloud:agent:cat-agent-1",
+        description: "Does things",
+        updatedAt: NOW,
+      }),
+    ]);
+  });
+
+  it("does NOT index a non-agent catalog item into unified search (FEA-4011)", async () => {
+    const row = makeCatalogRow({ targetKind: "plugin" });
+    setupWithDbTx({
+      catalogItem: { create: vi.fn().mockResolvedValue(row) },
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn(),
+      },
+      user: { findFirst: vi.fn().mockResolvedValue({ id: "u-1" }) },
+      agentComponent: { upsert: vi.fn().mockResolvedValue({}) },
+    });
+
+    await createCatalogItem({
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      targetKind: "plugin",
+      name: "My Plugin",
+    });
+
+    // A non-agent materializes no agent_components row, so no projection is
+    // accumulated: the post-commit batch flush is a no-op (an empty batch).
+    for (const call of mocks.indexManyAfterCommit.mock.calls) {
+      expect(call[0]).toEqual([]);
+    }
   });
 
   // Cross-org child-leak guard: a component may only be attached under a Pack
@@ -1544,7 +1652,111 @@ describe("updateCatalogItem", () => {
         content: "updated content",
         changedById: USER_ID,
       }),
+      // The version id is selected so a pack-member edit can link the new version.
+      select: { id: true },
     });
+  });
+
+  it("links a content edit on a PACK MEMBER to the F1 registry and stamps the new version (FEA-3909 F4)", async () => {
+    const PACK_ID = "pack-uuid-9";
+    const versionUpdate = vi.fn().mockResolvedValue({});
+    const updatedRow = makeCatalogRow({ name: "Member" });
+    // The owning item is a pack MEMBER: `parentPackId` is set on the ownership row.
+    setupWithDb({
+      catalogItem: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: ITEM_ID,
+          source: CatalogItemSource.OrgCustom,
+          archived: false,
+          targetKind: "skill",
+          organizationId: ORG_ID,
+          createdById: USER_ID,
+          sourceRepo: null,
+          parentPackId: PACK_ID,
+        }),
+      },
+    });
+    setupWithDbTx({
+      catalogItem: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue(updatedRow),
+      },
+      catalogItemVersion: {
+        findFirst: vi.fn().mockResolvedValue({ version: 4 }),
+        create: vi.fn().mockResolvedValue({ id: "civ-new" }),
+        update: versionUpdate,
+      },
+    });
+
+    const result = await updateCatalogItem({
+      id: ITEM_ID,
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      content: "# Edited member body",
+    });
+
+    expect(result.ok).toBe(true);
+    // The registry link is written with the pack occurrence shape, keyed to the
+    // owning pack, for the edited member's exact new body.
+    expect(mocks.registerDefinitionVersion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        packId: PACK_ID,
+        occurrenceType: SourceOccurrenceType.pack,
+        componentKind: AgentComponentKind.Skill,
+        content: "# Edited member body",
+      })
+    );
+    // ...and the returned definitionVersionId is stamped onto the NEW version row.
+    expect(versionUpdate).toHaveBeenCalledWith({
+      where: { id: "civ-new" },
+      data: { definitionVersionId: "dv-test" },
+    });
+  });
+
+  it("does NOT link an empty-content edit on a pack member (conservative PD5 — parity with the backfill)", async () => {
+    const PACK_ID = "pack-uuid-9";
+    const versionUpdate = vi.fn().mockResolvedValue({});
+    const updatedRow = makeCatalogRow({ name: "Member" });
+    setupWithDb({
+      catalogItem: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: ITEM_ID,
+          source: CatalogItemSource.OrgCustom,
+          archived: false,
+          targetKind: "skill",
+          organizationId: ORG_ID,
+          createdById: USER_ID,
+          sourceRepo: null,
+          parentPackId: PACK_ID,
+        }),
+      },
+    });
+    setupWithDbTx({
+      catalogItem: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findUnique: vi.fn().mockResolvedValue(updatedRow),
+      },
+      catalogItemVersion: {
+        findFirst: vi.fn().mockResolvedValue({ version: 4 }),
+        create: vi.fn().mockResolvedValue({ id: "civ-empty" }),
+        update: versionUpdate,
+      },
+    });
+
+    const result = await updateCatalogItem({
+      id: ITEM_ID,
+      organizationId: ORG_ID,
+      userId: USER_ID,
+      content: "",
+    });
+
+    expect(result.ok).toBe(true);
+    // Empty body ⇒ no version minted, no link stamped (the shared conservative
+    // guard leaves it NULL, exactly as the backfill leaves an empty member).
+    expect(mocks.registerDefinitionVersion).not.toHaveBeenCalled();
+    expect(versionUpdate).not.toHaveBeenCalled();
   });
 
   it("returns 403 when the write-time ownership predicate no longer matches", async () => {
@@ -1844,6 +2056,211 @@ describe("getCatalogItemDetail", () => {
     if (result.ok) {
       expect(result.value.id).toBe(ITEM_ID);
     }
+  });
+
+  it("returns latest version content for the parent item and child components", async () => {
+    const parentRow = makeCatalogRow({
+      id: ITEM_ID,
+      targetKind: "pack",
+      name: "Content Pack",
+    });
+    const contentChild = makeCatalogRow({
+      id: "child-with-content",
+      targetKind: "agent",
+      name: "Planner Agent",
+      parentPackId: ITEM_ID,
+    } as Record<string, unknown>);
+    const emptyChild = makeCatalogRow({
+      id: "child-without-content",
+      targetKind: "skill",
+      name: "Empty Skill",
+      parentPackId: ITEM_ID,
+    } as Record<string, unknown>);
+    const findVersion = vi.fn(
+      ({ where }: { where: { catalogItemId: string } }) => {
+        if (where.catalogItemId === ITEM_ID) {
+          return Promise.resolve({ content: "# Pack overview" });
+        }
+        return Promise.resolve(null);
+      }
+    );
+    // Child content now arrives via one DISTINCT ON query keyed by child id.
+    // `child-without-content` is absent from the result set, which is how a
+    // child with no versions is represented.
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValue([
+        { catalogItemId: "child-with-content", content: "You are a planner." },
+      ]);
+    setupWithDb({
+      catalogItem: {
+        findFirst: vi.fn().mockResolvedValue(parentRow),
+        findMany: vi.fn().mockResolvedValue([contentChild, emptyChild]),
+      },
+      catalogItemVersion: {
+        findFirst: findVersion,
+      },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await getCatalogItemDetail({
+      id: ITEM_ID,
+      organizationId: ORG_ID,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("# Pack overview");
+      expect(result.value.components).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "child-with-content",
+            content: "You are a planner.",
+          }),
+          // A child with no version rows resolves to null content rather than
+          // being dropped from the response.
+          expect.objectContaining({
+            id: "child-without-content",
+            content: null,
+          }),
+        ])
+      );
+    }
+    expect(findVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { catalogItemId: ITEM_ID },
+        orderBy: { version: "desc" },
+        select: { content: true },
+      })
+    );
+    // Regression (FEA-3299): child content must cost ONE query regardless of
+    // child count, not one per child. The previous shape issued a `findFirst`
+    // per child inside `Promise.all`, so a pack with ~300 components demanded
+    // ~300 pooled connections from a pool of 20 in a single GET.
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(findVersion).toHaveBeenCalledTimes(1); // the parent's own body only
+    // ...and it must be keyed by exactly the children the visibility predicate
+    // authorized above.
+    expect(queryRaw.mock.calls[0]?.[0]?.values).toEqual([
+      ["child-with-content", "child-without-content"],
+      ORG_ID,
+    ]);
+    // The identifiers are only ever exercised through this mock, so pin the SQL
+    // text itself — otherwise a typo in a table/column name passes the whole
+    // suite and throws at runtime on the first pack with a child. Same technique
+    // as lib/branch-status-check-retry.test.ts.
+    const queryText = queryRaw.mock.calls[0]?.[0]?.strings.join("?") ?? "";
+    expect(queryText).toContain('FROM "catalog_item_versions" v');
+    expect(queryText).toContain('DISTINCT ON (v."catalog_item_id")');
+    expect(queryText).toContain('v."catalog_item_id" AS "catalogItemId"');
+    expect(queryText).toContain("::uuid[]");
+    // Latest-per-child is by authored revision, not insertion order.
+    expect(queryText).toContain(
+      'ORDER BY v."catalog_item_id", v."version" DESC'
+    );
+    // The org/curated predicate is re-asserted in SQL rather than trusted from
+    // the caller — catalog_item_versions has no organization_id of its own, so
+    // the join to catalog_items is what carries the scope.
+    expect(queryText).toContain(
+      'JOIN "catalog_items" c ON c."id" = v."catalog_item_id"'
+    );
+    expect(queryText).toContain('c."organization_id" =');
+    expect(queryText).toContain(
+      `c."scope" = 'global' AND c."source" = 'curated'`
+    );
+  });
+
+  it("skips the child-content query entirely when a pack has no children", async () => {
+    const parentRow = makeCatalogRow({
+      id: ITEM_ID,
+      targetKind: "pack",
+      name: "Empty Pack",
+    });
+    const queryRaw = vi.fn();
+    setupWithDb({
+      catalogItem: {
+        findFirst: vi.fn().mockResolvedValue(parentRow),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      catalogItemVersion: {
+        findFirst: vi.fn().mockResolvedValue({ content: "# Pack overview" }),
+      },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await getCatalogItemDetail({
+      id: ITEM_ID,
+      organizationId: ORG_ID,
+    });
+
+    expect(result.ok).toBe(true);
+    // `= ANY('{}')` would match nothing; don't pay for the round-trip.
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("does not surface a foreign org's child written under the same pack id", async () => {
+    // Pins the cross-org child leak the childRows visibility predicate guards.
+    // Two independent defenses: findMany never returns a foreign org's child, AND
+    // the DISTINCT ON query re-asserts the org/curated predicate via its join, so
+    // the boundary does not rest on caller discipline (apps/api/AGENTS.md: org
+    // scoping takes no "trust the caller" patterns).
+    const parentRow = makeCatalogRow({
+      id: ITEM_ID,
+      targetKind: "pack",
+      name: "Content Pack",
+    });
+    const ownChild = makeCatalogRow({
+      id: "own-child",
+      targetKind: "agent",
+      name: "Planner Agent",
+      parentPackId: ITEM_ID,
+    } as Record<string, unknown>);
+    // findMany applies the org/curated filter, so a foreign org's child never
+    // reaches childRows and its id must never be bound into the raw query.
+    const findManyChildren = vi.fn().mockResolvedValue([ownChild]);
+    const queryRaw = vi
+      .fn()
+      .mockResolvedValue([{ catalogItemId: "own-child", content: "mine" }]);
+    setupWithDb({
+      catalogItem: {
+        findFirst: vi.fn().mockResolvedValue(parentRow),
+        findMany: findManyChildren,
+      },
+      catalogItemVersion: {
+        findFirst: vi.fn().mockResolvedValue({ content: "# Pack overview" }),
+      },
+      $queryRaw: queryRaw,
+    });
+
+    const result = await getCatalogItemDetail({
+      id: ITEM_ID,
+      organizationId: ORG_ID,
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.components).toHaveLength(1);
+      expect(result.value.components[0]?.id).toBe("own-child");
+    }
+    // The org/curated predicate still gates which children are read...
+    expect(findManyChildren).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          parentPackId: ITEM_ID,
+          archived: false,
+          OR: [
+            { organizationId: ORG_ID },
+            { scope: "global", source: "curated" },
+          ],
+        }),
+      })
+    );
+    // ...and only those ids are bound into the content query, alongside the org
+    // the query re-asserts in SQL.
+    expect(queryRaw.mock.calls[0]?.[0]?.values).toEqual([
+      ["own-child"],
+      ORG_ID,
+    ]);
   });
 
   it("returns 404 when item is not found or not accessible to org", async () => {
@@ -2186,9 +2603,11 @@ describe("importPackZipComponents", () => {
 
   /**
    * Wire the pack lookup (`withDb`), the in-transaction existing-children read,
-   * and the per-component create so a single import runs end-to-end. Returns the
-   * shared tx `create` spy so tests can assert exactly which children were
-   * written. `existingChildren` seeds the in-tx findMany (the dedupe source).
+   * and the batched child writes so a single import runs end-to-end. Returns the
+   * shared tx `createMany` spy so tests can assert exactly which children were
+   * written (children are inserted with one `catalogItem.createMany`, so the
+   * rows land in `createMany.mock.calls[0][0].data`). `existingChildren` seeds
+   * the in-tx findMany (the dedupe source).
    */
   function setupImport(options: {
     pack?: Record<string, unknown> | null;
@@ -2210,16 +2629,26 @@ describe("importPackZipComponents", () => {
       catalogItem: { findFirst: vi.fn().mockResolvedValue(pack) },
     });
 
-    const create = vi.fn((args: { data: { name: string } }) =>
-      Promise.resolve(makeCatalogRow({ name: args.data.name }))
-    );
+    const createMany = vi.fn().mockResolvedValue({ count: 0 });
     const findMany = vi.fn().mockResolvedValue(options.existingChildren ?? []);
+    const executeRaw = vi.fn().mockResolvedValue(0);
+    const versionUpdate = vi.fn().mockResolvedValue({});
     setupWithDbTx({
-      catalogItem: { findMany, create },
-      catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
+      $executeRaw: executeRaw,
+      catalogItem: { findMany, createMany },
+      catalogItemVersion: {
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        update: versionUpdate,
+      },
+      agentComponent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      // Agent members materialize an `agent_components` row on the org's cloud
+      // sentinel; resolve it as already-present so no user/create is needed.
+      computeTarget: {
+        findFirst: vi.fn().mockResolvedValue({ id: "sentinel-target-id" }),
+      },
     });
 
-    return { create, findMany };
+    return { createMany, findMany, executeRaw, versionUpdate };
   }
 
   beforeEach(() => {
@@ -2235,7 +2664,7 @@ describe("importPackZipComponents", () => {
       { kind: "command", name: "deploy", content: "Deploy it." },
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2247,7 +2676,94 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 2, skipped: 0, invalid: 0 });
     }
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(createMany.mock.calls[0][0].data).toHaveLength(2);
+  });
+
+  it("links each content-bearing member to the F1 registry and stamps the returned definitionVersionId (FEA-3909 F4)", async () => {
+    // An `agent` member proves the canonical-kind mapping: the catalog stores
+    // `targetKind: "agent"`, but the fingerprint/registry must receive the
+    // canonical `subagent` so a pack-imported agent dedupes with a device-synced
+    // subagent of identical bytes.
+    mockParsePackZip.mockReturnValue([
+      { kind: "agent", name: "planner", content: "You are a planner." },
+      { kind: "skill", name: "plan", content: "# Plan" },
+    ]);
+    const { versionUpdate } = setupImport({});
+
+    const result = await importPackZipComponents({
+      id: PACK_ID,
+      organizationId: ORG_ID,
+      userId: USER_ID,
+    });
+
+    expect(result.ok).toBe(true);
+
+    // One registry-link call per created member, each carrying the pack
+    // occurrence shape and the CANONICALIZED component kind.
+    expect(mocks.registerDefinitionVersion).toHaveBeenCalledTimes(2);
+    expect(mocks.registerDefinitionVersion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        packId: PACK_ID,
+        occurrenceType: SourceOccurrenceType.pack,
+        // "agent" -> canonical Subagent, not the raw catalog string.
+        componentKind: AgentComponentKind.Subagent,
+        content: "You are a planner.",
+      })
+    );
+    expect(mocks.registerDefinitionVersion).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        occurrenceType: SourceOccurrenceType.pack,
+        componentKind: AgentComponentKind.Skill,
+        content: "# Plan",
+      })
+    );
+
+    // The mocked definitionVersionId ("dv-test") is stamped back onto each
+    // freshly-created version row (keyed by the row's own id), linking the
+    // catalog to the registry.
+    expect(versionUpdate).toHaveBeenCalledTimes(2);
+    for (const call of versionUpdate.mock.calls) {
+      expect(call[0]).toEqual({
+        where: { id: expect.any(String) },
+        data: { definitionVersionId: "dv-test" },
+      });
+    }
+  });
+
+  it("indexes each imported agent member into unified search after commit (FEA-4011 Slice A)", async () => {
+    // Only agent members materialize an agent_components row, so only they are
+    // indexed; the skill member is not.
+    mockParsePackZip.mockReturnValue([
+      { kind: "agent", name: "planner", content: "You are a planner." },
+      { kind: "skill", name: "plan", content: "# Plan" },
+    ]);
+    setupImport({});
+
+    const result = await importPackZipComponents({
+      id: PACK_ID,
+      organizationId: ORG_ID,
+      userId: USER_ID,
+    });
+
+    expect(result.ok).toBe(true);
+    // Exactly one component indexed (the agent, not the skill), flushed in one
+    // post-commit BATCH upsert keyed on the org-identity slug via the shared
+    // codec, subtype = the canonical "subagent" kind.
+    expect(mocks.indexManyAfterCommit).toHaveBeenCalledTimes(1);
+    const batch = mocks.indexManyAfterCommit.mock.calls[0]?.[0];
+    expect(batch).toHaveLength(1);
+    const projection = batch?.[0];
+    expect(projection).toMatchObject({
+      entityType: SearchEntityType.AgentComponent,
+      title: "planner",
+      entitySubtype: "subagent",
+      // The pre-derived component id is a real UUID (not undefined).
+      entityId: expect.any(String),
+    });
   });
 
   it("maps a zip-bomb (parse over decompressed budget) to 413", async () => {
@@ -2296,7 +2812,7 @@ describe("importPackZipComponents", () => {
       { kind: "command", name: "ok", content: "small" },
       { kind: "skill", name: "toobig", content: oversized },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2309,17 +2825,17 @@ describe("importPackZipComponents", () => {
       // Only the valid entry is persisted; the oversized one is counted invalid.
       expect(result.value).toEqual({ created: 1, skipped: 0, invalid: 1 });
     }
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ name: "ok" }) })
-    );
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const okRows = createMany.mock.calls[0][0].data;
+    expect(okRows).toHaveLength(1);
+    expect(okRows[0]).toEqual(expect.objectContaining({ name: "ok" }));
   });
 
   it("rejects an imported entry with an out-of-range (empty) name", async () => {
     mockParsePackZip.mockReturnValue([
       { kind: "command", name: "", content: "body" },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2331,7 +2847,7 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 0, skipped: 0, invalid: 1 });
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("skips (does not duplicate) children already present in the pack", async () => {
@@ -2340,7 +2856,7 @@ describe("importPackZipComponents", () => {
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
     // A prior import already wrote `command:deploy`.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       existingChildren: [{ name: "deploy", targetKind: "command" }],
     });
 
@@ -2355,19 +2871,17 @@ describe("importPackZipComponents", () => {
       expect(result.value).toEqual({ created: 1, skipped: 1, invalid: 0 });
     }
     // Only the not-yet-present `plan` skill is created.
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ name: "plan" }),
-      })
-    );
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const planRows = createMany.mock.calls[0][0].data;
+    expect(planRows).toHaveLength(1);
+    expect(planRows[0]).toEqual(expect.objectContaining({ name: "plan" }));
   });
 
   it("reads existing children INSIDE the write transaction (atomic dedupe)", async () => {
     mockParsePackZip.mockReturnValue([
       { kind: "command", name: "deploy", content: "Deploy it." },
     ]);
-    const { findMany, create } = setupImport({});
+    const { findMany, createMany } = setupImport({});
 
     let findManyRanInsideTx = false;
     // The non-tx withDb path is the pack lookup; the dedupe findMany must run on
@@ -2379,8 +2893,15 @@ describe("importPackZipComponents", () => {
           return Promise.resolve([]);
         });
         return await cb({
-          catalogItem: { findMany, create },
-          catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
+          $executeRaw: vi.fn().mockResolvedValue(0),
+          catalogItem: { findMany, createMany },
+          catalogItemVersion: {
+            createMany: vi.fn().mockResolvedValue({ count: 0 }),
+            update: vi.fn().mockResolvedValue({}),
+          },
+          agentComponent: {
+            createMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
         });
       }
     );
@@ -2393,7 +2914,7 @@ describe("importPackZipComponents", () => {
 
     expect(result.ok).toBe(true);
     expect(findManyRanInsideTx).toBe(true);
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledTimes(1);
   });
 
   it("is idempotent: a re-run that sees its own prior children creates nothing", async () => {
@@ -2402,7 +2923,7 @@ describe("importPackZipComponents", () => {
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
     // Simulate the second run: both children already committed by the first run.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       existingChildren: [
         { name: "deploy", targetKind: "command" },
         { name: "plan", targetKind: "skill" },
@@ -2419,7 +2940,7 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 0, skipped: 2, invalid: 0 });
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("returns 404 when the pack is not found", async () => {
@@ -2441,7 +2962,7 @@ describe("importPackZipComponents", () => {
   it("returns 403 when the target item is not a Pack container", async () => {
     mockParsePackZip.mockReturnValue([]);
     // An org-owned item with a zip but targetKind!=="pack" cannot hold children.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       pack: {
         id: PACK_ID,
         source: "org_custom",
@@ -2461,7 +2982,7 @@ describe("importPackZipComponents", () => {
     if (!result.ok) {
       expect(result.error).toBe(403);
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 });
 
@@ -2474,9 +2995,11 @@ describe("importPackZipComponents", () => {
 
   /**
    * Wire the pack lookup (`withDb`), the in-transaction existing-children read,
-   * and the per-component create so a single import runs end-to-end. Returns the
-   * shared tx `create` spy so tests can assert exactly which children were
-   * written. `existingChildren` seeds the in-tx findMany (the dedupe source).
+   * and the batched child writes so a single import runs end-to-end. Returns the
+   * shared tx `createMany` spy so tests can assert exactly which children were
+   * written (children are inserted with one `catalogItem.createMany`, so the
+   * rows land in `createMany.mock.calls[0][0].data`). `existingChildren` seeds
+   * the in-tx findMany (the dedupe source).
    */
   function setupImport(options: {
     pack?: Record<string, unknown> | null;
@@ -2498,16 +3021,21 @@ describe("importPackZipComponents", () => {
       catalogItem: { findFirst: vi.fn().mockResolvedValue(pack) },
     });
 
-    const create = vi.fn((args: { data: { name: string } }) =>
-      Promise.resolve(makeCatalogRow({ name: args.data.name }))
-    );
+    const createMany = vi.fn().mockResolvedValue({ count: 0 });
     const findMany = vi.fn().mockResolvedValue(options.existingChildren ?? []);
+    const executeRaw = vi.fn().mockResolvedValue(0);
+    const versionUpdate = vi.fn().mockResolvedValue({});
     setupWithDbTx({
-      catalogItem: { findMany, create },
-      catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
+      $executeRaw: executeRaw,
+      catalogItem: { findMany, createMany },
+      catalogItemVersion: {
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        update: versionUpdate,
+      },
+      agentComponent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
     });
 
-    return { create, findMany };
+    return { createMany, findMany, executeRaw, versionUpdate };
   }
 
   beforeEach(() => {
@@ -2523,7 +3051,7 @@ describe("importPackZipComponents", () => {
       { kind: "command", name: "deploy", content: "Deploy it." },
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2535,7 +3063,8 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 2, skipped: 0, invalid: 0 });
     }
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(createMany.mock.calls[0][0].data).toHaveLength(2);
   });
 
   it("maps a zip-bomb (parse over decompressed budget) to 413", async () => {
@@ -2584,7 +3113,7 @@ describe("importPackZipComponents", () => {
       { kind: "command", name: "ok", content: "small" },
       { kind: "skill", name: "toobig", content: oversized },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2597,17 +3126,17 @@ describe("importPackZipComponents", () => {
       // Only the valid entry is persisted; the oversized one is counted invalid.
       expect(result.value).toEqual({ created: 1, skipped: 0, invalid: 1 });
     }
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ name: "ok" }) })
-    );
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const okRows = createMany.mock.calls[0][0].data;
+    expect(okRows).toHaveLength(1);
+    expect(okRows[0]).toEqual(expect.objectContaining({ name: "ok" }));
   });
 
   it("rejects an imported entry with an out-of-range (empty) name", async () => {
     mockParsePackZip.mockReturnValue([
       { kind: "command", name: "", content: "body" },
     ]);
-    const { create } = setupImport({});
+    const { createMany } = setupImport({});
 
     const result = await importPackZipComponents({
       id: PACK_ID,
@@ -2619,7 +3148,7 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 0, skipped: 0, invalid: 1 });
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("skips (does not duplicate) children already present in the pack", async () => {
@@ -2628,7 +3157,7 @@ describe("importPackZipComponents", () => {
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
     // A prior import already wrote `command:deploy`.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       existingChildren: [{ name: "deploy", targetKind: "command" }],
     });
 
@@ -2643,19 +3172,17 @@ describe("importPackZipComponents", () => {
       expect(result.value).toEqual({ created: 1, skipped: 1, invalid: 0 });
     }
     // Only the not-yet-present `plan` skill is created.
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ name: "plan" }),
-      })
-    );
+    expect(createMany).toHaveBeenCalledTimes(1);
+    const planRows = createMany.mock.calls[0][0].data;
+    expect(planRows).toHaveLength(1);
+    expect(planRows[0]).toEqual(expect.objectContaining({ name: "plan" }));
   });
 
   it("reads existing children INSIDE the write transaction (atomic dedupe)", async () => {
     mockParsePackZip.mockReturnValue([
       { kind: "command", name: "deploy", content: "Deploy it." },
     ]);
-    const { findMany, create } = setupImport({});
+    const { findMany, createMany } = setupImport({});
 
     let findManyRanInsideTx = false;
     // The non-tx withDb path is the pack lookup; the dedupe findMany must run on
@@ -2667,8 +3194,15 @@ describe("importPackZipComponents", () => {
           return Promise.resolve([]);
         });
         return await cb({
-          catalogItem: { findMany, create },
-          catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
+          $executeRaw: vi.fn().mockResolvedValue(0),
+          catalogItem: { findMany, createMany },
+          catalogItemVersion: {
+            createMany: vi.fn().mockResolvedValue({ count: 0 }),
+            update: vi.fn().mockResolvedValue({}),
+          },
+          agentComponent: {
+            createMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
         });
       }
     );
@@ -2681,7 +3215,7 @@ describe("importPackZipComponents", () => {
 
     expect(result.ok).toBe(true);
     expect(findManyRanInsideTx).toBe(true);
-    expect(create).toHaveBeenCalledTimes(1);
+    expect(createMany).toHaveBeenCalledTimes(1);
   });
 
   it("is idempotent: a re-run that sees its own prior children creates nothing", async () => {
@@ -2690,7 +3224,7 @@ describe("importPackZipComponents", () => {
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
     // Simulate the second run: both children already committed by the first run.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       existingChildren: [
         { name: "deploy", targetKind: "command" },
         { name: "plan", targetKind: "skill" },
@@ -2707,7 +3241,7 @@ describe("importPackZipComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 0, skipped: 2, invalid: 0 });
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("returns 404 when the pack is not found", async () => {
@@ -2729,7 +3263,7 @@ describe("importPackZipComponents", () => {
   it("returns 403 when the target item is not a Pack container", async () => {
     mockParsePackZip.mockReturnValue([]);
     // An org-owned item with a zip but targetKind!=="pack" cannot hold children.
-    const { create } = setupImport({
+    const { createMany } = setupImport({
       pack: {
         id: PACK_ID,
         source: "org_custom",
@@ -2749,7 +3283,7 @@ describe("importPackZipComponents", () => {
     if (!result.ok) {
       expect(result.error).toBe(403);
     }
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 });
 
@@ -2763,8 +3297,8 @@ describe("importPackRepoComponents", () => {
   /**
    * The repo path performs two non-tx `withDb` reads before importing: the pack
    * lookup, then the GitHub-installation-repository lookup. Wire both in order,
-   * plus the in-tx existing-children read and per-component create, so an import
-   * runs end-to-end. Returns the tx `create` spy for assertions.
+   * plus the in-tx existing-children read and batched child writes, so an import
+   * runs end-to-end. Returns the tx `createMany` spy for assertions.
    */
   function setupRepoImport(options: {
     pack?: Record<string, unknown> | null;
@@ -2796,16 +3330,20 @@ describe("importPackRepoComponents", () => {
       gitHubInstallationRepository: { findFirst },
     });
 
-    const create = vi.fn((args: { data: { name: string } }) =>
-      Promise.resolve(makeCatalogRow({ name: args.data.name }))
-    );
+    const createMany = vi.fn().mockResolvedValue({ count: 0 });
     const findMany = vi.fn().mockResolvedValue(options.existingChildren ?? []);
+    const executeRaw = vi.fn().mockResolvedValue(0);
     setupWithDbTx({
-      catalogItem: { findMany, create },
-      catalogItemVersion: { create: vi.fn().mockResolvedValue({}) },
+      $executeRaw: executeRaw,
+      catalogItem: { findMany, createMany },
+      catalogItemVersion: {
+        createMany: vi.fn().mockResolvedValue({ count: 0 }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      agentComponent: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
     });
 
-    return { create, findFirst };
+    return { createMany, findFirst, executeRaw };
   }
 
   beforeEach(() => {
@@ -2828,7 +3366,7 @@ describe("importPackRepoComponents", () => {
       { kind: "command", name: "deploy", content: "Deploy it." },
       { kind: "skill", name: "plan", content: "# Plan" },
     ]);
-    const { create } = setupRepoImport({});
+    const { createMany } = setupRepoImport({});
 
     const result = await importPackRepoComponents(input);
 
@@ -2836,7 +3374,40 @@ describe("importPackRepoComponents", () => {
     if (result.ok) {
       expect(result.value).toEqual({ created: 2, skipped: 0, invalid: 0 });
     }
-    expect(create).toHaveBeenCalledTimes(2);
+    expect(createMany).toHaveBeenCalledTimes(1);
+    expect(createMany.mock.calls[0][0].data).toHaveLength(2);
+  });
+
+  // FEA-3251: concurrent imports of the same pack (a retried import-repo
+  // request, or an admin double-click) must not double-insert children. The
+  // shared write transaction takes a per-pack advisory lock as its FIRST
+  // statement, before the dedupe read and any create, so a second concurrent
+  // import blocks until the first commits and then dedupes against it.
+  it("acquires a per-pack advisory lock before the dedupe read and any create", async () => {
+    mockFetchRepoComponents.mockResolvedValue([
+      { kind: "command", name: "deploy", content: "Deploy it." },
+    ]);
+    const { executeRaw, createMany } = setupRepoImport({});
+
+    const order: string[] = [];
+    executeRaw.mockImplementation((query: TemplateStringsArray) => {
+      order.push(`lock:${query.join("")}`);
+      return Promise.resolve(0);
+    });
+    createMany.mockImplementation(() => {
+      order.push("createMany");
+      return Promise.resolve({ count: 1 });
+    });
+
+    const result = await importPackRepoComponents(input);
+
+    expect(result.ok).toBe(true);
+    // The advisory lock is the first statement in the transaction.
+    expect(order[0]).toContain("pg_advisory_xact_lock");
+    expect(order.indexOf("createMany")).toBeGreaterThan(0);
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const [firstArg] = executeRaw.mock.calls[0];
+    expect((firstArg as TemplateStringsArray).join("")).toContain("hashtext");
   });
 
   it("returns 404 when the pack is not found", async () => {
@@ -2870,7 +3441,7 @@ describe("importPackRepoComponents", () => {
     // zipAssetKey on a non-pack), the repo path has no such implicit guard, so
     // the targetKind check MUST reject a non-pack target before any GitHub read
     // or import — otherwise child components could leak under a non-pack item.
-    const { create } = setupRepoImport({
+    const { createMany } = setupRepoImport({
       pack: { id: PACK_ID, source: "org_custom", targetKind: "plugin" },
     });
 
@@ -2882,7 +3453,7 @@ describe("importPackRepoComponents", () => {
     }
     // Guard fires before fetching the repo tree or creating any child.
     expect(mockFetchRepoComponents).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it("returns 400 when the repo is not visible to the org's GitHub App", async () => {

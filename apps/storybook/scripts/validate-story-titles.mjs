@@ -161,8 +161,44 @@ for (const storyFile of collectAppCoreStoryFiles()) {
   }
 }
 
+// PR #4814 review: every check above is keyed on storyId (the FILE stem), which
+// is unique by construction, so none of them can see two DIFFERENT files
+// claiming the same `meta.title`. That collision is silent and lossy in both
+// directions: Storybook folds same-titled files into one sidebar/autodocs
+// identity (one component becomes unreachable), and `buildAppCoreEntries` copies
+// `storyTitle` verbatim, so the generated catalog gains duplicate storyTitle
+// keys that any title -> component lookup resolves arbitrarily. Assert titles are
+// unique across the whole catalog so the next one fails CI instead of shipping.
+const sourcePathsByTitle = new Map();
+for (const entry of [
+  ...designSystemEntries,
+  ...appEntries,
+  ...appCoreEntries,
+]) {
+  if (!entry.storyTitle) {
+    continue;
+  }
+
+  const existing = sourcePathsByTitle.get(entry.storyTitle);
+  if (existing) {
+    existing.push(entry.sourcePath);
+    continue;
+  }
+
+  sourcePathsByTitle.set(entry.storyTitle, [entry.sourcePath]);
+}
+
+for (const [storyTitle, sourcePaths] of sourcePathsByTitle) {
+  if (sourcePaths.length > 1) {
+    console.error(
+      `Duplicate story title "${storyTitle}" claimed by ${sourcePaths.length} components: ${sourcePaths.join(", ")}. Story titles must be unique — give each a distinct "App Core/<Feature>/<Component>" title and re-run catalog:sync.`
+    );
+    process.exitCode = 1;
+  }
+}
+
 if (!process.exitCode) {
   console.log(
-    `Validated ${expectedTitles.size} cataloged story titles against ${actualTitles.size} story files, plus ${appCoreStoryCount} colocated App Core stories.`
+    `Validated ${expectedTitles.size} cataloged story titles against ${actualTitles.size} story files, plus ${appCoreStoryCount} colocated App Core stories, and ${sourcePathsByTitle.size} unique story titles.`
   );
 }

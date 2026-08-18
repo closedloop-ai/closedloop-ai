@@ -1,4 +1,4 @@
-import type { BranchUsageSummary } from "@repo/api/src/types/branch";
+import type { BranchUsageSummary } from "@repo/api/src/types/branch-usage";
 import {
   branchListQuerySchema,
   branchReadService,

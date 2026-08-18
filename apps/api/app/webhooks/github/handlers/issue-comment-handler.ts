@@ -21,8 +21,13 @@ import {
   softDeleteGitHubCommentByRemoteId,
   upsertGitHubIssueCommentThread,
 } from "@/app/comments/github-projection";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import {
   type GitHubDirtyScopePublicationInput,
   publishGitHubDirtyScopes,
@@ -35,7 +40,11 @@ import {
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
  */
-const HANDLED_ACTIONS = new Set(["created", "edited", "deleted"]);
+const HANDLED_ACTIONS = new Set<HandledIssueCommentEvent["action"]>([
+  "created",
+  "edited",
+  "deleted",
+]);
 
 /**
  * Union type for issue comment events we handle.
@@ -58,7 +67,8 @@ export type HandledIssueCommentEvent =
  * - deleted: Soft-deletes the unified GitHub issue-comment projection
  */
 export async function handleIssueComment(
-  event: HandledIssueCommentEvent
+  event: HandledIssueCommentEvent,
+  observationContext?: GitHubWebhookObservationContext
 ): Promise<Response> {
   const { action, comment, issue, repository } = event;
   const installationId = event.installation?.id;
@@ -73,12 +83,6 @@ export async function handleIssueComment(
 
   // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
-    log.info("[handleIssueComment] Skipping unhandled action", {
-      action,
-      commentId: comment.id,
-      issueNumber: issue.number,
-      repositoryFullName: repository.full_name,
-    });
     return NextResponse.json({
       message: `Ignoring unhandled issue_comment action: ${action}`,
       ok: true,
@@ -96,15 +100,6 @@ export async function handleIssueComment(
       { status: 400 }
     );
   }
-
-  log.info("[handleIssueComment] Processing issue_comment event", {
-    action,
-    commentId: comment.id,
-    prNumber: issue.number,
-    prTitle: issue.title,
-    repositoryId: repository.id,
-    installationId,
-  });
 
   const publication = await withDb.tx(async (tx) => {
     const ownerResolution = await resolveGitHubCommentOwner(tx, {
@@ -136,6 +131,16 @@ export async function handleIssueComment(
       return null;
     }
 
+    if (!existingPr.isCurrentPullRequest) {
+      await persistIssueCommentActivity(
+        event,
+        existingPr,
+        ownerResolution.organizationId,
+        observationContext
+      );
+      return null;
+    }
+
     const wroteProjection = await dispatchIssueCommentAction(tx, action, {
       comment,
       issue,
@@ -145,6 +150,12 @@ export async function handleIssueComment(
     if (!wroteProjection) {
       return null;
     }
+    await persistIssueCommentActivity(
+      event,
+      existingPr,
+      ownerResolution.organizationId,
+      observationContext
+    );
     return buildIssueCommentDirtyScopePublication({
       comment,
       issue,
@@ -156,13 +167,6 @@ export async function handleIssueComment(
   if (publication) {
     await publishGitHubDirtyScopes(publication);
   }
-
-  log.info("[handleIssueComment] Successfully processed issue_comment event", {
-    action,
-    commentId: comment.id,
-    prNumber: issue.number,
-    githubRepoId: repository.id,
-  });
 
   return NextResponse.json({
     message: "Event processed successfully",
@@ -242,10 +246,6 @@ async function handleCommentCreated(
     return false;
   }
 
-  log.info("[handleIssueComment] Issue comment created", {
-    commentId: comment.id,
-    prNumber: issue.number,
-  });
   return true;
 }
 
@@ -294,10 +294,6 @@ async function handleCommentEdited(
     return false;
   }
 
-  log.info("[handleIssueComment] Issue comment edited", {
-    commentId: comment.id,
-    prNumber: issue.number,
-  });
   return true;
 }
 
@@ -322,10 +318,6 @@ async function handleCommentDeleted(
     });
     return false;
   }
-  log.info("[handleIssueComment] Issue comment deleted", {
-    commentId: comment.id,
-    prNumber: issue.number,
-  });
   return true;
 }
 
@@ -389,4 +381,23 @@ function buildIssueCommentDirtyScopePublication({
     ],
     triggers: [GitHubDirtyTrigger.IssueComment],
   };
+}
+
+/** Persist authoritative issue-comment activity for an associated PR. */
+function persistIssueCommentActivity(
+  event: HandledIssueCommentEvent,
+  existingPr: CommentWebhookPrContext,
+  organizationId: string,
+  observationContext?: GitHubWebhookObservationContext
+) {
+  return persistGitHubBranchActivity({
+    eventName: GitHubBranchActivityEventName.IssueComment,
+    deliveryId: observationContext?.deliveryId,
+    payload: event,
+    attribution: {
+      organizationId,
+      branchArtifactId: existingPr.branchArtifactId,
+      pullRequestDetailId: existingPr.id,
+    },
+  });
 }

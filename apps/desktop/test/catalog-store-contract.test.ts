@@ -27,6 +27,8 @@ import {
   recordInstallRunEnd,
   recordInstallRunStart,
 } from "../src/main/packs/catalog-store.js";
+import { resolveAutoCommand } from "../src/main/packs/install-command-resolver.js";
+import { StreamRunErrorCode } from "../src/shared/install-run-contract.js";
 import { openTestPrisma, type RawDb } from "./prisma-test-utils.js";
 
 async function seedPack(
@@ -203,6 +205,159 @@ test("install runs: create returns id, in-flight lookup, end clears it, list fil
       (await listInstallRuns(prisma, { pack_id: "missing" })).length,
       0
     );
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-5248: harness-keyed command maps come back null-prototype, so an inherited key reads as absent", async () => {
+  const { prisma, db, close } = await setup();
+  try {
+    // A real row whose command maps configure exactly one harness. `harness` is
+    // an externally-supplied catalog value, so the map these become must not
+    // answer a lookup for a name that only exists on `Object.prototype`.
+    await db.query(
+      `UPDATE pack_catalog
+         SET install_commands = $1, uninstall_commands = $2
+       WHERE pack_id = 'alpha'`,
+      [
+        JSON.stringify({ claude: "claude plugin install alpha" }),
+        JSON.stringify({ claude: "rm -rf ~/.claude/plugins/alpha" }),
+      ]
+    );
+
+    const entry = await getCatalog(prisma, "alpha");
+
+    // The configured harness still resolves.
+    assert.equal(entry?.installCommands?.claude, "claude plugin install alpha");
+    assert.equal(
+      entry?.uninstallCommands?.claude,
+      "rm -rf ~/.claude/plugins/alpha"
+    );
+
+    // ...and an unconfigured one reads as absent whatever it is named. On a
+    // plain object these would be `Object.prototype.constructor` (a truthy
+    // FUNCTION) and `Object.prototype` itself.
+    for (const inherited of [
+      "constructor",
+      "toString",
+      "valueOf",
+      "__proto__",
+    ]) {
+      assert.equal(
+        entry?.installCommands?.[inherited],
+        undefined,
+        `installCommands['${inherited}'] must be absent`
+      );
+      assert.equal(
+        entry?.uninstallCommands?.[inherited],
+        undefined,
+        `uninstallCommands['${inherited}'] must be absent`
+      );
+    }
+  } finally {
+    await close();
+  }
+});
+
+/**
+ * An empty PATH, so resolution never consults the host's real CLIs. The
+ * uninstall path does not gate on PATH at all, and every install assertion below
+ * short-circuits on "no command" before PATH is read.
+ */
+const NO_PATH: Record<string, string> = { PATH: "" };
+
+/** Set a pack's raw command-map columns to arbitrary persisted JSON text. */
+async function setRawCommandColumns(
+  db: RawDb,
+  packId: string,
+  installJson: string,
+  uninstallJson: string
+): Promise<void> {
+  await db.query(
+    `UPDATE pack_catalog
+       SET install_commands = $1, uninstall_commands = $2
+     WHERE pack_id = $3`,
+    [installJson, uninstallJson, packId]
+  );
+}
+
+test("ISS-5248: a persisted ARRAY command map is rejected, not indexed into a command under key '0'", async () => {
+  const { prisma, db, close } = await setup();
+  try {
+    // The exact malformed row from review: `Object.entries(["touch /tmp/x"])`
+    // is `[["0", "touch /tmp/x"]]`, so an entries-only normalizer produced a
+    // real command under the harness name "0".
+    await setRawCommandColumns(
+      db,
+      "alpha",
+      JSON.stringify(["touch /tmp/x"]),
+      JSON.stringify(["touch /tmp/pwned"])
+    );
+
+    const entry = await getCatalog(prisma, "alpha");
+    assert.notEqual(entry, null);
+    assert.equal(entry?.installCommands, null);
+    assert.equal(entry?.uninstallCommands, null);
+
+    // The full chain, not just the mapper: uninstall is the reachable path
+    // (it does NOT gate on the harness CLI being on PATH), so before the
+    // rejection an external harness of "0" resolved "touch /tmp/pwned" as the
+    // script to spawn. It must now degrade to the NoCommand path.
+    const resolved = resolveAutoCommand(entry!, "alpha", "uninstall", NO_PATH);
+    assert.equal(resolved.command, null);
+    assert.equal(resolved.unavailable?.code, StreamRunErrorCode.NoCommand);
+
+    const install = resolveAutoCommand(entry!, "alpha", "install", NO_PATH);
+    assert.equal(install.command, null);
+    assert.equal(install.unavailable?.code, StreamRunErrorCode.NoCommand);
+  } finally {
+    await close();
+  }
+});
+
+test("ISS-5248: scalar and half-corrupt command maps are rejected whole, and a valid map still resolves", async () => {
+  const { prisma, db, close } = await setup();
+  try {
+    // A bare JSON string and a bare JSON boolean — neither is a harness→command
+    // map. (Not a bare NUMBER: SQLite's numeric affinity hands `42` back to the
+    // Prisma raw serializer as a number, which it refuses to serialize as Json,
+    // so that row aborts in the driver before any app code sees it.)
+    await setRawCommandColumns(
+      db,
+      "alpha",
+      JSON.stringify("touch /tmp/x"),
+      JSON.stringify(true)
+    );
+    const scalars = await getCatalog(prisma, "alpha");
+    assert.equal(scalars?.installCommands, null);
+    assert.equal(scalars?.uninstallCommands, null);
+
+    // A partially-corrupt object is dropped WHOLE rather than normalized down
+    // to its string entries — the record is valid-or-absent, never
+    // half-trusted.
+    await setRawCommandColumns(
+      db,
+      "alpha",
+      JSON.stringify({ claude: "claude plugin install alpha", codex: 7 }),
+      JSON.stringify({ claude: null })
+    );
+    const mixed = await getCatalog(prisma, "alpha");
+    assert.equal(mixed?.installCommands, null);
+    assert.equal(mixed?.uninstallCommands, null);
+
+    // ...and a well-formed map is still accepted, so the guard rejects bad
+    // rows rather than every row.
+    await setRawCommandColumns(
+      db,
+      "alpha",
+      JSON.stringify({ claude: "claude plugin install alpha" }),
+      JSON.stringify({ claude: "rm -rf ~/.claude/plugins/alpha" })
+    );
+    const valid = await getCatalog(prisma, "alpha");
+    assert.equal(valid?.installCommands?.claude, "claude plugin install alpha");
+    const resolved = resolveAutoCommand(valid!, "alpha", "uninstall", NO_PATH);
+    assert.equal(resolved.command, "rm -rf ~/.claude/plugins/alpha");
   } finally {
     await close();
   }

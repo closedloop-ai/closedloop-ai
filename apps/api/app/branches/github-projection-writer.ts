@@ -8,11 +8,21 @@ import {
   type GitHubFetchProvenance,
   gitHubFetchProvenanceData,
 } from "@/lib/github-fetch-provenance";
+import {
+  type PullRequestHeadRepositoryObservation,
+  persistPullRequestHeadRepositoryAuthority,
+} from "./pull-request-head-authority";
 import { pullRequestLocData } from "./pull-request-loc-data";
 
 export type BranchPullRequestProjectionInput = {
   organizationId: string;
-  repositoryId: string;
+  // Nullable: repo-less desktop rows (PRD-510 D2, and the PLN-1535 tier-2
+  // reconciler) genuinely carry no installation-repo surrogate id. App-repo
+  // producers pass a real id; the update path never rewrites it. The create path
+  // (upsertPullRequestDetailForBranch) requires a non-null id and throws on null,
+  // so repo-less rows only ever reach the writer via update-by-id — a create
+  // never actually persists null even though the column permits it.
+  repositoryId: string | null;
   githubId: string;
   number: number;
   title: string;
@@ -28,9 +38,27 @@ export type BranchPullRequestProjectionInput = {
   changedFiles?: number | null;
   checksStatus?: Prisma.BranchDetailUpdateInput["checksStatus"];
   reviewDecision?: Prisma.PullRequestDetailUncheckedCreateWithoutBranchArtifactInput["reviewDecision"];
+  // FEA-3552: GitHub PR createdAt — the true "PR opened" instant for the rail's
+  // opened dot. Optional: omitted (undefined) leaves the persisted value untouched
+  // on update so a later provenance-poorer projection can't clobber a known value.
+  githubCreatedAt?: Date | null;
+  // PLN-1535 M1: GitHub PR updated_at — the reconciler's watermark. Optional and
+  // omission-preserving on update, like githubCreatedAt, so a provenance-poorer
+  // projection can't null out a known value.
+  githubUpdatedAt?: Date | null;
   closedAt?: Date | null;
   mergedAt?: Date | null;
   mergeCommitSha?: string | null;
+  // The exact PR-head oid paired with `headBranch` at the provider-authority
+  // compare-and-set boundary. This remains optional for version-skewed callers;
+  // detail payload builders deliberately do not persist either member directly.
+  headRefOid?: string | null;
+  // PLN-1535 M3: the PR author's GitHub login. Optional & omission-preserving on
+  // update (undefined preserves the stored value; the webhook passes a concrete
+  // login). Lets the Postgres-served PR list render the real author.
+  authorLogin?: string | null;
+  /** Optional provider-authoritative head repository snapshot. */
+  headRepositoryObservation?: PullRequestHeadRepositoryObservation;
   fetchProvenance?: GitHubFetchProvenance;
 };
 
@@ -72,9 +100,14 @@ export function buildPullRequestDetailCreate(
       isDraft: input.isDraft,
       ...pullRequestLocData(input),
       isCurrent: true,
+      // FEA-3552: persist the GitHub PR createdAt on create (null when the
+      // producer had no created_at, e.g. a partial refresh payload).
+      githubCreatedAt: input.githubCreatedAt ?? null,
+      githubUpdatedAt: input.githubUpdatedAt ?? null,
       closedAt: input.closedAt ?? null,
       mergedAt: input.mergedAt ?? null,
       mergeCommitSha: input.mergeCommitSha ?? null,
+      authorLogin: input.authorLogin ?? null,
       ...gitHubFetchProvenanceData(input.fetchProvenance),
     };
   if (input.reviewDecision !== undefined) {
@@ -86,9 +119,16 @@ export function buildPullRequestDetailCreate(
 /**
  * Builds the PR detail update shape shared by webhook/read-repair writes and
  * historical backfill writes.
+ *
+ * `setCurrent` defaults to true (the webhook/backfill lanes establish the row as
+ * the branch's current PR). The PLN-1535 reconciler passes `false`: it is a
+ * data-freshness lane that must refresh a row's own fields without promoting a
+ * superseded row to current — ownership of `isCurrent` stays with the
+ * webhook/desktop-sync lanes.
  */
 export function buildPullRequestDetailUpdate(
-  input: BranchPullRequestProjectionInput
+  input: BranchPullRequestProjectionInput,
+  options?: { setCurrent?: boolean }
 ): Prisma.PullRequestDetailUncheckedUpdateInput {
   const update: Prisma.PullRequestDetailUncheckedUpdateInput = {
     number: input.number,
@@ -98,11 +138,20 @@ export function buildPullRequestDetailUpdate(
     prState: input.prState,
     isDraft: input.isDraft,
     ...pullRequestLocData(input),
-    isCurrent: true,
+    ...(options?.setCurrent === false ? {} : { isCurrent: true }),
     ...gitHubFetchProvenanceData(input.fetchProvenance),
   };
   if (input.reviewDecision !== undefined) {
     update.reviewDecision = input.reviewDecision;
+  }
+  // FEA-3552: only write githubCreatedAt when the caller supplied it, so a
+  // provenance-poorer projection that omits created_at can't null out a value an
+  // earlier richer projection already persisted.
+  if (input.githubCreatedAt !== undefined) {
+    update.githubCreatedAt = input.githubCreatedAt;
+  }
+  if (input.githubUpdatedAt !== undefined) {
+    update.githubUpdatedAt = input.githubUpdatedAt;
   }
   if (input.closedAt !== undefined) {
     update.closedAt = input.closedAt;
@@ -112,6 +161,11 @@ export function buildPullRequestDetailUpdate(
   }
   if (input.mergeCommitSha !== undefined) {
     update.mergeCommitSha = input.mergeCommitSha;
+  }
+  // PLN-1535 M3: omission-preserving, like the timestamp fields above — a
+  // provenance-poorer projection that omits the author never nulls a stored one.
+  if (input.authorLogin !== undefined) {
+    update.authorLogin = input.authorLogin;
   }
   return update;
 }
@@ -159,6 +213,19 @@ export async function writeExistingBranchPullRequestProjection(
         target.branchArtifactId,
         input
       );
+
+  await persistPullRequestHeadRepositoryAuthority(
+    db,
+    {
+      organizationId: input.organizationId,
+      pullRequestDetailId: prDetail.id,
+    },
+    input.headRepositoryObservation,
+    {
+      name: input.headBranch,
+      oid: input.headRefOid === undefined ? input.headSha : input.headRefOid,
+    }
+  );
 
   await db.pullRequestDetail.updateMany({
     where: {
@@ -298,16 +365,26 @@ async function upsertPullRequestDetailForBranch(
   branchArtifactId: string,
   input: BranchPullRequestProjectionInput
 ): Promise<{ id: string }> {
+  // This create-or-update keys on the (repositoryId, number) unique, so it is
+  // the App-repo path only. Repo-less rows (null repositoryId) must reach the
+  // writer with a pullRequestDetailId and take the update-by-id branch instead
+  // — an internal invariant, not a user-facing error.
+  const { repositoryId } = input;
+  if (repositoryId === null) {
+    throw new Error(
+      "upsertPullRequestDetailForBranch requires a repositoryId; a repo-less row must update by pullRequestDetailId"
+    );
+  }
   await adoptRepolessPullRequestDetail(db, {
     branchArtifactId,
     number: input.number,
-    repositoryId: input.repositoryId,
+    repositoryId,
     githubId: input.githubId,
   });
   return db.pullRequestDetail.upsert({
     where: {
       repositoryId_number: {
-        repositoryId: input.repositoryId,
+        repositoryId,
         number: input.number,
       },
     },

@@ -82,8 +82,9 @@ describe("useFrontendCaptureGate", () => {
   });
 
   it("fails closed for a non-staff user even when the flag reads enabled", async () => {
-    // Simulates the fail-open flag fallback (PostHog unconfigured → flag
-    // defaults enabled): the staff-email guard must still block capture.
+    // Simulates the QA fail-open (a tester set the blanket
+    // `closedloop:feature-flags-fail-open` key, so every flag reads enabled):
+    // the staff-email guard must still block capture.
     mockUser = {
       id: "user-999",
       primaryEmailAddress: { emailAddress: "customer@acme.com" },

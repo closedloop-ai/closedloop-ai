@@ -4,6 +4,22 @@ import { toast } from "sonner";
 import { action } from "storybook/actions";
 
 /**
+ * Fixed event time for the toast description (ISS-5286).
+ *
+ * `new Date().toLocaleString()` was nondeterministic on two axes, not one: the
+ * clock, and the runner's locale/timezone. Pinning the instant alone would still
+ * render "6/11/2025" here and "11/06/2025" elsewhere, so the locale and timezone
+ * are pinned too. The story still demonstrates a formatted timestamp, which is
+ * the point of the description slot.
+ */
+const EVENT_TIMESTAMP = new Date(Date.UTC(2025, 5, 11, 15, 30));
+const EVENT_TIMESTAMP_LABEL = EVENT_TIMESTAMP.toLocaleString("en-US", {
+  dateStyle: "long",
+  timeStyle: "short",
+  timeZone: "UTC",
+});
+
+/**
  * An opinionated toast component for React.
  */
 const meta: Meta<typeof Toaster> = {
@@ -32,7 +48,7 @@ export const Default: Story = {
       <button
         onClick={() =>
           toast("Event has been created", {
-            description: new Date().toLocaleString(),
+            description: EVENT_TIMESTAMP_LABEL,
             action: {
               label: "Undo",
               onClick: action("Undo clicked"),

@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { packIdsByMetadataBudget } from "../src/main/database/write-core.js";
+import { packIdsByMetadataBudget } from "../src/main/database/session-analytics-chunking.js";
 
 function flat(chunks: string[][]): string[] {
   return chunks.flat();

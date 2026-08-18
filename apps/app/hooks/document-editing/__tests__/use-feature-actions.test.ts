@@ -109,7 +109,7 @@ describe("useFeatureActions", () => {
       });
 
       expect(vi.mocked(toast.success)).toHaveBeenCalledWith(
-        "Feature evaluation started"
+        "Issue evaluation started"
       );
     });
   });

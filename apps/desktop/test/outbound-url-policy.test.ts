@@ -170,3 +170,53 @@ test("policy descriptors exclude URL path, query, and credentials", () => {
   assert.equal(serialized.includes("secret-token"), false);
   assert.equal(serialized.includes("report.txt"), false);
 });
+
+// ISS-5299: cover the 172.16-31 private branch in classifyIpv4 (line 191),
+// the public-IPv4 ip_literal return (line 197), the fea/feb link-local branch
+// in classifyIpv6 (line 208), and the public-IPv6 ip_literal return (line 215).
+
+test("classifyIpv4: 172.16-31 private subnet is denied as private_address_not_allowed", () => {
+  const decision = validateOutboundUrlForSurface(
+    "loop_attachment_download",
+    "https://172.16.100.200/file.txt"
+  );
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.diagnostics.reason, "private_address_not_allowed");
+  assert.equal(decision.diagnostics.destinationClass, "private");
+});
+
+test("classifyIpv4: public IPv4 literal is denied as ip_literal_not_allowed", () => {
+  const decision = validateOutboundUrlForSurface(
+    "loop_attachment_download",
+    "https://8.8.8.8/file.txt"
+  );
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.diagnostics.reason, "ip_literal_not_allowed");
+  assert.equal(decision.diagnostics.destinationClass, "ip_literal");
+});
+
+test("classifyIpv6: fea and feb link-local prefixes are denied as link_local_address_not_allowed", () => {
+  for (const ip of ["fea0::1", "feb0::1"]) {
+    const decision = validateOutboundUrlForSurface(
+      "loop_attachment_download",
+      `https://[${ip}]/file.txt`
+    );
+    assert.equal(decision.allowed, false, ip);
+    assert.equal(
+      decision.diagnostics.reason,
+      "link_local_address_not_allowed",
+      ip
+    );
+    assert.equal(decision.diagnostics.destinationClass, "link_local", ip);
+  }
+});
+
+test("classifyIpv6: public IPv6 literal is denied as ip_literal_not_allowed", () => {
+  const decision = validateOutboundUrlForSurface(
+    "loop_attachment_download",
+    "https://[2001:db8::1]/file.txt"
+  );
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.diagnostics.reason, "ip_literal_not_allowed");
+  assert.equal(decision.diagnostics.destinationClass, "ip_literal");
+});

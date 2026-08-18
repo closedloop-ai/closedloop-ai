@@ -1,5 +1,6 @@
 "use client";
 
+import type { ImportGoogleDocsResponse } from "@repo/api/src/types/google";
 import { useImportGoogleDocs } from "@repo/app/google/hooks/use-google-integration";
 import { useProjects } from "@repo/app/projects/hooks/use-projects";
 import {
@@ -46,14 +47,16 @@ export function GoogleImportModal({
   const importMutation = useImportGoogleDocs();
   const { data: projects, isLoading: projectsLoading } = useProjects();
 
-  // Reset form when modal closes
+  // Reset form and any prior import result when the modal closes
+  const resetMutation = importMutation.reset;
   useEffect(() => {
     if (!open) {
       setFolderId("");
       setProjectId(undefined);
       setFolderIdError("");
+      resetMutation();
     }
-  }, [open]);
+  }, [open, resetMutation]);
 
   // Validate folder ID on change
   const handleFolderIdChange = (value: string) => {
@@ -86,30 +89,10 @@ export function GoogleImportModal({
         projectId,
       });
 
-      // Show success message
-      if (result.importedCount === 0) {
-        toast.warning("No Google Docs found in this folder");
-      } else {
-        toast.success(
-          `Successfully imported ${result.importedCount} document${
-            result.importedCount === 1 ? "" : "s"
-          }`
-        );
-      }
+      reportImportOutcome(result);
 
-      // Show failures if any
-      if (result.failures.length > 0) {
-        toast.error(
-          `Failed to import ${result.failures.length} document${
-            result.failures.length === 1 ? "" : "s"
-          }`
-        );
-      }
-
-      // Close modal on success
-      if (result.importedCount > 0) {
-        onOpenChange(false);
-      }
+      // Keep the modal open so the result panel (imported titles + per-doc
+      // failures) is readable; the user dismisses via the Done button.
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Failed to import Google Docs"
@@ -199,69 +182,116 @@ export function GoogleImportModal({
           </div>
 
           {/* Import result preview (shown after import) */}
-          {importMutation.isSuccess && importMutation.data && (
-            <div className="space-y-2 rounded-lg border border-border bg-muted/50 p-3">
-              <div className="flex items-center gap-2">
-                <CheckCircleIcon className="h-4 w-4 text-success" />
-                <p className="font-medium text-sm">
-                  Imported {importMutation.data.importedCount} document
-                  {importMutation.data.importedCount === 1 ? "" : "s"}
-                </p>
-              </div>
-              {importMutation.data.artifacts.length > 0 && (
-                <ul className="ml-6 space-y-1 text-sm">
-                  {importMutation.data.artifacts.map(
-                    (doc: { id: string; slug: string; title: string }) => (
-                      <li className="text-muted-foreground" key={doc.id}>
-                        {doc.title}
-                      </li>
-                    )
-                  )}
-                </ul>
-              )}
-              {importMutation.data.failures.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  <p className="font-medium text-destructive text-sm">
-                    Failed to import {importMutation.data.failures.length}{" "}
-                    document
-                    {importMutation.data.failures.length === 1 ? "" : "s"}:
-                  </p>
+          {importMutation.isSuccess &&
+            importMutation.data &&
+            (importMutation.data.importedCount > 0 ||
+              importMutation.data.failures.length > 0) && (
+              <div className="space-y-2 rounded-lg border border-border bg-muted/50 p-3">
+                {/* The success affordance is claimed only when something was
+                  actually imported: an all-failed import lands here with a zero
+                  count, and a check mark above the red failure list contradicts
+                  it. */}
+                {importMutation.data.importedCount > 0 && (
+                  <div className="flex items-center gap-2">
+                    <CheckCircleIcon className="h-4 w-4 text-success" />
+                    <p className="font-medium text-sm">
+                      Imported {importMutation.data.importedCount} document
+                      {importMutation.data.importedCount === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                )}
+                {importMutation.data.artifacts.length > 0 && (
                   <ul className="ml-6 space-y-1 text-sm">
-                    {importMutation.data.failures.map((failure) => (
-                      <li className="text-muted-foreground" key={failure.docId}>
-                        {failure.docTitle}: {failure.error}
-                      </li>
-                    ))}
+                    {importMutation.data.artifacts.map(
+                      (doc: { id: string; slug: string; title: string }) => (
+                        <li className="text-muted-foreground" key={doc.id}>
+                          {doc.title}
+                        </li>
+                      )
+                    )}
                   </ul>
-                </div>
-              )}
-            </div>
-          )}
+                )}
+                {importMutation.data.failures.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <p className="font-medium text-destructive text-sm">
+                      Failed to import {importMutation.data.failures.length}{" "}
+                      document
+                      {importMutation.data.failures.length === 1 ? "" : "s"}:
+                    </p>
+                    <ul className="ml-6 space-y-1 text-sm">
+                      {importMutation.data.failures.map((failure) => (
+                        <li
+                          className="text-muted-foreground"
+                          key={failure.docId}
+                        >
+                          {failure.docTitle}: {failure.error}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
         </div>
 
         <DialogFooter>
-          <Button
-            disabled={importMutation.isPending}
-            onClick={() => onOpenChange(false)}
-            variant="outline"
-          >
-            Cancel
-          </Button>
-          <Button
-            disabled={!isValid || importMutation.isPending}
-            onClick={handleImport}
-          >
-            {importMutation.isPending ? (
-              <>
-                <Loader2Icon className="h-4 w-4 animate-spin" />
-                Importing...
-              </>
-            ) : (
-              "Import"
-            )}
-          </Button>
+          {importMutation.isSuccess ? (
+            <Button onClick={() => onOpenChange(false)}>Done</Button>
+          ) : (
+            <>
+              <Button
+                disabled={importMutation.isPending}
+                onClick={() => onOpenChange(false)}
+                variant="outline"
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={!isValid || importMutation.isPending}
+                onClick={handleImport}
+              >
+                {importMutation.isPending ? (
+                  <>
+                    <Loader2Icon className="h-4 w-4 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  "Import"
+                )}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Announce the outcome of a completed import.
+ *
+ * `importedCount === 0` on its own does NOT mean the folder was empty: a folder
+ * whose every document failed also imports zero. Reporting "no documents found"
+ * there contradicts both the failure toast and the per-document failure list in
+ * the result panel, so the empty-folder message is reserved for a folder that
+ * genuinely held nothing.
+ */
+function reportImportOutcome(result: ImportGoogleDocsResponse) {
+  if (result.importedCount > 0) {
+    toast.success(
+      `Successfully imported ${result.importedCount} document${
+        result.importedCount === 1 ? "" : "s"
+      }`
+    );
+  } else if (result.failures.length === 0) {
+    toast.warning("No Google Docs found in this folder");
+  }
+
+  if (result.failures.length > 0) {
+    toast.error(
+      `Failed to import ${result.failures.length} document${
+        result.failures.length === 1 ? "" : "s"
+      }`
+    );
+  }
 }

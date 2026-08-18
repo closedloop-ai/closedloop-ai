@@ -1,38 +1,7 @@
 /**
- * E2E proof (FEA-2159): a MERGED, single-PR branch with NO LOC enrichment makes
- * the REAL "Median PR size" KPI card render a NUMBER ("0"), not the "—" dash.
- *
- * This is the end-to-end stitch the unit tests only cover in pieces: it seeds the
- * exact un-enriched merged single-PR corpus into the launched app's real SQLite
- * store, boots the real desktop app, navigates to the real Branches view, and
- * asserts the real `MetricCard` for "Median PR size" (fed by the real
- * `getSharedBranchAnalytics` → `projectBranchAnalytics` path over IPC) shows "0".
- *
- * Why "0" is the meaningful assertion: FEA-2159 makes the projection median over
- * ALL merged single-PR branches, folding a missing line total in as
- * `(additions ?? 0) + (deletions ?? 0)`. For a fully un-enriched merged branch
- * that is `0`, so the KPI is `available`/`0` and the card gate
- * (`state === Available && value != null`) renders "0". BEFORE the fix, the same
- * corpus produced `medianPrSize.state = "unavailable"` → the card showed "—".
- * Asserting the card reads exactly "0" (and NOT "—") therefore fails closed
- * against the old behavior.
- *
- * Seeding mechanism (see helpers/seed-branches-db.ts): the desktop store is a
- * single libSQL/SQLite file the db-host opens at boot. Because a running app does
- * not observe another process's writes to that file (and its boot maintenance
- * would otherwise not have run against them), the corpus is seeded with the app
- * DOWN and read on the NEXT boot:
- *   1. Launch the app once so it creates + migrates the schema, then close it.
- *   2. Seed the four real rows (`sessions`, `artifacts` kind='branch',
- *      `session_artifact_links`, `pull_requests` merged) straight into the file.
- *   3. Relaunch — the app reads the seeded corpus at boot and its REAL projection
- *      runs over it (no test-only code path in the app).
- * The seeded session stamps a recent `last_activity_at` so the boot retention
- * sweep (which keys on that column) does not purge it and cascade its rows.
- *
- * Prerequisites:
- *   - The app must be built first: `pnpm -C apps/desktop build`
- *   - Run via: npx playwright test --config apps/desktop/playwright.config.ts
+ * Desktop E2E for PRD-601 LIST-013. A known merged PR with unknown LOC is
+ * Unavailable, while exact LOC already returned by cloud hydration must feed
+ * the canonical median without a new provider read.
  */
 
 import fs from "node:fs";
@@ -46,7 +15,9 @@ import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { GitHubPRState } from "../../../../packages/api/src/types/github";
+import { RepositoryDefaultSource } from "../../../../packages/api/src/types/repository-default-identity";
 import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import { completeFakeGitHubAuthority } from "./helpers/fake-github-authority-server";
 import {
   seedMergedUnenrichedSinglePrBranch,
   seedNoPullRequestBranch,
@@ -67,8 +38,14 @@ const SEED = {
 // The card value must be a plain integer string (e.g. "0"), not a placeholder.
 const NUMERIC_CARD_VALUE = /^\d+$/;
 
-test.describe("Branches Median PR size card (FEA-2159)", () => {
-  test("un-enriched merged single-PR branch renders a numeric Median PR size (0), not —", async () => {
+// The muted no-data glyph MetricCard renders for a genuine no-data metric (a
+// nullish `value`) since FEA-4236 — mirrors the component's `valueUnavailableLabel`
+// default in metric-card.tsx. Kept as a local constant so the two can't silently
+// drift the copy apart (the design-system default is not an exported symbol).
+const METRIC_CARD_UNAVAILABLE_LABEL = "—";
+
+test.describe("Branches Median PR size card (FEA-2949)", () => {
+  test("un-enriched merged single-PR branch renders Unavailable, not 0", async () => {
     test.setTimeout(180_000);
 
     // An EMPTY CLAUDE_HOME so the importer ingests nothing — the corpus is
@@ -118,19 +95,26 @@ test.describe("Branches Median PR size card (FEA-2159)", () => {
         // The specific "Median PR size" card. MetricCard renders the label in a
         // `[data-slot="card-description"]` and the value in
         // `[data-slot="card-title"]` inside one `[data-slot="card"]`, so scope by
-        // the label, then read the value.
+        // the label, then read the value. Scope to `:visible` cards: the Sessions
+        // bar owns its OWN "Median PR size" card (FEA-3574 dual-home), and the
+        // default Sessions view stays mounted-but-hidden under keep-alive, so a
+        // page-wide `[data-slot="card"]` match would collide with that hidden
+        // sibling. `:visible` keeps this on the active Branches surface (the same
+        // reason the date-range control above is scoped `:visible`).
         const medianCard = page
-          .locator('[data-slot="card"]')
+          .locator('[data-slot="card"]:visible')
           .filter({ hasText: "Median PR size" });
         await expect(medianCard).toBeVisible({ timeout: 30_000 });
         const medianValue = medianCard.locator('[data-slot="card-title"]');
 
-        // The real card shows the numeric median (0), NOT the "—" dash the old
-        // (pre-FEA-2159) projection produced for an un-enriched merged corpus.
-        await expect(medianValue).toHaveText("0", { timeout: 30_000 });
-        await expect(medianValue).not.toHaveText("—");
-        // Belt-and-suspenders: the value is a plain number, not a placeholder.
-        await expect(medianValue).toHaveText(NUMERIC_CARD_VALUE);
+        // The merged PR exists, so this is unknown required evidence rather
+        // than an empty eligible population. LIST-013 requires Unavailable.
+        await expect(medianValue).toHaveText(METRIC_CARD_UNAVAILABLE_LABEL, {
+          timeout: 30_000,
+        });
+        await expect(medianValue).not.toHaveText("0");
+        // Belt-and-suspenders: the value is unavailable, not a number.
+        await expect(medianValue).not.toHaveText(NUMERIC_CARD_VALUE);
 
         // Screenshot into Playwright's per-test output dir (portable across
         // machines/CI; CI uploads test-results-e2e/ on failure). Not a hardcoded
@@ -212,14 +196,23 @@ test.describe("Branches Median PR size card (FEA-2159)", () => {
         ).toBeVisible({ timeout: 30_000 });
         await page.locator('[aria-label="All time"]:visible').click();
 
+        // Scope to `:visible` cards so this stays on the active Branches surface
+        // and never matches the keep-alive-hidden Sessions view's own (cloud-only)
+        // "Median PR size" card (FEA-3574 dual-home) — a page-wide match resolves
+        // to two card-titles and trips Playwright strict mode.
         const medianCard = page
-          .locator('[data-slot="card"]')
+          .locator('[data-slot="card"]:visible')
           .filter({ hasText: "Median PR size" });
         await expect(medianCard).toBeVisible({ timeout: 30_000 });
         const medianValue = medianCard.locator('[data-slot="card-title"]');
 
-        await expect(medianValue).toHaveText("150", { timeout: 30_000 });
-        await expect(medianValue).toHaveText(NUMERIC_CARD_VALUE);
+        // The cloud list overlay proves this selected PR's LOC, but not the
+        // complete historical PR corpus, so the approved card must disclose a
+        // partial numeric value rather than claim complete coverage.
+        await expect(medianValue).toHaveText("150 LOC*", {
+          timeout: 30_000,
+        });
+
         await expect
           .poll(() =>
             serverRequests.some((url) => url.includes("/pull-requests"))
@@ -230,6 +223,130 @@ test.describe("Branches Median PR size card (FEA-2159)", () => {
           path: test.info().outputPath("cloud-median-card-e2e.png"),
           fullPage: true,
         });
+        expect(pageErrors).toEqual([]);
+      } finally {
+        await cleanup();
+      }
+    } finally {
+      await server.close();
+      fs.rmSync(userDataDir, { recursive: true, force: true });
+      fs.rmSync(claudeHome, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * ISS-5714, through the Electron harness. `packages/app/AGENTS.md` wants this
+   * shared summary row's regression in BOTH harnesses; the web half lives in
+   * `e2e/branches-surface.spec.ts`.
+   *
+   * THE DEFECT: `MEDIAN PR SIZE` rendered a real, disclosed figure with the bare
+   * word `Unavailable` in the delta slot directly beneath it — a number and a
+   * denial of that number in one tile, with nothing on screen saying which to
+   * believe. The figure was never in doubt; only the period-over-period
+   * COMPARISON was missing, and the slot now names the thing it cannot draw.
+   *
+   * Run on the DEFAULT 30-day window, deliberately: the sibling cases above widen
+   * to "All time", which has no prior window at all, so no comparison is promised
+   * there and no explanation is owed. The defect only exists where a comparison
+   * WAS promised and could not be computed.
+   */
+  test("renders No comparison, never a bare denial, under a value it did draw", async () => {
+    test.setTimeout(180_000);
+
+    const claudeHome = fs.mkdtempSync(
+      path.join(os.tmpdir(), "desktop-no-comparison-claude-")
+    );
+    const userDataDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "desktop-no-comparison-udd-")
+    );
+    // Inside the default 30-day window, computed from NOW rather than pinned: a
+    // fixed date silently ages out of the window and empties the card, which
+    // would make every assertion below pass or fail for the wrong reason.
+    const mergedAt = new Date(
+      Date.now() - 2 * 24 * 60 * 60 * 1000
+    ).toISOString();
+    const cloudSeed = {
+      repoFullName: "acme/web",
+      branchName: "iss-5714-no-comparison-e2e",
+      sessionId: "iss-5714-no-comparison-e2e-session",
+      prNumber: 5715,
+      mergedAt,
+      additions: 140,
+      deletions: 10,
+    } as const;
+    const serverRequests: string[] = [];
+    const server = await startBranchesCloudApiServer(cloudSeed, serverRequests);
+
+    try {
+      const first = await launchDesktopApp({
+        userDataDir,
+        keepUserDataDir: true,
+        env: { CLAUDE_HOME: claudeHome },
+      });
+      await waitForBranchesSchema(userDataDir);
+      await first.cleanup();
+
+      await seedNoPullRequestBranch(userDataDir, {
+        repoFullName: cloudSeed.repoFullName,
+        branchName: cloudSeed.branchName,
+        sessionId: cloudSeed.sessionId,
+        activityAt: cloudSeed.mergedAt,
+      });
+
+      const { page, pageErrors, cleanup } = await launchDesktopApp({
+        userDataDir,
+        keepUserDataDir: true,
+        env: {
+          CLAUDE_HOME: claudeHome,
+          CLOSEDLOOP_API_KEY: "sk_live_branches_no_comparison_e2e",
+          CL_AUTH_API_ORIGIN: server.origin,
+        },
+        beforeLaunch: (launchUserDataDir) => {
+          seedActiveProfileComputeTarget(launchUserDataDir, {
+            apiOrigin: server.origin,
+            cloudConnectionEnabled: true,
+            computeTargetId: "branches-no-comparison-e2e-target",
+          });
+        },
+      });
+
+      try {
+        await gotoNav(page, "branches");
+        await expect(
+          page.locator("header").getByText("Branches", { exact: true })
+        ).toBeVisible({ timeout: 30_000 });
+
+        // `:visible` scopes to the ACTIVE Branches surface — the Sessions view
+        // stays mounted-but-hidden under keep-alive and owns its own
+        // "Median PR size" card (FEA-3574 dual-home), so a page-wide match would
+        // resolve to two and read the wrong one.
+        const medianCard = page
+          .locator('[data-slot="card"]:visible')
+          .filter({ hasText: "Median PR size" });
+        await expect(medianCard).toHaveCount(1, { timeout: 30_000 });
+
+        // The VALUE is real and on screen. Asserted first and positively: every
+        // absence below would pass vacuously against a card that never rendered.
+        await expect(medianCard.locator('[data-slot="card-title"]')).toHaveText(
+          "150 LOC*",
+          { timeout: 30_000 }
+        );
+
+        // The delta slot names what it cannot draw, via the ONE shared
+        // "No comparison" affordance (`KpiDeltaPlaceholder`).
+        const noComparisonChip = medianCard.getByTestId(
+          "kpi-delta-placeholder"
+        );
+        await expect(noComparisonChip).toHaveCount(1, { timeout: 30_000 });
+        await expect(noComparisonChip).toContainText("No comparison");
+        // And nothing on the tile is a bare, unscoped denial. `exact: true`
+        // matches only a node whose WHOLE text is the word, so the `*`
+        // disclosure sentence — which contains a lowercase "unavailable" — can
+        // never satisfy this by accident.
+        await expect(
+          medianCard.getByText("Unavailable", { exact: true })
+        ).toHaveCount(0);
+
         expect(pageErrors).toEqual([]);
       } finally {
         await cleanup();
@@ -294,6 +411,10 @@ function routeBranchesCloudApiRequest(
         private: true,
         githubRepoId: "repo-cloud-median-github-id",
         source: "installation",
+        repositoryDefaultAuthority: completeFakeGitHubAuthority(
+          seed.repoFullName,
+          "repo-cloud-median-github-id"
+        ),
         pushedAt: seed.mergedAt,
         updatedAt: seed.mergedAt,
       },
@@ -345,6 +466,11 @@ function routeBranchesCloudApiRequest(
           author: "octocat",
           checksStatus: null,
           reviewDecision: null,
+          headRepository: completeFakeGitHubAuthority(
+            seed.repoFullName,
+            "repo-cloud-median-github-id",
+            RepositoryDefaultSource.PullRequestRest
+          ),
         },
       ],
     });

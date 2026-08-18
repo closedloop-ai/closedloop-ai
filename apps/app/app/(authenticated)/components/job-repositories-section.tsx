@@ -90,6 +90,18 @@ export function JobRepositoriesSection(
 
   const { primary: seedPrimary, additional: seedAdditional, pool } = resolved;
 
+  // A failed read is not an empty pool. Ordered before the empty branch on
+  // purpose: on failure `pool` is also `[]`, and the empty copy would state as
+  // fact that the team has curated nothing and send the user to a settings page
+  // — for a team a non-member cannot edit anyway (ISS-5095).
+  if (resolved.poolError) {
+    return (
+      <Alert variant="error">
+        <AlertDescription>{resolved.poolError}</AlertDescription>
+      </Alert>
+    );
+  }
+
   if (pool.length === 0) {
     return (
       <div className="rounded-md border border-muted bg-muted/20 p-3 text-muted-foreground text-sm">

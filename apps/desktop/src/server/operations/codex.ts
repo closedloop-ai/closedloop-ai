@@ -15,7 +15,7 @@ import type { ServerResponse } from "node:http";
 import path from "node:path";
 import { inspect } from "node:util";
 import type { ContentBlock } from "@closedloop-ai/loops-api/stream-types";
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import type {
   OperationDispatcher,
   OperationRequestContext,

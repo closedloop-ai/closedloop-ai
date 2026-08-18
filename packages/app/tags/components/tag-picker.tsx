@@ -31,6 +31,12 @@ type TagPickerProps = {
   showCreate?: boolean;
   /** Called when an applied tag chip is clicked. */
   onChipClick?: (tag: TagSummary) => void;
+  /** Permit applying existing or newly created tags. Defaults to true. */
+  canApply?: boolean;
+  /** Permit removing applied tags. Defaults to true. */
+  canRemove?: boolean;
+  /** Render applied chips beside the trigger. Defaults to true. */
+  showAppliedChips?: boolean;
 };
 
 export function TagPicker({
@@ -40,13 +46,16 @@ export function TagPicker({
   trigger,
   showCreate = true,
   onChipClick,
+  canApply = true,
+  canRemove = true,
+  showAppliedChips = true,
 }: Readonly<TagPickerProps>) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
 
   // Defer the org-wide tag fetch until the picker is opened: the inline
   // appliedTags come from props, so nothing renders this list until the
-  // popover is shown (CLAUDE.md: avoid reflexive on-mount fetching).
+  // popover is shown (AGENTS.md: avoid reflexive on-mount fetching).
   const { data: allTags = [], isLoading } = useTags({ enabled: open });
   const applyTag = useApplyTag();
   const removeTag = useRemoveTag();
@@ -71,11 +80,12 @@ export function TagPicker({
   );
 
   const available = useMemo(
-    () => filtered.filter((t) => !appliedIds.has(t.id)),
-    [filtered, appliedIds]
+    () => (canApply ? filtered.filter((t) => !appliedIds.has(t.id)) : []),
+    [filtered, appliedIds, canApply]
   );
 
   const showCreateOption =
+    canApply &&
     showCreate &&
     search.trim().length > 0 &&
     !allTags.some((t) => t.name.toLowerCase() === search.trim().toLowerCase());
@@ -122,7 +132,7 @@ export function TagPicker({
     <TagChip
       key={tag.id}
       onClick={onChipClick ? () => onChipClick(tag) : undefined}
-      onRemove={() => handleRemove(tag.id)}
+      onRemove={canRemove ? () => handleRemove(tag.id) : undefined}
       tag={tag}
     />
   ));
@@ -142,7 +152,7 @@ export function TagPicker({
 
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {chips}
+      {showAppliedChips ? chips : null}
       <Popover onOpenChange={handleOpenChange} open={open}>
         <PopoverTrigger asChild>
           {trigger ?? defaultTriggerButton}
@@ -197,7 +207,9 @@ export function TagPicker({
                       <TagPickerItem
                         applied
                         key={tag.id}
-                        onClick={() => handleRemove(tag.id)}
+                        onClick={
+                          canRemove ? () => handleRemove(tag.id) : undefined
+                        }
                         tag={tag}
                       />
                     ))}
@@ -261,7 +273,7 @@ function TagPickerItem({
 }: Readonly<{
   tag: TagSummary;
   applied?: boolean;
-  onClick: () => void;
+  onClick?: () => void;
 }>) {
   return (
     <button
@@ -269,6 +281,7 @@ function TagPickerItem({
         "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-muted",
         applied && "text-muted-foreground"
       )}
+      disabled={!onClick}
       onClick={onClick}
       type="button"
     >

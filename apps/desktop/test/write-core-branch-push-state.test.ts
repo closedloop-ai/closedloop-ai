@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { ArtifactRefRecord } from "../src/main/collectors/parsing/artifact-ref-extractor.js";
-import { persistArtifactLinks } from "../src/main/database/write-core.js";
+import type { ArtifactRefRecord } from "../src/main/collectors/parsing/artifact-ref-record.js";
+import { persistArtifactLinks } from "../src/main/database/artifact-link-persistence.js";
 import { openTestDb } from "./agent-db-test-utils.js";
 
 // FEA-2531: persistArtifactLinks stamps set-once, earliest-wins push state on the
@@ -320,7 +320,7 @@ test("fill-only: an existing pull_requests.branch_name is never clobbered", asyn
   }
 });
 
-test("referenced PR refs and headless/default-branch created refs never fill", async () => {
+test("only a created PR head fills, including a default-looking observed name", async () => {
   const dir = mkdtempSync(join(tmpdir(), "write-core-pr-head-skip-"));
   const db = await openTestDb(dir);
   try {
@@ -329,9 +329,10 @@ test("referenced PR refs and headless/default-branch created refs never fill", a
     await persist(db, "referencer", [
       createdPrRef({ relation: "referenced", branchName: "feat/not-mine" }),
       createdPrRef({ branchName: undefined }),
-      createdPrRef({ branchName: "main" }),
     ]);
     assert.equal(await readPrBranch(db, "referencer"), null);
+    await persist(db, "referencer", [createdPrRef({ branchName: "main" })]);
+    assert.equal(await readPrBranch(db, "referencer"), "main");
   } finally {
     await db.close();
     rmSync(dir, { recursive: true, force: true });

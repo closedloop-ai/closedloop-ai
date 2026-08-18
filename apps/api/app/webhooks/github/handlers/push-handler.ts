@@ -5,30 +5,51 @@ import {
   BranchPushSource,
   LinkType,
 } from "@repo/api/src/types/artifact";
-import type { JsonObject } from "@repo/api/src/types/common";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import {
   GitHubDirtyScopeKind,
   GitHubDirtyTrigger,
 } from "@repo/api/src/types/github-dirty-scope";
 import {
-  getProjectSettings,
-  resolveProjectRepoDefaults,
-} from "@repo/api/src/types/project";
+  type RepositoryDefaultAuthority,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity";
 import { Status } from "@repo/api/src/types/result";
 import { MAX_SYNCED_COMMIT_MESSAGE_LENGTH } from "@repo/api/src/types/session-artifact-link";
-import { ArtifactType, GitHubInstallationStatus, withDb } from "@repo/database";
+import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
+import {
+  ArtifactType,
+  GitHubInstallationStatus,
+  type TransactionClient,
+  withDb,
+} from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import { NextResponse } from "next/server";
-import { branchService } from "@/app/branches/branch-service";
+import {
+  branchService,
+  type UpsertBranchArtifactInput,
+} from "@/app/branches/branch-service";
+import { resolveCloudBranchWriteEligibility } from "@/app/branches/branch-write-eligibility";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
 import {
   commitService,
   type WebhookCommitInput,
 } from "@/app/commits/commit-service";
+import { bulkUpsertInstallationRepositories } from "@/app/integrations/github/service/repository-sync";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
+import { mapGitHubWebhookRepositoryDefaultAuthority } from "@/lib/github/repository-default-authority";
+import {
+  claimRepositoryDefaultObservationReceipt,
+  RepositoryDefaultObservationTargetKind,
+} from "@/lib/github/repository-default-observation-receipt";
 import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { pickPrimaryArtifactReference } from "./artifact-reference";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import { publishGitHubDirtyScopes } from "./dirty-scope-publisher";
 
 const HEAD_REF_PREFIX = "refs/heads/";
@@ -42,7 +63,10 @@ const HEAD_REF_PREFIX = "refs/heads/";
  * Security: Scopes updates to the specific installation to prevent updating
  * repositories across multiple installations with the same githubRepoId.
  */
-export async function handlePush(event: PushEvent): Promise<Response> {
+export async function handlePush(
+  event: PushEvent,
+  observation?: GitHubWebhookObservationContext
+): Promise<Response> {
   const {
     ref,
     repository,
@@ -57,7 +81,7 @@ export async function handlePush(event: PushEvent): Promise<Response> {
   const installationId = installation?.id;
   const branchName = parseBranchName(ref);
 
-  log.info("[handlePush] Processing push event", {
+  log.debug("[handlePush] Processing push event", {
     repositoryFullName: repository.full_name,
     githubRepoId: repository.id,
     installationId,
@@ -67,8 +91,21 @@ export async function handlePush(event: PushEvent): Promise<Response> {
     afterSha: after,
   });
 
+  if (!installationId) {
+    log.error("github_repository_default_authority_malformed", {
+      outcome: "missing_installation_id",
+      providerRepositoryId: String(repository.id),
+      repositoryFullName: repository.full_name,
+      source: RepositoryDefaultSource.PushWebhook,
+    });
+    return NextResponse.json({
+      message: "Push event missing installation identity, ignoring",
+      ok: true,
+    });
+  }
+
   if (!branchName) {
-    log.info("[handlePush] Skipping non-branch ref", { ref });
+    log.debug("[handlePush] Skipping non-branch ref", { ref });
     return NextResponse.json({
       message: "Ignoring non-branch push ref",
       ok: true,
@@ -82,13 +119,14 @@ export async function handlePush(event: PushEvent): Promise<Response> {
         fullName: repository.full_name,
         removedAt: null,
         installation: {
-          ...(installationId ? { installationId: String(installationId) } : {}),
+          installationId: String(installationId),
           status: GitHubInstallationStatus.ACTIVE,
           organizationId: { not: null },
         },
       },
       select: {
         id: true,
+        installationId: true,
         fullName: true,
         installation: { select: { organizationId: true } },
       },
@@ -105,6 +143,7 @@ export async function handlePush(event: PushEvent): Promise<Response> {
       ok: true,
     });
   }
+  const organizationId = repositoryRow.installation.organizationId;
 
   const lastPushedAt = repository.pushed_at
     ? new Date(
@@ -114,15 +153,70 @@ export async function handlePush(event: PushEvent): Promise<Response> {
       )
     : new Date();
 
-  await withDb((db) =>
-    db.gitHubInstallationRepository.updateMany({
-      where: { id: repositoryRow.id },
-      data: { lastPushedAt },
-    })
+  const defaultAuthority = mapGitHubWebhookRepositoryDefaultAuthority(
+    repository,
+    RepositoryDefaultSource.PushWebhook,
+    observation,
+    lastPushedAt
   );
-
-  if (branchName === repository.default_branch) {
-    log.info("[handlePush] Skipping default branch push", {
+  const authorityEventIsCurrent = await withDb.tx(async (tx) => {
+    if (
+      observation &&
+      !(await claimRepositoryDefaultObservationReceipt(tx, {
+        organizationId,
+        targetKind:
+          RepositoryDefaultObservationTargetKind.GitHubInstallationRepository,
+        targetId: repositoryRow.id,
+        source: RepositoryDefaultSource.PushWebhook,
+        observationKey: observation.deliveryId,
+        observedAt: observation.observedAt,
+      }))
+    ) {
+      return false;
+    }
+    const pushedAtUpdate = await tx.gitHubInstallationRepository.updateMany({
+      where: {
+        id: repositoryRow.id,
+        OR: [{ lastPushedAt: null }, { lastPushedAt: { lt: lastPushedAt } }],
+      },
+      data: { lastPushedAt },
+    });
+    const authorityEventIsCurrent =
+      pushedAtUpdate.count > 0 ||
+      (await hasEqualStoredPushTime(tx, repositoryRow.id, lastPushedAt));
+    if (defaultAuthority && authorityEventIsCurrent) {
+      await bulkUpsertInstallationRepositories(
+        tx,
+        repositoryRow.installationId,
+        [
+          {
+            githubRepoId: String(repository.id),
+            fullName: repository.full_name,
+            name: repository.name,
+            owner: repository.owner.login,
+            private: repository.private,
+            defaultAuthority,
+          },
+        ]
+      );
+    }
+    return authorityEventIsCurrent;
+  });
+  const eligibilityInput = buildPushEligibilityInput({
+    organizationId,
+    repositoryId: repositoryRow.id,
+    repositoryFullName: repositoryRow.fullName,
+    branchName,
+    defaultAuthority,
+    useFreshObservation: Boolean(authorityEventIsCurrent && observation),
+  });
+  const branchEligibility = await withDb((db) =>
+    resolveCloudBranchWriteEligibility(db, eligibilityInput)
+  );
+  if (branchEligibility.kind === "not_materialized") {
+    log.debug("[handlePush] Branch push excluded by default authority", {
+      cause: branchEligibility.cause,
+      reason: branchEligibility.reason,
       branchName,
       repositoryFullName: repository.full_name,
     });
@@ -134,35 +228,37 @@ export async function handlePush(event: PushEvent): Promise<Response> {
 
   const source = await resolvePushSourceArtifact({
     organizationId: repositoryRow.installation.organizationId,
-    repositoryId: repositoryRow.id,
+    repositoryFullName: repositoryRow.fullName,
     branchName,
   });
   if (source.kind === "skipped") {
-    log.info("[handlePush] No-slug branch ownership skipped", {
+    log.debug("[handlePush] Branch push skipped, no resolvable lineage", {
       branchName,
       repositoryFullName: repository.full_name,
       reason: source.reason,
-      candidateProjectIds: source.candidateProjectIds,
     });
     return NextResponse.json({
-      message: "No deterministic project repository default for branch push",
+      message: "No resolvable lineage for branch push",
       ok: true,
     });
   }
 
   const result = await branchService.upsertBranchArtifact({
-    organizationId: repositoryRow.installation.organizationId,
-    repositoryId: repositoryRow.id,
-    repositoryFullName: repositoryRow.fullName,
-    branchName,
+    ...eligibilityInput,
     defaultBranch: repository.default_branch,
     projectId: source.projectId,
     sourceArtifactId: source.sourceArtifactId,
+    createdById: source.createdById,
     baseBranch: repository.default_branch,
     baseBranchSource: BranchBaseBranchSource.RepositoryDefault,
     headSha: deleted ? null : after,
     headShaSource: deleted ? null : BranchHeadShaSource.PushWebhook,
     headShaObservedAt: lastPushedAt,
+    // The push payload has no documented per-delivery occurrence timestamp.
+    // Keep head ordering metadata, but let the canonical activity producer
+    // fail closed instead of treating repository state or receipt time as
+    // qualifying Last-active evidence.
+    activityAt: null,
     // PRD-510 FR2 / PLN-1099 Phase 2: a non-delete push is unambiguous push
     // evidence — stamp it set-once/earliest-wins in the service. A delete is not
     // a push, so leave push state untouched (null → service no-op, never clears).
@@ -180,30 +276,50 @@ export async function handlePush(event: PushEvent): Promise<Response> {
       result.error === Status.Conflict
         ? "Stale branch push ignored"
         : "Branch push rejected";
-    log.info("[handlePush] Branch materialization skipped", {
+    log.debug("[handlePush] Branch materialization skipped", {
       branchName,
       repositoryFullName: repository.full_name,
       status: result.error,
     });
     return NextResponse.json({ message, ok: true });
   }
+  await persistGitHubBranchActivity({
+    eventName: GitHubBranchActivityEventName.Push,
+    deliveryId: observation?.deliveryId,
+    payload: event,
+    attribution: {
+      organizationId,
+      branchArtifactId: result.value.id,
+    },
+  });
 
   if (!deleted) {
     waitUntil(
       refreshBranchFileChangeCache(result.value.id, {
         organizationId: repositoryRow.installation.organizationId,
-      }).then((refreshResult) => {
-        if (!refreshResult.ok) {
-          log.warn("[handlePush] Branch file-cache refresh did not complete", {
-            branchArtifactId: result.value.id,
-            status: refreshResult.error,
-          });
-        }
       })
+        .then((refreshResult) => {
+          if (!refreshResult.ok) {
+            log.warn(
+              "[handlePush] Branch file-cache refresh did not complete",
+              {
+                branchArtifactId: result.value.id,
+                status: refreshResult.error,
+              }
+            );
+          }
+        })
+        .catch((error) => {
+          log.warn("[handlePush] Branch file-cache refresh failed", {
+            branchArtifactId: result.value.id,
+            organizationId: repositoryRow.installation.organizationId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
     );
   }
 
-  log.info("[handlePush] Materialized branch artifact from push", {
+  log.debug("[handlePush] Materialized branch artifact from push", {
     branchArtifactId: result.value.id,
     branchName,
     githubRepoId: repository.id,
@@ -239,6 +355,19 @@ export async function handlePush(event: PushEvent): Promise<Response> {
     message: "Push event processed successfully",
     ok: true,
   });
+}
+
+/** Preserve repository authority when a newly received push is provider-stale. */
+async function hasEqualStoredPushTime(
+  tx: TransactionClient,
+  repositoryId: string,
+  incomingPushedAt: Date
+): Promise<boolean> {
+  const current = await tx.gitHubInstallationRepository.findUnique({
+    where: { id: repositoryId },
+    select: { lastPushedAt: true },
+  });
+  return current?.lastPushedAt?.getTime() === incomingPushedAt.getTime();
 }
 
 /** Parse a GitHub push `commit.timestamp`/`author.date` into a Date, else null. */
@@ -321,39 +450,57 @@ function parseBranchName(ref: string): string | null {
     : null;
 }
 
+function buildPushEligibilityInput(input: {
+  organizationId: string;
+  repositoryId: string;
+  repositoryFullName: string;
+  branchName: string;
+  defaultAuthority: RepositoryDefaultAuthority | undefined;
+  useFreshObservation: boolean;
+}): Pick<
+  UpsertBranchArtifactInput,
+  | "organizationId"
+  | "repositoryId"
+  | "repositoryFullName"
+  | "branchName"
+  | "repositoryDefaultObservation"
+> {
+  const base = {
+    organizationId: input.organizationId,
+    repositoryId: input.repositoryId,
+    repositoryFullName: input.repositoryFullName,
+    branchName: input.branchName,
+  };
+  if (!input.useFreshObservation) {
+    return base;
+  }
+  return {
+    ...base,
+    repositoryDefaultObservation: input.defaultAuthority
+      ? { authority: input.defaultAuthority }
+      : undefined,
+  };
+}
+
 type PushSourceResolution = {
   kind: "resolved";
   sourceArtifactId: string | null;
   projectId: string | null;
+  createdById: string | null;
 };
 
 type PushSourceSkip = {
   kind: "skipped";
-  reason: "ambiguous_project_default" | "missing_project_default";
-  candidateProjectIds: string[];
-};
-
-type ProjectWithRepositoryDefaults = {
-  id: string;
-  settings: unknown;
-  teams: Array<{
-    team: {
-      repositories: Array<{
-        installationRepositoryId: string;
-        isDefaultSelected: boolean;
-        isPrimary: boolean;
-      }>;
-    };
-  }>;
+  reason: PushSourceSkipReason;
 };
 
 async function resolvePushSourceArtifact({
   organizationId,
-  repositoryId,
+  repositoryFullName,
   branchName,
 }: {
   organizationId: string;
-  repositoryId: string;
+  repositoryFullName: string;
   branchName: string;
 }): Promise<PushSourceResolution | PushSourceSkip> {
   const primaryRef = pickPrimaryArtifactReference(
@@ -361,15 +508,18 @@ async function resolvePushSourceArtifact({
   );
 
   if (primaryRef) {
+    // FEA-4137: an `iss-42-*` branch may reference an existing `FEA-42` row (and
+    // an old `fea-42-*` branch a new `ISS-42` row). Resolve through cross-prefix
+    // aliases so the push links the right source artifact under either spelling.
     const artifact = await withDb((db) =>
       db.artifact.findFirst({
         where: {
           organizationId,
-          slug: primaryRef.slug,
+          slug: { in: expandSlugAliases(primaryRef.slug) },
           type: ArtifactType.DOCUMENT,
           subtype: primaryRef.docType,
         },
-        select: { id: true, projectId: true },
+        select: { id: true, createdById: true, projectId: true },
       })
     );
     if (artifact) {
@@ -377,30 +527,39 @@ async function resolvePushSourceArtifact({
         kind: "resolved",
         sourceArtifactId: artifact.id,
         projectId: artifact.projectId,
+        createdById: artifact.createdById,
       };
     }
   }
 
-  // D2: (repository_id, branch_name) is no longer unique, but in the webhook
-  // (App-repo) path repositoryId is always present and maps 1:1 to a repo full
-  // name, so findFirst by it resolves the same single row as before.
+  // Resolve any existing branch row by the PRD-510 D2 identity
+  // `(organizationId, repositoryFullName, branchName)` — the same org-scoped,
+  // App-installation-independent key `upsertBranchArtifact` writes and reads by.
+  // The webhook must NOT key this on repositoryId: the desktop producer creates
+  // a branch first-seen as non-App with `repositoryId = null` (D2/FR8), so a
+  // concrete-repositoryId lookup would miss that row, skip the push, and never
+  // reach `upsertBranchArtifact` — where the same D2 key finds the row and
+  // adopts the concrete repositoryId (upgrade-only). Using the D2 key here lets
+  // a pre-App desktop row resolve so the push adopts its id and updates it.
   const existingBranch = await withDb((db) =>
-    db.branchDetail.findFirst({
+    db.branchDetail.findUnique({
       where: {
-        repositoryId,
-        branchName,
+        organizationId_repositoryFullName_branchName: {
+          organizationId,
+          repositoryFullName: normalizeRepoFullName(repositoryFullName),
+          branchName,
+        },
       },
       select: {
         artifact: {
           select: {
-            organizationId: true,
             projectId: true,
             targetLinks: {
               where: {
                 linkType: LinkType.Produces,
                 source: { type: ArtifactType.DOCUMENT },
               },
-              select: { source: { select: { id: true } } },
+              select: { source: { select: { id: true, createdById: true } } },
               orderBy: { createdAt: "asc" },
               take: 1,
             },
@@ -410,16 +569,26 @@ async function resolvePushSourceArtifact({
     })
   );
   if (!existingBranch) {
-    return resolveFirstObservedNoSlugBranchOwnership({
-      organizationId,
-      repositoryId,
-    });
-  }
-  if (existingBranch.artifact.organizationId !== organizationId) {
+    // FEA-3325 / FEA-1749 (PLN-1354 Phase 4): there is deliberately NO
+    // repository -> project fallback here. A project may nominate default
+    // repositories for agentic execution, but that does not make a repository
+    // belong to a project — the relation does not exist in the domain. The
+    // fallback removed here inferred one anyway whenever exactly one project
+    // marked the repo `isDefaultSelected`, silently attributing an ad-hoc
+    // branch to an arbitrary project and re-attributing it the moment a second
+    // project nominated the same repo. Mirrors `resolveProjectId` in
+    // app/agent-sessions/service/project-resolution.ts, which dropped the
+    // equivalent inference from the session attribution lane.
+    //
+    // Reaching here means the branch name resolved to no artifact (no slug, or
+    // a slug that matched none) AND no producer has created a branch row under
+    // the D2 key yet, so nothing associates this branch with a project. Skip it
+    // rather than materialize under a fabricated parent. Once any producer
+    // (typically the desktop sync lane) creates the row, the lookup above
+    // resolves and subsequent pushes update it normally.
     return {
       kind: "skipped",
-      reason: "missing_project_default",
-      candidateProjectIds: [],
+      reason: PushSourceSkipReason.UnresolvedBranchLineage,
     };
   }
   const linkedSource = existingBranch.artifact.targetLinks[0]?.source ?? null;
@@ -427,82 +596,20 @@ async function resolvePushSourceArtifact({
     kind: "resolved",
     sourceArtifactId: linkedSource?.id ?? null,
     projectId: existingBranch.artifact.projectId,
+    createdById: linkedSource?.createdById ?? null,
   };
 }
 
-async function resolveFirstObservedNoSlugBranchOwnership({
-  organizationId,
-  repositoryId,
-}: {
-  organizationId: string;
-  repositoryId: string;
-}): Promise<PushSourceResolution | PushSourceSkip> {
-  const projects = await withDb((db) =>
-    db.project.findMany({
-      where: {
-        organizationId,
-        isTemplatesSentinel: false,
-      },
-      select: {
-        id: true,
-        settings: true,
-        teams: {
-          select: {
-            team: {
-              select: {
-                repositories: {
-                  select: {
-                    installationRepositoryId: true,
-                    isDefaultSelected: true,
-                    isPrimary: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    })
-  );
+/** Why a push did not materialize or update a branch artifact. */
+export const PushSourceSkipReason = {
+  /**
+   * The branch name resolved to no artifact (no slug reference, or a slug that
+   * matched none) and no producer has created a branch row under the D2 key
+   * yet, so nothing establishes lineage for it. See the FEA-3325 note in
+   * `resolvePushSourceArtifact`.
+   */
+  UnresolvedBranchLineage: "unresolved_branch_lineage",
+} as const;
 
-  const candidates = projects.filter((project) =>
-    projectDefaultContainsRepository(project, repositoryId)
-  );
-  if (candidates.length === 1) {
-    return {
-      kind: "resolved",
-      sourceArtifactId: null,
-      projectId: candidates[0].id,
-    };
-  }
-
-  return {
-    kind: "skipped",
-    reason:
-      candidates.length > 1
-        ? "ambiguous_project_default"
-        : "missing_project_default",
-    candidateProjectIds: candidates.map((project) => project.id).sort(),
-  };
-}
-
-function projectDefaultContainsRepository(
-  project: ProjectWithRepositoryDefaults,
-  repositoryId: string
-): boolean {
-  const settings = getProjectSettings((project.settings ?? {}) as JsonObject);
-  const teamRepos = project.teams.flatMap((projectTeam) =>
-    projectTeam.team.repositories.map((repo) => ({
-      installationRepositoryId: repo.installationRepositoryId,
-      isDefaultSelected: repo.isDefaultSelected,
-      isPrimary: repo.isPrimary,
-    }))
-  );
-
-  const resolved = resolveProjectRepoDefaults({
-    projectSettings: settings,
-    teamRepos,
-    teamCount: project.teams.length,
-  });
-  return resolved?.selectedRepoIds.includes(repositoryId) ?? false;
-}
+export type PushSourceSkipReason =
+  (typeof PushSourceSkipReason)[keyof typeof PushSourceSkipReason];

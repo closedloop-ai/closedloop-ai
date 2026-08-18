@@ -11,7 +11,7 @@ type ComingSoonPageProps = {
 export function ComingSoonPage({ label, icon: Icon }: ComingSoonPageProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <Header breadcrumbs={[{ label }]} />
+      <Header breadcrumbs={[{ label }]} suppressPageHeading />
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
         <Icon className="h-12 w-12 text-muted-foreground" />
         <h1 className="font-semibold text-xl">{label}</h1>

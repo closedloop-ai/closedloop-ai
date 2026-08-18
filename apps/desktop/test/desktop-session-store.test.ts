@@ -6,8 +6,8 @@ import { afterEach, beforeEach, test } from "node:test";
 import {
   type DesktopSessionRecord,
   DesktopSessionStore,
-} from "../src/main/desktop-session-store.js";
-import type { SafeStorageLike } from "../src/main/electron-safe-storage.js";
+} from "../src/main/session/desktop-session-store.js";
+import type { SafeStorageLike } from "../src/main/util/electron-safe-storage.js";
 
 let tempRoot = "";
 

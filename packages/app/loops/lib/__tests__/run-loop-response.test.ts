@@ -115,7 +115,14 @@ describe("handleRunLoopResponse — 429 rate limit", () => {
     expect(onRateLimited).not.toHaveBeenCalled();
   });
 
-  it("does not throw when onRateLimited is omitted and status is 429", () => {
+  /**
+   * `onRateLimited` is optional, and this branch used to call it with `?.` and
+   * return unconditionally — so a caller that omitted it turned a refused
+   * launch into a silent no-op. Every `use-document-generation` call site omits
+   * it and suppresses the default error toast, so 429 produced NOTHING there.
+   * A 429 with no handler must fall through to the shared fallback toast.
+   */
+  it("toasts the fallback when onRateLimited is omitted and status is 429", () => {
     const error = new ApiError("Rate limited", 429);
     const callbacks = {
       onMultipleTargets: vi.fn(),
@@ -125,6 +132,9 @@ describe("handleRunLoopResponse — 429 rate limit", () => {
     };
 
     expect(() => handleRunLoopResponse(error, callbacks)).not.toThrow();
+
+    expect(mockToastError).toHaveBeenCalledOnce();
+    expect(mockToastError).toHaveBeenCalledWith("Rate limited");
     expect(callbacks.onMultipleTargets).not.toHaveBeenCalled();
     expect(callbacks.onBackendMismatch).not.toHaveBeenCalled();
     expect(callbacks.onSuccess).not.toHaveBeenCalled();

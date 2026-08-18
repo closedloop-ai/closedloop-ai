@@ -288,9 +288,14 @@ function RoleBarActions({
 }>) {
   return (
     <>
+      {/* Icon-only message controls. On a touch pointer there is no hover to
+          reveal them, so `touch:opacity-100` keeps them visible; the mouse hover
+          reveal is unchanged. Each carries a real `aria-label` (a `title` alone
+          is not an accessible name, WCAG 4.1.2). */}
       {onDelete && !isStreaming && (
         <button
-          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:text-destructive group-hover:opacity-100"
+          aria-label="Delete message"
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 touch:opacity-100 transition-all hover:text-destructive group-hover:opacity-100"
           onClick={onDelete}
           title="Delete message"
           type="button"
@@ -300,7 +305,8 @@ function RoleBarActions({
       )}
       {onCopy && !isStreaming && (
         <button
-          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-foreground active:scale-95 group-hover:opacity-100"
+          aria-label="Copy message"
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 touch:opacity-100 transition-all hover:scale-125 hover:text-foreground active:scale-95 group-hover:opacity-100"
           onClick={onCopy}
           title="Copy message"
           type="button"
@@ -310,7 +316,8 @@ function RoleBarActions({
       )}
       {onForward && !isStreaming && (
         <button
-          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 transition-all hover:scale-125 hover:text-primary active:scale-95 group-hover:opacity-100"
+          aria-label={forwardLabel ?? "Forward message"}
+          className="cursor-pointer rounded p-0.5 text-muted-foreground/50 opacity-0 touch:opacity-100 transition-all hover:scale-125 hover:text-primary active:scale-95 group-hover:opacity-100"
           onClick={onForward}
           title={forwardLabel ?? "Forward message"}
           type="button"

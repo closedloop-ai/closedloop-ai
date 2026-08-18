@@ -11,6 +11,15 @@ export const INNER_CIRCUMFERENCE = 2 * Math.PI * INNER_PATH_RADIUS;
 
 export const ICON_STROKE_WIDTH = 1.66;
 
+/**
+ * Track (background circle) color for low-emphasis empty rings — the Todo
+ * (Feature) and Draft (Document) states. A muted-foreground tint that stays
+ * legible without competing with filled/progress states. Shared so the domain
+ * status icons and the generic StatusIcon render an identical empty-ring track.
+ */
+export const EMPTY_RING_TRACK_COLOR =
+  "color-mix(in oklch, var(--muted-foreground) 40%, transparent)";
+
 /** Filled circle with a white check mark — used for 100%/complete states. */
 export function FilledCheckCircle({ fill }: { fill: string }) {
   return (
@@ -80,3 +89,19 @@ export function FilledExclamationCircle({ fill }: { fill: string }) {
     </>
   );
 }
+
+/**
+ * Half-length of the "nothing to measure" dash, in viewBox units. The dash spans
+ * `CENTER ± this`, so it reads as a deliberate mark rather than a hairline while
+ * staying clear of where a ring's stroke would sit.
+ */
+export const NO_MEASURE_DASH_HALF_LENGTH = 5;
+
+/**
+ * Stroke color for the "nothing to measure" dash. Full-strength
+ * `--muted-foreground`, not the 40% `EMPTY_RING_TRACK_COLOR`: the ring track is
+ * a backdrop behind an arc and can afford to be faint, but the dash IS the whole
+ * mark, so it has to hold 3:1 non-text contrast on its own (WCAG 1.4.11) in both
+ * themes.
+ */
+export const NO_MEASURE_DASH_COLOR = "var(--muted-foreground)";

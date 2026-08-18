@@ -1,3 +1,6 @@
+import { BranchTagAvailability } from "@repo/api/src/types/branch";
+import { TagColor } from "@repo/api/src/types/tag";
+import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
 import { autoRollbackTransaction } from "@/__tests__/utils/db-helpers";
@@ -53,6 +56,65 @@ describeIfDb("org-scope read isolation across two tenants (FEA-2734)", () => {
         orgA.branchArtifactId
       );
       expect(own?.id).toBe(orgA.branchArtifactId);
+    });
+  });
+
+  it("projects only organization-owned generic tags through real list and detail reads", async () => {
+    await autoRollbackTransaction(async () => {
+      const { orgA, orgB } = await seedTwoOrgFixture();
+      const ownedTag = await withDb((db) =>
+        db.tag.create({
+          data: {
+            organizationId: orgA.organizationId,
+            createdById: orgA.userId,
+            name: "backend",
+            color: TagColor.Blue,
+          },
+          select: { id: true },
+        })
+      );
+      const foreignTag = await withDb((db) =>
+        db.tag.create({
+          data: {
+            organizationId: orgB.organizationId,
+            createdById: orgB.userId,
+            name: "foreign",
+            color: TagColor.Red,
+          },
+          select: { id: true },
+        })
+      );
+      await withDb((db) =>
+        db.tagArtifact.createMany({
+          data: [
+            { tagId: ownedTag.id, artifactId: orgA.branchArtifactId },
+            // Seed the malformed relation the read boundary must never expose.
+            { tagId: foreignTag.id, artifactId: orgA.branchArtifactId },
+          ],
+        })
+      );
+
+      const tagPermissions = { canApply: true, canRemove: false };
+      const list = await branchReadService.listBranches(
+        orgA.organizationId,
+        LIST_QUERY,
+        tagPermissions
+      );
+      const detail = await branchReadService.getBranchDetail(
+        orgA.organizationId,
+        orgA.branchArtifactId,
+        tagPermissions
+      );
+      const expectedProjection = {
+        artifactId: orgA.branchArtifactId,
+        tagAvailability: BranchTagAvailability.Available,
+        tagPermissions,
+        tags: [{ id: ownedTag.id, name: "backend", color: TagColor.Blue }],
+      };
+
+      expect(list.items).toHaveLength(1);
+      expect(list.items[0]).toMatchObject(expectedProjection);
+      expect(detail).toMatchObject(expectedProjection);
     });
   });
 

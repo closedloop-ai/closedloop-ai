@@ -11,6 +11,7 @@ export function createDatabaseMockModule(
       DOCUMENT: "DOCUMENT",
       BRANCH: "BRANCH",
       DEPLOYMENT: "DEPLOYMENT",
+      SESSION: "SESSION",
     },
     ArtifactSubtype: {
       PRD: "PRD",
@@ -80,7 +81,9 @@ export function createLoopDocumentIngestionMockModule(): MockModule {
 
 export function createPrLinkageMockModule(): MockModule {
   return {
-    ensurePrLinkageRecords: vi.fn().mockResolvedValue(undefined),
+    ensurePrLinkageRecords: vi
+      .fn()
+      .mockResolvedValue({ status: "linked", branchArtifactId: "branch-1" }),
   };
 }
 

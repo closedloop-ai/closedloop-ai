@@ -1,5 +1,5 @@
 import { GitHubDiffSide } from "@repo/api/src/types/branch-view";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   clampRangeToContiguous,
   collectRenderedLineNumbers,
@@ -87,6 +87,66 @@ function buildDeletedOnlySplitViewTable(): HTMLElement {
   return root;
 }
 
+function buildMalformedRowTable(): HTMLElement {
+  const root = document.createElement("div");
+  root.innerHTML = `
+    <table>
+      <tbody>
+        <tr data-testid="malformed"><td><pre>1</pre></td></tr>
+        <tr data-testid="right-target">
+          <td><pre>41</pre></td>
+          <td><pre></pre></td>
+          <td class="left"><pre>old</pre></td>
+          <td><pre>42</pre></td>
+          <td><pre>+</pre></td>
+          <td class="right"><pre>new target</pre></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+  return root;
+}
+
+/** A row with no left-classed cell at all, distinct from a left cell that is merely empty. */
+function buildMissingLeftCellTable(): HTMLElement {
+  const root = document.createElement("div");
+  root.innerHTML = `
+    <table>
+      <tbody>
+        <tr data-testid="missing-left">
+          <td><pre>40</pre></td>
+          <td><pre></pre></td>
+          <td><pre></pre></td>
+          <td><pre>42</pre></td>
+          <td><pre>+</pre></td>
+          <td class="right"><pre>new target</pre></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+  return root;
+}
+
+/** A row with no right-classed cell at all, distinct from a right cell that is merely empty. */
+function buildMissingRightCellTable(): HTMLElement {
+  const root = document.createElement("div");
+  root.innerHTML = `
+    <table>
+      <tbody>
+        <tr data-testid="missing-right">
+          <td><pre>41</pre></td>
+          <td><pre></pre></td>
+          <td class="left"><pre>old</pre></td>
+          <td><pre>42</pre></td>
+          <td><pre></pre></td>
+          <td><pre>new</pre></td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+  return root;
+}
+
 function setBoxMetrics(
   element: HTMLElement,
   metrics: {
@@ -167,6 +227,13 @@ describe("branch diff target helpers", () => {
     expect(findRenderedRightLineRow(root, 42)).toBeNull();
   });
 
+  test("skips a malformed row with fewer than two rendered cells", () => {
+    const root = buildMalformedRowTable();
+    expect(findRenderedRightLineRow(root, 42)?.dataset.testid).toBe(
+      "right-target"
+    );
+  });
+
   test("builds row-wide split-view highlight ids for the rendered target row", () => {
     const root = buildSplitViewTable();
     const row = findRenderedRightLineRow(root, 42);
@@ -198,6 +265,28 @@ describe("branch diff target helpers", () => {
     }
 
     expect(getRenderedSplitRowHighlightIds(row)).toEqual(["L-42"]);
+  });
+
+  test("omits the left highlight id when the row has no left-side cell at all", () => {
+    const root = buildMissingLeftCellTable();
+    const row = root.querySelector<HTMLTableRowElement>("tr");
+    expect(row).not.toBeNull();
+    if (!row) {
+      return;
+    }
+
+    expect(getRenderedSplitRowHighlightIds(row)).toEqual(["R-42"]);
+  });
+
+  test("omits the right highlight id when the row has no right-side cell at all", () => {
+    const root = buildMissingRightCellTable();
+    const row = root.querySelector<HTMLTableRowElement>("tr");
+    expect(row).not.toBeNull();
+    if (!row) {
+      return;
+    }
+
+    expect(getRenderedSplitRowHighlightIds(row)).toEqual(["L-41"]);
   });
 
   test("finds the ScrollArea viewport", () => {
@@ -366,6 +455,76 @@ describe("branch diff target helpers", () => {
     expect(outerScrollTo).toHaveBeenCalledWith({ top: 540 });
   });
 
+  test("falls back to setting scrollTop directly when a scroll container has no scrollTo method", () => {
+    const root = buildSplitViewTable();
+    const viewport = findScrollAreaViewport(root);
+    const row = findRenderedRightLineRow(root, 42);
+    expect(viewport).not.toBeNull();
+    expect(row).not.toBeNull();
+    if (!(viewport && row)) {
+      return;
+    }
+
+    setBoxMetrics(viewport, {
+      clientHeight: 400,
+      rect: { bottom: 500, height: 400, top: 100 },
+      scrollHeight: 1200,
+    });
+    setBoxMetrics(row, {
+      clientHeight: 20,
+      rect: { bottom: 850, height: 20, top: 830 },
+    });
+
+    // jsdom does not implement HTMLElement.prototype.scrollTo, so this
+    // container naturally exercises the direct-assignment fallback.
+    expect(typeof viewport.scrollTo).not.toBe("function");
+    expect(scrollRowIntoDiffViewport(root, row)).toBe(true);
+    expect(viewport.scrollTop).toBe(540);
+  });
+
+  describe("document scrolling element as a scroll target", () => {
+    afterEach(() => {
+      Reflect.deleteProperty(document, "scrollingElement");
+    });
+
+    test("includes the document scrolling element as a scroll target when the environment exposes one", () => {
+      const root = buildSplitViewTable();
+      const row = findRenderedRightLineRow(root, 42);
+      expect(row).not.toBeNull();
+      if (!row) {
+        return;
+      }
+
+      const documentScroller = document.createElement("div");
+      const documentScrollerScrollTo = vi.fn(function scrollTo(
+        this: HTMLElement,
+        options?: ScrollToOptions
+      ) {
+        this.scrollTop = Number(options?.top ?? 0);
+      });
+      setBoxMetrics(documentScroller, {
+        clientHeight: 400,
+        rect: { bottom: 500, height: 400, top: 100 },
+        scrollHeight: 1200,
+      });
+      Object.defineProperty(documentScroller, "scrollTo", {
+        configurable: true,
+        value: documentScrollerScrollTo,
+      });
+      Object.defineProperty(document, "scrollingElement", {
+        configurable: true,
+        value: documentScroller,
+      });
+      setBoxMetrics(row, {
+        clientHeight: 20,
+        rect: { bottom: 850, height: 20, top: 830 },
+      });
+
+      expect(scrollRowIntoDiffViewport(root, row)).toBe(true);
+      expect(documentScrollerScrollTo).toHaveBeenCalledWith({ top: 540 });
+    });
+  });
+
   test("returns false when no effective scroll container can move the row", () => {
     const root = buildSplitViewTable();
     const viewport = findScrollAreaViewport(root);
@@ -404,6 +563,27 @@ describe("contiguous range clamping", () => {
         (a, b) => a - b
       )
     ).toEqual([40, 41, 42]);
+  });
+
+  test("excludes the left line set when no row has a left-side cell", () => {
+    const root = buildMissingLeftCellTable();
+    expect(collectRenderedLineNumbers(root, GitHubDiffSide.Left)).toEqual(
+      new Set()
+    );
+  });
+
+  test("excludes the right line set when no row has a right-side cell", () => {
+    const root = buildMissingRightCellTable();
+    expect(collectRenderedLineNumbers(root, GitHubDiffSide.Right)).toEqual(
+      new Set()
+    );
+  });
+
+  test("excludes a line when no digits render before an empty content cell", () => {
+    const root = buildAddedOnlySplitViewTable();
+    expect(collectRenderedLineNumbers(root, GitHubDiffSide.Left)).toEqual(
+      new Set()
+    );
   });
 
   test("keeps a range that stays within one contiguous hunk", () => {

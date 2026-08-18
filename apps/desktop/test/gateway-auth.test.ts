@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, test } from "node:test";
-import { LocalSessionStore } from "../src/main/local-session-store.js";
+import { LocalSessionStore } from "../src/main/auth/local-session-store.js";
 import { GatewayRouter } from "../src/server/router.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";

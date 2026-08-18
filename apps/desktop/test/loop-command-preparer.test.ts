@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { DesktopCommandEvent } from "../src/main/cloud-protocol.js";
+import type { DesktopCommandEvent } from "../src/main/cloud/cloud-protocol.js";
 import {
   type LoopCommandPreparationOptions,
   prepareLoopCommandForExecution,
-} from "../src/main/loop-command-preparer.js";
-import type { FetchLoopExecutionCredentialsOptions } from "../src/main/loop-execution-credentials-client.js";
-import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/signed-loop-launch-error.js";
+} from "../src/main/loop/loop-command-preparer.js";
+import type { FetchLoopExecutionCredentialsOptions } from "../src/main/loop/loop-execution-credentials-client.js";
+import { SIGNED_LOOP_LAUNCH_MANAGED_KEY_ERROR } from "../src/main/loop/signed-loop-launch-error.js";
 
 test("preserves signed loop kill request body without fetching execution credentials", async () => {
   let fetchCalled = false;

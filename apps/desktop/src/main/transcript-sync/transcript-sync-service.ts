@@ -4,150 +4,138 @@
  * PLN-1288 tasks 3 & 5). Entirely separate from `AgentSessionSyncService`. It:
  *   - drains queued files through the per-file executor on a 5s tick, `live`
  *     ahead of `backfill`, at bounded concurrency, with exponential-backoff +
- *     consecutive-failure dead-lettering;
+ *     consecutive-failure dead-lettering (`transcript-drain-queue.ts`);
  *   - runs a full discovery sweep on start and every 30 min — the startup
  *     mini-backfill that catches sessions worked while the app was closed and,
- *     on first connect, IS the historical backfill (PLN-1288 tasks 3 & 5, AC7);
- *   - accepts hook-driven enqueue: terminal Claude events (Stop / SessionEnd /
- *     SubagentStop) enqueue immediately; activity events enqueue on a ~5 min
- *     max-wait debounce so an active session's S3 object stays within ~5 min
- *     (AC4) without uploading on every tool call.
+ *     on first connect, IS the historical backfill (AC7)
+ *     (`transcript-discovery-sweep.ts`);
+ *   - accepts live enqueue from both live-capture channels: terminal Claude
+ *     hook events flush immediately, activity events (hook OR watcher) enqueue
+ *     on a ~5 min max-wait debounce so an active session's S3 object stays
+ *     within ~5 min (AC4) without uploading on every tool call
+ *     (`transcript-live-enqueue.ts`).
  *
- * All timing, filesystem, clock, and hashing is injected so the queue/backoff
- * logic is unit-testable without real timers or disk. Transcript failures never
- * touch the metadata lane (PRD core decision 5) — this service shares nothing
- * with it.
+ * This file is the coordinator, not the implementation: it owns the injected
+ * options, the timer/clock/hash seams, the shared gates (`shouldRun`,
+ * `tierAllowsSync`), and the store+executor cache, and hands each lane to the
+ * module that owns it. All timing, filesystem, clock, and hashing is injected
+ * so those lanes are unit-testable without real timers or disk. Transcript
+ * failures never touch the metadata lane (PRD core decision 5) — this service
+ * shares nothing with it.
  */
 import { createHash } from "node:crypto";
-import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
-import type { TranscriptSyncExecutor } from "./transcript-sync-executor.js";
+import type { TranscriptForceArchiveResult } from "../../shared/transcript-read-contract.js";
 import {
-  TRANSCRIPT_MAIN_FILE_KEY,
-  TRANSCRIPT_SYNC_ACTIVITY_DEBOUNCE_MS,
+  emptyTranscriptStatusCounts,
+  TranscriptEgressGate,
+  TranscriptSyncClass,
+} from "../../shared/transcript-sync-status-contract.js";
+import type { TranscriptSyncStore } from "../database/transcript-sync-store.js";
+import {
+  BackgroundTaskTracker,
+  type QuiesceOutcome,
+  type QuiesceTimerDeps,
+} from "../lifecycle/sync-lane-quiesce.js";
+import { TranscriptDiscoverySweeper } from "./transcript-discovery-sweep.js";
+import {
+  TranscriptDrainQueue,
+  type TranscriptSyncRuntime,
+} from "./transcript-drain-queue.js";
+import type { TranscriptLiveActivity } from "./transcript-live-activity.js";
+import { TranscriptLiveEnqueue } from "./transcript-live-enqueue.js";
+import type { TranscriptObserveDeps } from "./transcript-observe.js";
+import { observeTranscriptRef } from "./transcript-observe.js";
+import {
+  defaultScheduler,
+  type Scheduler,
+  type TimerHandle,
+  type TranscriptHookPayload,
+  type TranscriptSyncServiceOptions,
+  type TranscriptSyncStatusSnapshot,
+} from "./transcript-sync-options.js";
+import {
   TRANSCRIPT_SYNC_CONCURRENCY,
-  TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES,
   TRANSCRIPT_SYNC_SWEEP_INTERVAL_MS,
   TRANSCRIPT_SYNC_TICK_INTERVAL_MS,
   type TranscriptFileRef,
-  type TranscriptFileStat,
-  type TranscriptFingerprint,
-  TranscriptSyncClass,
-  transcriptQueueKey,
-  transcriptRetryDelayMs,
 } from "./transcript-sync-types.js";
 
-const READY_BATCH_LIMIT = 32;
-
-/** Terminal Claude hook events that flush a transcript immediately. */
-const TERMINAL_HOOK_TYPES = new Set(["Stop", "SessionEnd", "SubagentStop"]);
-
-type TimerHandle = ReturnType<typeof setTimeout>;
-
-type Scheduler = {
-  setInterval: (fn: () => void, ms: number) => TimerHandle;
-  clearInterval: (handle: TimerHandle) => void;
-  setTimeout: (fn: () => void, ms: number) => TimerHandle;
-  clearTimeout: (handle: TimerHandle) => void;
-};
-
-const defaultScheduler: Scheduler = {
-  setInterval: (fn, ms) => setInterval(fn, ms),
-  clearInterval: (handle) => clearInterval(handle),
-  setTimeout: (fn, ms) => setTimeout(fn, ms),
-  clearTimeout: (handle) => clearTimeout(handle),
-};
-
-/** Per-file sync status projected for the availability UI (FEA-2716/2717). */
-export type TranscriptFileStatus = {
-  externalSessionId: string;
-  fileKey: string;
-  sourceHarness: string;
-  status: string;
-  syncClass: string;
-  syncedByteOffset: number;
-  lastSize: number | null;
-  lastError: string | null;
-};
-
-export type TranscriptSyncStatusSnapshot = {
-  enabled: boolean;
-  online: boolean;
-  files: TranscriptFileStatus[];
-};
-
-/** Minimal shape of a Claude hook payload the service consumes for triggers. */
-export type TranscriptHookPayload = {
-  hookType: string;
-  sessionId?: string;
-  transcriptPath?: string;
-};
-
-export type TranscriptSyncServiceOptions = {
-  /** Null until the db-host runtime is ready; the service no-ops until then. */
-  getStore: () => TranscriptSyncStore | null;
-  /** Build the executor bound to a concrete store (cached per store identity). */
-  buildExecutor: (store: TranscriptSyncStore) => TranscriptSyncExecutor;
-  /**
-   * Full-sweep discovery of every local transcript file. May be async so the
-   * caller can lazy-`import()` the collector-backed discovery module (keeping it
-   * off the desktop boot static-import graph — the agent-dashboard boundary).
-   */
-  discover: () => TranscriptFileRef[] | Promise<TranscriptFileRef[]>;
-  /** Feature-flag gate — when false the service never runs (hard no-op). */
-  isEnabled: () => boolean;
-  /** Signed-in + relay-ready: uploads only proceed when true. */
-  isOnline: () => boolean;
-  /**
-   * The live compute target id (or null offline). Passed through to
-   * `observe` so a file synced under a previous target re-queues after a
-   * target switch. Optional: omitted disables the target-switch check.
-   */
-  getComputeTargetId?: () => string | null;
-  /**
-   * Guard for hook-supplied transcript paths — the hook listener is an
-   * unauthenticated localhost endpoint, so a path MUST be validated (anchored
-   * under the known transcript root) before it can drive a raw byte upload.
-   * Returns the resolved REAL path (symlinks followed, canonicalized) to be
-   * uploaded, or `null` to reject; the service enqueues that resolved path so
-   * the executor never re-opens the original symlink (which could be repointed
-   * at a secret between check and read). Required, not optional: a new call site
-   * that forgets to wire it would otherwise silently allow uploading any file
-   * readable by the process. Tests pass a trivial `(path) => path` and exercise
-   * the real anchoring separately.
-   */
-  resolveTrustedTranscriptPath: (path: string) => string | null;
-  statFile: (path: string) => Promise<TranscriptFileStat | null>;
-  now?: () => string;
-  sourcePathHash?: (path: string) => string;
-  log?: (message: string) => void;
-  concurrency?: number;
-  scheduler?: Scheduler;
-};
-
-function isoAfter(nowIso: string, deltaMs: number): string {
-  return new Date(Date.parse(nowIso) + deltaMs).toISOString();
-}
+/**
+ * ISS-4710: minimum wall-clock gap between `drain gated:` diagnostic lines. The
+ * drain runs on a 5s tick, so a persistent gate (tier not consented, offline, no
+ * store) would log every tick without this throttle. 60s keeps the signal (the
+ * lane is gated) without flooding the log.
+ */
+const DRAIN_GATED_LOG_THROTTLE_MS = 60_000;
 
 export class TranscriptSyncService {
   private started = false;
   private drainTimer: TimerHandle | null = null;
   private sweepTimer: TimerHandle | null = null;
-  private readonly debounceTimers = new Map<string, TimerHandle>();
-  private readonly inFlight = new Set<string>();
-  private draining = false;
-  /** Boot recovery (requeue stale `uploading` rows) runs once per start. */
-  private staleRequeued = false;
   private cachedStore: TranscriptSyncStore | null = null;
-  private cachedExecutor: TranscriptSyncExecutor | null = null;
+  private cachedExecutor: TranscriptSyncRuntime["executor"] | null = null;
+  /**
+   * ISS-4710: last wall-clock ms a `drain gated:` diagnostic was emitted, so the
+   * gated-drain log is throttled to at most one line per
+   * {@link DRAIN_GATED_LOG_THROTTLE_MS} — the 5s drain tick would otherwise spam
+   * it on every tick while a gate (tier/enabled/online/store) holds the lane off.
+   */
+  private lastDrainGatedLogAt = 0;
+  /**
+   * ISS-4903: every detached lane task is tracked here so shutdown can await
+   * their tail before the db-host is disposed. Without it, `stop()` clears the
+   * timers but a tick already in the air keeps reading/writing against a handle
+   * the shutdown sequence is about to tear down — the `transcript task error:
+   * db-host exited (code: 0)` cascade that landed AFTER shutdown reported clean.
+   */
+  private readonly inFlight = new BackgroundTaskTracker();
 
   private readonly opts: TranscriptSyncServiceOptions;
   private readonly scheduler: Scheduler;
   private readonly concurrency: number;
 
+  private readonly observe: TranscriptObserveDeps;
+  private readonly queue: TranscriptDrainQueue;
+  private readonly sweeper: TranscriptDiscoverySweeper;
+  private readonly live: TranscriptLiveEnqueue;
+
   constructor(options: TranscriptSyncServiceOptions) {
     this.opts = options;
     this.scheduler = options.scheduler ?? defaultScheduler;
     this.concurrency = options.concurrency ?? TRANSCRIPT_SYNC_CONCURRENCY;
+    this.observe = {
+      statFile: (filePath) => this.opts.statFile(filePath),
+      hashPath: (filePath) => this.hashPath(filePath),
+      getComputeTargetId: () => this.opts.getComputeTargetId?.() ?? null,
+      now: () => this.now(),
+    };
+    this.queue = new TranscriptDrainQueue({
+      shouldRun: () => this.shouldRun(),
+      resolveRuntime: () => this.resolveRuntime(),
+      getComputeTargetId: () => this.opts.getComputeTargetId?.() ?? null,
+      now: () => this.now(),
+      log: (message) => this.log(message),
+      concurrency: this.concurrency,
+    });
+    this.sweeper = new TranscriptDiscoverySweeper({
+      opts: this.opts,
+      observe: this.observe,
+      tierAllowsSync: () => this.tierAllowsSync(),
+      now: () => this.now(),
+      log: (message) => this.log(message),
+      concurrency: this.concurrency,
+      drainOnce: () => this.drainOnce(),
+    });
+    this.live = new TranscriptLiveEnqueue({
+      opts: this.opts,
+      scheduler: this.scheduler,
+      observe: this.observe,
+      tierAllowsSync: () => this.tierAllowsSync(),
+      log: (message) => this.log(message),
+      runDetached: (work) => this.runDetached(work),
+      enqueueAndDrain: (ref) => this.enqueueAndDrain(ref),
+      drainOnce: () => this.drainOnce(),
+    });
   }
 
   private now(): string {
@@ -164,17 +152,64 @@ export class TranscriptSyncService {
     this.opts.log?.(message);
   }
 
-  /** Fire-and-forget a self-contained async task, logging any stray rejection. */
+  /**
+   * Fire-and-forget a self-contained async task, logging any stray rejection.
+   *
+   * ISS-4903: the task is ALSO registered with `inFlight` so `quiesce()` can
+   * await it during shutdown. Registration happens on the caught chain, so a
+   * task that rejects still counts as settled (its failure is logged here, not
+   * swallowed by the tracker).
+   */
   private runDetached(work: Promise<unknown>): void {
-    work.catch((error) =>
-      this.log(
-        `transcript task error: ${error instanceof Error ? error.message : String(error)}`
+    this.inFlight.track(
+      work.catch((error) =>
+        this.log(
+          `transcript task error: ${error instanceof Error ? error.message : String(error)}`
+        )
       )
     );
   }
 
+  /**
+   * PRD-532 §7 consent gate: whether the chosen `syncObservabilityTier` permits
+   * full session detail to leave the machine. Only the `full` tier does; tier
+   * `metadata`/`local`, or the not-yet-consented `null`, returns false.
+   * Undefined gate = not wired (legacy) = allowed. Gates both the drain
+   * (`shouldRun`) AND the queue-growing
+   * observe paths (sweep + hook enqueue) so a closed tier can't silently
+   * accumulate `queued` rows the drain will never process (FEA-3463).
+   */
+  private tierGate(): TranscriptEgressGate {
+    return this.opts.getCloudSyncTierGate?.() ?? TranscriptEgressGate.Allowed;
+  }
+
+  private tierAllowsSync(): boolean {
+    // Only `Allowed` drains. `Unresolved` is not a denial, but it is not a
+    // permission either, so egress keeps failing closed on it exactly as the
+    // boolean gate did — the tri-state exists for the STATUS SNAPSHOT, which
+    // must not render a pending policy as a settled no.
+    return this.tierGate() === TranscriptEgressGate.Allowed;
+  }
+
+  /**
+   * ISS-5387: is this lane actually able to deliver right now — started AND
+   * every gate open (consent tier, feature enablement, cloud online, store
+   * ready)? Read by the sync burn-down reporter, which must be able to tell
+   * `idle_not_running` from `drained`: an empty transcript ledger behind a shut
+   * gate has not caught up, it has stopped trying. Cheap and synchronous, unlike
+   * {@link getStatusSnapshot}, so it is safe to poll.
+   */
+  isRunning(): boolean {
+    return this.started && this.shouldRun();
+  }
+
   private shouldRun(): boolean {
+    // Honor the user's sync-observability consent: when the tier gate reports
+    // the chosen tier does not permit full session detail to leave the machine,
+    // suppress the transcript lane entirely — the consent contract wins over the
+    // feature-flag/online preconditions.
     return (
+      this.tierAllowsSync() &&
       this.opts.isEnabled() &&
       this.opts.isOnline() &&
       Boolean(this.opts.getStore())
@@ -182,10 +217,7 @@ export class TranscriptSyncService {
   }
 
   /** Resolve the current store + a matching executor, rebuilding on identity change. */
-  private resolveRuntime(): {
-    store: TranscriptSyncStore;
-    executor: TranscriptSyncExecutor;
-  } | null {
+  private resolveRuntime(): TranscriptSyncRuntime | null {
     const store = this.opts.getStore();
     if (!store) {
       this.cachedStore = null;
@@ -221,14 +253,10 @@ export class TranscriptSyncService {
     this.started = false;
     // A fresh start re-runs crash recovery (a stop mid-upload can itself leave
     // an `uploading` row behind).
-    this.staleRequeued = false;
-    // Release the drain re-entrancy guard so a stop-then-start doesn't stall:
-    // an interrupted drainOnce's Promise.all may still be pending, and without
-    // this the restarted ticks would early-return until it settles. `inFlight`
-    // is deliberately NOT cleared — those uploads are still running and their
-    // keys must keep blocking a concurrent re-claim of the same file; each
-    // processFile clears its own key in its finally.
-    this.draining = false;
+    this.sweeper.resetForRestart();
+    // The queue's in-flight claims are deliberately NOT cleared — those uploads
+    // are still running and their keys must keep blocking a concurrent re-claim
+    // of the same file; each drain clears its own key in its finally.
     if (this.drainTimer) {
       this.scheduler.clearInterval(this.drainTimer);
       this.drainTimer = null;
@@ -237,10 +265,18 @@ export class TranscriptSyncService {
       this.scheduler.clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
-    for (const handle of this.debounceTimers.values()) {
-      this.scheduler.clearTimeout(handle);
-    }
-    this.debounceTimers.clear();
+    // Reset the drain-gated log throttle alongside the timers so a stop/start
+    // within DRAIN_GATED_LOG_THROTTLE_MS does not inherit the prior lifecycle's
+    // timestamp and suppress the new lifecycle's first diagnostic.
+    this.lastDrainGatedLogAt = 0;
+    this.live.stop();
+    // ISS-5337: the OpenCode materialize pass runs in a utilityProcess, so a
+    // sweep can be parked on it for up to its own timeout. Cancel it here —
+    // `stop()` runs BEFORE `quiesceDesktopSyncLanes` (ISS-4903), which waits
+    // only ~2s for the detached sweep — otherwise the lane reports itself
+    // stopped while a worker keeps writing projections, and the sweep resumes
+    // against a db-host that shutdown has already disposed.
+    this.opts.stopMaterialize?.();
   }
 
   /** Re-evaluate on a connectivity/state change (mirrors AgentSessionSyncService). */
@@ -250,239 +286,131 @@ export class TranscriptSyncService {
     }
   }
 
-  /**
-   * Discovery sweep: fingerprint every local transcript file (backfill class) so
-   * files created/grown while the app was closed are enqueued, then drain. Runs
-   * even while offline (queue is built locally; uploads wait for connectivity).
-   */
-  async sweepOnce(): Promise<void> {
-    if (!this.opts.isEnabled()) {
-      return;
-    }
-    const store = this.opts.getStore();
-    if (!store) {
-      return;
-    }
-    // Boot recovery: revive rows a crash/force-quit stranded in `uploading`
-    // (ready queries exclude them and observe won't re-queue them). Runs on the
-    // first sweep the store is available for, before the drain.
-    if (!this.staleRequeued) {
-      this.staleRequeued = true;
-      const revived = await store.requeueStale(this.now());
-      if (revived > 0) {
-        this.log(`transcript sync requeued ${revived} stale uploading row(s)`);
-      }
-    }
-    const refs = await this.opts.discover();
-    await this.observeRefsBounded(store, refs);
-    this.log(`transcript sweep observed ${refs.length} file(s)`);
-    await this.drainOnce();
+  /** Full discovery pass — see `transcript-discovery-sweep.ts`. */
+  sweepOnce(): Promise<void> {
+    return this.sweeper.sweepOnce();
+  }
+
+  /** One bounded-concurrency upload pass — see `transcript-drain-queue.ts`. */
+  drainOnce(): Promise<void> {
+    this.logIfDrainGated();
+    return this.queue.drainOnce();
   }
 
   /**
-   * Observe every discovered ref at bounded concurrency (FEA-2835). The sweep
-   * previously awaited `observeRef` one ref at a time, so the whole discovery
-   * pass was a sequential chain of `fs.stat` + `store.observe` IPC round-trips —
-   * re-run on startup and every 30 min over potentially thousands of historical
-   * transcripts. Running the refs in fixed-size batches lets the per-item stat
-   * I/O and db-host IPC latency pipeline (the write-transactions still serialize
-   * in the db-host regardless). There is no per-item try/catch, so a bounded
-   * `Promise.all` preserves the prior abort-on-first-error behavior: a rejected
-   * observe fails the batch and no later batch starts.
+   * ISS-4710: emit a throttled `drain gated:` diagnostic when a tick can't drain
+   * because a gate (`shouldRun`: tier/enabled/online/store) holds the lane off —
+   * observability for the "transcript lane uploaded nothing during a rebuild"
+   * condition. The queue re-checks the same gate and no-ops the actual drain; this
+   * only adds the throttled note. Not the drain contract — behavior tests assert
+   * the executor call, not this log.
    */
-  private async observeRefsBounded(
-    store: TranscriptSyncStore,
-    refs: TranscriptFileRef[]
-  ): Promise<void> {
-    const batchSize = Math.max(1, this.concurrency);
-    for (let start = 0; start < refs.length; start += batchSize) {
-      const batch = refs.slice(start, start + batchSize);
-      await Promise.all(
-        batch.map((ref) =>
-          this.observeRef(store, ref, TranscriptSyncClass.Backfill)
-        )
-      );
-    }
-  }
-
-  private async observeRef(
-    store: TranscriptSyncStore,
-    ref: TranscriptFileRef,
-    syncClass: TranscriptSyncClass
-  ): Promise<void> {
-    const fileStat = await this.opts.statFile(ref.sourcePath);
-    await store.observe({
-      externalSessionId: ref.externalSessionId,
-      fileKey: ref.fileKey,
-      sourceHarness: ref.sourceHarness,
-      sourcePath: ref.sourcePath,
-      sourcePathHash: this.hashPath(ref.sourcePath),
-      mtimeMs: fileStat?.mtimeMs ?? null,
-      size: fileStat?.size ?? null,
-      syncClass,
-      currentComputeTargetId: this.opts.getComputeTargetId?.() ?? null,
-      now: this.now(),
-    });
-  }
-
-  /** Drain queued/failed files that are due, live-first, at bounded concurrency. */
-  async drainOnce(): Promise<void> {
-    if (this.draining || !this.shouldRun()) {
+  private logIfDrainGated(): void {
+    if (this.shouldRun()) {
       return;
     }
-    const runtime = this.resolveRuntime();
-    if (!runtime) {
+    const nowMs = Date.now();
+    if (nowMs - this.lastDrainGatedLogAt < DRAIN_GATED_LOG_THROTTLE_MS) {
       return;
     }
-    const available = this.concurrency - this.inFlight.size;
-    if (available <= 0) {
-      return;
-    }
-    this.draining = true;
-    try {
-      const ready = await runtime.store.listReady(
-        this.now(),
-        READY_BATCH_LIMIT
-      );
-      const toRun: TranscriptFingerprint[] = [];
-      for (const fp of ready) {
-        const key = transcriptQueueKey(fp.externalSessionId, fp.fileKey);
-        if (!this.inFlight.has(key) && toRun.length < available) {
-          this.inFlight.add(key); // claim synchronously before any await
-          toRun.push(fp);
-        }
-      }
-      await Promise.all(
-        toRun.map((fp) => this.processFile(runtime.store, runtime.executor, fp))
-      );
-    } finally {
-      this.draining = false;
-    }
-  }
-
-  private async processFile(
-    store: TranscriptSyncStore,
-    executor: TranscriptSyncExecutor,
-    fp: TranscriptFingerprint
-  ): Promise<void> {
-    const key = transcriptQueueKey(fp.externalSessionId, fp.fileKey);
-    try {
-      const result = await executor.syncFile(fp);
-      // A successful upload that isn't caught up leaves the row queued; the next
-      // drain tick continues it (bounded progress, no recursion).
-      if (result.kind === "uploaded" && !result.caughtUp) {
-        this.log(`transcript ${fp.fileKey} advanced; more to sync`);
-      }
-    } catch (error) {
-      const retryCount = fp.retryCount + 1;
-      const dead = retryCount >= TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES;
-      const message = error instanceof Error ? error.message : String(error);
-      const nowIso = this.now();
-      await store.recordFailure({
-        externalSessionId: fp.externalSessionId,
-        fileKey: fp.fileKey,
-        retryCount,
-        dead,
-        nextAttemptAt: dead
-          ? null
-          : isoAfter(nowIso, transcriptRetryDelayMs(retryCount)),
-        lastError: message,
-        now: nowIso,
-      });
-      this.log(
-        `transcript ${fp.fileKey} failed (attempt ${retryCount}${dead ? ", dead-lettered" : ""}): ${message}`
-      );
-    } finally {
-      this.inFlight.delete(key);
-    }
-  }
-
-  /**
-   * Hook-driven enqueue for a Claude session's MAIN transcript. Terminal events
-   * flush immediately; activity events schedule a single ~5 min max-wait timer
-   * (not reset by later activity) so continuous sessions upload on a steady
-   * cadence. Subagent files are covered by the discovery sweep.
-   */
-  enqueueClaudeHook(payload: TranscriptHookPayload): void {
-    if (
-      !(this.opts.isEnabled() && payload.sessionId && payload.transcriptPath)
-    ) {
-      return;
-    }
-    // The hook listener is an unauthenticated localhost endpoint, so the path is
-    // attacker-influenceable. Resolve it to a canonical real path under the known
-    // transcript root before it can drive a raw byte upload of an arbitrary
-    // readable file; enqueue that resolved path (not the original candidate) so a
-    // symlink can't be repointed at a secret between this check and the upload.
-    const trustedPath = this.opts.resolveTrustedTranscriptPath(
-      payload.transcriptPath
+    this.lastDrainGatedLogAt = nowMs;
+    this.log(
+      `drain gated: enabled=${this.opts.isEnabled()} online=${this.opts.isOnline()} tierAllows=${this.tierAllowsSync()} store=${Boolean(this.opts.getStore())}`
     );
-    if (trustedPath === null) {
-      this.log(`transcript hook rejected untrusted path: ${payload.hookType}`);
-      return;
-    }
-    const ref: TranscriptFileRef = {
-      externalSessionId: payload.sessionId,
-      fileKey: TRANSCRIPT_MAIN_FILE_KEY,
-      sourceHarness: "claude",
-      sourcePath: trustedPath,
-    };
-    const key = transcriptQueueKey(ref.externalSessionId, ref.fileKey);
-    if (TERMINAL_HOOK_TYPES.has(payload.hookType)) {
-      this.clearDebounce(key);
-      this.runDetached(this.enqueueAndDrain(ref));
-      return;
-    }
-    // Activity: only arm a timer if none is pending (max-wait, not trailing).
-    if (!this.debounceTimers.has(key)) {
-      const handle = this.scheduler.setTimeout(() => {
-        this.debounceTimers.delete(key);
-        this.runDetached(this.enqueueAndDrain(ref));
-      }, TRANSCRIPT_SYNC_ACTIVITY_DEBOUNCE_MS);
-      this.debounceTimers.set(key, handle);
-    }
   }
 
-  private clearDebounce(key: string): void {
-    const handle = this.debounceTimers.get(key);
-    if (handle) {
-      this.scheduler.clearTimeout(handle);
-      this.debounceTimers.delete(key);
-    }
+  /** Claude hook-channel trigger — see `transcript-live-enqueue.ts`. */
+  enqueueClaudeHook(payload: TranscriptHookPayload): void {
+    this.live.enqueueClaudeHook(payload);
   }
 
-  private async enqueueAndDrain(ref: TranscriptFileRef): Promise<void> {
-    const store = this.opts.getStore();
-    if (!store) {
-      return;
-    }
-    await this.observeRef(store, ref, TranscriptSyncClass.Live);
-    await this.drainOnce();
+  /** Harness-agnostic watcher/hook activity trigger (FEA-3640 / ISS-4390). */
+  enqueueActivity(activity: TranscriptLiveActivity): void {
+    this.live.enqueueActivity(activity);
+  }
+
+  /**
+   * User-initiated force-archive of one oversized transcript (FEA-3489).
+   *
+   * ISS-4903 (codex review): this is lane work like any timer/sweep task, just
+   * driven by an IPC request instead of a tick, so it is registered with
+   * `inFlight` too. Without that, a user hitting "Sync this transcript anyway"
+   * and then quitting (or applying an update) mid-upload would let `quiesce()`
+   * report drained on an empty tracker; shutdown would close the db-host and the
+   * force operation's next settle would fail against a disposed proxy while
+   * shutdown still reported clean. `track` takes no ownership of the promise and
+   * is not a rejection handler, so the caller's promise (and its errors) still
+   * reach the IPC caller unchanged.
+   */
+  forceSyncOversized(
+    externalSessionId: string,
+    fileKey: string
+  ): Promise<TranscriptForceArchiveResult> {
+    const work = this.queue.forceSyncOversized(externalSessionId, fileKey);
+    this.inFlight.track(work);
+    return work;
   }
 
   /** Per-file sync status for the desktop availability UI (FEA-2716/2717). */
   async getStatusSnapshot(): Promise<TranscriptSyncStatusSnapshot> {
+    // ISS-4716: resolve the store ONCE and derive both `storeReady` and the
+    // read below from that same local. Calling the live getter twice could
+    // report `storeReady: true` alongside empty counts collected after the
+    // runtime went away, which is exactly the "healthy but structurally
+    // impossible" state the renderer footnote must never claim.
+    const store = this.opts.getStore();
     const base = {
       enabled: this.opts.isEnabled(),
       online: this.opts.isOnline(),
+      tierGate: this.tierGate(),
+      storeReady: Boolean(store),
     };
+    if (!store) {
+      return { ...base, statusCounts: emptyTranscriptStatusCounts() };
+    }
+    return { ...base, statusCounts: await store.statusCounts() };
+  }
+
+  /**
+   * Observe one ref as `live` and drain. FEA-3463: don't observe a live row the
+   * drain will never process while the consent tier is closed — it would sit
+   * `queued` and grow the queue unboundedly (the drain's `shouldRun` gate
+   * already suppresses uploads). This gate is at the write point rather than at
+   * the hook entry, so a debounce timer armed while the tier was open but firing
+   * after it closed is suppressed too. The 30-min sweep re-discovers this
+   * session once tier is set.
+   */
+  private async enqueueAndDrain(ref: TranscriptFileRef): Promise<void> {
+    if (!this.tierAllowsSync()) {
+      return;
+    }
     const store = this.opts.getStore();
     if (!store) {
-      return { ...base, files: [] };
+      return;
     }
-    const rows = await store.listAll();
-    return {
-      ...base,
-      files: rows.map((row) => ({
-        externalSessionId: row.externalSessionId,
-        fileKey: row.fileKey,
-        sourceHarness: row.sourceHarness,
-        status: row.status,
-        syncClass: row.syncClass,
-        syncedByteOffset: row.syncedByteOffset,
-        lastSize: row.lastSize,
-        lastError: row.lastError,
-      })),
-    };
+    await observeTranscriptRef(
+      this.observe,
+      store,
+      ref,
+      TranscriptSyncClass.Live
+    );
+    await this.drainOnce();
+  }
+
+  /**
+   * ISS-4903: await the tail of every detached lane task, bounded by
+   * `budgetMs`. Shutdown calls this AFTER `stop()` (so no new tick is armed)
+   * and BEFORE the db-host is disposed, so an upload already in the air commits
+   * instead of failing against a torn-down handle.
+   *
+   * Returns `timed_out` when work is still in the air at the budget — the
+   * caller degrades the shutdown verdict rather than reporting a false `clean`.
+   * The budget is never unbounded: a wedged upload cannot hold the app open.
+   */
+  quiesce(
+    budgetMs: number,
+    timerDeps?: QuiesceTimerDeps
+  ): Promise<QuiesceOutcome> {
+    return this.inFlight.quiesce(budgetMs, timerDeps);
   }
 }

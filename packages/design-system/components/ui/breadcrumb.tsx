@@ -50,11 +50,17 @@ function BreadcrumbLink({
 }
 
 function BreadcrumbPage({ className, ...props }: React.ComponentProps<"span">) {
+  // The current-page crumb is the page you're on, not a navigable link, so it
+  // carries only `aria-current="page"` (WAI-ARIA APG breadcrumb pattern) and no
+  // `role="link"`. Exposing it as a disabled link made assistive tech announce a
+  // link that goes nowhere, and — because Playwright's accessible-name matching
+  // is a case-insensitive substring — a current crumb whose title contains a
+  // parent label (e.g. "fea-2939 sessions bravo" on a Sessions detail page) was
+  // matched as a second "Sessions" link, breaking `getByRole('link', …)` in the
+  // breadcrumb with a strict-mode duplicate (FEA-4260).
   return (
     <span
       data-slot="breadcrumb-page"
-      role="link"
-      aria-disabled="true"
       aria-current="page"
       className={cn("text-foreground font-normal", className)}
       {...props}

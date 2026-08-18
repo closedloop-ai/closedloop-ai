@@ -91,17 +91,22 @@ describe("PlansView light-plan adapter", () => {
       )
     );
 
-    const selectedProps = lightPlansShellMock.mock.calls.at(-1)?.[0];
-    expect(selectedProps.selectedPlan).toEqual(
-      expect.objectContaining({ id: "plan-1" })
-    );
-    expect(selectedProps.versions[0]).toEqual(
-      expect.objectContaining({
-        id: "version-1",
-        versionNumber: 1,
-        contentMarkdown: "version content",
-      })
-    );
+    // The versions land via an async state update after getPlanVersions
+    // resolves — wait for the re-render that carries them instead of reading
+    // the last call's props immediately (scheduling-sensitive otherwise).
+    await waitFor(() => {
+      const selectedProps = lightPlansShellMock.mock.calls.at(-1)?.[0];
+      expect(selectedProps.selectedPlan).toEqual(
+        expect.objectContaining({ id: "plan-1" })
+      );
+      expect(selectedProps.versions[0]).toEqual(
+        expect.objectContaining({
+          id: "version-1",
+          versionNumber: 1,
+          contentMarkdown: "version content",
+        })
+      );
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "confirm plan" }));
     fireEvent.click(screen.getByRole("button", { name: "reject plan" }));

@@ -13,6 +13,7 @@ import {
   Sparkles,
   Workflow,
 } from "lucide-react";
+import { SESSION_STATUS_FILTER_OPTIONS } from "./session-status-filters";
 import type {
   ActivityItem,
   AlwaysAllowRule,
@@ -205,13 +206,13 @@ export const sessionControls = {
     { value: "opencode", label: "OpenCode" },
   ],
   statusValue: "",
+  /* ISS-4654 (review, #4651): the hand-listed Completed/Abandoned options went
+   * with the retired vocabulary. Spreading the SHIPPED facet option list means
+   * this Storybook control can never again offer a value the real Status menu
+   * does not, and its labels cannot drift from the badge. */
   statusOptions: [
     { value: "", label: "All" },
-    { value: "active", label: "Active" },
-    { value: "waiting", label: "Waiting" },
-    { value: "completed", label: "Completed" },
-    { value: "error", label: "Error" },
-    { value: "abandoned", label: "Abandoned" },
+    ...SESSION_STATUS_FILTER_OPTIONS,
   ],
   sortValue: "time",
   sortOptions: [

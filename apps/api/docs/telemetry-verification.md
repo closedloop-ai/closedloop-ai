@@ -301,6 +301,8 @@ These fields are set by `buildEntry()` in `log.ts` (line 166) and by the telemet
 | `service` | Value of `DD_SERVICE` env var | `buildEntry()` reads `DD.service` |
 | `ddtags` | `env:{DD_ENV},version:{RELEASE_VERSION},git_sha:{VERCEL_GIT_COMMIT_SHA}` | `buildEntry()` line 166: `env:${DD.env},version:${DD.version},git_sha:${DD.gitSha}` |
 | `level` | `"info"` \| `"warn"` \| `"error"` | Set by `logAtSeverity()` based on event severity |
+| `status` | Same value as `level` | Datadog's reserved severity attribute (ISS-6341); stamped by `stampSeverity()` on both the intake payload and the structured console line. Query severity with `status:error`, not `@level:error` |
+| `callerStatus` | Whatever the call site passed as `status` | Present only when a `log.*` call's meta carried its own `status` (usually an HTTP code); relocated so it cannot be read as the log's severity |
 | `timestamp` | ISO 8601 UTC string | Set by `buildEntry()` at emit time |
 
 ### Telemetry payload fields (inside `message`)

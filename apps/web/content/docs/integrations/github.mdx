@@ -1,0 +1,38 @@
+---
+title: GitHub
+description: 'Connect GitHub to link repositories, branches, and pull requests'
+---
+
+The GitHub integration links your repositories to Closedloop so features can be
+associated with branches and pull requests.
+
+## Connect
+
+Connection uses GitHub's OAuth + App installation flow:
+
+1. In the web app, open **Settings → Integrations → GitHub** and start the
+   connect flow.
+2. Authorize the Closedloop GitHub App and choose which repositories to grant
+   access to. GitHub redirects back with an authorization code.
+3. The app completes the connection server-side — exchanging the code for a
+   token, verifying your access to the installation, claiming it, and syncing
+   repositories. The `client_secret` never leaves the API server.
+
+## Status
+
+```bash
+curl https://api.closedloop.ai/integrations/github \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+Once connected you can list the accessible repositories and their branches and
+pull requests. The MCP server exposes `get-github-status`.
+
+## Disconnect
+
+Disconnect from **Settings → Integrations → GitHub**, or over the API:
+
+```bash
+curl -X DELETE https://api.closedloop.ai/integrations/github \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```

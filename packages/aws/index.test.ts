@@ -10,8 +10,12 @@ import {
   getSignedDownloadUrlWithDisposition,
   getSignedTranscriptDownloadUrl,
   getSignedUploadUrl,
+  getTranscriptObjectBytesRange,
+  headAttachmentObject,
+  headAttachmentsBucket,
   INTELLIGENT_TIERING_STORAGE_CLASS,
   listObjects,
+  putAttachmentObject,
 } from "./index";
 
 const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn() }));
@@ -29,6 +33,8 @@ vi.mock("@aws-sdk/client-s3", () => {
     DeleteObjectCommand: MockCommand,
     DeleteObjectsCommand: MockCommand,
     GetObjectCommand: MockCommand,
+    HeadBucketCommand: MockCommand,
+    HeadObjectCommand: MockCommand,
     ListObjectsV2Command: MockCommand,
     PutObjectCommand: MockCommand,
     S3Client: class S3Client {
@@ -81,6 +87,38 @@ describe("getSignedUploadUrl", () => {
     expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
       expiresIn: 900,
     });
+  });
+});
+
+describe("putAttachmentObject", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    s3Send.mockResolvedValue({});
+  });
+
+  it("sends attachment bytes with MIME type and content length directly to S3", async () => {
+    const body = new Uint8Array([1, 2, 3]);
+
+    await putAttachmentObject({
+      body,
+      bucket: "attachment-bucket",
+      contentLength: body.byteLength,
+      contentType: "image/png",
+      key: "attachments/org/doc/file",
+    });
+
+    expect(s3Send).toHaveBeenCalledOnce();
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input).toMatchObject({
+      Body: body,
+      Bucket: "attachment-bucket",
+      ContentLength: 3,
+      ContentType: "image/png",
+      Key: "attachments/org/doc/file",
+    });
+    expect(getSignedUrl).not.toHaveBeenCalled();
   });
 });
 
@@ -205,6 +243,74 @@ describe("getSignedTranscriptDownloadUrl", () => {
     expect(getSignedUrl).toHaveBeenCalledWith(expect.anything(), command, {
       expiresIn: 300,
     });
+  });
+});
+
+describe("getTranscriptObjectBytesRange", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("issues a bounded ranged GET and returns only the requested prefix bytes", async () => {
+    const payload = new Uint8Array([1, 2, 3, 4]);
+    s3Send.mockResolvedValueOnce({
+      Body: { transformToByteArray: () => Promise.resolve(payload) },
+    });
+
+    const result = await getTranscriptObjectBytesRange(
+      "org/ct/ext/main.jsonl",
+      4,
+      "transcripts-bucket"
+    );
+
+    expect(Buffer.from(result as Buffer)).toEqual(Buffer.from(payload));
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    // Range is 0-based inclusive: bytes 0..(maxBytes-1).
+    expect(command.input).toMatchObject({
+      Bucket: "transcripts-bucket",
+      Key: "org/ct/ext/main.jsonl",
+      Range: "bytes=0-3",
+    });
+  });
+
+  it("floors the range at a single byte for a zero/negative cap", async () => {
+    s3Send.mockResolvedValueOnce({
+      Body: {
+        transformToByteArray: () => Promise.resolve(new Uint8Array([9])),
+      },
+    });
+
+    await getTranscriptObjectBytesRange("k", 0, "transcripts-bucket");
+
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input.Range).toBe("bytes=0-0");
+  });
+
+  it("returns null for a missing object (NoSuchKey) instead of throwing", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("no such key"), { name: "NoSuchKey" })
+    );
+
+    const result = await getTranscriptObjectBytesRange(
+      "missing",
+      100,
+      "transcripts-bucket"
+    );
+    expect(result).toBeNull();
+  });
+
+  it("rethrows a non-404 S3 error", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("access denied"), { name: "AccessDenied" })
+    );
+
+    await expect(
+      getTranscriptObjectBytesRange("k", 100, "transcripts-bucket")
+    ).rejects.toThrow("access denied");
   });
 });
 
@@ -445,5 +551,98 @@ describe("getCatalogAssetBytes", () => {
     await expect(
       getCatalogAssetBytes("k", "plugin-store-bucket")
     ).rejects.toBeInstanceOf(CatalogAssetTooLargeError);
+  });
+});
+
+describe("headAttachmentObject", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the object metadata when the key exists", async () => {
+    s3Send.mockResolvedValueOnce({ ContentLength: 12, ETag: '"abc"' });
+
+    await expect(headAttachmentObject("attachments/o/d/k")).resolves.toEqual({
+      byteSize: 12,
+      etag: '"abc"',
+    });
+  });
+
+  it("returns null on an authoritative per-key 404", async () => {
+    s3Send.mockRejectedValueOnce({
+      name: "NoSuchKey",
+      $metadata: { httpStatusCode: 404 },
+    });
+
+    await expect(headAttachmentObject("attachments/o/d/k")).resolves.toBeNull();
+  });
+
+  it("THROWS on a NoSuchBucket 404 instead of reporting the key absent", async () => {
+    // The catastrophic conflation: NoSuchBucket is also HTTP 404, so a
+    // status-only test would report every key in a deleted or misconfigured
+    // bucket as absent — and the row sweep deletes on absence. The caller must
+    // see an error it can classify as indeterminate, not a `null`.
+    s3Send.mockRejectedValueOnce({
+      name: "NoSuchBucket",
+      $metadata: { httpStatusCode: 404 },
+    });
+
+    await expect(headAttachmentObject("attachments/o/d/k")).rejects.toEqual(
+      expect.objectContaining({ name: "NoSuchBucket" })
+    );
+  });
+
+  it("THROWS when only the wire-format Code names the missing bucket", async () => {
+    // Same systemic failure, surfaced under the S3 error body's `Code` rather
+    // than the SDK error name.
+    s3Send.mockRejectedValueOnce({
+      name: "NotFound",
+      Code: "NoSuchBucket",
+      $metadata: { httpStatusCode: 404 },
+    });
+
+    await expect(headAttachmentObject("attachments/o/d/k")).rejects.toEqual(
+      expect.objectContaining({ Code: "NoSuchBucket" })
+    );
+  });
+
+  it("throws on a non-404 failure (indeterminate, not absent)", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("slow down"), {
+        name: "SlowDown",
+        $metadata: { httpStatusCode: 503 },
+      })
+    );
+
+    await expect(headAttachmentObject("attachments/o/d/k")).rejects.toThrow(
+      "slow down"
+    );
+  });
+});
+
+describe("headAttachmentsBucket", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves and probes the configured bucket when it is reachable", async () => {
+    s3Send.mockResolvedValueOnce({});
+
+    await expect(headAttachmentsBucket()).resolves.toBeUndefined();
+
+    const command = s3Send.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(command.input).toEqual({ Bucket: "test-bucket" });
+  });
+
+  it("rejects when the bucket is missing, so the caller can fail the whole run", async () => {
+    s3Send.mockRejectedValueOnce(
+      Object.assign(new Error("NoSuchBucket"), { name: "NoSuchBucket" })
+    );
+
+    await expect(headAttachmentsBucket("attachment-bucket")).rejects.toThrow(
+      "NoSuchBucket"
+    );
   });
 });

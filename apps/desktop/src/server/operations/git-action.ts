@@ -1,14 +1,20 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+import {
+  GitGatewayErrorCategory,
+  GitHookType,
+} from "@closedloop-ai/loops-api/friendly-error";
 import type {
   OperationDispatcher,
   OperationRequestContext,
 } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
 import { parseBody } from "./parse-body.js";
 import { json, jsonError } from "./response-utils.js";
+import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome } from "./symphony-utils.js";
 
 type GitAction =
@@ -21,6 +27,8 @@ type GitAction =
   | "sync-status";
 
 const MAX_STDERR_EXCERPT_CHARS = 1200;
+
+const BRANCH_NAME_DISALLOWED_REGEX = /[^a-zA-Z0-9-_/]/g;
 
 export function registerGitActionRoutes(
   dispatcher: OperationDispatcher,
@@ -55,7 +63,7 @@ export function registerGitActionRoutes(
         jsonError(context, 403, {
           error: "directory not allowed",
           code: LoopErrorCode.RepoNotAllowed,
-          details: { category: "repo_not_allowed" },
+          details: { category: GitGatewayErrorCategory.RepoNotAllowed },
         });
         return;
       }
@@ -114,7 +122,7 @@ export function registerGitActionRoutes(
         jsonError(context, 404, {
           error: "repository not found",
           code: LoopErrorCode.RepoNotFound,
-          details: { category: "repo_not_found" },
+          details: { category: GitGatewayErrorCategory.RepoNotFound },
         });
         return;
       }
@@ -141,13 +149,18 @@ async function handleStatus(
     ["rev-parse", "--abbrev-ref", "HEAD"],
     "status"
   );
-  const statusOutput = await gitRead(
+  // Porcelain output is column-significant: `XY <path>`, where X is the index
+  // (staged) column and Y is the worktree column. Do NOT trim the whole
+  // output — a leading space in the first entry's status columns is
+  // meaningful, and trimming it would shift the parse by a column. `gitReadRaw`
+  // preserves the leading columns.
+  const statusOutput = await gitReadRaw(
     processManager,
     repoPath,
     ["status", "--porcelain"],
     "status"
   );
-  const lines = statusOutput.split("\n").filter(Boolean);
+  const lines = statusOutput.split("\n").filter((line) => line.length > 0);
 
   const modified: string[] = [];
   const created: string[] = [];
@@ -155,21 +168,23 @@ async function handleStatus(
   const staged: string[] = [];
 
   for (const line of lines) {
-    const statusCode = line.slice(0, 2);
-    const file = line.slice(3).trim();
-    if (!file) {
+    const entry = parsePorcelainLine(line);
+    if (!entry) {
       continue;
     }
-    if (statusCode.includes("M")) {
+    const { indexStatus, worktreeStatus, file } = entry;
+    if (indexStatus === "M" || worktreeStatus === "M") {
       modified.push(file);
     }
-    if (statusCode.includes("A") || statusCode === "??") {
+    if (indexStatus === "A" || worktreeStatus === "A" || indexStatus === "?") {
       created.push(file);
     }
-    if (statusCode.includes("D")) {
+    if (indexStatus === "D" || worktreeStatus === "D") {
       deleted.push(file);
     }
-    if (statusCode[0] && statusCode[0] !== "?" && statusCode[0] !== " ") {
+    // The index (X) column marks a staged change; a space or `?` there is not
+    // staged. Renames/copies (`R`/`C`) are staged index changes.
+    if (indexStatus !== "?" && indexStatus !== " ") {
       staged.push(file);
     }
   }
@@ -192,7 +207,16 @@ async function handleBranch(
     return;
   }
 
-  const sanitizedBranch = branchName.replaceAll(/[^a-zA-Z0-9-_/]/g, "-");
+  const sanitizedBranch = sanitizeBranchName(branchName);
+  // A branch name that reduces to a leading hyphen (e.g. `--force`, `-D`) would
+  // be parsed by git as an option, not a ref: `branch --list --force` lists all
+  // branches and `checkout --force` discards local changes. Reject it outright.
+  if (sanitizedBranch.startsWith("-")) {
+    json(context, 400, {
+      error: "branchName must not start with a hyphen",
+    });
+    return;
+  }
   const branchesOutput = await gitRead(
     processManager,
     repoPath,
@@ -321,10 +345,11 @@ async function handleBranchDiff(
     if (!line.trim()) {
       continue;
     }
-    const [statusCode, file] = line.split(/\s+/, 2);
-    if (!file) {
+    const entry = parseNameStatusLine(line);
+    if (!entry) {
       continue;
     }
+    const { statusCode, file } = entry;
     if (statusCode.startsWith("A")) {
       files.created.push(file);
     } else if (statusCode.startsWith("D")) {
@@ -402,10 +427,23 @@ async function resolveTrackingBranch(
     ["branch", "-r"],
     "sync-status"
   );
-  if (branches.includes("origin/main")) {
+  // Parse exact trimmed ref lines rather than substring-matching, so
+  // `origin/mainline` / `origin/masterpiece` are not mistaken for the default
+  // branch (which would then fail the `rev-list` against a nonexistent ref).
+  const refs = new Set(
+    branches
+      .split("\n")
+      .map((line) => line.trim())
+      // Drop the `origin/HEAD -> origin/main` alias row.
+      .map((line) =>
+        line.includes(" -> ") ? line.split(" -> ")[0].trim() : line
+      )
+      .filter(Boolean)
+  );
+  if (refs.has("origin/main")) {
     return "origin/main";
   }
-  if (branches.includes("origin/master")) {
+  if (refs.has("origin/master")) {
     return "origin/master";
   }
   return null;
@@ -417,11 +455,75 @@ async function gitRead(
   args: string[],
   action: GitAction
 ): Promise<string> {
-  const result = await processManager.exec("git", args, repoPath);
+  return (await gitReadRaw(processManager, repoPath, args, action)).trim();
+}
+
+/**
+ * Like {@link gitRead} but returns stdout without trimming, for callers whose
+ * parsing depends on leading/trailing whitespace (e.g. `status --porcelain`,
+ * whose leading status columns are column-significant).
+ */
+async function gitReadRaw(
+  processManager: ProcessManager,
+  repoPath: string,
+  args: string[],
+  action: GitAction
+): Promise<string> {
+  const result = await processManager.exec(
+    getResolvedGitPath(),
+    args,
+    repoPath,
+    { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
+  );
   if (result.exitCode !== 0) {
     throw GitActionError.fromResult(action, args, result);
   }
-  return result.stdout.trim();
+  return result.stdout;
+}
+
+type PorcelainEntry = {
+  indexStatus: string;
+  worktreeStatus: string;
+  file: string;
+};
+
+/**
+ * Parses a single `git status --porcelain` line into its index (X) and
+ * worktree (Y) status columns and the affected path. The status is exactly the
+ * first two characters; the path begins at column 3. For rename/copy entries
+ * (`R`/`C`) the path is `old -> new`; the destination path is reported.
+ */
+function parsePorcelainLine(line: string): PorcelainEntry | null {
+  if (line.length < 4) {
+    return null;
+  }
+  const indexStatus = line[0];
+  const worktreeStatus = line[1];
+  let rawPath = line.slice(3).trim();
+  if (!rawPath) {
+    return null;
+  }
+  const renameArrow = rawPath.indexOf(" -> ");
+  if (renameArrow !== -1) {
+    rawPath = rawPath.slice(renameArrow + " -> ".length).trim();
+  }
+  const file = unquotePorcelainPath(rawPath);
+  if (!file) {
+    return null;
+  }
+  return { indexStatus, worktreeStatus, file };
+}
+
+/**
+ * Git quotes paths containing unusual characters in double quotes with C-style
+ * escapes. Strip the surrounding quotes for the common quoted-path case; leave
+ * unquoted paths (including plain spaces, which git does not quote) untouched.
+ */
+function unquotePorcelainPath(rawPath: string): string {
+  if (rawPath.length >= 2 && rawPath.startsWith('"') && rawPath.endsWith('"')) {
+    return rawPath.slice(1, -1);
+  }
+  return rawPath;
 }
 
 async function gitRun(
@@ -430,7 +532,12 @@ async function gitRun(
   args: string[],
   action: GitAction
 ): Promise<void> {
-  const result = await processManager.exec("git", args, repoPath);
+  const result = await processManager.exec(
+    getResolvedGitPath(),
+    args,
+    repoPath,
+    { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
+  );
   if (result.exitCode !== 0) {
     throw GitActionError.fromResult(action, args, result);
   }
@@ -498,7 +605,7 @@ function classifyGitActionError(error: GitActionError) {
       code: LoopErrorCode.SpawnFailed,
       details: {
         action: error.action,
-        category: "spawn_failed",
+        category: GitGatewayErrorCategory.SpawnFailed,
         stderrExcerpt: error.stderrExcerpt,
       },
     };
@@ -511,7 +618,7 @@ function classifyGitActionError(error: GitActionError) {
       code: LoopErrorCode.ProcessFailed,
       details: {
         action: "commit",
-        category: "pre_commit_hook",
+        category: GitGatewayErrorCategory.PreCommitHook,
         hookType: classifyHookType(output),
         stderrExcerpt: error.stderrExcerpt,
       },
@@ -524,7 +631,7 @@ function classifyGitActionError(error: GitActionError) {
       code: LoopErrorCode.ProcessFailed,
       details: {
         action: "push",
-        category: "git_push_auth",
+        category: GitGatewayErrorCategory.GitPushAuth,
         stderrExcerpt: error.stderrExcerpt,
       },
     };
@@ -535,7 +642,7 @@ function classifyGitActionError(error: GitActionError) {
     code: LoopErrorCode.ProcessFailed,
     details: {
       action: error.action,
-      category: "git_command_failed",
+      category: GitGatewayErrorCategory.GitCommandFailed,
       exitCode: error.exitCode,
       stderrExcerpt: error.stderrExcerpt,
     },
@@ -552,7 +659,7 @@ function isCommitHookFailure(error: GitActionError): boolean {
     normalizedOutput.includes("pre-commit") ||
     normalizedOutput.includes("husky") ||
     normalizedOutput.includes("hook") ||
-    classifyHookType(output) !== "unknown"
+    classifyHookType(output) !== GitHookType.Unknown
   );
 }
 
@@ -563,37 +670,35 @@ function getGitActionOutput(error: GitActionError): string {
   );
 }
 
-function classifyHookType(
-  output: string
-): "lint" | "test" | "typecheck" | "format" | "unknown" {
+function classifyHookType(output: string): GitHookType {
   const normalizedOutput = output.toLowerCase();
   if (
     normalizedOutput.includes("eslint") ||
     normalizedOutput.includes("lint")
   ) {
-    return "lint";
+    return GitHookType.Lint;
   }
   if (
     normalizedOutput.includes("typecheck") ||
     normalizedOutput.includes("tsc") ||
     normalizedOutput.includes("type error")
   ) {
-    return "typecheck";
+    return GitHookType.Typecheck;
   }
   if (
     normalizedOutput.includes("prettier") ||
     normalizedOutput.includes("format")
   ) {
-    return "format";
+    return GitHookType.Format;
   }
   if (
     normalizedOutput.includes("vitest") ||
     normalizedOutput.includes("jest") ||
     normalizedOutput.includes("test failed")
   ) {
-    return "test";
+    return GitHookType.Test;
   }
-  return "unknown";
+  return GitHookType.Unknown;
 }
 
 function isPushAuthFailure(stderr: string): boolean {
@@ -627,4 +732,39 @@ function truncate(value: string, maxChars: number): string {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+type NameStatusEntry = {
+  statusCode: string;
+  file: string;
+};
+
+/**
+ * Parses a `git diff --name-status` line. The format is TAB-delimited, so paths
+ * containing spaces survive. Simple statuses are `M\tpath`; rename/copy entries
+ * are `R100\told\tnew` / `C75\told\tnew`, whose destination (last field) is the
+ * path we report. Splitting on all whitespace would corrupt space-bearing paths
+ * and drop the rename destination.
+ */
+function parseNameStatusLine(line: string): NameStatusEntry | null {
+  const fields = line.split("\t");
+  const statusCode = fields[0];
+  if (!statusCode || fields.length < 2) {
+    return null;
+  }
+  const file = fields.at(-1)?.trim();
+  if (!file) {
+    return null;
+  }
+  return { statusCode, file };
+}
+
+/**
+ * Collapses characters outside the safe branch-name set to hyphens. The result
+ * is still checked for a leading hyphen by the caller, since a name like
+ * `--force` survives this pass unchanged and would otherwise be parsed by git
+ * as an option rather than a ref.
+ */
+function sanitizeBranchName(branchName: string): string {
+  return branchName.replaceAll(BRANCH_NAME_DISALLOWED_REGEX, "-");
 }

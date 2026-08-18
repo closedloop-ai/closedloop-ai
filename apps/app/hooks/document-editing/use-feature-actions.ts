@@ -35,7 +35,7 @@ export function useFeatureActions({ documentId }: UseFeatureActionsConfig) {
       { documentId, command: RunLoopCommand.EvaluateFeature },
       {
         onSuccess: () => {
-          toast.success("Feature evaluation started");
+          toast.success("Issue evaluation started");
         },
         onError: routeConflictError,
       }

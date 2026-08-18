@@ -27,11 +27,15 @@ export function AnalyticsRangeToggle({
 }: Readonly<AnalyticsRangeToggleProps>) {
   return (
     <div className={className ?? "flex items-center gap-2"}>
-      <span className="mr-2 font-medium text-slate-400 text-xs uppercase tracking-wider">
+      <span className="mr-2 font-medium text-muted-foreground text-xs uppercase tracking-wider">
         {label}
       </span>
+      {/* `outline` = the shared token-based segmented control: a bordered,
+          padded container of borderless pills, bg-muted + accent-foreground on
+          the active pill, muted/foreground labels. Its predecessor hardcoded a
+          slate/emerald palette that failed the 4.5:1 contrast floor on the
+          light product surfaces every consumer renders on. */}
       <ToggleGroup
-        className="gap-1"
         onValueChange={(nextValue) => {
           if (nextValue) {
             onValueChange?.(nextValue);
@@ -40,18 +44,10 @@ export function AnalyticsRangeToggle({
         size="sm"
         type="single"
         value={value}
-        variant="default"
+        variant="outline"
       >
         {options.map((option) => (
-          // `default` (not `outline`): this control carries its own dark
-          // slate/emerald theme and opts out of the shared outline redesign
-          // (borderless pills + bg-muted active). `border` restores the
-          // per-item border width the outline variant used to provide.
-          <ToggleGroupItem
-            className="border border-slate-700 bg-transparent text-slate-400 hover:text-white data-[state=on]:border-emerald-500/60 data-[state=on]:bg-emerald-600 data-[state=on]:text-white"
-            key={option.value}
-            value={option.value}
-          >
+          <ToggleGroupItem key={option.value} value={option.value}>
             {option.label}
           </ToggleGroupItem>
         ))}

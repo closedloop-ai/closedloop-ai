@@ -7,9 +7,68 @@
  */
 import type {
   NormalizedArtifacts,
+  NormalizedPrRef,
+  NormalizedToolKind,
   NormalizedToolUse,
   NormalizedTurnDuration,
 } from "./types";
+
+/**
+ * FEA-2642 (TC-038): agent-runtime orchestration/meta tools. Everything else
+ * that isn't an `mcp__*` tool is a `builtin` workspace/IO tool. Explicit
+ * allow-list (not a heuristic) so a new builtin never silently mis-classifies;
+ * adding a harness tool is a deliberate edit here. `Skill` is harness: it is a
+ * tool_use block (its `skillName` is the skill signal) and it is orchestration.
+ */
+export const HARNESS_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "Agent",
+  "Task",
+  "TaskCreate",
+  "TaskUpdate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "ToolSearch",
+  "Monitor",
+  "Workflow",
+  "SendMessage",
+  "Skill",
+  "ExitPlanMode",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "PushNotification",
+  "RemoteTrigger",
+]);
+
+/**
+ * Tool names whose input IS a shell command line, across harnesses (Claude
+ * `Bash`, Codex `shell` / `exec_command`). Shared so the recognizers that must
+ * treat a tool input as a COMMAND — and the ones that must NOT treat it as
+ * prose (ISS-5764) — cannot drift apart on the spelling.
+ */
+export const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "Bash",
+  "shell",
+  "exec_command",
+]);
+
+/**
+ * FEA-2642 (TC-038): classify a tool_use name as `builtin` | `harness` | `mcp`.
+ * MCP tools (`mcp__server__method`) win first; then the harness allow-list;
+ * everything else is a builtin workspace/IO tool.
+ */
+export function classifyToolKind(name: string): NormalizedToolKind {
+  if (name.startsWith("mcp__")) {
+    return "mcp";
+  }
+  return HARNESS_TOOL_NAMES.has(name) ? "harness" : "builtin";
+}
 
 /**
  * Normalize a timestamp to an ISO 8601 string. Handles numeric epoch (seconds or
@@ -177,6 +236,32 @@ export function countDiffFiles(patch: string): number {
   return count;
 }
 
+/**
+ * FEA-3668: whether a `cwd` value carries real repository/workspace meaning and
+ * may be recorded as a session's working directory. The dominant reject is the
+ * filesystem root `/`: automated harness launches whose process cwd is `/`
+ * (spawned from a launchd/daemon/detached context that never chdir'd) record `/`
+ * on the first turn before the agent cd's into the real worktree. Recording that
+ * transient `/` as the session cwd mis-derives the repository — git resolves
+ * nothing at `/`, so it falls back to the bogus repo "/". Parsers skip
+ * non-meaningful values so the first MEANINGFUL cwd wins; when none exists, cwd
+ * stays null (→ repo "Unknown", the correct grouping).
+ */
+export function isMeaningfulCwd(cwd: string | null | undefined): boolean {
+  if (!cwd) {
+    return false;
+  }
+  const trimmed = cwd.trim();
+  if (trimmed.length === 0) {
+    return false;
+  }
+  // POSIX root ("/", "//", …) or a bare Windows drive root ("C:", "C:\", "C:/").
+  if (/^\/+$/.test(trimmed) || /^[A-Za-z]:[\\/]*$/.test(trimmed)) {
+    return false;
+  }
+  return true;
+}
+
 /** CR-13: Extract repo name from cwd path (last path component). */
 export function extractRepoFromCwd(
   cwd: string | null | undefined
@@ -263,8 +348,8 @@ export function extractPrReferences(
   toolName: string,
   input: unknown,
   output?: unknown
-): Array<{ number: string; repo?: string; url?: string }> {
-  const refs: Array<{ number: string; repo?: string; url?: string }> = [];
+): NormalizedPrRef[] {
+  const refs: NormalizedPrRef[] = [];
   const seen = new Set<string>();
 
   for (const text of [
@@ -391,7 +476,7 @@ export function collectArtifacts(
   toolUses: Array<{ name: string; input?: unknown; output?: unknown }>,
   cwd: string | null | undefined
 ): NormalizedArtifacts {
-  const prs: Array<{ number: string; repo?: string; url?: string }> = [];
+  const prs: NormalizedPrRef[] = [];
   const issues: Array<{ key: string }> = [];
   const seenPr = new Set<string>();
   const seenIssue = new Set<string>();
@@ -544,4 +629,44 @@ export function shellCommandArgv(
     return input.cmd.map((element) => coerceArgvElement(element));
   }
   return null;
+}
+
+/**
+ * The visible text of a `tool_result` block, whose `content` is either a plain
+ * string or an array of `{type,text}` parts. Extracted from `parse-claude.ts`
+ * (ISS-4592), which is on the `biome.jsonc` shrink-only grandfather list.
+ */
+export function toolResultText(block: Record<string, unknown>): string {
+  if (typeof block.content === "string") {
+    return block.content;
+  }
+  const parts: string[] = [];
+  for (const entry of Array.isArray(block.content) ? block.content : []) {
+    const part = entry as Record<string, unknown> | null;
+    if (part && typeof part.text === "string") {
+      parts.push(part.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * The Claude parser's tolerant record coercion: non-objects become `{}` (never
+ * null), so downstream field reads no-op instead of throwing. Deliberately
+ * different from the shared `asRecord` in `./type-guards.js`, which returns
+ * null.
+ *
+ * Defined in this leaf module rather than in `claude/parse-claude.ts` (where it
+ * used to live) so that `claude/diff-stats-tool-handlers.ts` can reach it
+ * without importing the parser. That import closed a cycle (`parse-claude` spreads
+ * `DIFF_STATS_TOOL_HANDLERS` into its tool-handler map while the handlers module
+ * imported `asRecord` back from `parse-claude`), which left the handlers module
+ * — and anything importing it first, such as the desktop sidecar lane — throwing
+ * a TDZ `ReferenceError` unless some earlier import happened to evaluate
+ * `parse-claude` first.
+ */
+export function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object"
+    ? (value as Record<string, unknown>)
+    : {};
 }

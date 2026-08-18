@@ -9,6 +9,8 @@ import { AuthAdapterProvider } from "@repo/app/shared/auth/provider";
 import { createStaticAuthAdapter } from "@repo/app/shared/auth/static-auth-adapter";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
+import { NavigationProvider } from "@repo/navigation/provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type RenderResult, render } from "@testing-library/react";
 import { BranchesView } from "../branches-view";
@@ -73,16 +75,28 @@ export function renderView(
     defaultOptions: {
       queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
     },
-  })
+  }),
+  // Other feature flags enabled for this render (default none). Branches List
+  // itself direct-ships and does not read rollout state.
+  enabledFlags: string[] = []
 ): RenderResult & { queryClient: QueryClient } {
   const result = render(
     <QueryClientProvider client={queryClient}>
       <AuthAdapterProvider adapter={createStaticAuthAdapter()}>
         <ApiAdapterProvider adapter={inertApiAdapter}>
           <FeatureFlagAdapterProvider
-            adapter={createStaticFeatureFlagAdapter({ enabledFlags: [] })}
+            adapter={createStaticFeatureFlagAdapter({ enabledFlags })}
           >
-            <BranchesView dataSource={dataSource} />
+            {/* FEA-3560: the view reads/writes facet params via the navigation
+                port, so mount the in-memory adapter (mirrors production, where
+                the desktop shell always provides one). */}
+            <NavigationProvider
+              adapter={
+                createMemoryNavigation({ initialPath: "/branches" }).adapter
+              }
+            >
+              <BranchesView dataSource={dataSource} />
+            </NavigationProvider>
           </FeatureFlagAdapterProvider>
         </ApiAdapterProvider>
       </AuthAdapterProvider>

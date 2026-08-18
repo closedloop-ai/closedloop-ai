@@ -1,6 +1,6 @@
 "use client";
 
-import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
+import { SearchTypeahead } from "@repo/app/search/components/search-typeahead";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { usePath } from "@repo/navigation/use-path";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
@@ -49,11 +49,12 @@ export const Search = () => {
   };
 
   return (
-    <SidebarSearchForm
+    <SearchTypeahead
       nativeAction={`/${orgSlug}/search`}
       nativeInputName={WEB_SEARCH_QUERY_PARAM}
       nativeMethod="get"
       onClear={resetSearch}
+      onSelectHit={() => setValue("")}
       onSubmit={handleSubmit}
       onValueChange={setValue}
       showClear={showClear}

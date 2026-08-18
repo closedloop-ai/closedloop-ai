@@ -4,7 +4,14 @@
  * extraMtimeMs survives persist+reload (FEA-1459 Fix A).
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
@@ -354,5 +361,162 @@ test("codex rollout classification reads only the bounded first-line prefix, not
     linkage.parentThreadId,
     decoyParent,
     "the post-prefix session_meta must never be read"
+  );
+});
+
+test("catchup-cache: with no persistPath the cache is memory-only and writes nothing", () => {
+  // The engine constructs a cache with no `persistPath` for sources that have
+  // no durable home to key off. That cache must still answer correctly for the
+  // life of the process AND must not invent a file on disk — a stray cache
+  // written next to a collector's data would be re-read as if it were the
+  // collector's own state.
+  const dir = makeTempDir("catchup-cache-memory-");
+  const sourceFile = path.join(dir, "session.jsonl");
+  writeFileSync(sourceFile, "content\n", "utf8");
+
+  const cache = createCatchupCache();
+  assert.equal(cache.persisted, false, "no persistPath means not persisted");
+  cache.markSeen(sourceFile);
+  assert.equal(
+    cache.isUnchanged(sourceFile).unchanged,
+    true,
+    "the in-memory answer is still exact"
+  );
+  cache.flush();
+
+  assert.deepEqual(
+    readdirSync(dir),
+    ["session.jsonl"],
+    "flush() on a memory-only cache writes no file anywhere"
+  );
+  // ...and because nothing was written, a restart re-parses rather than
+  // skipping: memory-only is honest about what it can promise.
+  const rebuilt = createCatchupCache();
+  assert.equal(rebuilt.size(), 0);
+  assert.equal(rebuilt.isUnchanged(sourceFile).unchanged, false);
+});
+
+test("catchup-cache: a persisted entry that is not a (mtimeMs, size) pair is dropped, not trusted", () => {
+  // The cache file is foreign JSON by the time it is re-read (an older build,
+  // a partial write, a hand-edit). An entry whose numbers are missing or are
+  // the wrong type cannot be compared against a stat, and letting one through
+  // would make `isUnchanged` answer from `undefined === stat.mtimeMs` — a
+  // silent SKIP of a file that was never actually imported.
+  const dir = makeTempDir("catchup-cache-malformed-");
+  const goodFile = path.join(dir, "good.jsonl");
+  writeFileSync(goodFile, "content\n", "utf8");
+
+  const seeded = createCatchupCache({
+    persistPath: path.join(dir, "seed.json"),
+  });
+  seeded.markSeen(goodFile);
+  seeded.flush();
+  const seededEntries = (
+    JSON.parse(readFileSync(path.join(dir, "seed.json"), "utf8")) as {
+      version: number;
+      entries: Record<string, unknown>;
+    }
+  ).entries;
+  const goodEntry = seededEntries[goodFile] as {
+    mtimeMs: number;
+    size: number;
+  };
+
+  const persistPath = path.join(dir, "cache.json");
+  writeFileSync(
+    persistPath,
+    JSON.stringify({
+      version: 2,
+      entries: {
+        [goodFile]: goodEntry,
+        "/missing-size.jsonl": { mtimeMs: 1 },
+        "/string-mtime.jsonl": { mtimeMs: "1", size: 2 },
+        "/null-entry.jsonl": null,
+        // A well-formed pair whose OPTIONAL extra mtime is unusable keeps the
+        // entry and drops only that field — the subagent check then reads as
+        // "no extra mtime seen" instead of discarding a valid stat pair.
+        "/bad-extra.jsonl": { mtimeMs: 3, size: 4, extraMtimeMs: "nope" },
+      },
+    }),
+    "utf8"
+  );
+
+  const cache = createCatchupCache({ persistPath });
+  assert.equal(
+    cache.size(),
+    2,
+    "only the two well-formed entries were restored"
+  );
+  assert.equal(
+    cache.isUnchanged(goodFile).unchanged,
+    true,
+    "the well-formed entry still skips its file"
+  );
+  // Marking anything makes the cache dirty, so this flush rewrites the file
+  // from the RESTORED set — the malformed entries must not come back out.
+  cache.markSeen(goodFile);
+  cache.flush();
+  const reloaded = JSON.parse(readFileSync(persistPath, "utf8")) as {
+    entries: Record<string, unknown>;
+  };
+  assert.deepEqual(
+    Object.keys(reloaded.entries).sort(),
+    ["/bad-extra.jsonl", goodFile].sort(),
+    "the malformed entries are gone rather than round-tripped back out"
+  );
+  assert.deepEqual(
+    reloaded.entries["/bad-extra.jsonl"],
+    { mtimeMs: 3, size: 4 },
+    "the unusable extraMtimeMs was dropped, not persisted as a string"
+  );
+});
+
+test("catchup-cache: markSeen on a path that cannot be stat'd records nothing", () => {
+  // A file listed and then deleted before it is marked must not leave an entry
+  // behind: a fabricated (mtime, size) would let a LATER file at that same path
+  // be skipped as already-imported.
+  const dir = makeTempDir("catchup-cache-unstattable-");
+  const vanished = path.join(dir, "vanished.jsonl");
+
+  const cache = createCatchupCache({
+    persistPath: path.join(dir, "cache.json"),
+  });
+  assert.doesNotThrow(() => cache.markSeen(vanished));
+  assert.equal(cache.size(), 0, "no entry is invented for an unreadable path");
+
+  // The file arrives later — it must still read as changed and be parsed.
+  writeFileSync(vanished, "content\n", "utf8");
+  assert.equal(cache.isUnchanged(vanished).unchanged, false);
+});
+
+test("catchup-cache: an unwritable persistPath degrades to memory-only instead of failing the tick", () => {
+  const dir = makeTempDir("catchup-cache-unwritable-");
+  const sourceFile = path.join(dir, "session.jsonl");
+  writeFileSync(sourceFile, "content\n", "utf8");
+  // `blocked` is a FILE, so `mkdirSync(dirname(persistPath))` raises a real
+  // ENOTDIR — an un-stubbed failure on the persistence path.
+  const blocked = path.join(dir, "blocked");
+  writeFileSync(blocked, "not a directory", "utf8");
+  const persistPath = path.join(blocked, "cache.json");
+
+  const cache = createCatchupCache({ persistPath });
+  cache.markSeen(sourceFile);
+  assert.doesNotThrow(
+    () => cache.flush(),
+    "a failed persist must never fail the import tick"
+  );
+  assert.equal(existsSync(persistPath), false, "nothing reached disk");
+  // The reason swallowing is safe: the in-memory answer is unaffected, so this
+  // process keeps skipping unchanged files. NOTE (ISS-5302): `flush()` clears
+  // `dirty` BEFORE the write, so a later flush after the obstruction clears is
+  // a no-op and the entry never lands — deliberate per the "best-effort
+  // persistence" comment, and asserted here so a change to it is visible.
+  assert.equal(cache.isUnchanged(sourceFile).unchanged, true);
+  assert.equal(cache.size(), 1);
+  cache.flush();
+  assert.equal(
+    existsSync(persistPath),
+    false,
+    "the failed write is not retried on the next flush"
   );
 });

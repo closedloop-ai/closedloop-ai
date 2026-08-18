@@ -4,15 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import {
-  ApiKeyStore,
-  type SafeStorageLike,
-} from "../src/main/api-key-store.js";
-import {
   PROFILE_CONFIG_IPC_CHANNELS,
   ProfileConfigIpcChannel,
   registerProfileConfigIpcHandlers,
-} from "../src/main/profile-config-ipc.js";
-import { SettingsStore } from "../src/main/settings-store.js";
+} from "../src/main/ipc/profile-config-ipc.js";
+import {
+  ApiKeyStore,
+  type SafeStorageLike,
+} from "../src/main/settings/api-key-store.js";
+import { sanitizeSavedConfig } from "../src/main/settings/saved-config.js";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
 
 const UUID_V4_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -67,6 +68,7 @@ function registerProfileHandlers(
     encryptionAvailable?: boolean;
     cancelReasons?: string[];
     restarts?: { count: number };
+    seededSandboxes?: string[];
   } = {}
 ): Map<string, IpcHandler> {
   const handlers = new Map<string, IpcHandler>();
@@ -95,6 +97,10 @@ function registerProfileHandlers(
         }
       },
       isEncryptionAvailable: () => options.encryptionAvailable ?? true,
+      seedReposConfig: (sandboxBaseDirectory) => {
+        options.seededSandboxes?.push(sandboxBaseDirectory);
+        return Promise.resolve();
+      },
     }
   );
   return handlers;
@@ -989,4 +995,82 @@ test("profile save IPC copies managed keys without activating the portable profi
   });
   assert.equal(saved.apiKeySource, "USER_CREATED");
   assert.equal(restarts.count, 0);
+});
+
+// --- Existing-user sync-prompt dismissal (PRD-532 §8 / M6) ---
+
+test("ApiKeyStore sync-prompt dismissal defaults false and persists once set", () => {
+  const tmpDir = makeTempDir("saved-configs-syncprompt-");
+  const apiKeyStore = makeApiKeyStore(tmpDir);
+
+  assert.equal(apiKeyStore.hasDismissedSyncPrompt(), false);
+
+  apiKeyStore.dismissSyncPrompt();
+  assert.equal(apiKeyStore.hasDismissedSyncPrompt(), true);
+
+  // Persisted across a store re-open (one-time across restarts).
+  const rehydrated = makeApiKeyStore(tmpDir);
+  assert.equal(rehydrated.hasDismissedSyncPrompt(), true);
+});
+
+test("ApiKeyStore.clearApiKey resets the sync-prompt dismissal", () => {
+  const tmpDir = makeTempDir("saved-configs-syncprompt-clear-");
+  const apiKeyStore = makeApiKeyStore(tmpDir);
+
+  apiKeyStore.setApiKey("sk_live_key");
+  apiKeyStore.dismissSyncPrompt();
+  assert.equal(apiKeyStore.hasDismissedSyncPrompt(), true);
+
+  // Clearing the key resets the dismissal so a later key can re-offer the prompt.
+  apiKeyStore.clearApiKey();
+  assert.equal(apiKeyStore.hasDismissedSyncPrompt(), false);
+});
+
+// FEA-4005: an invalid persisted per-profile sandbox must be dropped on load so
+// it cannot crash `.trim()` in the renderer or throw in applyConfig.
+test("sanitizeSavedConfig drops a non-string / blank sandbox, keeps a valid one", () => {
+  const base = {
+    id: "p1",
+    name: "P1",
+    relayOrigin: "https://relay.test",
+    apiOrigin: "https://api.test",
+    webAppOrigin: "https://app.test",
+  };
+  // Valid string passes through unchanged (same reference).
+  const withValid = { ...base, sandboxBaseDirectory: "/workspace/x" };
+  assert.equal(sanitizeSavedConfig(withValid), withValid);
+
+  // Omitted stays omitted (version-skew: absent = inherit global).
+  assert.equal(
+    "sandboxBaseDirectory" in sanitizeSavedConfig({ ...base }),
+    false
+  );
+
+  // null / number / blank are dropped.
+  for (const bad of [null, 42, "", "   "]) {
+    const sanitized = sanitizeSavedConfig({
+      ...base,
+      sandboxBaseDirectory: bad,
+    } as unknown as Parameters<typeof sanitizeSavedConfig>[0]);
+    assert.equal("sandboxBaseDirectory" in sanitized, false);
+  }
+});
+
+test("getSavedConfigs sanitizes an invalid persisted sandbox on load", () => {
+  const tmpDir = makeTempDir("saved-configs-sanitize-");
+  const store = makeSettings(tmpDir);
+  store.setSavedConfigs([
+    {
+      id: "p1",
+      name: "P1",
+      relayOrigin: "https://relay.test",
+      apiOrigin: "https://api.test",
+      webAppOrigin: "https://app.test",
+      // Simulate a corrupt persisted value (a number) that predates validation.
+      sandboxBaseDirectory: 7,
+    } as unknown as Parameters<typeof store.setSavedConfigs>[0][number],
+  ]);
+  const loaded = store.getSavedConfigs();
+  assert.equal(loaded.length, 1);
+  assert.equal("sandboxBaseDirectory" in loaded[0], false);
 });

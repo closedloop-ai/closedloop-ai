@@ -11,11 +11,13 @@ describe("ResourceTelemetrySchema", () => {
       ResourceTelemetrySchema.parse({
         [TelemetryAttribute.ServiceName]: "cl-api",
         [TelemetryAttribute.ServiceVersion]: "1.2.3",
+        [TelemetryAttribute.DeviceId]: "device_0123456789abcdef",
         [TelemetryAttribute.HarnessName]: "claude",
       })
     ).toEqual({
       [TelemetryAttribute.ServiceName]: "cl-api",
       [TelemetryAttribute.ServiceVersion]: "1.2.3",
+      [TelemetryAttribute.DeviceId]: "device_0123456789abcdef",
       [TelemetryAttribute.HarnessName]: "claude",
     });
   });
@@ -87,6 +89,26 @@ describe("ResourceTelemetrySchema", () => {
     expect(
       ResourceTelemetrySchema.safeParse({
         [TelemetryAttribute.ServiceName]: "a".repeat(129),
+      }).success
+    ).toBe(false);
+    expect(
+      ResourceTelemetrySchema.safeParse({
+        [TelemetryAttribute.ServiceName]: "cl-api",
+        [TelemetryAttribute.DeviceId]: false,
+      }).success
+    ).toBe(false);
+    expect(
+      ResourceTelemetrySchema.safeParse({
+        [TelemetryAttribute.ServiceName]: "cl-api",
+        [TelemetryAttribute.DeviceId]: "device\nid",
+      }).success
+    ).toBe(false);
+    expect(
+      ResourceTelemetrySchema.safeParse({
+        [TelemetryAttribute.ServiceName]: "cl-api",
+        [TelemetryAttribute.DeviceId]: "a".repeat(
+          TelemetryTextMaxLength.DeviceId + 1
+        ),
       }).success
     ).toBe(false);
     expect(

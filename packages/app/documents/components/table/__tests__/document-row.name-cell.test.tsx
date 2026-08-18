@@ -64,7 +64,7 @@ describe("NameCell — Link vs div rendering", () => {
 
     const anchor = container.querySelector("a");
     expect(anchor).toBeInTheDocument();
-    expect(anchor).toHaveAttribute("href", "/test-org/features/FEAT-1");
+    expect(anchor).toHaveAttribute("href", "/test-org/issues/FEAT-1");
   });
 
   it("renders project NameCell as <a> when team context is available", () => {

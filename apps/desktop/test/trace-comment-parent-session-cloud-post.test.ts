@@ -4,27 +4,37 @@ import {
   AgentSessionSyncMode,
   type DesktopAgentSessionsPayload,
 } from "@repo/api/src/types/agent-session";
-import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "../src/main/agent-session-sync-contract.js";
-import { postTraceCommentParentSessionCloudSync } from "../src/main/trace-comment-parent-session-cloud-post.js";
+import { AGENT_SESSION_SYNC_SCHEMA_VERSION } from "../src/main/agent-sync/agent-session-sync-contract.js";
+import { postTraceCommentParentSessionCloudSync } from "../src/main/trace-comments/trace-comment-parent-session-cloud-post.js";
 
 const originalFetch = globalThis.fetch;
 const FINAL_FRAGMENT_PENDING_PATTERN = /final fragment pending/;
 const SYNC_REQUEST_FAILED_PATTERN =
   /Agent session sync request failed with status 200/;
+const CREDENTIALS_UNAVAILABLE_PATTERN =
+  /Desktop cloud session sync credentials unavailable/;
 
-describe("trace-comment parent-session direct cloud sync post", () => {
+// FEA-3425 (Phase 4a): the parent-session sync post is session-only — the
+// static `sk_live_*` key (+PoP) fallback was removed once session coverage
+// cleared the D7 no-strand gate.
+describe("trace-comment parent-session direct cloud sync post (session-only)", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
   });
 
-  test("posts to the direct sync route and returns the materialized result", async () => {
-    const requests: Array<{ body: string | null; headers: Headers; url: URL }> =
-      [];
+  test("posts to the direct sync route under the session Bearer and returns the materialized result", async () => {
+    const requests: Array<{
+      body: string | null;
+      headers: Headers;
+      signal: AbortSignal | null | undefined;
+      url: URL;
+    }> = [];
     globalThis.fetch = (input, init) => {
       const url = new URL(String(input));
       requests.push({
         body: init?.body?.toString() ?? null,
         headers: new Headers(init?.headers),
+        signal: init?.signal,
         url,
       });
       return Promise.resolve(
@@ -37,14 +47,8 @@ describe("trace-comment parent-session direct cloud sync post", () => {
       "session-1",
       makePayload(),
       {
-        getApiKey: () => "api-key-1",
+        getAccessToken: () => Promise.resolve("session-token-1"),
         getApiOrigin: () => "https://api.example.test",
-        getApiKeyProvenance: () => "DESKTOP_MANAGED",
-        signDesktopRequest: () => ({
-          "X-Desktop-Gateway-Id": "gateway-1",
-          "X-Desktop-Signature": "signature-1",
-          "X-Desktop-Timestamp": "1234567890",
-        }),
         log: (scope, message) => logs.push({ message, scope }),
       },
       "target-1"
@@ -56,9 +60,16 @@ describe("trace-comment parent-session direct cloud sync post", () => {
       requests[0].url.href,
       "https://api.example.test/desktop/agent-sessions/sync?computeTargetId=target-1"
     );
-    assert.equal(requests[0].headers.get("Authorization"), "Bearer api-key-1");
+    assert.equal(
+      requests[0].headers.get("Authorization"),
+      "Bearer session-token-1"
+    );
     assert.equal(requests[0].headers.get("Content-Type"), "application/json");
-    assert.equal(requests[0].headers.get("X-Desktop-Gateway-Id"), "gateway-1");
+    // PoP is an API-key-binding concern — never sent with the session Bearer.
+    assert.equal(requests[0].headers.get("X-Desktop-Gateway-Id"), null);
+    // The POST must carry a timeout AbortSignal so a hung dependency cannot
+    // stall the pending-comment sync retry loop indefinitely (FEA-3599).
+    assert.ok(requests[0].signal instanceof AbortSignal);
     assert.deepEqual(JSON.parse(requests[0].body ?? ""), makePayload());
     assert.deepEqual(logs, [
       {
@@ -81,7 +92,7 @@ describe("trace-comment parent-session direct cloud sync post", () => {
           "session-1",
           makePayload(),
           {
-            getApiKey: () => "api-key-1",
+            getAccessToken: () => Promise.resolve("session-token-1"),
             getApiOrigin: () => "https://api.example.test",
           },
           "target-1"
@@ -100,13 +111,63 @@ describe("trace-comment parent-session direct cloud sync post", () => {
           "session-1",
           makePayload(),
           {
-            getApiKey: () => "api-key-1",
+            getAccessToken: () => Promise.resolve("session-token-1"),
             getApiOrigin: () => "https://api.example.test",
           },
           "target-1"
         ),
       SYNC_REQUEST_FAILED_PATTERN
     );
+  });
+
+  test("rejects with credentials-unavailable and never POSTs when no session token exists", async () => {
+    const requests: URL[] = [];
+    globalThis.fetch = (input) => {
+      requests.push(new URL(String(input)));
+      return Promise.resolve(
+        Response.json({ success: true, data: { synced: true } })
+      );
+    };
+
+    await assert.rejects(
+      () =>
+        postTraceCommentParentSessionCloudSync(
+          "session-1",
+          makePayload(),
+          {
+            getAccessToken: () => Promise.resolve(null),
+            getApiOrigin: () => "https://api.example.test",
+          },
+          "target-1"
+        ),
+      CREDENTIALS_UNAVAILABLE_PATTERN
+    );
+    assert.equal(requests.length, 0, "no session token → no POST");
+  });
+
+  test("rejects with credentials-unavailable when the session token read throws", async () => {
+    const requests: URL[] = [];
+    globalThis.fetch = (input) => {
+      requests.push(new URL(String(input)));
+      return Promise.resolve(
+        Response.json({ success: true, data: { synced: true } })
+      );
+    };
+
+    await assert.rejects(
+      () =>
+        postTraceCommentParentSessionCloudSync(
+          "session-1",
+          makePayload(),
+          {
+            getAccessToken: () => Promise.reject(new Error("keychain locked")),
+            getApiOrigin: () => "https://api.example.test",
+          },
+          "target-1"
+        ),
+      CREDENTIALS_UNAVAILABLE_PATTERN
+    );
+    assert.equal(requests.length, 0, "thrown token read → no POST");
   });
 });
 

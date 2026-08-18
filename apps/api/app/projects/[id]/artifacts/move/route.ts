@@ -29,7 +29,7 @@ import { projectsService } from "../../../service";
  * Auth: `withAnyAuth` accepts both Clerk session and `sk_live_*` API keys so
  * MCP / agent clients can reorder programmatically (per PLN-755 OQ-2).
  *
- * Status mapping (per apps/api/CLAUDE.md "Errors as values"):
+ * Status mapping (per apps/api/AGENTS.md "Errors as values"):
  *  - 200 — move accepted
  *  - 400 — Zod validation failure OR ambiguous/invalid reference id
  *  - 404 — project not in caller's org, or artifact/reference id not in project

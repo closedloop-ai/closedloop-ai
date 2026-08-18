@@ -1,5 +1,6 @@
 // Define Liveblocks types for your application
 // https://liveblocks.io/docs/api-reference/liveblocks-react#Typing-your-data
+import type { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import type { DocumentVersionPublishedEvent } from "./room-events";
 
 declare global {
@@ -70,7 +71,7 @@ declare global {
        * The "floating" state is only ever set explicitly by the
        * Cross-Version Persistence floating-conversion pass.
        */
-      anchorStatus?: "anchored" | "floating" | "artifact-level";
+      anchorStatus?: DocumentThreadAnchorStatus;
     };
 
     // Custom room info set with resolveRoomsInfo, for useRoomInfo
@@ -99,6 +100,18 @@ declare global {
       $awaitingInput: {
         sessionTitle: string;
         sessionUrl: string;
+      };
+      // Fired when someone @-mentions a user in a session/branch trace comment
+      // (FEA-3490), so the mentioned user gets an inbox signal with a deep link
+      // to the commented trace — parity with mentioning in any other artifact.
+      $mention: {
+        // "session" | "branch" — the surface the trace comment lives on.
+        entityType: string;
+        entityTitle: string;
+        entityUrl: string;
+        actorId: string;
+        // Short plain-text preview of the comment body for the inbox row.
+        commentPreview: string;
       };
     };
   }

@@ -20,7 +20,7 @@ type ResolveSignedRunLoopIntentResult =
   | { ok: true; userIntentSignature: SignedRunLoopIntent | undefined }
   | { ok: false; response: NextResponse<ApiResult<never>> };
 
-export type RunLoopSigningRequirementResult = CommandSigningRequirementResult;
+type RunLoopSigningRequirementResult = CommandSigningRequirementResult;
 
 function buildRunLoopUserIntent(
   documentId: string,
@@ -44,7 +44,7 @@ function buildRunLoopUserIntent(
  * rollout identity. Shared targets must not inherit the browser viewer's flag
  * state because Desktop enforcement is negotiated from the owner's hello auth.
  */
-export async function resolveRunLoopSigningRequirement(input: {
+async function resolveRunLoopSigningRequirement(input: {
   computeTargetId: string | undefined;
   requesterUserId: string;
   requesterClerkUserId?: string | null;

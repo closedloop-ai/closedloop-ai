@@ -1,4 +1,4 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
 import { BranchEventDotRail } from "./branch-event-dot-rail";
 
@@ -37,10 +37,14 @@ export const GreenAndRed: Story = {
   args: { traceItems: greenAndRed, githubConnected: true },
 };
 
-export const WithPrComments: Story = {
-  args: { traceItems: greenAndRed, githubConnected: true, prCommentCount: 4 },
-};
-
-export const NotConnected: Story = {
-  args: { traceItems: greenAndRed, githubConnected: false, prCommentCount: 4 },
+export const StackedSemanticEvents: Story = {
+  args: {
+    activeHourStarts: ["2026-06-10T10:00:00.000Z"],
+    onScrub: () => undefined,
+    traceItems: [
+      ev("b", "Human steering", "2026-06-10T10:05:00.000Z"),
+      ev("g", "Commit pushed", "2026-06-10T10:15:00.000Z"),
+      ev("r", "CI limit reached", "2026-06-10T10:25:00.000Z"),
+    ],
+  },
 };

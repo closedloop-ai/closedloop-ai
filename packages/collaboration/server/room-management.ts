@@ -1,9 +1,13 @@
 import "server-only";
 import { Liveblocks } from "@liveblocks/node";
 import { withProsemirrorDocument } from "@liveblocks/node-prosemirror";
+import {
+  DocumentThreadAnchorStatus,
+  type DocumentThreadAnchorStatus as DocumentThreadAnchorStatusType,
+} from "@repo/api/src/types/comment";
 import type { DocumentVersionPublishedEvent } from "../shared/room-events";
 import { keys } from "./keys";
-import type { CommentBody, ThreadData } from "./webhook";
+import type { CommentBody, CommentData, ThreadData } from "./webhook";
 import { anchorThreadToText, findAnchorText } from "./yjs-anchor";
 
 /**
@@ -181,6 +185,35 @@ export type CreateArtifactThreadOptions = {
   version?: number;
 };
 
+export type CreateArtifactLevelThreadOptions = Omit<
+  CreateArtifactThreadOptions,
+  "anchorText"
+>;
+
+export type DeleteArtifactThreadOptions = {
+  roomId: string;
+  threadId: string;
+};
+
+export type DeleteArtifactCommentOptions = {
+  roomId: string;
+  threadId: string;
+  commentId: string;
+};
+
+export type ReplyToArtifactThreadOptions = {
+  roomId: string;
+  threadId: string;
+  userId: string;
+  bodyText: string;
+};
+
+export type MarkArtifactThreadResolutionOptions = {
+  roomId: string;
+  threadId: string;
+  userId: string;
+};
+
 export async function createArtifactThread({
   roomId,
   userId,
@@ -205,26 +238,14 @@ export async function createArtifactThread({
     throw new Error("Failed to validate anchor text", { cause: error });
   }
 
-  const body: CommentBody = {
-    version: 1,
-    content: [
-      {
-        type: "paragraph",
-        children: [{ text: bodyText }],
-      },
-    ],
-  };
-
-  const metadata: { resolved: false; version?: number } = { resolved: false };
-  if (version !== undefined) {
-    metadata.version = version;
-  }
-
   const thread = await liveblocks.createThread({
     roomId,
     data: {
-      comment: { userId, body },
-      metadata,
+      comment: { userId, body: buildCommentBody(bodyText) },
+      metadata: buildThreadMetadata(
+        version,
+        DocumentThreadAnchorStatus.Anchored
+      ),
     },
   });
 
@@ -242,6 +263,144 @@ export async function createArtifactThread({
 }
 
 /**
+ * Create an unanchored artifact-level Liveblocks comment thread. Unlike
+ * `createArtifactThread`, this intentionally skips Y.Doc anchor validation
+ * because the thread belongs to the whole artifact, not a text range.
+ */
+export async function createArtifactLevelThread({
+  roomId,
+  userId,
+  bodyText,
+  version,
+}: CreateArtifactLevelThreadOptions): Promise<ThreadData> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    throw new Error("LIVEBLOCKS_SECRET is not configured");
+  }
+
+  return await liveblocks.createThread({
+    roomId,
+    data: {
+      comment: { userId, body: buildCommentBody(bodyText) },
+      metadata: buildThreadMetadata(
+        version,
+        DocumentThreadAnchorStatus.ArtifactLevel
+      ),
+    },
+  });
+}
+
+/**
+ * Delete a Liveblocks artifact thread. Callers use this as compensation when a
+ * post-create local projection step fails and retrying would otherwise publish
+ * a duplicate visible thread.
+ */
+export async function deleteArtifactThread({
+  roomId,
+  threadId,
+}: DeleteArtifactThreadOptions): Promise<void> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    return;
+  }
+
+  await liveblocks.deleteThread({ roomId, threadId });
+}
+
+/**
+ * Delete a single comment from a Liveblocks artifact thread, leaving the rest of
+ * the thread intact. Used to compensate a reply whose local DB projection failed
+ * after the Liveblocks write succeeded, so a client retry cannot leave a
+ * duplicate visible reply. A no-op when Liveblocks is not configured.
+ */
+export async function deleteArtifactComment({
+  roomId,
+  threadId,
+  commentId,
+}: DeleteArtifactCommentOptions): Promise<void> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    return;
+  }
+
+  await liveblocks.deleteComment({ roomId, threadId, commentId });
+}
+
+/**
+ * Add a reply comment to an existing Liveblocks artifact thread and return the
+ * created comment. Liveblocks is the source of truth for document comments; the
+ * caller projects the returned comment into the local DB. All replies attach to
+ * the thread directly (flat replies, FEA-3950) — Liveblocks has no per-comment
+ * parent, so threaded discussion is a single flat comment list under the thread.
+ */
+export async function replyToArtifactThread({
+  roomId,
+  threadId,
+  userId,
+  bodyText,
+}: ReplyToArtifactThreadOptions): Promise<CommentData> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    throw new Error("LIVEBLOCKS_SECRET is not configured");
+  }
+
+  return await liveblocks.createComment({
+    roomId,
+    threadId,
+    data: { userId, body: buildCommentBody(bodyText) },
+  });
+}
+
+/**
+ * Mark a Liveblocks artifact thread as resolved, attributing the resolution to
+ * `userId`. Returns the updated thread so the caller can re-project resolution
+ * state. Author-only enforcement lives in the API service layer, not here.
+ */
+export async function markArtifactThreadResolved({
+  roomId,
+  threadId,
+  userId,
+}: MarkArtifactThreadResolutionOptions): Promise<ThreadData> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    throw new Error("LIVEBLOCKS_SECRET is not configured");
+  }
+
+  return await liveblocks.markThreadAsResolved({
+    roomId,
+    threadId,
+    data: { userId },
+  });
+}
+
+/**
+ * Mark a Liveblocks artifact thread as unresolved, attributing the action to
+ * `userId`. Mirror of {@link markArtifactThreadResolved}.
+ */
+export async function markArtifactThreadUnresolved({
+  roomId,
+  threadId,
+  userId,
+}: MarkArtifactThreadResolutionOptions): Promise<ThreadData> {
+  const liveblocks = getLiveblocksClient();
+
+  if (!liveblocks) {
+    throw new Error("LIVEBLOCKS_SECRET is not configured");
+  }
+
+  return await liveblocks.markThreadAsUnresolved({
+    roomId,
+    threadId,
+    data: { userId },
+  });
+}
+
+/**
  * Get a Liveblocks client instance.
  * Returns null if LIVEBLOCKS_SECRET is not configured.
  */
@@ -251,4 +410,38 @@ function getLiveblocksClient(): Liveblocks | null {
     return null;
   }
   return new Liveblocks({ secret });
+}
+
+function buildCommentBody(bodyText: string): CommentBody {
+  return {
+    version: 1,
+    content: [
+      {
+        type: "paragraph",
+        children: [{ text: bodyText }],
+      },
+    ],
+  };
+}
+
+function buildThreadMetadata(
+  version: number | undefined,
+  anchorStatus?: DocumentThreadAnchorStatusType
+): {
+  resolved: false;
+  version?: number;
+  anchorStatus?: DocumentThreadAnchorStatusType;
+} {
+  const metadata: {
+    resolved: false;
+    version?: number;
+    anchorStatus?: DocumentThreadAnchorStatusType;
+  } = { resolved: false };
+  if (version !== undefined) {
+    metadata.version = version;
+  }
+  if (anchorStatus !== undefined) {
+    metadata.anchorStatus = anchorStatus;
+  }
+  return metadata;
 }

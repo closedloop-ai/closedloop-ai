@@ -5,7 +5,7 @@ import {
   DESKTOP_PKCE_CODE_CHALLENGE_METHOD,
   generateDesktopPkce,
   generateOAuthState,
-} from "../src/main/desktop-authorize-pkce.js";
+} from "../src/main/auth/desktop-authorize-pkce.js";
 
 const BASE64URL = /^[A-Za-z0-9\-_]+$/;
 

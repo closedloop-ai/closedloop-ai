@@ -4,28 +4,33 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { estimateTokenCost } from "../src/shared/token-cost.js";
 
 /**
- * Contract test for the session DETAIL reads on the single `DesktopPrisma`
- * client. `getDetailsById`/`getActiveWithDetails`/`getHistoricalWithDetails`/
- * `getPage` keep their single `sessionDetailsCtes()` aggregate-join (per-session
+ * Contract test for the session DETAIL reads.
+ * `getDetailsById`/`getActiveWithDetails`/`getHistoricalWithDetails`/`getPage`
+ * keep their single `sessionDetailsCtes()` aggregate-join (per-session
  * COUNT(agents)/COUNT(events)/SUM(tokens) folded into the row in one query) on
  * `$queryRawUnsafe` — un-typeable AND the performant choice vs. per-table groupBy
  * marshalled to JS; only `attachEstimatedCosts` uses typed `findMany`. Like the
  * session/agent/event store contract tests this runs through
  * `openSqliteAgentDatabase` (electron), so it is a CI guard.
  *
+ * ISS-6199 moved these reads off the writer-bound `prisma.client` onto the reader
+ * pool; the WHERE is pinned by `session-read-stores-reader-pool.test.ts`, and
+ * this suite stays the WHAT — the values are the contract either way.
+ *
  * The existing `sqlite-agent-dashboard-database` suite already pins the
  * per-session counts/token-totals and the `getPage` filter/escape/ordering. This
- * fills the gap it leaves: the CTE counts are correct on the one client, and
- * `attachEstimatedCosts` decorates `estimatedCostUsd` typed off that client on
- * every detail-read path (by-id, active, historical, page) — including the
- * literal-`%`/`_` escape on the q-search.
+ * fills the gap it leaves: the CTE counts are correct, and
+ * `attachEstimatedCosts` decorates `estimatedCostUsd` on every detail-read path
+ * (by-id, active, historical, page) — including the literal-`%`/`_` escape on the
+ * q-search.
  */
 
 const NOW = "2026-06-23T00:00:00.000Z";
 
-test("FEA-1791: session detail reads + attachEstimatedCosts run on the single Prisma client", async () => {
+test("FEA-1791: session detail reads decorate estimatedCostUsd on every path", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "session-detail-reads-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   const db = await openSqliteAgentDatabase({
@@ -55,12 +60,35 @@ test("FEA-1791: session detail reads + attachEstimatedCosts run on the single Pr
     // read's `status IN (terminal)` filter and the cache.
     await db.run(
       `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
-       VALUES ('done-sess', 'Done Session', 'completed', $1, $1, 'claude')`,
+       VALUES ('done-sess', 'Done Session', 'inactive', $1, $1, 'claude')`,
       "2026-06-20T09:00:00.000Z"
     );
     await db.run(
       `INSERT INTO agents (id, session_id, status) VALUES ('a3','done-sess','completed')`
     );
+    await db.run(
+      `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
+       VALUES ('ttl-fallback', 'TTL Fallback', 'inactive', $1, $1, 'claude')`,
+      "2026-06-20T08:00:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO token_usage (
+         session_id, model, input_tokens, output_tokens, cache_read_tokens,
+         cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
+         cost_usd_estimated, created_at
+       ) VALUES ('ttl-fallback', 'claude-opus-4-5', 0, 0, 0, 1000, 600, 400, NULL, $1)`,
+      "2026-06-20T08:00:00.000Z"
+    );
+    const ttlFallbackCost = estimateTokenCost({
+      model: "claude-opus-4-5",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 1000,
+      cacheWrite1hTokens: 400,
+      observedAt: "2026-06-20T08:00:00.000Z",
+    });
+    assert.ok(ttlFallbackCost);
 
     // getDetailsById: per-session counts + token total + the attached estimated cost.
     const detail = await db.sessions.getDetailsById("cost-sess");
@@ -96,10 +124,12 @@ test("FEA-1791: session detail reads + attachEstimatedCosts run on the single Pr
       historical.some((s) => s.id === "cost-sess"),
       false
     );
+    const ttlFallback = historical.find((s) => s.id === "ttl-fallback");
+    assert.equal(ttlFallback?.estimatedCostUsd, ttlFallbackCost.costUsd);
 
     // getPage: total + the typed page read + cost decoration (both sessions).
     const page = await db.sessions.getPage({ limit: 10, offset: 0 });
-    assert.equal(page.total, 2);
+    assert.equal(page.total, 3);
     const pageCost = page.sessions.find((s) => s.id === "cost-sess");
     assert.ok(pageCost);
     assert.equal(pageCost.totalTokens, 400);

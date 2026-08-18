@@ -16,6 +16,7 @@ import {
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import { writeFakeClaudeScript } from "./helpers/fake-harness-artifacts.js";
 
 // ---------------------------------------------------------------------------
 // Shared cleanup state
@@ -410,9 +411,7 @@ describe("T-5.2: Output events arrive before completed event", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 
@@ -501,9 +500,7 @@ describe("T-5.2: Output events arrive before completed event", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 
@@ -836,9 +833,7 @@ describe("T-5.4: Flush on exit", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 
@@ -911,9 +906,7 @@ describe("T-5.5: No-formatter fallback", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     // Include system paths so 'bash', 'grep', 'tee' are available for the pipeline
     process.env.PATH = `${fakeBin}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin`;
     setShellPathForTest();
@@ -1026,9 +1019,7 @@ describe("T-5.7: tokensUsed shape in completed event", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 
@@ -1108,9 +1099,7 @@ describe("T-5.7: tokensUsed shape in completed event", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 
@@ -1188,9 +1177,7 @@ describe("T-5.7: tokensUsed shape in completed event", () => {
       `echo '{"type":"result","subtype":"success","result":"","is_error":false}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), stubScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, stubScript);
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
 

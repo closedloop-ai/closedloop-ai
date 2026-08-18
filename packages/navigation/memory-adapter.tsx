@@ -30,6 +30,13 @@ export type MemoryNavigation = {
   getHistory: () => readonly string[];
   /** Number of refresh() calls observed. */
   getRefreshCount: () => number;
+  /**
+   * Drives the in-memory store to a new path exactly as a Link tap would,
+   * without going through the `use*`-named accessor. Lets tests simulate a
+   * route change from plain helpers/callbacks (not just hook/component bodies)
+   * so they stay rules-of-hooks clean.
+   */
+  navigate: (path: string) => void;
 };
 
 export function createMemoryNavigation(
@@ -74,5 +81,6 @@ export function createMemoryNavigation(
     getCurrentHref: store.getHref,
     getHistory: store.getHistory,
     getRefreshCount: () => refreshCount,
+    navigate: (path: string) => store.actions.navigate(path),
   };
 }

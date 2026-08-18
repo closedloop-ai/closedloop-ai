@@ -1,13 +1,13 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import type { ApiKeyProvenance } from "../../main/api-key-store.js";
-import type { DesktopPopSigner } from "../../main/desktop-pop.js";
+import type { DesktopPopSigner } from "../../main/auth/desktop-pop.js";
 import {
   buildManagedDesktopPopHeaders,
   type DesktopPopUnavailableReporter,
-} from "../../main/desktop-pop-sign-utils.js";
-import type { JobStore } from "../../main/job-store.js";
+} from "../../main/auth/desktop-pop-sign-utils.js";
+import type { JobStore } from "../../main/jobs/job-store.js";
+import type { ApiKeyProvenance } from "../../main/settings/api-key-store.js";
 import type {
   OperationDispatcher,
   OperationRequestContext,

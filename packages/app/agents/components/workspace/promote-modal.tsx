@@ -13,7 +13,7 @@ import {
 import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { usePromoteAgentComponent } from "../../hooks/use-promote";
 
 type Props = {
@@ -44,6 +44,8 @@ export function PromoteModal({
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PromoteResponse | null>(null);
+  /** Component id this open cycle has already prefilled; see the effect below. */
+  const prefilledComponentIdRef = useRef<string | null>(null);
 
   const promote = usePromoteAgentComponent();
 
@@ -52,13 +54,30 @@ export function PromoteModal({
   // fields on dismissal: the real header keeps the same component object
   // mounted while toggling `open`, so reopening it must re-run the prefill or
   // the Name field would stay blank.
+  //
+  // ISS-5976: the prefill fires once per (component, open) cycle, gated on the
+  // component's stable `id` rather than on the object identity `component`
+  // arrives with. Those are not the same thing now that the shared client
+  // refetches on window focus: `AgentDetail` re-renders with a NEW
+  // `AgentComponentDetail` object for the SAME component after a focus refetch,
+  // and an identity-keyed prefill would re-run mid-edit and wipe the admin's
+  // typed Name and Description — and clear a promote result already on screen —
+  // just because they switched tabs. `component` stays in the dep list so the
+  // effect never reads a stale object; only the WRITES are gated.
   useEffect(() => {
-    if (open && component) {
-      setName(component.name);
-      setDescription("");
-      setError(null);
-      setResult(null);
+    if (!(open && component)) {
+      // Dismissed (or nothing to promote): re-arm so reopening prefills again.
+      prefilledComponentIdRef.current = null;
+      return;
     }
+    if (prefilledComponentIdRef.current === component.id) {
+      return;
+    }
+    prefilledComponentIdRef.current = component.id;
+    setName(component.name);
+    setDescription("");
+    setError(null);
+    setResult(null);
   }, [open, component]);
 
   const handleSubmit = useCallback(async () => {

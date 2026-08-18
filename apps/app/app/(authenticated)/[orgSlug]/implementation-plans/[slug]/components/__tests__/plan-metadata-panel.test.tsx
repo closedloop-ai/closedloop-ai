@@ -4,10 +4,7 @@ import {
   calculateAcceptanceRate,
   sortJudgeFeedbackItemsByScore,
 } from "@repo/app/documents/lib/evaluation-utils";
-import {
-  createMockDocument,
-  createMockGenerationStatus,
-} from "@repo/app/shared/test-fixtures/documents";
+import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { createMockJudgeFeedbackItem } from "@repo/app/shared/test-fixtures/evaluation";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -76,9 +73,10 @@ const createMockPlan = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
     ...overrides,
   }) as DocumentDetail;
 
+const LOOP_PATTERN = /loop/i;
+
 const defaultProps = {
   plan: createMockPlan(),
-  generationStatus: null,
   codeJudgeItems: null,
 };
 
@@ -267,27 +265,23 @@ describe("PlanMetadataPanel", () => {
     });
   });
 
-  describe("Generation content", () => {
-    test("displays loop link when generationStatus has loop source", () => {
-      render(
+  describe("Loop/run-state removal (ISS-5474)", () => {
+    test("renders no Loop section, status, initiator or loop link", () => {
+      const { container } = render(
         <PlanMetadataPanel
           {...defaultProps}
-          generationStatus={createMockGenerationStatus({
-            source: "loop",
-            loopId: "loop-abc",
-          })}
+          additionalRepos={[{ fullName: "org/repo-one", branch: "main" }]}
         />
       );
-      expect(screen.getByText("View loop details")).toBeDefined();
+
+      // Not vacuous — the panel really rendered its own sections.
+      expect(screen.getByText("Code Evaluation")).toBeDefined();
+      expect(container.textContent ?? "").not.toMatch(LOOP_PATTERN);
+      expect(container.querySelector('a[href*="/loops/"]')).toBeNull();
     });
   });
 
   describe("Additional repositories", () => {
-    const loopGenerationStatus = createMockGenerationStatus({
-      source: "loop",
-      loopId: "loop-abc",
-    });
-
     test("renders each repo fullName and branch when additionalRepos is non-empty", () => {
       render(
         <PlanMetadataPanel
@@ -296,10 +290,12 @@ describe("PlanMetadataPanel", () => {
             { fullName: "org/repo-one", branch: "main" },
             { fullName: "org/repo-two", branch: "feature-branch" },
           ]}
-          generationStatus={loopGenerationStatus}
         />
       );
 
+      // Survives the Loop-section removal on its own: repository provenance is
+      // not run state, and it no longer needs a loop-sourced run to render.
+      expect(screen.getByText("Additional Repositories")).toBeDefined();
       expect(screen.getByText("org/repo-one")).toBeDefined();
       expect(screen.getByText("(main)")).toBeDefined();
       expect(screen.getByText("org/repo-two")).toBeDefined();
@@ -307,12 +303,7 @@ describe("PlanMetadataPanel", () => {
     });
 
     test("does not render additional repos section when additionalRepos is absent", () => {
-      render(
-        <PlanMetadataPanel
-          {...defaultProps}
-          generationStatus={loopGenerationStatus}
-        />
-      );
+      render(<PlanMetadataPanel {...defaultProps} />);
 
       expect(screen.queryByText("Additional Repositories")).toBeNull();
     });

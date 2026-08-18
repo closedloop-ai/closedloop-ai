@@ -1,6 +1,6 @@
 # @closedloop-ai/telemetry-contract
 
-Canonical v0.10.0 telemetry attribute names, schemas, span envelopes, and consumer helpers for ClosedLoop App, Resource, Span, GenAI, Sync, Permission, and IPC perf telemetry contracts.
+Canonical v0.12.0 telemetry attribute names, schemas, span envelopes, and consumer helpers for ClosedLoop App, Resource, Span, GenAI, Sync, Permission, and IPC perf telemetry contracts.
 
 Import exact subpaths:
 
@@ -77,7 +77,7 @@ installed `dist/schemas/*.schema.json` files, or the release assets. The App
 schema currently uses `$id`
 `https://closedloop.ai/schemas/telemetry-contract/app/v0.3.schema.json`; the
 Sync schema uses `$id`
-`https://closedloop.ai/schemas/telemetry-contract/sync/v0.3.schema.json`. The
+`https://closedloop.ai/schemas/telemetry-contract/sync/v0.6.schema.json`. The
 GenAI and Resource schemas moved to `$id` `.../gen-ai/v0.4.schema.json` and
 `.../resource/v0.4.schema.json` when the FEA-2037 harness/cost attributes
 landed, and the new Permission schema uses `$id`
@@ -349,10 +349,13 @@ The package pins `@opentelemetry/semantic-conventions` to `1.39.0`. Attributes c
 - `app.exception.origin` maps from Desktop exception capture (`pre_init`, `main`, or `renderer`).
 - `app.organization.id` maps from the Desktop authenticated organization id (multiplayer attribution, FEA-1996); set only when an API key is present, so single-player telemetry never carries it.
 - GenAI cache-token attributes are compatibility fields until the pinned OTel JS package exports them.
-- `sync.event`, `sync.outcome`, `sync.payload_bytes`, and `sync.latency_ms`
-  map from future Desktop sync instrumentation in
-  `apps/desktop/src/main/agent-session-sync-service.ts`; they are
-  transport-health-only fields and must not carry session content.
+- `sync.event`, `sync.outcome`, `sync.payload_bytes`, `sync.latency_ms`, and
+  `sync.reason` map from Desktop sync instrumentation in
+  `apps/desktop/src/main/agent-sync/agent-session-sync-service.ts`; they are
+  transport-health-only fields and must not carry session content. `sync.reason`
+  (FEA-3426) is a closed enum naming why a `failure`/`dead_letter` batch failed
+  (`ack_timeout`, `rate_limited`, `ingestion_failed`, `validation_failed`,
+  `feature_disabled`, `locally_oversized`, `transport_error`, `unhydratable`).
 - `gen_ai.cost.usage` (per-call USD cost), `gen_ai.permission.decision`, and
   `gen_ai.permission.source` map from harness cost/permission events ingested
   by the desktop in-process OTLP receiver (PRD-468 FEA-1843).
@@ -367,7 +370,7 @@ The package pins `@opentelemetry/semantic-conventions` to `1.39.0`. Attributes c
   `error.type`. `ipc.session_count` is the total local-store session count —
   the fleet dimension that exposes the many-sessions perf cliff.
 
-The FEA-1980 App contract subpaths ship in `0.2.0`; the FEA-1981 Sync contract subpaths ship in `0.3.0`; the FEA-2037 Permission contract subpaths plus the `gen_ai.cost.usage` and `harness.name` attributes ship in `0.4.0` (release tag `telemetry-contract-v0.4.0`); the FEA-1986 `app.exception.origin` contract ships in `0.5.0` (release tag `telemetry-contract-v0.5.0`); the FEA-2170 collector allow-list codegen and drift guard land in `0.6.0` (release tag `telemetry-contract-v0.6.0`); the FEA-1991 collector PostHog-routing codegen and drift guard land in `0.7.0` (release tag `telemetry-contract-v0.7.0`); the FEA-1996 multiplayer `app.organization.id` attribute ships in `0.8.0` (release tag `telemetry-contract-v0.8.0`); the FEA-1997 `ipc` IPC perf wide-event subpaths plus the published `collector-tail-sampling-policy` SSOT ship in `0.9.0` (release tag `telemetry-contract-v0.9.0`). FEA-1996 and FEA-1997 both originally declared `0.8.0`; FEA-1996 merged first and published `0.8.0`, so the `ipc` subpaths and the `collector-tail-sampling-policy` SSOT — present on `main` but absent from the published `0.8.0` artifact — are republished as the additive-minor `0.9.0` (FEA-2198). The FEA-2184 collector-side PostHog identity transform artifacts ship in `0.9.1` (release tag `telemetry-contract-v0.9.1`). The FEA-3074 span envelope and span-aware emit helpers ship in `0.10.0` (release tag `telemetry-contract-v0.10.0`) while preserving the flat public `span.schema.json` asset. The generated `collector/*` artifacts are committed in-repo for cross-repo vendoring and are intentionally not packed into the published tarball (`files: ["dist"]`), so they do not change the published package surface. Publication is handled only by the existing main-branch GitHub Packages workflow after merge; consumers should pin the published package version after that workflow completes.
+The FEA-1980 App contract subpaths ship in `0.2.0`; the FEA-1981 Sync contract subpaths ship in `0.3.0`; the FEA-2037 Permission contract subpaths plus the `gen_ai.cost.usage` and `harness.name` attributes ship in `0.4.0` (release tag `telemetry-contract-v0.4.0`); the FEA-1986 `app.exception.origin` contract ships in `0.5.0` (release tag `telemetry-contract-v0.5.0`); the FEA-2170 collector allow-list codegen and drift guard land in `0.6.0` (release tag `telemetry-contract-v0.6.0`); the FEA-1991 collector PostHog-routing codegen and drift guard land in `0.7.0` (release tag `telemetry-contract-v0.7.0`); the FEA-1996 multiplayer `app.organization.id` attribute ships in `0.8.0` (release tag `telemetry-contract-v0.8.0`); the FEA-1997 `ipc` IPC perf wide-event subpaths plus the published `collector-tail-sampling-policy` SSOT ship in `0.9.0` (release tag `telemetry-contract-v0.9.0`). FEA-1996 and FEA-1997 both originally declared `0.8.0`; FEA-1996 merged first and published `0.8.0`, so the `ipc` subpaths and the `collector-tail-sampling-policy` SSOT — present on `main` but absent from the published `0.8.0` artifact — are republished as the additive-minor `0.9.0` (FEA-2198). The FEA-2184 collector-side PostHog identity transform artifacts ship in `0.9.1` (release tag `telemetry-contract-v0.9.1`). The FEA-3074 span envelope and span-aware emit helpers ship in `0.10.0` (release tag `telemetry-contract-v0.10.0`) while preserving the flat public `span.schema.json` asset. The FEA-3426 `sync.reason` transport-health attribute (the closed failure/dead-letter reason enum) ships as the additive-minor `0.11.0` (release tag `telemetry-contract-v0.11.0`). The FEA-3792 `transport_unavailable` `sync.reason` value (split out of the overloaded `rate_limited` so the SLO can separate a local relay flap from a server throttle) widens the closed reason enum and ships as the additive-minor `0.12.0` (release tag `telemetry-contract-v0.12.0`), moving the sync JSON Schema `$id` to `.../sync/v0.5.schema.json`. The ISS-5088 `transport_timeout` `sync.reason` value (a client-side request abort where the server never answered, split out of `ack_timeout` so the SLO can separate a lane-wide local/network stall from a server-answered 408) widens the closed reason enum the same way and ships as the additive-minor `0.13.0` (release tag `telemetry-contract-v0.13.0`), moving the sync JSON Schema `$id` to `.../sync/v0.6.schema.json`. The generated `collector/*` artifacts are committed in-repo for cross-repo vendoring and are intentionally not packed into the published tarball (`files: ["dist"]`), so they do not change the published package surface. Publication is handled only by the existing main-branch GitHub Packages workflow after merge; consumers should pin the published package version after that workflow completes.
 
 Only compiled JavaScript, declarations, generated schema assets, and the copied
 dist sample ship. Source files, scripts, tests, sourcemaps, declaration maps,

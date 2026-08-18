@@ -18,13 +18,17 @@ import {
 import { ArrowLeftIcon, BlocksIcon, SearchIcon } from "lucide-react";
 import { type ReactNode, useMemo, useState } from "react";
 import {
+  categoryDisplayLabel,
   installCount,
   type PackActivityEvent,
   type PackView,
+  packDisambiguators,
+  trendingPackIds,
   trendSlope,
 } from "../lib/pack-view";
 import type { PacksContext } from "../lib/packs-context";
 import type { InstallPending } from "./install-controls";
+import type { MemberTargetsInstall } from "./member-targets-block";
 import { PackCard } from "./pack-card";
 import { PackDetail } from "./pack-detail";
 import { TeamRail } from "./team-rail";
@@ -54,12 +58,19 @@ const SORT_LABEL: Record<SortMode, string> = {
   [SortMode.Name]: "Name",
 };
 
-const matchesQuery = (pack: PackView, query: string): boolean => {
+const matchesQuery = (
+  pack: PackView,
+  query: string,
+  disambiguator?: string
+): boolean => {
   if (!query) {
     return true;
   }
+  // Include the disambiguating qualifier: a user who reads "Agent" or "v2.3.1"
+  // off a same-named card and types it into the box must still find that card
+  // (FEA-3972), not get an empty grid.
   const haystack =
-    `${pack.name} ${pack.publisher ?? ""} ${pack.description ?? ""}`.toLowerCase();
+    `${pack.name} ${pack.publisher ?? ""} ${pack.description ?? ""} ${disambiguator ?? ""}`.toLowerCase();
   return haystack.includes(query.toLowerCase());
 };
 
@@ -105,7 +116,7 @@ const FilterBar = ({
           <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
           {categories.map((value) => (
             <SelectItem key={value} value={value}>
-              {value}
+              {categoryDisplayLabel(value)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -152,10 +163,29 @@ export type PacksWorkspaceProps = {
   onUninstall?: (packId: string, harness: Harness) => void;
   onUpdate?: (packId: string, harness: Harness) => void;
   onManageDistribution?: (packId: string) => void;
+  /**
+   * Withdraw the selected pack's distribution — stop offering it to the
+   * organization (ISS-5123). Forwarded straight to `PackDetail`; absent on every
+   * surface that lacks the capability or has the flag off.
+   */
+  onWithdrawDistribution?: (distributionIds: string[]) => void;
+  /** A withdrawal is in flight for the selected pack (ISS-5123). */
+  withdrawDistributionPending?: boolean;
   /** Extra admin actions (e.g. Archive) for the selected pack's detail header. */
   detailHeaderActions?: ReactNode;
   /** Replaces the selected pack's read-only Contents (e.g. admin components manager). */
   detailContentsSlot?: ReactNode;
+  /** Member per-machine read is in flight for the detail block (FEA-4077). */
+  memberTargetsLoading?: boolean;
+  /** Member per-machine read failed for the detail block (FEA-4077). */
+  memberTargetsError?: boolean;
+  /** Honest per-surface description for the member per-machine block (FEA-4077). */
+  memberTargetsDescription?: string;
+  /**
+   * ISS-5125: the member per-machine block's ACT half, passed straight to
+   * `PackDetail`. Omitted → that block stays read-only.
+   */
+  memberTargetsInstall?: MemberTargetsInstall | null;
 };
 
 export const PacksWorkspace = ({
@@ -173,8 +203,14 @@ export const PacksWorkspace = ({
   onUninstall,
   onUpdate,
   onManageDistribution,
+  onWithdrawDistribution,
+  withdrawDistributionPending,
   detailHeaderActions,
   detailContentsSlot,
+  memberTargetsLoading,
+  memberTargetsError,
+  memberTargetsDescription,
+  memberTargetsInstall,
 }: PacksWorkspaceProps) => {
   const showTeam = context.capabilities.showTeamUsage;
   const sortModes = useMemo<SortMode[]>(
@@ -200,14 +236,25 @@ export const PacksWorkspace = ({
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [packs]);
 
+  // Qualifier per pack whose display name collides with another in the catalog,
+  // so same-named grid cards stay distinguishable at a glance (FEA-3972).
+  // Computed over the full set — a collision is a property of the catalog, not
+  // the current filter.
+  const disambiguators = useMemo(() => packDisambiguators(packs), [packs]);
+
+  // Catalog-relative "trending" set (top movers vs. the field), computed once
+  // over the full catalog so the badge is selective and stable across filters
+  // rather than lighting up on every climbing card (FEA-3236).
+  const trending = useMemo(() => trendingPackIds(packs), [packs]);
+
   const visiblePacks = useMemo(() => {
     const filtered = packs.filter(
       (pack) =>
-        matchesQuery(pack, query) &&
+        matchesQuery(pack, query, disambiguators.get(pack.id)) &&
         (category === ALL_CATEGORIES || pack.category === category)
     );
     return [...filtered].sort(SORT_COMPARATORS[sort]);
-  }, [packs, query, category, sort]);
+  }, [packs, query, category, sort, disambiguators]);
 
   const recommended = useMemo(() => {
     if (!showTeam) {
@@ -247,14 +294,21 @@ export const PacksWorkspace = ({
           <PackDetail
             contentsSlot={detailContentsSlot}
             context={context}
+            disambiguator={disambiguators.get(resolved.id)}
             headerActions={detailHeaderActions}
             installError={installError}
             installPending={installPending}
+            memberTargetsDescription={memberTargetsDescription}
+            memberTargetsError={memberTargetsError}
+            memberTargetsInstall={memberTargetsInstall}
+            memberTargetsLoading={memberTargetsLoading}
             onInstall={onInstall}
             onManageDistribution={onManageDistribution}
             onUninstall={onUninstall}
             onUpdate={onUpdate}
+            onWithdrawDistribution={onWithdrawDistribution}
             pack={resolved}
+            withdrawDistributionPending={withdrawDistributionPending}
           />
         </div>
       );
@@ -285,10 +339,12 @@ export const PacksWorkspace = ({
               {visiblePacks.map((pack) => (
                 <PackCard
                   context={context}
+                  disambiguator={disambiguators.get(pack.id)}
                   key={pack.id}
                   onInstall={selectLocalInstall}
                   onSelect={select}
                   pack={pack}
+                  trending={trending.has(pack.id)}
                 />
               ))}
             </div>
@@ -319,6 +375,7 @@ export const PacksWorkspace = ({
           <TeamRail
             activity={activity}
             context={context}
+            disambiguators={disambiguators}
             onInstall={selectLocalInstall}
             onSelect={select}
             recommended={recommended}

@@ -4,7 +4,7 @@ import {
   isUsableDesktopServiceVersion,
   resolveDesktopServiceVersion,
   UNRESOLVED_DESKTOP_SERVICE_VERSION,
-} from "../src/main/desktop-service-version.js";
+} from "../src/main/util/desktop-service-version.js";
 
 const UNRESOLVED_WARNING_PATTERN = /Unresolved desktop service\.version/;
 

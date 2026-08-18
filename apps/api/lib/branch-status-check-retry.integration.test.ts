@@ -16,7 +16,13 @@ import {
   scheduleCheckRunRetry,
 } from "@/lib/branch-status-check-retry";
 
-const { mockQueryStatusCheckRollupWithProviderResult } = vi.hoisted(() => ({
+const {
+  mockGetInstallationOctokit,
+  mockOctokit,
+  mockQueryStatusCheckRollupWithProviderResult,
+} = vi.hoisted(() => ({
+  mockGetInstallationOctokit: vi.fn(),
+  mockOctokit: { marker: "installation-octokit" },
   mockQueryStatusCheckRollupWithProviderResult: vi.fn(),
 }));
 
@@ -28,6 +34,15 @@ vi.mock("@repo/github", () => ({
   },
   queryStatusCheckRollupWithProviderResult:
     mockQueryStatusCheckRollupWithProviderResult,
+}));
+
+vi.mock("@repo/github/installation-auth", () => ({
+  // Spy wrapper (not a bare vi.fn implementation) so restore/reset passes can
+  // never strip the marker client the drain threads into the rollup query.
+  getInstallationOctokit: (installationId: string) => {
+    mockGetInstallationOctokit(installationId);
+    return Promise.resolve(mockOctokit);
+  },
 }));
 
 import { GitHubProviderResultStatus } from "@repo/github";
@@ -106,6 +121,15 @@ describeWithDatabase("check_run retry recovery integration", () => {
       rescheduled: 0,
       succeeded: 1,
     });
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith(
+      seeded.installationId
+    );
+    expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
+      mockOctokit,
+      "acme",
+      "widgets",
+      seeded.headSha
+    );
     await expect(readRetryState(seeded.branchArtifactId)).resolves.toEqual(
       expect.objectContaining({ attempts: 0, state: null })
     );

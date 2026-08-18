@@ -1,39 +1,32 @@
 import { Priority } from "@repo/api/src/types/common.js";
-import { DocumentStatus, FeatureStatus } from "@repo/api/src/types/document.js";
+import { DocumentStatus, IssueStatus } from "@repo/api/src/types/document.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { registerUpdateDocument } from "../tools/update-document.js";
+import { createToolHarnessWithMock } from "./fixtures/tool-harness.js";
 
 type ToolHandler = (input: Record<string, unknown>) => Promise<{
   content: { type: "text"; text: string }[];
   isError?: boolean;
 }>;
 
+const VALID_DUE_DATE = "2026-07-24T05:00:00.000Z";
+
 function createToolHarness(apiClient: ApiClient): {
   handler: ToolHandler;
   registeredSchema: Record<string, z.ZodType>;
 } {
-  let handler: ToolHandler | undefined;
-  let schema: Record<string, z.ZodType> | undefined;
-  const registerTool = vi.fn(
-    (
-      _name: string,
-      config: { inputSchema: Record<string, z.ZodType> },
-      callback: ToolHandler
-    ): void => {
-      handler = callback;
-      schema = config.inputSchema;
-    }
+  const { handler, registerTool } = createToolHarnessWithMock(
+    registerUpdateDocument,
+    apiClient
   );
-
-  registerUpdateDocument({ registerTool } as never, apiClient);
-
-  if (!(handler && schema)) {
-    throw new Error("Tool handler was not registered");
-  }
-
-  return { handler, registeredSchema: schema };
+  const registeredSchema = (
+    registerTool.mock.calls[0]?.[1] as {
+      inputSchema: Record<string, z.ZodType>;
+    }
+  ).inputSchema;
+  return { handler, registeredSchema };
 }
 
 describe("update-document MCP tool", () => {
@@ -43,9 +36,10 @@ describe("update-document MCP tool", () => {
     vi.clearAllMocks();
   });
 
-  it("registers with assigneeId in the inputSchema", () => {
+  it("registers with assigneeId and dueDate in the inputSchema", () => {
     const { registeredSchema } = createToolHarness(apiClient);
     expect(registeredSchema).toHaveProperty("assigneeId");
+    expect(registeredSchema).toHaveProperty("dueDate");
   });
 
   it("passes a valid UUID assigneeId to apiClient.put body", async () => {
@@ -83,10 +77,10 @@ describe("update-document MCP tool", () => {
     });
     const { handler } = createToolHarness(apiClient);
 
-    await handler({ documentId: "FEA-42", status: FeatureStatus.InProgress });
+    await handler({ documentId: "FEA-42", status: IssueStatus.InProgress });
 
     expect(apiClient.put).toHaveBeenCalledWith("/documents/FEA-42", {
-      status: FeatureStatus.InProgress,
+      status: IssueStatus.InProgress,
     });
   });
 
@@ -123,13 +117,46 @@ describe("update-document MCP tool", () => {
   it("forwards priority to apiClient.put body", async () => {
     (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: "doc-1",
+      priority: Priority.High,
     });
     const { handler } = createToolHarness(apiClient);
 
-    await handler({ documentId: "FEA-42", priority: Priority.High });
+    const result = await handler({
+      documentId: "FEA-42",
+      priority: Priority.High,
+    });
 
     expect(apiClient.put).toHaveBeenCalledWith("/documents/FEA-42", {
       priority: Priority.High,
+    });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      priority: Priority.High,
+    });
+  });
+
+  it("forwards dueDate to apiClient.put body", async () => {
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+    });
+    const { handler } = createToolHarness(apiClient);
+
+    await handler({ documentId: "FEA-42", dueDate: VALID_DUE_DATE });
+
+    expect(apiClient.put).toHaveBeenCalledWith("/documents/FEA-42", {
+      dueDate: VALID_DUE_DATE,
+    });
+  });
+
+  it("forwards null dueDate to clear it", async () => {
+    (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "doc-1",
+    });
+    const { handler } = createToolHarness(apiClient);
+
+    await handler({ documentId: "FEA-42", dueDate: null });
+
+    expect(apiClient.put).toHaveBeenCalledWith("/documents/FEA-42", {
+      dueDate: null,
     });
   });
 
@@ -175,7 +202,7 @@ describe("update-document MCP tool", () => {
     });
   });
 
-  it("omits priority, approverId and fileName from body when not provided", async () => {
+  it("omits priority, dueDate, approverId and fileName from body when not provided", async () => {
     (apiClient.put as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: "doc-1",
     });
@@ -186,6 +213,7 @@ describe("update-document MCP tool", () => {
     const calledBody = (apiClient.put as ReturnType<typeof vi.fn>).mock
       .calls[0]?.[1] as Record<string, unknown>;
     expect(calledBody).not.toHaveProperty("priority");
+    expect(calledBody).not.toHaveProperty("dueDate");
     expect(calledBody).not.toHaveProperty("approverId");
     expect(calledBody).not.toHaveProperty("fileName");
   });
@@ -201,6 +229,21 @@ describe("update-document MCP tool", () => {
     const { registeredSchema } = createToolHarness(apiClient);
     const approverSchema = registeredSchema.approverId;
     const result = approverSchema.safeParse("not-a-uuid");
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts ISO date and timezone-qualified datetime dueDate values", () => {
+    const { registeredSchema } = createToolHarness(apiClient);
+    expect(registeredSchema.dueDate.safeParse("2026-07-24").success).toBe(true);
+    expect(registeredSchema.dueDate.safeParse(VALID_DUE_DATE).success).toBe(
+      true
+    );
+  });
+
+  it("rejects invalid dueDate strings via schema validation", () => {
+    const { registeredSchema } = createToolHarness(apiClient);
+    const dueDateSchema = registeredSchema.dueDate;
+    const result = dueDateSchema.safeParse("2026-07-32");
     expect(result.success).toBe(false);
   });
 });

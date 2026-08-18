@@ -11,6 +11,8 @@ import type { CodexRolloutLinkage } from "../src/main/collectors/codex/codex-sub
 import {
   claudeRefsFromListings,
   codexRefsFromRollouts,
+  discoverTranscriptFiles,
+  opencodeRefsFromSessions,
 } from "../src/main/transcript-sync/transcript-discovery.js";
 import { codexLinkage as linkage } from "./normalized-session-test-utils.js";
 
@@ -66,4 +68,81 @@ test("codexRefsFromRollouts groups descendants under the root session", () => {
     byRolloutPath.get("/codex/grandchild.jsonl")?.fileKey,
     "subagent:grandchild"
   );
+});
+
+test("codexRefsFromRollouts groups fork rollouts under the root session (FEA-2928)", () => {
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["root", linkage("root", null, 0, "/codex/root.jsonl")],
+    ["fork", linkage("fork", null, null, "/codex/fork.jsonl", "root")],
+  ]);
+  const refs = codexRefsFromRollouts(byId);
+  const byRolloutPath = new Map(refs.map((r) => [r.sourcePath, r]));
+
+  assert.equal(byRolloutPath.get("/codex/root.jsonl")?.fileKey, "main");
+  assert.equal(
+    byRolloutPath.get("/codex/root.jsonl")?.externalSessionId,
+    "root"
+  );
+  assert.equal(
+    byRolloutPath.get("/codex/fork.jsonl")?.externalSessionId,
+    "root"
+  );
+  assert.equal(
+    byRolloutPath.get("/codex/fork.jsonl")?.fileKey,
+    "subagent:fork"
+  );
+});
+
+test("codexRefsFromRollouts classifies orphan fork as main (FEA-2928)", () => {
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["orphan", linkage("orphan", null, null, "/codex/orphan.jsonl", "ghost")],
+  ]);
+  const refs = codexRefsFromRollouts(byId);
+  assert.equal(refs.length, 1);
+  assert.equal(refs[0]?.fileKey, "main");
+  assert.equal(refs[0]?.externalSessionId, "orphan");
+});
+
+test("opencodeRefsFromSessions maps materialized files to opencode refs (FEA-3932)", () => {
+  const refs = opencodeRefsFromSessions([
+    {
+      externalSessionId: "opencode-root",
+      fileKey: "main",
+      sourcePath:
+        "/state/transcript-materialized/opencode/opencode-root/main.jsonl",
+    },
+    {
+      externalSessionId: "opencode-root",
+      fileKey: "subagent:child",
+      sourcePath:
+        "/state/transcript-materialized/opencode/opencode-root/subagent:child.jsonl",
+    },
+  ]);
+  assert.deepEqual(
+    refs.map((r) => `${r.externalSessionId}:${r.fileKey}:${r.sourceHarness}`),
+    ["opencode-root:main:opencode", "opencode-root:subagent:child:opencode"]
+  );
+});
+
+test("discoverTranscriptFiles appends opencode refs after claude + codex (FEA-3932)", () => {
+  const refs = discoverTranscriptFiles({
+    listClaudeMainFiles: () => ["/home/.claude/projects/p/sess-1.jsonl"],
+    listClaudeSubagentFiles: () => [],
+    listCodexRolloutFiles: () => [],
+    mapCodexById: () => new Map(),
+    listOpencodeMaterializedFiles: () => [
+      {
+        externalSessionId: "opencode-1",
+        fileKey: "main",
+        sourcePath:
+          "/state/transcript-materialized/opencode/opencode-1/main.jsonl",
+      },
+    ],
+  });
+  const harnesses = refs.map((r) => r.sourceHarness);
+  assert.ok(harnesses.includes("claude"));
+  assert.ok(harnesses.includes("opencode"));
+  // OpenCode refs come last (appended after claude + codex).
+  assert.equal(refs.at(-1)?.sourceHarness, "opencode");
+  assert.equal(refs.at(-1)?.externalSessionId, "opencode-1");
 });

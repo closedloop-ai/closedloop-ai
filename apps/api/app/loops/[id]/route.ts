@@ -15,6 +15,14 @@ import { stopDesktopLoopBestEffort } from "../desktop-cancel";
 import { loopsService } from "../service";
 import { loopMetadataUpdateValidator } from "../validators";
 
+/**
+ * DELETE awaits a desktop kill that replays a not-delivered answer (ISS-6046),
+ * so this segment cannot run on the platform default. Literal because
+ * route-segment config must be statically analysable; pinned to
+ * `CANCEL_REQUEST_BUDGET_SECONDS` by `../cancel-route-max-duration.test.ts`.
+ */
+export const maxDuration = 60;
+
 export const GET = withAnyAuth<LoopDetail, "/loops/[id]">(
   async ({ user }, _, params) => {
     try {

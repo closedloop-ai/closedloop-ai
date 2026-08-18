@@ -1,9 +1,14 @@
+import {
+  type GitHubActorType,
+  normalizeGitHubActorType,
+} from "@repo/api/src/types/github-actor";
 import { ApproverRole } from "@repo/api/src/types/user";
 import {
   ExternalCommentProvider,
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { mergeGitHubAuthorProviderDetail } from "./github-author-provider-detail";
 
 const UNKNOWN_GITHUB_USER_LOGIN = "unknown-github-user";
 const UNKNOWN_GITHUB_USER_DISPLAY_NAME = "Unknown GitHub user";
@@ -18,6 +23,10 @@ export type ExternalGitHubUser = {
   login?: string | null;
   avatar_url?: string | null;
   html_url?: string | null;
+  /** Canonical normalized alias; takes precedence over the raw REST key. */
+  actorType?: unknown;
+  /** Raw GitHub REST/webhook actor type. */
+  type?: unknown;
 };
 
 /**
@@ -56,6 +65,7 @@ export type NormalizedExternalGitHubAuthor = {
   avatarUrl: string | null;
   profileUrl: string | null;
   isGhost: boolean;
+  actorType?: GitHubActorType;
 };
 
 type ResolvedExternalAuthorUser = {
@@ -81,6 +91,7 @@ type ExternalCommentAuthorRecord = {
   displayName: string | null;
   avatarUrl: string | null;
   profileUrl: string | null;
+  providerDetail: unknown;
   userId: string;
   user?: ResolvedExternalAuthorUser | null;
 };
@@ -92,6 +103,7 @@ export type ResolvedExternalGitHubAuthor = {
   source: "github_user_connection" | "external_comment_author" | "shadow_user";
 };
 
+/** Actor evidence retained alongside a memoized author resolution. */
 type PlannedExternalAuthorDb = Pick<
   TransactionClient,
   "externalCommentAuthor" | "gitHubUserConnection" | "user"
@@ -124,6 +136,7 @@ const EXTERNAL_AUTHOR_SELECT = {
   displayName: true,
   avatarUrl: true,
   profileUrl: true,
+  providerDetail: true,
   userId: true,
   user: { select: USER_SELECT },
 } as const;
@@ -151,6 +164,7 @@ export function normalizeExternalGitHubAuthor(
   const isGhost = providerUserId.startsWith("ghost:");
   const providerLogin = normalizeProviderLogin(author?.login, isGhost);
   const normalizedLogin = normalizeGitHubLogin(providerLogin);
+  const actorType = normalizeExternalGitHubActorType(author);
 
   return {
     provider: ExternalCommentProvider.GITHUB,
@@ -165,6 +179,7 @@ export function normalizeExternalGitHubAuthor(
     avatarUrl: isGhost ? null : trimToNull(author?.avatar_url),
     profileUrl: isGhost ? null : trimToNull(author?.html_url),
     isGhost,
+    ...(actorType ? { actorType } : {}),
   };
 }
 
@@ -207,11 +222,15 @@ async function resolveExternalGitHubAuthorWithDb(
   });
 
   if (linkedConnection?.user) {
+    const existingProviderDetail = identity.actorType
+      ? await findExistingProviderDetail(db, input.organizationId, identity)
+      : undefined;
     const externalAuthor = await upsertExternalAuthor(
       db,
       input.organizationId,
       identity,
-      linkedConnection.user.id
+      linkedConnection.user.id,
+      existingProviderDetail
     );
     return {
       identity,
@@ -236,7 +255,8 @@ async function resolveExternalGitHubAuthorWithDb(
       db,
       input.organizationId,
       identity,
-      existingDisposition.user.id
+      existingDisposition.user.id,
+      existingExternalAuthor.providerDetail
     );
     return {
       identity,
@@ -251,7 +271,8 @@ async function resolveExternalGitHubAuthorWithDb(
     db,
     input.organizationId,
     identity,
-    shadowUser.id
+    shadowUser.id,
+    existingExternalAuthor?.providerDetail
   );
 
   return {
@@ -297,6 +318,17 @@ function trimToNull(value: string | null | undefined): string | null {
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeExternalGitHubActorType(
+  author: ExternalGitHubUser | null
+): GitHubActorType | undefined {
+  if (!author) {
+    return undefined;
+  }
+  const evidence =
+    author.actorType === undefined ? author.type : author.actorType;
+  return normalizeGitHubActorType(evidence);
 }
 
 function externalAuthorUniqueWhere(
@@ -372,19 +404,37 @@ function externalAuthorData(
   };
 }
 
+async function findExistingProviderDetail(
+  db: PlannedExternalAuthorDb,
+  organizationId: string,
+  identity: NormalizedExternalGitHubAuthor
+): Promise<unknown> {
+  const existing = await db.externalCommentAuthor.findUnique({
+    where: externalAuthorUniqueWhere(organizationId, identity),
+    select: { providerDetail: true },
+  });
+  return existing?.providerDetail;
+}
+
 function upsertExternalAuthor(
   db: PlannedExternalAuthorDb,
   organizationId: string,
   identity: NormalizedExternalGitHubAuthor,
-  userId: string
+  userId: string,
+  existingProviderDetail: unknown
 ) {
   const data = externalAuthorData(organizationId, identity, userId);
+  const providerDetail = mergeGitHubAuthorProviderDetail(
+    existingProviderDetail,
+    identity.actorType
+  );
   const lastSeenAt = new Date();
+  const providerDetailData = providerDetail ? { providerDetail } : {};
 
   return db.externalCommentAuthor.upsert({
     where: externalAuthorUniqueWhere(organizationId, identity),
-    create: { ...data, lastSeenAt },
-    update: { ...data, lastSeenAt },
+    create: { ...data, ...providerDetailData, lastSeenAt },
+    update: { ...data, ...providerDetailData, lastSeenAt },
     select: EXTERNAL_AUTHOR_SELECT,
   });
 }

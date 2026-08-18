@@ -1,0 +1,76 @@
+---
+title: Users and Identity
+description: 'Look up the authenticated user and list organization members for assignment'
+---
+
+## Overview
+
+These tools resolve who the caller is and which users are available for assignment or lookup. Users are identified by **UUID only** — there is no slug form. Use `list-users` to discover a user's UUID, then pass it to tools such as `update-document(assigneeId: ...)`.
+
+<Callout>
+  Both tools resolve the caller and org from your authenticated connection — complete the OAuth flow with your `sk_live_...` API key first (see the [MCP Server Overview](./introduction#connecting-an-ai-agent)). `get-me` returns the user whose key made the request; `list-users` returns members of that user's organization.
+</Callout>
+
+---
+
+## Fetching the Authenticated User
+
+Use `get-me` to read the profile and identity of the user whose API key made the request. This is the fastest way to confirm authentication and discover the caller's own UUID.
+
+**Tool**: `get-me`
+**Underlying API**: `GET /me`
+
+```
+get-me()
+```
+
+The response includes the authenticated user's profile — `id`, `firstName`, `lastName`, `email`, and `role`.
+
+---
+
+## Listing Users
+
+Use `list-users` to retrieve organization users available for assignment or lookup.
+
+**Tool**: `list-users`
+**Underlying API**: `GET /users`
+
+```
+list-users(
+  limit?: number,   // 1–100, default 25
+  offset?: number   // Pagination offset, default 0
+)
+```
+
+The response is a paginated envelope. Each item includes `id`, `firstName`, `lastName`, `email`, `role`, and `updatedAt`:
+
+```json
+{
+  "total": 8,
+  "offset": 0,
+  "limit": 25,
+  "returned": 8,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    {
+      "id": "...",
+      "firstName": "Alice",
+      "lastName": "Nguyen",
+      "email": "alice@example.com",
+      "role": "ENGINEER",
+      "updatedAt": "2025-01-15T10:00:00Z"
+    }
+  ]
+}
+```
+
+**Example — assign a document to a user**:
+
+```
+1. list-users() → find Alice's id
+2. update-document(
+     documentId: "FEA-1035",
+     assigneeId: "<alice-uuid>"
+   )
+```

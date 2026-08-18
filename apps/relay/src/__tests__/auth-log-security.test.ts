@@ -70,55 +70,9 @@ vi.mock("socket.io", () => {
   };
 });
 
-vi.mock("node:http", () => {
-  type Listener = (...args: unknown[]) => void;
-  return {
-    createServer: vi.fn(() => {
-      const listeners = new Map<string, Set<Listener>>();
-      const addListener = (evt: string, fn: Listener) => {
-        let set = listeners.get(evt);
-        if (!set) {
-          set = new Set();
-          listeners.set(evt, set);
-        }
-        set.add(fn);
-      };
-      const mockServer = {
-        listening: false,
-        listen: vi.fn(function listen() {
-          mockServer.listening = true;
-          queueMicrotask(() => {
-            for (const fn of listeners.get("listening") ?? []) {
-              fn();
-            }
-          });
-          return mockServer;
-        }),
-        close: vi.fn((cb?: () => void) => {
-          mockServer.listening = false;
-          cb?.();
-          return mockServer;
-        }),
-        on: vi.fn((evt: string, fn: Listener) => {
-          addListener(evt, fn);
-          return mockServer;
-        }),
-        once: vi.fn((evt: string, fn: Listener) => {
-          const wrapper: Listener = (...args) => {
-            listeners.get(evt)?.delete(wrapper);
-            fn(...args);
-          };
-          addListener(evt, wrapper);
-          return mockServer;
-        }),
-        off: vi.fn((evt: string, fn: Listener) => {
-          listeners.get(evt)?.delete(fn);
-          return mockServer;
-        }),
-      };
-      return mockServer;
-    }),
-  };
+vi.mock("node:http", async () => {
+  const { createMockHttpServerFactory } = await import("./http-server-mock.js");
+  return { createServer: vi.fn(createMockHttpServerFactory()) };
 });
 
 // ---------------------------------------------------------------------------

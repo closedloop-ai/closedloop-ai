@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { LoopSchedulerContext } from "../src/main/loop-scheduler-context.js";
+import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
 
 // ---------------------------------------------------------------------------
 // Minimal gateway server that records requests
@@ -79,78 +79,15 @@ async function stopGateway(): Promise<void> {
 // We import the route registration function and drive it through a fake
 // OperationDispatcher so we can call the handler directly.
 
-import { PassThrough } from "node:stream";
-import type {
-  OperationHandler,
-  OperationRequestContext,
-} from "../src/server/operation-dispatcher.js";
+import {
+  buildSymphonyLoopContext,
+  createRouteRecorder,
+} from "./helpers/symphony-loop-op-context.js";
 
-type CapturedRoute = {
-  method: string;
-  path: string;
-  handler: OperationHandler;
-};
-const capturedRoutes: CapturedRoute[] = [];
-
-const fakeDispatcher = {
-  register(method: string, path: string, handler: OperationHandler) {
-    capturedRoutes.push({ method, path, handler });
-  },
-};
-
-function findHandler(method: string, pathSubstring: string): OperationHandler {
-  const route = capturedRoutes.find(
-    (r) => r.method === method && r.path.includes(pathSubstring)
-  );
-  if (!route) {
-    throw new Error(`No handler for ${method} ${pathSubstring}`);
-  }
-  return route.handler;
-}
-
-function buildContext(body: Record<string, unknown>): OperationRequestContext {
-  const bodyStr = JSON.stringify(body);
-  const req = new PassThrough() as unknown as http.IncomingMessage;
-  const res = new PassThrough() as unknown as http.ServerResponse;
-  let responseStatus = 0;
-  let responseBody = "";
-  // Minimal mock for the response
-  (res as unknown as Record<string, unknown>).statusCode = 0;
-  Object.defineProperty(res, "statusCode", {
-    get: () => responseStatus,
-    set: (v: number) => {
-      responseStatus = v;
-    },
-  });
-  (res as unknown as { setHeader: (k: string, v: string) => void }).setHeader =
-    () => {};
-  (res as unknown as { end: (data?: string) => void }).end = (
-    data?: string
-  ) => {
-    responseBody = data ?? "";
-  };
-
-  return {
-    method: "POST",
-    pathname: "/api/gateway/symphony/loop",
-    params: {},
-    query: new URLSearchParams(),
-    rawBody: Buffer.from(bodyStr),
-    body: bodyStr,
-    request: req,
-    response: res,
-    // Expose for assertions
-    get _responseStatus() {
-      return responseStatus;
-    },
-    get _responseBody() {
-      return responseBody;
-    },
-  } as OperationRequestContext & {
-    _responseStatus: number;
-    _responseBody: string;
-  };
-}
+const routeRecorder = createRouteRecorder();
+const capturedRoutes = routeRecorder.routes;
+const fakeDispatcher = routeRecorder.dispatcher;
+const findHandler = routeRecorder.find;
 
 /** Repo fullName whose basename does not exist under ssrfAllowDir — PLAN exits before run-loop spawn. */
 const SSRF_PLAN_REPO = {
@@ -200,34 +137,26 @@ test("returns 503 when getApiOrigin is absent", async () => {
   );
   try {
     // Register with no getApiOrigin
-    const freshRoutes: CapturedRoute[] = [];
+    const freshRecorder = createRouteRecorder();
     const { registerSymphonyLoopRoutes } = await import(
       "../src/server/operations/symphony-loop.js"
     );
     registerSymphonyLoopRoutes(
-      {
-        register: (m: string, p: string, h: OperationHandler) =>
-          freshRoutes.push({ method: m, path: p, handler: h }),
-      } as never,
+      freshRecorder.dispatcher as never,
       () => [allowDir],
       new LoopSchedulerContext(),
       undefined, // no getApiOrigin
       undefined
     );
-    const handler = freshRoutes.find(
-      (r) => r.path.includes("/loop") && !r.path.includes("kill")
-    )!.handler;
-    const ctx = buildContext({
+    const handler = freshRecorder.find("POST", "/api/gateway/symphony/loop");
+    const ctx = buildSymphonyLoopContext({
       loopId: "test",
       command: LoopCommand.Plan,
       closedLoopAuthToken: "tok",
-    }) as OperationRequestContext & {
-      _responseStatus: number;
-      _responseBody: string;
-    };
+    });
     await handler(ctx);
-    assert.equal(ctx._responseStatus, 503);
-    assert.ok(ctx._responseBody.includes("API origin not configured"));
+    assert.equal(ctx.responseStatus, 503);
+    assert.ok(ctx.responseBody.includes("API origin not configured"));
   } finally {
     await fs.rm(allowDir, { recursive: true, force: true });
   }
@@ -235,27 +164,24 @@ test("returns 503 when getApiOrigin is absent", async () => {
 
 test("works with no apiBaseUrl field in body when getApiOrigin is configured", async () => {
   const handler = findHandler("POST", "/loop");
-  const ctx = buildContext({
+  const ctx = buildSymphonyLoopContext({
     loopId: "00000000-0000-0000-0000-000000000001",
     command: LoopCommand.Plan,
     closedLoopAuthToken: "tok",
     // No apiBaseUrl at all
     artifacts: [],
     repo: { ...SSRF_PLAN_REPO },
-  }) as OperationRequestContext & {
-    _responseStatus: number;
-    _responseBody: string;
-  };
+  });
 
   await handler(ctx);
   // Should not fail with "Missing required fields" for apiBaseUrl
   // It will fail later (repo not found, etc.) but NOT because of apiBaseUrl
   assert.notEqual(
-    ctx._responseStatus,
+    ctx.responseStatus,
     400,
     "should not reject for missing apiBaseUrl"
   );
-  const parsed = JSON.parse(ctx._responseBody);
+  const parsed = JSON.parse(ctx.responseBody);
   assert.ok(
     !parsed.error?.includes("apiBaseUrl"),
     `unexpected apiBaseUrl error: ${parsed.error}`
@@ -264,14 +190,14 @@ test("works with no apiBaseUrl field in body when getApiOrigin is configured", a
 
 test("ignores caller-supplied apiBaseUrl -- events go to configured origin", async () => {
   const handler = findHandler("POST", "/loop");
-  const ctx = buildContext({
+  const ctx = buildSymphonyLoopContext({
     loopId: "00000000-0000-0000-0000-000000000002",
     command: LoopCommand.Plan,
     closedLoopAuthToken: "tok",
     apiBaseUrl: "http://169.254.169.254", // attacker-controlled
     artifacts: [],
     repo: { ...SSRF_PLAN_REPO },
-  }) as OperationRequestContext & { _responseStatus: number };
+  });
 
   await handler(ctx);
   // Any outbound requests must have gone to our test server, not 169.254.169.254
@@ -285,7 +211,7 @@ test("ignores caller-supplied apiBaseUrl -- events go to configured origin", asy
 
 test("ignores caller-supplied localhost apiBaseUrl", async () => {
   const handler = findHandler("POST", "/loop");
-  const ctx = buildContext({
+  const ctx = buildSymphonyLoopContext({
     loopId: "00000000-0000-0000-0000-000000000003",
     command: LoopCommand.Plan,
     closedLoopAuthToken: "tok",
@@ -306,7 +232,7 @@ test("ignores caller-supplied localhost apiBaseUrl", async () => {
 
 test("ignores caller-supplied private IP apiBaseUrl", async () => {
   const handler = findHandler("POST", "/loop");
-  const ctx = buildContext({
+  const ctx = buildSymphonyLoopContext({
     loopId: "00000000-0000-0000-0000-000000000004",
     command: LoopCommand.Plan,
     closedLoopAuthToken: "tok",

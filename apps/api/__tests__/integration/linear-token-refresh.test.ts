@@ -42,6 +42,7 @@ vi.mock("@/lib/integration-encryption", () => ({
 
 const mockRefreshAccessToken = refreshAccessToken as Mock;
 const mockGetTeams = getTeams as Mock;
+const PINNED_NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
 
 describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
   afterEach(() => {
@@ -120,8 +121,18 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         scope: ["read", "write", "issues:create"],
       });
 
-      // Try to get integration status (will trigger refresh)
-      const result = await linearService.getIntegrationStatus(orgId);
+      // Try to get integration status (will trigger refresh). `Date.now` is
+      // pinned across the call so the refreshed expiry is exact rather than
+      // merely "in the future" — see the sibling expiry test.
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(PINNED_NOW_MS);
+      let result: Awaited<
+        ReturnType<typeof linearService.getIntegrationStatus>
+      >;
+      try {
+        result = await linearService.getIntegrationStatus(orgId);
+      } finally {
+        nowSpy.mockRestore();
+      }
 
       expect(result.success).toBe(true);
       expect(result.connected).toBe(true);
@@ -140,13 +151,11 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
       expect(integration?.accessToken).toBe("new_access_token");
       expect(integration?.refreshToken).toBe("new_refresh_token");
 
-      // Token expiry should be updated
-      expect(integration?.tokenExpiresAt).not.toBeNull();
-      if (integration?.tokenExpiresAt) {
-        expect(integration.tokenExpiresAt.getTime()).toBeGreaterThan(
-          Date.now()
-        );
-      }
+      // Token expiry should be updated to exactly the refresh TTL past the
+      // pinned clock.
+      expect(integration?.tokenExpiresAt?.getTime()).toBe(
+        PINNED_NOW_MS + 7200 * 1000
+      );
     });
   });
 
@@ -288,8 +297,6 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         })
       );
 
-      const beforeRefresh = Date.now();
-
       // Mock refresh with specific expiry
       mockRefreshAccessToken.mockResolvedValue({
         accessToken: "new_token",
@@ -299,7 +306,15 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         scope: ["read"],
       });
 
-      await linearService.getIntegrationStatus(orgId);
+      // Pin only `Date.now` — not the timers a live pg pool depends on — so the
+      // stored expiry can be asserted exactly instead of inside a ±5 s window
+      // that a slow round-trip on a loaded runner can breach.
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(PINNED_NOW_MS);
+      try {
+        await linearService.getIntegrationStatus(orgId);
+      } finally {
+        nowSpy.mockRestore();
+      }
 
       const integration = await withDb((db) =>
         db.linearIntegration.findUnique({
@@ -315,12 +330,9 @@ describe.skipIf(!hasDatabase)("Linear Token Refresh Integration", () => {
         throw new Error("Token expiry not found");
       }
 
-      // Verify expiry is approximately 2 hours from now
-      const expectedExpiry = beforeRefresh + 7200 * 1000;
-      const actualExpiry = integration.tokenExpiresAt.getTime();
-
-      // Allow 5 second margin
-      expect(Math.abs(actualExpiry - expectedExpiry)).toBeLessThan(5000);
+      expect(integration.tokenExpiresAt.getTime()).toBe(
+        PINNED_NOW_MS + 7200 * 1000
+      );
     });
   });
 });

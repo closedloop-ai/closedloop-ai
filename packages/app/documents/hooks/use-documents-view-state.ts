@@ -9,20 +9,15 @@ import { useMemo, useReducer } from "react";
 
 /**
  * Interaction state for the documents table view (FEA-1763 / PLN-874
- * Phase 3): row selection, the anchored context menu, and the delete / move /
- * merge dialogs. Extracted from `documents-view.tsx`'s ten useState calls
- * into one reducer so the orchestrator component is composition-only and
- * every state transition is a named action.
+ * Phase 3): row selection and the delete / move / merge dialogs. Extracted
+ * from `documents-view.tsx`'s many useState calls into one reducer so the
+ * orchestrator component is composition-only and every state transition is a
+ * named action. The row overflow menu is per-row and self-contained
+ * (FEA-4242 — see `DocumentRowActions`), so no menu state lives here.
  */
-
-export type MenuState = {
-  item: DocumentRowItem;
-  anchor: HTMLElement;
-} | null;
 
 export type DocumentsViewState = {
   selectedIds: Set<string>;
-  menuState: MenuState;
   deleteTarget: DocumentRowItem | null;
   pendingBulkIds: Set<string>;
   deleteDialogOpen: boolean;
@@ -35,7 +30,6 @@ export type DocumentsViewState = {
 
 const INITIAL_STATE: DocumentsViewState = {
   selectedIds: new Set(),
-  menuState: null,
   deleteTarget: null,
   pendingBulkIds: new Set(),
   deleteDialogOpen: false,
@@ -51,8 +45,6 @@ type DocumentsViewAction =
   | { type: "selectionReplaced"; ids: Set<string> }
   | { type: "selectionCleared" }
   | { type: "selectionPruned"; currentIds: Set<string> }
-  | { type: "menuOpened"; item: DocumentRowItem; anchor: HTMLElement }
-  | { type: "menuClosed" }
   | { type: "deleteRequested"; item: DocumentRowItem }
   | { type: "bulkDeleteRequested" }
   | { type: "deleteDialogOpenChanged"; open: boolean }
@@ -145,7 +137,6 @@ function applyDeleteAction(
         deleteTarget: action.item,
         pendingBulkIds: new Set(),
         deleteDialogOpen: true,
-        menuState: null,
       };
     case "bulkDeleteRequested":
       return {
@@ -211,7 +202,7 @@ function applyMoveMergeAction(
 ): DocumentsViewState {
   switch (action.type) {
     case "moveRequested": {
-      const next = { ...state, menuState: null };
+      const next = { ...state };
       if (action.resolution.kind === "bulk") {
         next.moveEntities = action.resolution.entities;
       } else if (action.resolution.kind === "single") {
@@ -260,16 +251,6 @@ function documentsViewReducer(
     case "selectionCleared":
     case "selectionPruned":
       return applySelectionAction(state, action);
-    case "menuOpened":
-      return {
-        ...state,
-        menuState: { item: action.item, anchor: action.anchor },
-      };
-    case "menuClosed":
-      if (state.menuState === null) {
-        return state;
-      }
-      return { ...state, menuState: null };
     case "deleteRequested":
     case "bulkDeleteRequested":
     case "deleteDialogOpenChanged":
@@ -294,9 +275,6 @@ export function useDocumentsViewState() {
       clearSelection: () => dispatch({ type: "selectionCleared" }),
       pruneSelection: (currentIds: Set<string>) =>
         dispatch({ type: "selectionPruned", currentIds }),
-      openMenu: (item: DocumentRowItem, anchor: HTMLElement) =>
-        dispatch({ type: "menuOpened", item, anchor }),
-      closeMenu: () => dispatch({ type: "menuClosed" }),
       requestDelete: (item: DocumentRowItem) =>
         dispatch({ type: "deleteRequested", item }),
       requestBulkDelete: () => dispatch({ type: "bulkDeleteRequested" }),

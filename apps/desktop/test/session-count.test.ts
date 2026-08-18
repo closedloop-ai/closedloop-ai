@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { ipcSessionCount } from "../src/main/agent-dashboard-ipc-perf.js";
+import { ipcSessionCount } from "../src/main/dashboard/agent-dashboard-ipc-perf.js";
 import { createSqliteSessionStore } from "../src/main/database/read-stores.js";
 import { countSqliteSessions } from "../src/main/database/session-count.js";
 import type { SqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -24,7 +24,7 @@ import { openTestPrisma } from "./prisma-test-utils.js";
 
 const PERF_MODULE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../src/main/agent-dashboard-ipc-perf.ts"
+  "../src/main/dashboard/agent-dashboard-ipc-perf.ts"
 );
 const READ_STORES_MODULE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

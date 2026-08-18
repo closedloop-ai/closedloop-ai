@@ -1,0 +1,25 @@
+-- PLN-1562 (WS4): drop the vestigial `plans.sync_state` column.
+--
+-- The column has existed since 0001_init and never backed a feature. Its ONLY
+-- writer stamped the constant 'local_only' on every plan insert
+-- (`plan-store.ts`), and NOTHING has ever read it: no SELECT, no typed delegate
+-- read, no index, no aggregate, no renderer projection, and no wire payload. It
+-- is desktop-local (this SQLite store only) and appears in no cross-repo or
+-- cloud contract. What it did do is imply a plan sync lane that does not exist,
+-- next to four real ones — which is why PLN-1562 removes it rather than leaving
+-- it as a false signal in the schema.
+--
+-- The write was removed in the same change set (the INSERT no longer names the
+-- column), so nothing in this build touches it.
+--
+-- destructive-migration-ok(plans.sync_state): No reader exists on any build that
+-- can still serve this store. The FEA-3331 failure mode the gate guards against
+-- is a CLOUD one — a base-branch deployment still serving reads while its paired
+-- app build lags the schema. It does not apply here: this is the desktop-local
+-- SQLite store, where exactly one app build owns the file at a time, and the
+-- forward-only migration runner REFUSES TO BOOT a downgraded app against a
+-- store migrated by a newer build. So an older build carrying the column in its
+-- generated client can never open a store where this migration has run; there is
+-- no window in which a stale reader sees the dropped column. The only reference
+-- of any kind was the constant write, removed in this same change.
+ALTER TABLE "plans" DROP COLUMN "sync_state";

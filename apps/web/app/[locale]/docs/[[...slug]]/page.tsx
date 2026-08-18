@@ -7,6 +7,7 @@ import {
 } from "fumadocs-ui/layouts/docs/page";
 import defaultMdxComponents, { createRelativeLink } from "fumadocs-ui/mdx";
 import { notFound } from "next/navigation";
+import { APIPage } from "@/components/api-page";
 import { getDocsSource } from "@/lib/docs";
 import { createPageMetadata } from "@/lib/site";
 
@@ -69,6 +70,7 @@ const DynamicDocsPage = async ({ params }: DocsPageProps) => {
           components={{
             ...defaultMdxComponents,
             a: LinkComponent,
+            APIPage,
             CardGroup: Cards,
           }}
         />

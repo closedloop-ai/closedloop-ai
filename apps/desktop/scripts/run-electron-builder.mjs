@@ -4,6 +4,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getPackagingStageRoot } from "./packaging-stage-path.mjs";
+import {
+  classifyMacSigningEnv,
+  MacSigningMode,
+  macSigningFailureMessage,
+} from "./run-electron-builder-lib.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
@@ -33,31 +38,12 @@ await stat(stageRoot).catch(() => {
 //
 // Unset (not just empty) vars are intentionally allowed: that is the local /
 // ad-hoc build path (electron-builder ad-hoc-signs, notarization is skipped by
-// design), so we must not require signing there.
-const emptyDefinedSigningVars = [
-  "CSC_LINK",
-  "CSC_KEY_PASSWORD",
-  "APPLE_ID",
-  "APPLE_APP_SPECIFIC_PASSWORD",
-  "APPLE_TEAM_ID",
-].filter(
-  (name) => name in process.env && (process.env[name] ?? "").trim() === ""
-);
-if (emptyDefinedSigningVars.length > 0) {
-  throw new Error(
-    [
-      `macOS signing/notarization env var(s) defined but empty: ${emptyDefinedSigningVars.join(", ")}.`,
-      "This usually means the org-level Apple signing secrets are not shared with this",
-      "repository, so the workflow's secrets.APPLE_* references expand to empty",
-      "strings. Ask an org admin to add this repo to the repository access of the",
-      "closedloop-ai org secrets: APPLE_CSC_LINK, APPLE_CSC_KEY_PASSWORD, APPLE_ID,",
-      "APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID (Org → Settings → Secrets and",
-      "variables → Actions → Organization secrets).",
-      "",
-      "To build locally WITHOUT signing, unset CSC_LINK/CSC_KEY_PASSWORD entirely",
-      "(leave them undefined) so electron-builder ad-hoc-signs the app.",
-    ].join("\n")
-  );
+// design), so we must not require signing there. The classification itself
+// lives in run-electron-builder-lib.mjs so it can be driven under test without
+// spawning electron-builder.
+const macSigning = classifyMacSigningEnv(process.env);
+if (macSigning.mode === MacSigningMode.Misconfigured) {
+  throw new Error(macSigningFailureMessage(macSigning.emptyDefined));
 }
 
 const electronBuilderArgs = [

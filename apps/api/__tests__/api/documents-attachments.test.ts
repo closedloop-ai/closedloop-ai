@@ -1,7 +1,11 @@
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import type { CreateInlineImageAttachmentResponse } from "@repo/api/src/types/attachment";
 import {
   AttachmentPurpose,
   AttachmentPurposeSelector,
+  AttachmentUploadResponseErrorCode,
+  CreateInlineImageAttachmentErrorCode,
+  INLINE_ATTACHMENT_REF_PREFIX,
 } from "@repo/api/src/types/attachment";
 import { Result } from "@repo/api/src/types/result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,12 +13,16 @@ import {
   DELETE,
   GET as GetDownloadUrl,
 } from "@/app/documents/[id]/attachments/[attachmentId]/route";
+import { POST as CreateInlineImageAttachment } from "@/app/documents/[id]/attachments/images/route";
 import { POST as ResolveInlineImages } from "@/app/documents/[id]/attachments/resolve/route";
 import {
   GET as GetAttachments,
   POST,
 } from "@/app/documents/[id]/attachments/route";
-import { MAX_FILE_SIZE_BYTES } from "@/app/documents/[id]/attachments/validators";
+import {
+  MAX_ATTACHMENT_FILENAME_LENGTH,
+  MAX_FILE_SIZE_BYTES,
+} from "@/app/documents/[id]/attachments/validators";
 import { isMcpAttachmentUploadEnabled } from "@/app/documents/attachment-upload-feature";
 import {
   attachmentsService,
@@ -27,10 +35,10 @@ import {
   createMockRouteContext,
   createTestAuthContext,
 } from "../utils/auth-helpers";
+import { PNG_BASE64 } from "../utils/image-fixtures";
 
 let mockAuthContext: AuthContext;
 const mockWithAnyAuthOptions = vi.hoisted(() => [] as unknown[]);
-
 vi.mock("@/lib/auth/with-auth", () => ({
   withAuth: (handler: any) => async (request: any, context: any) =>
     handler(mockAuthContext, request, context.params),
@@ -74,6 +82,7 @@ vi.mock("@/app/documents/attachments-service", () => ({
   DOCUMENT_NOT_FOUND_ERROR: "Document not found",
   INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR: "Invalid inline attachment upload",
   attachmentsService: {
+    createInlineImageAttachment: vi.fn(),
     deleteAttachment: vi.fn(),
     getDownloadUrl: vi.fn(),
     listByDocument: vi.fn(),
@@ -125,6 +134,27 @@ describe("POST /api/artifacts/:id/attachments", () => {
         filename: "huge-file.pdf",
         mimeType: "application/pdf",
         sizeBytes: MAX_FILE_SIZE_BYTES + 1,
+      },
+    });
+    const response = await POST(
+      request,
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(attachmentsService.requestDirectUpload).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when filename exceeds the attachment filename cap", async () => {
+    const request = createMockRequest({
+      method: "POST",
+      url: "http://localhost:3002/api/artifacts/artifact-1/attachments",
+      body: {
+        filename: `${"a".repeat(MAX_ATTACHMENT_FILENAME_LENGTH)}.pdf`,
+        mimeType: "application/pdf",
+        sizeBytes: 1024,
       },
     });
     const response = await POST(
@@ -355,7 +385,7 @@ describe("POST /api/artifacts/:id/attachments", () => {
     expect(response.status).toBe(403);
     const json = await response.json();
     expect(json).toMatchObject({
-      code: "mcp_attachment_upload_disabled",
+      code: AttachmentUploadResponseErrorCode.McpUploadDisabled,
       success: false,
     });
     expect(attachmentsService.requestDirectUpload).not.toHaveBeenCalled();
@@ -412,7 +442,7 @@ describe("POST /api/artifacts/:id/attachments", () => {
     expect(response.headers.get("Retry-After")).toBe("37");
     const json = await response.json();
     expect(json).toMatchObject({
-      code: "attachment_upload_rate_limited",
+      code: AttachmentUploadResponseErrorCode.RateLimited,
       details: { retryAfterSeconds: 37 },
       success: false,
     });
@@ -442,6 +472,385 @@ describe("POST /api/artifacts/:id/attachments", () => {
     expect(resolveDocumentId).not.toHaveBeenCalled();
     expect(isMcpAttachmentUploadEnabled).not.toHaveBeenCalled();
     expect(attachmentsService.requestDirectUpload).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/artifacts/:id/attachments/images", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockAuthContext = createTestAuthContext();
+    vi.mocked(resolveDocumentId).mockImplementation(async (id: string) => id);
+    vi.mocked(isMcpAttachmentUploadEnabled).mockResolvedValue(false);
+  });
+
+  it("creates an inline image attachment for browser session callers without checking the MCP flag", async () => {
+    const mockResult: CreateInlineImageAttachmentResponse = {
+      attachmentId: "attachment-1",
+      attachmentRef: `${INLINE_ATTACHMENT_REF_PREFIX}attachment-1`,
+      attachment: {
+        id: "attachment-1",
+        artifactId: "artifact-1",
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 9,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdById: "user-1",
+        purpose: AttachmentPurpose.Inline,
+      },
+    };
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.ok(mockResult)
+    );
+
+    const request = createMockRequest({
+      method: "POST",
+      url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+      body: {
+        filename: "diagram.png",
+        mimeType: "image/png",
+        dataBase64: PNG_BASE64,
+      },
+    });
+    const response = await CreateInlineImageAttachment(
+      request,
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toEqual(mockResult);
+    expect(isMcpAttachmentUploadEnabled).not.toHaveBeenCalled();
+    expect(attachmentsService.createInlineImageAttachment).toHaveBeenCalledWith(
+      "artifact-1",
+      mockAuthContext.user.organizationId,
+      mockAuthContext.user.id,
+      "diagram.png",
+      "image/png",
+      PNG_BASE64
+    );
+  });
+
+  it("allows write-scoped API-key callers only when the MCP upload flag is enabled", async () => {
+    mockAuthContext = createTestAuthContext({
+      authMethod: "api_key",
+      apiKeyScopes: ["write"],
+    });
+    vi.mocked(isMcpAttachmentUploadEnabled).mockResolvedValue(true);
+    const mockResult: CreateInlineImageAttachmentResponse = {
+      attachmentId: "attachment-1",
+      attachmentRef: `${INLINE_ATTACHMENT_REF_PREFIX}attachment-1`,
+      attachment: {
+        id: "attachment-1",
+        artifactId: "artifact-1",
+        filename: "diagram.png",
+        mimeType: "image/png",
+        sizeBytes: 9,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        createdById: "user-1",
+        purpose: AttachmentPurpose.Inline,
+      },
+    };
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.ok(mockResult)
+    );
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(isMcpAttachmentUploadEnabled).toHaveBeenCalledWith({
+      clerkUserId: mockAuthContext.clerkUserId,
+      userId: mockAuthContext.user.id,
+    });
+    expect(attachmentsService.createInlineImageAttachment).toHaveBeenCalled();
+  });
+
+  it("fails API-key callers closed when the MCP upload flag is disabled before service side effects", async () => {
+    mockAuthContext = createTestAuthContext({
+      authMethod: "api_key",
+      apiKeyScopes: ["write"],
+    });
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(403);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: AttachmentUploadResponseErrorCode.McpUploadDisabled,
+      success: false,
+    });
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("fails disabled API-key callers closed before parsing invalid inline image bodies", async () => {
+    mockAuthContext = createTestAuthContext({
+      authMethod: "api_key",
+      apiKeyScopes: ["write"],
+    });
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "",
+          mimeType: "",
+          dataBase64: "x".repeat(800 * 1024),
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(403);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: AttachmentUploadResponseErrorCode.McpUploadDisabled,
+      success: false,
+    });
+    expect(resolveDocumentId).not.toHaveBeenCalled();
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns the inline image payload-too-large code when the raw request body exceeds the route cap", async () => {
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: "x".repeat(800 * 1024),
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(413);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: CreateInlineImageAttachmentErrorCode.PayloadTooLarge,
+      details: { maxBytes: 768 * 1024 },
+      success: false,
+    });
+    expect(resolveDocumentId).not.toHaveBeenCalled();
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when inline image filename exceeds the attachment filename cap", async () => {
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: `${"a".repeat(MAX_ATTACHMENT_FILENAME_LENGTH)}.png`,
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.success).toBe(false);
+    expect(resolveDocumentId).not.toHaveBeenCalled();
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects read-only API keys before document resolution or service handoff", async () => {
+    mockAuthContext = createTestAuthContext({
+      authMethod: "api_key",
+      apiKeyScopes: ["read"],
+    });
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(403);
+    expect(resolveDocumentId).not.toHaveBeenCalled();
+    expect(isMcpAttachmentUploadEnabled).not.toHaveBeenCalled();
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 without calling the service when document resolution fails", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue(null);
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/missing-document/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "missing-document" })
+    );
+
+    expect(response.status).toBe(404);
+    expect(
+      attachmentsService.createInlineImageAttachment
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for service-level base64 validation failures", async () => {
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.err({
+        code: CreateInlineImageAttachmentErrorCode.InvalidBase64,
+      })
+    );
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: CreateInlineImageAttachmentErrorCode.InvalidBase64,
+      success: false,
+    });
+  });
+
+  it("returns 413 with byte details when decoded image bytes exceed the inline cap", async () => {
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.err({
+        actualBytes: 524_289,
+        code: CreateInlineImageAttachmentErrorCode.PayloadTooLarge,
+        maxBytes: 524_288,
+      })
+    );
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(413);
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: CreateInlineImageAttachmentErrorCode.PayloadTooLarge,
+      details: { actualBytes: 524_289, maxBytes: 524_288 },
+      success: false,
+    });
+  });
+
+  it("returns retry metadata and Retry-After when the shared upload limiter rejects", async () => {
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.err({
+        code: CreateInlineImageAttachmentErrorCode.RateLimited,
+        retryAfterSeconds: 23,
+      })
+    );
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe("23");
+    const json = await response.json();
+    expect(json).toMatchObject({
+      code: AttachmentUploadResponseErrorCode.RateLimited,
+      details: { retryAfterSeconds: 23 },
+      success: false,
+    });
+  });
+
+  it.each([
+    [CreateInlineImageAttachmentErrorCode.StorageUnconfigured, 503],
+    [CreateInlineImageAttachmentErrorCode.StorageWriteFailed, 502],
+    [CreateInlineImageAttachmentErrorCode.PersistenceFailed, 500],
+  ])("maps %s service failures to HTTP %s", async (code, expectedStatus) => {
+    vi.mocked(attachmentsService.createInlineImageAttachment).mockResolvedValue(
+      Result.err({ code })
+    );
+
+    const response = await CreateInlineImageAttachment(
+      createMockRequest({
+        method: "POST",
+        url: "http://localhost:3002/api/artifacts/artifact-1/attachments/images",
+        body: {
+          filename: "diagram.png",
+          mimeType: "image/png",
+          dataBase64: PNG_BASE64,
+        },
+      }),
+      createMockRouteContext({ id: "artifact-1" })
+    );
+
+    expect(response.status).toBe(expectedStatus);
+    const json = await response.json();
+    expect(json).toMatchObject({ code, success: false });
   });
 });
 

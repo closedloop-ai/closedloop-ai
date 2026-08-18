@@ -1,13 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-const { mockGetInstallationOctokit } = vi.hoisted(() => ({
-  mockGetInstallationOctokit: vi.fn(),
-}));
-
-vi.mock("../installation-auth", () => ({
-  getInstallationOctokit: mockGetInstallationOctokit,
-}));
-
 import {
   fetchReviewThreadNodeIdByCommentId,
   fetchReviewThreadResolutionByNodeId,
@@ -62,18 +53,19 @@ describe("fetchReviewThreadNodeIdByCommentId", () => {
 
 describe("fetchReviewThreadResolutionByNodeId", () => {
   it("returns current provider resolution for a review-thread node", async () => {
-    const graphql = vi.fn().mockResolvedValue({
-      node: { __typename: "PullRequestReviewThread", isResolved: true },
-    });
-    mockGetInstallationOctokit.mockResolvedValue({ graphql });
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue({
+        node: { __typename: "PullRequestReviewThread", isResolved: true },
+      }),
+    };
 
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "PRRT_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
     ).resolves.toEqual({
       status: ReviewThreadResolutionResultStatus.Ok,
       isResolved: true,
     });
-    expect(graphql).toHaveBeenCalledWith(
+    expect(octokit.graphql).toHaveBeenCalledWith(
       expect.stringContaining("PullRequestReviewThreadResolution"),
       expect.objectContaining({
         threadId: "PRRT_node",
@@ -83,13 +75,14 @@ describe("fetchReviewThreadResolutionByNodeId", () => {
   });
 
   it("returns unresolved provider state for a review-thread node", async () => {
-    const graphql = vi.fn().mockResolvedValue({
-      node: { __typename: "PullRequestReviewThread", isResolved: false },
-    });
-    mockGetInstallationOctokit.mockResolvedValue({ graphql });
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue({
+        node: { __typename: "PullRequestReviewThread", isResolved: false },
+      }),
+    };
 
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "PRRT_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
     ).resolves.toEqual({
       status: ReviewThreadResolutionResultStatus.Ok,
       isResolved: false,
@@ -97,21 +90,22 @@ describe("fetchReviewThreadResolutionByNodeId", () => {
   });
 
   it("classifies missing and wrong node types as terminal", async () => {
-    const graphql = vi.fn().mockResolvedValue({
-      node: { __typename: "IssueComment" },
-    });
-    mockGetInstallationOctokit.mockResolvedValue({ graphql });
+    const octokit = {
+      graphql: vi.fn().mockResolvedValue({
+        node: { __typename: "IssueComment" },
+      }),
+    };
 
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "wrong_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "wrong_node")
     ).resolves.toEqual({
       status: ReviewThreadResolutionResultStatus.Terminal,
       reason: ReviewThreadResolutionTerminalReason.TypeMismatch,
     });
 
-    graphql.mockResolvedValueOnce({ node: null });
+    octokit.graphql.mockResolvedValueOnce({ node: null });
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "missing_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "missing_node")
     ).resolves.toEqual({
       status: ReviewThreadResolutionResultStatus.Terminal,
       reason: ReviewThreadResolutionTerminalReason.NotFound,
@@ -121,23 +115,24 @@ describe("fetchReviewThreadResolutionByNodeId", () => {
   it("uses the fixed route-timeout guard and classifies abort as retryable", async () => {
     const abortError = new Error("aborted");
     abortError.name = "AbortError";
-    const graphql = vi.fn().mockRejectedValue(abortError);
-    mockGetInstallationOctokit.mockResolvedValue({ graphql });
+    const octokit = { graphql: vi.fn().mockRejectedValue(abortError) };
 
     expect(REVIEW_THREAD_CONFIRMATION_TIMEOUT_MS).toBe(5000);
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "PRRT_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
     ).resolves.toMatchObject({
       status: ReviewThreadResolutionResultStatus.RetryableError,
       reason: ReviewThreadResolutionRetryableReason.Timeout,
     });
   });
 
-  it("bounds installation auth under the fixed provider confirmation timeout", async () => {
+  it("bounds a hung provider read under the fixed confirmation timeout", async () => {
     vi.useFakeTimers();
-    mockGetInstallationOctokit.mockReturnValue(new Promise(() => {}));
+    const octokit = {
+      graphql: vi.fn().mockReturnValue(new Promise(() => {})),
+    };
 
-    const result = fetchReviewThreadResolutionByNodeId("123", "PRRT_node");
+    const result = fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node");
 
     expect(REVIEW_THREAD_CONFIRMATION_TIMEOUT_MS).toBe(5000);
     await vi.advanceTimersByTimeAsync(REVIEW_THREAD_CONFIRMATION_TIMEOUT_MS);
@@ -147,30 +142,34 @@ describe("fetchReviewThreadResolutionByNodeId", () => {
     });
   });
 
-  it.each([
-    [
-      "rate limited installation auth",
-      Object.assign(new Error("rate limited"), { status: 429 }),
-      ReviewThreadResolutionRetryableReason.RateLimited,
-    ],
-    [
-      "GitHub 5xx installation auth",
-      Object.assign(new Error("bad gateway"), { status: 502 }),
-      ReviewThreadResolutionRetryableReason.ProviderUnavailable,
-    ],
-    [
-      "network installation auth",
-      new Error("network unavailable"),
-      ReviewThreadResolutionRetryableReason.GraphqlError,
-    ],
-  ])("classifies %s as retryable before GraphQL", async (_name, error, reason) => {
-    mockGetInstallationOctokit.mockRejectedValue(error);
+  it("bounds a hung client acquisition under the same confirmation timeout", async () => {
+    vi.useFakeTimers();
+    const neverResolvingClient = new Promise<{ graphql: () => never }>(
+      () => undefined
+    );
+
+    const result = fetchReviewThreadResolutionByNodeId(
+      neverResolvingClient,
+      "PRRT_node"
+    );
+
+    await vi.advanceTimersByTimeAsync(REVIEW_THREAD_CONFIRMATION_TIMEOUT_MS);
+    await expect(result).resolves.toMatchObject({
+      status: ReviewThreadResolutionResultStatus.RetryableError,
+      reason: ReviewThreadResolutionRetryableReason.Timeout,
+    });
+  });
+
+  it("classifies a failed client acquisition as retryable", async () => {
+    const failedClient = Promise.reject(
+      Object.assign(new Error("token exchange failed"), { status: 502 })
+    );
 
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "PRRT_node")
+      fetchReviewThreadResolutionByNodeId(failedClient, "PRRT_node")
     ).resolves.toMatchObject({
       status: ReviewThreadResolutionResultStatus.RetryableError,
-      reason,
+      reason: ReviewThreadResolutionRetryableReason.ProviderUnavailable,
     });
   });
 
@@ -198,11 +197,10 @@ describe("fetchReviewThreadResolutionByNodeId", () => {
       ReviewThreadResolutionRetryableReason.GraphqlError,
     ],
   ])("classifies %s as retryable", async (_name, error, reason) => {
-    const graphql = vi.fn().mockRejectedValue(error);
-    mockGetInstallationOctokit.mockResolvedValue({ graphql });
+    const octokit = { graphql: vi.fn().mockRejectedValue(error) };
 
     await expect(
-      fetchReviewThreadResolutionByNodeId("123", "PRRT_node")
+      fetchReviewThreadResolutionByNodeId(octokit, "PRRT_node")
     ).resolves.toMatchObject({
       status: ReviewThreadResolutionResultStatus.RetryableError,
       reason,

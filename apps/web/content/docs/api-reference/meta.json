@@ -1,0 +1,15 @@
+{
+  "title": "API Reference",
+  "pages": [
+    "index",
+    "documents",
+    "comment-threads",
+    "artifact-links",
+    "projects",
+    "loops",
+    "tags",
+    "users",
+    "search",
+    "agent-sessions"
+  ]
+}

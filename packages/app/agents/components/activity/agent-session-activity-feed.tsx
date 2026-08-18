@@ -1,7 +1,6 @@
 "use client";
 
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
-import { Badge } from "@repo/design-system/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -10,13 +9,17 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import type { Tone } from "@repo/design-system/components/ui/types";
+import { Link } from "@repo/navigation/link";
 import { ActivityIcon, Clock3Icon } from "lucide-react";
 import { useAgentSessions } from "../../hooks/use-agent-sessions";
 import { DegradedState } from "../shared/degraded-state";
 import {
   type AgentSessionActivity,
   type AgentSessionActivityHrefItem,
+  AgentSessionActivityStatus,
   projectAgentSessionActivities,
 } from "./activity-projection";
 
@@ -87,21 +90,40 @@ function ActivityRow({
 }: Readonly<{
   activity: AgentSessionActivity;
 }>) {
-  const title = activity.sessionHref ? (
-    <a className="font-medium hover:underline" href={activity.sessionHref}>
+  // FEA-4051: surface-agnostic `@repo/navigation` `Link` (renders a real
+  // anchor) drives the active adapter on both web (Next router) and the desktop
+  // renderer (hash-store adapter). A raw `<a href>` was a dead click on desktop.
+  // Mirrors FEA-4018's agents-table fix.
+  const sessionHref = activity.sessionHref;
+  const isNavigable = sessionHref !== null;
+  const title = sessionHref ? (
+    <Link className="font-medium hover:underline" href={sessionHref}>
       {activity.label}
-    </a>
+    </Link>
   ) : (
     <span className="font-medium">{activity.label}</span>
   );
 
   return (
-    <div className="rounded-md border p-4">
+    // A navigable row gets a whole-box hover treatment so the padded card reads
+    // as the target of its title link, instead of a bordered box where only the
+    // name string is clickable. The `Link` in the title stays the real anchor
+    // (accessible name + keyboard focus); this is a visual affordance only.
+    <div
+      className={
+        isNavigable
+          ? "rounded-md border p-4 transition-colors hover:bg-muted/40"
+          : "rounded-md border p-4"
+      }
+    >
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             {title}
-            <Badge variant="secondary">{activity.status}</Badge>
+            <ToneBadge
+              label={activity.status}
+              tone={activityStatusTone(activity.status)}
+            />
           </div>
           <p className="whitespace-pre-wrap text-muted-foreground text-sm">
             {activity.summary}
@@ -125,4 +147,25 @@ function ActivityRow({
       ) : null}
     </div>
   );
+}
+
+const ACTIVITY_STATUS_TONE: Record<AgentSessionActivityStatus, Tone> = {
+  [AgentSessionActivityStatus.Active]: "success",
+  [AgentSessionActivityStatus.AwaitingInput]: "accent",
+  // ISS-4586: terminal-not-failed reads muted, matching the SessionStatusBadge.
+  // ISS-4654 (review, #4651): the Completed and Abandoned entries went with
+  // their statuses. Abandoned was the last amber outcome in this slice — a
+  // `warning` tone on a run nobody observed failing.
+  [AgentSessionActivityStatus.Inactive]: "muted",
+  [AgentSessionActivityStatus.Failed]: "danger",
+  [AgentSessionActivityStatus.Updated]: "default",
+};
+
+/**
+ * Tones each activity status so Failed reads as danger and a finished run reads
+ * muted instead of every row sharing one flat secondary chip. Mirrors the tone
+ * vocabulary `SessionStatusBadge` uses for the same session lifecycle.
+ */
+function activityStatusTone(status: AgentSessionActivityStatus): Tone {
+  return ACTIVITY_STATUS_TONE[status];
 }

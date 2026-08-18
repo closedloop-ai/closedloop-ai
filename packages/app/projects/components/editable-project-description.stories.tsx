@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../shared/storybook/decorators";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import { EditableProjectDescription } from "./editable-project-description";
 
@@ -24,13 +23,7 @@ const projectRoutes: FixtureRoute[] = [
 const meta: Meta<typeof EditableProjectDescription> = {
   title: "App Core/Projects/Editable Project Description",
   component: EditableProjectDescription,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders apiRoutes={projectRoutes}>
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
+  parameters: { appCore: { apiRoutes: projectRoutes } },
   args: {
     projectId: PROJECT_ID,
     initialDescription: "Weekly planning and delivery tracking for the team.",

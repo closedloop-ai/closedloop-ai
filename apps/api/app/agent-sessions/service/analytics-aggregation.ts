@@ -3,15 +3,15 @@ import {
   AGENT_FAILED_STATUS_PATTERN,
   AGENT_SUCCESS_STATUS_PATTERN,
 } from "@repo/api/src/agent-session-status";
+import type { SyncedAgentSessionAgent } from "@repo/api/src/types/agent-session";
 import type {
   AgentSessionAgentTypeBreakdown,
   AgentSessionProjectBreakdown,
   AgentSessionRepositoryBreakdown,
   AgentSessionToolBreakdown,
-  SyncedAgentSessionAgent,
-} from "@repo/api/src/types/agent-session";
+} from "@repo/api/src/types/agent-session-usage-breakdown";
 import { withDb } from "@repo/database";
-import { decimalToNumber, tokenCountToNumber } from "./coercion";
+import { toNumber } from "@/lib/prisma-number";
 import type {
   AnalyticsJsonSessionRecord,
   AnalyticsScalarSessionRecord,
@@ -181,18 +181,18 @@ export function aggregateByRepository(
       continue;
     }
     const existing = map.get(repo);
-    const cost = decimalToNumber(session.estimatedCost);
+    const cost = toNumber(session.estimatedCost);
     if (existing) {
       existing.sessionCount += 1;
-      existing.inputTokens += tokenCountToNumber(session.inputTokens);
-      existing.outputTokens += tokenCountToNumber(session.outputTokens);
+      existing.inputTokens += toNumber(session.inputTokens);
+      existing.outputTokens += toNumber(session.outputTokens);
       existing.estimatedCost += cost;
       existing.errorCount += session.errorCount;
     } else {
       map.set(repo, {
         sessionCount: 1,
-        inputTokens: tokenCountToNumber(session.inputTokens),
-        outputTokens: tokenCountToNumber(session.outputTokens),
+        inputTokens: toNumber(session.inputTokens),
+        outputTokens: toNumber(session.outputTokens),
         estimatedCost: cost,
         errorCount: session.errorCount,
       });
@@ -228,19 +228,19 @@ export function aggregateByProject(
       continue;
     }
     const existing = map.get(session.artifact.projectId);
-    const cost = decimalToNumber(session.estimatedCost);
+    const cost = toNumber(session.estimatedCost);
     if (existing) {
       existing.sessionCount += 1;
-      existing.inputTokens += tokenCountToNumber(session.inputTokens);
-      existing.outputTokens += tokenCountToNumber(session.outputTokens);
+      existing.inputTokens += toNumber(session.inputTokens);
+      existing.outputTokens += toNumber(session.outputTokens);
       existing.estimatedCost += cost;
     } else {
       map.set(session.artifact.projectId, {
         projectName: project.name,
         projectSlug: project.slug,
         sessionCount: 1,
-        inputTokens: tokenCountToNumber(session.inputTokens),
-        outputTokens: tokenCountToNumber(session.outputTokens),
+        inputTokens: toNumber(session.inputTokens),
+        outputTokens: toNumber(session.outputTokens),
         estimatedCost: cost,
       });
     }

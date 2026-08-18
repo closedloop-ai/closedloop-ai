@@ -12,6 +12,7 @@ const DOCUMENT_TYPE_CHAT_SLUG: Record<DocumentType, string> = {
   [DocumentType.ImplementationPlan]: "plan",
   [DocumentType.Feature]: "feature",
   [DocumentType.Template]: "template",
+  [DocumentType.Doc]: "doc",
 };
 
 type DocumentChatTabProps = {

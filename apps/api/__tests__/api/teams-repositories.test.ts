@@ -52,7 +52,6 @@ describe("GET /teams/:teamId/repositories", () => {
       id: "team-1",
       organizationId: "org-1",
     } as any);
-    vi.mocked(teamsService.isMember).mockResolvedValue(true);
     vi.mocked(teamsService.getRepositories).mockResolvedValue(repos as any);
 
     const request = createMockRequest({
@@ -70,6 +69,49 @@ describe("GET /teams/:teamId/repositories", () => {
     expect(teamsService.getRepositories).toHaveBeenCalledWith("team-1");
   });
 
+  // ISS-5095: the repo pool inherits the org-readable visibility of the team and
+  // project that link to it. `isMember` is FALSE here and the read still
+  // succeeds — this is the exact persona (org member, not on this team) whose
+  // 403 blanked the workspace with a false "Your session expired".
+  it("returns repositories for an org member who is NOT a team member", async () => {
+    const repos = [buildMockTeamRepo({ isPrimary: true })];
+    vi.mocked(teamsService.findById).mockResolvedValue({
+      id: "team-1",
+      organizationId: "org-1",
+    } as any);
+    vi.mocked(teamsService.isMember).mockResolvedValue(false);
+    vi.mocked(teamsService.getRepositories).mockResolvedValue(repos as any);
+
+    const response = await GET(
+      createMockRequest(),
+      createMockRouteContext({ teamId: "team-1" })
+    );
+
+    expect(response.status).toBe(200);
+    const json = await response.json();
+    expect(json.success).toBe(true);
+    expect(json.data).toHaveLength(1);
+    expect(teamsService.getRepositories).toHaveBeenCalledWith("team-1");
+  });
+
+  // The membership check must be gone, not merely satisfied: a lingering call
+  // would mean the gate is still wired and one refactor away from returning.
+  it("does not consult team membership at all", async () => {
+    vi.mocked(teamsService.findById).mockResolvedValue({
+      id: "team-1",
+      organizationId: "org-1",
+    } as any);
+    vi.mocked(teamsService.getRepositories).mockResolvedValue([] as any);
+
+    const response = await GET(
+      createMockRequest(),
+      createMockRouteContext({ teamId: "team-1" })
+    );
+
+    expect(response.status).toBe(200);
+    expect(teamsService.isMember).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when team not found", async () => {
     vi.mocked(teamsService.findById).mockResolvedValue(null);
 
@@ -82,19 +124,25 @@ describe("GET /teams/:teamId/repositories", () => {
     expect(teamsService.getRepositories).not.toHaveBeenCalled();
   });
 
-  it("returns 403 when caller is not a member", async () => {
-    vi.mocked(teamsService.findById).mockResolvedValue({
-      id: "team-1",
-      organizationId: "org-1",
-    } as any);
-    vi.mocked(teamsService.isMember).mockResolvedValue(false);
+  // ISS-5095 widened this read from team-membership to org scope; the ORG
+  // boundary is what remains, so it is pinned explicitly. A team that exists but
+  // belongs to another organization is not found for this caller — the lookup is
+  // scoped by the caller's own `organizationId`, never a client-supplied one —
+  // and no repository row is read.
+  it("returns 404 for a team in another organization and never reads its repos", async () => {
+    // `findById` is org-scoped, so an out-of-org team resolves to null.
+    vi.mocked(teamsService.findById).mockResolvedValue(null);
 
     const response = await GET(
       createMockRequest(),
-      createMockRouteContext({ teamId: "team-1" })
+      createMockRouteContext({ teamId: "team-in-org-2" })
     );
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
+    expect(teamsService.findById).toHaveBeenCalledWith(
+      "team-in-org-2",
+      "org-1"
+    );
     expect(teamsService.getRepositories).not.toHaveBeenCalled();
   });
 
@@ -103,7 +151,6 @@ describe("GET /teams/:teamId/repositories", () => {
       id: "team-1",
       organizationId: "org-1",
     } as any);
-    vi.mocked(teamsService.isMember).mockResolvedValue(true);
     vi.mocked(teamsService.getRepositories).mockRejectedValue(
       new Error("Database error")
     );

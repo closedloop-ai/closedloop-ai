@@ -1,6 +1,6 @@
 "use client";
 
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import {
   createContext,
   type ReactNode,

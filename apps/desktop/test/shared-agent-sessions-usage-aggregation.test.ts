@@ -3,17 +3,15 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type {
-  AgentSessionSyncSource,
-  AgentSessionUsageAggregateFilters,
-} from "../src/main/agent-session-sync-service.js";
+import type { AgentSessionUsageAggregateFilters } from "../src/main/agent-sync/agent-session-read-model.js";
+import type { AgentSessionSyncSource } from "../src/main/agent-sync/agent-session-sync-source.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import { getSharedAgentSessionUsage } from "../src/main/shared-agent-sessions-api.js";
+import { getSharedAgentSessionUsage } from "../src/main/session/shared-agent-sessions-api.js";
 import type {
   SharedAgentSessionsListRequest,
   SharedAgentSessionsQuery,
-  SharedAgentSessionUsageSummary,
 } from "../src/shared/shared-agent-sessions-contract.js";
+import { normalizeUsage } from "./shared-agent-sessions-usage-parity-normalize.js";
 
 // FEA-1834 / PLN-941 §4: the SQL `aggregateUsage` path must reproduce the
 // hydrate-then-`buildUsageSummary` path byte-for-byte (costs to within float
@@ -22,8 +20,6 @@ import type {
 // displayed cent). Both paths run against the SAME seeded SQLite corpus; the
 // reference path is the same source with `aggregateUsage` stripped, which falls
 // back to `loadUsageSessions` → `buildUsageSummary`.
-
-const COST_EPSILON = 1e-9;
 
 type SqliteDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
 
@@ -40,6 +36,10 @@ type SeedSession = {
   awaitingInputSince?: string;
   endedAt?: string | null;
   userId?: string | null;
+  // FEA-4303: the PRIMARY displayed model (`sessions.model`) — the value the
+  // Model column paints and the source of the Model filter facet options,
+  // distinct from the per-token-usage `model`. Null exercises the null-drop.
+  model?: string | null;
 };
 
 type SeedToken = {
@@ -51,13 +51,28 @@ type SeedToken = {
   cacheWriteTokens: number;
 };
 
+// ISS-5443: the value `recomputeSessionLastActivityAt` would have written for an
+// event-less session — `MAX(<started_at floor>, ...)`, i.e. the started-at floor,
+// which is epoch for a null/empty/malformed value. Seeding it explicitly keeps
+// these fixtures a shape the production write path can actually produce: the
+// Sessions date window now bounds on `last_activity_at`, so a raw INSERT that
+// left the column at its epoch DEFAULT would put every seeded row outside every
+// 2026 window and stop the filter assertions below from testing anything.
+const SEEDED_DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}/;
+
+function seededLastActivityAt(startedAt: string | null): string {
+  return startedAt && SEEDED_DATE_PREFIX_RE.test(startedAt)
+    ? startedAt
+    : "1970-01-01T00:00:00.000Z";
+}
+
 async function insertSession(db: SqliteDb, seed: SeedSession): Promise<void> {
   // `updated_at` is kept independently valid (the usage path never reads it) so a
   // null/empty/malformed `started_at` can be seeded without an unrelated cast.
   await db.run(
     `INSERT INTO sessions
-       (id, status, started_at, updated_at, ended_at, harness, billing_mode, awaiting_input_since, user_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       (id, status, started_at, updated_at, last_activity_at, ended_at, harness, billing_mode, awaiting_input_since, user_id, model)
+     VALUES ($1, $2, $3, $4, $11, $5, $6, $7, $8, $9, $10)`,
     seed.id,
     seed.status,
     seed.startedAt,
@@ -66,7 +81,9 @@ async function insertSession(db: SqliteDb, seed: SeedSession): Promise<void> {
     seed.harness,
     seed.billingMode,
     seed.awaitingInputSince ?? null,
-    seed.userId ?? null
+    seed.userId ?? null,
+    seed.model ?? null,
+    seededLastActivityAt(seed.startedAt)
   );
 }
 
@@ -90,42 +107,6 @@ async function insertToken(
     token.cacheWriteTokens,
     at
   );
-}
-
-function sortBy<T>(rows: readonly T[], select: (row: T) => string): T[] {
-  return [...rows].sort((left, right) =>
-    select(left).localeCompare(select(right))
-  );
-}
-
-// Round to 9 decimals: kills the ~1e-15 difference between the two cost fold
-// orders (sum-of-per-session-costs vs cost-of-summed-tokens) while preserving
-// far more precision than the displayed cent.
-function roundCost(value: number): number {
-  return Math.round(value / COST_EPSILON) * COST_EPSILON;
-}
-
-/**
- * Normalize a usage summary into an order- and float-noise-independent shape so
- * the two code paths can be compared with a single `deepEqual` (breakdown order
- * differs — the SQL path orders by name, the hydrate path by first appearance —
- * and that order carries no meaning).
- */
-function normalizeUsage(summary: SharedAgentSessionUsageSummary) {
-  return {
-    ...summary,
-    totalEstimatedCost: roundCost(summary.totalEstimatedCost),
-    subscriptionEstimatedCost: roundCost(summary.subscriptionEstimatedCost),
-    apiEstimatedCost: roundCost(summary.apiEstimatedCost),
-    byModel: sortBy(summary.byModel, (row) => row.model).map((row) => ({
-      ...row,
-      estimatedCost: roundCost(row.estimatedCost),
-    })),
-    byHarness: sortBy(summary.byHarness, (row) => row.harness).map((row) => ({
-      ...row,
-      estimatedCost: roundCost(row.estimatedCost),
-    })),
-  };
 }
 
 test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across filters (FEA-1834 §4)", async () => {
@@ -191,7 +172,8 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       status: "completed",
       startedAt: "2026-03-14T10:00:00.000Z",
     });
-    // error→failed canonicalization; opencode→unknown ledger; out-of-range date.
+    // error→failed canonicalization; opencode→unknown ledger (ISS-5445: the
+    // stored value names a harness, not a payment method); out-of-range date.
     await insertSession(db, {
       id: "s-error",
       harness: "opencode",
@@ -292,14 +274,24 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
       { harness: "nonexistent" },
       { status: "completed" },
       { status: "active" },
-      // The shared UI still sends "error" for failed rows; the SQL aggregate
-      // path must canonicalize requested aliases the same way rows are
-      // canonicalized (`error` -> `failed`, `running` -> `active`).
+      // ISS-5366: the two facet values this batch promoted to real filters.
+      // Active/Stale PARTITION the old Active population against the display
+      // staleness cutoff, so both paths must apply the SAME cutoff — `stale`
+      // returns the long-silent `active` row that `active` now excludes (a
+      // non-empty result on both sides, not a vacuous agreement), and `unknown`
+      // matches by EXCLUSION from the recognized vocabulary. The SQL aggregate
+      // learned neither when the hydrate fold did, which is the drift §4 caught.
+      { status: "stale" },
+      { status: "unknown" },
+      // The SQL aggregate path must canonicalize the requested status the same
+      // way rows are canonicalized. ISS-5592 left `running` -> `active` as the
+      // only such rewrite; `failed` is now an unrecognized request that matches
+      // nothing, which this list still covers.
       { status: "error" },
       { status: "running" },
       { status: "waiting" },
       { status: "failed" },
-      { statuses: ["completed", "failed"] },
+      { statuses: ["completed", "error"] },
       { statuses: ["active", "waiting"] },
       { status: "completed", statuses: ["active"] },
       { startDate: "2026-03-01T00:00:00.000Z" },
@@ -368,13 +360,17 @@ test("SQLite aggregateUsage matches the hydrate/buildUsageSummary path across fi
     });
     assert.equal(waiting.totalSessions, 1, "exactly one waiting session");
 
+    // ISS-5592: was `["completed", "failed"]`, where `failed` reached the error
+    // row only because the boundary manufactured that spelling. Asking for
+    // `error` spans the same two groups in the live vocabulary — 4 `completed`
+    // fixture rows plus the 1 `error` row.
     const multiStatus = await getSharedAgentSessionUsage(withAggregate, {
-      statuses: ["completed", "failed"],
+      statuses: ["completed", "error"],
     });
     assert.equal(
       multiStatus.totalSessions,
       5,
-      "multi-status aggregate includes completed plus failed sessions"
+      "multi-status aggregate includes completed plus error sessions"
     );
   } finally {
     await db.close();
@@ -437,6 +433,138 @@ test("FEA-3149: the Waiting usage facet excludes ended-but-non-terminal awaiting
       hydrateWaiting.totalSessions,
       1,
       "hydrate Waiting facet excludes the ended awaiting-input session"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3319: a compacted token_usage row keeps its pre-compaction totals in
+// `baseline_*`; the stored `cost_usd_estimated` is already priced on the
+// EFFECTIVE total (current + baseline). Seed one directly so the aggregate's
+// token SUMs are exercised against a non-zero baseline.
+async function insertCompactedToken(
+  db: SqliteDb,
+  row: {
+    sessionId: string;
+    model: string;
+    inputTokens: number;
+    outputTokens: number;
+    baselineInput: number;
+    baselineOutput: number;
+    costUsdEstimated: number | null;
+  },
+  at: string
+): Promise<void> {
+  await db.run(
+    `INSERT INTO token_usage (
+       session_id, model, input_tokens, output_tokens,
+       cache_read_tokens, cache_write_tokens, raw_input, raw_output,
+       raw_cache_read, raw_cache_write,
+       baseline_input, baseline_output, baseline_cache_read, baseline_cache_write,
+       cost_usd_estimated, created_at, updated_at
+     )
+     VALUES ($1, $2, $3, $4, 0, 0, $3, $4, 0, 0, $5, $6, 0, 0, $7, $8, $8)`,
+    row.sessionId,
+    row.model,
+    row.inputTokens,
+    row.outputTokens,
+    row.baselineInput,
+    row.baselineOutput,
+    row.costUsdEstimated,
+    at
+  );
+}
+
+// FEA-3319: the SQL usage/analytics aggregates summed CURRENT-only token columns
+// while `estimated_cost_usd` summed the baseline-folded stored cost, so a
+// compacted priced session showed correct effective cost against undercounted
+// tokens (an inflated implied $/token) and diverged from the hydrate path, which
+// folds `baseline_*` into both tokens and cost. Folding `baseline_*` into the
+// token SUMs restores parity.
+test("FEA-3319: usage aggregate folds baseline tokens so compacted rows are not undercounted", async () => {
+  const { db, dir } = await openTempDb();
+
+  try {
+    // Priced compacted session: stored cost is priced on the effective total.
+    await insertSession(db, {
+      id: "s-compacted-priced",
+      harness: "claude",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-10T10:00:00.000Z",
+    });
+    await insertCompactedToken(
+      db,
+      {
+        sessionId: "s-compacted-priced",
+        model: "claude-opus-4-5",
+        inputTokens: 1000,
+        outputTokens: 200,
+        baselineInput: 500,
+        baselineOutput: 100,
+        costUsdEstimated: 0.05,
+      },
+      "2026-03-10T10:05:00.000Z"
+    );
+    // Unpriced compacted session (priceable model, null stored cost): the JS fold
+    // re-prices via `resolveTokenUsageCostUsd`, which must see the effective total
+    // — so the unpriced token SUMs must fold baseline too.
+    await insertSession(db, {
+      id: "s-compacted-unpriced",
+      harness: "claude",
+      billingMode: "api",
+      status: "completed",
+      startedAt: "2026-03-11T10:00:00.000Z",
+    });
+    await insertCompactedToken(
+      db,
+      {
+        sessionId: "s-compacted-unpriced",
+        model: "claude-sonnet-4-5",
+        inputTokens: 400,
+        outputTokens: 100,
+        baselineInput: 600,
+        baselineOutput: 50,
+        costUsdEstimated: null,
+      },
+      "2026-03-11T10:05:00.000Z"
+    );
+
+    const withAggregate = db.syncSource as AgentSessionSyncSource;
+    const reference: AgentSessionSyncSource = {
+      ...withAggregate,
+      aggregateUsage: undefined,
+    };
+
+    const viaAggregate = await getSharedAgentSessionUsage(withAggregate, {});
+    const viaHydrate = await getSharedAgentSessionUsage(reference, {});
+
+    // Parity with the hydrate/buildUsageSummary oracle (which folds baseline into
+    // both tokens and cost) — the whole point of the fix.
+    assert.deepEqual(
+      normalizeUsage(viaAggregate),
+      normalizeUsage(viaHydrate),
+      "aggregate must match the hydrate path for compacted sessions"
+    );
+
+    // Effective (current + baseline) token totals, not the post-compaction subset.
+    assert.equal(
+      viaAggregate.totalInputTokens,
+      1000 + 500 + 400 + 600,
+      "input tokens fold the pre-compaction baseline"
+    );
+    assert.equal(
+      viaAggregate.totalOutputTokens,
+      200 + 100 + 100 + 50,
+      "output tokens fold the pre-compaction baseline"
+    );
+    // The priced row's stored cost is unchanged (already effective-total priced);
+    // with folded tokens the implied $/token is no longer inflated.
+    assert.ok(
+      viaAggregate.totalEstimatedCost > 0,
+      "cost is preserved from the baseline-folded stored value"
     );
   } finally {
     await db.close();

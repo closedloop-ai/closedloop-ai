@@ -4,12 +4,14 @@ import { redactGatewaySessionId } from "@repo/observability/redact-correlation";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { isAgentSessionSyncSupportedForUser } from "./agent-session-sync-feature";
+import { TokenEventTransportIdentityCollisionError } from "./desktop-agent-sessions-errors";
 import {
   DesktopAgentSessionsAckReason,
   type DesktopAgentSessionsPayload,
   parseDesktopAgentSessionsPayload,
 } from "./desktop-agent-sessions-schema";
 import { FixedWindowRateLimiter } from "./fixed-window-rate-limiter";
+import { isOrgSessionSyncPolicyEnabled } from "./org-session-sync-policy";
 
 export type DesktopAgentSessionsHandlerContext = {
   organizationId: string;
@@ -25,6 +27,11 @@ export type DesktopAgentSessionsHandlerDeps = {
     userId: string;
     clerkUserId?: string | null;
   }) => Promise<boolean>;
+  /**
+   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
+   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
+   */
+  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
   rateLimiter?: DesktopAgentSessionsRateLimiter;
   upsertBatch?: (
     context: {
@@ -34,7 +41,7 @@ export type DesktopAgentSessionsHandlerDeps = {
       gatewaySessionId?: string;
     },
     payload: DesktopAgentSessionsPayload
-  ) => Promise<void>;
+  ) => Promise<{ persistedSessionIds: string[] }>;
   now?: () => number;
 };
 
@@ -90,6 +97,34 @@ export async function handleDesktopAgentSessionsEvent(
     return {
       accepted: false,
       reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      // ISS-5090: return the stable, value-free field/path summary the server
+      // already logs, so the desktop can record WHY a payload was rejected. It
+      // is what lets an operator tell a genuine local-data defect apart from
+      // capability/version skew without server log access.
+      detail: parsed.reason,
+    };
+  }
+
+  // FEA-4169: server-owned ORG POLICY gate. The client-side OrgSyncPolicyStore
+  // is UX-first; the server must deny ingest for a policy-off org here so an
+  // older/compromised Desktop that ignores the optional identity field cannot
+  // persist session batches for an org whose policy is off. Fail-closed
+  // (unresolved org → false), so this is enforced identically across version
+  // skew and never depends on a client-sent field.
+  const isOrgPolicyEnabled =
+    deps.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled;
+  const orgPolicyEnabled = await isOrgPolicyEnabled(context.organizationId);
+  if (!orgPolicyEnabled) {
+    emitTelemetryMetric({
+      metric: "agent_sessions.sync.failed",
+      organizationId: context.organizationId,
+      computeTargetId: context.targetId,
+      gatewaySessionId: context.gatewaySessionId,
+      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
+    });
+    return {
+      accepted: false,
+      reason: DesktopAgentSessionsAckReason.FeatureDisabled,
     };
   }
 
@@ -118,8 +153,9 @@ export async function handleDesktopAgentSessionsEvent(
 
   const upsertBatch = deps.upsertBatch ?? agentSessionsService.upsertSessions;
 
+  let persistedSessionIds: string[];
   try {
-    await upsertBatch(
+    ({ persistedSessionIds } = await upsertBatch(
       {
         organizationId: context.organizationId,
         userId: context.userId,
@@ -127,8 +163,25 @@ export async function handleDesktopAgentSessionsEvent(
         gatewaySessionId: context.gatewaySessionId,
       },
       parsed.payload
-    );
+    ));
   } catch (error) {
+    if (error instanceof TokenEventTransportIdentityCollisionError) {
+      log.warn("Desktop agent sessions validation failed", {
+        computeTargetId: context.targetId,
+        reason: error.message,
+      });
+      emitTelemetryMetric({
+        metric: "agent_sessions.sync.failed",
+        organizationId: context.organizationId,
+        computeTargetId: context.targetId,
+        gatewaySessionId: context.gatewaySessionId,
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      });
+      return {
+        accepted: false,
+        reason: DesktopAgentSessionsAckReason.ValidationFailed,
+      };
+    }
     log.error("Desktop agent sessions ingestion failed", {
       computeTargetId: context.targetId,
       gatewaySessionIdHash: redactGatewaySessionId(context.gatewaySessionId),
@@ -149,6 +202,22 @@ export async function handleDesktopAgentSessionsEvent(
     };
   }
 
+  // Goal stage 2 (atomic row-level ack): when the batch opted in, return the
+  // `externalSessionId`s this request actually PERSISTED, so the desktop clears
+  // exactly those outbox rows. These come from `upsertSessions`, NOT from the
+  // sent payload: the per-session transaction loop throws on a failing slice
+  // (handled above), but it also deliberately SKIPS a slice it will not write —
+  // a foreign chunk, whose revision does not match the server's pending
+  // assembly — and that id must be absent from the echo. Echoing the sent ids
+  // instead would let the desktop clear a row the server never stored, which is
+  // exactly the silent loss this stage exists to remove; the desktop's bounded
+  // `ack_omitted` budget re-sends the omitted row and recoverably dead-letters
+  // it if it never lands. REQUEST-GATED: installed desktops parse the success
+  // response with a `.strict()` validator, so the field must never appear for a
+  // batch that did not ask for it.
+  if (parsed.payload.wantsAcceptedSessionIds === true) {
+    return { accepted: true, acceptedSessionIds: persistedSessionIds };
+  }
   return { accepted: true };
 }
 

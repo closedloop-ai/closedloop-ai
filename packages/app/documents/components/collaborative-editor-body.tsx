@@ -7,10 +7,7 @@ import {
   type EditorWithAnchoredCommentsProps,
 } from "./editor-with-anchored-comments";
 
-type CollaborativeEditorBodyProps = Omit<
-  EditorWithAnchoredCommentsProps,
-  "scrollMode"
-> & {
+type CollaborativeEditorBodyProps = EditorWithAnchoredCommentsProps & {
   onOpenThreadCountChange?: (count: number) => void;
 };
 
@@ -57,7 +54,6 @@ export function CollaborativeEditorBody({
       <EditorWithAnchoredComments
         liveblocksRoomId={liveblocksRoomId}
         readOnly={readOnly}
-        scrollMode="outer"
         showComments={showComments}
         {...props}
       />

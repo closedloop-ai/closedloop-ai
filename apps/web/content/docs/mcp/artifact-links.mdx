@@ -1,0 +1,245 @@
+---
+title: Artifact Links
+description: 'Connect PRDs, implementation plans, features, and other artifacts in a typed lineage graph'
+---
+
+## Overview
+
+Artifact links are typed, directed edges between any two artifacts in Closedloop. They model the lineage between work items — for example, a PRD that produced an implementation plan, or an implementation plan that produced a feature.
+
+The three core link tools are:
+
+| Tool | Purpose | Required scope |
+|------|---------|----------------|
+| `list-artifact-links` | Read the relationships for an artifact (supports tree traversal) | `read` |
+| `create-artifact-link` | Create a new typed relationship | `write` |
+| `delete-artifact-link` | Remove one existing relationship | `delete` |
+
+A fourth tool, `create_branch_artifact`, creates or updates a branch artifact tied to a project repository (write scope required).
+
+---
+
+## Link Types
+
+The `linkType` field on every link is one of the values from the `LinkType` enum. The most common type for document lineage is `PRODUCES` — used when a higher-level artifact generates a lower-level one:
+
+```
+PRD --[PRODUCES]--> Implementation Plan --[PRODUCES]--> Feature
+```
+
+Other link types express different relationships such as references, blockers, or pull-request associations. Use `list-artifact-links` with a `linkType` filter to narrow results.
+
+---
+
+## Listing Artifact Links
+
+**Tool**: `list-artifact-links`
+**Underlying API**: `GET /artifact-links/resolved` (resolves source and target endpoints inline; differs from the raw `GET /artifact-links` endpoint in the REST API reference)
+
+```
+list-artifact-links(
+  artifactId: string,                      // UUID or slug (PRD-*, PLN-*, FEA-*)
+  linkType?: string,                       // Filter by link type
+  direction?: "source" | "target" | "both", // Default: both
+  mode?: "direct" | "tree",                // "tree" does BFS traversal
+  maxDepth?: number,                       // 1–50, only for mode="tree"
+  limit?: number,
+  offset?: number
+)
+```
+
+Each item in the response includes fully hydrated source and target endpoint objects:
+
+```json
+{
+  "id": "...",
+  "linkType": "PRODUCES",
+  "createdAt": "2025-01-15T10:00:00Z",
+  "source": {
+    "id": "...",
+    "type": "DOCUMENT",
+    "subtype": "PRD",
+    "name": "Mobile Onboarding Revamp",
+    "slug": "PRD-42",
+    "externalUrl": null
+  },
+  "target": {
+    "id": "...",
+    "type": "DOCUMENT",
+    "subtype": "IMPLEMENTATION_PLAN",
+    "name": "Mobile Onboarding — Implementation Plan",
+    "slug": "PLN-17",
+    "externalUrl": null
+  }
+}
+```
+
+### Traversal Modes
+
+**Direct mode** (`mode: "direct"`, the default): returns only links where the given artifact is a direct source or target.
+
+**Tree mode** (`mode: "tree"`): traverses the full link graph via BFS starting from the artifact, up to `maxDepth` hops. Use this to explore the entire lineage for a PRD or to find all downstream features.
+
+```
+list-artifact-links(
+  artifactId: "PRD-42",
+  mode: "tree",
+  maxDepth: 3,
+  linkType: "PRODUCES"
+)
+```
+
+### The `parentArtifact` Shortcut
+
+`list-documents` and `get-document` include a `parentArtifact` field as a convenience projection — the direct parent artifact from artifact-link lineage. This is useful for grouping or summarizing documents without a separate `list-artifact-links` call. For complete lineage, use `list-artifact-links` directly.
+
+---
+
+## Creating an Artifact Link
+
+**Tool**: `create-artifact-link`
+**Underlying API**: `POST /artifact-links`
+
+```
+create-artifact-link(
+  sourceId: string,   // UUID or slug (PRD-*, PLN-*, FEA-*)
+  targetId: string,   // UUID or slug (PRD-*, PLN-*, FEA-*)
+  linkType: string    // e.g. "PRODUCES"
+)
+```
+
+Slugs are supported for documents. Other artifact types (pull requests, deployments) require UUIDs.
+
+**Example — link a PRD to an implementation plan**:
+
+```
+create-artifact-link(
+  sourceId: "PRD-42",
+  targetId: "PLN-17",
+  linkType: "PRODUCES"
+)
+```
+
+The response includes the new link's `id`, `linkType`, `createdAt`, `sourceId`, and `targetId`.
+
+---
+
+## Deleting an Artifact Link
+
+**Tool**: `delete-artifact-link`
+**Underlying API**: `DELETE /artifact-links/{id}`
+**Required scope**: `delete` — a `write`-scoped session cannot remove links.
+
+```
+delete-artifact-link(
+  linkId: string   // The link's own UUID — not a source/target id or slug
+)
+```
+
+`linkId` is the `id` field of a link returned by `list-artifact-links` or `create-artifact-link`. It identifies the relationship itself, not either artifact it connects, so the usual sequence is to list first and delete the specific edge you saw. There is no bulk form: each call removes exactly one link.
+
+**Every link type has a behavioral consequence — none of them is a no-op.**
+
+- **`PRODUCES` changes lineage.** The project tree and the loop roll-ups derive from these edges, so a child detached from its parent stops appearing under it.
+- **`BLOCKS` gates loop dispatch.** An artifact is clear to dispatch only when it has no inbound `BLOCKS` link from a non-terminal source. Deleting such a link can therefore release deferred loop work — not at delete time, but on the next reconciliation pass, which sweeps `BLOCKED` loops on a cron rather than in response to the deletion.
+- **`RELATES_TO` can carry loop context.** An evergreen Document attached to a FEAT/PRD travels through a `RELATES_TO` link and is folded into that artifact's loop context packs. Deleting the link removes the document from every later pack, so subsequent loops run without context they previously had.
+
+Check what a link is doing before removing it — the safe-looking types are the ones whose effects are least visible in the UI.
+
+Deleting a link that has already been removed **succeeds quietly** rather than erroring, so retries and concurrent cleanups are safe. The response is:
+
+```json
+{ "deleted": true }
+```
+
+---
+
+## Branch Artifacts
+
+`create_branch_artifact` registers a Git branch as an artifact in Closedloop and optionally links it to a project. This is a write-scope operation typically invoked by automated CI/CD tooling rather than end-user agents.
+
+**Tool**: `create_branch_artifact`
+**Underlying API**: `POST /artifact-links/branches`
+
+```
+create_branch_artifact(
+  projectId: string,          // Project UUID
+  branchName: string,         // Exact Git branch name
+  sourceArtifactId?: string,  // Optional same-org source artifact UUID to link
+  defaultBranch?: string,     // Repo default branch (prevents default-branch materialization)
+  baseBranch?: string,        // Known base branch
+  baseBranchSource?: string,  // Base branch provenance
+  headSha?: string,           // Known branch head SHA
+  headShaSource?: string      // Head SHA provenance
+)
+```
+
+<Callout>
+  **Naming exception:** every other Closedloop MCP tool is named in kebab-case (`create-artifact-link`, `list-agent-sessions`, …), but this tool is registered as `create_branch_artifact` with **underscores**. Call it exactly as written — the underscore form is the registered tool name, not a typo. The response contains only the created (or updated) branch artifact's `id`.
+</Callout>
+
+---
+
+## Common Workflows
+
+### Trace the full lineage of a feature
+
+```
+1. get-document(documentId: "FEA-1035")
+   → note the parentArtifact field for the direct parent
+
+2. list-artifact-links(
+     artifactId: "FEA-1035",
+     mode: "tree",
+     maxDepth: 5
+   )
+   → shows PRD → PLN → FEA chain and any other connected artifacts
+```
+
+### Link a newly created implementation plan to its PRD
+
+```
+1. create-document(type: "IMPLEMENTATION_PLAN", ...) → { slug: "PLN-20" }
+
+2. create-artifact-link(
+     sourceId: "PRD-42",
+     targetId: "PLN-20",
+     linkType: "PRODUCES"
+   )
+```
+
+### Re-parent an artifact from one PRD to another
+
+There is no single atomic re-parent operation, so do it as create-then-delete. **Order matters**: creating the new link first means the child always has at least one parent, whereas deleting first leaves it orphaned in the tree until the create lands.
+
+```
+1. list-artifact-links(
+     artifactId: "FEA-1035",
+     direction: "source",
+     linkType: "PRODUCES"
+   )
+   → note the id of the stale link from the old PRD
+
+2. create-artifact-link(
+     sourceId: "PRD-613",
+     targetId: "FEA-1035",
+     linkType: "PRODUCES"
+   )
+
+3. delete-artifact-link(linkId: "<the stale link id from step 1>")
+
+4. list-artifact-links(...) again
+   → confirm exactly one PRODUCES parent remains
+```
+
+Between steps 2 and 3 two `PRODUCES` links exist, and `list-artifact-links` reports both. The project tree and the `parentArtifact` projection do not show two parents — each selects a single one, and the projection selects the most recently created link, so it already reads as the new parent during the window. The stale link is still worth deleting: it remains real lineage that `list-artifact-links` and any consumer reading raw links will see. Keep the window short.
+
+### Find all features produced from an implementation plan
+
+```
+list-artifact-links(
+  artifactId: "PLN-17",
+  direction: "source",
+  linkType: "PRODUCES"
+)
+```

@@ -4,6 +4,7 @@ import type { BranchKpi } from "@repo/api/src/types/branch";
 import {
   emptySharedBranchesAnalytics,
   emptySharedBranchesListResponse,
+  emptySharedBranchesPageDataResponse,
   emptySharedBranchesUsageSummary,
   SHARED_BRANCHES_IPC_CHANNEL_LIST,
   SHARED_BRANCHES_IPC_CHANNELS,
@@ -17,7 +18,7 @@ const UNAVAILABLE_KPI: BranchKpi = {
 };
 
 describe("shared branches IPC contract", () => {
-  test("channel list contains exactly the five branch channels", () => {
+  test("channel list contains exactly the seven branch channels", () => {
     assert.deepEqual(
       [...SHARED_BRANCHES_IPC_CHANNEL_LIST],
       [
@@ -27,6 +28,9 @@ describe("shared branches IPC contract", () => {
         "desktop:shared-branches:trace",
         "desktop:shared-branches:usage",
         "desktop:shared-branches:analytics",
+        "desktop:shared-branches:cohort-analytics",
+        // FEA-3056 follow-up: combined list + analytics read.
+        "desktop:shared-branches:page-data",
       ]
     );
     assert.equal(
@@ -40,6 +44,14 @@ describe("shared branches IPC contract", () => {
     assert.equal(
       SHARED_BRANCHES_IPC_CHANNELS.analytics,
       "desktop:shared-branches:analytics"
+    );
+    assert.equal(
+      SHARED_BRANCHES_IPC_CHANNELS.cohortAnalytics,
+      "desktop:shared-branches:cohort-analytics"
+    );
+    assert.equal(
+      SHARED_BRANCHES_IPC_CHANNELS.pageData,
+      "desktop:shared-branches:page-data"
     );
   });
 
@@ -88,6 +100,13 @@ describe("shared branches IPC contract", () => {
       buildPct: null,
       reworkPct: null,
       state: "unavailable",
+    });
+  });
+
+  test("empty page-data response pairs the empty list and empty analytics shapes", () => {
+    assert.deepEqual(emptySharedBranchesPageDataResponse(), {
+      list: emptySharedBranchesListResponse(),
+      analytics: emptySharedBranchesAnalytics(),
     });
   });
 });

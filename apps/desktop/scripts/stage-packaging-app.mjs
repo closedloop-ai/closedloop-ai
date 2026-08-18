@@ -20,6 +20,12 @@ import {
   isWorkspaceProtocolSpec,
   resolveWorkspaceDependencyTarget,
 } from "./packaging-workspace-deps.mjs";
+import {
+  assertNoUnresolvedWorkspaceSpecs,
+  isBundledWorkspaceDependency,
+  parseJsonFromCommandOutput,
+  resolveStageDependencySpec,
+} from "./stage-packaging-deps-lib.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
@@ -51,31 +57,10 @@ const workspaceDependencyPackages = new Map(
     path.join(repoRoot, "packages", packageDir),
   ])
 );
-
-function resolveStageDependencySpec(
-  packageJson,
-  dependencyName,
-  dependency,
-  workspaceTarballSpecs
-) {
-  const workspaceTarballSpec = workspaceTarballSpecs.get(dependencyName);
-  if (workspaceTarballSpec) {
-    return workspaceTarballSpec;
-  }
-
-  if (
-    typeof dependency.resolved === "string" &&
-    dependency.resolved.length > 0
-  ) {
-    return dependency.resolved;
-  }
-
-  return (
-    packageJson.dependencies?.[dependencyName] ??
-    packageJson.optionalDependencies?.[dependencyName] ??
-    dependency.version
-  );
-}
+// The same closure as a bare name set, for the pure classifier in
+// ./stage-packaging-deps-lib.mjs, which takes it as an argument rather than
+// closing over this module's state so it can be unit-tested (ISS-5303).
+const packedWorkspacePackageNames = new Set(workspaceDependencyPackages.keys());
 
 async function listTarballs(directory) {
   try {
@@ -209,63 +194,6 @@ async function stageWorkspaceMemberTarball(
   return rewrittenTarballPath;
 }
 
-function isBundledWorkspaceDependency(packageJson, dependencyName) {
-  if (workspaceDependencyPackages.has(dependencyName)) {
-    return false;
-  }
-  const declaredSpec = packageJson.dependencies?.[dependencyName];
-  return (
-    typeof declaredSpec === "string" &&
-    (declaredSpec.startsWith("workspace:") || declaredSpec.startsWith("link:"))
-  );
-}
-
-function assertNoUnresolvedWorkspaceSpecs(stagePackageJson) {
-  for (const [dependencyName, dependencySpec] of Object.entries(
-    stagePackageJson.dependencies ?? {}
-  )) {
-    if (
-      typeof dependencySpec === "string" &&
-      (dependencySpec.startsWith("workspace:") ||
-        dependencySpec.startsWith("link:"))
-    ) {
-      throw new Error(
-        `Staged dependency ${dependencyName} still uses unresolved spec ${dependencySpec}.`
-      );
-    }
-  }
-}
-
-function parseJsonFromCommandOutput(output) {
-  const trimmedOutput = output.trim();
-
-  try {
-    return JSON.parse(trimmedOutput);
-  } catch {
-    // pnpm may emit warnings before the JSON payload.
-  }
-
-  const startIndexCandidates = [
-    trimmedOutput.indexOf("["),
-    trimmedOutput.indexOf("{"),
-  ].filter((index) => index >= 0);
-
-  const startIndex =
-    startIndexCandidates.length > 0 ? Math.min(...startIndexCandidates) : 0;
-
-  for (let index = startIndex; index < trimmedOutput.length; index += 1) {
-    const candidate = trimmedOutput.slice(startIndex, index + 1);
-
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // Keep scanning until the JSON closes.
-    }
-  }
-
-  throw new Error("Failed to parse pnpm dependency output.");
-}
-
 const installedDependencyResult = spawnSync(
   "pnpm",
   ["list", "--prod", "--json", "--depth", "0", "--silent", "--loglevel=error"],
@@ -374,9 +302,10 @@ for (const [
 // Workspace dependencies fall into two buckets. The ones in
 // `workspaceDependencyPackages` are packed as tarballs and installed into the
 // closure because the main process imports them at runtime as externals. The
-// remaining workspace links — @repo/api, @closedloop-ai/shared-platform, and
-// @closedloop-ai/loops-api (inlined into the main/preload bundle by electron-vite), plus
-// @repo/app and design-system (bundled into the renderer by Vite) — are not
+// remaining workspace links — @repo/api, @closedloop-ai/shared-platform, @closedloop-ai/loops-api,
+// @repo/crewd, and @repo/cost (inlined into the main/preload bundle by
+// electron-vite), plus @repo/app and design-system (bundled into the renderer by
+// Vite) — are not
 // imported from node_modules by
 // the packaged app, so they are excluded from the closure. Leaving them in would
 // surface their unresolved `workspace:*`/`link:` spec to `pnpm install` and
@@ -386,7 +315,13 @@ const excludedWorkspaceDependencies = [];
 for (const [dependencyName, dependency] of Object.entries(
   installedDependencies
 )) {
-  if (isBundledWorkspaceDependency(packageJson, dependencyName)) {
+  if (
+    isBundledWorkspaceDependency(
+      packageJson,
+      dependencyName,
+      packedWorkspacePackageNames
+    )
+  ) {
     excludedWorkspaceDependencies.push(dependencyName);
     continue;
   }

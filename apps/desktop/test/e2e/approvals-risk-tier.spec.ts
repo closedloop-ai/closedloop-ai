@@ -41,7 +41,7 @@ test.describe("Approvals risk tier", () => {
     try {
       await gotoNav(page, "approvals");
       await expect(
-        page.getByRole("heading", { name: "Approvals", level: 2 })
+        page.getByRole("heading", { name: "Approvals", level: 1 })
       ).toBeVisible();
 
       // Locate each card as the smallest element holding its unique reason text

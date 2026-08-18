@@ -4,10 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentCoachingTips } from "../agent-coaching-tips";
 import type {
   AgentCoachingApi,
+  AgentCoachingGroundedMetrics,
   AgentCoachingTip,
   CoachingPackInfo,
 } from "../agent-coaching-types";
+import { makeGroundedMetrics } from "./grounded-metrics-factory";
 
+const NEXT_BUTTON_PATTERN = /Next/;
 const NO_TIPS_PATTERN = /No coaching tips right now/;
 const POWERED_BY_PATTERN = /Powered by/;
 const NO_NEW_TIPS_PATTERN = /No new tips right now/;
@@ -131,7 +134,15 @@ describe("AgentCoachingTips", () => {
       await screen.findByRole("button", { name: "Install (Apply skill)" })
     );
     await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
-    await screen.findByText("Created skill at .claude/skills/foo");
+    // FEA-3722: a successful install resets the draft installer, so the
+    // reviewed-draft panel tears down (rather than lingering below the now
+    // tip-cleared surface).
+    await waitFor(() =>
+      expect(screen.queryByText("Drafted artifact")).toBeNull()
+    );
+    expect(
+      screen.queryByRole("button", { name: "Install (Apply skill)" })
+    ).toBeNull();
   });
 
   it("installs the artifact even when recording feedback fails", async () => {
@@ -163,7 +174,153 @@ describe("AgentCoachingTips", () => {
 
     // A rejected recordFeedback (telemetry) must not block the install.
     await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
-    await screen.findByText("Created skill at .claude/skills/foo");
+    // FEA-3722: a successful install clears the draft panel post-install.
+    await waitFor(() =>
+      expect(screen.queryByText("Drafted artifact")).toBeNull()
+    );
+  });
+
+  it("keeps the draft visible and surfaces the error when install fails", async () => {
+    // FEA-3722: only a SUCCESSFUL install resets the draft installer. A failed
+    // install must keep the reviewed draft on screen so the user can retry, and
+    // report why it failed.
+    const installArtifact = vi.fn(() =>
+      Promise.reject(new Error("harness offline"))
+    );
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() => loaded([makeTip({ actions: [applyAction()] })])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    await screen.findByText("Drafted artifact");
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    await screen.findByText("Install failed: harness offline");
+    // The draft panel stays so the user can retry.
+    expect(screen.getByText("Drafted artifact")).toBeTruthy();
+  });
+
+  // FEA-3687 #2: the drafted-artifact panel belongs to the tip it was drafted
+  // from — navigating tips must clear it so a stale draft never hangs over the
+  // next tip.
+  it("clears the drafted artifact panel when navigating to the next tip", async () => {
+    const api: AgentCoachingApi = {
+      loadTips: vi.fn(() =>
+        loaded([
+          makeTip(),
+          makeTip({ id: "second-tip", title: "Second coaching tip" }),
+        ])
+      ),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+
+    // Draft an artifact on the first tip.
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Draft skill" }));
+    await screen.findByText("Drafted artifact");
+
+    // Advance to the next tip — the stale draft panel must be gone.
+    fireEvent.click(screen.getByRole("button", { name: NEXT_BUTTON_PATTERN }));
+    await screen.findByText("Second coaching tip");
+    expect(screen.queryByText("Drafted artifact")).toBeNull();
+  });
+
+  // FEA-3687 #2: dismissing a tip advances selection and must also clear an
+  // open draft from the dismissed tip.
+  it("clears the drafted artifact panel when the drafted tip is dismissed", async () => {
+    const api: AgentCoachingApi = {
+      loadTips: vi.fn(() =>
+        loaded([
+          makeTip(),
+          makeTip({ id: "second-tip", title: "Second coaching tip" }),
+        ])
+      ),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Draft skill" }));
+    await screen.findByText("Drafted artifact");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Dismiss coaching tip" })
+    );
+    await screen.findByText("Second coaching tip");
+    expect(screen.queryByText("Drafted artifact")).toBeNull();
+  });
+
+  // FEA-3687 #4: Apply dispatches by the reviewed action's kind.
+  it("passes the action kind to installArtifact on Apply", async () => {
+    const installArtifact = vi.fn(() =>
+      Promise.resolve("Installed skill at ~/.claude/skills/foo/SKILL.md")
+    );
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() =>
+        loaded([
+          makeTip({
+            actions: [{ ...applyAction(), kind: "create-new-file" as const }],
+          }),
+        ])
+      ),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    await screen.findByText("Drafted artifact");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
+    // draft, harness(undefined), kind
+    expect(installArtifact).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      "create-new-file"
+    );
+  });
+
+  it("defaults an absent action kind to create-new-file on Apply", async () => {
+    const installArtifact = vi.fn(() => Promise.resolve("Installed."));
+    const api: AgentCoachingApi = {
+      installArtifact,
+      loadTips: vi.fn(() => loaded([makeTip({ actions: [applyAction()] })])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Apply skill" }));
+    await screen.findByText("Drafted artifact");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Install (Apply skill)" })
+    );
+
+    await waitFor(() => expect(installArtifact).toHaveBeenCalledTimes(1));
+    expect(installArtifact).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      "create-new-file"
+    );
   });
 
   it("clears a tip on dismiss and shows the next", async () => {
@@ -236,7 +393,7 @@ describe("AgentCoachingTips", () => {
     await screen.findByText("Move repeated shell probes into a reusable skill");
     expect(screen.getByText("Tip 1 of 1")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Get More Tips" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get more tips" }));
 
     await screen.findByText("Tip 1 of 2");
     expect(loadTips).toHaveBeenCalledTimes(2);
@@ -269,7 +426,7 @@ describe("AgentCoachingTips", () => {
       ).toBeNull()
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Get More Tips" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get more tips" }));
 
     // The re-served tip is suppressed; the "no new tips" notice shows instead.
     await screen.findByText(NO_NEW_TIPS_PATTERN);
@@ -303,7 +460,7 @@ describe("AgentCoachingTips", () => {
     await screen.findByText("Move repeated shell probes into a reusable skill");
 
     // Kick off Get More Tips; its load stays in flight.
-    fireEvent.click(screen.getByRole("button", { name: "Get More Tips" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get more tips" }));
 
     // The user clears the current tip before the fetch resolves. Wait for the
     // tip to leave the list so the in-flight load resolves against state where
@@ -319,7 +476,11 @@ describe("AgentCoachingTips", () => {
     );
 
     // The in-flight load re-serves the just-cleared tip.
-    resolveSecond({ activePack: null, tips: [makeTip()] });
+    resolveSecond({
+      activePack: null,
+      groundedMetrics: null,
+      tips: [makeTip()],
+    });
 
     // It must stay cleared — a set read at button-click time instead of
     // resolution time would have resurrected it.
@@ -350,7 +511,7 @@ describe("AgentCoachingTips", () => {
         screen.queryByText("Move repeated shell probes into a reusable skill")
       ).toBeNull()
     );
-    expect(screen.getByRole("button", { name: "Get More Tips" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Get more tips" })).toBeTruthy();
     expect(screen.getByText(NO_TIPS_PATTERN)).toBeTruthy();
     // No automatic refetch — the only load was the initial mount.
     expect(loadTips).toHaveBeenCalledTimes(1);
@@ -398,19 +559,268 @@ describe("AgentCoachingTips", () => {
     render(<AgentCoachingTips api={api} />);
     await screen.findByText("Move repeated shell probes into a reusable skill");
 
-    fireEvent.click(screen.getByRole("button", { name: "Get More Tips" }));
+    fireEvent.click(screen.getByRole("button", { name: "Get more tips" }));
 
     await screen.findByText(NO_NEW_TIPS_PATTERN);
     expect(loadTips).toHaveBeenCalledTimes(2);
   });
+
+  it("defers generation on an empty corpus and reloads once local activity lands", async () => {
+    const unsubscribe = vi.fn();
+    const subscribeToActivity = vi.fn((_cb: () => void) => unsubscribe);
+    // Startup backfill race: the first read sees an empty corpus, the second
+    // (after the DB-change push) sees the landed sessions and yields a tip.
+    const loadTips = vi
+      .fn()
+      .mockResolvedValueOnce(await loaded([]))
+      .mockResolvedValueOnce(await loaded([makeTip()]));
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    render(<AgentCoachingTips api={api} />);
+
+    // First pass: nothing to show yet, and exactly ONE read — no wasted spawn.
+    await screen.findByText(NO_TIPS_PATTERN);
+    expect(loadTips).toHaveBeenCalledTimes(1);
+    expect(subscribeToActivity).toHaveBeenCalledTimes(1);
+
+    // The backfill lands → DB-change push → debounced re-load surfaces the tip.
+    subscribeToActivity.mock.calls[0][0]();
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    expect(loadTips).toHaveBeenCalledTimes(2);
+    // Grounded now — stop watching so later writes don't regenerate.
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+  });
+
+  it("stops waiting when the first load already reflects real activity", async () => {
+    const unsubscribe = vi.fn();
+    const subscribeToActivity = vi.fn((_cb: () => void) => unsubscribe);
+    // Activity present but the harness returned no tips: we must still stop
+    // waiting (the corpus is populated), driven by the grounded metrics.
+    const loadTips = vi.fn(() =>
+      loaded(
+        [],
+        null,
+        makeGroundedMetrics({
+          sessionsAnalyzed: 2,
+          eventsAnalyzed: 40,
+          totalInputTokens: 20_000,
+          totalOutputTokens: 5000,
+          totalTokens: 25_000,
+        })
+      )
+    );
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    render(<AgentCoachingTips api={api} />);
+
+    await screen.findByText(NO_TIPS_PATTERN);
+    await waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1));
+
+    // A later DB change must not trigger another load — we already kicked off.
+    subscribeToActivity.mock.calls[0][0]();
+    expect(loadTips).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsubscribes from activity on unmount", async () => {
+    const unsubscribe = vi.fn();
+    const api: AgentCoachingApi = {
+      loadTips: vi.fn(() => loaded([])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity: vi.fn(() => unsubscribe),
+    };
+
+    const { unmount } = render(<AgentCoachingTips api={api} />);
+    await screen.findByText(NO_TIPS_PATTERN);
+
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  // FEA-3698: an activity push that lands WHILE the initial load is in flight
+  // must not be dropped. The store records that the corpus went dirty and
+  // schedules exactly ONE reconciliation after the in-flight load settles.
+  it("reconciles activity that lands during the initial in-flight load", async () => {
+    const subscribeToActivity = vi.fn((_cb: () => void) => vi.fn());
+    const firstLoad = deferredLoad([]);
+    const loadTips = vi
+      .fn()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValueOnce(loaded([makeTip()]));
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    render(<AgentCoachingTips api={api} />);
+
+    // The first load is in flight. A DB-activity push arrives now — it must be
+    // remembered, not dropped (the old early-return lost it entirely).
+    await waitFor(() => expect(loadTips).toHaveBeenCalledTimes(1));
+    subscribeToActivity.mock.calls[0][0]();
+
+    // The initial load settles empty; the recorded dirty flag then drives one
+    // follow-up load, which surfaces the now-populated corpus.
+    firstLoad.resolve([]);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    expect(loadTips).toHaveBeenCalledTimes(2);
+  });
+
+  // FEA-3698: multiple pushes during a single in-flight load coalesce — the
+  // burst collapses to ONE follow-up, not one reload per push.
+  it("coalesces a burst of in-flight pushes into a single follow-up load", async () => {
+    const subscribeToActivity = vi.fn((_cb: () => void) => vi.fn());
+    const firstLoad = deferredLoad([]);
+    const loadTips = vi
+      .fn()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValueOnce(loaded([makeTip()]));
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    render(<AgentCoachingTips api={api} />);
+    await waitFor(() => expect(loadTips).toHaveBeenCalledTimes(1));
+
+    // Three pushes while the first load is in flight.
+    const push = subscribeToActivity.mock.calls[0][0];
+    push();
+    push();
+    push();
+
+    firstLoad.resolve([]);
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    // Initial load + exactly one coalesced follow-up — not one per push.
+    expect(loadTips).toHaveBeenCalledTimes(2);
+  });
+
+  // FEA-3698: a failed load must retain a retry path — the store stays
+  // subscribed so a later push re-attempts, and the panel reveals (first-settle)
+  // rather than hanging on the loading spinner.
+  it("surfaces a failed initial load and retries on the next activity push", async () => {
+    const subscribeToActivity = vi.fn((_cb: () => void) => vi.fn());
+    const loadTips = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("db offline"))
+      .mockReturnValueOnce(loaded([makeTip()]));
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    render(<AgentCoachingTips api={api} />);
+
+    // The first load rejected; the panel still reveals (empty), and the store is
+    // still subscribed so a retry path remains.
+    await screen.findByText(NO_TIPS_PATTERN);
+    await waitFor(() => expect(loadTips).toHaveBeenCalledTimes(1));
+
+    // A later push retries the load and surfaces the tip.
+    subscribeToActivity.mock.calls[0][0]();
+    await screen.findByText("Move repeated shell probes into a reusable skill");
+    expect(loadTips).toHaveBeenCalledTimes(2);
+  });
+
+  // FEA-3698: disposal must clear pending follow-up work — a dirty flag set
+  // during an in-flight load, plus its debounced reload, must not fire after the
+  // component unmounts.
+  it("clears the pending in-flight follow-up on unmount", async () => {
+    const unsubscribe = vi.fn();
+    const subscribeToActivity = vi.fn((_cb: () => void) => unsubscribe);
+    const firstLoad = deferredLoad([]);
+    const loadTips = vi
+      .fn()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValue(loaded([makeTip()]));
+    const api: AgentCoachingApi = {
+      loadTips,
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    const { unmount } = render(<AgentCoachingTips api={api} />);
+    await waitFor(() => expect(loadTips).toHaveBeenCalledTimes(1));
+
+    // Mark the corpus dirty mid-flight, then dispose before the load settles.
+    subscribeToActivity.mock.calls[0][0]();
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+
+    // Even after the in-flight load resolves, no follow-up load fires — disposal
+    // dropped the pending dirty work.
+    firstLoad.resolve([]);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loadTips).toHaveBeenCalledTimes(1);
+  });
+
+  // FEA-3698: a remount starts a fresh kickoff without leaking the prior one —
+  // the old subscription is torn down and the new instance subscribes exactly
+  // once.
+  it("tears down and re-subscribes cleanly on remount", async () => {
+    const firstUnsub = vi.fn();
+    const secondUnsub = vi.fn();
+    const subscribeToActivity = vi
+      .fn()
+      .mockReturnValueOnce(firstUnsub)
+      .mockReturnValueOnce(secondUnsub);
+    const api: AgentCoachingApi = {
+      loadTips: vi.fn(() => loaded([])),
+      recordFeedback: vi.fn(() => Promise.resolve()),
+      subscribeToActivity,
+    };
+
+    const { unmount } = render(<AgentCoachingTips api={api} />);
+    await screen.findByText(NO_TIPS_PATTERN);
+    unmount();
+    expect(firstUnsub).toHaveBeenCalledTimes(1);
+
+    render(<AgentCoachingTips api={api} />);
+    await screen.findByText(NO_TIPS_PATTERN);
+    // A fresh, single subscription for the remounted instance.
+    expect(subscribeToActivity).toHaveBeenCalledTimes(2);
+    expect(secondUnsub).not.toHaveBeenCalled();
+  });
 });
 
-/** A `loadTips` resolution: the day's tips plus the pack that powered them. */
+/**
+ * A `loadTips` resolution: the day's tips plus the pack that powered them.
+ * `groundedMetrics` defaults to null so the Coding Wrapped deck renders nothing
+ * in these tip-focused tests (the deck has its own coverage).
+ */
 function loaded(
   tips: AgentCoachingTip[],
-  activePack: CoachingPackInfo | null = null
+  activePack: CoachingPackInfo | null = null,
+  groundedMetrics: AgentCoachingGroundedMetrics | null = null
 ) {
-  return Promise.resolve({ activePack, tips });
+  return Promise.resolve({ activePack, groundedMetrics, tips });
+}
+
+/**
+ * A `loadTips` resolution the test controls by hand, so an activity push can be
+ * injected while the load is provably still in flight (the FEA-3698 race).
+ */
+function deferredLoad(initialTips: AgentCoachingTip[]) {
+  let resolveInner!: (value: Awaited<ReturnType<typeof loaded>>) => void;
+  const promise = new Promise<Awaited<ReturnType<typeof loaded>>>((resolve) => {
+    resolveInner = resolve;
+  });
+  return {
+    promise,
+    resolve: (tips: AgentCoachingTip[] = initialTips) =>
+      resolveInner({ activePack: null, groundedMetrics: null, tips }),
+  };
 }
 
 function applyAction() {

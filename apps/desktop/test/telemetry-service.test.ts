@@ -37,11 +37,11 @@ import {
   TELEMETRY_LOG_TAIL_MAX_BYTES,
   TELEMETRY_MAX_FIELD_BYTES,
   type TelemetryEventPayload,
-} from "../src/main/telemetry-protocol.js";
+} from "../src/main/telemetry/telemetry-protocol.js";
 import {
   type EnrichedTelemetryEvent,
   TelemetryService,
-} from "../src/main/telemetry-service.js";
+} from "../src/main/telemetry/telemetry-service.js";
 import {
   readFileTail,
   readLogTail,

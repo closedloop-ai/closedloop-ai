@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   DESKTOP_TELEMETRY_EGRESS_ENV_VAR,
   resolveDesktopTelemetryEgressEnabled,
-} from "../src/main/desktop-telemetry-egress.js";
+} from "../src/main/telemetry/desktop-telemetry-egress.js";
 
 test("egress defaults to enabled only for a packaged build", () => {
   assert.equal(

@@ -8,10 +8,12 @@ import {
   HARNESS_SELECTION_FEATURE_FLAG_KEY,
   HarnessType,
 } from "@repo/api/src/types/compute-target";
+import { DESKTOP_DEEP_LINK_URL } from "@repo/api/src/types/desktop-deep-link";
 import {
   useComputePreference,
   useSetComputePreference,
 } from "@repo/app/compute/hooks/use-compute-preference";
+import { useLatestElectronRelease } from "@repo/app/desktop/hooks/use-electron-release";
 import { resolveEffectiveComputeTargetSelection } from "@repo/app/loops/lib/compute-target-selection";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useIsMounted } from "@repo/app/shared/hooks/use-is-mounted";
@@ -36,7 +38,6 @@ import {
   DownloadIcon,
   LaptopIcon,
   Loader2Icon,
-  PowerIcon,
 } from "lucide-react";
 import { useState } from "react";
 import {
@@ -50,9 +51,20 @@ import {
   useComputeTargets,
   useUpdateComputeTargetHarness,
 } from "@/hooks/queries/use-compute-targets";
+import {
+  DESKTOP_LAUNCH_FALLBACK_FEATURE_FLAG_KEY,
+  useDesktopLaunchFallback,
+} from "@/hooks/use-desktop-launch-fallback";
+import { LaunchDesktopAppControl } from "./launch-desktop-app-control";
 
 // Mirrors the internal MAX_RECONNECT_ATTEMPTS in use-compute-target-status-stream.ts
 const SSE_MAX_RECONNECT_ATTEMPTS = 10;
+
+// This popover runs a button footprint one step below the design system's
+// smallest shipped size (`sm` bottoms out at h-8). Named once so the four
+// buttons in here cannot drift apart; promote it to a Button variant if the
+// footprint ever escapes this file.
+const COMPACT_BUTTON_CLASS = "h-7 w-full text-xs";
 
 /**
  * Returns whether the SSE stream is degraded (all reconnect attempts exhausted).
@@ -141,7 +153,11 @@ export function ComputeTargetPopover({
   // Keep SSE stream alive for real-time target status updates
   useComputeTargetStatusStream(true);
 
-  const { data: targets = [], isLoading: targetsLoading } = useComputeTargets();
+  const {
+    data: targets = [],
+    isLoading: targetsLoading,
+    refetch: refetchComputeTargets,
+  } = useComputeTargets();
   const { data: preferenceData, isLoading: preferenceLoading } =
     useComputePreference(userId, { enabled: !!userId });
   const setPreference = useSetComputePreference(userId);
@@ -187,6 +203,44 @@ export function ComputeTargetPopover({
   // T-4.5: targets registered but all offline
   const shouldShowAllOffline = !targetsLoading && allOffline;
 
+  // ISS-6109: the browser cannot observe whether `closedloop://` was handled, so
+  // the only honest signal is whether the desktop becomes reachable afterwards.
+  // Reachability is "one of MY OWN desktops is actually online". Not "the
+  // offline banner is hidden" (it also hides when the target list is empty or
+  // still resolving) and not "any target is online" (a teammate's shared machine
+  // coming up says nothing about the launch this user just fired). Getting this
+  // wrong silently cancels a genuinely failed launch's pending verdict.
+  const launchFallbackEnabled = useFeatureFlagEnabled(
+    DESKTOP_LAUNCH_FALLBACK_FEATURE_FLAG_KEY
+  );
+  const {
+    isAwaitingLaunch,
+    reset: resetLaunchFallback,
+    showFallback: showLaunchFallback,
+    startLaunchAttempt,
+  } = useDesktopLaunchFallback({
+    enabled: launchFallbackEnabled,
+    isDesktopReachable: ownTargets.some((target) => target.isOnline),
+    // The list is otherwise only refreshed by the SSE push above, which is
+    // exactly the signal that can be down while a launch is pending.
+    refreshReachability: refetchComputeTargets,
+  });
+  // The launch outcome is the ONLY reader of the release feed, so the query is
+  // gated on an attempt actually being in flight — not on the flag, and not on
+  // the offline banner being rendered. This popover lives in the global sidebar
+  // footer, so anything broader fetches `/electron-release` on every
+  // authenticated page for a Local user who never presses Launch. The click
+  // starts the fetch a full bound before the fallback can read it.
+  const { isLaunchOutcomeVisible, shouldShowOfflineRemediation } =
+    resolveLaunchControlVisibility({
+      isAllOffline: shouldShowAllOffline,
+      isAwaitingLaunch,
+      isLocal,
+      showLaunchFallback,
+    });
+  const { data: latestDesktopRelease, isLoading: isDesktopReleaseLoading } =
+    useLatestElectronRelease({ enabled: isLaunchOutcomeVisible });
+
   const triggerLabel = getTriggerLabel({
     effectiveTargetName: effectiveTarget?.machineName,
     isLocalOffline: isLocal && shouldShowAllOffline,
@@ -218,10 +272,18 @@ export function ComputeTargetPopover({
     return <CloudIcon className="size-4" />;
   }
 
+  // `setOpen(false)` on a controlled Popover does NOT fire `onOpenChange`, so
+  // every programmatic close must come through here or a pending launch verdict
+  // latches and resurfaces the next time the popover opens.
+  function closePopover(): void {
+    setShowDownloadPrompt(false);
+    resetLaunchFallback();
+    setOpen(false);
+  }
+
   function handleSelectCloud(): void {
     setPreference.mutate({ mode: ComputePreference.Cloud });
-    setShowDownloadPrompt(false);
-    setOpen(false);
+    closePopover();
   }
 
   function handleSelectLocal(targetId: string): void {
@@ -229,12 +291,11 @@ export function ComputeTargetPopover({
     if (!target?.isOnline) {
       return;
     }
-    setShowDownloadPrompt(false);
     setPreference.mutate({
       mode: ComputePreference.Local,
       computeTargetId: targetId,
     });
-    setOpen(false);
+    closePopover();
   }
 
   function handleLocalOptionClick(): void {
@@ -246,17 +307,22 @@ export function ComputeTargetPopover({
   }
 
   function handleLaunchDesktopApp(): void {
-    // T-4.5: invoke custom URI scheme registered by the desktop installer.
-    globalThis.location.href = "closedloop://";
+    // T-4.5 / ISS-6109: invoke the custom URI scheme the desktop installer
+    // registers. Navigation to an UNREGISTERED scheme is a silent no-op with no
+    // error event, so arm the bounded fallback first — that wait is the only
+    // way the user learns nothing answered.
+    startLaunchAttempt();
+    globalThis.location.href = DESKTOP_DEEP_LINK_URL;
   }
 
   return (
     <Popover
       onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) {
-          setShowDownloadPrompt(false);
+        if (next) {
+          setOpen(true);
+          return;
         }
+        closePopover();
       }}
       open={open}
     >
@@ -290,7 +356,7 @@ export function ComputeTargetPopover({
         )}
 
         {/* T-4.5: offline warning banner -- shown when preference is Local but all targets are offline */}
-        {isLocal && shouldShowAllOffline && (
+        {shouldShowOfflineRemediation && (
           <Alert className="mb-2" variant="warning">
             <AlertTriangleIcon />
             <AlertTitle>Desktop app is offline</AlertTitle>
@@ -304,7 +370,7 @@ export function ComputeTargetPopover({
                 data-testid="offline-remediation-actions"
               >
                 <Button
-                  className="h-7 w-full text-xs"
+                  className={COMPACT_BUTTON_CLASS}
                   onClick={handleSelectCloud}
                   size="sm"
                   variant="outline"
@@ -314,15 +380,14 @@ export function ComputeTargetPopover({
                 </Button>
                 {/* Gate on having at least one registered ComputeTarget (user has previously installed the app) */}
                 {targets.length > 0 && (
-                  <Button
-                    className="h-7 w-full text-xs"
-                    onClick={handleLaunchDesktopApp}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <PowerIcon className="size-3 shrink-0" />
-                    Launch Desktop App
-                  </Button>
+                  <LaunchDesktopAppControl
+                    compactButtonClass={COMPACT_BUTTON_CLASS}
+                    downloadUrl={latestDesktopRelease?.downloadUrl ?? null}
+                    isAwaitingLaunch={isAwaitingLaunch}
+                    isDownloadUrlLoading={isDesktopReleaseLoading}
+                    onLaunch={handleLaunchDesktopApp}
+                    showFallback={showLaunchFallback}
+                  />
                 )}
               </div>
             </AlertDescription>
@@ -456,7 +521,7 @@ export function ComputeTargetPopover({
               <p>Local compute requires the Closedloop Desktop app.</p>
               {/* TODO: Get desktop app download URL from product team */}
               <Button
-                className="h-7 w-full text-xs"
+                className={COMPACT_BUTTON_CLASS}
                 disabled
                 size="sm"
                 variant="outline"
@@ -493,6 +558,31 @@ function getTriggerLabel({
     return `Compute: ${effectiveTargetName ?? "Local"}`;
   }
   return "Compute: Cloud";
+}
+
+/**
+ * Resolves whether the offline remediation block — and the launch control it
+ * hosts — is on screen, and whether a launch verdict is currently live.
+ *
+ * `allOffline` spans EVERY target, so a teammate's shared machine coming online
+ * mid-attempt clears it and would unmount the very control the user is waiting
+ * on, losing the verdict while their own desktop is still unreachable.
+ * Reachability is owner-scoped (see the call site), so the mount that renders it
+ * has to be too — for exactly as long as an attempt is live.
+ */
+function resolveLaunchControlVisibility(input: {
+  isAllOffline: boolean;
+  isAwaitingLaunch: boolean;
+  isLocal: boolean;
+  showLaunchFallback: boolean;
+}): { isLaunchOutcomeVisible: boolean; shouldShowOfflineRemediation: boolean } {
+  const isLaunchOutcomeVisible =
+    input.isAwaitingLaunch || input.showLaunchFallback;
+  return {
+    isLaunchOutcomeVisible,
+    shouldShowOfflineRemediation:
+      input.isLocal && (input.isAllOffline || isLaunchOutcomeVisible),
+  };
 }
 
 /**

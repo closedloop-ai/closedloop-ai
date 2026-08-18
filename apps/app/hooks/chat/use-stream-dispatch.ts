@@ -123,10 +123,6 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
               break;
             }
 
-            console.log(
-              `[chat-stream] Reconnect attempt ${attempts}/${MAX_RECONNECT_ATTEMPTS}`
-            );
-
             try {
               const reconnectHeaders: Record<string, string> = {
                 "Content-Type": "application/json",
@@ -143,9 +139,6 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
               });
 
               if (!reconnectResponse.ok) {
-                console.log(
-                  `[chat-stream] Reconnect response: ${reconnectResponse.status}`
-                );
                 // 4xx = auth/client error, stop retrying; 5xx = transient, keep trying
                 if (reconnectResponse.status < 500) {
                   break;
@@ -201,7 +194,9 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
               if (err instanceof DOMException && err.name === "AbortError") {
                 throw err;
               }
-              console.error("[chat-stream] Reconnect error:", err);
+              // The failure is surfaced below via the `error/set` dispatch once
+              // reconnection is exhausted; a client-side console line would only
+              // reach the end user's devtools.
               break;
             }
           }
@@ -227,7 +222,6 @@ export function useStreamDispatch(params: UseStreamDispatchParams) {
           // User stopped the stream — not an error
           return { ok: true };
         }
-        console.error("Chat error:", err);
         dispatch({
           type: "error/set",
           message:

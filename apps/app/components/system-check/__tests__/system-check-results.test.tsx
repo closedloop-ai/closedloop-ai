@@ -1,4 +1,7 @@
-import { PluginUpdateOutcome } from "@repo/api/src/types/compute-target";
+import {
+  CheckSeverity,
+  PluginUpdateOutcome,
+} from "@repo/api/src/types/compute-target";
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 import type { CheckResult } from "@/lib/engineer/queries/health-check";
@@ -36,6 +39,15 @@ const optionalFailed: CheckResult = {
   passed: false,
   error: "Not found",
 };
+
+const BLOCKED_REMEDIATION_REGEX = /Fix the Claude CLI check first/;
+const PLUGIN_ENABLE_REGEX = /claude plugin enable/;
+const GATEWAY_UPDATE_REGEX = /Open the Closedloop Gateway app to update/;
+const PYTHON_REMEDIATION_REGEX = /Install Python 3.10 or later/;
+const CODEX_REMEDIATION =
+  "Install the Codex CLI if you want to run Codex sessions.";
+const CODEX_REMEDIATION_REGEX = /Install the Codex CLI/;
+const NOT_CHECKED_REGEX = /Not checked, Claude CLI unavailable/;
 
 function getSectionByHeading(name: string): HTMLElement {
   const heading = screen.getByRole("heading", { name });
@@ -414,5 +426,181 @@ describe("SystemCheckResults — required/optional partition", () => {
         name: "https://github.com/closedloop-ai/claude-plugins#quick-start",
       })
     ).toBeInTheDocument();
+  });
+});
+
+describe("SystemCheckResults — blocked and warning severities (ISS-5369)", () => {
+  const blockedPlugin: CheckResult = {
+    id: "plugin-code",
+    label: "Symphony Plugin",
+    required: true,
+    passed: false,
+    severity: CheckSeverity.Blocked,
+    blockedBy: "claude-cli",
+    error: "Not checked, Claude CLI unavailable",
+    remediation:
+      "Fix the Claude CLI check first: Update binary path in Settings, or clear the override",
+  };
+
+  test("a blocked row is not styled as a failure and repeats no doomed command", () => {
+    render(<SystemCheckResults checks={[blockedPlugin]} />);
+
+    const remediation = screen.getByText(BLOCKED_REMEDIATION_REGEX);
+    const box = remediation.closest("[data-check-severity]");
+    expect(box).not.toBeNull();
+    expect(box?.getAttribute("data-check-severity")).toBe(
+      CheckSeverity.Blocked
+    );
+    expect(box?.className).not.toContain("destructive");
+    expect(screen.queryByText(PLUGIN_ENABLE_REGEX)).toBeNull();
+  });
+
+  test("a warning row is not styled as a failure", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "app-version",
+            label: "Gateway Version",
+            required: false,
+            passed: true,
+            severity: CheckSeverity.Warning,
+            version: "0.16.69",
+            error: "Update available: 0.17.0",
+            remediation: "Open the Closedloop Gateway app to update",
+          },
+        ]}
+      />
+    );
+
+    const box = screen
+      .getByText(GATEWAY_UPDATE_REGEX)
+      .closest("[data-check-severity]");
+    expect(box?.getAttribute("data-check-severity")).toBe(
+      CheckSeverity.Warning
+    );
+    expect(box?.className).not.toContain("destructive");
+  });
+
+  test("a gateway that sends no severity keeps the legacy failure styling", () => {
+    render(<SystemCheckResults checks={[requiredFailed]} />);
+
+    const box = screen
+      .getByText(PYTHON_REMEDIATION_REGEX)
+      .closest("[data-check-severity]");
+    expect(box?.getAttribute("data-check-severity")).toBe(CheckSeverity.Error);
+    expect(box?.className).toContain("destructive");
+  });
+
+  test("a severity from a newer gateway falls back instead of breaking the panel", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            ...requiredFailed,
+            severity: "quarantined" as unknown as CheckSeverity,
+          },
+        ]}
+      />
+    );
+
+    const box = screen
+      .getByText(PYTHON_REMEDIATION_REGEX)
+      .closest("[data-check-severity]");
+    expect(box?.getAttribute("data-check-severity")).toBe(CheckSeverity.Error);
+  });
+
+  test("an optional failure is toned as a warning, not as something broken", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          {
+            id: "codex",
+            label: "Codex CLI",
+            required: false,
+            passed: false,
+            severity: CheckSeverity.Error,
+            error: "Not installed",
+            remediation: CODEX_REMEDIATION,
+          },
+        ]}
+      />
+    );
+
+    const box = screen
+      .getByText(CODEX_REMEDIATION_REGEX)
+      .closest("[data-check-severity]");
+    expect(box?.className).not.toContain("destructive");
+    expect(box?.className).toContain("warning");
+  });
+
+  test("a required failure keeps the destructive tone", () => {
+    render(<SystemCheckResults checks={[requiredFailed]} />);
+
+    const box = screen
+      .getByText(PYTHON_REMEDIATION_REGEX)
+      .closest("[data-check-severity]");
+    expect(box?.className).toContain("destructive");
+  });
+
+  test("blocked siblings sharing one fix state it once, not once per row", () => {
+    const folders = [
+      "code",
+      "code-review",
+      "judges",
+      "platform",
+      "self-learning",
+    ];
+    render(
+      <SystemCheckResults
+        checks={folders.map((folder) => ({
+          ...blockedPlugin,
+          id: `plugin-${folder}`,
+          label: folder,
+        }))}
+      />
+    );
+
+    // Five rows, each still carrying its own "Not checked" state...
+    expect(screen.getAllByText(NOT_CHECKED_REGEX)).toHaveLength(folders.length);
+    // ...but exactly one box telling the user what to actually fix.
+    expect(screen.getAllByText(BLOCKED_REMEDIATION_REGEX)).toHaveLength(1);
+    expect(
+      document.querySelectorAll("[data-system-check-shared-remediation]")
+    ).toHaveLength(1);
+  });
+
+  test("a lone blocked row still shows its remediation inline", () => {
+    render(<SystemCheckResults checks={[blockedPlugin]} />);
+
+    expect(screen.getAllByText(BLOCKED_REMEDIATION_REGEX)).toHaveLength(1);
+    expect(
+      document.querySelectorAll("[data-system-check-shared-remediation]")
+    ).toHaveLength(0);
+  });
+});
+
+describe("SystemCheckResults — a passing row says it once (ISS-5369)", () => {
+  test("a passing row with no version renders a single status mark", () => {
+    render(
+      <SystemCheckResults
+        checks={[
+          { id: "gh-auth", label: "GitHub Auth", required: true, passed: true },
+        ]}
+      />
+    );
+
+    const row = screen.getByText("GitHub Auth").closest("div");
+    expect(row?.querySelectorAll("svg")).toHaveLength(1);
+  });
+
+  test("a passing row with a version renders the mark plus the version", () => {
+    render(<SystemCheckResults checks={[requiredPassed]} />);
+
+    const row = screen.getByText("Git").closest("div");
+    expect(row?.querySelectorAll("svg")).toHaveLength(1);
+    expect(
+      within(row as HTMLElement).getAllByText("2.40.0").length
+    ).toBeGreaterThan(0);
   });
 });

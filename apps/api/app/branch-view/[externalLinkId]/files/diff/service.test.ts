@@ -3,20 +3,32 @@ import {
   BranchSyncStatus,
 } from "@repo/api/src/types/artifact";
 import { ChecksStatus } from "@repo/api/src/types/branch-view";
-import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  GitHubAccessDenialReason,
+  GitHubPRState,
+} from "@repo/api/src/types/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BranchViewContextCredentialSource } from "@/lib/resolve-pr-context";
 
-const { mockGetBoundedFileContentAtRef, mockGetMergeBaseSha, mockWithDb } =
-  vi.hoisted(() => ({
-    mockGetBoundedFileContentAtRef: vi.fn(),
-    mockGetMergeBaseSha: vi.fn(),
-    mockWithDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  }));
+const {
+  mockGetBoundedFileContentAtRef,
+  mockGetMergeBaseSha,
+  mockRunBranchViewRead,
+  mockWithDb,
+} = vi.hoisted(() => ({
+  mockGetBoundedFileContentAtRef: vi.fn(),
+  mockGetMergeBaseSha: vi.fn(),
+  mockRunBranchViewRead: vi.fn(),
+  mockWithDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+}));
 
-vi.mock("@repo/github", () => ({
+vi.mock("@repo/github/file-content", () => ({
   getBoundedFileContentAtRef: mockGetBoundedFileContentAtRef,
   getMergeBaseSha: mockGetMergeBaseSha,
+}));
+
+vi.mock("@/lib/github/github-branch-view-read-client", () => ({
+  runBranchViewRead: mockRunBranchViewRead,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -31,6 +43,9 @@ vi.mock("@/lib/resolve-pr-context", () => ({
 }));
 
 import { getFileDiff } from "./service";
+
+// The resolver-built client the service must thread into every GitHub read.
+const RESOLVED_OCTOKIT = { marker: "resolved-octokit" };
 
 const prContext = {
   externalLink: {
@@ -92,9 +107,31 @@ const prContext = {
   pullNumber: 42,
 } as const;
 
+/** Wire the file-cache lookup so the requested path is a changed file. */
+function installChangedFile() {
+  mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+    callback({
+      branchFileChange: {
+        findFirst: vi.fn().mockResolvedValue({
+          path: "src/changed.ts",
+          previousPath: null,
+          isBinary: false,
+        }),
+      },
+    })
+  );
+}
+
 describe("branch-view file diff authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Pass-through: run the service's read with the resolved client and wrap
+    // it in the runner's Result. Denial classification itself is covered by
+    // the github-branch-view-read-client tests.
+    mockRunBranchViewRead.mockImplementation(async (_input, read) => ({
+      ok: true,
+      value: await read(RESOLVED_OCTOKIT),
+    }));
   });
 
   it("rejects file reads for paths that are not in the pull request", async () => {
@@ -107,6 +144,7 @@ describe("branch-view file diff authorization", () => {
 
     const result = await getFileDiff(
       prContext as never,
+      "user-1",
       "src/secrets.ts",
       null
     );
@@ -116,6 +154,8 @@ describe("branch-view file diff authorization", () => {
       error: "File is not part of this branch",
     });
     expect(mockGetBoundedFileContentAtRef).not.toHaveBeenCalled();
+    // No credential is resolved for a request that never reaches GitHub.
+    expect(mockRunBranchViewRead).not.toHaveBeenCalled();
   });
 
   it("fetches raw content only after the requested path matches the branch file cache", async () => {
@@ -136,6 +176,7 @@ describe("branch-view file diff authorization", () => {
 
     const result = await getFileDiff(
       prContext as never,
+      "user-1",
       "src/changed.ts",
       null
     );
@@ -151,9 +192,20 @@ describe("branch-view file diff authorization", () => {
       },
       error: null,
     });
-    // The base side is read at the merge-base, not the base branch tip.
+    // The client comes from the PLN-1525 read runner, once per request…
+    expect(mockRunBranchViewRead).toHaveBeenCalledTimes(1);
+    expect(mockRunBranchViewRead).toHaveBeenCalledWith(
+      {
+        organizationId: "org-1",
+        userId: "user-1",
+        target: { owner: "acme", repo: "repo" },
+      },
+      expect.any(Function),
+      expect.any(Function)
+    );
+    // …and the base side is read at the merge-base, not the base branch tip.
     expect(mockGetMergeBaseSha).toHaveBeenCalledWith(
-      "123",
+      RESOLVED_OCTOKIT,
       "acme",
       "repo",
       "main",
@@ -162,7 +214,7 @@ describe("branch-view file diff authorization", () => {
     expect(mockGetBoundedFileContentAtRef).toHaveBeenCalledTimes(2);
     expect(mockGetBoundedFileContentAtRef).toHaveBeenNthCalledWith(
       1,
-      "123",
+      RESOLVED_OCTOKIT,
       "acme",
       "repo",
       "src/changed.ts",
@@ -171,7 +223,7 @@ describe("branch-view file diff authorization", () => {
     );
     expect(mockGetBoundedFileContentAtRef).toHaveBeenNthCalledWith(
       2,
-      "123",
+      RESOLVED_OCTOKIT,
       "acme",
       "repo",
       "src/changed.ts",
@@ -205,6 +257,7 @@ describe("branch-view file diff authorization", () => {
         owner: "active-owner",
         repo: "renamed-repo",
       } as never,
+      "user-1",
       "src/changed.ts",
       null
     );
@@ -222,8 +275,19 @@ describe("branch-view file diff authorization", () => {
         isBinary: true,
       },
     });
+    // The sibling's identity feeds the resolver target. No installation
+    // credential rides along — the read is the user's or it is denied.
+    expect(mockRunBranchViewRead).toHaveBeenCalledWith(
+      {
+        organizationId: "org-1",
+        userId: "user-1",
+        target: { owner: "active-owner", repo: "renamed-repo" },
+      },
+      expect.any(Function),
+      expect.any(Function)
+    );
     expect(mockGetMergeBaseSha).toHaveBeenCalledWith(
-      "active-installation",
+      RESOLVED_OCTOKIT,
       "active-owner",
       "renamed-repo",
       "main",
@@ -231,7 +295,7 @@ describe("branch-view file diff authorization", () => {
     );
     expect(mockGetBoundedFileContentAtRef).toHaveBeenNthCalledWith(
       1,
-      "active-installation",
+      RESOLVED_OCTOKIT,
       "active-owner",
       "renamed-repo",
       "src/changed.ts",
@@ -255,7 +319,12 @@ describe("branch-view file diff authorization", () => {
       .mockResolvedValueOnce({ status: "found", content: "old content" })
       .mockResolvedValueOnce({ status: "too_large" });
 
-    const result = await getFileDiff(prContext as never, "src/huge.ts", null);
+    const result = await getFileDiff(
+      prContext as never,
+      "user-1",
+      "src/huge.ts",
+      null
+    );
 
     expect(result).toEqual({
       data: null,
@@ -277,6 +346,7 @@ describe("branch-view file diff authorization", () => {
 
     const result = await getFileDiff(
       prContext as never,
+      "user-1",
       "assets/screenshot.png",
       null
     );
@@ -293,6 +363,40 @@ describe("branch-view file diff authorization", () => {
       error: null,
     });
     expect(mockGetBoundedFileContentAtRef).not.toHaveBeenCalled();
+    expect(mockRunBranchViewRead).not.toHaveBeenCalled();
+  });
+
+  it("flags only a both-sides-missing outcome as a possible cloaked 404", async () => {
+    const mockDb = {
+      branchFileChange: {
+        findFirst: vi.fn().mockResolvedValue({
+          path: "src/changed.ts",
+          previousPath: null,
+          isBinary: false,
+        }),
+      },
+    };
+    mockWithDb.mockImplementation((callback) => callback(mockDb));
+    mockGetMergeBaseSha.mockResolvedValue("merge-base-sha");
+    mockGetBoundedFileContentAtRef
+      .mockResolvedValueOnce({ status: "missing" })
+      .mockResolvedValueOnce({ status: "found", content: "new content" });
+
+    await getFileDiff(prContext as never, "user-1", "src/changed.ts", null);
+
+    const looksCloaked = mockRunBranchViewRead.mock.calls[0][2];
+    // The cached file is a changed file of this branch: absent from BOTH refs
+    // is implausible and must be distrusted…
+    expect(looksCloaked([{ status: "missing" }, { status: "missing" }])).toBe(
+      true
+    );
+    // …while one side missing is a legitimate new or deleted file.
+    expect(
+      looksCloaked([{ status: "missing" }, { status: "found", content: "x" }])
+    ).toBe(false);
+    expect(
+      looksCloaked([{ status: "found", content: "x" }, { status: "missing" }])
+    ).toBe(false);
   });
 
   it("falls back to the base branch ref when the merge base cannot be resolved", async () => {
@@ -311,16 +415,64 @@ describe("branch-view file diff authorization", () => {
       .mockResolvedValueOnce({ status: "found", content: "old content" })
       .mockResolvedValueOnce({ status: "found", content: "new content" });
 
-    await getFileDiff(prContext as never, "src/changed.ts", null);
+    await getFileDiff(prContext as never, "user-1", "src/changed.ts", null);
 
     expect(mockGetBoundedFileContentAtRef).toHaveBeenNthCalledWith(
       1,
-      "123",
+      RESOLVED_OCTOKIT,
       "acme",
       "repo",
       "src/changed.ts",
       "main",
       1024 * 1024
     );
+  });
+  it.each([
+    GitHubAccessDenialReason.Revoked,
+    GitHubAccessDenialReason.NoInstallation,
+  ])("maps a %s read denial onto accessDenial instead of a bare error string", async (reason) => {
+    installChangedFile();
+    mockRunBranchViewRead.mockResolvedValueOnce({
+      ok: false,
+      error: { reason },
+    });
+
+    const result = await getFileDiff(
+      prContext as never,
+      "user-1",
+      "src/changed.ts",
+      null
+    );
+
+    expect(result).toEqual({
+      data: null,
+      error: "File diff unavailable",
+      accessDenial: { reason },
+    });
+  });
+
+  it("carries retryAfterSeconds through so the route can send a Retry-After", async () => {
+    // The whole denial is threaded, not just its reason: dropping the ETA here
+    // is what previously left the client with no idea when to retry.
+    installChangedFile();
+    mockRunBranchViewRead.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        reason: GitHubAccessDenialReason.RateLimited,
+        retryAfterSeconds: 42,
+      },
+    });
+
+    const result = await getFileDiff(
+      prContext as never,
+      "user-1",
+      "src/changed.ts",
+      null
+    );
+
+    expect(result.accessDenial).toEqual({
+      reason: GitHubAccessDenialReason.RateLimited,
+      retryAfterSeconds: 42,
+    });
   });
 });

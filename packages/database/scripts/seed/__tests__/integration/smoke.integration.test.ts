@@ -92,14 +92,12 @@ type SeedCommandResult = {
   stdout: string;
   stderr: string;
   exitCode: number | null;
-  elapsedMs: number;
 };
 
 function runSeedCommand(
   args: readonly string[] = [],
   env: NodeJS.ProcessEnv = process.env
 ): SeedCommandResult {
-  const startMs = Date.now();
   let stdout = "";
   let stderr = "";
   let exitCode: number | null = null;
@@ -125,7 +123,7 @@ function runSeedCommand(
     stderr = spawnError.stderr ?? "";
   }
 
-  return { stdout, stderr, exitCode, elapsedMs: Date.now() - startMs };
+  return { stdout, stderr, exitCode };
 }
 
 function getPrivateBaselineOutputLeaks(output: string): string[] {
@@ -198,11 +196,10 @@ describe.skipIf(!DATABASE_URL_SET)(
           getPrivateBaselineOutputLeaks(first.stdout + first.stderr)
         ).toEqual([]);
 
-        // AC-017: must complete within the local-profile latency target.
-        expect(
-          first.elapsedMs,
-          `pnpm seed took ${first.elapsedMs} ms, which exceeds the 120 s local-profile target`
-        ).toBeLessThan(LOCAL_LATENCY_MS);
+        // AC-017 is enforced by `execSync`'s `timeout: LOCAL_LATENCY_MS` above,
+        // which kills the command at the target and surfaces a non-zero
+        // `exitCode` — already asserted. A wall-clock bound on a measured
+        // duration would add nothing but flake on a loaded runner.
 
         const countsBeforeRerun = await countProfileModels(ctx);
         const second = runSeedCommand();

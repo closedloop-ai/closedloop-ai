@@ -17,8 +17,9 @@ export type AttachmentListProps = {
 
 /**
  * Wrap-enabled list of attachment chips for artifact detail surfaces.
- * Image attachments link to their preview URL; non-image files expose a
- * download action when a handler is provided.
+ * Image attachments link to their preview URL; every other file type
+ * (`.md`, `.txt`, `.pdf`, `.csv`, …) is openable by clicking its filename
+ * when an `onDownload` handler is provided, plus a dedicated download button.
  */
 export function AttachmentList({
   attachments,
@@ -60,10 +61,18 @@ function AttachmentChip({
   onDelete,
   actionVisibility,
 }: Readonly<AttachmentChipProps>) {
+  // On a touch pointer there is no hover to reveal the download / delete
+  // actions, so `touch:opacity-100` keeps them visible; the mouse hover reveal
+  // is unchanged.
   const actionClassName =
     actionVisibility === "always"
       ? undefined
-      : "opacity-0 group-hover:opacity-100";
+      : "opacity-0 touch:opacity-100 group-hover:opacity-100";
+
+  // Non-image files have no inline preview, so clicking the filename opens
+  // (downloads) the file instead — this is what makes `.md`, `.txt`, `.pdf`,
+  // etc. attachments openable rather than dead text (FEA-1940).
+  const isFilenameClickable = !attachment.previewUrl && Boolean(onDownload);
 
   return (
     <div className="group flex items-center gap-2 rounded-md border bg-background px-2 py-1 text-sm">
@@ -86,9 +95,19 @@ function AttachmentChip({
       ) : (
         <FileIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
       )}
-      <span className="max-w-[180px] truncate font-medium">
-        {attachment.filename}
-      </span>
+      {isFilenameClickable ? (
+        <button
+          className="max-w-[180px] truncate rounded font-medium underline-offset-2 hover:underline"
+          onClick={() => onDownload?.(attachment)}
+          type="button"
+        >
+          {attachment.filename}
+        </button>
+      ) : (
+        <span className="max-w-[180px] truncate font-medium">
+          {attachment.filename}
+        </span>
+      )}
       <span className="shrink-0 text-muted-foreground text-xs">
         {formatAttachmentSize(attachment.sizeBytes)}
       </span>

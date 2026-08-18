@@ -2,7 +2,7 @@
 // canonical job shape and one stub-store cast rather than hand-rolling 30-field
 // LocalJob literals (which drift silently when the type changes).
 
-import type { JobStore, LocalJob } from "../src/main/job-store.js";
+import type { JobStore, LocalJob } from "../src/main/jobs/job-store.js";
 
 /**
  * Builds a minimal valid `LocalJob` with sensible defaults; pass `overrides`

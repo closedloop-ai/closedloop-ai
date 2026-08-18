@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OrganizationCommandPublicKey } from "../src/main/authorized-public-keys-client.js";
-import { CommandKeyReconciler } from "../src/main/command-key-reconciler.js";
+import type { OrganizationCommandPublicKey } from "../src/main/command-signing/authorized-public-keys-client.js";
+import { CommandKeyReconciler } from "../src/main/command-signing/command-key-reconciler.js";
 import {
   type ActiveCommandKeyTargetContext,
   classifyOrganizationCommandKeysForTarget,
-} from "../src/main/command-key-target-context.js";
+} from "../src/main/command-signing/command-key-target-context.js";
 import {
   type PendingCommandKeyNotification,
   type PendingCommandKeyNotificationOptions,
   PendingCommandKeyNotifier,
-} from "../src/main/pending-command-key-notifier.js";
+} from "../src/main/command-signing/pending-command-key-notifier.js";
 import { BROWSER_KEY_TARGET_ACCESS } from "../src/shared/contracts.js";
 
 const TARGET_ID = "11111111-1111-4111-8111-111111111111";

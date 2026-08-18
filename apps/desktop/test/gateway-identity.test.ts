@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
-import { GatewayIdentityStore } from "../src/main/gateway-identity.js";
+import { GatewayIdentityStore } from "../src/main/auth/gateway-identity.js";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;

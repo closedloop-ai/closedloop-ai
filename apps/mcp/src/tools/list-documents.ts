@@ -1,15 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { LinkType } from "@repo/api/src/types/artifact.js";
 import {
-  DocumentType,
   type DocumentWithProject,
+  documentTypeInputSchema,
 } from "@repo/api/src/types/document.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import { McpApiError } from "../api-error.js";
 import {
   asRecord,
-  buildDocumentUrlFromRecord,
   buildPaginatedPayload,
   buildQuery,
   DEFAULT_PAGE_LIMIT,
@@ -17,10 +16,12 @@ import {
   describeIdOrSlug,
   extractArrayItems,
   MAX_PAGE_LIMIT,
+  type McpUrlBuilder,
   PARENT_ARTIFACT_METADATA_HELP,
   type ParentArtifactProjectionInput,
   readNumber,
   readString,
+  readTagSummaries,
   withErrorHandling,
   withParentArtifactProjection,
 } from "./tool-utils.js";
@@ -52,12 +53,15 @@ export function shapeListDocumentItem(
     type: readString(row.type),
     status: readString(row.status),
     projectId: readString(row.projectId),
+    dueDate: readString(row.dueDate),
+    priority: readString(row.priority),
     // Stack-rank position within the project (PRD-421); lower sorts first,
     // null when unranked. Lets agents read order before calling move-artifact.
     sortOrder: readNumber(row.sortOrder),
     assigneeId: readString(row.assigneeId),
     createdAt: readString(row.createdAt),
     updatedAt: readString(row.updatedAt),
+    tags: readTagSummaries(row.tags),
     assignee: row.assignee
       ? {
           id: readString(assigneeRaw.id),
@@ -103,12 +107,16 @@ async function fetchParentProjectionMap(
  */
 export function registerListDocuments(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "list-documents",
     {
-      description: `List documents — PRDs (PRD-*), implementation plans (PLN-*), and features (FEA-*). Filter by project, type, or assignee. Returned \`slug\` values are the preferred user-facing handles for follow-up calls. ${PARENT_ARTIFACT_METADATA_HELP}`,
+      // ISS-4397: describe the current Issue vocabulary (ISS-*), with
+      // FEATURE/FEA kept only as compatibility aliases. Reuses DOCUMENT_DOC_HELP
+      // so this surface cannot drift from the shared type help text.
+      description: `List documents. ${DOCUMENT_DOC_HELP} Filter by project, type (\`ISSUE\`≡\`FEATURE\`), or assignee. Returned \`slug\` values are the preferred user-facing handles for follow-up calls. ${PARENT_ARTIFACT_METADATA_HELP}`,
       inputSchema: {
         projectId: z
           .string()
@@ -118,10 +126,17 @@ export function registerListDocuments(
           .string()
           .optional()
           .describe("Filter by assignee user ID"),
-        type: z
-          .enum(DocumentType)
+        // ISS-4397: reuse the shared public-contract input schema
+        // (`documentTypeInputSchema`, colocated with the type in `@repo/api`). It
+        // accepts the input superset (canonical types + the `ISSUE` alias) and
+        // normalizes to the persisted type before the outgoing query, so
+        // `type=ISSUE` and `type=FEATURE` both resolve regardless of whether the
+        // API deploy is upgraded (skew-safe).
+        type: documentTypeInputSchema
           .optional()
-          .describe(`${DOCUMENT_DOC_HELP} Filter by type.`),
+          .describe(
+            `${DOCUMENT_DOC_HELP} Filter by type (\`ISSUE\`≡\`FEATURE\`).`
+          ),
         limit: z
           .number()
           .int()
@@ -190,7 +205,7 @@ export function registerListDocuments(
               );
               return {
                 ...shaped,
-                webUrl: buildDocumentUrlFromRecord(asRecord(item)),
+                webUrl: urls.buildDocumentUrlFromRecord(asRecord(item)),
               };
             },
           }

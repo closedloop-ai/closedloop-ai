@@ -61,6 +61,9 @@ describe("health-check freshness", () => {
     ).toBe(false);
   });
 
+  // Normalization forces the `app-version` row to `required: false` (ISS-5369),
+  // so this also covers that the `requiredOnly` narrowing does not hide the
+  // version row from the cache-invalidation check.
   it("expires app version checks when the latest version changed", () => {
     expect(
       isHealthCheckCacheEntryFresh({

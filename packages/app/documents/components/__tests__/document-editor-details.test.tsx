@@ -7,9 +7,13 @@ import type { BasicUser } from "@repo/api/src/types/user";
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
 import { createMemoryNavigation } from "@repo/navigation/memory-adapter";
 import { NavigationProvider } from "@repo/navigation/provider";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
+import { ApiAdapterProvider } from "../../../shared/api/provider";
+import { AuthAdapterProvider } from "../../../shared/auth/provider";
+import { createStaticAuthAdapter } from "../../../shared/auth/static-auth-adapter";
 
 vi.mock("@repo/app/shared/feature-flags/feature-flagged", () => ({
   FeatureFlagged: ({ children }: { children: unknown }) => children,
@@ -23,13 +27,28 @@ import {
 /**
  * Renders inside the memory navigation adapter so the embedded `UserLink`'s
  * `useOrgPath` builder resolves; the org slug drives the expected
- * `/test-org/users/...` hrefs.
+ * `/test-org/users/...` hrefs. Also mounts the query, auth, and API ports the
+ * embedded (collapsed) `CommentsSection` depends on — its read is disabled
+ * while collapsed, so no request is issued.
  */
 function renderWithNav(ui: ReactElement) {
   const nav = createMemoryNavigation({ orgSlug: "test-org" });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(ui, {
     wrapper: ({ children }: { children: ReactNode }) => (
-      <NavigationProvider adapter={nav.adapter}>{children}</NavigationProvider>
+      <QueryClientProvider client={queryClient}>
+        <NavigationProvider adapter={nav.adapter}>
+          <AuthAdapterProvider adapter={createStaticAuthAdapter()}>
+            <ApiAdapterProvider
+              adapter={{ resolveApiOrigin: () => "http://test.invalid" }}
+            >
+              {children}
+            </ApiAdapterProvider>
+          </AuthAdapterProvider>
+        </NavigationProvider>
+      </QueryClientProvider>
     ),
   });
 }
@@ -98,6 +117,42 @@ describe("DocumentEditorDetails", () => {
     expect(
       screen.getByRole("link", { name: "Artifact Creator" })
     ).toHaveAttribute("href", "/test-org/users/artifact-creator");
+  });
+
+  test("resets the comment draft when the document changes without unmounting", () => {
+    const activity = {
+      createdAt: ARTIFACT_CREATED_AT,
+      createdBy: artifactCreator,
+      updatedAt: ARTIFACT_UPDATED_AT,
+    };
+    const { rerender } = renderWithNav(
+      <DocumentEditorDetails activity={activity} documentId="artifact-1">
+        <div>Relationships section</div>
+      </DocumentEditorDetails>
+    );
+
+    // Expand the section so the composer renders, then type a draft. The
+    // artifact composer's textarea is named by its visible "Comment on the
+    // whole document" label.
+    fireEvent.click(screen.getByRole("button", { name: COMMENTS_BUTTON_NAME }));
+    const composer = screen.getByLabelText("Add a comment");
+    fireEvent.change(composer, { target: { value: "Draft on the first doc" } });
+    expect(screen.getByLabelText("Add a comment")).toHaveValue(
+      "Draft on the first doc"
+    );
+
+    // Navigate to a different document in the same mounted details container.
+    rerender(
+      <DocumentEditorDetails activity={activity} documentId="artifact-2">
+        <div>Relationships section</div>
+      </DocumentEditorDetails>
+    );
+
+    // key={documentId} remounts the section: the section is collapsed again and
+    // the stale draft is gone rather than carrying across documents.
+    expect(screen.queryByLabelText("Add a comment")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: COMMENTS_BUTTON_NAME }));
+    expect(screen.getByLabelText("Add a comment")).toHaveValue("");
   });
 
   test("renders unknown-user fallback when artifact creator is unavailable", () => {

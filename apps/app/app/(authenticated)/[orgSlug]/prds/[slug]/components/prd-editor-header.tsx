@@ -6,10 +6,22 @@ import {
   type DocumentWithProject,
   type GenerationStatus,
 } from "@repo/api/src/types/document";
-import { PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY } from "@repo/api/src/types/loop";
+import {
+  PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY,
+  RunLoopCommand,
+} from "@repo/api/src/types/loop";
 import { FavoriteButton } from "@repo/app/documents/components/favorite-button";
-import { isCommandDisabled } from "@repo/app/documents/lib/generation-status-utils";
+import {
+  RunActionMenuItem,
+  RunInFlightMenuNote,
+} from "@repo/app/documents/components/run-action-availability";
+import {
+  isCommandDisabled,
+  isRunInFlightForCommand,
+} from "@repo/app/documents/lib/generation-status-utils";
 import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
+import { useFeatureFlagEnabledOptional } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   DropdownMenu,
@@ -31,6 +43,7 @@ import {
   RotateCcwIcon,
   TrashIcon,
 } from "lucide-react";
+import { useId } from "react";
 import {
   type BreadcrumbEntry,
   Header,
@@ -83,9 +96,36 @@ export function PRDEditorHeader({
   isPending = false,
 }: Readonly<PRDEditorHeaderProps>) {
   const orgSlug = useOrgSlug();
+  const reasonId = useId();
   const requestChangesFlag = useFeatureFlag(
     PRD_REQUEST_CHANGES_FEATURE_FLAG_KEY
   );
+  // ISS-5508: closed by default. OFF, every run item below keeps the native
+  // `disabled` it has always rendered and no explanation exists.
+  const explainUnavailable = useFeatureFlagEnabledOptional(
+    ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY
+  );
+  const runInFlight = (targetCommand: RunLoopCommand) =>
+    explainUnavailable &&
+    isRunInFlightForCommand({ generationStatus, targetCommand });
+  // A run may only be named as the cause when it is the ONLY blocker — a run
+  // finishing does not settle a pending local mutation, so claiming it would
+  // promise an availability that never arrives.
+  const generatePrdRunInFlight =
+    runInFlight(RunLoopCommand.GeneratePrd) && !isGenerating;
+  const evaluatePrdRunInFlight =
+    runInFlight(RunLoopCommand.EvaluatePrd) && !isEvaluating;
+  // Also gated on the item RENDERING at all: "Amend PRD" is behind its own flag,
+  // and without this the menu could show a note explaining an item that is not
+  // on screen.
+  const requestPrdChangesRunInFlight =
+    requestChangesFlag?.enabled === true &&
+    runInFlight(RunLoopCommand.RequestPrdChanges) &&
+    !(isGenerating || isRequestingChanges);
+  const anyRunInFlight =
+    generatePrdRunInFlight ||
+    evaluatePrdRunInFlight ||
+    requestPrdChangesRunInFlight;
 
   const breadcrumbs: BreadcrumbEntry[] = prd.project?.teams?.[0]?.id
     ? [
@@ -153,52 +193,64 @@ export function PRDEditorHeader({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem
+          <RunActionMenuItem
             disabled={isCommandDisabled({
               generationStatus,
               isLoading: generationStatusLoading,
-              targetCommand: "generate_prd",
+              targetCommand: RunLoopCommand.GeneratePrd,
               localMutationPending: isGenerating,
             })}
-            onClick={() => onGeneratePrd()}
+            onActivate={() => onGeneratePrd()}
+            reasonId={reasonId}
+            runInFlight={generatePrdRunInFlight}
           >
             <PrdIcon className="h-4 w-4" />
             {isGenerating ? "Generating PRD..." : "Generate PRD"}
-          </DropdownMenuItem>
+          </RunActionMenuItem>
           <DropdownMenuItem onClick={() => onDecomposeFeatures()}>
             <BoxIcon className="h-4 w-4" />
-            Decompose into Features
+            Decompose into Issues
           </DropdownMenuItem>
-          <DropdownMenuItem
+          <RunActionMenuItem
             disabled={isCommandDisabled({
               generationStatus,
               isLoading: generationStatusLoading,
-              targetCommand: "evaluate_prd",
+              targetCommand: RunLoopCommand.EvaluatePrd,
               localMutationPending: isEvaluating,
             })}
-            onClick={() => onEvaluatePrd()}
+            onActivate={() => onEvaluatePrd()}
+            reasonId={reasonId}
+            runInFlight={evaluatePrdRunInFlight}
           >
             <GaugeIcon className="h-4 w-4" />
             {isEvaluating ? "Evaluating PRD..." : "Evaluate PRD"}
-          </DropdownMenuItem>
+          </RunActionMenuItem>
           <DropdownMenuItem onClick={() => onGeneratePlan()}>
             <PlanIcon className="h-4 w-4" />
             Generate Implementation Plan
           </DropdownMenuItem>
           {requestChangesFlag?.enabled && (
-            <DropdownMenuItem
+            <RunActionMenuItem
               disabled={isCommandDisabled({
                 generationStatus,
                 isLoading: generationStatusLoading,
-                targetCommand: "request_prd_changes",
+                targetCommand: RunLoopCommand.RequestPrdChanges,
                 localMutationPending: isGenerating || isRequestingChanges,
               })}
-              onClick={() => onRequestChanges()}
+              onActivate={() => onRequestChanges()}
+              reasonId={reasonId}
+              runInFlight={requestPrdChangesRunInFlight}
             >
               <MessageSquareIcon className="h-4 w-4" />
               {isRequestingChanges ? "Amending PRD..." : "Amend PRD"}
-            </DropdownMenuItem>
+            </RunActionMenuItem>
           )}
+          {anyRunInFlight ? (
+            <>
+              <DropdownMenuSeparator />
+              <RunInFlightMenuNote id={reasonId} />
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
 

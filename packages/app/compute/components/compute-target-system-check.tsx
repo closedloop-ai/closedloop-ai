@@ -15,7 +15,7 @@ import {
   Loader2,
   RefreshCw,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
 export type ComputeTargetSystemCheckState =
   | "idle"
@@ -36,11 +36,38 @@ type ComputeTargetSystemCheckProps = {
   defaultOpen?: boolean;
   title?: string;
   checkedAtLabel?: string;
+  /**
+   * Failing REQUIRED rows — the ones that actually block a command. Optional
+   * rows never count here; they arrive as `warningCount` (ISS-5687).
+   */
   failureCount?: number;
+  /**
+   * Failing OPTIONAL rows (the two MCP rows, chiefly). A non-blocking finding:
+   * it must not be reported as a failure, and must not be silently rounded away
+   * into "All checks passed" either.
+   */
+  warningCount?: number;
   hasResult?: boolean;
   isEligible?: boolean;
   isLoading?: boolean;
   targetName?: string;
+  /**
+   * Repair control, rendered beside Re-check. The surface owns the transport, so
+   * this is a slot rather than a prop bundle; omitted (or null) when the shell
+   * has Repair gated off, or when the gateway has nothing repairable — see
+   * `SystemCheckRepairButton`, which returns null in exactly that case.
+   */
+  repairAction?: ReactNode;
+  /** Narration of a repair run, rendered above the check rows. */
+  repairPanel?: ReactNode;
+  /**
+   * True while a repair is running. The Repair control sits in the header but
+   * its narration lives inside this collapsible, which defaults closed — so a
+   * repair started from a collapsed section would report only through the badge.
+   * Starting one opens the section; it is never auto-closed, so the steps stay
+   * readable after the run finishes.
+   */
+  isRepairing?: boolean;
 };
 
 const BADGE_CLASS_NAMES: Record<ComputeTargetSystemCheckState, string> = {
@@ -66,12 +93,22 @@ export function ComputeTargetSystemCheck({
   title = "System Check",
   checkedAtLabel,
   failureCount,
+  warningCount,
   hasResult,
   isEligible,
   isLoading,
   targetName,
+  repairAction,
+  repairPanel,
+  isRepairing = false,
 }: Readonly<ComputeTargetSystemCheckProps>) {
   const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    if (isRepairing) {
+      setOpen(true);
+    }
+  }, [isRepairing]);
   const resolvedHasResult = hasResult ?? content !== undefined;
   const resolvedIsEligible = isEligible ?? state !== "disabled";
   const resolvedIsLoading = isLoading ?? state === "loading";
@@ -79,6 +116,7 @@ export function ComputeTargetSystemCheck({
     state ??
     getSystemCheckState({
       failureCount,
+      warningCount,
       hasResult: resolvedHasResult,
       isEligible: resolvedIsEligible,
       isLoading: resolvedIsLoading,
@@ -87,6 +125,7 @@ export function ComputeTargetSystemCheck({
     summary ??
     getSystemCheckSummary({
       failureCount,
+      warningCount,
       hasResult: resolvedHasResult,
       isEligible: resolvedIsEligible,
       isLoading: resolvedIsLoading,
@@ -139,24 +178,28 @@ export function ComputeTargetSystemCheck({
             </div>
           </CollapsibleTrigger>
 
-          <Button
-            className="w-full shrink-0 gap-1.5 md:w-auto"
-            disabled={actionDisabled}
-            onClick={(event) => {
-              event.stopPropagation();
-              onAction?.();
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <RefreshCw
-              className={`size-3.5 ${resolvedIsLoading ? "animate-spin" : ""}`}
-            />
-            {resolvedActionLabel}
-          </Button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            {repairAction}
+            <Button
+              className="shrink-0 gap-1.5"
+              disabled={actionDisabled}
+              onClick={(event) => {
+                event.stopPropagation();
+                onAction?.();
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <RefreshCw
+                className={`size-3.5 ${resolvedIsLoading ? "animate-spin" : ""}`}
+              />
+              {resolvedActionLabel}
+            </Button>
+          </div>
         </div>
 
-        <CollapsibleContent className="mt-4 border-t pt-4">
+        <CollapsibleContent className="mt-4 space-y-4 border-t pt-4">
+          {repairPanel}
           {content ?? resolvedFallback}
         </CollapsibleContent>
       </div>
@@ -166,11 +209,13 @@ export function ComputeTargetSystemCheck({
 
 function getSystemCheckState({
   failureCount,
+  warningCount,
   hasResult,
   isEligible,
   isLoading,
 }: Readonly<{
   failureCount?: number;
+  warningCount?: number;
   hasResult: boolean;
   isEligible: boolean;
   isLoading: boolean;
@@ -184,7 +229,10 @@ function getSystemCheckState({
   if (!hasResult) {
     return "idle";
   }
-  if (failureCount === 0) {
+  // A warning is not a pass. Excluding optional rows from the failure count
+  // (ISS-5687) must not promote an unconfigured MCP to a green "All checks
+  // passed" — it stops being reported as a blocker, not as a finding.
+  if (failureCount === 0 && !warningCount) {
     return "success";
   }
   return "warning";
@@ -192,28 +240,44 @@ function getSystemCheckState({
 
 function getSystemCheckSummary({
   failureCount,
+  warningCount,
   hasResult,
   isEligible,
   isLoading,
 }: Readonly<{
   failureCount?: number;
+  warningCount?: number;
   hasResult: boolean;
   isEligible: boolean;
   isLoading: boolean;
 }>): string {
   if (!hasResult) {
     if (isLoading) {
-      return "Running system check...";
+      return "Running system check…";
     }
     return isEligible
       ? "Awaiting first system check"
       : "System check unavailable";
   }
+  const failures =
+    typeof failureCount === "number" && failureCount > 0 ? failureCount : 0;
+  const warnings =
+    typeof warningCount === "number" && warningCount > 0 ? warningCount : 0;
+  // Both are named when both stand. Collapsing to the failure count alone would
+  // hide a real finding behind a more severe one — a smaller version of the
+  // same omission ISS-5687 is about.
+  const parts: string[] = [];
+  if (failures > 0) {
+    parts.push(`${failures} failure${failures === 1 ? "" : "s"}`);
+  }
+  if (warnings > 0) {
+    parts.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  }
+  if (parts.length > 0) {
+    return parts.join(", ");
+  }
   if (failureCount === 0) {
     return "All checks passed";
-  }
-  if (typeof failureCount === "number" && failureCount > 0) {
-    return `${failureCount} failure${failureCount === 1 ? "" : "s"}`;
   }
   return "Check completed";
 }

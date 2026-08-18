@@ -1,6 +1,7 @@
 "use client";
 
 import type { User } from "@repo/api/src/types/user";
+import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import type { TableFilterCurrentUser } from "@repo/design-system/components/ui/table-filters";
 import { useMemo } from "react";
 
@@ -18,12 +19,9 @@ export function useFilterCurrentUser(
     if (!currentUser) {
       return null;
     }
-    const name =
-      [currentUser.firstName, currentUser.lastName].filter(Boolean).join(" ") ||
-      currentUser.email;
     return {
       id: currentUser.id,
-      name,
+      name: getUserDisplayName(currentUser),
       avatarUrl: currentUser.avatarUrl ?? undefined,
     };
   }, [currentUser]);

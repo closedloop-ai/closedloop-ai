@@ -427,7 +427,11 @@ test("Codex OTel minimal session start uses earliest parseable instant across of
       { started_at: string }[]
     >("SELECT started_at FROM sessions WHERE id = $1", "otel-session");
 
-    assert.equal(session[0].started_at, "2026-06-18T10:00:00+02:00");
+    // FEA-3743: the earliest instant (10:00+02:00 == 08:00 UTC) wins AND is
+    // stored in canonical ISO-8601 UTC 'Z' form, not its offset input form. The
+    // instant is preserved exactly; only the text representation is normalized
+    // so the lexically-compared column stays single-format.
+    assert.equal(session[0].started_at, "2026-06-18T08:00:00.000Z");
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -685,3 +689,288 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
   }
   return value as Record<string, unknown>;
 }
+
+// FEA-3591: the minimal session upsert must seed `last_activity_at` so an
+// OTel-only row satisfies the `last_activity_at >= started_at` invariant from
+// birth. Before the fix the column fell to its 1970 epoch DEFAULT — a live
+// violation (and a poisoned `ended_at = epoch` if the orphan sweep caught the
+// row first). Equality with `started_at` is correct for an events-less session
+// (recompute's COALESCE(MAX(events), started_at) floored ≡ started_at) and is
+// form-safe: it holds for offset-form timestamps too, with no string MAX.
+test("Codex OTel minimal session seeds last_activity_at = started_at (FEA-3591)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-otel-floor-"));
+  const db = await openTestDb(dir);
+  try {
+    await db.codexOtel.persistBatch({
+      spans: [
+        {
+          ...makeSpan(),
+          traceId: "trace-z",
+          spanId: "span-z",
+          sessionId: "otel-z-form",
+          startTime: "2026-06-18T12:00:00.000Z",
+          endTime: "2026-06-18T12:01:00.000Z",
+        },
+        {
+          ...makeSpan(),
+          traceId: "trace-offset",
+          spanId: "span-offset",
+          sessionId: "otel-offset-form",
+          startTime: "2026-06-18T10:00:00+02:00",
+          endTime: "2026-06-18T10:01:00+02:00",
+        },
+      ],
+      tokenUsage: [],
+    });
+
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { id: string; started_at: string; last_activity_at: string }[]
+    >(
+      "SELECT id, started_at, last_activity_at FROM sessions WHERE id IN ($1, $2) ORDER BY id",
+      "otel-offset-form",
+      "otel-z-form"
+    );
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.equal(row.last_activity_at, row.started_at, row.id);
+    }
+
+    // A second batch for the same session must NOT touch last_activity_at —
+    // the ON CONFLICT arm leaves the column to recomputeSessionLastActivityAt
+    // (a string MAX there could regress mixed-form values).
+    await db.codexOtel.persistBatch({
+      spans: [
+        {
+          ...makeSpan(),
+          traceId: "trace-z-2",
+          spanId: "span-z-2",
+          sessionId: "otel-z-form",
+          startTime: "2026-06-18T14:00:00.000Z",
+          endTime: "2026-06-18T14:01:00.000Z",
+        },
+      ],
+      tokenUsage: [],
+    });
+    const after = await db.prisma.client.$queryRawUnsafe<
+      { last_activity_at: string }[]
+    >("SELECT last_activity_at FROM sessions WHERE id = $1", "otel-z-form");
+    assert.equal(after[0]?.last_activity_at, "2026-06-18T12:00:00.000Z");
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3743: the OTel writer is the known offender that used to persist
+// timestamps in their raw incoming form, including timezone-offset forms. Every
+// timestamp it writes — span start/end, the derived session started_at/
+// last_activity_at, and token_usage.created_at — must now land in canonical
+// ISO-8601 UTC 'Z' form (same instant, single text format) so the lexically-
+// compared columns sort chronologically.
+test("Codex OTel writer normalizes all offset-form timestamps to canonical UTC 'Z' at write time (FEA-3743)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-otel-canonical-"));
+  const db = await openTestDb(dir);
+  try {
+    await db.codexOtel.persistBatch({
+      spans: [
+        {
+          ...makeSpan(),
+          traceId: "trace-offset",
+          spanId: "span-offset",
+          // 10:00+02:00 == 08:00 UTC, 10:01+02:00 == 08:01 UTC.
+          startTime: "2026-06-18T10:00:00+02:00",
+          endTime: "2026-06-18T10:01:00+02:00",
+        },
+      ],
+      tokenUsage: [
+        {
+          sessionId: "otel-session",
+          model: "gpt-5-codex",
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          // 06:30-05:00 == 11:30 UTC.
+          observedAt: "2026-06-18T06:30:00-05:00",
+        },
+      ],
+    });
+
+    const span = await db.prisma.client.$queryRawUnsafe<
+      { start_time: string; end_time: string }[]
+    >(
+      "SELECT start_time, end_time FROM codex_trace_span WHERE trace_id = $1",
+      "trace-offset"
+    );
+    assert.equal(span[0].start_time, "2026-06-18T08:00:00.000Z");
+    assert.equal(span[0].end_time, "2026-06-18T08:01:00.000Z");
+
+    const usage = await db.prisma.client.$queryRawUnsafe<
+      { created_at: string }[]
+    >(
+      "SELECT created_at FROM token_usage WHERE session_id = $1 AND model = $2",
+      "otel-session",
+      "gpt-5-codex"
+    );
+    assert.equal(usage[0].created_at, "2026-06-18T11:30:00.000Z");
+
+    // Earliest instant across the span (08:00Z) and usage (11:30Z) wins the
+    // session start, and it too is stored canonical.
+    const session = await db.prisma.client.$queryRawUnsafe<
+      { started_at: string; last_activity_at: string }[]
+    >(
+      "SELECT started_at, last_activity_at FROM sessions WHERE id = $1",
+      "otel-session"
+    );
+    assert.equal(session[0].started_at, "2026-06-18T08:00:00.000Z");
+    assert.equal(session[0].last_activity_at, "2026-06-18T08:00:00.000Z");
+
+    // No non-canonical residue anywhere in the healed columns: every date-shaped
+    // value ends in 'Z'. (A `%-%` / `%+%` LIKE would false-match the date's own
+    // hyphens; the canonical marker is the trailing 'Z'.)
+    const nonZ = (column: string): string =>
+      `${column} IS NOT NULL
+         AND ${column} GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*'
+         AND ${column} NOT LIKE '%Z'`;
+    const residue = await db.prisma.client.$queryRawUnsafe<{ cnt: number }[]>(
+      `SELECT
+         (SELECT COUNT(*) FROM sessions
+            WHERE ${nonZ("started_at")} OR ${nonZ("last_activity_at")})
+       + (SELECT COUNT(*) FROM token_usage WHERE ${nonZ("created_at")})
+       + (SELECT COUNT(*) FROM codex_trace_span
+            WHERE ${nonZ("start_time")} OR ${nonZ("end_time")})
+         AS cnt`
+    );
+    assert.equal(Number(residue[0].cnt), 0);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3743: rows an EARLIER build persisted in offset form (before the write-
+// path fix) are healed to canonical UTC 'Z' by the post-backfill maintenance
+// pass. The data-revision rebuild can't reach these OTel-only rows (no source
+// transcript), so a dedicated in-place heal owns the migration.
+test("normalizeStoredTimestampFormats heals pre-existing offset-form rows to canonical UTC 'Z' (FEA-3743)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "codex-otel-heal-"));
+  const db = await openTestDb(dir);
+  try {
+    // Simulate legacy offset-form rows written by a pre-fix build by writing the
+    // raw offset text directly (bypassing the now-normalizing writer).
+    // Seed `updated_at` in the PAST so the heal's watermark bump (to the fixed
+    // test `now` = 2026-06-18T12:00:00.000Z) is observable — this is what makes
+    // the FEA-1962 `updated_at >= watermark` sync scan re-select an already-synced
+    // terminal session so the corrected instant reaches the cloud.
+    await db.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO sessions (
+           id, status, started_at, last_activity_at, updated_at,
+           harness, billing_mode, data_revision
+         ) VALUES ($1, 'active', $2, $3, $4, 'codex', 'unknown', $5)`,
+        "legacy-offset",
+        "2026-06-18T10:00:00+02:00",
+        "2026-06-18T10:05:00+02:00",
+        "2026-06-18T09:00:00.000Z",
+        DATA_REVISION
+      )
+    );
+    // A pre-existing derived analytics row carrying the OLD offset-form
+    // `started_at` (as the pre-fix rollup would have persisted it). The heal must
+    // re-derive this so the sync-emitted `sessionAnalytics.startedAt` copy is
+    // canonical too — the analytics backfill only anti-joins MISSING rows.
+    await db.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO session_analytics (session_id, started_at, updated_at)
+         VALUES ($1, $2, $3)`,
+        "legacy-offset",
+        "2026-06-18T10:00:00+02:00",
+        "2026-06-18T09:00:00.000Z"
+      )
+    );
+    await db.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO token_usage (
+           session_id, model, input_tokens, output_tokens,
+           cache_read_tokens, cache_write_tokens, usage_source, revision_id,
+           created_at, updated_at
+         ) VALUES ($1, $2, 1, 1, 0, 0, $3, $4, $5, $6)`,
+        "legacy-offset",
+        "gpt-5-codex",
+        CodexOtelTokenUsageSource.OtelLogPayload,
+        DATA_REVISION,
+        "2026-06-18T06:30:00-05:00",
+        "2026-06-18T12:00:00.000Z"
+      )
+    );
+    await db.prisma.write((client) =>
+      client.$executeRawUnsafe(
+        `INSERT INTO codex_trace_span (
+           trace_id, span_id, session_id, name, start_time, end_time,
+           duration_ms, status, received_at, revision_id, attributes,
+           resource_attributes
+         ) VALUES ($1, $2, $3, 'codex.exec', $4, $5, 125, 'ok', $6, $7, '{}', '{}')`,
+        "legacy-trace",
+        "legacy-span",
+        "legacy-offset",
+        "2026-06-18T10:00:00+02:00",
+        "2026-06-18T10:01:00+02:00",
+        "2026-06-18T12:00:00.000Z",
+        DATA_REVISION
+      )
+    );
+
+    const rewritten = await db.normalizeStoredTimestampFormats();
+    assert.equal(rewritten, 5);
+
+    const session = await db.prisma.client.$queryRawUnsafe<
+      { started_at: string; last_activity_at: string }[]
+    >(
+      "SELECT started_at, last_activity_at FROM sessions WHERE id = $1",
+      "legacy-offset"
+    );
+    assert.equal(session[0].started_at, "2026-06-18T08:00:00.000Z");
+    assert.equal(session[0].last_activity_at, "2026-06-18T08:05:00.000Z");
+
+    // FEA-3743: healing the session timestamps must ALSO bump `updated_at` so the
+    // durable sync watermark re-selects this already-synced terminal session and
+    // the corrected instant reaches the cloud.
+    const watermark = await db.prisma.client.$queryRawUnsafe<
+      { updated_at: string }[]
+    >("SELECT updated_at FROM sessions WHERE id = $1", "legacy-offset");
+    assert.equal(watermark[0].updated_at, "2026-06-18T12:00:00.000Z");
+
+    // FEA-3743: the derived, sync-emitted `session_analytics.started_at` copy is
+    // re-derived from the healed source so it is canonical too.
+    const analytics = await db.prisma.client.$queryRawUnsafe<
+      { started_at: string }[]
+    >(
+      "SELECT started_at FROM session_analytics WHERE session_id = $1",
+      "legacy-offset"
+    );
+    assert.equal(analytics[0].started_at, "2026-06-18T08:00:00.000Z");
+
+    const usage = await db.prisma.client.$queryRawUnsafe<
+      { created_at: string }[]
+    >(
+      "SELECT created_at FROM token_usage WHERE session_id = $1",
+      "legacy-offset"
+    );
+    assert.equal(usage[0].created_at, "2026-06-18T11:30:00.000Z");
+
+    const span = await db.prisma.client.$queryRawUnsafe<
+      { start_time: string; end_time: string }[]
+    >(
+      "SELECT start_time, end_time FROM codex_trace_span WHERE trace_id = $1",
+      "legacy-trace"
+    );
+    assert.equal(span[0].start_time, "2026-06-18T08:00:00.000Z");
+    assert.equal(span[0].end_time, "2026-06-18T08:01:00.000Z");
+
+    // Idempotent: a second pass over the now-canonical store rewrites nothing.
+    assert.equal(await db.normalizeStoredTimestampFormats(), 0);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

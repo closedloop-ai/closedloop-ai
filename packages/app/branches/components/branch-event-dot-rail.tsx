@@ -1,39 +1,28 @@
 "use client";
 
-import type { BranchCommit, MergedTraceItem } from "@repo/api/src/types/branch";
-import { cn } from "@repo/design-system/lib/utils";
-import { MessageSquareIcon } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import type { BranchCommit } from "@repo/api/src/types/branch";
+import type { BranchAssociatedPullRequest } from "@repo/api/src/types/branch-associated-pull-request";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import {
-  type BranchEventDot,
-  deriveEventDots,
-  deriveLifecycleDots,
-} from "../lib/branch-event-dots";
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
+import { cn } from "@repo/design-system/lib/utils";
+import { memo, useMemo } from "react";
 import {
   formatClock,
   fractionOf,
   type TimeRange,
   timeRange,
 } from "../lib/branch-timeline-range";
-import {
-  type BranchTipAnchor,
-  BranchTipPortal,
-  tipAnchorFromElement,
-} from "./branch-tip-portal";
 
 /**
- * Event-dot rail (Epic E / E3) — the design handoff's `bq-drail`. Green
- * (success/commit/merge) and red (error/fail) dots derive from the LOCAL merged
- * trace and are positioned by their timestamp along the shared timeline axis, so
- * they sit under the matching E1 hour bar. Orange dots are a SEPARATE source —
- * the live PR comment count (soft F3) — overlaid only when GitHub is KNOWN to be
- * connected (`githubConnected === true`); when it's KNOWN disconnected
- * (`=== false`) a muted connect-GitHub hint shows. While the connection state is
- * UNKNOWN (prop omitted/undefined — the v1 default, no producer wired yet) we
- * show neither the hint nor orange, so we never assert "Connect GitHub" against
- * a state we haven't actually determined. Never blue.
- * Outcome colors use semantic tokens (success/destructive/warning), NOT the
- * actor chart palette, so outcome ≠ actor identity. Hovering a dot opens the
+ * Event-dot rail for the exact Branch timeline event language: blue human
+ * steering, green GitHub/pull-request lifecycle, and red failures or limits.
+ * Dots are positioned by authoritative event time, filtered to active timeline
+ * hours when the parent supplies them, and stacked within an hour so simultaneous
+ * events remain separately clickable. Hovering or focusing a dot opens the
  * design's `bq-tip-mk` card; clicking it scrubs the shared playhead to the dot's
  * timestamp (`onScrub`), which scrolls the trace — the same path the bars and
  * playhead use — so lifecycle dots (no trace row, e.g. the merge) work too.
@@ -48,83 +37,123 @@ export type BranchEventDotRailProps = {
   commits?: readonly BranchCommit[];
   /** PR number, labels the lifecycle dots ("Merged #123"). */
   prNumber?: number | null;
+  /** Complete associated PR history, including closed-unmerged outcomes. */
+  pullRequests?: readonly BranchAssociatedPullRequest[];
   /** Live PR comment count (soft F3); null/undefined → no orange. */
+  /** @deprecated PR comments belong in the tab-scoped comments rail. */
   prCommentCount?: number | null;
   /**
    * GitHub connection state. `true` → may show orange comments; `false` → shows
    * the connect hint; `undefined` (unknown — the v1 default) → shows neither.
    */
+  /** @deprecated Connection state no longer changes timeline event semantics. */
   githubConnected?: boolean;
+  /** Active bar hour starts. When present, dots outside those bars are omitted. */
+  activeHourStarts?: readonly string[];
   /** Shared axis (from E1) so dots align with the bars; else derived from dots. */
   range?: TimeRange | null;
   activeRow?: number | null;
   /** Scrub the shared playhead to a dot's timestamp (scrolls the trace). */
   onScrub?: (t: string) => void;
+  /** Jump to the exact trace row for trace-backed dots. */
+  onScrubRow?: (row: number) => void;
   className?: string;
 };
 
-const COLOR_CLASS: Record<BranchEventDot["color"], string> = {
+type TimelineEventColor = "blue" | "green" | "red";
+
+type TimelineEventDot = {
+  filterToActiveHour: boolean;
+  row: number | null;
+  t: string;
+  color: TimelineEventColor;
+  label: string;
+};
+
+const COLOR_CLASS: Record<TimelineEventColor, string> = {
+  blue: "d-blue",
   green: "d-green",
   red: "d-red",
-  orange: "d-orange",
 };
 
 /** Category header (label + accent color) for the marker tooltip. */
-const DOT_META: Record<
-  BranchEventDot["color"],
-  { label: string; color: string }
-> = {
+const DOT_META: Record<TimelineEventColor, { label: string; color: string }> = {
+  blue: { label: "Human steering", color: "var(--primary)" },
   green: { label: "Commits, PRs & merges", color: "var(--success-foreground)" },
   red: { label: "Failures & limits", color: "var(--destructive)" },
-  orange: { label: "Review comments", color: "var(--warning, #d9a441)" },
 };
 
-type PositionedDot = { dot: BranchEventDot; left: number; key: string };
+type PositionedDot = {
+  dot: TimelineEventDot;
+  key: string;
+  left: number;
+  stackIndex: number;
+};
 
 function EventDot({
   dot,
   left,
+  stackIndex,
   active,
   onScrub,
-  onHover,
+  onScrubRow,
 }: {
-  dot: BranchEventDot;
+  dot: TimelineEventDot;
   left: number;
+  stackIndex: number;
   active: boolean;
   onScrub?: (t: string) => void;
-  onHover: (anchor: BranchTipAnchor) => void;
+  onScrubRow?: (row: number) => void;
 }) {
-  const className = cn("bq-dot", COLOR_CLASS[dot.color], active && "hot");
-  const style = { left: `${left}%` };
-  if (onScrub) {
-    return (
-      <button
+  const className = cn(COLOR_CLASS[dot.color], active && "hot");
+  const style = {
+    left: `${left}%`,
+    top: `${3 + stackIndex * 34}px`,
+  };
+  // FEA-3866: the marker detail is a tap-triggered `Popover` on the dot, not a
+  // mouse-position tooltip — no hover dependency, so it's reachable on touch.
+  // Radix portals the content (clearing the sticky timeline's stacking context
+  // and the page scroller's overflow like the old body portal did) and gives
+  // focus management + Escape-to-close for free. Clicking the dot still scrubs
+  // the playhead (`onScrub`) AND opens the tip — one tap does both. A dot with
+  // no `onScrub` (no trace row to scrub to) stays a plain, non-interactive
+  // marker, exactly as before.
+  if (!(onScrub || onScrubRow)) {
+    return <span className={cn("bq-dot", className)} style={style} />;
+  }
+  return (
+    <Popover>
+      <PopoverTrigger
         aria-label={dot.label}
-        className={className}
-        onClick={() => onScrub(dot.t)}
-        onFocus={(event) => onHover(tipAnchorFromElement(event.currentTarget))}
-        onMouseEnter={(event) =>
-          onHover(tipAnchorFromElement(event.currentTarget))
+        className="absolute flex size-8 -translate-x-1/2 items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        onClick={() =>
+          dot.row != null && onScrubRow ? onScrubRow(dot.row) : onScrub?.(dot.t)
         }
         style={style}
         type="button"
-      />
-    );
-  }
-  return <span className={className} style={style} />;
+      >
+        <span
+          className={cn("bq-dot relative top-0 left-0", className)}
+          style={{ background: DOT_META[dot.color].color }}
+        />
+      </PopoverTrigger>
+      <DotTipContent dot={dot} />
+    </Popover>
+  );
 }
 
-/** Portaled to <body> so it's never clipped behind the sticky chrome. */
-function DotTip({
-  dot,
-  anchor,
-}: {
-  dot: BranchEventDot;
-  anchor: BranchTipAnchor;
-}) {
+/**
+ * The marker detail rendered inside the dot's `Popover` (FEA-3866). Radix
+ * portals it above the sticky chrome and owns the card shell (`bg-popover`,
+ * border, radius, shadow, padding) from the `PopoverContent` primitive — so no
+ * hand-rolled card chrome here. `bq-tip-mk` only carries the marker-card widths;
+ * `w-auto p-3` overrides the primitive's fixed `w-72`/`p-4` so the compact tip
+ * sizes to its content. The inner `bq-tip-*` classes style the header + list.
+ */
+function DotTipContent({ dot }: { dot: TimelineEventDot }) {
   const meta = DOT_META[dot.color];
   return (
-    <BranchTipPortal anchor={anchor} className="bq-tip-mk">
+    <PopoverContent align="center" className="bq-tip-mk w-auto p-3" side="top">
       <div className="bq-tip-mkhead" style={{ color: meta.color }}>
         <span className="bq-tip-sw" style={{ background: meta.color }} />
         {meta.label}
@@ -139,7 +168,7 @@ function DotTip({
           <span className="bq-tip-ll">{dot.label}</span>
         </div>
       </div>
-    </BranchTipPortal>
+    </PopoverContent>
   );
 }
 
@@ -149,28 +178,30 @@ export const BranchEventDotRail = memo(function BranchEventDotRail({
   openedAt,
   commits,
   prNumber,
-  prCommentCount,
-  githubConnected,
+  pullRequests,
+  activeHourStarts,
   range,
   activeRow,
   onScrub,
+  onScrubRow,
   className,
 }: BranchEventDotRailProps) {
-  const [hovered, setHovered] = useState<{
-    dot: BranchEventDot;
-    anchor: BranchTipAnchor;
-  } | null>(null);
   const dots = useMemo(
     () => [
-      ...deriveEventDots(traceItems),
-      ...deriveLifecycleDots({
+      ...deriveTraceEventDots(traceItems),
+      ...deriveTimelineLifecycleDots({
         mergedAt: mergedAt ?? null,
         prNumber: prNumber ?? null,
         openedAt: openedAt ?? null,
         commits: commits ?? [],
+        pullRequests: pullRequests ?? [],
       }),
     ],
-    [traceItems, mergedAt, prNumber, openedAt, commits]
+    [traceItems, mergedAt, prNumber, openedAt, commits, pullRequests]
+  );
+  const activeHourSet = useMemo(
+    () => (activeHourStarts ? new Set(activeHourStarts) : null),
+    [activeHourStarts]
   );
   const axis = useMemo(() => {
     if (range) {
@@ -184,62 +215,186 @@ export const BranchEventDotRail = memo(function BranchEventDotRail({
     if (!axis) {
       return [];
     }
-    return dots.map((dot, i) => {
+    const stackByHour = new Map<string, number>();
+    const entries: PositionedDot[] = [];
+    dots.forEach((dot, i) => {
       const ms = Date.parse(dot.t);
-      return {
+      if (Number.isNaN(ms)) {
+        return;
+      }
+      const hourStart = floorTimelineHour(ms);
+      if (
+        dot.filterToActiveHour &&
+        activeHourSet &&
+        !activeHourSet.has(hourStart)
+      ) {
+        return;
+      }
+      const stackIndex = stackByHour.get(hourStart) ?? 0;
+      stackByHour.set(hourStart, stackIndex + 1);
+      entries.push({
         dot,
-        left: Number.isNaN(ms) ? 0 : fractionOf(axis, ms) * 100,
+        left: fractionOf(axis, ms) * 100,
         // Lifecycle dots all have row: null, and N commit/PR dots can share a
         // color+timestamp; disambiguate with the array index so React never
         // drops a sibling. (`l${i}` can't collide with a numeric trace row.)
         key: `${dot.color}-${dot.row ?? `l${i}`}-${dot.t}`,
-      };
+        stackIndex,
+      });
     });
-  }, [axis, dots]);
+    return entries;
+  }, [activeHourSet, axis, dots]);
 
-  // Only act on a KNOWN connection state — `undefined` means unknown, so we show
-  // neither the hint nor orange rather than asserting "Connect GitHub".
-  const showComments =
-    githubConnected === true && prCommentCount != null && prCommentCount > 0;
-  const showHint = githubConnected === false;
-
-  if (dots.length === 0 && !(showComments || showHint)) {
+  if (positioned.length === 0) {
     return null;
   }
 
+  const stackCount = Math.max(
+    1,
+    ...positioned.map((entry) => entry.stackIndex + 1)
+  );
+
   return (
     <div className={cn("bq-drail-wrap", className)}>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: container only clears the hover tooltip; dots carry the interactivity */}
-      {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: container only clears the hover tooltip; dots carry the interactivity */}
-      <div className="bq-drail" onMouseLeave={() => setHovered(null)}>
+      {/* Each dot owns its own tap `Popover` (FEA-3866), so the rail no longer
+          tracks a shared hovered marker or clears it on mouse-leave. */}
+      <div className="bq-drail" style={{ height: `${4 + stackCount * 34}px` }}>
         {positioned.map((entry) => (
           <EventDot
             active={activeRow != null && entry.dot.row === activeRow}
             dot={entry.dot}
             key={entry.key}
             left={entry.left}
-            onHover={(anchor) => setHovered({ anchor, dot: entry.dot })}
             onScrub={onScrub}
+            onScrubRow={onScrubRow}
+            stackIndex={entry.stackIndex}
           />
         ))}
       </div>
-      {hovered ? <DotTip anchor={hovered.anchor} dot={hovered.dot} /> : null}
-      {showComments || showHint ? (
-        <div className="bq-drail-foot">
-          {showComments ? (
-            <span className="bq-drail-comments">
-              <span className="bq-dot d-orange" />
-              {prCommentCount} PR comment{prCommentCount === 1 ? "" : "s"}
-            </span>
-          ) : null}
-          {showHint ? (
-            <span className="bq-drail-hint">
-              <MessageSquareIcon aria-hidden size={11} />
-              Connect GitHub for PR comments
-            </span>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 });
+
+const TIMELINE_HOUR_MS = 3_600_000;
+
+function deriveTraceEventDots(
+  items: readonly MergedTraceItem[]
+): TimelineEventDot[] {
+  const dots: TimelineEventDot[] = [];
+  items.forEach((item, row) => {
+    if (item.type !== "event") {
+      return;
+    }
+    const color = resolveTraceEventColor(item.dot);
+    dots.push({
+      color,
+      filterToActiveHour: true,
+      label: item.text,
+      row,
+      t: item.t,
+    });
+  });
+  return dots;
+}
+
+function resolveTraceEventColor(dot: "g" | "b" | "r"): TimelineEventColor {
+  const colorByDot = {
+    b: "blue",
+    g: "green",
+    r: "red",
+  } as const satisfies Record<typeof dot, TimelineEventColor>;
+  return colorByDot[dot];
+}
+
+function deriveTimelineLifecycleDots(input: {
+  mergedAt: string | null;
+  prNumber: number | null;
+  openedAt: string | null;
+  commits: readonly BranchCommit[];
+  pullRequests: readonly BranchAssociatedPullRequest[];
+}): TimelineEventDot[] {
+  const dots: TimelineEventDot[] = [];
+  for (const commit of input.commits) {
+    if (!isValidInstant(commit.committedAt)) {
+      continue;
+    }
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: commit.message || commit.sha.slice(0, 7),
+      row: null,
+      t: commit.committedAt,
+    });
+  }
+  for (const pullRequest of input.pullRequests) {
+    appendPullRequestLifecycleDots(dots, pullRequest);
+  }
+  if (input.pullRequests.length > 0) {
+    return dots;
+  }
+  const suffix = input.prNumber == null ? "" : ` #${input.prNumber}`;
+  if (isValidInstant(input.openedAt)) {
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: `Opened${suffix}`,
+      row: null,
+      t: input.openedAt,
+    });
+  }
+  if (isValidInstant(input.mergedAt)) {
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: `Merged${suffix}`,
+      row: null,
+      t: input.mergedAt,
+    });
+  }
+  return dots;
+}
+
+function appendPullRequestLifecycleDots(
+  dots: TimelineEventDot[],
+  pullRequest: BranchAssociatedPullRequest
+): void {
+  const suffix = ` #${pullRequest.number}`;
+  if (isValidInstant(pullRequest.openedAt)) {
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: `Opened${suffix}`,
+      row: null,
+      t: pullRequest.openedAt,
+    });
+  }
+  if (isValidInstant(pullRequest.mergedAt)) {
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: `Merged${suffix}`,
+      row: null,
+      t: pullRequest.mergedAt,
+    });
+    return;
+  }
+  if (isValidInstant(pullRequest.closedAt)) {
+    dots.push({
+      color: "green",
+      filterToActiveHour: false,
+      label: `Closed${suffix}`,
+      row: null,
+      t: pullRequest.closedAt,
+    });
+  }
+}
+
+function isValidInstant(value: string | null): value is string {
+  return value != null && !Number.isNaN(Date.parse(value));
+}
+
+function floorTimelineHour(timestamp: number): string {
+  return new Date(
+    Math.floor(timestamp / TIMELINE_HOUR_MS) * TIMELINE_HOUR_MS
+  ).toISOString();
+}

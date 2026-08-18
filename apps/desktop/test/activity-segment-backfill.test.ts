@@ -53,7 +53,7 @@ async function insertSession(
     client.$transaction((tx) =>
       tx.$executeRawUnsafe(
         `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
-         VALUES ($1, $1, 'completed', '2026-06-07T00:00:00.000Z', '2026-06-07T00:25:00.000Z', 'claude')`,
+         VALUES ($1, $1, 'inactive', '2026-06-07T00:00:00.000Z', '2026-06-07T00:25:00.000Z', 'claude')`,
         sessionId
       )
     )
@@ -90,6 +90,17 @@ async function readMarker(
     : null;
 }
 
+async function readSessionUpdatedAt(
+  prisma: DesktopPrisma,
+  sessionId: string
+): Promise<string> {
+  const rows = await prisma.client.$queryRawUnsafe<{ updated_at: string }[]>(
+    "SELECT updated_at FROM sessions WHERE id = $1",
+    sessionId
+  );
+  return rows[0]?.updated_at ?? "";
+}
+
 function writeTranscript(dir: string, sessionId: string): string {
   const filePath = join(dir, `${sessionId}.jsonl`);
   writeFileSync(filePath, "{}\n");
@@ -118,6 +129,36 @@ test("backfill tiles an imported session and records the version marker", async 
     );
     const marker = await readMarker(prisma, "bf-1");
     assert.equal(marker?.classifierVersion, ACTIVITY_CLASSIFIER_VERSION);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await close();
+  }
+});
+
+test("FEA-3568: a re-tile bumps the session updated_at so the metadata sync lane re-enqueues it", async () => {
+  const { prisma, close } = await openTestPrisma();
+  const dir = mkdtempSync(join(tmpdir(), "fea3568-backfill-dirty-"));
+  try {
+    await insertSession(prisma, "bf-dirty");
+    const before = await readSessionUpdatedAt(prisma, "bf-dirty");
+    const filePath = writeTranscript(dir, "bf-dirty");
+
+    const result = await backfillActivitySegmentsFromTranscripts(prisma, {
+      listTranscriptFiles: () => [filePath],
+      sessionIdFromPath: () => "bf-dirty",
+      parseSessionFile: () => Promise.resolve(sessionFixture("bf-dirty")),
+    });
+    assert.equal(result.captured, 1);
+
+    // The re-tile writes only segment rows, which don't touch the session row;
+    // the FEA-3568 dirty-mark must advance updated_at so the incremental sync lane
+    // (keyed on the updated_at watermark cursor) re-syncs the re-derived tiling to
+    // the cloud. Without it a classifier-version bump never propagates.
+    const after = await readSessionUpdatedAt(prisma, "bf-dirty");
+    assert.ok(
+      after > before,
+      `expected updated_at to advance after re-tile (before=${before} after=${after})`
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
     await close();
@@ -240,7 +281,7 @@ test("retention purge removes activity segments and the backfill marker", async 
       client.$transaction((tx) =>
         tx.$executeRawUnsafe(
           `INSERT INTO sessions (id, name, status, started_at, updated_at, last_activity_at, harness)
-           VALUES ('expired', 'expired', 'completed', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 'claude')`
+           VALUES ('expired', 'expired', 'inactive', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', 'claude')`
         )
       )
     );
@@ -259,12 +300,12 @@ test("retention purge removes activity segments and the backfill marker", async 
       })
     );
 
-    const deleted = await sweepExpiredSessions(
+    const { purged } = await sweepExpiredSessions(
       prisma,
       "2026-06-29T00:00:00.000Z"
     );
 
-    assert.ok(deleted >= 1, "the expired session was purged");
+    assert.ok(purged >= 1, "the expired session was purged");
     assert.equal(
       await countSegments(prisma, "expired"),
       0,

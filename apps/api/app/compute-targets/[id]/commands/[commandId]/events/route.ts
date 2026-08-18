@@ -1,5 +1,6 @@
 import type { DesktopCommandEvent } from "@repo/api/src/types/compute-target";
 import { NextResponse } from "next/server";
+import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { authorizeBranchViewLocalEventRead } from "@/lib/branch-view-local-authorization";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -136,10 +137,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string; commandId: string }> }
 ): Promise<Response> {
   try {
-    const authContext = await resolveAnyAuthContext(request);
-    if (!authContext) {
-      return new Response("Unauthorized", { status: 401 });
+    const authResult = await resolveAnyAuthContext(request);
+    if (!authResult.ok) {
+      return authContextFailureResponse(authResult.failure);
     }
+    const authContext = authResult.context;
 
     const { id: targetId, commandId } = await params;
     const target = await computeTargetsService.findAccessibleById(

@@ -1,6 +1,13 @@
 import type { FeatureFlagAdapter } from "@repo/app/shared/feature-flags/feature-flag-adapter";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { FEATURE_FLAGS } from "../../shared/feature-flags";
 
 type DesktopFlagState = {
@@ -33,6 +40,12 @@ export function DesktopFeatureFlagProvider({
   const [desktopFlags, setDesktopFlags] = useState<Record<string, boolean>>(
     () => ({ ...DESKTOP_FLAG_DEFAULTS })
   );
+  // ISS-5037: has the FIRST `getAllFlags` settled? Before it does, every
+  // desktop flag reads its registry default, which for a default-OFF flag is
+  // indistinguishable from "the user turned it off". That is the right posture
+  // for SHOWING gated UI (stay dark), but not for a one-way decision like
+  // redirecting a route away — see `App.tsx`'s Labs gate.
+  const [desktopFlagsResolved, setDesktopFlagsResolved] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,10 +57,14 @@ export function DesktopFeatureFlagProvider({
             return;
           }
           setDesktopFlags(readDesktopFlags(payload));
+          setDesktopFlagsResolved(true);
         })
         .catch(() => {
           if (!cancelled) {
             setDesktopFlags({ ...DESKTOP_FLAG_DEFAULTS });
+            // Settled, even though it settled on the defaults: an unreachable
+            // bridge must not hold a gated route on its loading state forever.
+            setDesktopFlagsResolved(true);
           }
         });
     };
@@ -81,11 +98,26 @@ export function DesktopFeatureFlagProvider({
   );
 
   return (
-    <FeatureFlagAdapterProvider adapter={adapter}>
-      {children}
-    </FeatureFlagAdapterProvider>
+    <DesktopFeatureFlagsResolvedContext value={desktopFlagsResolved}>
+      <FeatureFlagAdapterProvider adapter={adapter}>
+        {children}
+      </FeatureFlagAdapterProvider>
+    </DesktopFeatureFlagsResolvedContext>
   );
 }
+
+/**
+ * ISS-5037 — whether the desktop flag snapshot has actually arrived.
+ *
+ * Defaults to `false` (and to `false` with no provider, e.g. a unit test that
+ * mounts a bare subtree), so a caller that withholds a one-way decision until
+ * this is true degrades to withholding it — never to committing it early.
+ */
+export function useDesktopFeatureFlagsResolved(): boolean {
+  return useContext(DesktopFeatureFlagsResolvedContext);
+}
+
+const DesktopFeatureFlagsResolvedContext = createContext(false);
 
 const DESKTOP_FLAG_DEFAULTS: Record<string, boolean> = Object.fromEntries(
   FEATURE_FLAGS.map((flag) => [flag.key, flag.default])

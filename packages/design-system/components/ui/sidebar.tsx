@@ -83,8 +83,13 @@ function SidebarProvider({
         _setOpen(openState)
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+      // Persist the open state so it survives reloads. `setOpen` runs from
+      // render-triggered callbacks, so touching `document` unguarded throws
+      // under SSR and leaves no seam for a non-DOM shell (RN AsyncStorage
+      // adapter). Read the global off `globalThis` and guard it.
+      if (typeof globalThis.document !== "undefined") {
+        globalThis.document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+      }
     },
     [setOpenProp, open]
   )
@@ -94,8 +99,13 @@ function SidebarProvider({
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
 
-  // Adds a keyboard shortcut to toggle the sidebar.
+  // Adds a keyboard shortcut to toggle the sidebar. Effect timing already keeps
+  // this client-only; read the global off `globalThis` and guard it so the same
+  // hygiene holds in a non-DOM shell.
   React.useEffect(() => {
+    if (typeof globalThis.window === "undefined") {
+      return
+    }
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
         event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
@@ -106,8 +116,8 @@ function SidebarProvider({
       }
     }
 
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
+    globalThis.window.addEventListener("keydown", handleKeyDown)
+    return () => globalThis.window.removeEventListener("keydown", handleKeyDown)
   }, [toggleSidebar])
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
@@ -555,8 +565,10 @@ const sidebarMenuButtonVariants = cva(
           "bg-background shadow-[0_0_0_1px_hsl(var(--sidebar-border))] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_hsl(var(--sidebar-accent))]",
       },
       size: {
-        default: "h-8 text-base",
-        sm: "h-7 text-xs",
+        // Touch pointers floor the row to the 44px WCAG 2.5.5 target
+        // (`--tap-min`); the dense mouse height (`h-8`/`h-7`) is unchanged.
+        default: "h-8 touch:min-h-tap-min text-base",
+        sm: "h-7 touch:min-h-tap-min text-xs",
         lg: "h-12 text-base group-data-[collapsible=icon]:p-0!",
       },
     },

@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { JobStore, LocalJob } from "../../main/job-store.js";
+import type { JobStore, LocalJob } from "../../main/jobs/job-store.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { parseBody } from "./parse-body.js";

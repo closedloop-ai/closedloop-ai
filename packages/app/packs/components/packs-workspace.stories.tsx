@@ -1,5 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { mockPackActivity, mockPackViews } from "../lib/pack-view-mock";
+import {
+  mockCollidingPackViews,
+  mockPackActivity,
+  mockPackViews,
+} from "../lib/pack-view-mock";
 import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PacksWorkspace } from "./packs-workspace";
 
@@ -30,6 +34,18 @@ export const DesktopSolo: Story = {
 
 export const WebAdmin: Story = {
   args: {
+    context: createPacksContext(PacksMode.WebAdmin),
+  },
+};
+
+// Same-named packs across every disambiguation axis (category, version, and the
+// publisher last resort), so the qualifier under each colliding name can be read
+// side by side — how that secondary line reads is mostly a judgment call, so it
+// needs a surface to look at (FEA-3972).
+export const CollidingNames: Story = {
+  args: {
+    packs: mockCollidingPackViews,
+    activity: [],
     context: createPacksContext(PacksMode.WebAdmin),
   },
 };

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   fetchOnboardingStatus,
   resolveOnboardingPopupDecision,
-} from "../src/main/onboarding-popup.js";
+} from "../src/main/onboarding/onboarding-popup.js";
 
 test("fetchOnboardingStatus returns wizardCompleted on success envelope", async () => {
   let capturedUrl = "";

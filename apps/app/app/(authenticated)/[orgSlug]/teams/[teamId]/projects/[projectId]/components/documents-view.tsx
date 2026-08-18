@@ -5,20 +5,28 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { ArtifactType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
 import type { ProjectTreeResponse } from "@repo/api/src/types/project-tree";
 import { MoveEntityDialog } from "@repo/app/documents/components/move-entity-dialog";
 import { BulkStatusPicker } from "@repo/app/documents/components/table/bulk-status-picker";
 import { BulkTagPicker } from "@repo/app/documents/components/table/bulk-tag-picker";
 import {
+  type ColumnCollapseContext,
+  collapseUninformativeColumns,
+} from "@repo/app/documents/components/table/column-collapse";
+import {
   DocumentRow,
   type DocumentRowItem,
+  getDocumentTableColumnCount,
 } from "@repo/app/documents/components/table/document-row";
+import { DocumentTableSkeleton } from "@repo/app/documents/components/table/document-table-skeleton";
 import {
   collectArtifactRowItems,
   getItemTitle,
   toRowItem,
 } from "@repo/app/documents/components/table/document-tree";
 import { DocumentsEmptyState } from "@repo/app/documents/components/table/documents-empty-state";
+import { DocumentsTreeSection } from "@repo/app/documents/components/table/documents-tree-section";
 import type { FilterCategory } from "@repo/app/documents/components/table/filter-category";
 import { sectionIcon } from "@repo/app/documents/components/table/group-section-icon";
 import type { RowEditHandlers } from "@repo/app/documents/components/table/row-edit-context";
@@ -44,6 +52,7 @@ import {
   runBulkDelete,
 } from "@repo/app/documents/lib/table-row-actions";
 import {
+  buildCollapseVisibleItems,
   buildFlatItems,
   buildGroupedSections,
   buildParentMap,
@@ -63,27 +72,22 @@ import { useSortParams } from "@repo/app/shared/hooks/use-sort-params";
 import { STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { NAME_SORT_OPTIONS } from "@repo/app/shared/lib/sort-comparators";
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@repo/design-system/components/ui/dropdown-menu";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import { GroupSectionHeader } from "@repo/design-system/components/ui/group-section-header";
+import { ariaTableProps } from "@repo/design-system/lib/grid-table-aria";
 import {
-  ArrowDownToLineIcon,
-  ArrowUpToLineIcon,
   GitPullRequestIcon,
   Layers2Icon,
   Loader2,
   MergeIcon,
   TrashIcon,
 } from "lucide-react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { GeneratePrdFromDocumentDialog } from "@/app/(authenticated)/[orgSlug]/documents/components/generate-prd-from-document-dialog";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 import { useContextGroupExpansion } from "../hooks/use-context-group-expansion";
 import { useStackRanking } from "../hooks/use-stack-ranking";
+import { DocumentRowActions } from "./document-row-actions";
 import { MergeDocumentsDialog } from "./merge-documents-dialog";
 
 export type DocumentsViewProps = {
@@ -98,6 +102,21 @@ export type DocumentsViewProps = {
   treeData?: ProjectTreeResponse | null;
   /** Loading state for externally-provided tree data. */
   isTreeDataLoading?: boolean;
+  /**
+   * Whether the primary documents list is still loading (fetching, or waiting
+   * on a prerequisite such as the current user). When true, the view renders a
+   * table skeleton instead of the empty state so the empty state never flashes
+   * before rows arrive (FEA-3938). Optional and backward-compatible: consumers
+   * that already gate their own loading (e.g. the project page, which mounts
+   * this view only after artifacts resolve) can omit it.
+   */
+  isLoading?: boolean;
+  /**
+   * Screen-reader label for the loading skeleton. Lets a caller name what it is
+   * loading (e.g. "Loading tasks…") without this shared view asserting one
+   * caller's noun. Defaults to the skeleton's caller-agnostic "Loading…".
+   */
+  loadingLabel?: string;
   /**
    * Storage key prefix for group expansion state. Defaults to
    * `project-artifacts:${projectId}` in single-project mode; required when
@@ -116,16 +135,28 @@ export type DocumentsViewProps = {
   isFilterActive?: boolean;
   /** Callback to clear all project filters. */
   onClearFilters?: () => void;
+  /**
+   * Whether the board has ANY task at all BEFORE paging/filtering — the honest
+   * "is the queue truly empty" signal. When a caller pages the data upstream
+   * (My Tasks, ISS-4466), `documents`/`treeData` here are only the current
+   * page's subset, so a filter that matches nothing hands this view two empty
+   * sources and it would take the "No artifacts yet" branch, dropping the
+   * "Clear filters" action. Callers that page upstream pass this so the
+   * no-match state (with Clear filters) wins over the truly-empty state.
+   * Optional and backward-compatible: unpaged callers omit it and the view
+   * derives emptiness from its own `documents`/`treeData` as before.
+   */
+  hasUnpagedItems?: boolean;
   /** How to group items (none / status / assignee / priority). */
   groupBy?: GroupByMode;
-  /**
-   * When set, the "branches" category only shows pull requests whose
-   * `assigneeId` matches this id. Used by My Tasks to hide unassigned PRs
-   * and PRs assigned to other users from the current user's view.
-   */
-  branchAssigneeFilter?: string | null;
   /** localStorage key for sort state persistence. */
   sortPersistenceKey?: string;
+  /**
+   * FEA-4165: reorder the data columns. Receives the reordered VISIBLE column-id
+   * order the owning page merges into its persisted order. Omit → header drag
+   * handles are hidden (static columns).
+   */
+  onReorderColumns?: (nextVisibleOrder: string[]) => void;
 };
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: orchestrator component
@@ -135,6 +166,8 @@ export function DocumentsView({
   teamId,
   treeData: providedTreeData,
   isTreeDataLoading,
+  isLoading,
+  loadingLabel,
   storageKey,
   filterText,
   filterCategory,
@@ -144,9 +177,10 @@ export function DocumentsView({
   applyProjectFilters,
   isFilterActive,
   onClearFilters,
+  hasUnpagedItems,
   groupBy = GroupByMode.None,
-  branchAssigneeFilter,
   sortPersistenceKey,
+  onReorderColumns,
 }: DocumentsViewProps) {
   const orgSlug = useOrgSlug();
   const expansionKey = storageKey ?? `project-artifacts:${projectId ?? "all"}`;
@@ -164,7 +198,6 @@ export function DocumentsView({
   const { state, actions } = useDocumentsViewState();
   const {
     selectedIds,
-    menuState,
     deleteTarget,
     pendingBulkIds,
     deleteDialogOpen,
@@ -192,6 +225,13 @@ export function DocumentsView({
   const isStackRankEnabled = useFeatureFlagEnabled(
     STACK_RANK_PROJECT_PAGE_FEATURE_FLAG_KEY
   );
+  // FEA-3952: "Generate PRD" is offered on evergreen Document (DocumentType.Doc)
+  // rows. The generated PRD's target project is chosen inside the dialog
+  // (pre-filled to this project when the view is project-scoped).
+  const [generatePrdSource, setGeneratePrdSource] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const { sortBy, sortDir, setSort, clearSort } = useSortParams<SortKey>({
     validColumns: SORT_KEYS,
     defaultColumn: isStackRankEnabled ? SortKey.StackRank : null,
@@ -282,13 +322,8 @@ export function DocumentsView({
         getItemTitle(item).toLowerCase().includes(text)
       );
     }
-    if (branchAssigneeFilter) {
-      items = items.filter(
-        (item) => item.data.assigneeId === branchAssigneeFilter
-      );
-    }
     return items;
-  }, [filterCategory, treeData, filterText, branchAssigneeFilter]);
+  }, [filterCategory, treeData, filterText]);
 
   // Build flat items for filtered views
   const flatItems: DocumentRowItem[] = useMemo(
@@ -337,6 +372,67 @@ export function DocumentsView({
     ]
   );
 
+  // FEA-3945 / FEA-3946: drop columns that convey nothing for the currently
+  // visible rows — an all-empty Parent/default-Priority column (every surface),
+  // or a constant Assignee/Project on the single-scope "My Issues" view (opt-in
+  // via `collapseConstantColumns`, off on the general artifacts table where
+  // those are inline-edit controls the column menu still enables).
+  // The collapse input is built from the rows the body actually paints —
+  // collapsed-section rows are excluded so a hidden Urgent row can't keep the
+  // Priority column open for a section of only Medium rows — plus the same
+  // parent context the cells read, applied to both the header and every row so
+  // the grid stays aligned. The Loop column and its loop context were removed
+  // with the Loop cell; `hasParent` is now the only ambient lookup here.
+  const collapseItems = useMemo(
+    () =>
+      buildCollapseVisibleItems({
+        groupBy,
+        groupedSections,
+        isGroupedView,
+        flatItems,
+        groups,
+        isGroupExpanded: isTreeGroupExpanded,
+        isSectionExpanded,
+      }),
+    [
+      groupBy,
+      groupedSections,
+      isGroupedView,
+      flatItems,
+      groups,
+      isTreeGroupExpanded,
+      isSectionExpanded,
+    ]
+  );
+  const collapseContext: ColumnCollapseContext = useMemo(
+    () => ({
+      hasParent: (id: string) => parentMap.has(id),
+      collapseConstantColumns: editHandlers?.surfaceVariant === "my-tasks",
+    }),
+    [parentMap, editHandlers]
+  );
+  const effectiveColumns = useMemo(
+    () =>
+      collapseUninformativeColumns(
+        visibleColumns,
+        collapseItems,
+        collapseContext
+      ),
+    [visibleColumns, collapseItems, collapseContext]
+  );
+
+  // ISS-4761: the Documents tree was the last production caller still opted OUT
+  // of the shared `GridTable` ARIA table semantics (ISS-4672), so
+  // `/<org>/documents` announced a body cell as a loose "Active" where every
+  // other dense table says "Status, Active". ISS-5280 retired the flag that
+  // staged this, so the whole view opts in unconditionally — the one resolved
+  // value still threads down to every header, row, and cell from here, so the
+  // table can never be half-labelled.
+  const insideAriaTable = true;
+  // The table's `aria-colcount`, derived from the SAME arithmetic the header
+  // and the rows number their tracks with, so all three cannot drift apart.
+  const ariaColumnCount = getDocumentTableColumnCount(effectiveColumns.length);
+
   // PLN-755 (PRD-421): all stack-rank interaction state and actions. See
   // `useStackRanking` for why the surface is gated to the "all" tree view.
   const {
@@ -378,8 +474,13 @@ export function DocumentsView({
   const isPostFilterEmpty = renderedItems.length === 0;
   const shouldShowEmptyState =
     isSourceEmpty || (isFilterActive === true && isPostFilterEmpty);
+  // Prefer the caller's unpaged signal (My Tasks pages upstream, so the local
+  // `documents`/`treeData` are only the current page's subset — a zero-match
+  // filter would otherwise read as an empty board and drop "Clear filters").
+  // Falls back to the local sources for unpaged callers (ISS-4466).
   const hasAnyItems =
-    documents.length > 0 || treeHasRenderableArtifacts(treeData);
+    hasUnpagedItems ??
+    (documents.length > 0 || treeHasRenderableArtifacts(treeData));
 
   // ---- Selection handlers ----
 
@@ -452,6 +553,21 @@ export function DocumentsView({
     );
   }
 
+  // ---- Loading ----
+
+  // While the primary documents list is still loading, render a table skeleton
+  // rather than falling through to the empty state (FEA-3938). Only applies
+  // before any rows exist: once the list has data, keep showing it during
+  // background refetches instead of flashing the skeleton over live rows.
+  if (isLoading === true && !hasAnyItems) {
+    return (
+      <DocumentTableSkeleton
+        label={loadingLabel}
+        visibleColumns={visibleColumns}
+      />
+    );
+  }
+
   // ---- Empty state ----
 
   if (shouldShowEmptyState) {
@@ -475,6 +591,32 @@ export function DocumentsView({
 
   // ---- Table body rendering (extracted to avoid nested ternaries) ----
 
+  // FEA-4242: build the per-row overflow ("More actions") menu. Each row owns
+  // its own `DropdownMenu` (via `DocumentRowActions`), triggered by the row's
+  // real button — replacing the former single view-level menu anchored to an
+  // invisible, manually-positioned span. The Radix trigger both anchors the
+  // popover and receives focus on close, so the stale-rect positioning and the
+  // focus-stranding are gone by construction.
+  function renderRowActions(item: DocumentRowItem) {
+    return (
+      <DocumentRowActions
+        canGeneratePrd={canGeneratePrdFromRow(item)}
+        item={item}
+        onDelete={() => actions.requestDelete(item)}
+        onGeneratePrd={() => {
+          const doc = item.kind === "document" ? item.data : null;
+          if (doc) {
+            setGeneratePrdSource({ id: doc.id, title: doc.title });
+          }
+        }}
+        onMove={() => handleRequestMove(item)}
+        onMoveToBottom={() => moveToBottom(item)}
+        onMoveToTop={() => moveToTop(item)}
+        showRankActions={isDndEnabled && isRankableMenuItem(item)}
+      />
+    );
+  }
+
   // Flat category views (documents/features/plans) are never a rank surface
   // — `isRankSurface` requires the "all" view — so these rows carry no rank
   // affordance and render plain.
@@ -482,16 +624,17 @@ export function DocumentsView({
     return (
       <DocumentRow
         editHandlers={editHandlers}
+        insideAriaTable={insideAriaTable}
         isSelected={selectedIds.has(item.data.id)}
         item={item}
         key={item.data.id}
-        onMoreMenu={actions.openMenu}
+        moreMenuContent={renderRowActions(item)}
         onSelectionChange={actions.changeSelection}
         parentHref={parentMap.get(item.data.id)?.href}
         parentTitle={parentMap.get(item.data.id)?.title}
         selectMode={selectMode}
         showCheckbox={showCheckbox}
-        visibleColumns={visibleColumns}
+        visibleColumns={effectiveColumns}
       />
     );
   }
@@ -501,47 +644,55 @@ export function DocumentsView({
       return groupedSections.map((section) => {
         const sectionOpen = isSectionExpanded(section.descriptor.key);
         return (
-          <div key={section.descriptor.key}>
-            <GroupSectionHeader
-              count={section.groups.length}
-              icon={sectionIcon(section.descriptor)}
-              isOpen={sectionOpen}
-              label={section.descriptor.label}
-              onToggle={() => toggleSection(section.descriptor.key)}
-            />
+          <DocumentsTreeSection
+            columnCount={ariaColumnCount}
+            insideAriaTable={insideAriaTable}
+            key={section.descriptor.key}
+            sectionHeader={
+              <GroupSectionHeader
+                count={section.groups.length}
+                icon={sectionIcon(section.descriptor)}
+                isOpen={sectionOpen}
+                label={section.descriptor.label}
+                onToggle={() => toggleSection(section.descriptor.key)}
+              />
+            }
+          >
             {sectionOpen &&
               section.groups.map((group) =>
                 isGroupedView ? (
                   <TreeGroupRows
                     editHandlers={editHandlers}
                     group={group}
-                    handleMoreMenu={actions.openMenu}
                     handleSelectionChange={actions.changeSelection}
+                    insideAriaTable={insideAriaTable}
                     isGroupExpanded={isTreeGroupExpanded}
                     key={group.groupKey}
                     parentMap={parentMap}
                     rankInteractionMode={rankInteractionMode}
+                    renderMoreMenu={renderRowActions}
                     selectedIds={selectedIds}
                     toggleGroup={toggleTreeGroup}
-                    visibleColumns={visibleColumns}
+                    visibleColumns={effectiveColumns}
                   />
                 ) : (
                   <DocumentRow
                     editHandlers={editHandlers}
+                    insideAriaTable={insideAriaTable}
                     isSelected={selectedIds.has(group.root.data.id)}
                     item={group.root}
                     key={group.root.data.id}
-                    onMoreMenu={actions.openMenu}
+                    moreMenuContent={renderRowActions(group.root)}
                     onSelectionChange={actions.changeSelection}
                     parentHref={parentMap.get(group.root.data.id)?.href}
                     parentTitle={parentMap.get(group.root.data.id)?.title}
                     rankInteractionMode={rankInteractionMode}
                     showCheckbox={showCheckbox}
-                    visibleColumns={visibleColumns}
+                    visibleColumns={effectiveColumns}
                   />
                 )
               )}
-          </div>
+          </DocumentsTreeSection>
         );
       });
     }
@@ -551,15 +702,16 @@ export function DocumentsView({
         <TreeGroupRows
           editHandlers={editHandlers}
           group={group}
-          handleMoreMenu={actions.openMenu}
           handleSelectionChange={actions.changeSelection}
+          insideAriaTable={insideAriaTable}
           isGroupExpanded={isTreeGroupExpanded}
           key={group.groupKey}
           parentMap={parentMap}
           rankInteractionMode={rankInteractionMode}
+          renderMoreMenu={renderRowActions}
           selectedIds={selectedIds}
           toggleGroup={toggleTreeGroup}
-          visibleColumns={visibleColumns}
+          visibleColumns={effectiveColumns}
         />
       ));
     }
@@ -603,19 +755,26 @@ export function DocumentsView({
               filter.
             </div>
           )}
-        <DocumentTableHeader
-          allSelected={allSelected}
-          nameSortOptions={NAME_SORT_OPTIONS}
-          onClearSort={clearSort}
-          onSelectAll={handleSelectAll}
-          onSort={(col, dir) => setSort(col as SortKey, dir)}
-          showSelectAll={showCheckbox}
-          someSelected={someSelected}
-          sortBy={sortBy}
-          sortDir={sortDir}
-          visibleColumns={visibleColumns}
-        />
-        {renderRankableBody()}
+        {/* ISS-4761: the ARIA table wraps the header + body ONLY. The filter
+            banner above and the floating selection bar below are not rows, and a
+            `role="table"` may not own them. */}
+        <div {...ariaTableProps(insideAriaTable, ariaColumnCount)}>
+          <DocumentTableHeader
+            allSelected={allSelected}
+            insideAriaTable={insideAriaTable}
+            nameSortOptions={NAME_SORT_OPTIONS}
+            onClearSort={clearSort}
+            onReorderColumns={onReorderColumns}
+            onSelectAll={handleSelectAll}
+            onSort={(col, dir) => setSort(col as SortKey, dir)}
+            showSelectAll={showCheckbox}
+            someSelected={someSelected}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            visibleColumns={effectiveColumns}
+          />
+          {renderRankableBody()}
+        </div>
 
         {/* Floating selection bar */}
         {selectedIds.size > 0 && (
@@ -683,78 +842,6 @@ export function DocumentsView({
         )}
       </div>
 
-      {/* Context menu dropdown (anchored to the more-menu button via virtual ref) */}
-      <DropdownMenu
-        onOpenChange={(open) => {
-          if (!open) {
-            actions.closeMenu();
-          }
-        }}
-        open={menuState !== null}
-      >
-        <DropdownMenuTrigger asChild>
-          <span
-            className="pointer-events-none fixed"
-            ref={(node) => {
-              if (node && menuState?.anchor) {
-                const rect = menuState.anchor.getBoundingClientRect();
-                node.style.top = `${rect.top}px`;
-                node.style.left = `${rect.left}px`;
-                node.style.width = `${rect.width}px`;
-                node.style.height = `${rect.height}px`;
-              }
-            }}
-          />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          onCloseAutoFocus={(e) => e.preventDefault()}
-        >
-          {isDndEnabled &&
-            menuState !== null &&
-            isRankableMenuItem(menuState.item) && (
-              <>
-                <DropdownMenuItem
-                  onClick={() => {
-                    moveToTop(menuState.item);
-                    actions.closeMenu();
-                  }}
-                >
-                  <ArrowUpToLineIcon className="h-4 w-4" />
-                  Move to top
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => {
-                    moveToBottom(menuState.item);
-                    actions.closeMenu();
-                  }}
-                >
-                  <ArrowDownToLineIcon className="h-4 w-4" />
-                  Move to bottom
-                </DropdownMenuItem>
-              </>
-            )}
-          {menuState?.item.kind === "document" && (
-            <DropdownMenuItem onClick={() => handleRequestMove(menuState.item)}>
-              <Layers2Icon className="h-4 w-4" />
-              Move to Project
-            </DropdownMenuItem>
-          )}
-          {menuState &&
-            getRowTypeConfig(menuState.item)?.deletable === true && (
-              <DropdownMenuItem
-                onClick={() => {
-                  actions.requestDelete(menuState.item);
-                }}
-                variant="destructive"
-              >
-                <TrashIcon className="h-4 w-4 text-destructive" />
-                Delete
-              </DropdownMenuItem>
-            )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
       {/* Delete confirmation — heading/body copy comes from the row-type
           registry (PLN-874 Task 3.5). */}
       <DeleteConfirmationDialog
@@ -795,6 +882,18 @@ export function DocumentsView({
           teamId={teamId}
         />
       )}
+      {generatePrdSource && (
+        <GeneratePrdFromDocumentDialog
+          defaultProjectId={projectId}
+          document={generatePrdSource}
+          onOpenChange={(open) => {
+            if (!open) {
+              setGeneratePrdSource(null);
+            }
+          }}
+          open={generatePrdSource !== null}
+        />
+      )}
 
       {/* Merge artifacts dialog */}
       {selectedDocumentsForMerge && (
@@ -824,6 +923,16 @@ export function DocumentsView({
       )}
     </>
   );
+}
+
+/**
+ * Whether the "Generate PRD" row action should be offered: only for an
+ * evergreen Document (DocumentType.Doc) row (FEA-3952). The type check is the
+ * gate that carries meaning — no feature flag (the repo is not gating new
+ * features). Extracted so it can be asserted behaviorally.
+ */
+export function canGeneratePrdFromRow(item: DocumentRowItem): boolean {
+  return item.kind === "document" && item.data.type === DocumentType.Doc;
 }
 
 /**

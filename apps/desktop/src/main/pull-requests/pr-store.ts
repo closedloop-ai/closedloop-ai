@@ -20,6 +20,7 @@ import type {
   PrSessionGroup,
   PrStats,
 } from "../../shared/agent-db-contract.js";
+import { maxIso, toCanonicalIso, validIso } from "../database/db-helpers.js";
 import type { Prisma } from "../database/generated/client.js";
 import type { DbHostPrisma } from "../database/prisma-client.js";
 
@@ -38,14 +39,6 @@ import type { DbHostPrisma } from "../database/prisma-client.js";
 
 /** Every PR read scopes to artifacts of this kind. */
 const PR_KIND = "pull_request";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
 
 /** Deterministic 16-hex id — same PR in the same session dedups to one row. */
 function pullRequestId(
@@ -75,20 +68,62 @@ type PullRequestInput = {
   closedAt?: string | null;
   mergedAt?: string | null;
   harness: string;
-  observedAt?: string;
+  observedAt?: string | null;
+};
+
+/**
+ * The per-row fields a DATA_REVISION rebuild carries ACROSS its
+ * delete-then-reinsert of a session's `pull_requests` rows.
+ *
+ * The rebuild still DROPS rows the re-parse no longer references — stale-row
+ * removal is deliberate and pinned by `pr-store-write.test.ts` — but a row that
+ * comes back must not come back stripped. `createdAt`/`observedAt` are
+ * first-observation provenance, and (ISS-4606) `state`/`mergedAt`/`closedAt`/
+ * `openedAt` are written ONLY by the GitHub enrichment runner
+ * (`syncPullRequestLifecycle`); the importer never emits them, so a transcript
+ * re-read cannot re-derive them and the rebuild was silently blanking a merged
+ * PR back to "no known state" on every DATA_REVISION bump.
+ */
+export type PullRequestPreservedFields = {
+  createdAt: string | null;
+  observedAt: string | null;
+  state: string | null;
+  mergedAt: string | null;
+  closedAt: string | null;
+  openedAt: string | null;
 };
 
 export async function upsertPullRequest(
   tx: Prisma.TransactionClient,
-  pr: PullRequestInput
+  pr: PullRequestInput,
+  now: string,
+  preservedSeeds?: ReadonlyMap<string, PullRequestPreservedFields>
 ): Promise<{ id: string; created: boolean }> {
   const id = pullRequestId(pr.harness, pr.externalSessionId, pr.prUrl);
-  const existingResult = await tx.$queryRawUnsafe<{ id: string }[]>(
-    "SELECT id FROM pull_requests WHERE id = $1",
-    id
-  );
+  const incomingObservedAt = validIso(pr.observedAt);
+  const existingResult = await tx.$queryRawUnsafe<
+    { id: string; observed_at: string | null }[]
+  >("SELECT id, observed_at FROM pull_requests WHERE id = $1", id);
 
   if (existingResult.length > 0) {
+    // observed_at advances through the SAME validIso/maxIso resolution the
+    // INSERT seed below uses — one mechanism, resolved in JS, bound as a single
+    // parameter. Reading-then-resolving is race-free because every
+    // pull_requests write runs inside the serialized importer/lifecycle/sync
+    // `$transaction` on the one DesktopPrisma client (see module header).
+    //
+    // INVARIANT: this function is the only pull_requests.observed_at writer
+    // (write-core's UPDATE sets branch_name only; enrichment-runner's sets
+    // state/branch_name/merged_at/closed_at/opened_at), so the stored value is
+    // always the valid ISO this function last wrote. validIso() still guards
+    // the stored side so a corrupted row loses to valid incoming evidence
+    // instead of pinning the row stale forever; a NULL incoming never touches
+    // the stored value (COALESCE below).
+    const storedObservedAt = existingResult[0]?.observed_at ?? null;
+    const advancedObservedAt =
+      incomingObservedAt === null
+        ? null
+        : resolveCanonicalObservedAt(storedObservedAt, incomingObservedAt);
     await tx.$executeRawUnsafe(
       // branch_name is AUTHORITATIVE from the import (not COALESCE-preserved):
       // it is the per-session head ref for a PR this session created, or null for
@@ -102,25 +137,39 @@ export async function upsertPullRequest(
              title       = COALESCE(title, $3),
              state       = COALESCE($4, state),
              closed_at   = COALESCE($5, closed_at),
-             merged_at   = COALESCE($6, merged_at)
-       WHERE id = $7`,
+             merged_at   = COALESCE($6, merged_at),
+             observed_at = COALESCE($7, observed_at)
+       WHERE id = $8`,
       pr.branchName || null,
       pr.headSha || null,
       pr.title || null,
       pr.state || null,
       pr.closedAt || null,
       pr.mergedAt || null,
+      advancedObservedAt,
       id
     );
     return { id, created: false };
   }
 
+  const seed = preservedSeeds?.get(id);
+  const createdAt = seed?.createdAt ?? now;
+  const observedAt =
+    resolveCanonicalObservedAt(seed?.observedAt ?? null, incomingObservedAt) ??
+    now;
+
+  // ISS-4606: the lifecycle columns fall back to the pre-teardown seed. The
+  // import never supplies them (`persistNormalizedPullRequests` passes no
+  // `state`), so without this a rebuild re-inserts the row with a NULL state and
+  // NULL merge/close instants — discarding what enrichment learned from GitHub.
+  // Incoming still wins when present, so a genuine live update is never pinned
+  // to a stale seed.
   await tx.$executeRawUnsafe(
     `INSERT INTO pull_requests
        (id, session_id, pr_url, pr_number, repo_full_name, branch_name,
-        head_sha, title, state, closed_at, merged_at, harness, observed_at,
-        created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+        head_sha, title, state, closed_at, merged_at, opened_at, harness,
+        observed_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
     id,
     pr.externalSessionId || null,
     pr.prUrl,
@@ -129,12 +178,13 @@ export async function upsertPullRequest(
     pr.branchName || null,
     pr.headSha || null,
     pr.title || null,
-    pr.state || null,
-    pr.closedAt || null,
-    pr.mergedAt || null,
+    pr.state || seed?.state || null,
+    pr.closedAt || seed?.closedAt || null,
+    pr.mergedAt || seed?.mergedAt || null,
+    seed?.openedAt ?? null,
     pr.harness,
-    pr.observedAt || nowIso(),
-    nowIso()
+    observedAt,
+    createdAt
   );
   return { id, created: true };
 }
@@ -342,4 +392,27 @@ export async function sessionIdsWithPullRequests(
     _count: { _all: true },
   });
   return groups.map((g) => ({ session_id: g.sessionId, c: g._count._all }));
+}
+
+/**
+ * ISS-5427: pick the later of the stored/seed and incoming `observed_at`, then
+ * canonicalize the winner.
+ *
+ * `maxIso` compares by INSTANT so it picks the right operand, but returns that
+ * operand VERBATIM — and the stored side is exactly where a legacy value lives:
+ * a row written (or an ISS-4606 preserved seed captured) before the write path
+ * canonicalized can hold an offset form, and when it is the later instant it
+ * wins and is written straight back, defeating the caller's canonicalization.
+ * `pull_requests.observed_at` is TEXT that `branch-reads.ts` orders
+ * `DESC NULLS LAST` to pick the newest PR per branch, so a surviving offset form
+ * would sort by its wall-clock digits rather than its instant. The boot heal
+ * (`timestamp-format-maintenance.ts`) repairs the rows already on disk; this
+ * keeps a later merge from writing one back.
+ */
+function resolveCanonicalObservedAt(
+  stored: string | null,
+  incoming: string | null
+): string | null {
+  const winner = maxIso(validIso(stored), incoming);
+  return winner === null ? null : toCanonicalIso(winner);
 }

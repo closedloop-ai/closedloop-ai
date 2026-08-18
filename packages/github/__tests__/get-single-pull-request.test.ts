@@ -1,27 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-
-const mockPullsGet = vi.fn();
-const mockOctokitAuthOptions: unknown[] = [];
-
-vi.mock("@octokit/auth-app", () => ({
-  createAppAuth: vi.fn(() => async (_opts: unknown) => ({
-    token: "test-token",
-  })),
-}));
-
-vi.mock("@octokit/rest", () => ({
-  Octokit: class {
-    constructor(options?: unknown) {
-      mockOctokitAuthOptions.push(options);
-    }
-
-    rest = {
-      pulls: {
-        get: mockPullsGet,
-      },
-    };
-  },
-}));
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -31,14 +8,24 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
+import type { Octokit } from "@octokit/rest";
 import {
   GitHubProviderResultStatus,
   GitHubUserTokenProviderResultStatus,
   getSinglePullRequest,
-  getSinglePullRequestWithUserTokenProviderResult,
+  getSinglePullRequestWithProviderResult,
 } from "../index";
 
-const INSTALLATION_ID = "12345";
+// The functions are credential-agnostic (PLN-1525 step 4): callers inject the
+// Octokit, so the tests do too — no App env, no auth mocking.
+const mockPullsGet = vi.fn();
+
+const octokit = {
+  rest: {
+    pulls: { get: mockPullsGet },
+  },
+} as unknown as Octokit;
+
 const OWNER = "acme";
 const REPO = "my-repo";
 const PULL_NUMBER = 42;
@@ -83,19 +70,8 @@ function makePrData(
 }
 
 describe("getSinglePullRequest", () => {
-  beforeAll(() => {
-    process.env.GITHUB_APP_ID = "1";
-    process.env.GITHUB_APP_PRIVATE_KEY = "test-key";
-    process.env.GITHUB_APP_WEBHOOK_SECRET = "test-secret";
-    process.env.GITHUB_APP_CLIENT_ID = "test-client-id";
-    process.env.GITHUB_APP_CLIENT_SECRET = "test-client-secret";
-    process.env.GITHUB_APP_DISPATCH_REPO = "owner/dispatch";
-    process.env.WEBAPP_ENV = "stage";
-  });
-
   beforeEach(() => {
     mockPullsGet.mockReset();
-    mockOctokitAuthOptions.length = 0;
   });
 
   it("returns mapped PR data for an open pull request", async () => {
@@ -104,7 +80,7 @@ describe("getSinglePullRequest", () => {
     });
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -122,6 +98,7 @@ describe("getSinglePullRequest", () => {
       state: "OPEN",
       isDraft: false,
       authorLogin: null,
+      createdAt: null,
       mergedAt: null,
       closedAt: null,
       mergeCommitSha: null,
@@ -130,11 +107,13 @@ describe("getSinglePullRequest", () => {
       changedFiles: 4,
     });
 
-    expect(mockPullsGet).toHaveBeenCalledWith({
-      owner: OWNER,
-      repo: REPO,
-      pull_number: PULL_NUMBER,
-    });
+    expect(mockPullsGet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: OWNER,
+        repo: REPO,
+        pull_number: PULL_NUMBER,
+      })
+    );
   });
 
   it("omits PR LOC fields when the REST response does not include them", async () => {
@@ -145,7 +124,7 @@ describe("getSinglePullRequest", () => {
     mockPullsGet.mockResolvedValueOnce({ data });
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -167,7 +146,7 @@ describe("getSinglePullRequest", () => {
     });
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -189,7 +168,7 @@ describe("getSinglePullRequest", () => {
     });
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -206,7 +185,7 @@ describe("getSinglePullRequest", () => {
     );
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -219,7 +198,7 @@ describe("getSinglePullRequest", () => {
     mockPullsGet.mockRejectedValueOnce(new Error("Network timeout"));
 
     const result = await getSinglePullRequest(
-      INSTALLATION_ID,
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -227,14 +206,20 @@ describe("getSinglePullRequest", () => {
 
     expect(result).toBeNull();
   });
+});
 
-  it("fetches a single pull request with a user OAuth token", async () => {
+describe("getSinglePullRequestWithProviderResult", () => {
+  beforeEach(() => {
+    mockPullsGet.mockReset();
+  });
+
+  it("returns a Success result with mapped PR data", async () => {
     mockPullsGet.mockResolvedValueOnce({
       data: makePrData({ user: { login: "octocat" } }),
     });
 
-    const result = await getSinglePullRequestWithUserTokenProviderResult(
-      "user-token-1",
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -251,21 +236,22 @@ describe("getSinglePullRequest", () => {
         changedFiles: 4,
       }),
     });
-    expect(mockOctokitAuthOptions.at(-1)).toEqual({ auth: "user-token-1" });
-    expect(mockPullsGet).toHaveBeenCalledWith({
-      owner: OWNER,
-      repo: REPO,
-      pull_number: PULL_NUMBER,
-    });
+    expect(mockPullsGet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: OWNER,
+        repo: REPO,
+        pull_number: PULL_NUMBER,
+      })
+    );
   });
 
-  it("classifies user OAuth 401 responses as unauthorized credentials", async () => {
+  it("classifies 401 responses as unauthorized credentials", async () => {
     mockPullsGet.mockRejectedValueOnce(
       Object.assign(new Error("Bad credentials"), { status: 401 })
     );
 
-    const result = await getSinglePullRequestWithUserTokenProviderResult(
-      "user-token-1",
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -276,15 +262,15 @@ describe("getSinglePullRequest", () => {
     });
   });
 
-  it("classifies non-rate-limit user OAuth 403 responses as insufficient scope", async () => {
+  it("classifies non-rate-limit 403 responses as insufficient scope", async () => {
     mockPullsGet.mockRejectedValueOnce(
       Object.assign(new Error("Resource not accessible by token"), {
         status: 403,
       })
     );
 
-    const result = await getSinglePullRequestWithUserTokenProviderResult(
-      "user-token-1",
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
       OWNER,
       REPO,
       PULL_NUMBER
@@ -292,6 +278,39 @@ describe("getSinglePullRequest", () => {
 
     expect(result).toEqual({
       status: GitHubUserTokenProviderResultStatus.CredentialInsufficientScope,
+    });
+  });
+
+  it("classifies rate-limited 403 responses as provider rate limits, not scope faults", async () => {
+    mockPullsGet.mockRejectedValueOnce(
+      Object.assign(new Error("API rate limit exceeded"), { status: 403 })
+    );
+
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result).toEqual({
+      status: GitHubProviderResultStatus.ProviderRateLimit,
+      retryAfterSeconds: null,
+    });
+  });
+
+  it("returns provider_unavailable for other errors", async () => {
+    mockPullsGet.mockRejectedValueOnce(new Error("Network timeout"));
+
+    const result = await getSinglePullRequestWithProviderResult(
+      octokit,
+      OWNER,
+      REPO,
+      PULL_NUMBER
+    );
+
+    expect(result).toEqual({
+      status: GitHubProviderResultStatus.ProviderUnavailable,
     });
   });
 });

@@ -164,11 +164,15 @@ export type CreateCatalogItemRequest = {
 /**
  * Response for the Pack import endpoints (`POST /catalog/{id}/import-zip` and
  * `POST /catalog/{id}/import-repo`) — how many child components were created vs
- * skipped (already present).
+ * skipped (already present) vs dropped as invalid (failed create-path
+ * validation). Both routes and the shared import service are typed on this one
+ * shape so the wire contract can't drift from what the server returns.
  */
 export type ImportPackZipResponse = {
   created: number;
   skipped: number;
+  /** Recognized entries dropped because they failed create-path validation. */
+  invalid: number;
 };
 
 /**
@@ -263,6 +267,18 @@ export type DistributionDto = {
    * `auto_install`.
    */
   assetDownloadUrl: string | null;
+  /**
+   * ISS-5123: when set, the org has WITHDRAWN this distribution — the pack is no
+   * longer offered to or installable by the organization. Withdrawn
+   * distributions are excluded from every live read (`GET /distributions` and
+   * the desktop assigned-target poll), so in practice a client sees a non-null
+   * value only on the single-distribution detail read.
+   *
+   * Optional so the field degrades safely under version skew: an older API omits
+   * it entirely and an older client ignores it, and in both directions "absent"
+   * means the same thing as `null` — not withdrawn.
+   */
+  withdrawnAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };

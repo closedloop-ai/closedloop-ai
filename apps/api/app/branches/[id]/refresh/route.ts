@@ -1,6 +1,7 @@
 import type { BranchRefreshResponse } from "@repo/api/src/types/branch";
 import { BranchRefreshReason } from "@repo/api/src/types/branch";
 import { branchReadService } from "@/app/branches/branch-read-service";
+import { branchTagPermissionsForAuth } from "@/app/branches/branch-tag-projection";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
   errorResponse,
@@ -12,13 +13,18 @@ export const POST = withAnyAuth<
   BranchRefreshResponse,
   "/branches/[id]/refresh"
 >(
-  async ({ user, authMethod }, _, params) => {
+  async (authContext, _, params) => {
+    const { user, authMethod } = authContext;
     try {
       const { id } = await params;
       const response = await branchReadService.refreshBranch(
         user.organizationId,
         id,
-        { userId: user.id, authMethod }
+        {
+          userId: user.id,
+          authMethod,
+          tagPermissions: branchTagPermissionsForAuth(authContext),
+        }
       );
       if (response.reason === BranchRefreshReason.NotFound) {
         return notFoundResponse("Branch");

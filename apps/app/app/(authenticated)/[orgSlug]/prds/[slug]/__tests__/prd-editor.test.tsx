@@ -18,7 +18,7 @@ vi.mock("@/hooks/document-editing/use-prd-actions", () => ({
   usePrdActions: () => mockUsePrdActions(),
 }));
 
-vi.mock("@/components/document-editor/document-editor-scaffold", () => ({
+vi.mock("@repo/app/documents/components/document-editor-scaffold", () => ({
   DocumentEditorScaffold: ({
     floatingChildren,
   }: {
@@ -66,10 +66,6 @@ vi.mock("@/components/document-editor/evaluation-section", () => ({
   EvaluationSection: () => null,
 }));
 
-vi.mock("@repo/app/documents/components/generation-status-banner", () => ({
-  GenerationStatusBanner: () => null,
-}));
-
 vi.mock("@repo/app/judges-analytics/hooks/use-judges", () => ({
   usePrdJudgesFeedback: () => ({ data: null }),
 }));
@@ -88,10 +84,6 @@ vi.mock("@repo/app/documents/hooks/use-prd-modals", () => ({
 }));
 
 vi.mock("@repo/app/documents/hooks/use-documents", () => ({
-  useDismissDocumentGenerationStatus: () => ({
-    isPending: false,
-    mutate: vi.fn(),
-  }),
   useDocumentGenerationStatus: () => ({
     data: null,
     invalidateCache: vi.fn(),
@@ -183,7 +175,6 @@ function createDocument() {
     sortOrder: null,
     templateForType: null,
     title: "Test PRD",
-    tokenUsage: null,
     type: DocumentType.Prd,
     updatedAt: new Date("2026-01-01T00:00:00.000Z"),
     version: {

@@ -27,14 +27,14 @@ export type SigningTarget = Pick<
 >;
 
 /** Relay request fields included in the canonical user-intent signature. */
-export type SignableRelayRequest = {
+type SignableRelayRequest = {
   method: string;
   pathWithQuery: string;
   body: JsonValue | undefined;
 };
 
 /** Signed command envelope forwarded through app relay routes to Desktop/API. */
-export type SignedDesktopCommand = CommandSignatureFields & {
+type SignedDesktopCommand = CommandSignatureFields & {
   commandId: BrowserSignedCommandId;
   path: string;
   query?: Record<string, string | string[]>;
@@ -148,7 +148,7 @@ export function resolveSignedDesktopRequest(
 }
 
 /** Serializes signature payload fields with stable key ordering. */
-export function canonicalizeCommandSignaturePayload(
+function canonicalizeCommandSignaturePayload(
   payload: CanonicalPayload
 ): string {
   return stableStringify(payload);

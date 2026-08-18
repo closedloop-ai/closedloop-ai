@@ -25,13 +25,17 @@ describe("RootErrorBoundary", () => {
       expect.any(Error),
       expect.stringContaining("ThrowingChild")
     );
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      "Desktop renderer error boundary caught an error",
-      expect.any(Error),
-      {
-        componentStack: expect.stringContaining("ThrowingChild"),
-      }
-    );
+    // FEA-4111 removed the boundary's own console line — React already prints a
+    // caught render error, and a second copy never reached the aggregator. The
+    // spy is still installed because React's own logging goes through it; assert
+    // only that the boundary contributes no message of its own.
+    expect(
+      consoleErrorSpy.mock.calls
+        .flat()
+        .some((argument) =>
+          String(argument).includes("Desktop renderer error boundary")
+        )
+    ).toBe(false);
   });
 });
 

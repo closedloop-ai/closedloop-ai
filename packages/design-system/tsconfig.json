@@ -1,12 +1,12 @@
 {
   "extends": "@repo/typescript-config/react-library.json",
   "compilerOptions": {
-    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "paths": {
       "@repo/*": ["../*"],
       "@closedloop-ai/design-system/*": ["./*"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["figma/**/*.figma.tsx", "node_modules"]
+  "exclude": ["node_modules", "dist"]
 }

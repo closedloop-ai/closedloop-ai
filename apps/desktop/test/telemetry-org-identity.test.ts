@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   createTelemetryOrgProvider,
   type TelemetryOrgApiKeyReader,
-} from "../src/main/telemetry-org-identity.js";
+} from "../src/main/telemetry/telemetry-org-identity.js";
 
 const API_ORIGIN = "https://api.example.test";
 

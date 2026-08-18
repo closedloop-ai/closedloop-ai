@@ -6,9 +6,7 @@ import {
   BranchViewCommentActionResultCode,
   BranchViewCommentWriteIdentityStatus,
   CommentKind,
-  FileChangeStatus,
   GitHubDiffSide,
-  PRReviewCommentState,
   PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
 import { toast } from "@repo/design-system/components/ui/sonner";
@@ -22,10 +20,15 @@ import type {
 } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ReviewFindingPriority } from "@/lib/engineer/review-finding-priority";
-import type { BranchViewFileDiff } from "../../types";
-import { type ChangedFileEntry, FileSection } from "../../types";
+import type { ChangedFileEntry } from "../../types";
 import { BranchDiffView } from "../branch-diff-view";
 import { BranchViewCommentIdentityBlockerProvider } from "../branch-view-comment-identity-blocker-store";
+import {
+  diff,
+  makeEntry,
+  makeInlineComment,
+  makeLocalEntry,
+} from "./branch-diff-view-fixtures";
 import { buildCommentBody } from "./review-comment-body-fixture";
 
 const diffViewerMockState = vi.hoisted(() => ({
@@ -263,73 +266,6 @@ vi.mock("react-diff-viewer-continued", () => ({
   DiffMethod: { WORDS: "WORDS" },
   LineNumberPrefix: { LEFT: "L", RIGHT: "R" },
 }));
-
-function makeEntry(path: string): ChangedFileEntry {
-  return {
-    file: {
-      additions: 3,
-      deletions: 1,
-      path,
-      previousPath: null,
-      status: FileChangeStatus.Modified,
-    },
-    fileId: `committed:${path}`,
-    section: FileSection.Committed,
-  };
-}
-
-function makeLocalEntry(path: string): ChangedFileEntry {
-  return {
-    file: {
-      additions: 3,
-      deletions: 1,
-      path,
-      previousPath: null,
-      status: FileChangeStatus.Modified,
-    },
-    fileId: `local:${path}`,
-    section: FileSection.Local,
-  };
-}
-
-function makeInlineComment(
-  overrides: Partial<BranchViewComment> = {}
-): BranchViewComment {
-  return {
-    author: "reviewer-user",
-    authorAvatar: null,
-    authorKind: PrCommentAuthorKind.User,
-    body: "Inline comment body",
-    createdAt: "2026-05-22T12:00:00.000Z",
-    githubCommentId: "9001",
-    htmlUrl: "https://github.com/acme/repo/pull/1#discussion_r9001",
-    id: "comment-9001",
-    inReplyToId: null,
-    kind: CommentKind.ReviewComment,
-    line: 2,
-    path: "src/app.tsx",
-    reviewId: "review-1",
-    side: GitHubDiffSide.Right,
-    state: PRReviewCommentState.Pending,
-    ...overrides,
-  };
-}
-
-function diff(overrides: Partial<BranchViewFileDiff> = {}) {
-  return {
-    data: {
-      isBinary: false,
-      isDeleted: false,
-      isNew: false,
-      newContent: ["one", "two", "three"].join("\n"),
-      oldContent: ["one", "old", "three"].join("\n"),
-      path: "src/app.tsx",
-      ...overrides,
-    },
-    error: null,
-    isLoading: false,
-  };
-}
 
 function renderDiffView(props: {
   allFiles?: ChangedFileEntry[];
@@ -891,6 +827,20 @@ describe("BranchDiffView target line navigation", () => {
       },
       expect.objectContaining({ onSuccess: expect.any(Function) })
     );
+  });
+
+  test("pins the inline-comment gutter cell to top alignment inline so react-diff-viewer-continued 4.4.0's unlayered `.diffContainer td { vertical-align: baseline }` reset cannot drop the gutter to the diff-row baseline", () => {
+    renderDiffView({ canCreateInlineComment: true });
+
+    const gutter = screen.getByTestId(
+      `inline-gutter-${GitHubDiffSide.Right}-1`
+    );
+
+    // The Tailwind `align-top` utility is layered and would lose to the
+    // library's unlayered `& td` baseline reset; the inline style is what keeps
+    // the gutter row-top aligned regardless of cascade layering.
+    expect(gutter).toHaveStyle({ verticalAlign: "top" });
+    expect(gutter).toHaveClass("align-top");
   });
 
   test("cancelling the inline composer clears the line selection", () => {

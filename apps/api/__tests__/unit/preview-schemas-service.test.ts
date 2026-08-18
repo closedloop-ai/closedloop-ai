@@ -16,13 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Mocks — must be declared before imports
 // ---------------------------------------------------------------------------
 
-const { mockWithDb, mockListAllBranchNames } = vi.hoisted(() => ({
+const { mockWithDb, mockWithDbTx, mockListAllBranchNames } = vi.hoisted(() => ({
   mockWithDb: vi.fn(),
+  mockWithDbTx: vi.fn(),
   mockListAllBranchNames: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
-  withDb: Object.assign(mockWithDb, { tx: vi.fn() }),
+  withDb: Object.assign(mockWithDb, { tx: mockWithDbTx }),
   Prisma: {
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
       strings,
@@ -51,161 +52,30 @@ import { normalizePreviewSchemaName } from "@repo/database/schema-utils";
 import { deriveBranchSchemaName } from "@repo/database/scripts/cleanup-preview-schemas-lib";
 import { log } from "@repo/observability/log";
 import { previewSchemaCleanupService } from "@/app/preview-schemas/service";
+import { createPreviewSchemaMocks, readSqlText } from "./preview-schemas-mocks";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Sets up mockWithDb to return a list of schema names from listPreviewSchemas().
- * listPreviewSchemas calls: withDb(db => db.$queryRaw<{nspname}[]>(...))
- */
-function mockListSchemas(names: string[]): void {
-  mockQueryRawRowsOnce(names.map((nspname) => ({ nspname })));
-}
-
-function mockQueryRawOnce<T>(row: T | null): void {
-  mockQueryRawRowsOnce(row ? [row] : []);
-}
-
-function mockQueryRawRowsOnce<T>(rows: T[]): void {
-  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
-    fn({
-      $queryRaw: vi.fn().mockResolvedValue(rows),
-    })
-  );
-}
-
-function mockExecuteRawOnce(
-  result: number,
-  onQuery?: (query: unknown) => void
-): void {
-  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
-    fn({
-      $executeRaw: vi.fn((query: unknown) => {
-        onQuery?.(query);
-        return Promise.resolve(result);
-      }),
-    })
-  );
-}
-
-function mockExecuteRawUnsafeOnce(result: number): void {
-  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
-    fn({
-      $executeRawUnsafe: vi.fn().mockResolvedValue(result),
-    })
-  );
-}
-
-function mockExecuteRawFailure(message: string): void {
-  mockWithDb.mockImplementationOnce((fn: (db: unknown) => unknown) =>
-    fn({
-      $executeRaw: vi.fn().mockRejectedValue(new Error(message)),
-    })
-  );
-}
-
-/**
- * Sets up mockWithDb to return a registry row result for readRegistryRow().
- * readRegistryRow calls: withDb(db => db.$queryRaw<{last_seen_at}[]>(...))
- */
-function mockRegistryRow(
-  row: { last_seen_at: string; branch?: string | null } | null
-): void {
-  mockQueryRawOnce(row);
-}
-
-/**
- * Sets up mockWithDb to throw SQLSTATE 42P01 (undefined_table) for readRegistryRow().
- */
-function mockRegistryTableMissing(): void {
-  mockWithDb.mockImplementationOnce((_fn: (db: unknown) => unknown) => {
-    const err = new Error("relation does not exist") as Error & {
-      code?: string;
-    };
-    err.code = "42P01";
-    return Promise.reject(err);
-  });
-}
-
-/**
- * Sets up mockWithDb to simulate the existence check in dropSchemaForBranch().
- * Checks pg_namespace: returns a row if the schema exists, empty array if absent.
- */
-function mockSchemaExists(schemaName: string, exists: boolean): void {
-  mockQueryRawRowsOnce(exists ? [{ nspname: schemaName }] : []);
-}
-
-/**
- * Sets up mockWithDb to simulate a successful executeDrop().
- * executeDrop calls: withDb(db => db.$executeRawUnsafe(...))
- */
-function mockDropSuccess(): void {
-  mockExecuteRawUnsafeOnce(0);
-}
-
-/**
- * Sets up mockWithDb to simulate a failed executeDrop().
- */
-function mockDropFailure(message: string): void {
-  mockWithDb.mockImplementationOnce((_fn: (db: unknown) => unknown) =>
-    Promise.reject(new Error(message))
-  );
-}
-
-/**
- * Configures mockListAllBranchNames to resolve with the given branch list.
- */
-function mockGitHubBranches(branches: string[]): void {
-  mockListAllBranchNames.mockResolvedValueOnce(branches);
-}
-
-/**
- * Configures mockListAllBranchNames to reject (simulates GitHub API failure).
- */
-function mockGitHubBranchesFailure(message: string): void {
-  mockListAllBranchNames.mockRejectedValueOnce(new Error(message));
-}
-
-/**
- * Sets up mockWithDb to return an observation row for readObservation().
- * readObservation calls: withDb(db => db.$queryRaw<{first_observed_at}[]>(...))
- */
-function mockObservationRow(row: { first_observed_at: string } | null): void {
-  mockQueryRawOnce(row);
-}
-
-/**
- * Sets up mockWithDb to simulate a successful upsertObservation().
- * upsertObservation calls: withDb(db => db.$executeRaw(...))
- */
-function mockUpsertObservationSuccess(): void {
-  mockExecuteRawOnce(1);
-}
-
-/**
- * Sets up mockWithDb to simulate a successful cleanupStaleObservations().
- * cleanupStaleObservations calls: withDb(db => db.$executeRaw(...))
- */
-function mockCleanupStaleObservationsSuccess(
-  onQuery?: (query: unknown) => void
-): void {
-  mockExecuteRawOnce(0, onQuery);
-}
-
-function mockCleanupStaleObservationsFailure(message: string): void {
-  mockExecuteRawFailure(message);
-}
-
-/**
- * Sets up mockWithDb to throw an error for readObservation().
- */
-function mockObservationReadFailure(message: string): void {
-  mockWithDb.mockImplementationOnce((_fn: (db: unknown) => unknown) =>
-    Promise.reject(new Error(message))
-  );
-}
+const {
+  mockTransactionalDropOnce,
+  mockObservationsBatch,
+  mockOrphanDropSuccess,
+  mockUpsertObservationsBatch,
+  mockCleanupStaleObservationsFailure,
+  mockCleanupStaleObservationsSuccess,
+  mockDropFailure,
+  mockDropSuccess,
+  mockGitHubBranches,
+  mockGitHubBranchesFailure,
+  mockListSchemas,
+  mockObservationReadFailure,
+  mockObservationRow,
+  mockRegistryRow,
+  mockRegistryTableMissing,
+  mockSchemaExists,
+} = createPreviewSchemaMocks(mockWithDb, mockListAllBranchNames, mockWithDbTx);
 
 const TEST_BRANCH = "feat/cleanup-schemas";
 const TEST_SCHEMA = deriveBranchSchemaName(
@@ -220,28 +90,6 @@ const CLEANUP_REGISTRY_EXISTS_GUARD_SQL =
 const CLEANUP_REGISTRY_DELETE_SQL =
   /FROM\s+public\.preview_schemas\s+AS\s+registry/;
 
-type MockSql = {
-  strings: readonly string[];
-};
-
-function readSqlText(query: unknown): string {
-  if (!isMockSql(query)) {
-    return "";
-  }
-  return query.strings.join("");
-}
-
-function isMockSql(query: unknown): query is MockSql {
-  if (typeof query !== "object" || query === null) {
-    return false;
-  }
-  const candidate = query as { strings?: unknown };
-  return (
-    Array.isArray(candidate.strings) &&
-    candidate.strings.every((part) => typeof part === "string")
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -249,6 +97,12 @@ function isMockSql(query: unknown): query is MockSql {
 describe("previewSchemaCleanupService.runDailySweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drain any `mockImplementationOnce` queue the previous test did not
+    // consume — `clearAllMocks` clears call history but NOT queued
+    // implementations, so a leftover would be handed to the next test's first
+    // query and cascade failures across the file.
+    mockWithDb.mockReset();
+    mockWithDbTx.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -328,8 +182,8 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
 
     mockListSchemas([schemaName]);
     mockRegistryRow(null); // no registry row → orphaned
-    mockObservationRow(null); // first observation — no existing row
-    mockUpsertObservationSuccess(); // upsert observation
+    mockObservationsBatch([]); // first observation — no existing row
+    mockUpsertObservationsBatch(); // batched upsert
     mockCleanupStaleObservationsSuccess();
 
     const result = await previewSchemaCleanupService.runDailySweep(7);
@@ -338,7 +192,7 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
     expect(result.counters.orphan.dropped).toBe(0);
     expect(result.counters.orphan.kept).toBe(1);
 
-    // list (1) + readRegistry (1) + readObservation (1) + upsertObservation (1) + cleanup (1) = 5
+    // list (1) + readRegistry (1) + readObservations (1) + upsertObservations (1) + cleanup (1) = 5
     expect(mockWithDb).toHaveBeenCalledTimes(5);
   });
 
@@ -355,9 +209,11 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
 
     mockListSchemas([schemaName]);
     mockRegistryRow(null); // orphaned
-    mockObservationRow({ first_observed_at: firstObserved }); // already observed
-    mockUpsertObservationSuccess(); // upsert (idempotent)
-    mockDropSuccess(); // drop the schema
+    mockObservationsBatch([
+      { schema_name: schemaName, first_observed_at: firstObserved },
+    ]); // already observed
+    mockUpsertObservationsBatch(); // batched upsert (idempotent)
+    mockOrphanDropSuccess(); // re-verify still-unregistered, then drop
     mockCleanupStaleObservationsSuccess();
 
     const result = await previewSchemaCleanupService.runDailySweep(7);
@@ -380,8 +236,10 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
 
     mockListSchemas([schemaName]);
     mockRegistryRow(null); // orphaned
-    mockObservationRow({ first_observed_at: firstObserved }); // observed but in grace
-    mockUpsertObservationSuccess();
+    mockObservationsBatch([
+      { schema_name: schemaName, first_observed_at: firstObserved },
+    ]); // observed but in grace
+    mockUpsertObservationsBatch();
     mockCleanupStaleObservationsSuccess();
 
     const result = await previewSchemaCleanupService.runDailySweep(7);
@@ -404,9 +262,11 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
 
     mockListSchemas([schemaName]);
     mockRegistryTableMissing(); // 42P01 → registryTableMissing = true → orphaned
-    mockObservationRow({ first_observed_at: firstObserved });
-    mockUpsertObservationSuccess();
-    mockDropSuccess();
+    mockObservationsBatch([
+      { schema_name: schemaName, first_observed_at: firstObserved },
+    ]);
+    mockUpsertObservationsBatch();
+    mockOrphanDropSuccess();
     mockCleanupStaleObservationsSuccess((query) => {
       cleanupSql = readSqlText(query);
     });
@@ -465,9 +325,11 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
     mockRegistryRow({ last_seen_at: oldLastSeen }); // stale
     mockRegistryRow(null); // orphan (no row)
     mockDropSuccess(); // drop stale
-    mockObservationRow({ first_observed_at: firstObserved }); // orphan already observed, grace elapsed
-    mockUpsertObservationSuccess(); // upsert observation for orphan
-    mockDropSuccess(); // drop orphan (grace elapsed)
+    mockObservationsBatch([
+      { schema_name: orphan, first_observed_at: firstObserved },
+    ]); // orphan already observed, grace elapsed
+    mockUpsertObservationsBatch(); // batched upsert for orphans
+    mockOrphanDropSuccess(); // drop orphan (grace elapsed)
     mockCleanupStaleObservationsSuccess();
 
     const result = await previewSchemaCleanupService.runDailySweep(7);
@@ -528,6 +390,12 @@ describe("previewSchemaCleanupService.runDailySweep", () => {
 describe("previewSchemaCleanupService.runDailySweep — orphan error isolation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drain any `mockImplementationOnce` queue the previous test did not
+    // consume — `clearAllMocks` clears call history but NOT queued
+    // implementations, so a leftover would be handed to the next test's first
+    // query and cascade failures across the file.
+    mockWithDb.mockReset();
+    mockWithDbTx.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -535,33 +403,33 @@ describe("previewSchemaCleanupService.runDailySweep — orphan error isolation",
     vi.useRealTimers();
   });
 
-  it("counts observation read failure as orphan.errored while remaining orphans proceed", async () => {
+  it("counts every orphan as errored and drops none when the batched observation read fails", async () => {
+    // The grace-window bookkeeping is intentionally set-based (one read + one
+    // upsert for the whole batch) so it stays bounded after the DROP budget is
+    // spent. The trade-off is that a failure is batch-wide rather than
+    // per-orphan: no orphan's grace state is known, so none may be dropped, and
+    // every one is counted so the loss is visible rather than silent.
     vi.useFakeTimers();
     const now = new Date("2026-01-15T00:00:00.000Z");
     vi.setSystemTime(now);
 
-    const orphanFail = "preview_orphan_fail1111";
-    const orphanOk = "preview_orphan_ok222222";
-    const firstObserved = new Date(
-      now.getTime() - 49 * 60 * 60 * 1000
-    ).toISOString();
+    const orphanA = "preview_orphan_fail1111";
+    const orphanB = "preview_orphan_ok222222";
 
-    mockListSchemas([orphanFail, orphanOk]);
+    mockListSchemas([orphanA, orphanB]);
     // Both are orphaned (no registry row)
     mockRegistryRow(null);
     mockRegistryRow(null);
-    // First orphan: observation read fails
+    // The batched observation read fails, taking the whole orphan pass with it.
     mockObservationReadFailure("connection lost during observation read");
-    // Second orphan: observation read succeeds, grace elapsed → drop
-    mockObservationRow({ first_observed_at: firstObserved });
-    mockUpsertObservationSuccess();
-    mockDropSuccess();
     mockCleanupStaleObservationsSuccess();
 
     const result = await previewSchemaCleanupService.runDailySweep(7);
 
-    expect(result.counters.orphan.errored).toBe(1);
-    expect(result.counters.orphan.dropped).toBe(1);
+    expect(result.counters.orphan.errored).toBe(2);
+    expect(result.counters.orphan.dropped).toBe(0);
+    expect(result.counters.orphan.kept).toBe(0);
+    expect(mockWithDbTx).not.toHaveBeenCalled();
     expect(result.exitCode).toBe(1); // errored > 0
   });
 });
@@ -569,12 +437,20 @@ describe("previewSchemaCleanupService.runDailySweep — orphan error isolation",
 describe("previewSchemaCleanupService.dropSchemaForBranch", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drain any `mockImplementationOnce` queue the previous test did not
+    // consume — `clearAllMocks` clears call history but NOT queued
+    // implementations, so a leftover would be handed to the next test's first
+    // query and cascade failures across the file.
+    mockWithDb.mockReset();
+    mockWithDbTx.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
   it("drops schema and returns dropped=true when schema exists", async () => {
     mockSchemaExists(TEST_SCHEMA, true);
-    mockDropSuccess();
+    // dropSchemaForBranch drops directly; it does not run the sweep's
+    // re-verification read, so only the transactional DROP is queued.
+    mockTransactionalDropOnce();
 
     const result =
       await previewSchemaCleanupService.dropSchemaForBranch(TEST_BRANCH);
@@ -584,8 +460,11 @@ describe("previewSchemaCleanupService.dropSchemaForBranch", () => {
     expect(result.alreadyGone).toBe(false);
     expect(result.error).toBeNull();
 
-    // existence check (1) + executeDrop (1) = 2 calls
-    expect(mockWithDb).toHaveBeenCalledTimes(2);
+    // The DROP moved into a transaction (for its SET LOCAL timeouts), so only
+    // the existence check goes through plain withDb.
+    expect(mockWithDbTx).toHaveBeenCalledTimes(1);
+    // existence check (1) = 1 call
+    expect(mockWithDb).toHaveBeenCalledTimes(1);
   });
 
   it("returns alreadyGone=true and does not call DROP when schema does not exist", async () => {
@@ -634,6 +513,12 @@ describe("previewSchemaCleanupService.dropSchemaForBranch", () => {
 
     for (const branch of branches) {
       vi.clearAllMocks();
+      // Drain any `mockImplementationOnce` queue the previous test did not
+      // consume — `clearAllMocks` clears call history but NOT queued
+      // implementations, so a leftover would be handed to the next test's first
+      // query and cascade failures across the file.
+      mockWithDb.mockReset();
+      mockWithDbTx.mockReset();
       const derived = deriveBranchSchemaName(
         branch,
         normalizePreviewSchemaName
@@ -665,6 +550,12 @@ describe("previewSchemaCleanupService.dropSchemaForBranch", () => {
 describe("previewSchemaCleanupService.runDryRun", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drain any `mockImplementationOnce` queue the previous test did not
+    // consume — `clearAllMocks` clears call history but NOT queued
+    // implementations, so a leftover would be handed to the next test's first
+    // query and cascade failures across the file.
+    mockWithDb.mockReset();
+    mockWithDbTx.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
   });
 
@@ -975,6 +866,12 @@ describe("previewSchemaCleanupService.runDryRun", () => {
 describe("previewSchemaCleanupService — branch-aware sweep (partitionDecisionsWithBranch / fetchLiveBranches)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Drain any `mockImplementationOnce` queue the previous test did not
+    // consume — `clearAllMocks` clears call history but NOT queued
+    // implementations, so a leftover would be handed to the next test's first
+    // query and cascade failures across the file.
+    mockWithDb.mockReset();
+    mockWithDbTx.mockReset();
     mockListAllBranchNames.mockResolvedValue(["main"]);
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-15T00:00:00.000Z"));
@@ -1169,7 +1066,12 @@ describe("previewSchemaCleanupService — branch-aware sweep (partitionDecisions
 
     expect(result.exitCode).toBe(0);
     expect(result.counters["orphan-branch"].dropped).toBe(0);
-    expect(result.counters["ttl-expired"].kept).toBe(12);
+    // The 7 withheld candidates are attributed to the bucket that refused them,
+    // not folded into `ttl-expired.kept` with the 5 genuinely-live schemas
+    // (ISS-5343). Before that, a refused pass reported an all-zero
+    // `orphan-branch` line and was indistinguishable from having nothing to do.
+    expect(result.counters["orphan-branch"].kept).toBe(7);
+    expect(result.counters["ttl-expired"].kept).toBe(5);
     expect(mockWithDb).toHaveBeenCalledTimes(14);
     expect(log.warn).toHaveBeenCalledWith(
       "[preview-schema-cleanup] Skipping branch-aware pass: orphan-branch candidates exceed mass-drop cap",

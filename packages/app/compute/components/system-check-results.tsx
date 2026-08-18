@@ -2,7 +2,10 @@
 
 import {
   type CheckResult,
+  CheckSeverity,
+  isIndeterminateCheckSeverity,
   PluginUpdateOutcome,
+  resolveCheckSeverity,
 } from "@closedloop-ai/loops-api/compute-target";
 import {
   Tooltip,
@@ -10,8 +13,19 @@ import {
   TooltipTrigger,
 } from "@repo/design-system/components/ui/tooltip";
 import { cn } from "@repo/design-system/lib/utils";
-import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  CircleDashed,
+  Info,
+  Loader2,
+  XCircle,
+} from "lucide-react";
 import { type MouseEvent, type ReactNode, useEffect } from "react";
+import {
+  SystemCheckStatusBadge,
+  SystemCheckStatusTone,
+} from "./system-check-status-badge";
 
 type CheckCategoryId = "cli" | "plugins" | "apps" | "config" | "mcp" | "other";
 
@@ -45,6 +59,17 @@ export type SystemCheckResultsRemediationClick =
   SystemCheckResultsRemediationView & {
     linkUrl: string;
   };
+
+/**
+ * The one neutral surface tone the System Check panel uses.
+ *
+ * Three surfaces in a single dialog had drifted to three different alphas
+ * (`bg-background/55`, `bg-muted/30`, `bg-muted/40`), which reads as three
+ * different kinds of thing rather than one panel. Exported so
+ * `HealthCheckDialog`'s guidance blocks stay on the same value instead of
+ * re-declaring their own.
+ */
+export const SYSTEM_CHECK_NEUTRAL_SURFACE_CLASS = "border-border bg-muted/40";
 
 const CHECK_CATEGORIES: CheckCategory[] = [
   { id: "cli", label: "CLI" },
@@ -288,8 +313,18 @@ function SystemCheckCategoryCard({
     payload: SystemCheckResultsRemediationClick
   ) => void;
 }>) {
+  const sharedRemediation = getSharedIndeterminateRemediation(
+    group.checks,
+    visibleCount
+  );
+
   return (
-    <section className="rounded-md border bg-background/55 p-3 shadow-sm">
+    <section
+      className={cn(
+        "rounded-md border p-3 shadow-sm",
+        SYSTEM_CHECK_NEUTRAL_SURFACE_CLASS
+      )}
+    >
       <div className="mb-2 flex items-center gap-2">
         <h5 className="font-medium text-foreground text-sm">{group.label}</h5>
       </div>
@@ -302,18 +337,62 @@ function SystemCheckCategoryCard({
             onStructuredRemediationViewed={onStructuredRemediationViewed}
             pluginAutoUpdateEnabled={pluginAutoUpdateEnabled}
             revealed={visibleCount > displayIndex}
+            sharedRemediation={sharedRemediation}
             targetKind={targetKind}
           />
         ))}
       </div>
+      {sharedRemediation && (
+        <SystemCheckRemediationNote
+          className="mt-2"
+          data-system-check-shared-remediation="true"
+          severity={CheckSeverity.Blocked}
+          toneClassName={SYSTEM_CHECK_NEUTRAL_SURFACE_CLASS}
+        >
+          {renderRemediationText(sharedRemediation)}
+        </SystemCheckRemediationNote>
+      )}
     </section>
   );
+}
+
+/**
+ * The remediation text shared by two or more revealed, indeterminate rows in
+ * this category.
+ *
+ * One unresolvable Claude binary marks all five plugin rows `blocked` with the
+ * identical "fix the Claude CLI check first" sentence. Stacking five identical
+ * boxes under five rows that already read "Not checked" is noise, not
+ * information, so the card says it once instead.
+ */
+function getSharedIndeterminateRemediation(
+  checks: IndexedCheck[],
+  visibleCount: number
+): string | undefined {
+  const counts = new Map<string, number>();
+  for (const { check, displayIndex } of checks) {
+    const revealed = visibleCount > displayIndex;
+    const indeterminate = isIndeterminateCheckSeverity(
+      resolveCheckSeverity(check)
+    );
+    if (revealed && indeterminate && check.remediation) {
+      counts.set(check.remediation, (counts.get(check.remediation) ?? 0) + 1);
+    }
+  }
+
+  for (const [remediation, count] of counts) {
+    if (count > 1) {
+      return remediation;
+    }
+  }
+  return undefined;
 }
 
 function SystemCheckRow({
   check,
   pluginAutoUpdateEnabled,
   revealed,
+  sharedRemediation,
   targetKind,
   onStructuredRemediationViewed,
   onStructuredRemediationLinkClick,
@@ -321,6 +400,7 @@ function SystemCheckRow({
   check: CheckResult;
   pluginAutoUpdateEnabled: boolean;
   revealed: boolean;
+  sharedRemediation?: string;
   targetKind: SystemCheckResultsTargetKind;
   onStructuredRemediationViewed?: (
     payload: SystemCheckResultsRemediationView
@@ -329,12 +409,24 @@ function SystemCheckRow({
     payload: SystemCheckResultsRemediationClick
   ) => void;
 }>) {
-  const isAdvisory = check.passed && Boolean(check.error);
+  const severity = resolveCheckSeverity(check);
   const value = getSystemCheckValue(check);
   const updateStatus = getPluginUpdateStatus(check, pluginAutoUpdateEnabled);
   const enableStatus = getPluginEnableStatus(check);
+  // A remediation the whole card already states once is not repeated per row.
+  const hoistedToCard =
+    sharedRemediation !== undefined && check.remediation === sharedRemediation;
   const showRemediation =
-    (check.error || !check.passed) && Boolean(check.remediation);
+    severity !== CheckSeverity.Passed &&
+    !hoistedToCard &&
+    Boolean(check.remediation);
+  // The gateway's own reason this failing row is beyond Repair, shown on the row
+  // it describes rather than in a list above the results (ISS-5389). Passing
+  // rows and repairable rows carry nothing here.
+  const blockedReason =
+    !check.passed && check.repair?.repairable === false
+      ? check.repair.reason
+      : undefined;
   const remediationLinks = check.remediationLinks ?? [];
   const showStructuredLinks =
     revealed &&
@@ -377,45 +469,77 @@ function SystemCheckRow({
   return (
     <div className="fade-in slide-in-from-left-3 animate-in space-y-0.5 duration-300">
       <div className="flex min-w-0 items-center gap-2 text-sm">
-        <SystemCheckIcon
-          advisory={isAdvisory}
-          passed={check.passed}
-          required={check.required}
-        />
+        <SystemCheckIcon required={check.required} severity={severity} />
         <span className="min-w-0 flex-1 truncate">{check.label}</span>
         {enableStatus}
         {updateStatus}
         {value}
-        {check.passed && !check.version && !check.error && (
-          <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />
-        )}
       </div>
       {showRemediation && (
-        <p className="mt-1 ml-6 rounded border border-destructive/20 bg-destructive/10 px-2 py-1 text-xs">
-          <span className="text-foreground/80">
-            {showStructuredLinks ? (
-              <span className="mb-1 block">
-                {remediationLinks.map((link) => (
-                  <a
-                    className="font-medium text-primary underline underline-offset-2"
-                    href={link.url}
-                    key={link.url}
-                    onClick={handleRemediationLinkClick}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {link.label}
-                  </a>
-                ))}
-              </span>
-            ) : null}
-            <span className="select-all text-[11px]">
-              {renderRemediationText(check.remediation ?? "")}
+        <SystemCheckRemediationNote
+          className="mt-1 ml-6"
+          severity={severity}
+          toneClassName={getRemediationToneClassName(severity, check.required)}
+        >
+          {showStructuredLinks ? (
+            <span className="mb-1 block">
+              {remediationLinks.map((link) => (
+                <a
+                  className="font-medium text-primary underline underline-offset-2"
+                  href={link.url}
+                  key={link.url}
+                  onClick={handleRemediationLinkClick}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {link.label}
+                </a>
+              ))}
             </span>
-          </span>
+          ) : null}
+          {renderRemediationText(check.remediation ?? "")}
+        </SystemCheckRemediationNote>
+      )}
+      {blockedReason && (
+        <p className="mt-1 ml-6 flex items-start gap-1.5 text-muted-foreground text-xs">
+          <Info aria-hidden="true" className="mt-0.5 size-3 shrink-0" />
+          <span>{blockedReason}</span>
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * The one remediation-note treatment, used both per row and once per card when
+ * several blocked rows share a single fix. Keeping it in one place is what
+ * stops the row copy and the card copy drifting into two different boxes.
+ */
+function SystemCheckRemediationNote({
+  children,
+  className,
+  severity,
+  toneClassName,
+  ...rest
+}: Readonly<{
+  children: ReactNode;
+  className?: string;
+  severity: CheckSeverity;
+  toneClassName: string;
+}> &
+  Readonly<Record<`data-${string}`, string>>) {
+  return (
+    <p
+      className={cn(
+        "rounded border px-2 py-1 text-xs",
+        toneClassName,
+        className
+      )}
+      data-check-severity={severity}
+      {...rest}
+    >
+      <span className="select-all text-foreground/80">{children}</span>
+    </p>
   );
 }
 
@@ -427,13 +551,28 @@ function getPluginUpdateStatus(
     return null;
   }
   if (check.updateOutcome === "success") {
-    return <SystemCheckStatusBadge label="Updated" tone="success" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Updated"
+        tone={SystemCheckStatusTone.Success}
+      />
+    );
   }
   if (check.updateOutcome === "timeout") {
-    return <SystemCheckStatusBadge label="Update timed out" tone="warning" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Update timed out"
+        tone={SystemCheckStatusTone.Warning}
+      />
+    );
   }
   if (check.updateOutcome === "failed" || check.updateOutcome === "skipped") {
-    return <SystemCheckStatusBadge label="Update failed" tone="danger" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Update failed"
+        tone={SystemCheckStatusTone.Danger}
+      />
+    );
   }
   return null;
 }
@@ -443,39 +582,33 @@ function getPluginEnableStatus(check: CheckResult): ReactNode {
     return null;
   }
   if (check.enableOutcome === PluginUpdateOutcome.Success) {
-    return <SystemCheckStatusBadge label="Enabled" tone="success" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Enabled"
+        tone={SystemCheckStatusTone.Success}
+      />
+    );
   }
   if (check.enableOutcome === PluginUpdateOutcome.Timeout) {
-    return <SystemCheckStatusBadge label="Enable timed out" tone="warning" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Enable timed out"
+        tone={SystemCheckStatusTone.Warning}
+      />
+    );
   }
   if (
     check.enableOutcome === PluginUpdateOutcome.Failed ||
     check.enableOutcome === PluginUpdateOutcome.Skipped
   ) {
-    return <SystemCheckStatusBadge label="Setup required" tone="danger" />;
+    return (
+      <SystemCheckStatusBadge
+        label="Setup required"
+        tone={SystemCheckStatusTone.Danger}
+      />
+    );
   }
   return null;
-}
-
-function SystemCheckStatusBadge({
-  label,
-  tone,
-}: Readonly<{ label: string; tone: "success" | "warning" | "danger" }>) {
-  return (
-    <span
-      className={cn(
-        "shrink-0 rounded border px-1.5 py-0.5 font-medium text-[10px]",
-        tone === "success" &&
-          "border-emerald-500/30 bg-emerald-500/10 text-emerald-700",
-        tone === "warning" &&
-          "border-amber-500/30 bg-amber-500/10 text-amber-700",
-        tone === "danger" &&
-          "border-destructive/30 bg-destructive/10 text-destructive"
-      )}
-    >
-      {label}
-    </span>
-  );
 }
 
 function renderRemediationText(remediation: string): ReactNode[] {
@@ -536,21 +669,45 @@ function SystemCheckValue({
   );
 }
 
+/**
+ * A blocked or unknown row is NOT a failure — it is a check that could not be
+ * determined. Rendering it with the destructive failure mark is what let one
+ * stale binary-path override read as six broken plugins (ISS-5369), so those
+ * two severities get a neutral mark and never the red X.
+ */
 function SystemCheckIcon({
-  advisory,
-  passed,
   required,
-}: Readonly<{ advisory: boolean; passed: boolean; required: boolean }>) {
-  if (advisory) {
-    return <AlertTriangle className="size-4 shrink-0 text-amber-500" />;
+  severity,
+}: Readonly<{ required: boolean; severity: CheckSeverity }>) {
+  if (isIndeterminateCheckSeverity(severity)) {
+    return <CircleDashed className="size-4 shrink-0 text-muted-foreground" />;
   }
-  if (passed) {
-    return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
+  if (severity === CheckSeverity.Passed) {
+    return <CheckCircle2 className="size-4 shrink-0 text-success" />;
   }
-  if (required) {
+  if (severity === CheckSeverity.Error && required) {
     return <XCircle className="size-4 shrink-0 text-destructive" />;
   }
-  return <AlertTriangle className="size-4 shrink-0 text-amber-500" />;
+  return <AlertTriangle className="size-4 shrink-0 text-warning-foreground" />;
+}
+
+/**
+ * Tone must read `required` alongside `severity`, exactly as `SystemCheckIcon`
+ * does. An optional failure (Codex CLI not installed) carries
+ * `severity: "error"` too, and toning its remediation destructive told the user
+ * something was broken that never blocked them.
+ */
+function getRemediationToneClassName(
+  severity: CheckSeverity,
+  required: boolean
+): string {
+  if (isIndeterminateCheckSeverity(severity)) {
+    return SYSTEM_CHECK_NEUTRAL_SURFACE_CLASS;
+  }
+  if (severity === CheckSeverity.Error && required) {
+    return "border-destructive/20 bg-destructive/10";
+  }
+  return "border-warning/30 bg-warning/10";
 }
 
 function SystemCheckRowSkeleton() {
@@ -564,7 +721,12 @@ function SystemCheckRowSkeleton() {
 
 function SystemCheckCategorySkeleton() {
   return (
-    <div className="rounded-md border bg-background/55 p-3 shadow-sm">
+    <div
+      className={cn(
+        "rounded-md border p-3 shadow-sm",
+        SYSTEM_CHECK_NEUTRAL_SURFACE_CLASS
+      )}
+    >
       <div className="mb-2 flex items-center gap-2">
         <div className="h-4 w-16 animate-pulse rounded bg-muted" />
       </div>

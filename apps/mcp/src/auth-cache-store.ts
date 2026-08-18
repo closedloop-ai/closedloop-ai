@@ -33,6 +33,7 @@ type AuthCacheStore = {
   set(sessionId: string, auth: SerializedMcpAuth, ttlMs: number): Promise<void>;
   delete(sessionId: string): Promise<void>;
   touch(sessionId: string, ttlMs: number): Promise<void>;
+  close?(): Promise<void>;
 };
 
 class RedisAuthCacheStore implements AuthCacheStore {
@@ -110,6 +111,10 @@ class RedisAuthCacheStore implements AuthCacheStore {
     } catch {
       // Fire-and-forget TTL refresh
     }
+  }
+
+  async close(): Promise<void> {
+    await this.redis.quit();
   }
 }
 

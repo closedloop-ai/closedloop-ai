@@ -2,27 +2,27 @@ import fs from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import type { ApiKeyProvenance } from "../main/api-key-store.js";
-import type { DesktopPopSigner } from "../main/desktop-pop.js";
-import type { DesktopPopUnavailableReporter } from "../main/desktop-pop-sign-utils.js";
-import { gatewayLog } from "../main/gateway-logger.js";
-import type { JobStore } from "../main/job-store.js";
-import type { LocalSessionStore } from "../main/local-session-store.js";
-import type { LoopCompletedHook } from "../main/loop-finalizer.js";
-import { LoopSchedulerContext } from "../main/loop-scheduler-context.js";
-import type { LoopTokenStore } from "../main/loop-token-store.js";
+import type { DesktopPopSigner } from "../main/auth/desktop-pop.js";
+import type { DesktopPopUnavailableReporter } from "../main/auth/desktop-pop-sign-utils.js";
+import type { LocalSessionStore } from "../main/auth/local-session-store.js";
+import type { JobStore } from "../main/jobs/job-store.js";
+import { gatewayLog } from "../main/logging/gateway-logger.js";
+import type { LoopCompletedHook } from "../main/loop/loop-finalizer.js";
+import { LoopSchedulerContext } from "../main/loop/loop-scheduler-context.js";
+import type { LoopTokenStore } from "../main/loop/loop-token-store.js";
+import type { ApiKeyProvenance } from "../main/settings/api-key-store.js";
 import {
   getOtlpReceiverState,
   toClaudeCodeOtelReceiverStatus,
-} from "../main/otlp-receiver-state.js";
-import type { RetrySpawnDeps } from "../main/spawn-retry.js";
+} from "../main/telemetry/otlp-receiver-state.js";
+import type { RetrySpawnDeps } from "../main/util/spawn-retry.js";
 import {
   type ComputeTargetCapabilities,
   DEFAULT_GATEWAY_PORT,
   FALLBACK_GATEWAY_PORTS,
   type HealthResponse,
 } from "../shared/contracts.js";
-import type { BranchPrIdentityResolver } from "./operations/git-pr.js";
+import type { MemberPackInstaller } from "./operations/member-pack-install.js";
 import type { WorktreeProvider } from "./operations/symphony-loop.js";
 import {
   type DesktopSecurityUpgradePayload,
@@ -109,8 +109,10 @@ export type DesktopGatewayServerOptions = {
   }>;
   applyUpdate?: () => Promise<void>;
   isUpdateAndRestartEnabled?: () => boolean;
-  enableLegacyGithubDataRoutes?: boolean;
-  resolveBranchPrIdentity?: BranchPrIdentityResolver;
+  /** `app.isPackaged`, forwarded to the Gateway Version check (ISS-5369). */
+  isPackagedBuild?: () => boolean;
+  /** Starts a vetted catalog-pack install for member self-service (FEA-4082). */
+  installPack?: MemberPackInstaller;
 };
 
 export class DesktopGatewayServer {
@@ -174,8 +176,8 @@ export class DesktopGatewayServer {
       checkForUpdate: this.options.checkForUpdate,
       applyUpdate: this.options.applyUpdate,
       isUpdateAndRestartEnabled: this.options.isUpdateAndRestartEnabled,
-      enableLegacyGithubDataRoutes: this.options.enableLegacyGithubDataRoutes,
-      resolveBranchPrIdentity: this.options.resolveBranchPrIdentity,
+      isPackagedBuild: this.options.isPackagedBuild,
+      installPack: this.options.installPack,
     });
   }
 
@@ -242,7 +244,8 @@ export class DesktopGatewayServer {
     getOnboardingCompleted?: () => boolean,
     schedulers?: LoopSchedulerContext,
     onLoopCompleted?: LoopCompletedHook,
-    resolveBranchPrIdentity?: BranchPrIdentityResolver
+    installPack?: MemberPackInstaller,
+    isPackagedBuild?: () => boolean
   ): DesktopGatewayServer {
     return new DesktopGatewayServer({
       host: "127.0.0.1",
@@ -283,7 +286,8 @@ export class DesktopGatewayServer {
       isUpdateAndRestartEnabled,
       schedulers,
       onLoopCompleted,
-      resolveBranchPrIdentity,
+      installPack,
+      isPackagedBuild,
     });
   }
 

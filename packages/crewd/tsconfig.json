@@ -1,0 +1,12 @@
+{
+  "extends": "@repo/typescript-config/node-next.json",
+  "compilerOptions": {
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "outDir": "dist",
+    "rootDir": "."
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules", "dist"]
+}

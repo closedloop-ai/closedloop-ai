@@ -16,9 +16,21 @@ import {
   type GitHubReadModelPageInfo,
   type GitHubReadModelPullRequest,
   GitHubReadModelSource,
+  type GitHubRepositoryDefaultObservationContext,
   GitHubSyncResultReason,
   type GitHubSyncResultReason as GitHubSyncResultReasonValue,
 } from "./types/github-read-model.ts";
+import {
+  type RepositoryDefaultAuthority,
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultReason,
+  RepositoryDefaultSource,
+  type RepositoryDefaultUnavailableObservation,
+  repositoryDefaultAuthorityValidator,
+  repositoryDefaultUnavailableObservationValidator,
+} from "./types/repository-default-identity.ts";
+import { VcsProviderKind } from "./types/vcs-provider-kind.ts";
 
 export const GITHUB_BUNDLED_PULL_REQUESTS_DEFAULT_PAGE_SIZE = 100;
 export const GITHUB_BUNDLED_PULL_REQUESTS_MAX_PAGE_SIZE = 100;
@@ -57,6 +69,13 @@ export const GITHUB_BUNDLED_PULL_REQUESTS_QUERY = `
           baseRefName
           headRefName
           headRefOid
+          headRepository {
+            databaseId
+            nameWithOwner
+            defaultBranchRef {
+              name
+            }
+          }
           mergeCommit {
             oid
           }
@@ -114,6 +133,11 @@ export type BundledPullRequestNode = {
   baseRefName?: string | null;
   headRefName?: string | null;
   headRefOid?: string | null;
+  headRepository?: {
+    databaseId?: number | null;
+    nameWithOwner?: string | null;
+    defaultBranchRef?: { name?: string | null } | null;
+  } | null;
   mergeCommit?: { oid?: string | null } | null;
   author?: { login?: string | null } | null;
   commits?: {
@@ -157,11 +181,12 @@ export function buildBundledPullRequestsVariables(
 
 export function mapBundledPullRequestsResponse(
   response: BundledPullRequestsGraphqlResponse | null | undefined,
-  source: GitHubReadModelSource = GitHubReadModelSource.Provider
+  source: GitHubReadModelSource = GitHubReadModelSource.Provider,
+  repositoryDefaultContext?: GitHubRepositoryDefaultObservationContext
 ): GitHubBundledPullRequestsResult {
   const pullRequests: GitHubReadModelPullRequest[] = [];
   for (const node of response?.repository?.pullRequests?.nodes ?? []) {
-    const mapped = mapPullRequestNode(node, source);
+    const mapped = mapPullRequestNode(node, source, repositoryDefaultContext);
     if (mapped) {
       pullRequests.push(mapped);
     }
@@ -186,12 +211,17 @@ export function mapBundledPullRequestsResponse(
 
 export function mapPullRequestNode(
   node: BundledPullRequestNode | null | undefined,
-  source: GitHubReadModelSource
+  source: GitHubReadModelSource,
+  repositoryDefaultContext?: GitHubRepositoryDefaultObservationContext
 ): GitHubReadModelPullRequest | null {
   if (!(node?.id && typeof node.number === "number" && node.url)) {
     return null;
   }
 
+  const headRepository = mapGraphqlHeadRepository(
+    node.headRepository,
+    repositoryDefaultContext
+  );
   return {
     githubId: resolveRestPullRequestId(node),
     number: node.number,
@@ -218,6 +248,14 @@ export function mapPullRequestNode(
     updatedAt: normalizeOptionalString(node.updatedAt),
     author: normalizeOptionalString(node.author?.login),
     source,
+    ...(headRepository.authority === undefined
+      ? {}
+      : { headRepository: headRepository.authority }),
+    ...(headRepository.unavailable === undefined
+      ? {}
+      : {
+          headRepositoryUnavailable: headRepository.unavailable,
+        }),
   };
 }
 
@@ -374,6 +412,89 @@ export function bundledPullRequestsFoundAllTargets(
 
 const LOW_GRAPHQL_BUDGET_REMAINING = 250;
 const GH_ZERO_TIME = "0001-01-01T00:00:00Z";
+
+function mapGraphqlHeadRepository(
+  repository: BundledPullRequestNode["headRepository"],
+  context: GitHubRepositoryDefaultObservationContext | undefined
+): {
+  authority?: RepositoryDefaultAuthority;
+  unavailable?: RepositoryDefaultUnavailableObservation;
+} {
+  if (context === undefined) {
+    return {};
+  }
+  if (repository === null || repository === undefined) {
+    return mapGraphqlHeadRepositoryUnavailable(
+      RepositoryDefaultReason.NotReported,
+      context
+    );
+  }
+
+  const providerRepositoryId = normalizeProviderRepositoryId(
+    repository.databaseId
+  );
+  const fullName = normalizeOptionalString(repository.nameWithOwner);
+  if (!(providerRepositoryId && fullName)) {
+    return mapGraphqlHeadRepositoryUnavailable(
+      RepositoryDefaultReason.Malformed,
+      context
+    );
+  }
+
+  const defaultBranch = normalizeOptionalString(
+    repository.defaultBranchRef?.name
+  );
+  const parsed = repositoryDefaultAuthorityValidator.safeParse({
+    repository: {
+      provider: VcsProviderKind.GitHub,
+      providerRepositoryId,
+      fullName,
+    },
+    evidence:
+      defaultBranch === null
+        ? {
+            availability: RepositoryDefaultAvailability.Unavailable,
+            completeness: RepositoryDefaultCompleteness.Unavailable,
+            reason: RepositoryDefaultReason.NotReported,
+          }
+        : {
+            availability: RepositoryDefaultAvailability.Available,
+            completeness: RepositoryDefaultCompleteness.Complete,
+            defaultBranch,
+          },
+    provenance: {
+      source: RepositoryDefaultSource.PullRequestGraphql,
+      ...context,
+    },
+  });
+  if (!parsed.success) {
+    return mapGraphqlHeadRepositoryUnavailable(
+      RepositoryDefaultReason.Malformed,
+      context
+    );
+  }
+  return { authority: parsed.data };
+}
+
+function mapGraphqlHeadRepositoryUnavailable(
+  reason: RepositoryDefaultReason,
+  context: GitHubRepositoryDefaultObservationContext
+): { unavailable?: RepositoryDefaultUnavailableObservation } {
+  const parsed = repositoryDefaultUnavailableObservationValidator.safeParse({
+    reason,
+    provenance: {
+      source: RepositoryDefaultSource.PullRequestGraphql,
+      ...context,
+    },
+  });
+  return parsed.success ? { unavailable: parsed.data } : {};
+}
+
+function normalizeProviderRepositoryId(value: number | null | undefined) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? String(value)
+    : null;
+}
 
 function mapProviderPullRequestState(
   state: string | null | undefined,

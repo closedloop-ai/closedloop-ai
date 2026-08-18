@@ -1,198 +1,296 @@
-import type { BranchPageDetail } from "@repo/api/src/types/branch";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
-import type { ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { BranchStatus } from "@repo/api/src/types/branch";
+import { ReviewDecision } from "@repo/api/src/types/branch-checks";
+import {
+  branchSelectedPullRequestChecksEvidenceUnavailable,
+  projectBranchSelectedPullRequestChecks,
+} from "@repo/api/src/types/branch-selected-pull-request-checks";
+import { GitHubPRState } from "@repo/api/src/types/github-status";
+import {
+  SelectedPullRequestCheckCategory,
+  SelectedPullRequestCheckSourceKind,
+  SelectedPullRequestChecksCompleteness,
+  SelectedPullRequestChecksHistoryMode,
+  SelectedPullRequestChecksPartialReason,
+} from "@repo/api/src/types/selected-pull-request-checks-evidence";
+import {
+  SelectedPullRequestEvidenceAvailability,
+  SelectedPullRequestEvidenceUnavailableReason,
+} from "@repo/api/src/types/selected-pull-request-evidence";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
 import { makeBranchDetail } from "../../../__tests__/branch-fixtures";
 import { BranchPrStatusPanel } from "../branch-pr-status-panel";
 
-const MULTI_PR_RE = /multiple prs are linked/i;
-const CONNECT_RE = /light up this metric/i;
-const CONNECT_COPY_RE = /connect github to see live review/i;
-const SECTION_TITLE = "Checks & review";
-
-function jsonResponse(status: number, body: unknown): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-  } as Response;
-}
-
-function mockReviews(response: Response) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation(() => Promise.resolve(response));
-}
-
-function renderPanel(detail: BranchPageDetail): ReactElement {
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  return (
-    <QueryClientProvider client={client}>
-      <BranchPrStatusPanel detail={detail} />
-    </QueryClientProvider>
-  );
-}
-
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+const HEAD_SHA = "b".repeat(40);
+const INCOMPLETE_CHECKS_BUTTON_RE = /checks\s*1\/2 observed\*/i;
+const ALL_ACTIONABLE_STATUS_COUNTS_RE =
+  /Passed 1 · Failed 1 · Pending 1 · Skipped 1 · Canceled 1/;
+const NEUTRAL_RE = /Neutral/;
+const NEUTRAL_REMAINDER_RE =
+  /Passed 1 · Failed 0 · Pending 0 · Skipped 1 · Canceled 1 · Neutral 1/;
+const PARTIAL_PROVIDER_COUNTS_RE = /1 of 2 provider checks returned/i;
 
 describe("BranchPrStatusPanel", () => {
-  it("renders nothing when no PR is linked", () => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: null,
-    });
-    render(renderPanel(detail));
-    expect(screen.queryByText(SECTION_TITLE)).not.toBeInTheDocument();
+  it("renders nothing when the producer resolved no selected pull request", () => {
+    render(
+      <BranchPrStatusPanel
+        detail={makeBranchDetail({ selectedPullRequest: null })}
+      />
+    );
+    expect(screen.queryByText("Checks & review")).not.toBeInTheDocument();
   });
 
-  it("lights up the lifecycle badge + approvals from live review data when connected", async () => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 42,
-      status: "open",
-    });
-    mockReviews(
-      jsonResponse(200, {
-        reviewDecision: "APPROVED",
-        approvalCount: 2,
-        changesRequestedCount: 0,
-      })
+  it("renders selected-PR lifecycle, review decision, and every actionable status count", () => {
+    render(
+      <BranchPrStatusPanel
+        detail={selectedDetail({
+          selectedPullRequestChecks: projectBranchSelectedPullRequestChecks({
+            ...checksEvidence(false),
+            checks: [
+              makeCheck("passed", SelectedPullRequestCheckCategory.Successful),
+              makeCheck("failed", SelectedPullRequestCheckCategory.Failing),
+              makeCheck("pending", SelectedPullRequestCheckCategory.Pending),
+              makeCheck(
+                "skipped",
+                SelectedPullRequestCheckCategory.Neutral,
+                "skipped"
+              ),
+              makeCheck(
+                "canceled",
+                SelectedPullRequestCheckCategory.Neutral,
+                "cancelled"
+              ),
+            ],
+            counts: {
+              providerExpected: 5,
+              providerReturned: 5,
+              normalizedAttempts: 5,
+              emitted: 5,
+              total: 5,
+              successful: 1,
+              failing: 1,
+              pending: 1,
+              neutral: 2,
+            },
+          }).response,
+        })}
+      />
     );
 
-    render(renderPanel(detail));
-
-    await waitFor(() =>
-      expect(screen.getByText("2 approvals")).toBeInTheDocument()
-    );
-    // Badge refines to "Approved" on a live APPROVED decision.
+    expect(screen.getByText("Checks & review")).toBeInTheDocument();
     expect(screen.getByText("Approved")).toBeInTheDocument();
+    expect(screen.getByText("1 failing")).toBeInTheDocument();
+    expect(
+      screen.getByText(ALL_ACTIONABLE_STATUS_COUNTS_RE)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(NEUTRAL_RE)).not.toBeInTheDocument();
   });
 
-  it("uses the linked PR URL for live status when branch repo identity is missing", async () => {
-    const detail = makeBranchDetail({
-      repoFullName: null,
-      prUrl: "https://github.com/octo/repo/pull/42",
-      prNumber: 42,
-      status: "open",
-    });
-    const fetchSpy = mockReviews(
-      jsonResponse(200, {
-        reviewDecision: "APPROVED",
-        approvalCount: 1,
-        changesRequestedCount: 0,
-      })
+  it("shows a neutral remainder only when it is not skipped or canceled", () => {
+    render(
+      <BranchPrStatusPanel
+        detail={selectedDetail({
+          selectedPullRequestChecks: projectBranchSelectedPullRequestChecks({
+            ...checksEvidence(false),
+            checks: [
+              makeCheck("passed", SelectedPullRequestCheckCategory.Successful),
+              makeCheck(
+                "skipped",
+                SelectedPullRequestCheckCategory.Neutral,
+                "skipped"
+              ),
+              makeCheck(
+                "canceled",
+                SelectedPullRequestCheckCategory.Neutral,
+                "canceled"
+              ),
+              makeCheck(
+                "neutral",
+                SelectedPullRequestCheckCategory.Neutral,
+                "neutral"
+              ),
+            ],
+            counts: {
+              providerExpected: 4,
+              providerReturned: 4,
+              normalizedAttempts: 4,
+              emitted: 4,
+              total: 4,
+              successful: 1,
+              failing: 0,
+              pending: 0,
+              neutral: 3,
+            },
+          }).response,
+        })}
+      />
     );
 
-    render(renderPanel(detail));
-
-    await waitFor(() =>
-      expect(screen.getByText("1 approval")).toBeInTheDocument()
-    );
-    const url = String(fetchSpy.mock.calls[0]?.[0]);
-    expect(url).toContain("owner=octo");
-    expect(url).toContain("repo=repo");
-    expect(url).toContain("number=42");
+    expect(screen.getByText(NEUTRAL_REMAINDER_RE)).toBeInTheDocument();
   });
 
-  it("gates with a multi-PR notice (no connect CTA) when multiple PRs are linked", () => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 42,
-      multiPrWarning: true,
-      status: "open",
-    });
-    const fetchSpy = mockReviews(jsonResponse(200, {}));
-
-    render(renderPanel(detail));
-
-    expect(screen.getByText(MULTI_PR_RE)).toBeInTheDocument();
-    expect(screen.queryByText(CONNECT_RE)).not.toBeInTheDocument();
-    // Ambiguous attribution → the overlay is never queried.
-    expect(fetchSpy).not.toHaveBeenCalled();
-  });
-
-  it("degrades to a connect-GitHub affordance (no thrown error) on a gateway 403", async () => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 9,
-      status: "open",
-    });
-    mockReviews(jsonResponse(403, { error: "nope" }));
-
-    render(renderPanel(detail));
-
-    await waitFor(() =>
-      expect(screen.getByText(CONNECT_COPY_RE)).toBeInTheDocument()
-    );
-    expect(screen.getByText(CONNECT_RE)).toBeInTheDocument();
-  });
-
-  it("still renders PERSISTED checks when live is unavailable (403)", async () => {
-    const detail = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 9,
-      status: "open",
-      // Persisted enrichment present (forward-compat; null in v1).
-      checksStatus: "PASSING",
-      checksPassed: 3,
-      checksTotal: 3,
-    });
-    mockReviews(jsonResponse(403, { error: "nope" }));
-
-    render(renderPanel(detail));
-
-    await waitFor(() =>
-      expect(screen.getByText(CONNECT_COPY_RE)).toBeInTheDocument()
-    );
-    // Persisted checks shown alongside the connect affordance, not hidden.
-    expect(screen.getByText("3/3 passing")).toBeInTheDocument();
-    expect(screen.getByText(CONNECT_RE)).toBeInTheDocument();
-  });
-
-  it("does NOT show the previous branch's status after navigating to a no-PR branch", async () => {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    mockReviews(
-      jsonResponse(200, {
-        reviewDecision: "APPROVED",
-        approvalCount: 2,
-        changesRequestedCount: 0,
-      })
+  it("stars incomplete counts and discloses the incomplete coverage", () => {
+    render(
+      <BranchPrStatusPanel
+        detail={selectedDetail({
+          selectedPullRequestChecks: checksProjection(true),
+        })}
+      />
     );
 
-    const withPr = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: 42,
-      status: "open",
+    const disclosure = screen.getByRole("button", {
+      name: INCOMPLETE_CHECKS_BUTTON_RE,
     });
+    fireEvent.click(disclosure);
+    expect(screen.getByText(PARTIAL_PROVIDER_COUNTS_RE)).toBeInTheDocument();
+    expect(screen.getByText("Build")).toBeInTheDocument();
+  });
+
+  it("keeps unavailable checks distinct from a known empty check set", () => {
+    const unavailable = branchSelectedPullRequestChecksEvidenceUnavailable({
+      status: SelectedPullRequestEvidenceAvailability.Unavailable,
+      reason: SelectedPullRequestEvidenceUnavailableReason.ProviderFailure,
+    }).response;
     const { rerender } = render(
-      <QueryClientProvider client={client}>
-        <BranchPrStatusPanel detail={withPr} />
-      </QueryClientProvider>
+      <BranchPrStatusPanel
+        detail={selectedDetail({ selectedPullRequestChecks: unavailable })}
+      />
     );
-    await waitFor(() =>
-      expect(screen.getByText("2 approvals")).toBeInTheDocument()
-    );
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
 
-    // Navigate to a branch with no PR — the panel renders nothing, never the
-    // previous branch's approvals.
-    const noPr = makeBranchDetail({
-      repoFullName: "octo/repo",
-      prNumber: null,
-    });
     rerender(
-      <QueryClientProvider client={client}>
-        <BranchPrStatusPanel detail={noPr} />
-      </QueryClientProvider>
+      <BranchPrStatusPanel
+        detail={selectedDetail({
+          selectedPullRequestChecks: projectBranchSelectedPullRequestChecks({
+            ...checksEvidence(false),
+            checks: [],
+            counts: {
+              providerExpected: 0,
+              providerReturned: 0,
+              normalizedAttempts: 0,
+              emitted: 0,
+              total: 0,
+              successful: 0,
+              failing: 0,
+              pending: 0,
+              neutral: 0,
+            },
+          }).response,
+        })}
+      />
     );
-
-    expect(screen.queryByText("2 approvals")).not.toBeInTheDocument();
-    expect(screen.queryByText(SECTION_TITLE)).not.toBeInTheDocument();
+    expect(screen.getByText("N/A")).toBeInTheDocument();
+    expect(screen.queryByText("Unavailable")).not.toBeInTheDocument();
   });
 });
+
+function selectedDetail(overrides = {}) {
+  return makeBranchDetail({
+    status: BranchStatus.Open,
+    selectedPullRequest: {
+      id: "octo/repo#42",
+      repositoryFullName: "octo/repo",
+      number: 42,
+      title: "Selected PR",
+      url: "https://github.com/octo/repo/pull/42",
+      state: GitHubPRState.Open,
+      isDraft: false,
+      reviewDecision: ReviewDecision.Approved,
+      openedAt: "2026-08-01T00:00:00.000Z",
+      closedAt: null,
+      mergedAt: null,
+      body: "Description",
+      headRefOid: HEAD_SHA,
+      mergeCommitSha: null,
+      changedFiles: 1,
+      additions: 5,
+      deletions: 2,
+    },
+    ...overrides,
+  });
+}
+
+function checksProjection(incomplete: boolean) {
+  return projectBranchSelectedPullRequestChecks(checksEvidence(incomplete))
+    .response;
+}
+
+function checksEvidence(incomplete: boolean) {
+  return {
+    identity: {
+      githubId: "PR_kwDOtest",
+      repositoryFullName: "octo/repo",
+      number: 42,
+      url: "https://github.com/octo/repo/pull/42",
+    },
+    revision: { headSha: HEAD_SHA },
+    checks: [
+      {
+        providerId: "check-1",
+        sourceIdentity: "build",
+        sourceKind: SelectedPullRequestCheckSourceKind.CheckRun,
+        sourceApp: null,
+        name: "Build",
+        providerStatus: "completed",
+        providerConclusion: "success",
+        category: SelectedPullRequestCheckCategory.Successful,
+        createdAt: null,
+        startedAt: null,
+        completedAt: null,
+        targetUrl: null,
+      },
+    ],
+    counts: {
+      providerExpected: 2,
+      providerReturned: 1,
+      normalizedAttempts: 1,
+      emitted: 1,
+      total: 2,
+      successful: 1,
+      failing: 0,
+      pending: 0,
+      neutral: 0,
+    },
+    pagination: {
+      pageSize: 100,
+      pagesFetched: 1,
+      acquisitionMaximum: 500,
+      reachedAcquisitionMaximum: false,
+    },
+    history: {
+      mode: SelectedPullRequestChecksHistoryMode.LatestPerSourceFromProviderRollup,
+      providerLimit: null,
+      rawAttempts: 1,
+      emittedSources: 1,
+    },
+    coverage: {
+      completeness: incomplete
+        ? SelectedPullRequestChecksCompleteness.Partial
+        : SelectedPullRequestChecksCompleteness.Complete,
+      reasons: incomplete
+        ? [SelectedPullRequestChecksPartialReason.CountMismatch]
+        : [],
+    },
+  };
+}
+
+function makeCheck(
+  sourceIdentity: string,
+  category: SelectedPullRequestCheckCategory,
+  providerConclusion = "success"
+) {
+  return {
+    providerId: `check-${sourceIdentity}`,
+    sourceIdentity,
+    sourceKind: SelectedPullRequestCheckSourceKind.CheckRun,
+    sourceApp: null,
+    name: sourceIdentity,
+    providerStatus: "completed",
+    providerConclusion,
+    category,
+    createdAt: null,
+    startedAt: null,
+    completedAt: null,
+    targetUrl: null,
+  };
+}

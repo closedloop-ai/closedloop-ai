@@ -406,6 +406,7 @@ describe("upsertGitHubReviewCommentThread", () => {
         githubDeletedAt: observedAt,
         ...expectedProvenance,
       },
+      select: { commentId: true },
     });
     expect(tx.gitHubCommentThreadProjection.update).toHaveBeenCalledWith({
       where: { threadId: "thread-1" },
@@ -413,6 +414,7 @@ describe("upsertGitHubReviewCommentThread", () => {
         deletedAt: observedAt,
         ...expectedProvenance,
       },
+      select: { threadId: true },
     });
   });
 });

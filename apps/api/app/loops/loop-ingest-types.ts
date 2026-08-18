@@ -3,7 +3,7 @@
  *
  * Co-located in `apps/api/app/loops/` because they are consumed exclusively
  * by the backend (the service method and its route layer). They are not part
- * of the shared frontend/backend contract — per `packages/api/CLAUDE.md`,
+ * of the shared frontend/backend contract — per `packages/api/AGENTS.md`,
  * such types belong with their owner, not in `@repo/api`.
  */
 

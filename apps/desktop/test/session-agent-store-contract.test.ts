@@ -62,7 +62,7 @@ test("FEA-1791: session store reads convert onto typed Prisma delegates", async 
     await seedSession(db, {
       id: "s-done",
       name: "Done",
-      status: "completed",
+      status: "inactive",
       startedAt: "2026-06-01T00:00:01.000Z",
     });
     await seedSession(db, {
@@ -76,12 +76,6 @@ test("FEA-1791: session store reads convert onto typed Prisma delegates", async 
       name: "Active",
       status: "active",
       startedAt: "2026-06-01T00:00:03.000Z",
-    });
-    await seedSession(db, {
-      id: "s-abandoned",
-      name: "Abandoned",
-      status: "abandoned",
-      startedAt: "2026-06-01T00:00:04.000Z",
     });
     await seedSession(db, {
       id: "s-error",
@@ -101,7 +95,7 @@ test("FEA-1791: session store reads convert onto typed Prisma delegates", async 
     const all = await db.sessions.getAll();
     assert.deepEqual(
       all.map((s) => s.id),
-      ["s-error", "s-abandoned", "s-active", "s-waiting", "s-done"]
+      ["s-error", "s-active", "s-waiting", "s-done"]
     );
 
     // getActive: excludes terminal statuses (completed/abandoned/error), newest

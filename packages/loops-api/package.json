@@ -163,6 +163,18 @@
       "import": "./dist/stream-types.js",
       "require": "./dist/stream-types.cjs",
       "default": "./dist/stream-types.js"
+    },
+    "./currency": {
+      "types": "./dist/currency.d.ts",
+      "import": "./dist/currency.js",
+      "require": "./dist/currency.cjs",
+      "default": "./dist/currency.js"
+    },
+    "./secret-value-pattern": {
+      "types": "./dist/secret-value-pattern.d.ts",
+      "import": "./dist/secret-value-pattern.js",
+      "require": "./dist/secret-value-pattern.cjs",
+      "default": "./dist/secret-value-pattern.js"
     }
   },
   "files": [
@@ -187,8 +199,8 @@
     "@repo/typescript-config": "workspace:*",
     "@types/node": "^25.9.1",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.18",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^4.1.9",
     "zod": "^4.3.6"
   }
 }

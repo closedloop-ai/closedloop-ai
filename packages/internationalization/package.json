@@ -4,26 +4,27 @@
   "private": true,
   "scripts": {
     "translate": "npx -y languine@latest translate",
-    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit --emitDeclarationOnly false"
+    "test:coverage": "vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=*.ts'",
+    "typecheck": "tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@formatjs/intl-localematcher": "^0.8.2",
     "negotiator": "^1.0.0",
     "next": "catalog:",
     "next-international": "^1.3.1",
-    "react": "19.2.5",
-    "react-dom": "19.2.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
     "@types/negotiator": "^0.6.4",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   }
 }

@@ -15,6 +15,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import {
+  CONTENT_KIND_LABEL,
   CONTENT_KIND_ORDER,
   PackContentKind,
   type PackUser,
@@ -34,52 +35,52 @@ type ContentKindMeta = {
 export const CONTENT_KIND_META: Record<PackContentKind, ContentKindMeta> = {
   [PackContentKind.Agent]: {
     icon: BotIcon,
-    label: "Agent",
+    label: CONTENT_KIND_LABEL[PackContentKind.Agent],
     plural: "Agents",
     iconColor: "text-blue-600 dark:text-blue-400",
     iconBg: "bg-blue-500/10",
   },
   [PackContentKind.Skill]: {
     icon: WrenchIcon,
-    label: "Skill",
+    label: CONTENT_KIND_LABEL[PackContentKind.Skill],
     plural: "Skills",
     iconColor: "text-violet-600 dark:text-violet-400",
     iconBg: "bg-violet-500/10",
   },
   [PackContentKind.Command]: {
     icon: TerminalIcon,
-    label: "Command",
+    label: CONTENT_KIND_LABEL[PackContentKind.Command],
     plural: "Commands",
     iconColor: "text-emerald-600 dark:text-emerald-400",
     iconBg: "bg-emerald-500/10",
   },
   [PackContentKind.Hook]: {
     icon: WebhookIcon,
-    label: "Hook",
+    label: CONTENT_KIND_LABEL[PackContentKind.Hook],
     plural: "Hooks",
     iconColor: "text-amber-600 dark:text-amber-400",
     iconBg: "bg-amber-500/10",
   },
   [PackContentKind.Mcp]: {
     icon: PlugIcon,
-    label: "MCP tool",
+    label: CONTENT_KIND_LABEL[PackContentKind.Mcp],
     plural: "MCP tools",
     iconColor: "text-rose-600 dark:text-rose-400",
     iconBg: "bg-rose-500/10",
   },
   [PackContentKind.Plugin]: {
     icon: PackageIcon,
-    label: "Plugin",
+    label: CONTENT_KIND_LABEL[PackContentKind.Plugin],
     plural: "Plugins",
     iconColor: "text-sky-600 dark:text-sky-400",
     iconBg: "bg-sky-500/10",
   },
   [PackContentKind.Tool]: {
     icon: HammerIcon,
-    label: "Tool",
+    label: CONTENT_KIND_LABEL[PackContentKind.Tool],
     plural: "Tools",
-    iconColor: "text-slate-600 dark:text-slate-400",
-    iconBg: "bg-slate-500/10",
+    iconColor: "text-teal-600 dark:text-teal-400",
+    iconBg: "bg-teal-500/10",
   },
 };
 
@@ -201,35 +202,37 @@ export const UserPill = ({
 );
 
 /**
- * Compact "3 agents · 5 skills · 1 hook" summary shown on each card. Only counts
- * the kinds visible in the current surface (`visibleKinds`).
+ * Cap on how many kind counts the card summary prints inline. A pack can bundle
+ * all seven kinds; spelling out every one wraps the summary onto two or three
+ * lines in a 350px grid card and — because the grid stretches — drags every card
+ * in that row taller with it. So we print at most the first three present kinds
+ * (in `CONTENT_KIND_ORDER`) and roll the rest into a "+N more" so the summary
+ * stays on one line.
  */
-export function contentSummary(
-  pack: PackView,
-  visibleKinds: readonly PackContentKind[] = CONTENT_KIND_ORDER
-): string {
-  return visibleKinds
-    .map((kind) => {
-      const count = pack.contents.filter((item) => item.kind === kind).length;
-      if (count === 0) {
-        return null;
-      }
-      const meta = CONTENT_KIND_META[kind];
-      const label = count === 1 ? meta.label : meta.plural;
-      return `${count} ${label.toLowerCase()}`;
-    })
-    .filter((part): part is string => part !== null)
-    .join(" · ");
-}
+const CONTENT_SUMMARY_MAX_KINDS = 3;
 
-/** The content kinds a surface should render, given its extended-kinds flag. */
-export function visibleContentKinds(
-  showExtended: boolean
-): readonly PackContentKind[] {
-  return showExtended
-    ? CONTENT_KIND_ORDER
-    : CONTENT_KIND_ORDER.filter(
-        (kind) =>
-          kind !== PackContentKind.Plugin && kind !== PackContentKind.Tool
-      );
+/**
+ * Compact "3 agents · 5 skills · 1 hook" summary shown on each card, counting
+ * every content kind a pack bundles (FEA-4132 graduated the extended kinds to
+ * always-on, so there is no per-surface gate). Clamped to the first
+ * `CONTENT_SUMMARY_MAX_KINDS` present kinds with a "+N more" tail so a pack that
+ * carries many kinds can't wrap the summary onto extra lines and stretch the card.
+ */
+export function contentSummary(pack: PackView): string {
+  const parts = CONTENT_KIND_ORDER.map((kind) => {
+    const count = pack.contents.filter((item) => item.kind === kind).length;
+    if (count === 0) {
+      return null;
+    }
+    const meta = CONTENT_KIND_META[kind];
+    const label = count === 1 ? meta.label : meta.plural;
+    return `${count} ${label.toLowerCase()}`;
+  }).filter((part): part is string => part !== null);
+
+  if (parts.length <= CONTENT_SUMMARY_MAX_KINDS) {
+    return parts.join(" · ");
+  }
+  const shown = parts.slice(0, CONTENT_SUMMARY_MAX_KINDS);
+  const extra = parts.length - shown.length;
+  return `${shown.join(" · ")} · +${extra} more`;
 }

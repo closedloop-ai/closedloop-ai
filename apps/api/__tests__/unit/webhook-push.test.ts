@@ -1,18 +1,15 @@
-/**
- * Unit tests for GitHub push webhook handler.
- *
- * Tests the handlePush function which processes push events:
- * - Updates lastPushedAt timestamp for tracked repositories via updateMany
- * - Silently skips unknown repositories (no matching installation repository)
- * - Uses githubRepoId for repository matching
- */
-
 import type { PushEvent } from "@octokit/webhooks-types";
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 
-// Mock modules before importing
 vi.mock("@repo/database", () => ({
-  withDb: vi.fn(),
+  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  Prisma: {
+    join: vi.fn(),
+    sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    })),
+  },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
     BRANCH: "BRANCH",
@@ -61,7 +58,14 @@ vi.mock("@/app/webhooks/github/handlers/dirty-scope-publisher", () => ({
   publishGitHubDirtyScopes: vi.fn(),
 }));
 
-// Import after mocking
+vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
+  GitHubBranchActivityEventName: { Push: "push" },
+  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
+    status: "no_write",
+    reason: "missing_authoritative_timestamp",
+  }),
+}));
+
 import { withDb } from "@repo/database";
 import { parseArtifactReferences } from "@repo/github/artifact-reference-parser";
 import { log } from "@repo/observability/log";
@@ -69,11 +73,19 @@ import { waitUntil } from "@vercel/functions";
 import { branchService } from "@/app/branches/branch-service";
 import { refreshBranchFileChangeCache } from "@/app/branches/file-cache-service";
 import { commitService } from "@/app/commits/commit-service";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { publishGitHubDirtyScopes } from "@/app/webhooks/github/handlers/dirty-scope-publisher";
-import { handlePush } from "@/app/webhooks/github/handlers/push-handler";
+import {
+  handlePush,
+  PushSourceSkipReason,
+} from "@/app/webhooks/github/handlers/push-handler";
+import { persistedGitHubRepositoryAuthority } from "../fixtures/repository-default-authority";
 
-// Type aliases for mocked functions
 const mockWithDb = withDb as unknown as Mock;
+const mockWithDbTx = withDb.tx as unknown as Mock;
 const mockParseArtifactReferences = parseArtifactReferences as unknown as Mock;
 const mockWaitUntil = waitUntil as unknown as Mock;
 const mockUpsertBranchArtifact =
@@ -84,102 +96,42 @@ const mockPublishGitHubDirtyScopes =
   publishGitHubDirtyScopes as unknown as Mock;
 const mockRecordWebhookCommits =
   commitService.recordWebhookCommits as unknown as Mock;
-const mockLogInfo = log.info as unknown as Mock;
+const mockLogDebug = log.debug as unknown as Mock;
+const mockLogWarn = log.warn as unknown as Mock;
+const mockPersistGitHubBranchActivity =
+  persistGitHubBranchActivity as unknown as Mock;
 
-// Mock database client
 const mockDb = {
+  $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
   gitHubInstallationRepository: {
+    findMany: vi.fn(),
     findFirst: vi.fn(),
+    findUnique: vi.fn(),
     updateMany: vi.fn(),
   },
-  artifact: {
-    findFirst: vi.fn(),
+  repositoryDefaultObservationReceipt: {
+    createMany: vi.fn(),
   },
-  branchDetail: {
-    // D2: the push handler resolves an existing branch by (repository_id,
-    // branch_name) via findFirst now that that pair is no longer a unique key.
-    findFirst: vi.fn(),
-  },
-  project: {
-    findMany: vi.fn(),
-  },
+  artifact: { findFirst: vi.fn() },
+  branchDetail: { findUnique: vi.fn() },
+  publicRepository: { findMany: vi.fn() },
 };
 
-/**
- * Helper to create minimal repository object for webhook events
- */
 function createRepository(githubId: number, fullName: string) {
   return {
     id: githubId,
-    node_id: `R_${githubId}`,
     name: fullName.split("/")[1] || fullName,
     full_name: fullName,
     private: false,
     owner: {
       login: fullName.split("/")[0] || "owner",
-      id: 12_345,
-      node_id: "U_12345",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User" as const,
-      site_admin: false,
     },
-    html_url: "",
-    description: null,
-    fork: false,
-    url: "",
-    created_at: "2021-01-01T00:00:00Z",
-    updated_at: "2021-01-01T00:00:00Z",
     pushed_at: "2024-06-15T10:30:00Z",
-    git_url: "",
-    ssh_url: "",
-    clone_url: "",
-    svn_url: "",
-    homepage: null,
-    size: 0,
-    stargazers_count: 0,
-    watchers_count: 0,
-    language: null,
-    has_issues: true,
-    has_projects: true,
-    has_downloads: true,
-    has_wiki: true,
-    has_pages: false,
-    has_discussions: false,
-    forks_count: 0,
-    mirror_url: null,
-    archived: false,
-    disabled: false,
-    open_issues_count: 0,
-    license: null,
-    allow_forking: true,
-    is_template: false,
-    web_commit_signoff_required: false,
-    topics: [],
-    visibility: "public" as const,
-    forks: 0,
-    open_issues: 0,
-    watchers: 0,
     default_branch: "main",
-    stargazers: 0,
-    master_branch: "main",
   };
 }
 
-/**
- * Helper to create minimal push event
- */
 function createPushEvent(partial: {
   repositoryId: number;
   repositoryFullName: string;
@@ -271,22 +223,34 @@ describe("handlePush", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // Default mock implementation for withDb
     mockWithDb.mockImplementation((callback) => callback(mockDb));
+    mockWithDbTx.mockImplementation((callback) => callback(mockDb));
+    const authority = persistedGitHubRepositoryAuthority({
+      githubRepoId: "123",
+      fullName: "owner/repo",
+    });
     mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
       id: "repo-db-1",
-      fullName: "owner/repo",
+      installationId: "installation-db-1",
+      ...authority,
       installation: { organizationId: "org-1" },
     });
+    mockDb.gitHubInstallationRepository.findMany.mockResolvedValue([authority]);
+    mockDb.publicRepository.findMany.mockResolvedValue([]);
+    mockDb.repositoryDefaultObservationReceipt.createMany.mockResolvedValue({
+      count: 1,
+    });
+    mockDb.$executeRaw.mockResolvedValue(1);
+    mockDb.$queryRaw.mockResolvedValue([authority]);
     mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
       count: 1,
     });
     mockDb.artifact.findFirst.mockResolvedValue({
       id: "source-artifact-1",
+      createdById: "source-user-1",
       projectId: "project-1",
     });
-    mockDb.branchDetail.findFirst.mockResolvedValue(null);
-    mockDb.project.findMany.mockResolvedValue([]);
+    mockDb.branchDetail.findUnique.mockResolvedValue(null);
     mockParseArtifactReferences.mockReturnValue([
       {
         slug: "FEA-1116",
@@ -391,7 +355,10 @@ describe("handlePush", () => {
         count: 1,
       });
 
-      const response = await handlePush(event);
+      const response = await handlePush(event, {
+        deliveryId: "push-delivery-1",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
       const json = await response.json();
 
       expect(json).toEqual({
@@ -402,7 +369,15 @@ describe("handlePush", () => {
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
-        where: { id: "repo-db-1" },
+        where: {
+          id: "repo-db-1",
+          OR: [
+            { lastPushedAt: null },
+            {
+              lastPushedAt: { lt: new Date("2024-06-15T10:30:00Z") },
+            },
+          ],
+        },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
       expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
@@ -411,13 +386,55 @@ describe("handlePush", () => {
           repositoryId: "repo-db-1",
           branchName: "fea-1116-branch-artifact",
           sourceArtifactId: "source-artifact-1",
+          createdById: "source-user-1",
           beforeSha: "abc123",
           headSha: "def456",
           headShaObservedAt: new Date("2024-06-15T10:30:00Z"),
           isCreate: false,
         })
       );
+      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+        eventName: GitHubBranchActivityEventName.Push,
+        deliveryId: "push-delivery-1",
+        payload: event,
+        attribution: {
+          organizationId: "org-1",
+          branchArtifactId: "branch-artifact-1",
+        },
+      });
       expect(mockWaitUntil).toHaveBeenCalled();
+    });
+
+    it("does not apply repository authority from an older provider event", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        ref: "refs/heads/main",
+      });
+      (event.repository as any).pushed_at = "2024-06-15T10:00:00Z";
+      mockDb.gitHubInstallationRepository.updateMany.mockResolvedValueOnce({
+        count: 0,
+      });
+      mockDb.gitHubInstallationRepository.findUnique.mockResolvedValueOnce({
+        lastPushedAt: new Date("2024-06-15T11:00:00Z"),
+      });
+
+      const response = await handlePush(event, {
+        deliveryId: "stale-delivery",
+        observedAt: new Date("2024-06-15T12:00:00.000Z"),
+      });
+
+      expect(await response.json()).toEqual({
+        message: "Default branch push ignored",
+        ok: true,
+      });
+      expect(mockDb.$executeRaw).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.findUnique
+      ).toHaveBeenCalledWith({
+        where: { id: "repo-db-1" },
+        select: { lastPushedAt: true },
+      });
     });
 
     it("passes GitHub created pushes through as branch-create observations", async () => {
@@ -494,7 +511,15 @@ describe("handlePush", () => {
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
-        where: { id: "repo-db-1" },
+        where: {
+          id: "repo-db-1",
+          OR: [
+            { lastPushedAt: null },
+            {
+              lastPushedAt: { lt: new Date("2024-06-15T10:30:00Z") },
+            },
+          ],
+        },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
@@ -505,7 +530,6 @@ describe("handlePush", () => {
         repositoryFullName: "owner/repo",
       });
 
-      // GitHub sends pushed_at as Unix seconds (number), not ISO string
       (event.repository as any).pushed_at = 1_718_444_200;
 
       mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
@@ -517,7 +541,6 @@ describe("handlePush", () => {
       const calledWith = mockDb.gitHubInstallationRepository.updateMany.mock
         .calls[0][0].data.lastPushedAt as Date;
 
-      // Must be in 2024, not 1970 (the bug was treating seconds as milliseconds)
       expect(calledWith.getFullYear()).toBe(2024);
       expect(calledWith).toEqual(new Date(1_718_444_200 * 1000));
     });
@@ -548,7 +571,6 @@ describe("handlePush", () => {
         count: 1,
       });
 
-      // First push — earlier payload timestamp
       const event1 = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
@@ -562,7 +584,6 @@ describe("handlePush", () => {
           .lastPushedAt as Date
       ).getTime();
 
-      // Second push — later payload timestamp
       const event2 = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
@@ -599,48 +620,70 @@ describe("handlePush", () => {
       expect(
         mockDb.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
-        where: { id: "repo-db-1" },
+        where: {
+          id: "repo-db-1",
+          OR: [
+            { lastPushedAt: null },
+            {
+              lastPushedAt: { lt: new Date("2024-06-15T10:30:00Z") },
+            },
+          ],
+        },
         data: { lastPushedAt: new Date("2024-06-15T10:30:00Z") },
       });
     });
 
-    it("looks up active repository without installationId when installation is missing", async () => {
+    it("fails closed before database access when installation identity is missing", async () => {
       const event = createPushEvent({
         repositoryId: 789,
         repositoryFullName: "owner/repo",
       });
 
-      // Remove installation field to test fallback
       (event as any).installation = undefined;
 
-      mockDb.gitHubInstallationRepository.updateMany.mockResolvedValue({
-        count: 1,
+      const response = await handlePush(event);
+
+      expect(await response.json()).toEqual({
+        message: "Push event missing installation identity, ignoring",
+        ok: true,
       });
-
-      await handlePush(event);
-
+      expect(mockWithDb).not.toHaveBeenCalled();
+      expect(mockWithDbTx).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
       expect(
         mockDb.gitHubInstallationRepository.findFirst
-      ).toHaveBeenCalledWith({
-        where: {
-          githubRepoId: "789",
-          fullName: "owner/repo",
-          removedAt: null,
-          installation: {
-            status: "ACTIVE",
-            organizationId: { not: null },
-          },
-        },
-        select: {
-          id: true,
-          fullName: true,
-          installation: { select: { organizationId: true } },
-        },
-      });
+      ).not.toHaveBeenCalled();
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
     });
   });
 
   describe("edge cases", () => {
+    it("limits a duplicate delivery receipt to authority while preserving branch work", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        ref: "refs/heads/feature/replayed",
+      });
+      mockDb.repositoryDefaultObservationReceipt.createMany.mockResolvedValueOnce(
+        { count: 0 }
+      );
+
+      const response = await handlePush(event, {
+        deliveryId: "delivery-replayed",
+        observedAt: new Date("2026-08-10T20:00:00.000Z"),
+      });
+
+      expect((await response.json()).ok).toBe(true);
+      expect(
+        mockDb.gitHubInstallationRepository.updateMany
+      ).not.toHaveBeenCalled();
+      expect(mockDb.$executeRaw).not.toHaveBeenCalled();
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledOnce();
+      expect(mockRecordWebhookCommits).toHaveBeenCalledOnce();
+    });
+
     it("handles push with zero commits", async () => {
       const event = createPushEvent({
         repositoryId: 123,
@@ -712,6 +755,29 @@ describe("handlePush", () => {
       expect(mockWaitUntil).not.toHaveBeenCalled();
     });
 
+    it("logs a warning when the scheduled cache refresh throws (FEA-3327)", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+      });
+      const refreshError = new Error("github compare failed");
+      mockRefreshBranchFileChangeCache.mockRejectedValueOnce(refreshError);
+
+      const response = await handlePush(event);
+      const json = await response.json();
+
+      expect(json.ok).toBe(true);
+      await mockWaitUntil.mock.calls[0][0];
+
+      expect(mockLogWarn).toHaveBeenCalledWith(
+        "[handlePush] Branch file-cache refresh failed",
+        expect.objectContaining({
+          branchArtifactId: "branch-artifact-1",
+          error: "github compare failed",
+        })
+      );
+    });
+
     it("updates an existing branch artifact when the branch name has no document slug", async () => {
       const event = createPushEvent({
         repositoryId: 123,
@@ -721,9 +787,8 @@ describe("handlePush", () => {
         after: "new-head",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findFirst.mockResolvedValueOnce({
+      mockDb.branchDetail.findUnique.mockResolvedValueOnce({
         artifact: {
-          organizationId: "org-1",
           projectId: "project-existing",
           targetLinks: [],
         },
@@ -741,6 +806,7 @@ describe("handlePush", () => {
           branchName: "manual/no-slug-branch",
           projectId: "project-existing",
           sourceArtifactId: null,
+          createdById: null,
           beforeSha: "old-head",
           headSha: "new-head",
         })
@@ -748,35 +814,28 @@ describe("handlePush", () => {
       expect(mockWaitUntil).toHaveBeenCalled();
     });
 
-    it("materializes a first no-slug branch when one project default matches the repository", async () => {
+    it("carries linked source artifact creator for an existing no-slug branch", async () => {
       const event = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
-        ref: "refs/heads/manual/no-slug-default",
+        ref: "refs/heads/manual/no-slug-linked-branch",
         before: "old-head",
         after: "new-head",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
-      mockDb.project.findMany.mockResolvedValueOnce([
-        {
-          id: "project-default",
-          settings: {},
-          teams: [
+      mockDb.branchDetail.findUnique.mockResolvedValueOnce({
+        artifact: {
+          projectId: "project-existing",
+          targetLinks: [
             {
-              team: {
-                repositories: [
-                  {
-                    installationRepositoryId: "repo-db-1",
-                    isDefaultSelected: true,
-                    isPrimary: true,
-                  },
-                ],
+              source: {
+                id: "linked-source-artifact",
+                createdById: "linked-source-user",
               },
             },
           ],
         },
-      ]);
+      });
 
       const response = await handlePush(event);
       const json = await response.json();
@@ -787,9 +846,10 @@ describe("handlePush", () => {
       });
       expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
         expect.objectContaining({
-          branchName: "manual/no-slug-default",
-          projectId: "project-default",
-          sourceArtifactId: null,
+          branchName: "manual/no-slug-linked-branch",
+          projectId: "project-existing",
+          sourceArtifactId: "linked-source-artifact",
+          createdById: "linked-source-user",
           beforeSha: "old-head",
           headSha: "new-head",
         })
@@ -797,111 +857,90 @@ describe("handlePush", () => {
       expect(mockWaitUntil).toHaveBeenCalled();
     });
 
-    it("skips first no-slug branch materialization when project defaults are ambiguous", async () => {
+    it("skips a first-observed no-slug branch instead of inferring a project from repository defaults", async () => {
       const event = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
-        ref: "refs/heads/manual/ambiguous-default",
+        ref: "refs/heads/manual/no-slug-default",
+        before: "old-head",
+        after: "new-head",
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
-      mockDb.project.findMany.mockResolvedValueOnce([
-        {
-          id: "project-a",
-          settings: {},
-          teams: [
-            {
-              team: {
-                repositories: [
-                  {
-                    installationRepositoryId: "repo-db-1",
-                    isDefaultSelected: true,
-                    isPrimary: true,
-                  },
-                ],
-              },
-            },
-          ],
-        },
-        {
-          id: "project-b",
-          settings: {},
-          teams: [
-            {
-              team: {
-                repositories: [
-                  {
-                    installationRepositoryId: "repo-db-1",
-                    isDefaultSelected: true,
-                    isPrimary: true,
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      ]);
+      mockDb.branchDetail.findUnique.mockResolvedValueOnce(null);
 
       const response = await handlePush(event);
       const json = await response.json();
 
       expect(json).toEqual({
-        message: "No deterministic project repository default for branch push",
+        message: "No resolvable lineage for branch push",
         ok: true,
       });
       expect(mockUpsertBranchArtifact).not.toHaveBeenCalled();
       expect(mockWaitUntil).not.toHaveBeenCalled();
-      expect(mockLogInfo).toHaveBeenCalledWith(
-        "[handlePush] No-slug branch ownership skipped",
+      expect(mockLogDebug).toHaveBeenCalledWith(
+        "[handlePush] Branch push skipped, no resolvable lineage",
         expect.objectContaining({
-          reason: "ambiguous_project_default",
-          candidateProjectIds: ["project-a", "project-b"],
+          branchName: "manual/no-slug-default",
+          reason: PushSourceSkipReason.UnresolvedBranchLineage,
         })
       );
     });
 
-    it("skips first no-slug branch materialization when no project default matches", async () => {
+    it("does not persist commits or publish dirty scopes for a skipped no-slug branch", async () => {
       const event = createPushEvent({
         repositoryId: 123,
         repositoryFullName: "owner/repo",
-        ref: "refs/heads/manual/missing-default",
+        ref: "refs/heads/manual/no-slug-commits",
+        commitsCount: 1,
       });
       mockParseArtifactReferences.mockReturnValueOnce([]);
-      mockDb.branchDetail.findFirst.mockResolvedValueOnce(null);
-      mockDb.project.findMany.mockResolvedValueOnce([
-        {
-          id: "project-other",
-          settings: {},
-          teams: [
-            {
-              team: {
-                repositories: [
-                  {
-                    installationRepositoryId: "repo-other",
-                    isDefaultSelected: true,
-                    isPrimary: true,
-                  },
-                ],
-              },
-            },
-          ],
+      mockDb.branchDetail.findUnique.mockResolvedValueOnce(null);
+
+      await handlePush(event);
+
+      expect(mockRecordWebhookCommits).not.toHaveBeenCalled();
+      expect(mockPublishGitHubDirtyScopes).not.toHaveBeenCalled();
+    });
+
+    it("resolves a repo-less desktop-first branch row by the D2 identity key", async () => {
+      const event = createPushEvent({
+        repositoryId: 123,
+        repositoryFullName: "owner/repo",
+        ref: "refs/heads/manual/desktop-first",
+        before: "old-head",
+        after: "new-head",
+      });
+      mockParseArtifactReferences.mockReturnValueOnce([]);
+      mockDb.branchDetail.findUnique.mockResolvedValueOnce({
+        artifact: {
+          projectId: null,
+          targetLinks: [],
         },
-      ]);
+      });
 
       const response = await handlePush(event);
       const json = await response.json();
 
       expect(json).toEqual({
-        message: "No deterministic project repository default for branch push",
+        message: "Push event processed successfully",
         ok: true,
       });
-      expect(mockUpsertBranchArtifact).not.toHaveBeenCalled();
-      expect(mockWaitUntil).not.toHaveBeenCalled();
-      expect(mockLogInfo).toHaveBeenCalledWith(
-        "[handlePush] No-slug branch ownership skipped",
+      expect(mockDb.branchDetail.findUnique).toHaveBeenCalledWith(
         expect.objectContaining({
-          reason: "missing_project_default",
-          candidateProjectIds: [],
+          where: {
+            organizationId_repositoryFullName_branchName: {
+              organizationId: "org-1",
+              repositoryFullName: "owner/repo",
+              branchName: "manual/desktop-first",
+            },
+          },
+        })
+      );
+      expect(mockUpsertBranchArtifact).toHaveBeenCalledWith(
+        expect.objectContaining({
+          branchName: "manual/desktop-first",
+          repositoryId: "repo-db-1",
+          projectId: null,
         })
       );
     });

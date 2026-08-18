@@ -16,6 +16,7 @@ import { afterEach, test } from "node:test";
 import type { CodexRolloutLinkage } from "../src/main/collectors/codex/codex-subagent-rollouts.js";
 import {
   buildCodexChildrenById,
+  effectiveParentId,
   findCodexDescendants,
   findCodexParentSource,
   mapCodexRolloutsById,
@@ -127,6 +128,132 @@ test("findCodexParentSource resolves the parent source path when present", () =>
   assert.equal(
     findCodexParentSource("/codex/child.jsonl", [], byId, child),
     "/codex/parent.jsonl"
+  );
+});
+
+// ── FEA-2928: fork/resume linkage tests ───────────────────────────────────
+
+test("effectiveParentId returns parentThreadId when set", () => {
+  const l = linkage("child", "parent");
+  assert.equal(effectiveParentId(l), "parent");
+});
+
+test("effectiveParentId returns forkedFromId when parentThreadId is null", () => {
+  const l = linkage("fork", null, 0, "/codex/fork.jsonl", "origin");
+  assert.equal(effectiveParentId(l), "origin");
+});
+
+test("effectiveParentId returns parentThreadId when both are set", () => {
+  const l = linkage("child", "parent", 1, "/codex/child.jsonl", "origin");
+  assert.equal(effectiveParentId(l), "parent");
+});
+
+test("effectiveParentId returns null when neither is set", () => {
+  const l = linkage("root", null);
+  assert.equal(effectiveParentId(l), null);
+});
+
+test("walkCodexRootLinkage follows fork chain (A → fork B → fork C)", () => {
+  const a = linkage("a", null, 0, "/codex/a.jsonl");
+  const b = linkage("b", null, null, "/codex/b.jsonl", "a");
+  const c = linkage("c", null, null, "/codex/c.jsonl", "b");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["a", a],
+    ["b", b],
+    ["c", c],
+  ]);
+
+  assert.equal(walkCodexRootLinkage(c, byId).rolloutId, "a");
+  assert.equal(walkCodexRootLinkage(b, byId).rolloutId, "a");
+  assert.equal(walkCodexRootLinkage(a, byId).rolloutId, "a");
+});
+
+test("walkCodexRootLinkage follows mixed chain (A → subagent B → fork C)", () => {
+  const a = linkage("a", null, 0);
+  const b = linkage("b", "a", 1);
+  const c = linkage("c", null, null, "/codex/c.jsonl", "b");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["a", a],
+    ["b", b],
+    ["c", c],
+  ]);
+
+  assert.equal(walkCodexRootLinkage(c, byId).rolloutId, "a");
+});
+
+test("walkCodexRootLinkage terminates on fork cycle (A forks from B, B forks from A)", () => {
+  const a = linkage("a", null, null, "/codex/a.jsonl", "b");
+  const b = linkage("b", null, null, "/codex/b.jsonl", "a");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["a", a],
+    ["b", b],
+  ]);
+
+  const root = walkCodexRootLinkage(a, byId);
+  assert.equal(root.rolloutId, "b");
+});
+
+test("walkCodexRootLinkage treats orphan fork as root", () => {
+  const fork = linkage("fork", null, null, "/codex/fork.jsonl", "ghost");
+  const byId = new Map<string, CodexRolloutLinkage>([["fork", fork]]);
+
+  assert.equal(walkCodexRootLinkage(fork, byId).rolloutId, "fork");
+});
+
+test("buildCodexChildrenById indexes fork children", () => {
+  const root = linkage("root", null, 0);
+  const fork = linkage("fork", null, null, "/codex/fork.jsonl", "root");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["root", root],
+    ["fork", fork],
+  ]);
+
+  const childrenById = buildCodexChildrenById(byId);
+  const rootChildren = childrenById.get("root") ?? [];
+  assert.equal(rootChildren.length, 1);
+  assert.equal(rootChildren[0]?.rolloutId, "fork");
+});
+
+test("findCodexDescendants returns fork rollouts as descendants", () => {
+  const root = linkage("root", null, 0);
+  const fork = linkage("fork", null, null, "/codex/fork.jsonl", "root");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["root", root],
+    ["fork", fork],
+  ]);
+
+  const descendants = findCodexDescendants(
+    "",
+    [],
+    byId,
+    buildCodexChildrenById(byId),
+    root
+  );
+  assert.equal(descendants.length, 1);
+  assert.equal(descendants[0]?.rolloutId, "fork");
+});
+
+test("findCodexParentSource returns parent for forked rollout", () => {
+  const root = linkage("root", null, 0, "/codex/root.jsonl");
+  const fork = linkage("fork", null, null, "/codex/fork.jsonl", "root");
+  const byId = new Map<string, CodexRolloutLinkage>([
+    ["root", root],
+    ["fork", fork],
+  ]);
+
+  assert.equal(
+    findCodexParentSource("/codex/fork.jsonl", [], byId, fork),
+    "/codex/root.jsonl"
+  );
+});
+
+test("findCodexParentSource returns null for orphan fork", () => {
+  const fork = linkage("fork", null, null, "/codex/fork.jsonl", "ghost");
+  const byId = new Map<string, CodexRolloutLinkage>([["fork", fork]]);
+
+  assert.equal(
+    findCodexParentSource("/codex/fork.jsonl", [], byId, fork),
+    null
   );
 });
 

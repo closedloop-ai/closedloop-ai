@@ -20,10 +20,35 @@ type InstanceInfo = {
 };
 
 type TargetRegistry = {
-  register(targetId: string, metadata: TargetMetadata): Promise<void>;
+  /**
+   * Persist the registry entry for a freshly connected target.
+   *
+   * Resolves `false` instead of rejecting when the backing store refused the
+   * write: registration is non-fatal by design (a relay that cannot reach Redis
+   * still serves its local socket), but the caller must be able to SEE the loss,
+   * because an unregistered target is invisible to every other relay instance
+   * until the heartbeat self-heal re-creates it.
+   */
+  register(targetId: string, metadata: TargetMetadata): Promise<boolean>;
   lookup(targetId: string): Promise<TargetMetadata | null>;
   deregister(targetId: string, ownerToken: string): Promise<boolean>;
   refreshTtl(targetId: string, ownerToken: string): Promise<boolean>;
+  /**
+   * Re-create a MISSING registry entry for a target this instance still holds a
+   * live socket for.
+   *
+   * `refreshTtl` deliberately refuses to touch a key it cannot verify ownership
+   * of -- but that means a lost entry (TTL lapse while heartbeats stalled, Redis
+   * failover/eviction, a swallowed `register` at hello) could never come back
+   * until the desktop reconnected. Until then every dispatch landing on any
+   * OTHER relay instance answered `target_not_connected` instantly while the
+   * desktop sat connected here (ISS-5811: the 0.4s never-started launches).
+   *
+   * SET NX so only a genuinely absent key is written: a live entry owned by a
+   * newer connection elsewhere is never clobbered, and when two instances race
+   * to heal, exactly one wins. Returns true when this call created the entry.
+   */
+  reclaim(targetId: string, metadata: TargetMetadata): Promise<boolean>;
   deregisterAllByInstance(instanceId: string): Promise<number>;
   registerInstance(instanceId: string, info: InstanceInfo): Promise<void>;
   lookupInstance(instanceId: string): Promise<InstanceInfo | null>;
@@ -34,9 +59,9 @@ class InMemoryTargetRegistry implements TargetRegistry {
   private readonly targets = new Map<string, TargetMetadata>();
   private readonly instances = new Map<string, InstanceInfo>();
 
-  register(targetId: string, metadata: TargetMetadata): Promise<void> {
+  register(targetId: string, metadata: TargetMetadata): Promise<boolean> {
     this.targets.set(targetId, metadata);
-    return Promise.resolve();
+    return Promise.resolve(true);
   }
 
   lookup(targetId: string): Promise<TargetMetadata | null> {
@@ -53,6 +78,14 @@ class InMemoryTargetRegistry implements TargetRegistry {
   }
 
   refreshTtl(_targetId: string, _ownerToken: string): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+
+  reclaim(targetId: string, metadata: TargetMetadata): Promise<boolean> {
+    if (this.targets.has(targetId)) {
+      return Promise.resolve(false);
+    }
+    this.targets.set(targetId, metadata);
     return Promise.resolve(true);
   }
 
@@ -111,16 +144,19 @@ class RedisTargetRegistry implements TargetRegistry {
     this.redis = redis;
   }
 
-  async register(targetId: string, metadata: TargetMetadata): Promise<void> {
+  async register(targetId: string, metadata: TargetMetadata): Promise<boolean> {
     try {
-      await this.redis.set(
+      const result = await this.redis.set(
         `target:${targetId}`,
         JSON.stringify(metadata),
         "PX",
         TARGET_TTL_MS
       );
+      return result === "OK";
     } catch {
-      // graceful degradation
+      // Graceful degradation: never throw at a caller that is mid-handshake.
+      // The `false` is what makes the loss visible instead of silent.
+      return false;
     }
   }
 
@@ -145,6 +181,21 @@ class RedisTargetRegistry implements TargetRegistry {
         ownerToken
       )) as number;
       return result === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  async reclaim(targetId: string, metadata: TargetMetadata): Promise<boolean> {
+    try {
+      const result = await this.redis.set(
+        `target:${targetId}`,
+        JSON.stringify(metadata),
+        "PX",
+        TARGET_TTL_MS,
+        "NX"
+      );
+      return result === "OK";
     } catch {
       return false;
     }

@@ -30,12 +30,21 @@ import path from "node:path";
 //     longer published/pre-built), so main inlines it from source; its only
 //     runtime dep `@pydantic/genai-prices` is bundled with it (not externalized),
 //     so it needs no closure entry.
+//   - @repo/crewd — the audit/scheduler core; its `exports` resolve to `.ts`
+//     source (never published), so main inlines it from source (WORKSPACE_INLINE
+//     in electron.vite.config.ts) and it needs no closure entry.
+//   - @repo/cost — the canonical token-cost engine (genai-cost +
+//     harness-cost-parity); its `exports` resolve to `.ts` source (never
+//     published), so main inlines it from source (WORKSPACE_INLINE in
+//     electron.vite.config.ts). Its runtime dep `@pydantic/genai-prices` is a
+//     direct apps/desktop registry dependency (externalized, resolved from
+//     node_modules), not carried by the inline, so it needs no closure entry.
 //   - @repo/app, @closedloop-ai/design-system — renderer-only; Vite bundles them.
 //
-// `packages/api/**`, `packages/shared-platform/**`, and `packages/loops-api/**`
-// are now *bundled build inputs* (a change to them alters the bundle), so CI path
-// filters (pr-test.yml, desktop-packaging-validation gating) still cover them
-// even though they left the staged runtime closure.
+// `packages/api/**`, `packages/shared-platform/**`, `packages/loops-api/**`, and
+// `packages/cost/**` are now *bundled build inputs* (a change to them alters the
+// bundle), so CI path filters (pr-test.yml `closure`/`electron_e2e`, e2e-test.yml
+// `desktop_e2e`) still cover them even though they left the staged runtime closure.
 //
 // This is the SINGLE SOURCE OF TRUTH consumed by stage-packaging-app.mjs, which
 // builds its `workspaceDependencyPackages` Map from it.

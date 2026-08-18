@@ -288,4 +288,104 @@ describe("parseSymphonyLoopRequestBody", () => {
         err.message.includes("cloudSessionToken is malformed")
     );
   });
+
+  // ISS-5154: `s3StateKey` names where a crash support bundle is uploaded. A
+  // present-but-wrong key used to collapse into omission, at which point
+  // handleLoopRequest falls back to `existing.s3StateKey` and a redispatch files
+  // this run's bundle under the PRIOR run's key.
+  test("accepts the dispatcher's state key for this loop", () => {
+    const loopId = "aaaaaaaa-0000-0000-0000-000000000020";
+    const parsed = parseSymphonyLoopRequestBody({
+      loopId,
+      command: LoopCommand.Plan,
+      closedLoopAuthToken: "token",
+      artifacts: [],
+      s3StateKey: `org-1/loops/${loopId}/run-1`,
+    });
+    assert.equal(parsed.s3StateKey, `org-1/loops/${loopId}/run-1`);
+  });
+
+  test("an ABSENT state key stays absent so the gateway keeps the job's existing key", () => {
+    const parsed = parseSymphonyLoopRequestBody({
+      loopId: "aaaaaaaa-0000-0000-0000-000000000021",
+      command: LoopCommand.Plan,
+      closedLoopAuthToken: "token",
+      artifacts: [],
+    });
+    assert.equal(
+      parsed.s3StateKey,
+      undefined,
+      "an older dispatcher omits the field entirely — that must not reject"
+    );
+
+    const explicitNull = parseSymphonyLoopRequestBody({
+      loopId: "aaaaaaaa-0000-0000-0000-000000000022",
+      command: LoopCommand.Plan,
+      closedLoopAuthToken: "token",
+      artifacts: [],
+      s3StateKey: null,
+    });
+    assert.equal(explicitNull.s3StateKey, undefined);
+  });
+
+  test("rejects a state key belonging to ANOTHER loop", () => {
+    assert.throws(
+      () =>
+        parseSymphonyLoopRequestBody({
+          loopId: "aaaaaaaa-0000-0000-0000-000000000023",
+          command: LoopCommand.Plan,
+          closedLoopAuthToken: "token",
+          artifacts: [],
+          s3StateKey: "org-1/loops/aaaaaaaa-0000-0000-0000-000000000099/run-1",
+        }),
+      (err) =>
+        err instanceof SymphonyLoopRequestValidationError &&
+        err.message.includes("s3StateKey is malformed") &&
+        err.message.includes("aaaaaaaa-0000-0000-0000-000000000099")
+    );
+  });
+
+  test("rejects whitespace, empty, and non-prefix state keys instead of dropping them", () => {
+    const loopId = "aaaaaaaa-0000-0000-0000-000000000024";
+    const rejected = [
+      `  org-1/loops/${loopId}/run-1`,
+      `org-1/loops/${loopId}/run 1`,
+      "   ",
+      "",
+      `org-1/${loopId}/run-1`,
+      `org-1/loops/${loopId}`,
+      `org-1/loops/${loopId}/${"x".repeat(900)}`,
+    ];
+    for (const s3StateKey of rejected) {
+      assert.throws(
+        () =>
+          parseSymphonyLoopRequestBody({
+            loopId,
+            command: LoopCommand.Plan,
+            closedLoopAuthToken: "token",
+            artifacts: [],
+            s3StateKey,
+          }),
+        (err) =>
+          err instanceof SymphonyLoopRequestValidationError &&
+          err.message.includes("s3StateKey is malformed"),
+        `expected ${JSON.stringify(s3StateKey)} to be rejected at the boundary`
+      );
+    }
+  });
+
+  test("rejects a present state key that cannot be attributed to a loop", () => {
+    assert.throws(
+      () =>
+        parseSymphonyLoopRequestBody({
+          command: LoopCommand.Plan,
+          closedLoopAuthToken: "token",
+          artifacts: [],
+          s3StateKey: "org-1/loops/some-loop/run-1",
+        }),
+      (err) =>
+        err instanceof SymphonyLoopRequestValidationError &&
+        err.message.includes("loopId is missing")
+    );
+  });
 });

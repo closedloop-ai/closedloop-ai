@@ -25,6 +25,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
   withDb: mocks.withDb,
+  // Minimal stub of the enum the service reads for its case-insensitive
+  // component-identity match; the mocked `findMany` ignores the `where`.
+  Prisma: { QueryMode: { insensitive: "insensitive" } },
 }));
 
 import { complianceService } from "../compliance/service";
@@ -74,22 +77,103 @@ function makeDistribution(
   };
 }
 
-type UsageRow = {
-  agentComponent: { computeTargetId: string } | null;
+// A usage fixture describes one installed component that has real invocations.
+// The batched read now runs as a GROUP BY over usage (returning distinct
+// `{ agentComponentId, componentKind }` rows) followed by one keyed fetch of
+// the owning components (`{ id, componentKey, name, computeTargetId }`). Each
+// fixture yields both the group row and its component row, correlated by a
+// synthetic `agentComponentId`. Defaults line up with the default
+// `makeDistribution` catalog item ("Test Plugin", kind "plugin"), whose
+// normalized identity is `test plugin`.
+type UsageFixture = {
+  computeTargetId: string;
+  componentKind: string;
+  componentKey: string | null;
+  name: string | null;
+  agentComponentId: string;
+};
+
+function makeUsageRow(
+  computeTargetId: string,
+  overrides: {
+    componentKind?: string;
+    componentKey?: string | null;
+    name?: string | null;
+    agentComponentId?: string;
+  } = {}
+): UsageFixture {
+  const componentKind = overrides.componentKind ?? "plugin";
+  const name = overrides.name === undefined ? "Test Plugin" : overrides.name;
+  const componentKey =
+    overrides.componentKey === undefined ? null : overrides.componentKey;
+  return {
+    computeTargetId,
+    componentKind,
+    componentKey,
+    name,
+    agentComponentId:
+      overrides.agentComponentId ??
+      `acid-${componentKind}-${componentKey ?? name ?? ""}-${computeTargetId}`,
+  };
+}
+
+type UsageGroupRow = { agentComponentId: string; componentKind: string };
+type ComponentRow = {
+  id: string;
+  componentKey: string | null;
+  name: string | null;
+  computeTargetId: string;
 };
 
 type MockDb = {
   distribution: { findMany: ReturnType<typeof vi.fn> };
   computeTarget: { findMany: ReturnType<typeof vi.fn> };
-  agentComponentSessionUsage: { findMany: ReturnType<typeof vi.fn> };
+  agentComponentSessionUsage: { groupBy: ReturnType<typeof vi.fn> };
+  agentComponent: { findMany: ReturnType<typeof vi.fn> };
 };
+
+function splitUsageFixtures(usageRows: UsageFixture[]): {
+  groups: UsageGroupRow[];
+  components: ComponentRow[];
+} {
+  const groups = new Map<string, UsageGroupRow>();
+  const components = new Map<string, ComponentRow>();
+  for (const row of usageRows) {
+    groups.set(`${row.agentComponentId}\u0000${row.componentKind}`, {
+      agentComponentId: row.agentComponentId,
+      componentKind: row.componentKind,
+    });
+    components.set(row.agentComponentId, {
+      id: row.agentComponentId,
+      componentKey: row.componentKey,
+      name: row.name,
+      computeTargetId: row.computeTargetId,
+    });
+  }
+  return {
+    groups: Array.from(groups.values()),
+    components: Array.from(components.values()),
+  };
+}
+
+function makeUsageDb(usageRows: UsageFixture[]): {
+  groupBy: ReturnType<typeof vi.fn>;
+  findMany: ReturnType<typeof vi.fn>;
+} {
+  const { groups, components } = splitUsageFixtures(usageRows);
+  return {
+    groupBy: vi.fn().mockResolvedValue(groups),
+    findMany: vi.fn().mockResolvedValue(components),
+  };
+}
 
 function installDb(params: {
   distributions: DistributionFixture[];
   computeTargets: { id: string }[];
-  usageRows?: UsageRow[];
+  usageRows?: UsageFixture[];
 }): void {
   const { distributions, computeTargets, usageRows = [] } = params;
+  const usage = makeUsageDb(usageRows);
 
   const db: MockDb = {
     distribution: {
@@ -99,7 +183,10 @@ function installDb(params: {
       findMany: vi.fn().mockResolvedValue(computeTargets),
     },
     agentComponentSessionUsage: {
-      findMany: vi.fn().mockResolvedValue(usageRows),
+      groupBy: usage.groupBy,
+    },
+    agentComponent: {
+      findMany: usage.findMany,
     },
   };
 
@@ -162,11 +249,7 @@ describe("complianceService.getCompliance", () => {
           }),
         ],
         computeTargets: [{ id: TARGET_1 }, { id: TARGET_2 }],
-        usageRows: [
-          {
-            agentComponent: { computeTargetId: TARGET_2 },
-          },
-        ],
+        usageRows: [makeUsageRow(TARGET_2)],
       });
 
       const result = await complianceService.getCompliance({
@@ -234,10 +317,8 @@ describe("complianceService.getCompliance", () => {
           }),
         ],
         computeTargets: [{ id: TARGET_1 }, { id: TARGET_2 }],
-        usageRows: [
-          // TARGET_1 has usage, TARGET_2 does not
-          { agentComponent: { computeTargetId: TARGET_1 } },
-        ],
+        // TARGET_1 has usage, TARGET_2 does not
+        usageRows: [makeUsageRow(TARGET_1)],
       });
 
       const result = await complianceService.getCompliance({
@@ -261,7 +342,7 @@ describe("complianceService.getCompliance", () => {
           }),
         ],
         computeTargets: [{ id: TARGET_1 }],
-        usageRows: [{ agentComponent: { computeTargetId: TARGET_1 } }],
+        usageRows: [makeUsageRow(TARGET_1)],
       });
 
       const result = await complianceService.getCompliance({
@@ -367,10 +448,7 @@ describe("complianceService.getCompliance", () => {
           { id: "target-4444" },
         ],
         // TARGET_1 and TARGET_2 have usage
-        usageRows: [
-          { agentComponent: { computeTargetId: TARGET_1 } },
-          { agentComponent: { computeTargetId: TARGET_2 } },
-        ],
+        usageRows: [makeUsageRow(TARGET_1), makeUsageRow(TARGET_2)],
       });
 
       const result = await complianceService.getCompliance({
@@ -410,10 +488,11 @@ describe("complianceService.getCompliance", () => {
         computeTarget: {
           findMany: vi.fn().mockResolvedValue([{ id: TARGET_1 }]),
         },
+        // DIST_2's TARGET_1 is installed but has no usage
         agentComponentSessionUsage: {
-          // DIST_2's TARGET_1 is installed but has no usage
-          findMany: vi.fn().mockResolvedValue([]),
+          groupBy: vi.fn().mockResolvedValue([]),
         },
+        agentComponent: { findMany: vi.fn().mockResolvedValue([]) },
       };
 
       mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
@@ -435,6 +514,156 @@ describe("complianceService.getCompliance", () => {
       );
       expect(distAItem?.notInstalledCount).toBe(1);
       expect(distBItem?.installedButUnusedCount).toBe(1);
+    });
+  });
+
+  describe("limit caps display rows, not the scan (completeness)", () => {
+    it("scans all distributions and reports total + truncated when gaps exceed limit", async () => {
+      // Three distributions each with an all-targeting not-installed gap. A
+      // limit of 2 must still SCAN all three (so nothing is silently dropped)
+      // and report total=3, truncated=true — not an empty/short page that
+      // reads as "compliant".
+      const dists = ["dist-a", "dist-b", "dist-c"].map((id) =>
+        makeDistribution({
+          id,
+          catalogItem: { name: id, targetKind: "plugin" },
+          targetStatuses: [],
+        })
+      );
+      installDb({
+        distributions: dists,
+        computeTargets: [{ id: TARGET_1 }],
+      });
+
+      const result = await complianceService.getCompliance({
+        organizationId: ORG,
+        limit: 2,
+      });
+
+      expect(result.items).toHaveLength(2);
+      expect(result.total).toBe(3);
+      expect(result.truncated).toBe(true);
+    });
+
+    it("does not set truncated when every gap fits in the page", async () => {
+      installDb({
+        distributions: [makeDistribution({ targetStatuses: [] })],
+        computeTargets: [{ id: TARGET_1 }],
+      });
+
+      const result = await complianceService.getCompliance({
+        organizationId: ORG,
+        limit: 50,
+      });
+
+      expect(result.items).toHaveLength(1);
+      expect(result.total).toBe(1);
+      expect(result.truncated).toBe(false);
+    });
+
+    it("does not pass take:limit to the distribution query", async () => {
+      const distributionFindMany = vi.fn().mockResolvedValue([]);
+      const db: MockDb = {
+        distribution: { findMany: distributionFindMany },
+        computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
+        agentComponentSessionUsage: {
+          groupBy: vi.fn().mockResolvedValue([]),
+        },
+        agentComponent: { findMany: vi.fn().mockResolvedValue([]) },
+      };
+      mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
+        callback(db)
+      );
+
+      await complianceService.getCompliance({ organizationId: ORG, limit: 10 });
+
+      const callArg = distributionFindMany.mock.calls[0]?.[0] as
+        | { take?: number }
+        | undefined;
+      expect(callArg?.take).toBeUndefined();
+    });
+  });
+
+  describe("batched usage read (FEA-4024, no N+1)", () => {
+    it("resolves installed-but-unused for every distribution with ONE usage query", async () => {
+      // Only Plugin A's TARGET_1 has a matching usage row; the single batched
+      // GROUP BY returns the whole distinct set and the service attributes each
+      // row to its (kind, normalized-name, target) identity in memory.
+      const usage = makeUsageDb([makeUsageRow(TARGET_1, { name: "Plugin A" })]);
+      const db: MockDb = {
+        distribution: {
+          findMany: vi.fn().mockResolvedValue([
+            makeDistribution({
+              id: DIST_1,
+              catalogItem: { name: "Plugin A", targetKind: "plugin" },
+              targetStatuses: [
+                { computeTargetId: TARGET_1, status: "installed" },
+                { computeTargetId: TARGET_2, status: "installed" },
+              ],
+            }),
+            makeDistribution({
+              id: DIST_2,
+              catalogItem: { name: "Plugin B", targetKind: "plugin" },
+              targetStatuses: [
+                { computeTargetId: TARGET_1, status: "installed" },
+                { computeTargetId: TARGET_2, status: "installed" },
+              ],
+            }),
+          ]),
+        },
+        computeTarget: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([{ id: TARGET_1 }, { id: TARGET_2 }]),
+        },
+        agentComponentSessionUsage: { groupBy: usage.groupBy },
+        agentComponent: { findMany: usage.findMany },
+      };
+      mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
+        callback(db)
+      );
+
+      const result = await complianceService.getCompliance({
+        organizationId: ORG,
+        limit: 50,
+      });
+
+      // Two distributions, but only ONE usage GROUP BY — the N+1 is gone.
+      expect(usage.groupBy).toHaveBeenCalledTimes(1);
+
+      const pluginA = result.items.find(
+        (i) => i.catalogItemName === "Plugin A"
+      );
+      const pluginB = result.items.find(
+        (i) => i.catalogItemName === "Plugin B"
+      );
+      // Plugin A: TARGET_1 used, TARGET_2 unused.
+      expect(pluginA?.installedButUnusedCount).toBe(1);
+      // Plugin B: no row matches its identity → both installed targets unused.
+      expect(pluginB?.installedButUnusedCount).toBe(2);
+    });
+
+    it("skips the usage query entirely when no targets are installed", async () => {
+      const usage = makeUsageDb([]);
+      const db: MockDb = {
+        distribution: {
+          findMany: vi
+            .fn()
+            .mockResolvedValue([makeDistribution({ targetStatuses: [] })]),
+        },
+        computeTarget: {
+          findMany: vi.fn().mockResolvedValue([{ id: TARGET_1 }]),
+        },
+        agentComponentSessionUsage: { groupBy: usage.groupBy },
+        agentComponent: { findMany: usage.findMany },
+      };
+      mocks.withDb.mockImplementation((callback: (db: MockDb) => unknown) =>
+        callback(db)
+      );
+
+      await complianceService.getCompliance({ organizationId: ORG, limit: 50 });
+
+      expect(usage.groupBy).not.toHaveBeenCalled();
     });
   });
 

@@ -1,5 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { DateRange } from "../../lib/format-utils";
 import { useSharedDateRange } from "../use-shared-date-range";
 
 const SHARED_KEY = "shared:date-range:test";
@@ -10,6 +11,18 @@ afterEach(() => {
 });
 
 describe("useSharedDateRange", () => {
+  it("adopts a changed default while no preference is persisted", () => {
+    const { result, rerender } = renderHook(
+      ({ defaultRange }: { defaultRange: DateRange }) =>
+        useSharedDateRange("flagged", defaultRange),
+      { initialProps: { defaultRange: "90d" as DateRange } }
+    );
+
+    expect(result.current.dateRange).toBe("90d");
+    rerender({ defaultRange: "30d" });
+    expect(result.current.dateRange).toBe("30d");
+    expect(localStorage.getItem("shared:date-range:flagged")).toBeNull();
+  });
   it("defaults to the 90d window when nothing is persisted", () => {
     const { result } = renderHook(() => useSharedDateRange("test"));
     expect(result.current.dateRange).toBe("90d");

@@ -1,4 +1,5 @@
 import { TelemetryAttribute } from "./src/attributes";
+import { TelemetryDurationMsMax } from "./src/schema-primitives";
 
 /**
  * Typed source of truth for the keyless-telemetry collector tail-sampling
@@ -24,11 +25,14 @@ export type CollectorTailSamplingPolicy = {
   /** Expected new traces/sec — collector pre-sizes buffers from this hint. */
   readonly expectedNewTracesPerSec: number;
   /**
-   * Root-span duration (ms) at/above which a trace is treated as slow and kept
-   * at 100%. A fixed proxy for the p99 boundary; calibrate against observed
-   * Datadog p99 post-deploy (FEA-1992 §7).
+   * Child-span duration_ms at/above which a trace is treated as slow and kept
+   * at 100%. Activity-window root duration is intentionally excluded.
    */
   readonly slowLatencyThresholdMs: number;
+  /** Span attribute carrying the bounded child-operation duration in ms. */
+  readonly slowLatencyAttributeKey: string;
+  /** Inclusive upper bound accepted by the collector numeric_attribute policy. */
+  readonly slowLatencyMaxMs: number;
   /** Baseline keep rate (%) applied to everything not caught by a keep policy. */
   readonly baselineSamplingPercentage: number;
   /** Span attribute carrying the HTTP status code, matched for 5xx retention. */
@@ -37,6 +41,11 @@ export type CollectorTailSamplingPolicy = {
   readonly serverErrorStatusRange: {
     readonly min: number;
     readonly max: number;
+  };
+  /** Persist keep/drop decisions so late root spans follow the original vote. */
+  readonly decisionCache: {
+    readonly sampledCacheSize: number;
+    readonly nonSampledCacheSize: number;
   };
   /** Stable policy names (also the otelcol decision metric labels). */
   readonly policyNames: {
@@ -51,15 +60,21 @@ export type CollectorTailSamplingPolicy = {
 export const ERROR_STATUS_CODE = "ERROR";
 
 export const CollectorTailSamplingPolicy: CollectorTailSamplingPolicy = {
-  decisionWaitSeconds: 10,
-  numTraces: 50_000,
+  decisionWaitSeconds: 310,
+  numTraces: 62_000,
   expectedNewTracesPerSec: 200,
   slowLatencyThresholdMs: 2000,
+  slowLatencyAttributeKey: TelemetryAttribute.DurationMs,
+  slowLatencyMaxMs: TelemetryDurationMsMax,
   baselineSamplingPercentage: 10,
   // Canonical contract key (single source of truth); the numeric_attribute
   // policy must match the same key the SDK emits on error spans.
   serverErrorAttributeKey: TelemetryAttribute.HttpResponseStatusCode,
   serverErrorStatusRange: { min: 500, max: 599 },
+  decisionCache: {
+    sampledCacheSize: 100_000,
+    nonSampledCacheSize: 100_000,
+  },
   policyNames: {
     errorStatus: "keep-error-status",
     serverErrors: "keep-server-errors",
@@ -86,7 +101,29 @@ export function assertValidPolicy(policy: CollectorTailSamplingPolicy): void {
   requirePositiveInt("decisionWaitSeconds", policy.decisionWaitSeconds);
   requirePositiveInt("numTraces", policy.numTraces);
   requirePositiveInt("expectedNewTracesPerSec", policy.expectedNewTracesPerSec);
+  if (
+    policy.numTraces <
+    policy.decisionWaitSeconds * policy.expectedNewTracesPerSec
+  ) {
+    problems.push(
+      `numTraces must be >= decisionWaitSeconds * expectedNewTracesPerSec (got ${policy.numTraces} < ${policy.decisionWaitSeconds * policy.expectedNewTracesPerSec}).`
+    );
+  }
   requirePositiveInt("slowLatencyThresholdMs", policy.slowLatencyThresholdMs);
+  requirePositiveInt("slowLatencyMaxMs", policy.slowLatencyMaxMs);
+  if (policy.slowLatencyThresholdMs > policy.slowLatencyMaxMs) {
+    problems.push(
+      `slowLatencyThresholdMs must be <= slowLatencyMaxMs (got ${policy.slowLatencyThresholdMs} > ${policy.slowLatencyMaxMs}).`
+    );
+  }
+  requirePositiveInt(
+    "decisionCache.sampledCacheSize",
+    policy.decisionCache.sampledCacheSize
+  );
+  requirePositiveInt(
+    "decisionCache.nonSampledCacheSize",
+    policy.decisionCache.nonSampledCacheSize
+  );
 
   if (
     !Number.isInteger(policy.baselineSamplingPercentage) ||

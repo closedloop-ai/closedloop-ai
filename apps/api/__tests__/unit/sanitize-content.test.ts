@@ -366,7 +366,7 @@ describe("sanitizeDocumentContent", () => {
   });
 
   describe("adversarial ReDoS", () => {
-    it("completes within 500ms for 5000 lines with one or two backticks each", () => {
+    it("sanitizes 5000 lines with one or two unclosed backticks each without corrupting them", () => {
       const lines: string[] = [];
       for (let i = 0; i < 2500; i++) {
         lines.push("`single backtick line");
@@ -374,12 +374,17 @@ describe("sanitizeDocumentContent", () => {
       }
       const content = lines.join("\n");
 
-      const start = Date.now();
-      sanitizeDocumentContent(content);
-      const elapsed = Date.now() - start;
+      const result = sanitizeDocumentContent(content);
 
-      expect(elapsed).toBeLessThan(500);
-    });
+      // Correctness at scale, not a wall-clock bound. What a timing assertion
+      // never proved is that all 5000 unclosed-backtick lines survive the
+      // placeholder round-trip byte for byte; the explicit 2 s test timeout
+      // below is what catches a backtracking regression, and unlike an
+      // `expect(elapsed)` bound it is a budget rather than an assertion, so it
+      // is not the load-sensitive thing AGENTS.md bans.
+      expect(result.content).toBe(content);
+      expect(result.stripped).toEqual([]);
+    }, 2000);
   });
 
   describe("idempotency", () => {

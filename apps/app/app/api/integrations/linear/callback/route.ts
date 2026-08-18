@@ -31,20 +31,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Read cookies early so onboarding return is available for all error redirects
     const cookieStore = await cookies();
-    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
-    const returnTo = onboardingReturn ? "/onboarding" : undefined;
 
-    const makeErrorRedirect = (code: LinearErrorCode): NextResponse => {
-      const response = NextResponse.redirect(
-        getErrorRedirectUrl(code, returnTo)
-      );
-      if (onboardingReturn) {
-        response.cookies.delete("onboarding_return");
-      }
-      return response;
-    };
+    const makeErrorRedirect = (code: LinearErrorCode): NextResponse =>
+      NextResponse.redirect(getErrorRedirectUrl(code));
 
     const { searchParams } = new URL(request.url);
 
@@ -132,12 +122,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     });
 
     // Clear cookies and redirect using response object pattern (Next.js App Router best practice)
-    const response = NextResponse.redirect(getSuccessRedirectUrl(returnTo));
+    const response = NextResponse.redirect(getSuccessRedirectUrl());
     response.cookies.delete(LINEAR_OAUTH_STATE_COOKIE);
     response.cookies.delete(LINEAR_PKCE_VERIFIER_COOKIE);
-    if (onboardingReturn) {
-      response.cookies.delete("onboarding_return");
-    }
     return response;
   } catch (error) {
     log.error("[linear/callback] Failed to complete OAuth", { error });

@@ -3,21 +3,22 @@
  * @description Validates the first-party harness parsers (FEA-1503) against
  * synthetic transcripts in the documented on-disk formats. Fixtures are carried
  * over from the prior vendor-parser tests so the CommonJS→TypeScript port is
- * proven not to drift, plus a Claude transcript fixture for the new first-party
- * Claude collector.
+ * proven not to drift.
+ *
+ * Covers four harnesses — Copilot, OpenCode, Codex, and Cursor. The CLAUDE
+ * parser's suites were carved out of this file, into the sibling
+ * `test/claude-*.test.ts` files, so its contract is readable from the file tree
+ * rather than buried in what was then a five-harness suite. They are siblings,
+ * not a subdirectory: `scripts/run-node-tests.mjs` discovers suites with a flat,
+ * non-recursive `readdirSync` over `test/`, so a suite in a subdirectory would
+ * never run in CI.
  */
 import assert from "node:assert/strict";
-import {
-  mkdirSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, test } from "node:test";
-import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
+import { parseCursorTranscript } from "@repo/lib/harness/cursor/parse-cursor";
 import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
 import { parseRolloutFile } from "../src/main/collectors/codex/codex-parser.js";
 import { workspacePathFromUri } from "../src/main/collectors/copilot/copilot-home.js";
@@ -28,6 +29,23 @@ import {
 import { parseTranscriptFile } from "../src/main/collectors/cursor/cursor-parser.js";
 import { loadSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";
 import {
+  CODEX_CHILD_UUID,
+  CODEX_DUPLICATE_UUID,
+  CODEX_FORK_UUID,
+  CODEX_GRANDCHILD_UUID,
+  CODEX_MISSING_PARENT_UUID,
+  CODEX_PARENT_UUID,
+  CODEX_UUID,
+  codexMcpToolCallBegin,
+  codexMcpToolCallEnd,
+  codexSessionMeta,
+  codexSubagentMeta,
+  codexTokenCount,
+  codexTurn,
+  minimalCodexRollout,
+  writeCodexCollectorRollout,
+} from "./codex-rollout-fixture.js";
+import {
   cleanupTempDirs,
   makeTempDir,
   writeJsonl,
@@ -35,156 +53,8 @@ import {
 
 afterEach(cleanupTempDirs);
 
-const CODEX_UUID = "11111111-1111-4111-8111-111111111111";
-const CODEX_PARENT_UUID = "22222222-2222-4222-8222-222222222222";
-const CODEX_CHILD_UUID = "33333333-3333-4333-8333-333333333333";
-const CODEX_GRANDCHILD_UUID = "44444444-4444-4444-8444-444444444444";
-const CODEX_MISSING_PARENT_UUID = "55555555-5555-4555-8555-555555555555";
-const CODEX_DUPLICATE_UUID = "66666666-6666-4666-8666-666666666666";
-const CODEX_FORK_UUID = "77777777-7777-4777-8777-777777777777";
-
 function writeRollout(name: string, lines: unknown[]): string {
   return writeJsonl(makeTempDir("codex-rollout-"), name, lines);
-}
-
-function writeCodexCollectorRollout(
-  root: string,
-  id: string,
-  lines: unknown[],
-  prefix = "2026-06-24T10-00-00"
-): string {
-  const dir = path.join(root, "2026", "06", "24");
-  mkdirSync(dir, { recursive: true });
-  return writeJsonl(dir, `rollout-${prefix}-${id}.jsonl`, lines);
-}
-
-function codexSessionMeta(
-  timestamp: string,
-  payload: Record<string, unknown>
-): unknown {
-  return {
-    timestamp,
-    type: "session_meta",
-    payload: {
-      cwd: "/Users/dev/codex-parent",
-      cli_version: "0.40.0",
-      ...payload,
-    },
-  };
-}
-
-function codexSubagentMeta(
-  timestamp: string,
-  id: string,
-  parentThreadId: string,
-  depth = 1
-): unknown {
-  return codexSessionMeta(timestamp, {
-    id,
-    source: {
-      subagent: {
-        agent_nickname: `child-${id.slice(0, 4)}`,
-        agent_role: "worker",
-        thread_spawn: {
-          parent_thread_id: parentThreadId,
-          depth,
-        },
-      },
-    },
-  });
-}
-
-function codexTurn(timestamp: string, model = "gpt-5-codex"): unknown {
-  return {
-    timestamp,
-    type: "turn_context",
-    payload: { model, cwd: "/Users/dev/codex-parent" },
-  };
-}
-
-function codexUser(timestamp: string): unknown {
-  return {
-    timestamp,
-    type: "event_msg",
-    payload: { type: "user_message", message: "work" },
-  };
-}
-
-function codexAssistant(timestamp: string): unknown {
-  return {
-    timestamp,
-    type: "response_item",
-    payload: {
-      type: "message",
-      role: "assistant",
-      content: [{ type: "output_text", text: "done" }],
-    },
-  };
-}
-
-function codexTokenCount(
-  timestamp: string,
-  inputTokens: number,
-  cachedInputTokens: number,
-  outputTokens: number
-): unknown {
-  return {
-    timestamp,
-    type: "event_msg",
-    payload: {
-      type: "token_count",
-      info: {
-        total_token_usage: {
-          input_tokens: inputTokens,
-          cached_input_tokens: cachedInputTokens,
-          output_tokens: outputTokens,
-        },
-      },
-      turn_context: { model: "gpt-5-codex" },
-    },
-  };
-}
-
-function codexMcpToolCallBegin(
-  timestamp: string,
-  argumentsValue: unknown
-): unknown {
-  return {
-    timestamp,
-    type: "event_msg",
-    payload: {
-      type: "mcp_tool_call_begin",
-      server: "github",
-      method: "create_pull_request",
-      arguments: argumentsValue,
-    },
-  };
-}
-
-function codexMcpToolCallEnd(timestamp: string, output: unknown): unknown {
-  return {
-    timestamp,
-    type: "event_msg",
-    payload: {
-      type: "mcp_tool_call_end",
-      output,
-    },
-  };
-}
-
-function minimalCodexRollout(
-  id: string,
-  timestamp: string,
-  totals: { input: number; cached: number; output: number },
-  meta?: unknown
-): unknown[] {
-  return [
-    meta ?? codexSessionMeta(timestamp, { id, source: "exec" }),
-    codexTurn(timestamp),
-    codexUser(timestamp),
-    codexAssistant(timestamp),
-    codexTokenCount(timestamp, totals.input, totals.cached, totals.output),
-  ];
 }
 
 describe("Copilot parsers", () => {
@@ -276,6 +146,84 @@ describe("Copilot parsers", () => {
       cacheRead: 2000,
       cacheWrite: 300,
     });
+  });
+
+  // FEA-3728: an OpenAI-backed Copilot payload reports `reasoning_output_tokens`,
+  // which is a SUBSET of `output_tokens` (proven for OpenAI/Codex in FEA-3126 /
+  // FEA-3527) — the output figure already includes it. The parser must NOT fold
+  // it into output again; doing so double-counts reasoning and inflates cost.
+  test("Copilot Chat parser does not fold reasoning_output_tokens into output (OpenAI subset)", () => {
+    const dir = makeTempDir("copilot-reasoning-subset-");
+    const filePath = path.join(dir, "session.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        sessionId: "copilot-reasoning-1",
+        creationDate: 1_710_000_000_000,
+        lastMessageDate: 1_710_000_060_000,
+        model: "gpt-5.5",
+        usage: {
+          input_tokens: 600,
+          output_tokens: 220,
+          reasoning_output_tokens: 80,
+          cache_read_tokens: 2000,
+          cache_write_tokens: 300,
+        },
+        requests: [
+          {
+            id: "req-1",
+            timestamp: 1_710_000_000_000,
+            message: { text: "Summarize" },
+            response: { markdown: "Done." },
+          },
+        ],
+      }),
+      "utf8"
+    );
+
+    const parsed = parseChatSessionFile(filePath, "/Users/dev/my project");
+    assert.ok(parsed, "expected a parsed Copilot chat session");
+    // output stays 220 — reasoning_output_tokens is already inside it, not added.
+    assert.equal(parsed.tokensByModel["gpt-5.5"].output, 220);
+    assert.notEqual(parsed.tokensByModel["gpt-5.5"].output, 220 + 80);
+  });
+
+  // FEA-3728 (contrast): `reasoning_tokens` is reasoning counted SEPARATELY from
+  // output, so it stays additive — only the OpenAI `reasoning_output_tokens`
+  // subset field is excluded from the fold.
+  test("Copilot Chat parser still folds additive reasoning_tokens into output", () => {
+    const dir = makeTempDir("copilot-reasoning-additive-");
+    const filePath = path.join(dir, "session.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        sessionId: "copilot-reasoning-2",
+        creationDate: 1_710_000_000_000,
+        lastMessageDate: 1_710_000_060_000,
+        model: "gpt-5.5",
+        usage: {
+          input_tokens: 600,
+          output_tokens: 220,
+          reasoning_tokens: 80,
+          cache_read_tokens: 2000,
+          cache_write_tokens: 300,
+        },
+        requests: [
+          {
+            id: "req-1",
+            timestamp: 1_710_000_000_000,
+            message: { text: "Summarize" },
+            response: { markdown: "Done." },
+          },
+        ],
+      }),
+      "utf8"
+    );
+
+    const parsed = parseChatSessionFile(filePath, "/Users/dev/my project");
+    assert.ok(parsed, "expected a parsed Copilot chat session");
+    // reasoning_tokens is separate reasoning, so it folds into output.
+    assert.equal(parsed.tokensByModel["gpt-5.5"].output, 220 + 80);
   });
 
   // Exercises the Copilot CLI events.jsonl dispatch path: session metadata,
@@ -584,7 +532,7 @@ describe("Codex parser", () => {
     // comparability (1200 total - 400 cached = 800 non-cached input).
     assert.deepEqual(parsed.tokensByModel["gpt-5-codex"], {
       input: 800,
-      output: 350,
+      output: 300,
       cacheRead: 400,
       cacheWrite: 0,
     });
@@ -844,6 +792,66 @@ describe("Codex collector", () => {
       cacheRead: 550,
       cacheWrite: 0,
     });
+  });
+
+  test("Codex collector folds child compactions into the root and skips replayed timestamps (FEA-3127)", async () => {
+    const root = makeTempDir("codex-collector-compactions-");
+    const parentCompactionTs = "2026-06-24T10:03:00.000Z";
+    const childCompactionTs = "2026-06-24T10:04:00.000Z";
+    const compactedPair = (ts: string, echoTs: string) => [
+      {
+        timestamp: ts,
+        type: "compacted",
+        payload: { message: "", replacement_history: [] },
+      },
+      {
+        timestamp: echoTs,
+        type: "event_msg",
+        payload: { type: "context_compacted" },
+      },
+    ];
+    const parentPath = writeCodexCollectorRollout(root, CODEX_PARENT_UUID, [
+      ...minimalCodexRollout(CODEX_PARENT_UUID, "2026-06-24T10:00:00.000Z", {
+        input: 1000,
+        cached: 400,
+        output: 100,
+      }),
+      ...compactedPair(parentCompactionTs, "2026-06-24T10:03:00.100Z"),
+    ]);
+    // The child records the parent's compaction timestamp (a forked rollout
+    // replays its source's history, `compacted` records included) plus one
+    // compaction of its own.
+    const childPath = writeCodexCollectorRollout(
+      root,
+      CODEX_CHILD_UUID,
+      [
+        ...minimalCodexRollout(
+          CODEX_CHILD_UUID,
+          "2026-06-24T10:01:00.000Z",
+          { input: 500, cached: 100, output: 50 },
+          codexSubagentMeta(
+            "2026-06-24T10:01:00.000Z",
+            CODEX_CHILD_UUID,
+            CODEX_PARENT_UUID,
+            1
+          )
+        ),
+        ...compactedPair(parentCompactionTs, "2026-06-24T10:03:00.100Z"),
+        ...compactedPair(childCompactionTs, "2026-06-24T10:04:00.100Z"),
+      ],
+      "2026-06-24T10-01-00"
+    );
+    const collector = createCodexCollector({
+      sessionsDir: root,
+      archivedDir: path.join(root, "archive"),
+      listSources: () => [parentPath, childPath],
+    });
+
+    const [parent] = await collector.parse(parentPath);
+    assert.deepEqual(parent.compactions, [
+      { uuid: null, timestamp: parentCompactionTs },
+      { uuid: null, timestamp: childCompactionTs },
+    ]);
   });
 
   test("Codex collector drops poisoned/malformed persisted linkage cache entries", async () => {
@@ -1269,1141 +1277,89 @@ describe("Cursor parser", () => {
       cacheWrite: 300,
     });
   });
-});
 
-describe("Claude parser", () => {
-  test("Claude parser extracts session metadata, tokens, tools, and thinking", async () => {
-    const dir = makeTempDir("claude-proj-");
-    const filePath = writeJsonl(dir, "claude-sess-1.jsonl", [
+  // FEA-3710 (Parser roadmap 4): the Cursor parser core now lives in the shared,
+  // browser-safe `@repo/lib/harness` module. This pins the contract that both
+  // entrypoints — the desktop file shell (`parseTranscriptFile`, which streams
+  // the file and stamps mtime) and the pure core (`parseCursorTranscript`, which
+  // the cloud/browser upload path invokes on in-memory lines) — produce the SAME
+  // canonical NormalizedSession for the same fixture, modulo the desktop-only
+  // `fileModifiedAt` stamp. A surface-specific semantic fork would diverge here.
+  test("Cursor: desktop shell and shared core produce the same canonical session", async () => {
+    const records = [
       {
-        type: "user",
         timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        gitBranch: "main",
-        version: "1.2.3",
-        message: {
-          role: "user",
-          content: "Investigate the local changes.",
+        type: "session_meta",
+        payload: {
+          cwd: "/Users/dev/cursor project",
+          model: "claude-3-7-sonnet",
+          git: { branch: "main" },
         },
       },
       {
-        type: "assistant",
         timestamp: "2024-03-09T16:00:05.000Z",
-        message: {
-          model: "claude-opus-4-5",
+        type: "user_message",
+        payload: { message: "Investigate failing test" },
+      },
+      {
+        timestamp: "2024-03-09T16:00:08.000Z",
+        type: "tool_call",
+        payload: { name: "Bash", arguments: { command: "pnpm test" } },
+      },
+      {
+        timestamp: "2024-03-09T16:00:09.000Z",
+        type: "tool_result",
+        payload: { output: "1 failing", exit_code: 1 },
+      },
+      {
+        timestamp: "2024-03-09T16:00:11.500Z",
+        type: "assistant_message",
+        payload: { message: "Found it" },
+      },
+      {
+        timestamp: "2024-03-09T16:00:12.000Z",
+        type: "token_count",
+        payload: {
           usage: {
-            input_tokens: 100,
-            output_tokens: 50,
-            cache_read_input_tokens: 10,
-            cache_creation_input_tokens: 5,
-          },
-          content: [
-            { type: "thinking", thinking: "hmm" },
-            { type: "tool_use", name: "Read", input: { file_path: "x" } },
-          ],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.sessionId, "claude-sess-1");
-    assert.equal(parsed.cwd, "/Users/dev/proj");
-    assert.equal(parsed.gitBranch, "main");
-    assert.equal(parsed.version, "1.2.3");
-    assert.equal(parsed.model, "claude-opus-4-5");
-    assert.equal(parsed.userMessages, 1);
-    assert.equal(parsed.assistantMessages, 1);
-    assert.equal(parsed.messages[0]?.role, "human");
-    assert.equal(parsed.messages[0]?.text, "Investigate the local changes.");
-    assert.equal(parsed.thinkingBlockCount, 1);
-    assert.equal(parsed.toolUses.length, 1);
-    assert.equal(parsed.toolUses[0].name, "Read");
-    assert.deepEqual(parsed.messageTimestamps, ["2024-03-09T16:00:05.000Z"]);
-    assert.deepEqual(parsed.tokensByModel["claude-opus-4-5"], {
-      input: 100,
-      output: 50,
-      cacheRead: 10,
-      cacheWrite: 5,
-    });
-    assert.equal(parsed.startedAt, "2024-03-09T16:00:00.000Z");
-    assert.equal(parsed.endedAt, "2024-03-09T16:00:05.000Z");
-    assert.equal(parsed.entrypoint, "claude");
-  });
-
-  test("Claude parser excludes tool-result-only user turns from human messages (FEA-2192)", async () => {
-    const dir = makeTempDir("claude-toolresult-");
-    const filePath = writeJsonl(dir, "claude-toolresult.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Read the config file." },
-      },
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_read_1",
-              name: "Read",
-              input: { file_path: "config.ts" },
-            },
-          ],
-        },
-      },
-      {
-        // Synthetic tool-result turn: delivered as a `user` entry but carrying no
-        // human-authored text. Must NOT be counted as human steering (FEA-2192).
-        type: "user",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "toolu_read_1",
-              content: "export const config = {};",
-            },
-          ],
-        },
-      },
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:03.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [{ type: "text", text: "Done." }],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Only the genuine prompt counts; the tool-result turn is not a human message.
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Read the config file.");
-    // The tool_result is still back-linked to its tool_use (applyToolResult runs).
-    assert.equal(parsed.toolUses.length, 1);
-    assert.equal(parsed.toolUses[0]?.output, "export const config = {};");
-  });
-
-  test("Claude parser keeps user turns mixing text and tool_result as human messages (FEA-2192)", async () => {
-    const dir = makeTempDir("claude-mixed-");
-    const filePath = writeJsonl(dir, "claude-mixed.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_read_1",
-              name: "Read",
-              input: { file_path: "config.ts" },
-            },
-          ],
-        },
-      },
-      {
-        // A user turn carrying BOTH a tool_result and human-authored text — a
-        // genuine prompt that must NOT be skipped (FEA-2192).
-        type: "user",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "toolu_read_1",
-              content: "export const config = {};",
-            },
-            { type: "text", text: "Now refactor it." },
-          ],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // The mixed turn still counts as one human message and keeps its text...
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Now refactor it.");
-    // ...while the tool_result in the same turn is still back-linked to its tool.
-    assert.equal(parsed.toolUses[0]?.output, "export const config = {};");
-  });
-
-  test("Claude parser excludes synthetic user turns (meta, compaction, task-notification) from human messages (FEA-2192)", async () => {
-    const dir = makeTempDir("claude-synthetic-");
-    const filePath = writeJsonl(dir, "claude-synthetic.jsonl", [
-      {
-        // Genuine human prompt.
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        message: { role: "user", content: "Run the review." },
-      },
-      {
-        // Slash-command expansion injected as a meta turn.
-        type: "user",
-        isMeta: true,
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          role: "user",
-          content: [{ type: "text", text: "# Comprehensive Review\nRun..." }],
-        },
-      },
-      {
-        // Auto-compaction continuation summary.
-        type: "user",
-        isCompactSummary: true,
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: {
-          role: "user",
-          content:
-            "This session is being continued from a previous conversation.",
-        },
-      },
-      {
-        // Background-task completion notification (origin.kind).
-        type: "user",
-        origin: { kind: "task-notification" },
-        timestamp: "2024-03-09T16:00:03.000Z",
-        message: {
-          role: "user",
-          content:
-            "<task-notification>\n<task-id>abc</task-id>\n<result>DONE</result>\n</task-notification>",
-        },
-      },
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:04.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [{ type: "text", text: "On it." }],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Only the genuine prompt is a human message; meta/compaction/task-notification
-    // turns reuse the `user` role but are not human steering (FEA-2192).
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Run the review.");
-  });
-
-  test("Claude parser still captures tool_result on a synthetic user turn (FEA-2192)", async () => {
-    const dir = makeTempDir("claude-synthetic-toolresult-");
-    const filePath = writeJsonl(dir, "claude-synthetic-toolresult.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_read_1",
-              name: "Read",
-              input: { file_path: "config.ts" },
-            },
-          ],
-        },
-      },
-      {
-        // Synthetic (isMeta) turn that ALSO carries a tool_result. The synthetic
-        // guard must skip the human message, but applyToolResult runs first and
-        // unconditionally, so the tool output must still be back-linked (FEA-2192).
-        type: "user",
-        isMeta: true,
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          role: "user",
-          content: [
-            {
-              type: "tool_result",
-              tool_use_id: "toolu_read_1",
-              content: "export const config = {};",
-            },
-          ],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // The synthetic turn adds no human message...
-    assert.equal(parsed.userMessages, 0);
-    assert.equal(parsed.messages.filter((m) => m.role === "human").length, 0);
-    // ...but its tool_result is still captured and back-linked to the tool_use.
-    assert.equal(parsed.toolUses.length, 1);
-    assert.equal(parsed.toolUses[0]?.output, "export const config = {};");
-  });
-
-  test("Claude parser carries inline sidechain parentUuid into subagent hierarchy", async () => {
-    const dir = makeTempDir("claude-sidechain-");
-    const filePath = writeJsonl(dir, "claude-sidechain.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        uuid: "parent-sidechain",
-        isSidechain: true,
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_parent_sidechain",
-              name: "Read",
-              input: { file_path: "parent.ts" },
-            },
-          ],
-        },
-      },
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        uuid: "child-sidechain",
-        parentUuid: "parent-sidechain",
-        isSidechain: true,
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_sidechain",
-              name: "Read",
-              input: { file_path: "nested.ts" },
-            },
-          ],
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.subagents?.length, 2);
-    const child = parsed.subagents?.find(
-      (subagent) => subagent.id === "child-sidechain"
-    );
-    assert.equal(child?.parentId, "parent-sidechain");
-    assert.equal(child?.toolUses?.[0]?.subagentId, "child-sidechain");
-  });
-
-  test("Claude parser does not create self-parented sidechain subagents from fallback ids", async () => {
-    const dir = makeTempDir("claude-sidechain-fallback-");
-    const filePath = path.join(dir, "claude-sidechain-fallback.jsonl");
-    writeFileSync(
-      filePath,
-      `${JSON.stringify({
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        parentUuid: "parent-only-id",
-        isSidechain: true,
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "tool_use",
-              name: "Read",
-              input: { file_path: "fallback.ts" },
-            },
-          ],
-        },
-      })}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseClaudeFile(filePath);
-
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.subagents?.[0]?.id, "parent-only-id");
-    assert.equal(parsed.subagents?.[0]?.parentId, null);
-  });
-
-  test("Claude parser de-dupes matching inline sidechain and sidecar tool uses", async () => {
-    const dir = makeTempDir("claude-sidechain-sidecar-");
-    const sessionId = "claude-sidechain-sidecar";
-    const nativeSubagentId = "agent-dup";
-    const filePath = path.join(dir, `${sessionId}.jsonl`);
-    const subagentsDir = path.join(dir, sessionId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(
-      filePath,
-      [
-        {
-          type: "assistant",
-          timestamp: "2024-03-09T16:00:00.000Z",
-          uuid: nativeSubagentId,
-          isSidechain: true,
-          message: {
-            role: "assistant",
-            model: "claude-opus-4-5",
-            usage: {
-              input_tokens: 10,
-              output_tokens: 5,
-              cache_read_input_tokens: 0,
-              cache_creation_input_tokens: 0,
-            },
-            content: [
-              {
-                type: "tool_use",
-                id: "toolu_duplicate",
-                name: "Read",
-                input: { file_path: "inline.ts" },
-              },
-            ],
+            input_tokens: 120,
+            output_tokens: 45,
+            cache_read_tokens: 900,
+            cache_write_tokens: 30,
           },
         },
-      ]
-        .map((line) => JSON.stringify(line))
-        .join("\n"),
-      "utf8"
+      },
+    ];
+
+    const dir = makeTempDir("cursor-parity-");
+    const sessionId = "session-parity";
+    const sessionDir = path.join(dir, sessionId);
+    mkdirSync(sessionDir, { recursive: true });
+    const filePath = writeJsonl(sessionDir, `${sessionId}.jsonl`, records);
+
+    // Desktop entrypoint: stream the file, derive sessionId from the path.
+    const viaShell = await parseTranscriptFile(filePath);
+    assert.ok(viaShell, "expected the desktop shell to parse the transcript");
+
+    // Cloud/browser entrypoint: feed the same lines to the pure core with the
+    // same sessionId the desktop path derived.
+    const viaCore = await parseCursorTranscript(
+      records.map((record) => JSON.stringify(record)),
+      { sessionId }
     );
-    writeFileSync(
-      path.join(subagentsDir, `${nativeSubagentId}.jsonl`),
-      `${JSON.stringify({
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        message: {
-          role: "assistant",
-          model: "claude-opus-4-5",
-          usage: {
-            input_tokens: 10,
-            output_tokens: 5,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-          },
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_duplicate",
-              name: "Read",
-              input: { file_path: "sidecar.ts" },
-            },
-          ],
-        },
-      })}\n`,
-      "utf8"
-    );
+    assert.ok(viaCore, "expected the shared core to parse the transcript");
 
-    const parsed = await parseClaudeFile(filePath);
-
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    const subagent = parsed.subagents?.find(
-      (candidate) => candidate.id === nativeSubagentId
-    );
-    assert.equal(subagent?.toolUses?.length, 1);
-    assert.equal(subagent?.toolUses?.[0]?.id, "toolu_duplicate");
-    assert.deepEqual(subagent?.toolUses?.[0]?.input, {
-      file_path: "inline.ts",
-    });
-  });
-
-  test("Claude parser excludes ScheduleWakeup XML re-injection from human messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-wakeup-xml-");
-    const filePath = writeJsonl(dir, "claude-wakeup-xml.jsonl", [
-      {
-        // Genuine typed prompt — must still count.
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Run the suite." },
-      },
-      {
-        // Assistant records the ScheduleWakeup prompt to re-inject later.
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_1",
-              name: "ScheduleWakeup",
-              input: { prompt: "/babysit-pr 2257 --no-merge" },
-            },
-          ],
-        },
-      },
-      {
-        // Harness re-injects the scheduled prompt as expanded slash-command XML.
-        // Must NOT be counted as a human message (FEA-2641).
-        type: "user",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: {
-          role: "user",
-          content:
-            "<command-message>babysit-pr</command-message>\n<command-name>/babysit-pr</command-name>\n<command-args>2257 --no-merge</command-args>",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Only the genuine prompt counts; the XML re-injection is excluded.
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Run the suite.");
-    // The ScheduleWakeup tool_use is still captured even though the re-injection
-    // is excluded from human messages.
-    const wakeupTool = parsed.toolUses.find(
-      (tu) => tu.name === "ScheduleWakeup"
-    );
-    assert.ok(wakeupTool, "ScheduleWakeup tool_use must be captured");
-  });
-
-  test("Claude parser excludes ScheduleWakeup plain-text re-injection from human messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-wakeup-plain-");
-    const filePath = writeJsonl(dir, "claude-wakeup-plain.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Start the task." },
-      },
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_2",
-              name: "ScheduleWakeup",
-              input: { prompt: "check the deploy status" },
-            },
-          ],
-        },
-      },
-      {
-        // Harness re-injects the prompt verbatim as plain text. Must NOT count (FEA-2641).
-        type: "user",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: { role: "user", content: "check the deploy status" },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Start the task.");
-  });
-
-  test("Claude parser consumes a scheduled prompt per firing — a later genuine identical prompt still counts (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-wakeup-consume-");
-    const filePath = writeJsonl(dir, "claude-wakeup-consume.jsonl", [
-      {
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_consume",
-              name: "ScheduleWakeup",
-              input: { prompt: "check status" },
-            },
-          ],
-        },
-      },
-      {
-        // The single scheduled firing re-injects the prompt: NOT counted, and
-        // this match CONSUMES the recorded firing.
-        type: "user",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: { role: "user", content: "check status" },
-      },
-      {
-        // A human later GENUINELY types the same text. With the firing already
-        // consumed, this must count as a human message.
-        type: "user",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: { role: "user", content: "check status" },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "check status");
-    assert.equal(humanMessages[0]?.timestamp, "2024-03-09T16:00:02.000Z");
-  });
-
-  test("Claude parser excludes slash-normalized ScheduleWakeup XML re-injection from human messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-wakeup-slashnorm-");
-    const filePath = writeJsonl(dir, "claude-wakeup-slashnorm.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Go ahead." },
-      },
-      {
-        // Older transcript records the prompt WITHOUT the leading slash.
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_3",
-              name: "ScheduleWakeup",
-              input: { prompt: "babysit-pr 2257 --no-merge" },
-            },
-          ],
-        },
-      },
-      {
-        // XML re-injection carries the leading slash in <command-name>; the
-        // parser strips it when matching against the slash-free recorded prompt
-        // (FEA-2641). Must NOT count as a human message.
-        type: "user",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: {
-          role: "user",
-          content:
-            "<command-name>/babysit-pr</command-name>\n<command-args>2257 --no-merge</command-args>",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Go ahead.");
-  });
-
-  test("Claude parser excludes <local-command-stdout> user entries from human messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-local-stdout-");
-    const filePath = writeJsonl(dir, "claude-local-stdout.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Build it." },
-      },
-      {
-        // Local command output echoed back as a user entry — not human input (FEA-2641).
-        type: "user",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          role: "user",
-          content: "<local-command-stdout>Bye!</local-command-stdout>",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // The local-command-stdout echo must not be counted as a human message.
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Build it.");
-    // FEA-3112: the echo is kept in the transcript as a role:"system" message
-    // (not dropped), so the session-detail trace still shows the command output.
-    const systemMessages = parsed.messages.filter((m) => m.role === "system");
-    assert.equal(systemMessages.length, 1);
-    assert.equal(
-      systemMessages[0]?.text,
-      "<local-command-stdout>Bye!</local-command-stdout>"
-    );
-  });
-
-  test("Claude parser excludes teammate-injected user entries from human messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-teammate-msg-");
-    const filePath = writeJsonl(dir, "claude-teammate-msg.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Keep going." },
-      },
-      {
-        // Agent-to-agent message injected as a user entry — not human steering (FEA-2641).
-        type: "user",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          role: "user",
-          content: "Another Claude session sent a message: check the PR status",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Keep going.");
-  });
-
-  test("Claude parser counts genuine typed slash command with no matching ScheduleWakeup as a human message (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-genuine-slash-");
-    const filePath = writeJsonl(dir, "claude-genuine-slash.jsonl", [
-      {
-        // User types a slash command; no ScheduleWakeup recorded this prompt,
-        // so it is genuine human input and must count (FEA-2641).
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: {
-          role: "user",
-          content:
-            "<command-name>/model</command-name>\n<command-args></command-args>",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // No matching ScheduleWakeup → must be counted as a human message.
-    assert.equal(parsed.userMessages, 1);
-    assert.equal(parsed.messages.filter((m) => m.role === "human").length, 1);
-  });
-
-  test("Claude parser excludes typed /exit from human messages but keeps the slash-command record (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-exit-cmd-");
-    const filePath = writeJsonl(dir, "claude-exit-cmd.jsonl", [
-      {
-        type: "user",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Build it." },
-      },
-      {
-        // Typed /exit — a clean session exit is not human steering (FEA-2641
-        // PM ruling). Must not add a human turn, but the command itself stays
-        // in the slash-command record.
-        type: "user",
-        timestamp: "2024-03-09T18:00:00.000Z",
-        message: {
-          role: "user",
-          content:
-            "<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>",
-        },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Build it.");
-    assert.ok(
-      parsed.slashCommands.some((c) => c.name === "/exit"),
-      "typed /exit must still be recorded as a slash command"
-    );
-  });
-
-  test("Claude parser counts user entries with origin.kind='human' as genuine messages (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-origin-human-");
-    const filePath = writeJsonl(dir, "claude-origin-human.jsonl", [
-      {
-        // Newer harness versions stamp origin.kind:"human" on genuinely-typed
-        // prompts. Must NOT be treated as synthetic — it is real human input
-        // (FEA-2641; contrast: origin.kind:"task-notification" IS synthetic).
-        type: "user",
-        origin: { kind: "human" },
-        timestamp: "2024-03-09T16:00:00.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Deploy to staging." },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Deploy to staging.");
-  });
-
-  test("Claude parser handles invalid ScheduleWakeup inputs without crashing and still counts subsequent genuine prompts (FEA-2641)", async () => {
-    const dir = makeTempDir("claude-wakeup-edge-");
-    const filePath = writeJsonl(dir, "claude-wakeup-edge.jsonl", [
-      {
-        // null prompt — must not crash or record anything in scheduledPrompts.
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:00.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_null",
-              name: "ScheduleWakeup",
-              input: { prompt: null },
-            },
-          ],
-        },
-      },
-      {
-        // Empty string prompt — must not record (empty after trim).
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:01.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_empty",
-              name: "ScheduleWakeup",
-              input: { prompt: "" },
-            },
-          ],
-        },
-      },
-      {
-        // Numeric prompt — not a string, must not be recorded.
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:02.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_num",
-              name: "ScheduleWakeup",
-              input: { prompt: 42 },
-            },
-          ],
-        },
-      },
-      {
-        // Missing prompt field entirely — must not crash.
-        type: "assistant",
-        timestamp: "2024-03-09T16:00:03.000Z",
-        message: {
-          model: "claude-opus-4-5",
-          content: [
-            {
-              type: "tool_use",
-              id: "toolu_wakeup_nofield",
-              name: "ScheduleWakeup",
-              input: {},
-            },
-          ],
-        },
-      },
-      {
-        // Genuine human prompt after all the invalid edge inputs — must still count.
-        type: "user",
-        timestamp: "2024-03-09T16:00:04.000Z",
-        cwd: "/Users/dev/proj",
-        message: { role: "user", content: "Proceed normally." },
-      },
-    ]);
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Genuine prompt after all invalid ScheduleWakeup inputs must count.
-    assert.equal(parsed.userMessages, 1);
-    const humanMessages = parsed.messages.filter((m) => m.role === "human");
-    assert.equal(humanMessages.length, 1);
-    assert.equal(humanMessages[0]?.text, "Proceed normally.");
-    // All four ScheduleWakeup tool_uses are still captured despite invalid inputs.
-    assert.equal(
-      parsed.toolUses.filter((tu) => tu.name === "ScheduleWakeup").length,
-      4
-    );
-  });
-
-  test("Claude parser returns null for a transcript with no timestamps", async () => {
-    const dir = makeTempDir("claude-empty-");
-    const filePath = path.join(dir, "empty.jsonl");
-    writeFileSync(filePath, `${JSON.stringify({ type: "summary" })}\n`, "utf8");
-    assert.equal(await parseClaudeFile(filePath), null);
-  });
-
-  test("Claude parser ignores symlinked subagent sidecars outside the session directory", async () => {
-    const dir = makeTempDir("claude-sidecar-");
-    const outsideDir = makeTempDir("claude-sidecar-out-");
-    try {
-      const sessionId = "claude-sidecar";
-      const filePath = path.join(dir, `${sessionId}.jsonl`);
-      const subagentsDir = path.join(dir, sessionId, "subagents");
-      const outsideSubagent = path.join(outsideDir, "agent-outside.jsonl");
-      mkdirSync(subagentsDir, { recursive: true });
-      writeFileSync(
-        filePath,
-        [
-          {
-            type: "user",
-            timestamp: "2024-03-09T16:00:00.000Z",
-            cwd: "/Users/dev/proj",
-            message: { role: "user", content: "hello" },
-          },
-          {
-            type: "assistant",
-            timestamp: "2024-03-09T16:00:05.000Z",
-            message: {
-              model: "claude-opus-4-5",
-              usage: {
-                input_tokens: 1,
-                output_tokens: 1,
-                cache_read_input_tokens: 0,
-                cache_creation_input_tokens: 0,
-              },
-              content: [{ type: "text", text: "hello" }],
-            },
-          },
-        ]
-          .map((line) => JSON.stringify(line))
-          .join("\n"),
-        "utf8"
-      );
-      writeFileSync(
-        outsideSubagent,
-        `${JSON.stringify({
-          type: "assistant",
-          timestamp: "2024-03-09T16:00:06.000Z",
-          message: {
-            model: "claude-opus-4-5",
-            usage: {
-              input_tokens: 1000,
-              output_tokens: 1000,
-              cache_read_input_tokens: 0,
-              cache_creation_input_tokens: 0,
-            },
-            content: [{ type: "text", text: "outside" }],
-          },
-        })}\n`,
-        "utf8"
-      );
-      symlinkSync(
-        outsideSubagent,
-        path.join(subagentsDir, "agent-outside.jsonl")
-      );
-
-      const parsed = await parseClaudeFile(filePath);
-
-      assert.ok(parsed);
-      assert.deepEqual(parsed.tokensByModel["claude-opus-4-5"], {
-        input: 1,
-        output: 1,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-      rmSync(outsideDir, { recursive: true, force: true });
-    }
-  });
-
-  // FEA-2771: malformed JSONL lines are skipped silently; the parse-quality
-  // signal must count them and separate a benign truncated final line from
-  // mid-file corruption that drops a turn with no other trace.
-  const userLine = JSON.stringify({
-    type: "user",
-    timestamp: "2024-03-09T16:00:00.000Z",
-    // Synthetic, non-home cwd: these parse-quality cases don't exercise cwd
-    // path handling, so keep it machine-independent (apps/desktop/AGENTS.md).
-    cwd: "/workspace/project",
-    message: { role: "user", content: "hello" },
-  });
-  const assistantLine = JSON.stringify({
-    type: "assistant",
-    timestamp: "2024-03-09T16:00:05.000Z",
-    message: {
-      model: "claude-opus-4-5",
-      usage: {
-        input_tokens: 100,
-        output_tokens: 50,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-      content: [{ type: "text", text: "hi" }],
-    },
-  });
-  // A truncated mid-write line: valid JSON prefix, no closing brace.
-  const truncatedLine = '{"type":"assistant","timestamp":"2024-03-09T16:00:06';
-
-  test("Claude parser reports a clean parse quality when all lines are valid", async () => {
-    const dir = makeTempDir("claude-pq-clean-");
-    const filePath = path.join(dir, "clean.jsonl");
-    writeFileSync(filePath, `${userLine}\n${assistantLine}\n`, "utf8");
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 2,
-      malformedLines: 0,
-      truncatedFinalLine: false,
-    });
-  });
-
-  test("Claude parser flags a truncated final line as benign in parse quality (FEA-2771)", async () => {
-    const dir = makeTempDir("claude-pq-truncated-");
-    const filePath = path.join(dir, "truncated.jsonl");
-    // Valid turns followed by a truncated trailing line (live/interrupted write).
-    writeFileSync(
-      filePath,
-      `${userLine}\n${assistantLine}\n${truncatedLine}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Prior turns still parse; the trailing drop is flagged but expected.
-    assert.deepEqual(parsed.tokensByModel["claude-opus-4-5"], {
-      input: 100,
-      output: 50,
-      cacheRead: 0,
-      cacheWrite: 0,
-    });
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 3,
-      malformedLines: 1,
-      truncatedFinalLine: true,
-    });
-  });
-
-  test("Claude parser flags mid-file corruption in parse quality (FEA-2771)", async () => {
-    const dir = makeTempDir("claude-pq-corrupt-");
-    const filePath = path.join(dir, "corrupt.jsonl");
-    // A malformed line BEFORE the final line: real corruption, not truncation.
-    writeFileSync(
-      filePath,
-      `${userLine}\n${truncatedLine}\n${assistantLine}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 3,
-      malformedLines: 1,
-      // Final line parsed cleanly → the drop is mid-file, not a truncation.
-      truncatedFinalLine: false,
-    });
-    // Consumers derive mid-file corruption = malformedLines - (truncated ? 1 : 0).
-    const midFileMalformed =
-      (parsed.parseQuality?.malformedLines ?? 0) -
-      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0);
-    assert.equal(midFileMalformed, 1);
-  });
-
-  // A distinct valid subagent turn, used to place corruption mid-file (a
-  // malformed line that is NOT the subagent's final line).
-  const subAssistantLine = JSON.stringify({
-    type: "assistant",
-    timestamp: "2024-03-09T16:00:10.000Z",
-    message: {
-      model: "claude-opus-4-5",
-      usage: {
-        input_tokens: 20,
-        output_tokens: 10,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-      content: [{ type: "text", text: "sub" }],
-    },
-  });
-
-  test("Claude parser surfaces mid-file corruption in a subagent transcript (FEA-2905)", async () => {
-    const dir = makeTempDir("claude-pq-subagent-corrupt-");
-    const sessionId = "claude-pq-subagent-corrupt";
-    const filePath = path.join(dir, `${sessionId}.jsonl`);
-    // Clean main transcript: no corruption, no truncated final line.
-    writeFileSync(filePath, `${userLine}\n${assistantLine}\n`, "utf8");
-
-    // A subagent sidecar with a malformed line BEFORE its final line: real
-    // corruption that silently drops that turn's folded token usage. Without
-    // FEA-2905 the parent still reports a clean parse (malformedLines: 0).
-    const subagentsDir = path.join(dir, sessionId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(
-      path.join(subagentsDir, "agent-corrupt.jsonl"),
-      `${subAssistantLine}\n${truncatedLine}\n${subAssistantLine}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // Main (2) + subagent (3) lines are aggregated; the subagent's malformed
-    // line is mid-file (its final line parsed cleanly), so it reads as genuine
-    // corruption rather than a benign truncation.
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 5,
-      malformedLines: 1,
-      truncatedFinalLine: false,
-    });
-    const midFileMalformed =
-      (parsed.parseQuality?.malformedLines ?? 0) -
-      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0);
-    assert.equal(midFileMalformed, 1);
-  });
-
-  test("Claude parser treats a truncated subagent final line as benign, not corruption (FEA-2905)", async () => {
-    const dir = makeTempDir("claude-pq-subagent-truncated-");
-    const sessionId = "claude-pq-subagent-truncated";
-    const filePath = path.join(dir, `${sessionId}.jsonl`);
-    // Clean main transcript.
-    writeFileSync(filePath, `${userLine}\n${assistantLine}\n`, "utf8");
-
-    // A subagent sidecar whose only malformed line is its FINAL line — the
-    // benign shape of a still-running/interrupted subagent write. It must be
-    // discounted the same way the main transcript's truncated final line is, so
-    // it does not read as mid-file corruption for the parent session.
-    const subagentsDir = path.join(dir, sessionId, "subagents");
-    mkdirSync(subagentsDir, { recursive: true });
-    writeFileSync(
-      path.join(subagentsDir, "agent-live.jsonl"),
-      `${subAssistantLine}\n${truncatedLine}\n`,
-      "utf8"
-    );
-
-    const parsed = await parseClaudeFile(filePath);
-    assert.ok(parsed, "expected a parsed Claude transcript");
-    // The subagent's valid turn still folds its tokens into the parent.
-    assert.equal(
-      parsed.tokensByModel["claude-opus-4-5"]?.input,
-      // main assistant (100) + subagent assistant (20)
-      120
-    );
-    // Main (2) + subagent (2) lines counted, but the subagent's benign trailing
-    // truncation is discounted → no mid-file corruption reported.
-    assert.deepEqual(parsed.parseQuality, {
-      totalLines: 4,
-      malformedLines: 0,
-      truncatedFinalLine: false,
-    });
-    const midFileMalformed =
-      (parsed.parseQuality?.malformedLines ?? 0) -
-      (parsed.parseQuality?.truncatedFinalLine ? 1 : 0);
-    assert.equal(midFileMalformed, 0);
+    // The only permitted divergence is the desktop-only source mtime, which the
+    // cloud renderer has no file to stamp. Everything else must be identical.
+    const { fileModifiedAt: _shellMtime, ...shellCanonical } = viaShell;
+    const { fileModifiedAt: _coreMtime, ...coreCanonical } = viaCore;
+    assert.deepEqual(shellCanonical, coreCanonical);
   });
 });
 
 // FEA-2907: the Codex rollout parser silently dropped malformed JSONL lines and
 // never emitted a parse-quality signal, so a truncated/corrupt rollout lost a
 // turn's token usage with zero diagnostic. These mirror the Claude parity tests
-// above (FEA-2771).
+// in `test/claude/parse-quality.test.ts` (FEA-2771).
 describe("Codex parser parse quality (FEA-2907)", () => {
   // A minimal, valid Codex rollout: one user turn + one assistant turn whose
   // token usage lands in tokensByModel.
@@ -2493,7 +1449,7 @@ describe("Codex parser parse quality (FEA-2907)", () => {
     // Prior turns still parse; the trailing drop is flagged but expected.
     assert.deepEqual(parsed.tokensByModel["gpt-5-codex"], {
       input: 800,
-      output: 350,
+      output: 300,
       cacheRead: 400,
       cacheWrite: 0,
     });

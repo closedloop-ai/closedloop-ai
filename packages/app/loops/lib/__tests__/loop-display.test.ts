@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   deriveIsLocal,
   getCommandLabels,
+  getLoopBreadcrumbLabel,
+  shortLoopId,
   terminalLabel,
 } from "../loop-display";
 
@@ -49,5 +51,46 @@ describe("deriveIsLocal", () => {
   it("is false when the compute target is null or absent", () => {
     expect(deriveIsLocal({ computeTarget: null })).toBe(false);
     expect(deriveIsLocal({})).toBe(false);
+  });
+});
+
+describe("shortLoopId", () => {
+  it("returns the leading id slice for disambiguation", () => {
+    expect(shortLoopId("loop_abcdef123456")).toBe("loop_abc");
+  });
+});
+
+describe("getLoopBreadcrumbLabel", () => {
+  const loop = { command: LoopCommand.Execute, id: "loop_abcdef123456" };
+
+  it("leads with the command noun then the artifact title when present", () => {
+    expect(getLoopBreadcrumbLabel(loop, "FEA-3979: Fix breadcrumb")).toBe(
+      "Code: FEA-3979: Fix breadcrumb"
+    );
+  });
+
+  it("trims the artifact title", () => {
+    expect(getLoopBreadcrumbLabel(loop, "  Padded title  ")).toBe(
+      "Code: Padded title"
+    );
+  });
+
+  it("appends a short id to the bare noun when there is no artifact title", () => {
+    expect(getLoopBreadcrumbLabel(loop, null)).toBe("Code loop_abc");
+    expect(getLoopBreadcrumbLabel(loop, undefined)).toBe("Code loop_abc");
+    expect(getLoopBreadcrumbLabel(loop, "   ")).toBe("Code loop_abc");
+  });
+
+  it("names a manual loop with the Manual noun, not the raw MANUAL command", () => {
+    const manual = { command: LoopCommand.Manual, id: "loop_abcdef123456" };
+    expect(getLoopBreadcrumbLabel(manual)).toBe("Manual loop_abc");
+  });
+
+  it("falls back to a short id when the command has no label", () => {
+    const unlabeled = {
+      command: "  " as LoopCommand,
+      id: "loop_abcdef123456",
+    };
+    expect(getLoopBreadcrumbLabel(unlabeled)).toBe("Loop loop_abc");
   });
 });

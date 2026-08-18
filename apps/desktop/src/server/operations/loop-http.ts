@@ -1,11 +1,11 @@
 import crypto from "node:crypto";
-import { buildManagedDesktopPopHeaders } from "../../main/desktop-pop-sign-utils.js";
-import { gatewayLog } from "../../main/gateway-logger.js";
-import type { LoopPopDeps } from "../../main/loop-lifecycle.js";
+import { buildManagedDesktopPopHeaders } from "../../main/auth/desktop-pop-sign-utils.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
+import type { LoopPopDeps } from "../../main/loop/loop-lifecycle.js";
 import type {
   LoopTokenMeta,
   LoopTokenStore,
-} from "../../main/loop-token-store.js";
+} from "../../main/loop/loop-token-store.js";
 import { loopError, loopLog } from "./symphony-utils.js";
 
 // ---------------------------------------------------------------------------

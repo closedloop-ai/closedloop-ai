@@ -15,6 +15,15 @@ export type BootstrapClaimResponse = {
   gatewayId: string;
 };
 
+/**
+ * PRD-532 §5.5 (PR-K / M8): exact success body returned by
+ * POST /desktop/managed-key/provision. The session-authenticated provisioning
+ * endpoint mints the same DESKTOP_MANAGED `sk_live_*` relay key as the
+ * onboarding-attempt bootstrap claim, so it returns the identical wire
+ * contract. Backend-only (never surfaced to a renderer or logged).
+ */
+export type DesktopManagedKeyProvisionResponse = BootstrapClaimResponse;
+
 /** Exact non-2xx error body required by the desktop onboarding contract. */
 export type DesktopContractErrorBody<TCode extends string = string> = {
   code: TCode;

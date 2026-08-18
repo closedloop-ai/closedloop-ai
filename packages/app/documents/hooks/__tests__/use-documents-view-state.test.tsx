@@ -8,8 +8,6 @@ function makeItem(id: string): DocumentRowItem {
   return { kind: "document", data: makeArtifact({ id }) };
 }
 
-const ANCHOR = {} as HTMLElement;
-
 describe("useDocumentsViewState", () => {
   test("selection: change, replace, prune, clear", () => {
     const { result } = renderHook(() => useDocumentsViewState());
@@ -50,21 +48,15 @@ describe("useDocumentsViewState", () => {
     expect(result.current.state).toBe(before);
   });
 
-  test("requestDelete opens the dialog with the target and closes the menu", () => {
+  test("requestDelete opens the dialog with the target", () => {
     const { result } = renderHook(() => useDocumentsViewState());
     const item = makeItem("doc-1");
-
-    act(() => {
-      result.current.actions.openMenu(item, ANCHOR);
-    });
-    expect(result.current.state.menuState?.item).toBe(item);
 
     act(() => {
       result.current.actions.requestDelete(item);
     });
     expect(result.current.state.deleteDialogOpen).toBe(true);
     expect(result.current.state.deleteTarget).toBe(item);
-    expect(result.current.state.menuState).toBeNull();
   });
 
   test("single delete success closes the dialog and removes the row from selection", () => {
@@ -168,11 +160,10 @@ describe("useDocumentsViewState", () => {
     expect(result.current.state.mergeError).toBeNull();
   });
 
-  test("requestMove routes single vs bulk resolutions and closes the menu", () => {
+  test("requestMove routes single vs bulk resolutions", () => {
     const { result } = renderHook(() => useDocumentsViewState());
 
     act(() => {
-      result.current.actions.openMenu(makeItem("doc-1"), ANCHOR);
       result.current.actions.requestMove({
         kind: "single",
         entity: { id: "doc-1", projectId: "proj-1" },
@@ -182,7 +173,6 @@ describe("useDocumentsViewState", () => {
       id: "doc-1",
       projectId: "proj-1",
     });
-    expect(result.current.state.menuState).toBeNull();
 
     act(() => {
       result.current.actions.closeMoveDialog();

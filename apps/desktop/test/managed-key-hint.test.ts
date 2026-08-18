@@ -17,10 +17,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import {
-  SettingsStore,
-  shouldShowManagedKeyHint,
-} from "../src/main/settings-store.js";
+import { shouldShowManagedKeyHint } from "../src/main/settings/saved-config.js";
+import { SettingsStore } from "../src/main/settings/settings-store.js";
 import { DEFAULT_DESKTOP_SETTINGS } from "../src/shared/contracts.js";
 
 let tempRoot = "";

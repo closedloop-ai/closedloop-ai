@@ -1,50 +1,22 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import type { DocumentType } from "@repo/api/src/types/document";
+// Icons, labels, badge labels, and pill colors are the single canonical set in
+// project-constants (which itself re-binds the FEA-3954 canonical label maps);
+// this badge composes them so the two surfaces cannot drift.
+import {
+  DOCUMENT_TYPE_BADGE_LABELS,
+  DOCUMENT_TYPE_COLORS,
+  DOCUMENT_TYPE_ICONS,
+  DOCUMENT_TYPE_LABELS,
+} from "@repo/app/projects/lib/project-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { buttonVariants } from "@repo/design-system/components/ui/button";
 import { cn } from "@repo/design-system/lib/utils";
-import { BoxIcon, FileIcon, FileTextIcon, ListCheckIcon } from "lucide-react";
+import { FileQuestionIcon } from "lucide-react";
 
-const DOCUMENT_TYPE_ICONS = {
-  [DocumentType.Prd]: FileIcon,
-  [DocumentType.ImplementationPlan]: ListCheckIcon,
-  [DocumentType.Template]: FileTextIcon,
-  [DocumentType.Feature]: BoxIcon,
-} as const;
-
-const DOCUMENT_TYPE_LABELS = {
-  [DocumentType.Prd]: "PRD",
-  [DocumentType.ImplementationPlan]: "Implementation Plan",
-  [DocumentType.Template]: "Template",
-  [DocumentType.Feature]: "Feature",
-} as const;
-
-const DOCUMENT_TYPE_BADGE_LABELS = {
-  [DocumentType.Prd]: "PRD",
-  [DocumentType.ImplementationPlan]: "Plan",
-  [DocumentType.Template]: "Template",
-  [DocumentType.Feature]: "Feature",
-} as const;
-
-const DOCUMENT_TYPE_COLORS = {
-  [DocumentType.Prd]: {
-    bg: "bg-blue-100 dark:bg-blue-900/50",
-    text: "text-blue-700 dark:text-blue-300",
-  },
-  [DocumentType.ImplementationPlan]: {
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
-    text: "text-emerald-700 dark:text-emerald-300",
-  },
-  [DocumentType.Template]: {
-    bg: "bg-indigo-100 dark:bg-indigo-900/50",
-    text: "text-indigo-700 dark:text-indigo-300",
-  },
-  [DocumentType.Feature]: {
-    bg: "bg-amber-100 dark:bg-amber-900/50",
-    text: "text-amber-700 dark:text-amber-300",
-  },
-} as const;
-
-const DEFAULT_DOCUMENT_TYPE_ICON = FileTextIcon;
+// Unknown-type fallback. Distinct from every named-type glyph (FileTextIcon now
+// belongs to Doc) so an unrecognized subtype never renders identically to a
+// real one.
+const DEFAULT_DOCUMENT_TYPE_ICON = FileQuestionIcon;
 const DEFAULT_DOCUMENT_TYPE_COLORS = {
   bg: "bg-muted",
   text: "text-muted-foreground",

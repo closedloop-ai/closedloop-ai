@@ -16,7 +16,7 @@ import {
   getCodexConfigPath as resolveCodexConfigPath,
   getCodexHome as resolveCodexHome,
   getCodexSessionsDir as resolveCodexSessionsDir,
-} from "../../codex-home-paths.js";
+} from "../../util/codex-home-paths.js";
 import { collectJsonlFiles } from "../parsing/parser-utils.js";
 
 export function getCodexHome(): string {

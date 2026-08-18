@@ -189,21 +189,45 @@ export type KeylessTelemetrySessionAck =
  * Export envelope. `body` is opaque OTLP protobuf bytes — the relay never
  * decodes it. Over Socket.IO this arrives as a Buffer (a `Uint8Array`).
  */
-export const keylessTelemetryEnvelopeSchema = z
-  .object({
-    sessionId: z.string().min(1).max(256),
-    signal: z.string().min(1).max(32),
-    contentType: z.string().min(1).max(128),
-    body: z.instanceof(Uint8Array),
-  })
-  .strict();
-
 export type KeylessTelemetryEnvelope = {
   sessionId: string;
   signal: KeylessTelemetrySignal;
   contentType: string;
   body: Uint8Array;
 };
+
+/**
+ * Field validators for the export envelope, kept as a standalone literal so the
+ * keys-covered guard below can see them.
+ *
+ * `satisfies Record<keyof KeylessTelemetryEnvelope, z.ZodTypeAny>` makes the
+ * shape total over the contract's KEY SET: adding a field to
+ * {@link KeylessTelemetryEnvelope} without teaching it here fails `tsc`. Because
+ * the schema is `.strict()`, an untaught field would otherwise make the relay
+ * reject the ENTIRE envelope at runtime and drop the export — the FEA-3701 class
+ * of silent loss recorded in the root AGENTS.md.
+ *
+ * Scope, so a passing guard is not over-read. It proves KEY COVERAGE only:
+ * `z.ZodTypeAny` is the top type, so it does NOT pin a key's bounds or its
+ * optionality — relaxing `.max(256)`, or dropping an `.optional()` on a key that
+ * is already covered, still satisfies it. It is compile-time only, constraining
+ * OUR edits and adding no runtime tolerance for a version-skewed peer, which
+ * still meets the same `.strict()` rejection. And it is deliberately not paired
+ * with a `z.ZodType<KeylessTelemetryEnvelope>` annotation the way the desktop IPC
+ * bridges are: `signal` is parsed as a bounded `z.string()` and narrowed to
+ * {@link KeylessTelemetrySignal} at runtime by `isKeylessTelemetrySignal` in
+ * {@link validateKeylessTelemetryEnvelope}, so that annotation would not compile.
+ */
+const keylessTelemetryEnvelopeShape = {
+  sessionId: z.string().min(1).max(256),
+  signal: z.string().min(1).max(32),
+  contentType: z.string().min(1).max(128),
+  body: z.instanceof(Uint8Array),
+} satisfies Record<keyof KeylessTelemetryEnvelope, z.ZodTypeAny>;
+
+export const keylessTelemetryEnvelopeSchema = z
+  .object(keylessTelemetryEnvelopeShape)
+  .strict();
 
 /** Export ack. Discriminated on `accepted`. */
 export type KeylessTelemetryExportAck =

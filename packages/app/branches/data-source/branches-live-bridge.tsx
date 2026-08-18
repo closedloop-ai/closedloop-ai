@@ -1,13 +1,12 @@
 "use client";
 
-import { useQueryClient } from "@tanstack/react-query";
 import {
   LIVE_BRIDGE_INVALIDATION_THROTTLE_MS,
   useLiveQueryBridge,
 } from "../../shared/hooks/use-live-query-bridge";
 import { branchesKeys } from "../hooks/use-branches";
 import type { BranchesChange } from "./branches-data-source";
-import { useBranchesDataSource } from "./provider";
+import { useBranchesDataSource, useBranchesQueryContext } from "./provider";
 
 /**
  * Bridges a live branch data source's change stream to the React Query cache:
@@ -19,13 +18,16 @@ import { useBranchesDataSource } from "./provider";
  * {@link useLiveQueryBridge} hook (identical to AgentSessionsLiveBridge); this
  * component supplies only the branch-specific change-id extraction and the
  * invalidation policy:
- * - **List + usage + analytics always move** — any branch change can shift the
- *   visible page, the aggregate summary, AND the KPI cards (B6 wired the
- *   always-on `BranchesSummaryCards` to `useBranchAnalytics`, so a local DB
- *   change such as a PR merging must refresh the merge-rate card too, not leave
- *   it stale until remount). Analytics reads the same bounded grouped queries
- *   the list/usage refetch already issues, so the extra invalidation is
- *   proportionate — not a new hot path.
+ * - **Usage + analytics + cohort analytics + page-data always move** — any
+ *   branch change can shift the visible page, the aggregate summary, the exact
+ *   filtered-cohort metrics, AND the KPI cards (B6
+ *   wired the always-on `BranchesSummaryCards` to the combined `pageData` read
+ *   — FEA-3056 follow-up — so a local DB change such as a PR merging must
+ *   refresh the merge-rate card too, not leave it stale until remount).
+ *   `analytics` (still used standalone by the branch detail page) and
+ *   `pageData` read the same bounded grouped queries, so the extra
+ *   invalidation is proportionate — not a new hot path. There is no
+ *   standalone list query to invalidate (`pageData` is the only list read).
  * - **Details + traces** — a `{ branchId }` change refreshes that one `detail`
  *   AND its lazily-fetched merged `trace` (PLN-1148 Phase 2), both keyed by the
  *   active source's scope; a broad `{}` change refreshes all open details and
@@ -42,18 +44,22 @@ import { useBranchesDataSource } from "./provider";
  */
 export function BranchesLiveBridge() {
   const dataSource = useBranchesDataSource();
-  const queryClient = useQueryClient();
+  const { queryClient, queryIdentity } = useBranchesQueryContext();
 
   useLiveQueryBridge<BranchesChange>({
     subscribe: dataSource.subscribe,
     getChangeId: (change) => change.branchId,
     flush: ({ broad, ids }) => {
-      // List + usage + analytics always move: all three are derived from the
-      // local branch corpus, and the KPI cards (B6) read analytics, so a branch
-      // change must refresh them too rather than leave the cards stale.
-      queryClient.invalidateQueries({ queryKey: branchesKeys.lists() });
+      // Usage + analytics + cohort analytics + page-data always move: all are
+      // derived from the local branch corpus, and the KPI cards (B6) read
+      // analytics, so a branch change must refresh them too rather than leave
+      // the cards stale.
       queryClient.invalidateQueries({ queryKey: branchesKeys.usages() });
       queryClient.invalidateQueries({ queryKey: branchesKeys.analyticsRoot() });
+      queryClient.invalidateQueries({
+        queryKey: branchesKeys.cohortAnalyticsRoot(),
+      });
+      queryClient.invalidateQueries({ queryKey: branchesKeys.pageDataRoot() });
 
       if (broad) {
         // A `{}` event can touch any branch, so refresh every open detail and
@@ -69,13 +75,25 @@ export function BranchesLiveBridge() {
       // source's scope (detail/trace keys are scope-qualified).
       for (const branchId of ids) {
         queryClient.invalidateQueries({
-          queryKey: branchesKeys.detail(dataSource.scope, branchId),
+          queryKey: branchesKeys.detail(
+            dataSource.scope,
+            branchId,
+            queryIdentity
+          ),
         });
         queryClient.invalidateQueries({
-          queryKey: branchesKeys.trace(dataSource.scope, branchId),
+          queryKey: branchesKeys.trace(
+            dataSource.scope,
+            branchId,
+            queryIdentity
+          ),
         });
         queryClient.invalidateQueries({
-          queryKey: branchesKeys.comments(dataSource.scope, branchId),
+          queryKey: branchesKeys.comments(
+            dataSource.scope,
+            branchId,
+            queryIdentity
+          ),
         });
       }
     },

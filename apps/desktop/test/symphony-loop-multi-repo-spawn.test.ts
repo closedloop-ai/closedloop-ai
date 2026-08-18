@@ -21,6 +21,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { setShellPathForTest } from "../src/server/shell-path.js";
+import { writeFakeClaudeScript } from "./helpers/fake-harness-artifacts.js";
 import {
   makeFakeWorktreeProvider,
   makeMultiRepoGateway,
@@ -136,10 +137,9 @@ test("PLAN with 2 additionalRepos passes --add-dir for each worktree to native C
   const argvFile = path.join(tmpDir, "capture-plan-argv.txt");
   const envFile = path.join(tmpDir, "capture-plan-env.txt");
   const promptFile = path.join(tmpDir, "capture-plan-prompt.txt");
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    buildMultiRepoCaptureScript({ argvFile, envFile, promptFile }),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    buildMultiRepoCaptureScript({ argvFile, envFile, promptFile })
   );
 
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
@@ -313,10 +313,9 @@ test("PLAN with no additionalRepos: multi-repo env vars are absent from spawn en
   const argvFile = path.join(tmpDir, "capture-plan-empty-argv.txt");
   const envFile = path.join(tmpDir, "capture-plan-empty-env.txt");
   const promptFile = path.join(tmpDir, "capture-plan-empty-prompt.txt");
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    buildMultiRepoCaptureScript({ argvFile, envFile, promptFile }),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    buildMultiRepoCaptureScript({ argvFile, envFile, promptFile })
   );
 
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
@@ -431,9 +430,7 @@ for (const command of PRD_PEER_COMMANDS) {
       `echo '{"type":"result"}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), spyScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, spyScript);
 
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
@@ -588,9 +585,7 @@ for (const command of PRD_PEER_COMMANDS) {
       `echo '{"type":"result"}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), spyScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, spyScript);
 
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();

@@ -1,4 +1,4 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import { activeIdleSpans } from "./branch-derivations";
 
 /**

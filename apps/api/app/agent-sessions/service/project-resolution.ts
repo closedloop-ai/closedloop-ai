@@ -4,14 +4,13 @@ import type {
 } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import type { AgentSessionUsageQuery } from "../validators";
-import { isUuid, normalizeNullableString } from "./coercion";
+import { isUuid } from "./coercion";
 import type {
   AgentSessionUpsertTx,
   LastSyncTargetRecord,
   SessionProjectResolution,
 } from "./records";
 
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: attribution resolution intentionally folds artifact, loop, and repository lookups into one coordinator
 export async function resolveProjectResolution(
   tx: AgentSessionUpsertTx,
   organizationId: string,
@@ -19,7 +18,6 @@ export async function resolveProjectResolution(
 ): Promise<SessionProjectResolution> {
   const artifactIds = new Set<string>();
   const loopIds = new Set<string>();
-  const repositoryFullNames = new Set<string>();
 
   for (const session of sessions) {
     const attribution = session.attribution;
@@ -32,15 +30,9 @@ export async function resolveProjectResolution(
     if (isUuid(attribution.sourceLoopId)) {
       loopIds.add(attribution.sourceLoopId);
     }
-    const repositoryFullName = normalizeNullableString(
-      attribution.repositoryFullName
-    );
-    if (repositoryFullName) {
-      repositoryFullNames.add(repositoryFullName);
-    }
   }
 
-  const [artifacts, loops, repositories] = await Promise.all([
+  const [artifacts, loops] = await Promise.all([
     artifactIds.size > 0
       ? tx.artifact.findMany({
           where: {
@@ -72,40 +64,6 @@ export async function resolveProjectResolution(
           },
         })
       : Promise.resolve([]),
-    repositoryFullNames.size > 0
-      ? tx.gitHubInstallationRepository.findMany({
-          where: {
-            fullName: {
-              in: [...repositoryFullNames],
-            },
-            teamRepositories: {
-              some: {
-                team: {
-                  is: {
-                    organizationId,
-                  },
-                },
-              },
-            },
-          },
-          select: {
-            fullName: true,
-            teamRepositories: {
-              select: {
-                team: {
-                  select: {
-                    projects: {
-                      select: {
-                        projectId: true,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        })
-      : Promise.resolve([]),
   ]);
 
   const artifactProjectById = new Map<string, string>();
@@ -116,6 +74,13 @@ export async function resolveProjectResolution(
       artifactProjectById.set(artifact.id, artifact.projectId);
     }
   }
+
+  // FEA-1718: every loop the query returned is, by that query's own predicate, a
+  // real loop in THIS organization. Capture that membership before the
+  // project-only narrowing below drops the ones without a project — those are
+  // still valid loops, and promoting a session to `SessionOrigin.LOOP` must key
+  // off loop EXISTENCE, not off whether the loop happens to have a project.
+  const sameOrgLoopIds = new Set(loops.map((loop) => loop.id));
 
   const loopProjectById = new Map<string, string>();
   for (const loop of loops) {
@@ -132,29 +97,10 @@ export async function resolveProjectResolution(
     }
   }
 
-  const repoToProjectIds = new Map<string, Set<string>>();
-  for (const repository of repositories) {
-    const ids = repoToProjectIds.get(repository.fullName) ?? new Set<string>();
-    for (const teamRepository of repository.teamRepositories) {
-      for (const project of teamRepository.team.projects) {
-        ids.add(project.projectId);
-      }
-    }
-    repoToProjectIds.set(repository.fullName, ids);
-  }
-
-  const projectByRepositoryFullName = new Map<string, string | null>();
-  for (const [fullName, projectIds] of repoToProjectIds) {
-    projectByRepositoryFullName.set(
-      fullName,
-      projectIds.size === 1 ? [...projectIds][0] : null
-    );
-  }
-
   return {
     artifactProjectById,
     loopProjectById,
-    projectByRepositoryFullName,
+    sameOrgLoopIds,
   };
 }
 
@@ -183,13 +129,15 @@ export function resolveProjectId(
     }
   }
 
-  const repositoryFullName = normalizeNullableString(
-    attribution.repositoryFullName
-  );
-  if (!repositoryFullName) {
-    return null;
-  }
-  return resolution.projectByRepositoryFullName.get(repositoryFullName) ?? null;
+  // FEA-1749: there is deliberately NO repository -> project fallback here.
+  // A project may nominate default repositories for agentic execution, but that
+  // does not make a repository belong to a project — the relation does not exist
+  // in the domain. The removed fallback inferred one anyway whenever a team
+  // happened to have exactly one project, silently attributing ad-hoc local work
+  // to an arbitrary project and re-attributing it the moment someone added a
+  // second. Only real lineage (sourceArtifactId / sourceLoopId) parents a
+  // session; everything else is honestly unparented.
+  return null;
 }
 
 export function toViewerScope(
@@ -216,6 +164,7 @@ export function toLastSyncTarget(
     isOnline: record.isOnline,
     lastSeenAt: record.lastSeenAt,
     lastAgentSessionSyncAt: record.lastAgentSessionSyncAt,
+    lastAgentSessionSyncAttemptAt: record.lastAgentSessionSyncAttemptAt,
     owner: record.user,
   };
 }

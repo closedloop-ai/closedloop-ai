@@ -22,12 +22,18 @@ const meta: Meta<typeof TooltipContent> = {
         type: "radio",
       },
     },
+    hideArrow: {
+      control: "boolean",
+      description:
+        "Hide the pointer for rich or popover-styled tooltip surfaces.",
+    },
     children: {
       control: "text",
     },
   },
   args: {
     side: "top",
+    hideArrow: false,
     children: "Add to library",
   },
   parameters: {

@@ -16,3 +16,12 @@ export const PRIORITY_COLORS: Record<Priority, string> = {
   [Priority.High]: "text-red-600 dark:text-red-400",
   [Priority.Urgent]: "text-red-800 dark:text-red-300",
 };
+
+/**
+ * The priority every artifact is created with (see `artifact-row-adapter`).
+ * A row still at this value carries no signal, so decluttering surfaces
+ * (compact priority cell, constant-priority column collapse) treat it as the
+ * "no meaningful priority" sentinel. Single source of truth so the cell and the
+ * collapse rule can't disagree on what "default" means.
+ */
+export const DEFAULT_PRIORITY = Priority.Medium;

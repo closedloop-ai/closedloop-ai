@@ -16,6 +16,7 @@ import {
 } from "../src/server/operations/symphony-loop.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
+  _setKnownBinaryLocationsForResolverTest,
   resetShellPathCache,
   setShellPathForTest,
 } from "../src/server/shell-path.js";
@@ -56,6 +57,8 @@ afterEach(async () => {
     process.env.PATH = originalPath;
   }
   resetShellPathCache();
+  // Never leak a known-location resolver override into the next test.
+  _setKnownBinaryLocationsForResolverTest(null);
 
   for (const server of serversToClose.splice(0)) {
     await server.stop();
@@ -414,7 +417,11 @@ describe("T-5.2: writePrdArtifact", () => {
   test("(a) PRD type artifact writes prd.md", async () => {
     const tmpDir = makeTempDir();
     await writePrdArtifact(tmpDir, [
-      { type: "PRD", content: "This is the PRD content" },
+      {
+        id: "prd-1",
+        type: LoopArtifactType.Prd,
+        content: "This is the PRD content",
+      },
     ]);
     const prdPath = path.join(tmpDir, "prd.md");
     assert.ok(existsSync(prdPath), "prd.md should exist");
@@ -450,7 +457,13 @@ describe("T-5.2: writePrdArtifact", () => {
     const tmpDir = makeTempDir();
     await writePrdArtifact(
       tmpDir,
-      [{ type: "PRD", content: "The real PRD content" }],
+      [
+        {
+          id: "prd-1",
+          type: LoopArtifactType.Prd,
+          content: "The real PRD content",
+        },
+      ],
       "This is the prompt, not the PRD"
     );
     const prdPath = path.join(tmpDir, "prd.md");
@@ -479,8 +492,12 @@ describe("T-5.2: writePrdArtifact", () => {
     // primary even with a same-type ref present.
     const tmpDir = makeTempDir();
     await writePrdArtifact(tmpDir, [
-      { type: "PRD", content: "PARENT PRD (context ref)" },
-      { type: "PRD", content: "PRIMARY PRD" },
+      {
+        id: "prd-context-ref",
+        type: LoopArtifactType.Prd,
+        content: "PARENT PRD (context ref)",
+      },
+      { id: "prd-primary", type: LoopArtifactType.Prd, content: "PRIMARY PRD" },
     ]);
     assert.equal(
       await fs.readFile(path.join(tmpDir, "prd.md"), "utf-8"),
@@ -806,6 +823,14 @@ describe("T-5.5: BINARY_NOT_FOUND when claude not in PATH", () => {
     await fs.mkdir(emptyBin, { recursive: true });
     // No claude binary in emptyBin — PATH points only there
     process.env.PATH = emptyBin;
+    // ISS-5114: pinning PATH alone does NOT make claude absent. The
+    // known-location tier (FEA-3742) probes absolute paths like
+    // /opt/homebrew/bin/claude with a raw access() check that ignores the
+    // shell-path sandbox, so on any machine with claude installed the resolver
+    // still found it and this test got PROCESS_FAILED instead of
+    // BINARY_NOT_FOUND — the literal signature of the binary being found. Pin
+    // the tier empty so BOTH resolution tiers are controlled by the test.
+    _setKnownBinaryLocationsForResolverTest({ claude: [] });
     setShellPathForTest();
 
     const eventSrv = await startEventServer();

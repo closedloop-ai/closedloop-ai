@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-perf-telemetry.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-perf-telemetry.ts
  *
  * Covers:
  *   T-5.1  Zod schema validation — each of the 8 event types
@@ -22,8 +22,8 @@ import {
   parseAndEmitChunk,
   reconcileLoopPerfTelemetry,
   startLoopPerfTelemetryWatcher,
-} from "../src/main/loop-perf-telemetry.js";
-import type { TelemetryEventPayload } from "../src/main/telemetry-protocol.js";
+} from "../src/main/loop/loop-perf-telemetry.js";
+import type { TelemetryEventPayload } from "../src/main/telemetry/telemetry-protocol.js";
 
 // ---------------------------------------------------------------------------
 // Shared temp-dir cleanup

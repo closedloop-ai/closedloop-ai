@@ -3,22 +3,58 @@ import {
   CatalogItemScope,
   CatalogItemSource,
 } from "@repo/api/src/types/distribution";
+import type { MemberTargetsInstall } from "@repo/app/packs/components/member-targets-block";
 import type { PackView } from "@repo/app/packs/lib/pack-view";
+import { ApiError } from "@repo/app/shared/api/api-error";
+import {
+  API_TIMEOUT_ERROR_CODE,
+  API_TIMEOUT_ERROR_MESSAGE,
+} from "@repo/app/shared/api/api-timeout";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CatalogDashboard } from "../catalog-dashboard";
 
+/** The bare unstyled paragraph ISS-5002 replaced with the real skeleton. */
+const LEGACY_LOADING_TEXT = /Loading Packs…/;
+
+/**
+ * Marks that a non-null `memberTargetsInstall` reached PacksWorkspace. Read at
+ * render time (not when the `vi.mock` factory is evaluated), so the hoisted
+ * factory below can reference it safely.
+ */
+const INSTALL_MARKER = "wired";
+
+/** A stand-in for the hook's return value; identity is what gets asserted. */
+const installStub: MemberTargetsInstall = { onInstall: vi.fn() };
+
 const mocks = vi.hoisted(() => ({
+  refetchQueries: vi.fn(),
   useAdminPackViews: vi.fn(),
   useCatalogItems: vi.fn(),
   useCatalogItem: vi.fn(),
   useArchiveCatalogItem: vi.fn(),
   useDistribution: vi.fn(),
+  useWithdrawDistribution: vi.fn(),
   useCurrentUser: vi.fn(),
   useFeatureFlagEnabled: vi.fn(),
+  useMemberTargetsInstall: vi.fn(),
   usePackAnalytics: vi.fn(),
+  useComputeTargets: vi.fn(),
   invalidateQueries: vi.fn(),
+}));
+
+vi.mock("@/hooks/queries/use-compute-targets", () => ({
+  useComputeTargets: mocks.useComputeTargets,
+}));
+
+// ISS-5125. The real hook's own behaviour (per-cell pending set, pack-scoped
+// outcomes, dispatch copy) is covered by
+// packages/app/packs/hooks/__tests__/use-member-targets-install.test.tsx. What
+// this suite owns is the DASHBOARD's half of the contract: the arguments it
+// computes for the hook, and that it hands the result to PacksWorkspace.
+vi.mock("@repo/app/packs/hooks/use-member-targets-install", () => ({
+  useMemberTargetsInstall: mocks.useMemberTargetsInstall,
 }));
 
 vi.mock("@repo/app/packs/hooks/use-admin-pack-views", () => ({
@@ -27,6 +63,7 @@ vi.mock("@repo/app/packs/hooks/use-admin-pack-views", () => ({
 
 vi.mock("@repo/app/agents/hooks/use-catalog", () => ({
   catalogKeys: {
+    all: ["catalog"] as const,
     detail: (id: string) => ["catalog", "detail", id] as const,
   },
   useArchiveCatalogItem: mocks.useArchiveCatalogItem,
@@ -35,7 +72,9 @@ vi.mock("@repo/app/agents/hooks/use-catalog", () => ({
 }));
 
 vi.mock("@repo/app/agents/hooks/use-distributions", () => ({
+  distributionKeys: { all: ["distributions"] as const },
   useDistribution: mocks.useDistribution,
+  useWithdrawDistribution: mocks.useWithdrawDistribution,
 }));
 
 vi.mock("@repo/app/packs/hooks/use-pack-analytics", () => ({
@@ -51,7 +90,10 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
-  useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries }),
+  useQueryClient: () => ({
+    invalidateQueries: mocks.invalidateQueries,
+    refetchQueries: mocks.refetchQueries,
+  }),
 }));
 
 vi.mock("@repo/app/packs/components/packs-workspace", () => ({
@@ -59,6 +101,9 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
     detailContentsSlot,
     detailHeaderActions,
     detailPack,
+    memberTargetsError,
+    memberTargetsInstall,
+    memberTargetsLoading,
     onManageDistribution,
     onSelectPack,
     packs,
@@ -67,12 +112,23 @@ vi.mock("@repo/app/packs/components/packs-workspace", () => ({
     detailContentsSlot?: ReactNode;
     detailHeaderActions?: ReactNode;
     detailPack?: PackView | null;
+    memberTargetsError?: boolean;
+    memberTargetsInstall?: MemberTargetsInstall | null;
+    memberTargetsLoading?: boolean;
     onManageDistribution?: (packId: string) => void;
     onSelectPack?: (packId: string | null) => void;
     packs: PackView[];
     toolbarSlot?: ReactNode;
   }) => (
     <div>
+      <div
+        data-member-targets-error={String(Boolean(memberTargetsError))}
+        data-member-targets-install={
+          memberTargetsInstall ? INSTALL_MARKER : "none"
+        }
+        data-member-targets-loading={String(Boolean(memberTargetsLoading))}
+        data-testid="member-targets-state"
+      />
       <div data-testid="toolbar">{toolbarSlot}</div>
       {packs.map((pack) => (
         <button
@@ -170,12 +226,22 @@ describe("CatalogDashboard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.useFeatureFlagEnabled.mockReturnValue(true);
+    mocks.useMemberTargetsInstall.mockReturnValue(null);
     mocks.useArchiveCatalogItem.mockReturnValue({
       isPending: false,
       mutateAsync: vi.fn().mockResolvedValue({}),
     });
     mocks.useDistribution.mockReturnValue({ data: null });
+    mocks.useWithdrawDistribution.mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn().mockResolvedValue({}),
+    });
     mocks.usePackAnalytics.mockReturnValue({ data: null });
+    mocks.useComputeTargets.mockReturnValue({
+      data: [],
+      error: null,
+      isLoading: false,
+    });
   });
 
   it("lets a non-admin owner edit a selected custom item without admin controls", () => {
@@ -213,6 +279,73 @@ describe("CatalogDashboard", () => {
       "data-existing-id",
       pack.id
     );
+  });
+
+  it("arms member install for the selected pack and threads it to the workspace", () => {
+    const pack = makeCatalogItem({ createdById: "owner-1" });
+    setupDashboard({
+      currentUserId: "owner-1",
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+    mocks.useMemberTargetsInstall.mockReturnValue(installStub);
+
+    render(<CatalogDashboard isAdmin={false} />);
+
+    expect(mocks.useFeatureFlagEnabled).toHaveBeenCalledWith(
+      "member-self-service-install"
+    );
+    // Nothing selected yet: armed, but with no pack to install.
+    expect(mocks.useMemberTargetsInstall).toHaveBeenLastCalledWith({
+      packId: null,
+      enabled: true,
+    });
+    expect(screen.getByTestId("member-targets-state")).toHaveAttribute(
+      "data-member-targets-install",
+      INSTALL_MARKER
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
+
+    expect(mocks.useMemberTargetsInstall).toHaveBeenLastCalledWith({
+      packId: pack.id,
+      enabled: true,
+    });
+  });
+
+  it("leaves member install disarmed for an admin and behind a closed flag", () => {
+    const pack = makeCatalogItem({ createdById: null });
+    setupDashboard({
+      currentUserId: null,
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+
+    render(<CatalogDashboard isAdmin />);
+
+    expect(mocks.useMemberTargetsInstall).toHaveBeenLastCalledWith({
+      packId: null,
+      enabled: false,
+    });
+
+    // Same negative on the member surface when the flag is closed — the arm
+    // above proves this selector reports `wired` when the hook does return one.
+    mocks.useFeatureFlagEnabled.mockReturnValue(false);
+    setupDashboard({
+      currentUserId: "owner-1",
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+
+    render(<CatalogDashboard isAdmin={false} />);
+
+    expect(mocks.useMemberTargetsInstall).toHaveBeenLastCalledWith({
+      packId: null,
+      enabled: false,
+    });
+    for (const node of screen.getAllByTestId("member-targets-state")) {
+      expect(node).toHaveAttribute("data-member-targets-install", "none");
+    }
   });
 
   it("hides edit for a non-admin non-owner", () => {
@@ -337,6 +470,141 @@ describe("CatalogDashboard", () => {
     ).toBeNull();
     expect(screen.queryByTestId("editor-dialog")).toBeNull();
   });
+
+  it("surfaces the member-targets error when the current-user query fails", () => {
+    const pack = makeCatalogItem({ createdById: "owner-1" });
+    setupDashboard({
+      currentUserId: null,
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+    // /me fails on initial load (no cached data): the block must show an error,
+    // not a false "no machines" empty.
+    mocks.useCurrentUser.mockReturnValue({
+      data: undefined,
+      error: new Error("me failed"),
+      isLoading: false,
+    });
+
+    render(<CatalogDashboard isAdmin={false} />);
+
+    const state = screen.getByTestId("member-targets-state");
+    expect(state.getAttribute("data-member-targets-error")).toBe("true");
+  });
+
+  it("keeps cached machines visible when a background refetch fails", () => {
+    const pack = makeCatalogItem({ createdById: "owner-1" });
+    setupDashboard({
+      currentUserId: "owner-1",
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+    // Compute-targets refetch failed, but TanStack retains the last data: the
+    // block must keep the cached rows, not discard them for the error state.
+    mocks.useComputeTargets.mockReturnValue({
+      data: [],
+      error: new Error("refetch failed"),
+      isLoading: false,
+    });
+
+    render(<CatalogDashboard isAdmin={false} />);
+
+    const state = screen.getByTestId("member-targets-state");
+    expect(state.getAttribute("data-member-targets-error")).toBe("false");
+  });
+
+  it("keeps member-targets loading while the current-user query is pending", () => {
+    const pack = makeCatalogItem({ createdById: "owner-1" });
+    setupDashboard({
+      currentUserId: null,
+      items: [pack],
+      detailById: { [pack.id]: pack },
+    });
+    // /me still loading while compute targets resolved: must not flash empty.
+    mocks.useComputeTargets.mockReturnValue({
+      data: [],
+      error: null,
+      isLoading: false,
+    });
+    mocks.useCurrentUser.mockReturnValue({
+      data: null,
+      error: null,
+      isLoading: true,
+    });
+
+    render(<CatalogDashboard isAdmin={false} />);
+
+    const state = screen.getByTestId("member-targets-state");
+    expect(state.getAttribute("data-member-targets-loading")).toBe("true");
+  });
+
+  // ISS-5002: the surface used to render a bare unstyled "Loading Packs…"
+  // paragraph forever, while the purpose-built skeleton went unused and a
+  // request that never returned produced no error state at all.
+  it("renders the purpose-built skeleton while Packs load, not a bare paragraph", () => {
+    setupLoadingDashboard();
+
+    render(<CatalogDashboard isAdmin={true} />);
+
+    expect(screen.getByTestId("packs-workspace-skeleton")).toBeInTheDocument();
+    expect(screen.queryByText(LEGACY_LOADING_TEXT)).not.toBeInTheDocument();
+    // The heading is known ahead of the fetch and holds its place, so the grid
+    // does not shift when the catalog lands.
+    expect(screen.getByRole("heading", { name: "Packs" })).toBeInTheDocument();
+  });
+
+  it("states a timed-out Packs read as a timeout with a retry, not as a server rejection", () => {
+    setupFailedDashboard(
+      new ApiError(API_TIMEOUT_ERROR_MESSAGE, 0, {
+        code: API_TIMEOUT_ERROR_CODE,
+      })
+    );
+
+    render(<CatalogDashboard isAdmin={true} />);
+
+    // The user is told we stopped waiting — never left on a permanent skeleton,
+    // and never told the server rejected something it never answered.
+    expect(screen.getByText("Packs took too long to load")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("packs-workspace-skeleton")
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(mocks.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ["catalog"],
+    });
+    expect(mocks.refetchQueries).toHaveBeenCalledWith({
+      queryKey: ["distributions"],
+    });
+  });
+
+  it("states a server-answered failure distinctly from a timeout", () => {
+    setupFailedDashboard(new ApiError("Catalog is unavailable", 500));
+
+    render(<CatalogDashboard isAdmin={true} />);
+
+    expect(screen.getByText("Couldn't load packs")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Packs took too long to load")
+    ).not.toBeInTheDocument();
+    // A raw transport message is never rendered to a customer.
+    expect(
+      screen.queryByText("Catalog is unavailable")
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the Packs heading above a failed read, matching the headed skeleton", () => {
+    // The loading branch already renders CatalogHeading, so dropping it here
+    // swapped the whole page for one centered card with no page identity the
+    // instant the fetch failed.
+    setupFailedDashboard(new ApiError("Catalog is unavailable", 500));
+
+    render(<CatalogDashboard isAdmin={true} />);
+
+    expect(screen.getByRole("heading", { name: "Packs" })).toBeInTheDocument();
+    expect(screen.getByText("Couldn't load packs")).toBeInTheDocument();
+  });
 });
 
 function setupDashboard({
@@ -428,4 +696,28 @@ function renderNonEditableParent(packOverrides: Partial<CatalogItemDto>) {
 
   render(<CatalogDashboard isAdmin={false} />);
   fireEvent.click(screen.getByRole("button", { name: "Select Custom Pack" }));
+}
+
+/** Packs surface with both underlying reads still in flight. */
+function setupLoadingDashboard() {
+  mocks.useAdminPackViews.mockReturnValue({
+    packViews: [],
+    distributionByCatalogId: new Map(),
+    isLoading: true,
+    error: null,
+  });
+  mocks.useCatalogItems.mockReturnValue({ data: undefined });
+  mocks.useCurrentUser.mockReturnValue({ data: null });
+}
+
+/** Packs surface whose underlying read failed with `error`. */
+function setupFailedDashboard(error: Error) {
+  mocks.useAdminPackViews.mockReturnValue({
+    packViews: [],
+    distributionByCatalogId: new Map(),
+    isLoading: false,
+    error,
+  });
+  mocks.useCatalogItems.mockReturnValue({ data: undefined });
+  mocks.useCurrentUser.mockReturnValue({ data: null });
 }

@@ -58,6 +58,13 @@ export function useLocalStorageState<T>(
     } catch {
       return defaultRef.current;
     }
+    // An absent key means the caller's current default, not the default from
+    // the first render. Feature-gated surfaces can legitimately change their
+    // default after asynchronous flag hydration without persisting a choice.
+    if (raw === null) {
+      cacheRef.current.raw = null;
+      return defaultRef.current;
+    }
     if (raw !== cacheRef.current.raw) {
       cacheRef.current = { raw, parsed: deserialize(raw) };
     }

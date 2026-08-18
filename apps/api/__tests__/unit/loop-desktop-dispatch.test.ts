@@ -1,122 +1,88 @@
 /**
- * Tests for dispatchRelayOperation delivery-failure handling.
+ * Launch dispatch delivery handling (`launchLoopOnDesktop`) and the payload it
+ * builds.
  *
- * The key invariant: a relay 200 response with { delivered: false } must be
- * treated as a launch failure when throwOnFailure=true (e.g. launchLoopOnDesktop).
- * The fire-and-forget kill path (throwOnFailure=false / default) must NOT throw.
+ * The key invariant: a relay 200 response with { delivered: false } means the
+ * command never reached the desktop and must be treated as a launch failure
+ * (ISS-5708), replayed a bounded number of times first (ISS-5811).
+ *
+ * The kill entry point (`stopDesktopLoop`) drives the same dispatch helper and
+ * is covered in `loop-desktop-kill-dispatch.test.ts`.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Mocks (must come before imports) ---
 
-const mockCommandSigningEligibilityStatus = vi.hoisted(
-  () =>
-    ({
-      Eligible: "eligible",
-      Ineligible: "ineligible",
-      Unknown: "unknown",
-    }) as const
-);
-const mockCommandSigningRequirementStatus = vi.hoisted(
-  () =>
-    ({
-      Required: "required",
-      NotRequired: "not_required",
-      Unknown: "unknown",
-    }) as const
-);
-const mockCommandSigningEligibilityUnknownReason = vi.hoisted(
-  () => "command_signing_eligibility_unknown" as const
-);
-const mockCommandSigningEligibilityUnknownError = vi.hoisted(
-  () =>
-    "Command signing eligibility could not be verified for this compute target" as const
+vi.mock("@repo/observability/log", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).logMock()
 );
 
-vi.mock("@repo/observability/log", () => ({
-  log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+vi.mock("@repo/database", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).databaseMock()
+);
 
-vi.mock("@repo/database", () => ({
-  withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
-  EvaluationReportType: { PLAN: "PLAN", CODE: "CODE" },
-}));
+vi.mock("@/lib/desktop-command-store", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).desktopCommandStoreMock()
+);
 
-// Mock desktopCommandStore so launchLoopOnDesktop can run without a real DB.
-vi.mock("@/lib/desktop-command-store", () => ({
-  desktopCommandStore: {
-    createCommand: vi.fn().mockResolvedValue({
-      command: { commandId: "cmd-test-1" },
-      deduped: false,
-    }),
-    markCommandExpired: vi.fn().mockResolvedValue(undefined),
-  },
-}));
+vi.mock("@/app/compute-targets/service", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).computeTargetsServiceMock()
+);
 
-vi.mock("@/app/compute-targets/service", () => ({
-  computeTargetsService: {
-    findById: vi.fn().mockResolvedValue({
-      organizationId: "org-1",
-      userId: "owner-1",
-      gatewayId: "gateway-1",
-      capabilities: {},
-    }),
-  },
-}));
+vi.mock("@/lib/compute-target-signing-eligibility", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).commandSigningEligibilityMock()
+);
 
-vi.mock("@/lib/compute-target-signing-eligibility", () => ({
-  COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_ERROR:
-    mockCommandSigningEligibilityUnknownError,
-  COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_REASON:
-    mockCommandSigningEligibilityUnknownReason,
-  CommandSigningEligibilityStatus: mockCommandSigningEligibilityStatus,
-  CommandSigningRequirementStatus: mockCommandSigningRequirementStatus,
-  isComputeTargetSigningEligible: vi.fn().mockResolvedValue({
-    status: mockCommandSigningEligibilityStatus.Ineligible,
-    reason: "no_active_managed_key",
-  }),
-}));
+vi.mock("@/lib/relay-event-bus", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).relayEventBusMock()
+);
 
-// relayEventBus is used by the non-relay (direct socket.io) path.
-vi.mock("@/lib/relay-event-bus", () => ({
-  relayEventBus: { publishOperation: vi.fn() },
-}));
+vi.mock("@/app/compute-targets/relay-command-helpers", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).relayCommandHelpersMock()
+);
 
-// Transitive imports from loop-desktop.ts
-vi.mock("@/app/compute-targets/relay-command-helpers", () => ({
-  toRelayOperation: vi.fn().mockReturnValue({
-    operationId: "test-op",
-    method: "POST",
-    path: "/test",
-    body: {},
-  }),
-}));
-
-vi.mock("@/lib/desktop-gateway-wire", () => ({
-  toWireCommandFromRelayOperation: vi.fn().mockReturnValue({
-    commandId: "cmd-test-1",
-    operationId: "test-op",
-    method: "POST",
-    path: "/test",
-    body: {},
-  }),
-  toEnvelope: vi.fn().mockReturnValue({
-    commandId: "cmd-test-1",
-    operationId: "test-op",
-  }),
-}));
+vi.mock("@/lib/desktop-gateway-wire", async () =>
+  (
+    await import("@/__tests__/support/loops/loop-desktop-dispatch.test-mocks")
+  ).desktopGatewayWireMock()
+);
 
 // --- Imports (after mocks) ---
 
+import { LoopBranchMaterializationRole } from "@closedloop-ai/loops-api/desktop-request";
 import {
   COMMAND_SIGNING_CAPABILITY_KEY,
   COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
 } from "@repo/api/src/types/compute-target";
 import { DocumentType } from "@repo/api/src/types/document";
 import { LoopCommand } from "@repo/api/src/types/loop";
-import { LoopBranchMaterializationRole } from "@repo/api/src/types/loop-body";
 import { log } from "@repo/observability/log";
+import {
+  stubDefaultCreateCommand,
+  trackMintedCommandIds,
+} from "@/__tests__/support/loops/loop-desktop-dispatch.test-helpers";
+import {
+  mockResponse,
+  mockUnparseableResponse,
+  RE_503,
+  RE_NOT_DELIVERED,
+  RE_TARGET_OFFLINE,
+} from "@/__tests__/support/loops/loop-desktop-dispatch.test-mocks";
 import { toRelayOperation } from "@/app/compute-targets/relay-command-helpers";
 import { computeTargetsService } from "@/app/compute-targets/service";
 import {
@@ -130,7 +96,9 @@ import {
   DispatchError,
   isDispatchError,
   launchLoopOnDesktop,
+  MALFORMED_RELAY_ENVELOPE_REASON,
 } from "@/lib/loops/loop-desktop";
+import { relayEventBus } from "@/lib/relay-event-bus";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -161,24 +129,6 @@ const VALID_LAUNCH_OPTS = {
     ],
   },
 };
-
-const RE_NOT_DELIVERED = /not delivered/i;
-const RE_TARGET_OFFLINE = /target offline/i;
-const RE_503 = /503/;
-
-/** Create a minimal mock Response object accepted by dispatchRelayOperation. */
-function mockResponse(
-  status: number,
-  body: unknown
-): ReturnType<typeof global.fetch> {
-  const text = JSON.stringify(body);
-  return Promise.resolve({
-    ok: status >= 200 && status < 300,
-    status,
-    text: () => Promise.resolve(text),
-    json: () => Promise.resolve(body),
-  } as Response);
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -214,7 +164,7 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBeDefined();
   });
 
-  it("throws containing 'not delivered' when relay returns { delivered: false, reason: 'target_offline' } and throwOnFailure=true", async () => {
+  it("throws containing 'not delivered' when relay returns { delivered: false, reason: 'target_offline' }", async () => {
     vi.spyOn(globalThis, "fetch").mockReturnValue(
       mockResponse(200, { delivered: false, reason: "target_offline" })
     );
@@ -242,6 +192,51 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
     await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
       RE_TARGET_OFFLINE
     );
+  });
+
+  // A 2xx alone is not delivery. Rejecting only an explicit `delivered: false`
+  // fails open on every other shape, which is exactly where ISS-5708 found the
+  // launch: a command that never left the cloud, reported as dispatched.
+  it.each([
+    ["an empty object", {}],
+    ["a null body", null],
+    ["a non-boolean delivered", { delivered: "true" }],
+  ])("fails the launch when a relay 2xx carries %s instead of a delivered envelope", async (_shape, body) => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(mockResponse(200, body));
+
+    const error = await launchLoopOnDesktop(VALID_LAUNCH_OPTS).catch(
+      (err: unknown) => err
+    );
+
+    expect(isDispatchError(error)).toBe(true);
+    expect((error as DispatchError).dispatchReason).toBe(
+      MALFORMED_RELAY_ENVELOPE_REASON
+    );
+  });
+
+  it("fails the launch when a relay 2xx body is not JSON at all", async () => {
+    vi.spyOn(globalThis, "fetch").mockReturnValue(mockUnparseableResponse(200));
+
+    const error = await launchLoopOnDesktop(VALID_LAUNCH_OPTS).catch(
+      (err: unknown) => err
+    );
+
+    expect(isDispatchError(error)).toBe(true);
+    expect((error as DispatchError).dispatchReason).toBe(
+      MALFORMED_RELAY_ENVELOPE_REASON
+    );
+  });
+
+  it("keeps a delivered envelope when its diagnostic reason is off-contract", async () => {
+    // Only `delivered` decides. Failing the envelope over the reason field
+    // would point the fail-closed check the wrong way and report a command
+    // that DID reach the desktop as a launch failure.
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValue(mockResponse(200, { delivered: true, reason: 42 }));
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBeDefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("throws when relay returns non-200 status (existing behavior preserved)", async () => {
@@ -601,68 +596,6 @@ describe("dispatchRelayOperation (via launchLoopOnDesktop)", () => {
       })
     );
   });
-
-  it("does NOT throw when relay returns { delivered: false } on the kill (fire-and-forget) path", async () => {
-    // The kill path uses stopDesktopLoop which calls dispatchRelayOperation with
-    // throwOnFailure=false (the default). Verify that the same { delivered: false }
-    // response does not propagate an error.
-    vi.spyOn(globalThis, "fetch").mockReturnValue(
-      mockResponse(200, { delivered: false, reason: "target_offline" })
-    );
-
-    const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
-
-    await expect(stopDesktopLoop("loop-1", "ct-1")).resolves.toBeUndefined();
-  });
-
-  it("keeps unsigned kill available without checking signing eligibility", async () => {
-    vi.spyOn(globalThis, "fetch").mockReturnValue(
-      mockResponse(200, { delivered: true })
-    );
-    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
-      status: CommandSigningEligibilityStatus.Unknown,
-      reason: COMMAND_SIGNING_ELIGIBILITY_UNKNOWN_REASON,
-    });
-
-    const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
-
-    await expect(stopDesktopLoop("loop-1", "ct-1")).resolves.toBeUndefined();
-    expect(isComputeTargetSigningEligible).not.toHaveBeenCalled();
-    expect(desktopCommandStore.createCommand).toHaveBeenCalledWith(
-      "ct-1",
-      expect.objectContaining({
-        operationId: "symphony_loop_kill",
-        body: { loopId: "loop-1" },
-      })
-    );
-  });
-
-  it("expires signed kill commands and throws when immediate delivery fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockReturnValue(
-      mockResponse(200, { delivered: false, reason: "target_offline" })
-    );
-
-    const { stopDesktopLoop } = await import("@/lib/loops/loop-desktop");
-
-    await expect(
-      stopDesktopLoop("loop-1", "ct-1", {
-        commandId: "0196b1bb-7a00-7000-8000-000000000010",
-        signature: "signature",
-        signaturePayload: "{}",
-        publicKeyFingerprint: "cl:abcdefghijklmnopqrstuv",
-        body: { loopId: "loop-1", action: "loop.kill" },
-      })
-    ).rejects.toThrow(DispatchError);
-    expect(desktopCommandStore.markCommandExpired).toHaveBeenCalledWith(
-      "cmd-test-1",
-      "signed_command_delivery_failed:target_offline",
-      expect.objectContaining({
-        commandId: "cmd-test-1",
-        operationId: "symphony_loop_kill",
-        computeTargetId: "ct-1",
-      })
-    );
-  });
 });
 
 describe("DispatchError", () => {
@@ -691,5 +624,270 @@ describe("DispatchError", () => {
     expect(caught).toBeInstanceOf(DispatchError);
     expect(isDispatchError(caught)).toBe(true);
     expect((caught as DispatchError).commandId).toBe("cmd-test-1");
+  });
+});
+
+/**
+ * ISS-5811. The relay collapses a cross-instance peer-proxy timeout into
+ * `delivered:false, reason:"target_not_connected"`, so a launch died whenever
+ * the API's `POST /dispatch` happened to land on a relay instance that did not
+ * own the desktop's socket — measured on the live fleet as four launches
+ * failing at 4.29-4.40s (the relay's 4s `PEER_DISPATCH_TIMEOUT_MS` plus
+ * overhead) against a ~370ms delivery when the owning instance was hit, with
+ * the attempt immediately after a failure succeeding.
+ */
+describe("launch dispatch replay (ISS-5811)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      organizationId: "org-1",
+      userId: "owner-1",
+      gatewayId: "gateway-1",
+      capabilities: {},
+    } as any);
+    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
+      status: CommandSigningEligibilityStatus.Ineligible,
+      reason: "no_active_managed_key",
+    });
+    stubDefaultCreateCommand();
+    vi.stubEnv("RELAY_API_URL", "http://relay.test");
+    vi.stubEnv("INTERNAL_API_SECRET", "secret");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    // `clearAllMocks` clears recorded calls but NOT queued `mockReturnValueOnce`
+    // values. These cases queue exact response sequences, so an unconsumed entry
+    // would be served to the next case and make it pass or fail for a reason
+    // that has nothing to do with the behavior under test.
+    vi.restoreAllMocks();
+  });
+
+  it("delivers the launch when a not-delivered answer is followed by a delivery", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      )
+      .mockReturnValueOnce(mockResponse(200, { delivered: true }));
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBe(
+      "cmd-test-1"
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays the SAME commandId so a peer that already emitted cannot double-spawn", async () => {
+    // The relay's not-delivered answer is ambiguous: the peer may have emitted
+    // before it timed out. Replay is only safe because the commandId is minted
+    // once and reused -- the desktop executor dedupes on it. Minting a second
+    // command here would be a second, independently-executable run.
+    //
+    // `createCommand` hands back a DISTINCT id per call here so the assertion
+    // can actually fail. Against the suite-wide fixed `cmd-test-1`, a
+    // production path that re-minted per attempt would still put the same
+    // string on the wire twice and this test would stay green while the
+    // desktop double-spawned.
+    const mintedCommandIds = trackMintedCommandIds();
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      )
+      .mockReturnValueOnce(mockResponse(200, { delivered: true }));
+
+    await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+
+    expect(mintedCommandIds).toEqual(["cmd-minted-1"]);
+    const commandIds = fetchSpy.mock.calls.map(
+      (call) => JSON.parse(String(call[1]?.body)).operation.commandId
+    );
+    expect(commandIds).toEqual(["cmd-minted-1", "cmd-minted-1"]);
+  });
+
+  it("keeps replaying past a second not-delivered answer", async () => {
+    // At the observed ~43% per-attempt delivery rate, stopping at two attempts
+    // leaves ~32% of launches dead. The third attempt is the difference between
+    // ~68% and ~82%, so a bound of two is a regression, not a nicety. (That rate
+    // was sampled under desktop memory pressure and is a floor rather than a
+    // baseline -- see the constant's comment -- but every rate in range argues
+    // the same direction.)
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      )
+      .mockReturnValueOnce(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      )
+      .mockReturnValueOnce(mockResponse(200, { delivered: true }));
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBe(
+      "cmd-test-1"
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("gives up after a bounded number of attempts rather than replaying forever", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValue(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      );
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
+      RE_NOT_DELIVERED
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not replay a relay rejection, which is deterministic rather than transient", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockReturnValue(mockResponse(503, "Service Unavailable"));
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
+      RE_503
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves no error-level log behind when the launch recovers on replay", async () => {
+    // Error logs on this path feed a Datadog monitor. A miss that the next
+    // attempt recovers is now an expected transient, so it must not leave an
+    // error: an alert that fires on every recovered launch is one people learn
+    // to scroll past, and the exhausted-budget error below is the signal that
+    // has to stay legible.
+    vi.spyOn(globalThis, "fetch")
+      .mockReturnValueOnce(
+        mockResponse(200, { delivered: false, reason: "target_not_connected" })
+      )
+      .mockReturnValueOnce(mockResponse(200, { delivered: true }));
+
+    await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+
+    expect(log.error).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not delivered"),
+      expect.objectContaining({ reason: "target_not_connected" })
+    );
+  });
+
+  it("logs exactly one error once the replay budget is exhausted", async () => {
+    // One, not two: before ISS-5811 the same miss was logged by
+    // `assertDelivered` and again by the catch in `dispatchRelayApiOperation`.
+    vi.spyOn(globalThis, "fetch").mockReturnValue(
+      mockResponse(200, { delivered: false, reason: "target_not_connected" })
+    );
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
+      RE_NOT_DELIVERED
+    );
+
+    expect(log.error).toHaveBeenCalledTimes(1);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining("not delivered"),
+      expect.objectContaining({ reason: "target_not_connected" })
+    );
+  });
+});
+
+/**
+ * ISS-5811 over the LOCAL RELAY FALLBACK transport.
+ *
+ * Without `RELAY_API_URL`/`INTERNAL_API_SECRET` the same retry helper publishes
+ * through the in-process `relayEventBus` instead of the relay's HTTP
+ * `/dispatch`, and reports the miss as `deliveredToSubscriber: false` rather
+ * than `delivered: false`. The replay contract has to hold identically on both
+ * -- `apps/api/AGENTS.md` requires the fallback branch to be covered alongside
+ * the configured remote branch, precisely because a normal local run only ever
+ * exercises this one.
+ */
+describe("launch dispatch replay over the local relay fallback (ISS-5811)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(computeTargetsService.findById).mockResolvedValue({
+      organizationId: "org-1",
+      userId: "owner-1",
+      gatewayId: "gateway-1",
+      capabilities: {},
+    } as any);
+    vi.mocked(isComputeTargetSigningEligible).mockResolvedValue({
+      status: CommandSigningEligibilityStatus.Ineligible,
+      reason: "no_active_managed_key",
+    });
+    stubDefaultCreateCommand();
+    // Explicitly REMOVE the remote-transport config rather than assume it is
+    // absent: `getRelayApiDispatchConfig` prefers it, so an ambient value would
+    // route these cases back through fetch and prove nothing about the fallback.
+    vi.stubEnv("RELAY_API_URL", undefined);
+    vi.stubEnv("INTERNAL_API_SECRET", undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("delivers the launch when a no-subscriber publish is followed by a delivery", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error("the fallback transport must not reach fetch");
+    });
+    vi.mocked(relayEventBus.publishOperation)
+      .mockReturnValueOnce({ deliveredToSubscriber: false })
+      .mockReturnValueOnce({ deliveredToSubscriber: true });
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).resolves.toBe(
+      "cmd-test-1"
+    );
+    expect(relayEventBus.publishOperation).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("treats a no-subscriber publish as a failure and gives up on the same bound", async () => {
+    vi.mocked(relayEventBus.publishOperation).mockReturnValue({
+      deliveredToSubscriber: false,
+    });
+
+    await expect(launchLoopOnDesktop(VALID_LAUNCH_OPTS)).rejects.toThrow(
+      RE_NOT_DELIVERED
+    );
+    expect(relayEventBus.publishOperation).toHaveBeenCalledTimes(3);
+  });
+
+  it("replays the SAME commandId over the fallback transport too", async () => {
+    // Same safety argument as the remote transport, same falsifiability
+    // requirement: a distinct id per mint, so re-minting per attempt fails here.
+    const mintedCommandIds = trackMintedCommandIds();
+    vi.mocked(relayEventBus.publishOperation)
+      .mockReturnValueOnce({ deliveredToSubscriber: false })
+      .mockReturnValueOnce({ deliveredToSubscriber: true });
+
+    await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+
+    expect(mintedCommandIds).toEqual(["cmd-minted-1"]);
+    // `params` is typed as JsonValue on the dispatch request; the commandId is
+    // the field `toRelayOperation` parks there.
+    const publishedCommandIds = vi
+      .mocked(relayEventBus.publishOperation)
+      .mock.calls.map(
+        ([, operation]) =>
+          (operation.params as { commandId?: string } | null)?.commandId
+      );
+    expect(publishedCommandIds).toEqual(["cmd-minted-1", "cmd-minted-1"]);
+  });
+
+  it("keeps a recovered fallback launch off the error log", async () => {
+    vi.mocked(relayEventBus.publishOperation)
+      .mockReturnValueOnce({ deliveredToSubscriber: false })
+      .mockReturnValueOnce({ deliveredToSubscriber: true });
+
+    await launchLoopOnDesktop(VALID_LAUNCH_OPTS);
+
+    expect(log.error).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining("not delivered"),
+      expect.objectContaining({ reason: "target_offline" })
+    );
   });
 });

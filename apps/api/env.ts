@@ -8,6 +8,7 @@ import { keys as google } from "@repo/google/keys";
 import { keys as linear } from "@repo/linear/keys";
 import { keys as core } from "@repo/next-config/keys";
 import { keys as observability } from "@repo/observability/keys";
+import { keys as pensero } from "@repo/pensero/keys";
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
 import {
@@ -33,6 +34,7 @@ export const env = createEnv({
     google(),
     linear(),
     observability(),
+    pensero(),
   ],
   server: {
     INTERNAL_API_SECRET: z.string().min(1).optional(),

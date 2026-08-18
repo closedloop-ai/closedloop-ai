@@ -3,8 +3,8 @@ import { LoopStatus } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
-  buildLoopUrl,
   encodePathSegment,
+  type McpUrlBuilder,
   withErrorHandling,
 } from "./tool-utils.js";
 
@@ -14,7 +14,8 @@ import {
  */
 export function registerCompleteLoop(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "complete-loop",
@@ -102,7 +103,7 @@ export function registerCompleteLoop(
                 {
                   loopId,
                   status: LoopStatus.Completed,
-                  webUrl: buildLoopUrl(loopId),
+                  webUrl: urls.buildLoopUrl(loopId),
                   prUrl,
                   branchName,
                   summary,

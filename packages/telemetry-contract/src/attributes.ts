@@ -3,6 +3,7 @@ export const TelemetryAttribute = {
   ServiceName: "service.name",
   ServiceVersion: "service.version",
   AppInstallationId: "app.installation.id",
+  DeviceId: "device.id",
   AppOrganizationId: "app.organization.id",
   DeploymentEnvironmentName: "deployment.environment.name",
   ExceptionType: "exception.type",
@@ -31,6 +32,7 @@ export const TelemetryAttribute = {
   SyncOutcome: "sync.outcome",
   SyncPayloadBytes: "sync.payload_bytes",
   SyncLatencyMs: "sync.latency_ms",
+  SyncReason: "sync.reason",
   GenAiCostUsage: "gen_ai.cost.usage",
   GenAiPermissionDecision: "gen_ai.permission.decision",
   GenAiPermissionSource: "gen_ai.permission.source",
@@ -39,6 +41,11 @@ export const TelemetryAttribute = {
   IpcPayloadBytes: "ipc.payload_bytes",
   IpcResultCount: "ipc.result_count",
   IpcSessionCount: "ipc.session_count",
+  ImportEvent: "import.event",
+  ImportGroupLabel: "import.group_label",
+  ImportGroupFailedCount: "import.group_failed_count",
+  ImportSessionsIncomplete: "import.sessions_incomplete",
+  ImportSessionsPendingRevision: "import.sessions_pending_revision",
 } as const;
 
 /** Literal union of all published telemetry attribute names. */
@@ -90,6 +97,7 @@ export type TelemetryAttributeOwnership =
 export const ResourceTelemetryAttributes = [
   TelemetryAttribute.ServiceName,
   TelemetryAttribute.ServiceVersion,
+  TelemetryAttribute.DeviceId,
   TelemetryAttribute.HarnessName,
 ] as const;
 
@@ -104,6 +112,11 @@ export const AppTelemetryAttributes = [
   TelemetryAttribute.AppExceptionOrigin,
   TelemetryAttribute.AppOperatingMode,
   TelemetryAttribute.AppLifecycleEvent,
+  TelemetryAttribute.ImportEvent,
+  TelemetryAttribute.ImportGroupLabel,
+  TelemetryAttribute.ImportGroupFailedCount,
+  TelemetryAttribute.ImportSessionsIncomplete,
+  TelemetryAttribute.ImportSessionsPendingRevision,
 ] as const;
 
 /** OTel HTTP span attributes allowed by the span schema. */
@@ -154,6 +167,7 @@ export const SyncTelemetryAttributes = [
   TelemetryAttribute.SyncOutcome,
   TelemetryAttribute.SyncPayloadBytes,
   TelemetryAttribute.SyncLatencyMs,
+  TelemetryAttribute.SyncReason,
 ] as const;
 
 /** Desktop IPC perf wide-event attributes allowed by the ipc schema (FEA-1997). */
@@ -171,6 +185,7 @@ export const OtelTelemetryAttributes = [
   TelemetryAttribute.ServiceName,
   TelemetryAttribute.ServiceVersion,
   TelemetryAttribute.AppInstallationId,
+  TelemetryAttribute.DeviceId,
   TelemetryAttribute.DeploymentEnvironmentName,
   TelemetryAttribute.ExceptionType,
   TelemetryAttribute.ExceptionMessage,
@@ -204,6 +219,7 @@ export const ClosedLoopCompatibilityAttribute = {
   SyncOutcome: TelemetryAttribute.SyncOutcome,
   SyncPayloadBytes: TelemetryAttribute.SyncPayloadBytes,
   SyncLatencyMs: TelemetryAttribute.SyncLatencyMs,
+  SyncReason: TelemetryAttribute.SyncReason,
   GenAiCostUsage: TelemetryAttribute.GenAiCostUsage,
   GenAiPermissionDecision: TelemetryAttribute.GenAiPermissionDecision,
   GenAiPermissionSource: TelemetryAttribute.GenAiPermissionSource,
@@ -212,6 +228,12 @@ export const ClosedLoopCompatibilityAttribute = {
   IpcPayloadBytes: TelemetryAttribute.IpcPayloadBytes,
   IpcResultCount: TelemetryAttribute.IpcResultCount,
   IpcSessionCount: TelemetryAttribute.IpcSessionCount,
+  ImportEvent: TelemetryAttribute.ImportEvent,
+  ImportGroupLabel: TelemetryAttribute.ImportGroupLabel,
+  ImportGroupFailedCount: TelemetryAttribute.ImportGroupFailedCount,
+  ImportSessionsIncomplete: TelemetryAttribute.ImportSessionsIncomplete,
+  ImportSessionsPendingRevision:
+    TelemetryAttribute.ImportSessionsPendingRevision,
 } as const;
 
 /** Literal union of ClosedLoop compatibility telemetry attributes. */
@@ -290,6 +312,13 @@ export const CompatibilityAttributeProducerMapping = {
     reason:
       "Sync latency as an attribute is a ClosedLoop transport-health concept with no pinned OTel semantic convention equivalent.",
   },
+  [TelemetryAttribute.SyncReason]: {
+    producer:
+      "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts (sync subsystem instrumentation, FEA-3426)",
+    sourceField: "reason",
+    reason:
+      "Sync failure/dead-letter reason (closed enum: ack_timeout, rate_limited, ingestion_failed, validation_failed, feature_disabled, locally_oversized, transport_error, unhydratable) is a ClosedLoop transport-health concept with no pinned OTel semantic convention equivalent.",
+  },
   [TelemetryAttribute.GenAiCostUsage]: {
     producer:
       "apps/desktop in-process OTLP receiver (harness cost events, PRD-468 FEA-1843)",
@@ -345,6 +374,41 @@ export const CompatibilityAttributeProducerMapping = {
     reason:
       "Total local-store session count — the fleet dimension that exposes the many-sessions perf cliff. No pinned OTel semantic convention owns it, so it stays a ClosedLoop compatibility field.",
   },
+  [TelemetryAttribute.ImportEvent]: {
+    producer:
+      "apps/desktop/src/main/telemetry/import-health-telemetry.ts (desktop import-health counters, ISS-5103)",
+    sourceField: "kind",
+    reason:
+      "Discriminator for desktop local-store import-health events (group_failed vs pass summary). ClosedLoop store-health concept with no pinned OTel semantic convention equivalent.",
+  },
+  [TelemetryAttribute.ImportGroupLabel]: {
+    producer:
+      "apps/desktop/src/main/telemetry/import-health-telemetry.ts (desktop import-health counters, ISS-5103)",
+    sourceField: "groupLabel",
+    reason:
+      "Closed low-cardinality set naming the sqlite import record group that failed (the write-core runGroup labels, plus `unknown` as the version-skew fallback). ClosedLoop store-health concept with no pinned OTel semantic convention equivalent.",
+  },
+  [TelemetryAttribute.ImportGroupFailedCount]: {
+    producer:
+      "apps/desktop/src/main/telemetry/import-health-telemetry.ts (desktop import-health counters, ISS-5103)",
+    sourceField: "count",
+    reason:
+      "Count of tolerated import-group failures for one group label in the tally window. ClosedLoop store-health concept with no pinned OTel semantic convention equivalent.",
+  },
+  [TelemetryAttribute.ImportSessionsIncomplete]: {
+    producer:
+      "apps/desktop/src/main/telemetry/import-health-telemetry.ts (desktop import-health counters, ISS-5103)",
+    sourceField: "sessionsIncomplete",
+    reason:
+      "Count of importSession results flagged `incomplete` in the tally window. ClosedLoop store-health concept with no pinned OTel semantic convention equivalent.",
+  },
+  [TelemetryAttribute.ImportSessionsPendingRevision]: {
+    producer:
+      "apps/desktop/src/main/telemetry/import-health-telemetry.ts (desktop import-health counters, ISS-5103)",
+    sourceField: "sessionsPendingRevision",
+    reason:
+      "Count of sessions stuck at the DATA_REVISION_IMPORT_PENDING sentinel from before the tally window began. ClosedLoop store-health concept with no pinned OTel semantic convention equivalent.",
+  },
 } as const satisfies Record<
   ClosedLoopCompatibilityAttribute,
   { producer: string; sourceField: string; reason: string }
@@ -355,6 +419,7 @@ export const TelemetryAttributeOwnershipByName = {
   [TelemetryAttribute.ServiceName]: TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.ServiceVersion]: TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.AppInstallationId]: TelemetryAttributeOwnership.Otel,
+  [TelemetryAttribute.DeviceId]: TelemetryAttributeOwnership.Otel,
   [TelemetryAttribute.AppOrganizationId]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.DeploymentEnvironmentName]:
@@ -394,6 +459,8 @@ export const TelemetryAttributeOwnershipByName = {
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.SyncLatencyMs]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.SyncReason]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.GenAiCostUsage]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.GenAiPermissionDecision]:
@@ -409,6 +476,16 @@ export const TelemetryAttributeOwnershipByName = {
   [TelemetryAttribute.IpcResultCount]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
   [TelemetryAttribute.IpcSessionCount]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.ImportEvent]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.ImportGroupLabel]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.ImportGroupFailedCount]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.ImportSessionsIncomplete]:
+    TelemetryAttributeOwnership.ClosedLoopCompatibility,
+  [TelemetryAttribute.ImportSessionsPendingRevision]:
     TelemetryAttributeOwnership.ClosedLoopCompatibility,
 } as const satisfies Record<
   TelemetryAttributeName,

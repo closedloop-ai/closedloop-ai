@@ -1,0 +1,10 @@
+{
+  "title": "Projects",
+  "pages": [
+    "listProjects",
+    "getProject",
+    "createProject",
+    "updateProject",
+    "deleteProject"
+  ]
+}

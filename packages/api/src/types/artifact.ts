@@ -3,6 +3,7 @@
 // record (Artifact) plus one of four type-specific detail objects, each
 // identified by `Artifact.type`.
 
+import { normalizeDocumentType } from "@closedloop-ai/loops-api/document";
 import type { ChecksStatus, ReviewDecision } from "./branch-view";
 import type { JsonObject, Priority } from "./common";
 import type { ArtifactRepositorySnapshot } from "./document";
@@ -82,9 +83,47 @@ export const ArtifactSubtype = {
   ImplementationPlan: "IMPLEMENTATION_PLAN",
   Template: "TEMPLATE",
   Feature: "FEATURE",
+  Doc: "DOC",
 } as const;
 export type ArtifactSubtype =
   (typeof ArtifactSubtype)[keyof typeof ArtifactSubtype];
+
+/**
+ * Canonical `ISSUE` input alias for the persisted `FEATURE` subtype (FEA-3956,
+ * PRD-560 Phase 3). Mirrors the parallel `DocumentTypeAlias.Issue` boundary
+ * vocabulary (ISS-4397): the product renamed Features → Issues in the UI,
+ * routes, and slugs (FEA-3954/FEA-3955/FEA-4137), but the underlying storage
+ * subtype stays `FEATURE` (non-destructive, per PRD-560 decision 2). This alias
+ * is the input value the DB/wire boundary ACCEPTS from callers — a skewed
+ * newer desktop/MCP/external client may send the canonical `ISSUE`; it
+ * normalizes to the persisted `FEATURE` via {@link normalizeArtifactSubtype}
+ * before it reaches Prisma or any exhaustive `Record<ArtifactSubtype, …>` map.
+ *
+ * `ISSUE` is deliberately NOT a member of {@link ArtifactSubtype}: it never
+ * persists, so existing FEATURE-typed rows, the `IssueStatus` vocabulary, slug
+ * prefixes, and every `subtype === FEATURE` predicate keep working unchanged.
+ * Additive and skew-safe: old clients that only know `FEATURE` are unaffected,
+ * and new clients may send `ISSUE`.
+ */
+export const ArtifactSubtypeAlias = {
+  Issue: "ISSUE",
+} as const;
+export type ArtifactSubtypeAlias =
+  (typeof ArtifactSubtypeAlias)[keyof typeof ArtifactSubtypeAlias];
+
+/**
+ * The accepted *input* artifact-subtype vocabulary at the DB/wire boundary:
+ * every persisted {@link ArtifactSubtype} plus the `ISSUE` alias (FEA-3956).
+ * Boundary consumers validate against this superset; the value is normalized to
+ * a persisted {@link ArtifactSubtype} with {@link normalizeArtifactSubtype}
+ * before use.
+ */
+export const ArtifactSubtypeInput = {
+  ...ArtifactSubtype,
+  ...ArtifactSubtypeAlias,
+} as const;
+export type ArtifactSubtypeInput =
+  (typeof ArtifactSubtypeInput)[keyof typeof ArtifactSubtypeInput];
 
 /**
  * Parent-row fields common to every artifact type. Per-type detail objects
@@ -335,3 +374,23 @@ export type BatchMoveArtifactsInput = {
 export type BatchMoveArtifactsResult = {
   movedArtifacts: { id: string; type: ArtifactType }[];
 };
+
+/**
+ * Normalizes an accepted input artifact subtype to its persisted
+ * {@link ArtifactSubtype}. `ISSUE` → `FEATURE`; every other value is returned
+ * unchanged. Call this at the DB/wire boundary before persisting or querying so
+ * the canonical `ISSUE` never leaks into the database or into a
+ * `Record<ArtifactSubtype, …>` map (FEA-3956). Unknown values are outside the
+ * type and are rejected by the caller's own validation before this point.
+ *
+ * Delegates to the {@link normalizeDocumentType} SSOT (`@closedloop-ai/loops-api`): the
+ * persisted `ArtifactSubtype` vocabulary and its `ISSUE` input alias are the
+ * same value set as `DocumentType`/`DocumentTypeAlias`, so the `ISSUE → FEATURE`
+ * mapping is owned in exactly one place instead of a second exhaustive record
+ * that could drift.
+ */
+export function normalizeArtifactSubtype(
+  subtype: ArtifactSubtypeInput
+): ArtifactSubtype {
+  return normalizeDocumentType(subtype);
+}

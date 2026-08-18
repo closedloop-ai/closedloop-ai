@@ -1,0 +1,43 @@
+-- ISS-5135: drop the `wall_clock_heal_seen` marker table with the FEA-3427
+-- wall-clock heal it existed to serve.
+--
+-- The heal (ISS-4447 #3976 + ISS-4493 #4051) force-enqueued sessions whose CLOUD
+-- `wallClock` was anchored on a pre-FEA-3427 `updated_at` re-sync bump, so the
+-- desktop would re-emit their payload with the corrected anchor. This table was
+-- its completion marker, keyed `(source_key, data_revision)` so a later boot at
+-- the same revision could skip re-enqueuing the whole candidate set.
+--
+-- Retired because the marker's revision scoping made it self-defeating:
+-- DATA_REVISION bumped ~5 times in the 6 days after the heal shipped, and every
+-- bump discards the marker. Meanwhile the candidate query keys on local
+-- `updated_at` sitting past `ended_at`, which healing the CLOUD row never
+-- changes — so the same historical sessions matched forever and the full set was
+-- re-enqueued roughly daily, indefinitely, for a display correction that had
+-- already landed everywhere online. All reads and writes of this table were
+-- removed in the same change set (`wall-clock-heal-marker.ts` and its store
+-- facade are deleted), so nothing in this build touches it.
+--
+-- SAFETY (not a gate marker): `check-destructive-migrations.ts` deliberately
+-- scans only column-level DDL (its comment at the DROP TABLE regex says so), and
+-- its `destructive-migration-ok(...)` parser keys on `table.column` — so a table
+-- drop is ungated and a table-scoped marker would excuse nothing. The precedent
+-- drop (0044_drop_unused_pricing_tables) carries no marker at all. This block is
+-- therefore a voluntary rationale for human review, NOT lint clearance.
+--
+-- The rationale: no reader exists on any build that can still serve this store. The FEA-3331 failure mode the gate guards
+-- against is a CLOUD one — a base-branch deployment still serving reads while its
+-- paired app build lags the schema. It does not apply here: this is the
+-- desktop-local SQLite store, where exactly one app build owns the file at a
+-- time, and the forward-only migration runner REFUSES TO BOOT a downgraded app
+-- against a store migrated by a newer build. So an older build carrying the model
+-- in its generated client can never open a store where this migration has run;
+-- there is no window in which a stale reader sees the dropped table. The table is
+-- a local high-water mark only — it holds no session data, is in no wire or cloud
+-- contract, and losing it strands nothing: the heal it gated is gone.
+-- `IF EXISTS` matches the house idiom on both sides of this table's life:
+-- 0041 created it with `CREATE TABLE IF NOT EXISTS`, and the precedent drops
+-- (0006_drop_pricing_lookup_miss, 0044_drop_unused_pricing_tables) all guard.
+-- Not strictly required — the runner refuses history gaps, so 0041 always ran
+-- first — but the runner's idempotent heal only tolerates column-level errors,
+-- so a `no such table` here would be a hard boot refusal with DB IPC disabled.
+DROP TABLE IF EXISTS "wall_clock_heal_seen";

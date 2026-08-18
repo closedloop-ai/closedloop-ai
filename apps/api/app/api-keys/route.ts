@@ -1,4 +1,9 @@
 import type { ApiKey, CreateApiKeyResponse } from "@repo/api/src/types/api-key";
+import { AuditAction, AuditObjectType } from "@repo/api/src/types/audit";
+import {
+  dispatchAuditEvent,
+  userAuditActor,
+} from "@/app/audit/audit-emit-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import { errorResponse, parseBody, successResponse } from "@/lib/route-utils";
 import { apiKeysService } from "./service";
@@ -40,6 +45,18 @@ export const POST = withAuth<CreateApiKeyResponse, "/api-keys">(
         user.id,
         input
       );
+
+      // Record the key mint on the tamper-evident audit ledger (FEA-3862).
+      // Non-blocking/best-effort; the plaintext key is never included in the
+      // detail — only the key id and its non-secret name.
+      dispatchAuditEvent({
+        organizationId: user.organizationId,
+        actor: userAuditActor(user.id),
+        action: AuditAction.ApiKeyMinted,
+        objectType: AuditObjectType.ApiKey,
+        objectId: result.id,
+        detail: { name: result.name },
+      });
 
       return successResponse(result);
     } catch (error) {

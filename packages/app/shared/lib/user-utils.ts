@@ -1,16 +1,47 @@
+import { mentionMatchDisplayName } from "@repo/collaboration/shared/mention-matching";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
+
+/**
+ * Join a user's name parts into a single "First Last" string, dropping empty
+ * parts. Returns "" when no usable name part exists so callers can apply their
+ * own fallback chain (email, id, "—", …).
+ *
+ * SSOT for the renderer-surface name-part collapse (FEA-3606) — the desktop
+ * account tab used to inline this exact expression. NOTE: this intentionally
+ * does NOT `.trim()` the joined result, preserving that inlined derivation
+ * byte-for-byte: a whitespace-only name part is returned as-is rather than
+ * collapsed to "". The backend counterpart
+ * (`apps/api/lib/user-display-name.ts` `formatUserFullName`) DOES trim; the two
+ * are deliberately kept separate because their observable outputs differ on
+ * whitespace-only inputs and desktop-main cannot take a runtime value import
+ * from `@repo/api` (pglite boot caveat) anyway.
+ */
+export function getUserNamePart(user: {
+  firstName: string | null;
+  lastName: string | null;
+}): string {
+  return [user.firstName, user.lastName].filter(Boolean).join(" ");
+}
 
 /**
  * Get display name from user object
  * Falls back to email if no name parts are available
+ *
+ * Delegates the "First Last / email" derivation to the shared, SDK-free
+ * `@repo/collaboration/shared/mention-matching` helper so it stays identical to
+ * the mention resolvers (FEA-3507). The mention copy treats email as required,
+ * so we normalize the optional email to "" and keep the extra "Unknown user"
+ * fallback here.
  */
 export function getUserDisplayName(user: {
   firstName: string | null;
   lastName: string | null;
   email?: string;
 }): string {
-  const name = [user.firstName, user.lastName].filter(Boolean).join(" ");
-  return name || user.email || "Unknown user";
+  return (
+    mentionMatchDisplayName({ ...user, email: user.email ?? "" }) ||
+    "Unknown user"
+  );
 }
 
 /**

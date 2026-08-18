@@ -26,6 +26,7 @@ function makeComponent(
 ): AgentComponent {
   return {
     id: "uuid-0001",
+    slug: overrides.slug ?? "subagent::test-subagent",
     name: "Test Subagent",
     kind: AgentComponentKind.Subagent,
     sourceType: SourceType.Repo,
@@ -33,9 +34,8 @@ function makeComponent(
     harness: Harness.Claude,
     invocations: 10,
     sessions: 3,
-    klocPerDollar: 2.5,
+    locPerDollar: 2.5,
     trend: [1, 2, 3],
-    owner: "alice",
     collaborators: [],
     computeTargetIds: ["t1"],
     firstSeenAt: "2026-01-01T00:00:00.000Z",
@@ -51,10 +51,22 @@ function makeDetail(
     ...makeComponent(overrides),
     properties: { path: "/agents/agent.md", format: "md" },
     prompt: "You are a helpful agent.",
+    versions: [],
+    resolvedState: "unresolved",
     sessionsTab: [],
+    sessionsTabTruncated: false,
     branchesTab: [],
+    branchesTabTruncated: false,
     provenance: [],
     usageSessions: [],
+    locDelta: null,
+    successRate: null,
+    successDelta: null,
+    tokenEfficiencyDelta: null,
+    efficiencyTrend: [],
+    mergedPrs: null,
+    qualityScore: null,
+    qualityDelta: null,
   };
 }
 

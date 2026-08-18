@@ -21,7 +21,6 @@ import {
   FileIcon,
   FolderIcon,
   ListTreeIcon,
-  RefreshCwIcon,
   TagIcon,
   UserIcon,
 } from "lucide-react";
@@ -30,7 +29,6 @@ import type { ReactNode } from "react";
 const COLUMN_ICONS: Partial<Record<DocumentColumn, ReactNode>> = {
   [Col.Type]: <FileIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Assignee]: <UserIcon className="h-4 w-4 text-muted-foreground" />,
-  [Col.Loop]: <RefreshCwIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Parent]: <ListTreeIcon className="h-4 w-4 text-muted-foreground" />,
   [Col.Priority]: <PriorityIcon priority={Priority.Medium} size={16} />,
   [Col.Score]: <BadgeCheckIcon className="h-4 w-4 text-muted-foreground" />,

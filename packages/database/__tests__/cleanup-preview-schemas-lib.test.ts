@@ -5,7 +5,10 @@ import {
   computeExitCode,
   deriveBranchSchemaName,
   getBranchModeCounterBucket,
+  isMergeQueuePreview,
   isOrphanGraceElapsed,
+  MERGE_QUEUE_REF_PREFIX,
+  MERGE_QUEUE_SCHEMA_PREFIX,
   makeCounters,
   parseCliArgs,
   validateHost,
@@ -101,7 +104,7 @@ describe("buildSummary", () => {
     const counters = makeCounters();
     const result = buildSummary(counters);
     expect(result).toBe(
-      "summary: ttl-expired[dropped=0 kept=0 errored=0] orphan[dropped=0 kept=0 errored=0] orphan-branch[dropped=0 kept=0 errored=0] pr-closed[dropped=0 kept=0 errored=0] registry-read[errored=0]"
+      "summary: ttl-expired[dropped=0 kept=0 errored=0] orphan[dropped=0 kept=0 errored=0] orphan-branch[dropped=0 kept=0 errored=0] pr-closed[dropped=0 kept=0 errored=0] registry-read[errored=0] deferred=0"
     );
   });
 
@@ -118,6 +121,13 @@ describe("buildSummary", () => {
     expect(result).toContain("orphan-branch[dropped=0 kept=0 errored=0]");
     expect(result).toContain("pr-closed[dropped=5 kept=0 errored=0]");
     expect(result).toContain("registry-read[errored=4]");
+  });
+
+  it("surfaces deferred drops so a budget-truncated sweep cannot read as complete", () => {
+    const counters = makeCounters();
+    counters["ttl-expired"].dropped = 250;
+    counters.deferredDrops = 212;
+    expect(buildSummary(counters)).toContain("deferred=212");
   });
 
   it("always starts with 'summary: '", () => {
@@ -339,6 +349,14 @@ describe("computeExitCode", () => {
     expect(result).toBe(0);
   });
 
+  it("returns 0 when the only non-zero counter is deferredDrops", () => {
+    // Running out of the sweep's time budget is not a failure — the next daily
+    // sweep resumes — so it must not reach the route's 500 + Slack page.
+    const counters = makeCounters();
+    counters.deferredDrops = 212;
+    expect(computeExitCode(counters)).toBe(0);
+  });
+
   it("returns 1 when ttl-expired has errored > 0", () => {
     const counters = makeCounters();
     counters["ttl-expired"].errored = 1;
@@ -382,7 +400,7 @@ describe("computeExitCode", () => {
 // ---------------------------------------------------------------------------
 
 describe("makeCounters", () => {
-  it("returns an object with all four category keys plus registryReadErrored", () => {
+  it("returns an object with all four category keys plus the two scalars", () => {
     const counters = makeCounters();
     expect(Object.keys(counters)).toEqual([
       "ttl-expired",
@@ -390,6 +408,7 @@ describe("makeCounters", () => {
       "orphan-branch",
       "pr-closed",
       "registryReadErrored",
+      "deferredDrops",
     ]);
   });
 
@@ -408,6 +427,11 @@ describe("makeCounters", () => {
   it("initializes registryReadErrored to zero", () => {
     const counters = makeCounters();
     expect(counters.registryReadErrored).toBe(0);
+  });
+
+  it("initializes deferredDrops to zero", () => {
+    const counters = makeCounters();
+    expect(counters.deferredDrops).toBe(0);
   });
 
   it("each call returns a fresh independent object", () => {
@@ -458,5 +482,94 @@ describe("isOrphanGraceElapsed", () => {
   it("returns false with zero-hour grace when firstObservedAt is null", () => {
     // Even with zero grace, null means first observation — don't drop
     expect(isOrphanGraceElapsed(null, 0, now)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isMergeQueuePreview
+// ---------------------------------------------------------------------------
+
+describe("isMergeQueuePreview", () => {
+  const QUEUE_BRANCH = `${MERGE_QUEUE_REF_PREFIX}main/pr-4444-abc1234`;
+  const QUEUE_SCHEMA = `${MERGE_QUEUE_SCHEMA_PREFIX}main_pr_4444_abc1234_1a2b3c4d`;
+
+  it("identifies a queue preview by its registry branch", () => {
+    expect(
+      isMergeQueuePreview({
+        schemaName: QUEUE_SCHEMA,
+        branch: QUEUE_BRANCH,
+      })
+    ).toBe(true);
+  });
+
+  it("falls back to the schema-name prefix when the branch column is null", () => {
+    // `preview_schemas.branch` is nullable, so the derived name is the only
+    // signal available for those rows.
+    expect(
+      isMergeQueuePreview({ schemaName: QUEUE_SCHEMA, branch: null })
+    ).toBe(true);
+  });
+
+  it.each([
+    "",
+    "   ",
+    "\t\n",
+  ])("treats a blank branch (%j) as absent and falls back to the name", (blank) => {
+    // `upsertSchemaRegistry` writes `branch ?? null` straight from
+    // VERCEL_GIT_COMMIT_REF, which preserves an empty string. Taking `""` as
+    // an authoritative non-queue branch would both deny the schema its short
+    // TTL and hand it to the branch-aware pass, where no live branch can ever
+    // match `""` — dropping a queue preview early on a liveness check.
+    expect(
+      isMergeQueuePreview({ schemaName: QUEUE_SCHEMA, branch: blank })
+    ).toBe(true);
+  });
+
+  it("does not queue-classify a blank-branch ordinary preview", () => {
+    expect(
+      isMergeQueuePreview({
+        schemaName: "preview_feat_add_widget_9f8e7d6c",
+        branch: "",
+      })
+    ).toBe(false);
+  });
+
+  it("does not treat an ordinary feature branch as a queue preview", () => {
+    expect(
+      isMergeQueuePreview({
+        schemaName: "preview_feat_add_widget_9f8e7d6c",
+        branch: "feat/add-widget",
+      })
+    ).toBe(false);
+  });
+
+  it("does not treat a null-branch ordinary preview as a queue preview", () => {
+    expect(
+      isMergeQueuePreview({
+        schemaName: "preview_feat_add_widget_9f8e7d6c",
+        branch: null,
+      })
+    ).toBe(false);
+  });
+
+  it("trusts the branch over a coincidentally queue-shaped schema name", () => {
+    // A human could push a branch literally named `gh-readonly-queue-ish/...`;
+    // the branch column is authoritative when present.
+    expect(
+      isMergeQueuePreview({
+        schemaName: QUEUE_SCHEMA,
+        branch: "feat/gh-readonly-queue-lookalike",
+      })
+    ).toBe(false);
+  });
+
+  it("the schema-name prefix is what the ref normalizes to", () => {
+    // Pins the two exported constants to each other: the name form must be the
+    // ref form lowercased with non-identifier runs collapsed to `_`.
+    const normalizedRefPrefix = MERGE_QUEUE_REF_PREFIX.toLowerCase().replace(
+      /[^a-z0-9_]+/g,
+      "_"
+    );
+    expect(MERGE_QUEUE_SCHEMA_PREFIX).toBe(`preview_${normalizedRefPrefix}`);
   });
 });

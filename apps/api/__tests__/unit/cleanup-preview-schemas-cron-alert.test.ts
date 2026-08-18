@@ -66,6 +66,7 @@ vi.mock("@/lib/route-utils", () => ({
 // ---------------------------------------------------------------------------
 
 import type { CategoryCounters } from "@repo/database/scripts/cleanup-preview-schemas-lib";
+import { makeCounters as makeZeroedCounters } from "@repo/database/scripts/cleanup-preview-schemas-lib";
 import { GET } from "@/app/cron/cleanup-preview-schemas/route";
 
 // ---------------------------------------------------------------------------
@@ -81,17 +82,14 @@ function makeRequest(token = "test-cron-secret"): Request {
   });
 }
 
+/**
+ * Zeroed counters from the canonical factory, so a field added to
+ * `CategoryCounters` reaches this fixture instead of it drifting out of shape.
+ */
 function makeCounters(
   overrides: Partial<CategoryCounters> = {}
 ): CategoryCounters {
-  return {
-    "ttl-expired": { kept: 0, dropped: 0, errored: 0 },
-    orphan: { kept: 0, dropped: 0, errored: 0 },
-    "orphan-branch": { kept: 0, dropped: 0, errored: 0 },
-    "pr-closed": { kept: 0, dropped: 0, errored: 0 },
-    registryReadErrored: 0,
-    ...overrides,
-  };
+  return { ...makeZeroedCounters(), ...overrides };
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,33 @@
+---
+title: Integrations
+description: 'Connect GitHub, Google, and Linear to Closedloop'
+---
+
+Closedloop connects to the tools your team already uses. Each integration is
+connected per-organization from settings, and you can check its status or
+disconnect it at any time.
+
+<Cards>
+  <Card title="GitHub" href="./github">
+    Link repositories, branches, and pull requests.
+  </Card>
+  <Card title="Google" href="./google">
+    Import documents from Google Drive.
+  </Card>
+  <Card title="Linear" href="./linear">
+    Export features to Linear issues.
+  </Card>
+</Cards>
+
+## Checking connection status
+
+Each integration exposes a status endpoint, and the MCP server surfaces the same
+information through `get-github-status`, `get-google-status`, and
+`get-linear-status`:
+
+```bash
+curl https://api.closedloop.ai/integrations/github \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+See the [MCP Integration Status reference](../mcp/status).

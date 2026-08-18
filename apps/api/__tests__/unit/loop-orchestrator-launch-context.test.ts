@@ -137,7 +137,11 @@ vi.mock("@/lib/loops/loop-ecs", () => ({
 }));
 
 import { HarnessType } from "@repo/api/src/types/compute-target";
-import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop";
+import {
+  LoopCommand,
+  LoopErrorCode,
+  LoopStatus,
+} from "@repo/api/src/types/loop";
 import { issueLoopRunnerToken } from "@repo/auth/loop-runner-jwt";
 import { withDb } from "@repo/database";
 import { getInstallationAccessToken } from "@repo/github";
@@ -213,14 +217,27 @@ describe("resolveLoopLaunchContext — token resolution for ECS launches", () =>
     assert: (ctx: typeof expect) => void;
   }>([
     {
-      scenario: "token resolution failure cancels the loop",
+      // ISS-5711: a launch that never reached the runner is a FAILURE, not a
+      // user cancellation. Full coverage lives in
+      // `loop-launch-failure-status.test.ts`.
+      scenario: "token resolution failure fails the loop",
       tokenOverride: () =>
         mockGetInstallationAccessToken.mockRejectedValue(
           new Error("GitHub App auth failed")
         ),
       expectedError: "GitHub App auth failed",
       assert: (expect) => {
-        expect(mockLoopsService.cancel).toHaveBeenCalledWith("loop-1", "org-1");
+        expect(mockLoopsService.cancel).not.toHaveBeenCalled();
+        expect(mockLoopsService.updateStatus).toHaveBeenCalledWith(
+          "loop-1",
+          "org-1",
+          LoopStatus.Failed,
+          expect.objectContaining({
+            error: expect.objectContaining({
+              code: LoopErrorCode.LaunchFailed,
+            }),
+          })
+        );
       },
     },
     {

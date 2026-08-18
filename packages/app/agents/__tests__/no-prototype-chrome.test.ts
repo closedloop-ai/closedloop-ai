@@ -16,22 +16,18 @@
  *   packages/app/agents/components/sessions/__tests__/source-guardrails.test.ts
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import {
+  importsOf,
+  parseSourceFileAt,
+} from "@repo/app/shared/testing/source-ast";
 import { describe, expect, it } from "vitest";
 
 // Resolve paths relative to this test file's directory.
 const AGENTS_DIR = join(import.meta.dirname, "..");
 const WORKSPACE_DIR = join(AGENTS_DIR, "components", "workspace");
 const LIB_DIR = join(AGENTS_DIR, "lib");
-
-// Regex that matches actual import/require statements pointing at apps/prototypes.
-// Matches both:
-//   import ... from "apps/prototypes/..."
-//   import ... from "../../../../../../apps/prototypes/..."  (relative traversal)
-// Does NOT match comment lines that merely mention the path.
-const PROTOTYPE_IMPORT_RE =
-  /from\s+["'][^"']*apps\/prototypes[^"']*["']|require\s*\(\s*["'][^"']*apps\/prototypes[^"']*["']\s*\)/;
 
 // Prototype-only chrome filenames that must NOT appear in the production slice.
 const PROTOTYPE_CHROME_FILES = [
@@ -49,6 +45,9 @@ const TYPESCRIPT_SOURCE_RE = /\.(ts|tsx)$/;
 // Disallow: apps/prototypes and any other unexpected external dependency.
 const COMPONENT_META_ALLOWED_PREFIX_RE =
   /^(@repo\/api|@repo\/design-system|@repo\/app|lucide-react|react|\.)/;
+
+// The prototype sandbox path, matched against resolved import specifiers.
+const PROTOTYPE_SLICE_PATH = "apps/prototypes";
 
 function listSourceFiles(dir: string): string[] {
   if (!existsSync(dir)) {
@@ -72,14 +71,21 @@ function listProductionSourceFiles(dir: string): string[] {
 
 describe("no-prototype-chrome guardrail (T-3.8 / AC-005)", () => {
   it("no file in packages/app/agents/ imports from apps/prototypes/", () => {
-    const violations = listProductionSourceFiles(AGENTS_DIR)
-      .map((filePath) => ({
-        filePath: filePath.replace(`${AGENTS_DIR}/`, "agents/"),
-        source: readFileSync(filePath, "utf8"),
-      }))
-      .filter(({ source }) => PROTOTYPE_IMPORT_RE.test(source));
+    // AST-based (FEA-4112), like the component-meta case below: the raw-text
+    // regex this replaced could be tripped by a comment or string mentioning
+    // the path, and never saw `export … from` or dynamic `import()` re-exports.
+    const files = listProductionSourceFiles(AGENTS_DIR);
+    const violations = files
+      .filter((filePath) =>
+        importsOf(parseSourceFileAt(filePath)).some(({ specifier }) =>
+          specifier.includes(PROTOTYPE_SLICE_PATH)
+        )
+      )
+      .map((filePath) => filePath.replace(`${AGENTS_DIR}/`, "agents/"));
 
     expect(violations).toEqual([]);
+    // Non-vacuity: an empty or failed walk must not pass silently.
+    expect(files.length).toBeGreaterThan(0);
   });
 
   it("prototype chrome files were NOT ported into the workspace slice", () => {
@@ -94,21 +100,28 @@ describe("no-prototype-chrome guardrail (T-3.8 / AC-005)", () => {
   });
 
   it("component-meta.tsx imports only from @repo/api, @closedloop-ai/design-system, lucide-react, or slice-relative paths", () => {
-    const filePath = join(LIB_DIR, "component-meta.tsx");
-    const source = readFileSync(filePath, "utf8");
+    // AST-based (FEA-4112): asserting on resolved module specifiers rather than
+    // on the file text means a prototype path named in a comment is not a
+    // violation, and a real import cannot hide behind unusual formatting.
+    const importSpecifiers = importsOf(
+      parseSourceFileAt(join(LIB_DIR, "component-meta.tsx"))
+    ).map(({ specifier }) => specifier);
+
+    // Sanity: the parse resolved real imports, so the filters below cannot pass
+    // vacuously over an empty list.
+    expect(importSpecifiers.length).toBeGreaterThan(0);
 
     // Must not import from apps/prototypes (redundant with first test, explicit for clarity).
-    expect(PROTOTYPE_IMPORT_RE.test(source)).toBe(false);
+    expect(
+      importSpecifiers.filter((specifier) =>
+        specifier.includes(PROTOTYPE_SLICE_PATH)
+      )
+    ).toEqual([]);
 
-    // Collect all from-import specifiers.
-    const importSpecifiers = [
-      ...source.matchAll(/from\s+["']([^"']+)["']/g),
-    ].map((m) => m[1]);
-
-    const disallowed = importSpecifiers.filter(
-      (spec) => !COMPONENT_META_ALLOWED_PREFIX_RE.test(spec)
-    );
-
-    expect(disallowed).toEqual([]);
+    expect(
+      importSpecifiers.filter(
+        (specifier) => !COMPONENT_META_ALLOWED_PREFIX_RE.test(specifier)
+      )
+    ).toEqual([]);
   });
 });

@@ -12,7 +12,21 @@
  * must never crash the main process — the catch-up poll still keeps the dashboard
  * current.
  */
-import { existsSync, type FSWatcher, watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
+
+/**
+ * ISS-5154 (ISP): the only members this watcher touches on an attached handle —
+ * an error subscription (a platform limitation must not crash the main process)
+ * and a close. `fs.FSWatcher` satisfies it structurally, so the production
+ * default (`fs.watch`) is unchanged, but the `watchDirectory` TEST HOOK no
+ * longer has to fabricate an entire `FSWatcher` to hand back a recorder. That
+ * demand is what forced every collector suite to cast its fake through the
+ * seam, which is the test asserting against a contract this module never had.
+ */
+export type AttachedDirectoryWatcher = {
+  on(event: "error", listener: (error: Error) => void): unknown;
+  close(): void;
+};
 
 const DEBOUNCE_MS = 600;
 const RETRY_MS = 4000;
@@ -61,7 +75,10 @@ export type HarnessWatcherOptions = {
   /** Missed-event sweep interval. Use null to rely on fs.watch live events only. */
   catchupPollMs?: number | null;
   /** Test hook for deterministic filesystem event delivery. */
-  watchDirectory?: (root: string, listener: WatchListener) => FSWatcher;
+  watchDirectory?: (
+    root: string,
+    listener: WatchListener
+  ) => AttachedDirectoryWatcher;
   log?: (message: string) => void;
 };
 
@@ -87,7 +104,7 @@ export function createHarnessWatcher(
   let resolveScheduledInitialImport: (() => void) | null = null;
   let retryTimer: NodeJS.Timeout | null = null;
   let catchupTimer: NodeJS.Timeout | null = null;
-  const watchers: FSWatcher[] = [];
+  const watchers: AttachedDirectoryWatcher[] = [];
   const attached = new Set<string>();
   const pendingEvents: HarnessWatcherEvent[] = [];
   const pendingEventKeys = new Set<string>();

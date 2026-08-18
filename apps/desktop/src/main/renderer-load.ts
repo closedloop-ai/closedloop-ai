@@ -27,7 +27,7 @@ export type RendererLoadDeps = {
   loadUrl: (url: string) => Promise<unknown>;
   /** Registers the given URL as the sole allowed navigation target. */
   allowRendererUrl: (url: string) => void;
-  /** Registers the `app://` protocol handler before the bundled load. */
+  /** Registers the `app://` protocol handler (idempotent) before any load. */
   registerAppProtocol: () => void;
   log: RendererLoadLogger;
 };
@@ -46,6 +46,14 @@ function describeError(error: unknown): string {
 export async function loadRendererContent(
   deps: RendererLoadDeps
 ): Promise<RendererLoadOutcome> {
+  // The `app://` handler must exist regardless of which renderer source wins:
+  // the dev (Vite) renderer still fetches prepared transcripts over
+  // `app://renderer/transcripts/...` (FEA-3324 B2), so registering only before
+  // the bundled load left the dev renderer with a privileged-but-unhandled
+  // scheme and every transcript read died with ERR_UNKNOWN_URL_SCHEME.
+  // Registration is idempotent, so the recovery-reload path stays safe.
+  deps.registerAppProtocol();
+
   if (deps.devRendererUrl) {
     deps.allowRendererUrl(deps.devRendererUrl);
     try {
@@ -61,7 +69,6 @@ export async function loadRendererContent(
     }
   }
 
-  deps.registerAppProtocol();
   deps.allowRendererUrl(deps.bundledRendererUrl);
   try {
     await deps.loadUrl(deps.bundledRendererUrl);

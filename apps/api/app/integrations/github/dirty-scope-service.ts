@@ -192,6 +192,7 @@ async function upsertPendingDirtyScope({
           existing?.genericRefresh === true || isGenericScopeSet(mergedScopes),
         expiresAt,
       },
+      select: { id: true },
     });
   });
 }

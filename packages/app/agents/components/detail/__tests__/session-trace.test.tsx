@@ -5,9 +5,37 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionTrace, type SessionTraceItem } from "../session-trace";
 import type { TraceTextAnchor } from "../trace-comments";
+import {
+  COMMENT_BUTTON_NAME_RE,
+  sayItem,
+  selectRenderedText,
+} from "./session-trace-test-helpers";
+
+// FEA-3490: the inline composer always renders the org-member @-mention picker.
+// `useOrganizationUsers` is stubbed so the picker has members to suggest/resolve.
+const mockUseOrganizationUsers = vi.fn();
+vi.mock("@repo/app/users/hooks/use-users", () => ({
+  useOrganizationUsers: (options?: { enabled?: boolean }) =>
+    mockUseOrganizationUsers(options),
+}));
+
+beforeEach(() => {
+  mockUseOrganizationUsers.mockReturnValue({
+    data: [
+      {
+        id: "u-ada",
+        firstName: "Ada",
+        lastName: "Lovelace",
+        email: "ada@example.com",
+        avatarUrl: null,
+        active: true,
+      },
+    ],
+  });
+});
 
 afterEach(() => {
   cleanup();
@@ -39,25 +67,7 @@ function promptItem(row: number, text: string): SessionTraceItem {
   };
 }
 
-function sayItem(
-  row: number,
-  text: string,
-  extra: Partial<Extract<SessionTraceItem, { type: "say" }>> = {}
-): SessionTraceItem {
-  return {
-    type: "say",
-    _row: row,
-    t: "00:00",
-    tMs: row,
-    cum: 0,
-    actor: agentActor,
-    text,
-    ...extra,
-  };
-}
-
 const CLOCK_RE = /^\d{1,2}(:\d{2})?(am|pm)$/;
-const COMMENT_BUTTON_NAME_RE = /comment/i;
 
 function eventItem(row: number, t: string): SessionTraceItem {
   return {
@@ -72,7 +82,7 @@ function eventItem(row: number, t: string): SessionTraceItem {
 
 function toolsItem(
   row: number,
-  toolRows: Array<{ label: string; detail: string; err: boolean }>
+  toolRows: Extract<SessionTraceItem, { type: "tools" }>["items"]
 ): SessionTraceItem {
   return {
     type: "tools",
@@ -190,6 +200,131 @@ describe("SessionTrace", () => {
     expect(head?.getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("expands an individual tool-call row to reveal its command, output, and meta (FEA-3547)", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionTrace
+        items={[
+          toolsItem(1, [
+            {
+              label: "Bash",
+              detail: "ls -la",
+              err: false,
+              input: "ls -la /tmp",
+              output: "total 8\ndrwxr-xr-x",
+              status: "exit 0",
+              durationMs: 2500,
+            },
+          ]),
+        ]}
+      />
+    );
+
+    // Open the group card first.
+    const groupHead = container.querySelector("button.st-tools-head");
+    if (!groupHead) {
+      throw new Error("expected an expandable group head");
+    }
+    await user.click(groupHead);
+
+    // The per-call row is itself a button, collapsed by default.
+    const row = container.querySelector("button.st-toolrow");
+    expect(row?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".st-toolrow-detail")).toBeNull();
+
+    if (!row) {
+      throw new Error("expected an expandable tool-call row");
+    }
+    await user.click(row);
+
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    const detail = container.querySelector(".st-toolrow-detail");
+    expect(detail).not.toBeNull();
+    expect(detail?.textContent).toContain("ls -la /tmp");
+    expect(detail?.textContent).toContain("drwxr-xr-x");
+    expect(detail?.textContent).toContain("exit 0");
+  });
+
+  it("expands a detail-less tool-call row to an explicit empty state (FEA-3547)", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionTrace
+        items={[toolsItem(1, [{ label: "Read", detail: "a.ts", err: false }])]}
+      />
+    );
+
+    await user.click(container.querySelector("button.st-tools-head")!);
+    const row = container.querySelector("button.st-toolrow");
+    if (!row) {
+      throw new Error("expected an expandable tool-call row");
+    }
+    await user.click(row);
+
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    // No state stamped + no inline detail → the honest "not loaded" copy.
+    expect(container.querySelector(".st-toolrow-empty")?.textContent).toContain(
+      "isn't loaded in this view"
+    );
+  });
+
+  // FEA-3696: the expanded panel must render a TRUTHFUL, state-specific message
+  // rather than one ambiguous "no detail" for every empty case — and must do so
+  // identically on both the session-detail and branch-merged surfaces (they
+  // share this SessionTrace renderer).
+  it.each([
+    ["unavailable" as const, "isn't loaded in this view"],
+    ["redacted" as const, "was redacted"],
+    ["malformed" as const, "couldn't be read"],
+  ])("renders the truthful empty panel for a %s tool call", async (detailState, expected) => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionTrace
+        items={[
+          toolsItem(1, [
+            { label: "mcp__x__y", detail: "", err: false, detailState },
+          ]),
+        ]}
+      />
+    );
+
+    await user.click(container.querySelector("button.st-tools-head")!);
+    await user.click(container.querySelector("button.st-toolrow")!);
+
+    expect(container.querySelector(".st-toolrow-empty")?.textContent).toContain(
+      expected
+    );
+  });
+
+  it("renders the actual command/output for an available tool call (no empty panel)", async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <SessionTrace
+        items={[
+          toolsItem(1, [
+            {
+              label: "Bash",
+              detail: "ls",
+              err: false,
+              detailState: "available",
+              callId: "e-1",
+              input: "ls -la /tmp",
+              output: "drwxr-xr-x",
+              status: "exit 0",
+            },
+          ]),
+        ]}
+      />
+    );
+
+    await user.click(container.querySelector("button.st-tools-head")!);
+    await user.click(container.querySelector("button.st-toolrow")!);
+
+    expect(container.querySelector(".st-toolrow-empty")).toBeNull();
+    const detail = container.querySelector(".st-toolrow-detail");
+    expect(detail?.textContent).toContain("ls -la /tmp");
+    expect(detail?.textContent).toContain("drwxr-xr-x");
+  });
+
   it("renders a static (non-expandable) tools card when there are no rows", () => {
     const { container } = render(<SessionTrace items={[toolsItem(1, [])]} />);
 
@@ -246,6 +381,34 @@ describe("SessionTrace", () => {
       }),
       body: "Please explain this.",
     });
+  });
+
+  it("threads a selected @-mention through the draft (FEA-3490)", async () => {
+    const user = userEvent.setup();
+    const onSubmitTraceComment = vi.fn();
+    const { container } = render(
+      <SessionTrace
+        items={[sayItem(3, "Select this exact passage for review.")]}
+        onSubmitTraceComment={onSubmitTraceComment}
+      />
+    );
+
+    selectRenderedText(container, "exact passage");
+    fireEvent.mouseUp(container.querySelector(".st") as HTMLElement);
+    await user.click(
+      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
+    );
+    const textarea = screen.getByPlaceholderText("Comment on this passage...");
+    await user.type(textarea, "cc @ad");
+    await user.click(await screen.findByText("Ada Lovelace"));
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+
+    expect(onSubmitTraceComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: "cc @Ada Lovelace",
+        mentions: ["u-ada"],
+      })
+    );
   });
 
   it("uses the actual selected range when repeated text appears in one row", async () => {
@@ -486,7 +649,7 @@ describe("SessionTrace", () => {
     expect(onSubmitTraceComment).not.toHaveBeenCalled();
   });
 
-  it("shows required inline composer toolbar controls", async () => {
+  it("shows the live mention picker controls in the inline composer", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <SessionTrace
@@ -501,13 +664,17 @@ describe("SessionTrace", () => {
       screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
     );
 
-    expect(screen.getByRole("button", { name: "Attach file" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Mention" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Add emoji" })).toBeVisible();
+    // FEA-3490: the "@" button is now a working picker trigger, not the old
+    // inert placeholder; clicking it opens the org-member suggestion list.
+    const mentionButton = screen.getByRole("button", { name: "Mention" });
+    expect(mentionButton).toBeVisible();
     expect(
       screen.getByPlaceholderText("Comment on this passage...")
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Comment" })).toBeVisible();
+
+    await user.click(mentionButton);
+    expect(await screen.findByText("Ada Lovelace")).toBeVisible();
   });
 
   it("clamps the inline composer inside a narrow trace viewport", async () => {
@@ -608,53 +775,6 @@ describe("SessionTrace", () => {
     expect(onSubmitTraceComment).not.toHaveBeenCalled();
   });
 });
-
-function selectRenderedText(
-  container: HTMLElement,
-  text: string,
-  occurrence = 0
-): Range {
-  const node = findTextNode(container, text, occurrence);
-  if (!node) {
-    throw new Error(`Unable to find text node: ${text}`);
-  }
-  const value = node.textContent ?? "";
-  const start = findOccurrenceIndex(value, text, occurrence);
-  const range = document.createRange();
-  range.setStart(node, start);
-  range.setEnd(node, start + text.length);
-  const selection = globalThis.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-  return range;
-}
-
-function findTextNode(node: Node, text: string, occurrence = 0): Text | null {
-  if (node.nodeType === Node.TEXT_NODE) {
-    const value = node.textContent ?? "";
-    if (findOccurrenceIndex(value, text, occurrence) >= 0) {
-      return node as Text;
-    }
-  }
-  for (const child of Array.from(node.childNodes)) {
-    const found = findTextNode(child, text, occurrence);
-    if (found) {
-      return found;
-    }
-  }
-  return null;
-}
-
-function findOccurrenceIndex(value: string, text: string, occurrence: number) {
-  let cursor = -1;
-  for (let index = 0; index <= occurrence; index += 1) {
-    cursor = value.indexOf(text, cursor + 1);
-    if (cursor < 0) {
-      return -1;
-    }
-  }
-  return cursor;
-}
 
 function createRect(rect: Partial<DOMRect>): DOMRect {
   return {

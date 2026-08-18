@@ -1,0 +1,38 @@
+-- ISS-6105: index the sync cursor's own sort key.
+--
+-- Sync selection is driven by `sessions.updated_at` (the FEA-1962 watermark), and
+-- `sessions` carried no index on it. Both cursor reads in `sync-source.ts` —
+-- `listTopSessionCursorRows` (`ORDER BY updated_at DESC, id DESC LIMIT 1`) and
+-- `listUpdatedSessionCursorRows` (`WHERE updated_at > ? OR (updated_at = ? AND id
+-- NOT IN (…))`, same order) — therefore full-scanned the table and then sorted it
+-- in a temp B-tree, on EVERY sync tick, forever.
+--
+-- Measured with EXPLAIN QUERY PLAN on a copy of a real 2.1 GB / 2,962-session
+-- snapshot:
+--
+--   before  SCAN sessions / USE TEMP B-TREE FOR ORDER BY          (both reads)
+--   after   SCAN sessions USING COVERING INDEX idx_sessions_updated_at   (top)
+--           SEARCH sessions USING COVERING INDEX (updated_at>?)   (incremental)
+--
+-- i.e. the incremental read stops being a scan at all and becomes a range seek,
+-- and the top read stops materializing a 2,962-row sort just to return one row.
+-- Warm-cache timings on that snapshot: top cursor 4.62 ms -> 0.01 ms,
+-- incremental cursor 6.94 ms -> 2.35 ms. The cold-cache gap is wider than that,
+-- because `SCAN sessions` walks every row's page — including the overflow pages
+-- of the unindexed `metadata` JSON blob, which reaches 9.86 MB on a single row in
+-- this snapshot — while the covering index touches neither.
+--
+-- Covering, and in the read's own direction: `(updated_at DESC, id DESC)` supplies
+-- the predicate, the tie-break, and both selected columns, so neither statement
+-- visits the table at all. Not partial: unlike the sibling partial indexes on this
+-- table (idx_sessions_data_revision_pending, idx_sessions_status_ended_at,
+-- idx_sessions_cwd) there is no selective predicate to hang one on — every session
+-- row is a legitimate cursor candidate, which is precisely why the scan was
+-- corpus-sized.
+--
+-- Write cost is one index entry maintained per session insert and per
+-- `updated_at` write. That column is already written on every content change
+-- (write-core.ts stamps `UPDATE sessions SET updated_at = now`), so this is real
+-- amplification and not free — but it is one narrow entry against a read that ran
+-- unbounded on every tick of a process that also owns local durability.
+CREATE INDEX IF NOT EXISTS "idx_sessions_updated_at" ON "sessions"("updated_at" DESC, "id" DESC);

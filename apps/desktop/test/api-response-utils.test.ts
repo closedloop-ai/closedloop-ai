@@ -5,7 +5,7 @@ import {
   fetchSessionJson,
   unwrapApiEnvelope,
   unwrapApiResultData,
-} from "../src/main/api-response-utils.js";
+} from "../src/main/util/api-response-utils.js";
 import { sessionFetchStub } from "./session-fetch-test-utils.js";
 
 test("unwrapApiEnvelope returns the raw data payload for an object envelope", () => {

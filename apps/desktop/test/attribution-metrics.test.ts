@@ -1,7 +1,7 @@
 /**
  * @file attribution-metrics.test.ts
  * @description FEA-2266 unit tests for the PURE metric module
- * (`src/main/attribution-metrics.ts`). Pins the taxonomy/confidence/cohort
+ * (`src/main/telemetry/attribution-metrics.ts`). Pins the taxonomy/confidence/cohort
  * vocabularies (drift guard), the band cut-point functions, and exact Coverage —
  * including the `idle`/gap exclusion, per-cohort slicing/reconciliation, and
  * totality over empty/edge input. Coverage runs on the classifier's own output;
@@ -9,6 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { Harness } from "../src/main/collectors/types.js";
 import {
   ACTIVITY_STATE_VALUES,
   ActivityState,
@@ -31,8 +32,7 @@ import {
   sessionTotalSpendUsd,
   TAXONOMY_VERSION,
   type TokenSpendEvent,
-} from "../src/main/attribution-metrics.js";
-import { Harness } from "../src/main/collectors/types.js";
+} from "../src/main/telemetry/attribution-metrics.js";
 
 function cohort(overrides: Partial<SessionCohort> = {}): SessionCohort {
   return {

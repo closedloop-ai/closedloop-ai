@@ -1,0 +1,16 @@
+{
+  "title": "MCP Server",
+  "pages": [
+    "introduction",
+    "documents",
+    "artifact-links",
+    "projects",
+    "search",
+    "loops",
+    "agent-sessions",
+    "agent-components",
+    "threads",
+    "users",
+    "status"
+  ]
+}

@@ -135,4 +135,60 @@ describe("gatewayGuard — AC-004.4 localhost-only enforcement", () => {
     );
     expect(result).toBeNull();
   });
+
+  it("returns 403 without calling fetch when the session has no auth token", async () => {
+    const { auth } = authReturning({ userId: "user-1", token: null });
+    const result = await gatewayGuard(
+      auth,
+      makeRequest("/api/gateway-relay/git", "app.example.com")
+    );
+    expect(result?.status).toBe(403);
+    await expect(result?.json()).resolves.toEqual({
+      error: "Gateway API requires a registered compute target",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns 403 when the compute-targets probe responds with a non-ok status", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response("upstream error", { status: 500 })
+    );
+    const { auth } = authReturning({ userId: "user-1", token: "tok" });
+    const result = await gatewayGuard(
+      auth,
+      makeRequest("/api/gateway-relay/git", "app.example.com")
+    );
+    expect(result?.status).toBe(403);
+    await expect(result?.json()).resolves.toEqual({
+      error: "Gateway API requires a registered compute target",
+    });
+  });
+
+  it("returns 403 when the compute-targets response body is not valid JSON", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response("not json", { status: 200 })
+    );
+    const { auth } = authReturning({ userId: "user-1", token: "tok" });
+    const result = await gatewayGuard(
+      auth,
+      makeRequest("/api/gateway-relay/git", "app.example.com")
+    );
+    expect(result?.status).toBe(403);
+    await expect(result?.json()).resolves.toEqual({
+      error: "Gateway API requires a registered compute target",
+    });
+  });
+
+  it("returns 403 when the compute-targets probe rejects with a network error", async () => {
+    vi.mocked(fetch).mockRejectedValue(new TypeError("Failed to fetch"));
+    const { auth } = authReturning({ userId: "user-1", token: "tok" });
+    const result = await gatewayGuard(
+      auth,
+      makeRequest("/api/gateway-relay/git", "app.example.com")
+    );
+    expect(result?.status).toBe(403);
+    await expect(result?.json()).resolves.toEqual({
+      error: "Gateway API requires a registered compute target",
+    });
+  });
 });

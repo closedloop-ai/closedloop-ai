@@ -17,7 +17,7 @@
 
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, test } from "node:test";
-import { gatewayLog } from "../src/main/gateway-logger.js";
+import { gatewayLog } from "../src/main/logging/gateway-logger.js";
 import {
   getCloudLoopStatus,
   postLoopEvent,

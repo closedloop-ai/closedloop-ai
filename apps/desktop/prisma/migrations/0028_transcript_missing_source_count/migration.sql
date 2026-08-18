@@ -1,0 +1,19 @@
+-- FEA-3555: dedicated consecutive missing-source counter for the transcript sync
+-- lane, isolated from `retry_count`.
+--
+-- `retry_count` is bumped by BOTH a missing-source observation (handleMissingSource)
+-- AND any transient upload failure (processFile's catch: network/S3/plan errors).
+-- The terminal `source_gone` dead-letter fires at TRANSCRIPT_SYNC_MAX_MISSING_SOURCE_ATTEMPTS
+-- (3), which is below TRANSCRIPT_SYNC_MAX_CONSECUTIVE_FAILURES (5). Reusing the shared
+-- counter let an unrelated transient-failure run contribute to the missing-source
+-- threshold, so a file that was present-but-failing to upload and only THEN vanished
+-- could be dead-lettered as permanently gone after a single missing observation.
+--
+-- This column counts ONLY consecutive missing-source observations. It is incremented
+-- on each miss, reset to 0 on any non-missing outcome (a successful upload/noop, or a
+-- transient upload failure), and reset by planObservation when the file reappears
+-- (a changed file re-queues). The threshold decision reads THIS column, so the
+-- monotonic missing-source run — the intended "observed gone N drain attempts in a
+-- row" semantics — can never be contaminated by transient upload failures. `retry_count`
+-- still drives the backoff delay ladder unchanged.
+ALTER TABLE "transcript_sync_state" ADD COLUMN "missing_source_count" INTEGER NOT NULL DEFAULT 0;

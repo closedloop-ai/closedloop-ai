@@ -8,7 +8,7 @@ import {
   OtlpReceiverUnavailableReason,
   setOtlpReceiverStateForProcess,
   toClaudeCodeOtelReceiverStatus,
-} from "../src/main/otlp-receiver-state.js";
+} from "../src/main/telemetry/otlp-receiver-state.js";
 import {
   ClaudeCodeOtelDiagnosticTag,
   ClaudeCodeOtelEnvVar,

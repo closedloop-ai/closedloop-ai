@@ -1,35 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ApiClient } from "../api-client.js";
 import { registerListDocumentVersions } from "../tools/list-document-versions.js";
-
-type ToolHandler = (input: Record<string, unknown>) => Promise<{
-  content: { type: "text"; text: string }[];
-  isError?: boolean;
-}>;
-
-function createToolHarness(apiClient: ApiClient): ToolHandler {
-  let handler: ToolHandler | undefined;
-  const registerTool = vi.fn(
-    (_name: string, _config: unknown, callback: ToolHandler): void => {
-      handler = callback;
-    }
-  );
-
-  registerListDocumentVersions({ registerTool } as never, apiClient);
-
-  if (!handler) {
-    throw new Error("Tool handler was not registered");
-  }
-
-  return handler;
-}
-
-function parseToolPayload(result: Awaited<ReturnType<ToolHandler>>) {
-  if (result.isError) {
-    throw new Error(result.content[0]?.text ?? "Tool returned an error");
-  }
-  return JSON.parse(result.content[0]?.text ?? "null");
-}
+import {
+  createToolHarness,
+  parseToolPayload,
+} from "./fixtures/tool-harness.js";
 
 describe("list-document-versions MCP tool", () => {
   it("paginates the unwrapped version array returned by ApiClient", async () => {
@@ -47,7 +22,9 @@ describe("list-document-versions MCP tool", () => {
         createdById: "user-1",
       },
     ]);
-    const handler = createToolHarness({ get } as unknown as ApiClient);
+    const handler = createToolHarness(registerListDocumentVersions, {
+      get,
+    } as unknown as ApiClient);
 
     const payload = parseToolPayload(
       await handler({ documentId: "PLN-15", limit: 1, offset: 0 })

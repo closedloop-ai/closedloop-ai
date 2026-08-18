@@ -6,7 +6,7 @@ import {
 } from "../scripts/sample-export-constants";
 
 const PACKAGE_JSON_PATH = new URL("../package.json", import.meta.url);
-const EXPECTED_PACKAGE_VERSION = "0.10.0";
+const EXPECTED_PACKAGE_VERSION = "0.13.0";
 const EXPECTED_OTEL_SEMCONV_VERSION = "1.39.0";
 const IMPORT_TYPES_PATTERN = /^\.\/dist\/.*\.d\.ts$/;
 const REQUIRE_TYPES_PATTERN = /^\.\/dist\/.*\.d\.cts$/;

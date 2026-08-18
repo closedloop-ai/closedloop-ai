@@ -6,8 +6,8 @@
 import type { GenerationStatus } from "@repo/api/src/types/document";
 import { describe, expect, it } from "vitest";
 import {
-  getStatusMessage,
   isCommandDisabled,
+  isRunInFlightForCommand,
 } from "../generation-status-utils";
 
 const makeGenerationStatus = (
@@ -159,46 +159,72 @@ describe("isCommandDisabled", () => {
   });
 });
 
-describe("getStatusMessage", () => {
-  it("returns a waiting message for PENDING", () => {
-    expect(getStatusMessage("PENDING", "execute")).toBe("Waiting to start...");
+/**
+ * ISS-5508: the one of `isCommandDisabled`'s three causes a user can be told
+ * about. These cases are the whole point of splitting it out — the explanation
+ * must never fire on the two causes that say nothing about a run existing.
+ */
+describe("isRunInFlightForCommand", () => {
+  it("is true only while a run of the SAME command is still going", () => {
+    for (const status of ["PENDING", "QUEUED", "RUNNING"] as const) {
+      expect(
+        isRunInFlightForCommand({
+          generationStatus: makeGenerationStatus({
+            status,
+            command: "execute",
+          }),
+          targetCommand: "execute",
+        })
+      ).toBe(true);
+    }
   });
 
-  it("returns a command-specific queued message for QUEUED", () => {
-    expect(getStatusMessage("QUEUED", "execute")).toBe(
-      "Queued for execution..."
-    );
-    expect(getStatusMessage("QUEUED", "explore")).toBe(
-      "Queued for exploration..."
-    );
-  });
-
-  it("returns the bare running verb for RUNNING without an initiator", () => {
-    expect(getStatusMessage("RUNNING", "execute")).toBe(
-      "Executing plan and creating PR..."
-    );
-  });
-
-  it("prefixes the initiator name and lowercases the verb for RUNNING", () => {
+  it("is false for a settled run, another command, or no status at all", () => {
+    for (const status of ["SUCCESS", "FAILURE", "NONE"] as const) {
+      expect(
+        isRunInFlightForCommand({
+          generationStatus: makeGenerationStatus({
+            status,
+            command: "execute",
+          }),
+          targetCommand: "execute",
+        })
+      ).toBe(false);
+    }
     expect(
-      getStatusMessage("RUNNING", "execute", {
-        firstName: "Ada",
-        lastName: "Lovelace",
+      isRunInFlightForCommand({
+        generationStatus: makeGenerationStatus({
+          status: "RUNNING",
+          command: "plan",
+        }),
+        targetCommand: "execute",
       })
-    ).toBe("Ada Lovelace is executing plan and creating PR...");
+    ).toBe(false);
+    expect(
+      isRunInFlightForCommand({
+        generationStatus: undefined,
+        targetCommand: "execute",
+      })
+    ).toBe(false);
   });
 
-  it("returns a command-specific failure message for FAILURE", () => {
-    expect(getStatusMessage("FAILURE", "execute")).toBe(
-      "Plan execution failed"
-    );
-    expect(getStatusMessage("FAILURE", "explore")).toBe(
-      "Codebase exploration failed"
-    );
-  });
+  it("does NOT follow the disabled predicate's other two causes", () => {
+    // A pending local mutation and a still-loading status poll both disable the
+    // control. Neither is evidence a run exists, so an explanation driven off
+    // `isCommandDisabled` would assert one that is not happening.
+    const noRun = {
+      generationStatus: undefined,
+      targetCommand: "execute" as const,
+    };
 
-  it("returns an empty string for terminal/unknown statuses", () => {
-    expect(getStatusMessage("SUCCESS", "execute")).toBe("");
-    expect(getStatusMessage("NONE", null)).toBe("");
+    expect(isCommandDisabled({ ...noRun, isLoading: true })).toBe(true);
+    expect(
+      isCommandDisabled({
+        ...noRun,
+        isLoading: false,
+        localMutationPending: true,
+      })
+    ).toBe(true);
+    expect(isRunInFlightForCommand(noRun)).toBe(false);
   });
 });

@@ -57,6 +57,7 @@ function liveFakeSource(withSubscribe: boolean) {
     detail: () => Promise.reject(new Error("unused")),
     usage: () => Promise.reject(new Error("unused")),
     analytics: () => Promise.reject(new Error("unused")),
+    pageData: () => Promise.reject(new Error("unused")),
     ...(withSubscribe
       ? {
           subscribe: (onChange: (change: AgentSessionsChange) => void) => {
@@ -203,6 +204,7 @@ describe("AgentSessionsLiveBridge", () => {
       detail: () => Promise.reject(new Error("unused")),
       usage: () => Promise.reject(new Error("unused")),
       analytics: () => Promise.reject(new Error("unused")),
+      pageData: () => Promise.reject(new Error("unused")),
       subscribe: (onChange) => {
         emitChange = onChange;
         return () => {
@@ -245,6 +247,7 @@ describe("AgentSessionsLiveBridge", () => {
       detail: () => Promise.reject(new Error("unused")),
       usage: () => Promise.reject(new Error("unused")),
       analytics: () => Promise.reject(new Error("unused")),
+      pageData: () => Promise.reject(new Error("unused")),
       subscribe: (onChange) => {
         emitChange = onChange;
         return () => {
@@ -304,6 +307,9 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     const keys = invalidatedKeys();
     expect(keys).toContain(JSON.stringify(agentSessionKeys.lists()));
     expect(keys).toContain(JSON.stringify(agentSessionKeys.usages()));
+    // FEA-4157: the Sessions views read list + summary through `pageData`, so a
+    // live event must invalidate the combined read or the table/cards go stale.
+    expect(keys).toContain(JSON.stringify(agentSessionKeys.pageDataRoot()));
     // Detail keys are scope-qualified; the live fake source's scope is "local".
     expect(keys).toContain(
       JSON.stringify(agentSessionKeys.detail("local", "s1"))
@@ -315,7 +321,7 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     expect(keys).not.toContain(JSON.stringify(agentSessionKeys.details()));
   });
 
-  it("expands a {} change to list + usage + all details, never analytics", async () => {
+  it("expands a {} change to list + usage + page-data + all details, never analytics", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -327,6 +333,7 @@ describe("AgentSessionsLiveBridge invalidation scoping", () => {
     const keys = invalidatedKeys();
     expect(keys).toContain(JSON.stringify(agentSessionKeys.lists()));
     expect(keys).toContain(JSON.stringify(agentSessionKeys.usages()));
+    expect(keys).toContain(JSON.stringify(agentSessionKeys.pageDataRoot()));
     expect(keys).toContain(JSON.stringify(agentSessionKeys.details()));
     expect(keys).not.toContain(
       JSON.stringify(agentSessionKeys.analyticsRoot())

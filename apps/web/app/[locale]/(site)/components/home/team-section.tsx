@@ -34,9 +34,16 @@ export const TeamSection = () => {
   return (
     <section className="mx-auto w-full max-w-[1300px] px-6 py-16 md:px-10 md:py-24">
       <div className="max-w-3xl">
+        {/*
+          ISS-5490: carries the hero's spend framing into the first section
+          below it. Previously the hero led on token spend and this h2 answered
+          with the old shared-workspace pitch, which read as two products on one
+          page.
+        */}
         <h2 className="text-balance font-semibold text-4xl tracking-tight md:text-5xl">
           <span className="text-primary">One system.</span> Requirements, plans,
-          code, and validation, all shared across your team and agents.
+          code, and what every agent run cost — shared across your team and
+          agents.
         </h2>
       </div>
       <div className="mt-16 grid grid-cols-1 gap-10 md:grid-cols-3">

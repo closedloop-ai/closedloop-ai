@@ -1,0 +1,19 @@
+-- FEA-4142: covering index for the Agents sidebar activity badge count.
+--
+-- The badge (FEA-3009) only needs `total` — the number of sessions completed
+-- since the user last opened Agents — but its `completedAfter` +
+-- `statuses:["completed"]` query disables both desktop SQL list fast paths, so
+-- getSharedAgentSessions used to fall to the full-corpus hydration fallback
+-- (listAllSessionCursorRows + loadSyncedSessions of up to
+-- MAX_WORKING_SET_SESSIONS full sessions) just to compute `total =
+-- filtered.length`. That is the FEA-2038 db-host OOM path, and it fired every 5
+-- minutes from the global sidebar. countSessions now answers it with a single
+-- `SELECT COUNT(*) FROM sessions WHERE <status> AND ended_at >= ?`.
+--
+-- This composite index covers exactly that count's columns (status, ended_at),
+-- so SQLite can satisfy the count from the narrow index instead of scanning the
+-- sessions table. Partial on the non-null ended_at predicate — a still-running
+-- session has no completion timestamp and can never match the bound — which
+-- keeps the index small, mirroring the partial-index convention on the sibling
+-- session indexes.
+CREATE INDEX IF NOT EXISTS "idx_sessions_status_ended_at" ON "sessions"("status", "ended_at") WHERE ended_at IS NOT NULL;

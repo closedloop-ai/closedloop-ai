@@ -203,6 +203,7 @@ export async function seedEvaluationEntities(
           update: {
             reportType: evalDef.reportType,
           },
+          select: { id: true },
         }),
       counts,
     });
@@ -243,6 +244,7 @@ export async function seedEvaluationEntities(
               justification: scoreDef.justification,
               finalStatus: scoreDef.finalStatus,
             },
+            select: { id: true },
           }),
         counts,
       });
@@ -278,6 +280,7 @@ export async function seedEvaluationEntities(
             update: {
               score: scoreDef.score,
             },
+            select: { id: true },
           }),
         counts,
       });

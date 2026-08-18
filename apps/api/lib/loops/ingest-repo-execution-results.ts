@@ -78,7 +78,11 @@ async function ingestSuccessEntry(
           status: GitHubInstallationStatus.ACTIVE,
         },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        fullName: true,
+        installation: { select: { installationId: true } },
+      },
     })
   );
 
@@ -94,22 +98,16 @@ async function ingestSuccessEntry(
     return;
   }
 
-  const prTitle =
-    result.prTitle ||
-    `Closedloop: ${result.branchName || `PR #${result.prNumber}`}`;
-
-  let ingested = false;
-
-  await withDb.tx(async (tx) => {
+  const sourceArtifact = await withDb.tx(async (tx) => {
     // Verify the source DOCUMENT artifact exists (used for projectId scoping
     // + linkage creation). The cross-repo check in documentWhere also confines
     // the lookup to organizationId.
-    const sourceArtifact = await tx.artifact.findUnique({
+    const source = await tx.artifact.findUnique({
       where: documentWhere({ id: documentId, organizationId }),
       select: { organizationId: true, projectId: true, slug: true },
     });
 
-    if (!sourceArtifact) {
+    if (!source) {
       log.warn(
         "[ingest-repo-execution-results] Source artifact not found for PR record creation",
         {
@@ -118,29 +116,30 @@ async function ingestSuccessEntry(
           documentId,
         }
       );
-      return;
+      return null;
     }
-
-    // Create PR artifact + detail and the source → PRODUCES → PR link, with
-    // race-safe dedup against records that may have been created by the
-    // pull_request webhook or another command handler.
-    await ensurePrLinkageRecords(tx, {
-      organizationId: sourceArtifact.organizationId,
-      projectId: sourceArtifact.projectId,
-      documentId,
-      prUrl: result.prUrl,
-      prTitle,
-      prNumber: result.prNumber,
-      githubId: String(result.githubId ?? result.prNumber),
-      headBranch: result.branchName,
-      baseBranch: result.baseBranch,
-      commitSha: result.commitSha ?? null,
-    });
-
-    ingested = true;
+    return source;
   });
 
-  if (ingested) {
+  if (!sourceArtifact) {
+    return;
+  }
+
+  // Provider IO intentionally runs outside the source-read transaction. The
+  // canonical Branch service owns its own atomic branch/PR/link transaction.
+  const linkage = await ensurePrLinkageRecords({
+    organizationId: sourceArtifact.organizationId,
+    projectId: sourceArtifact.projectId,
+    documentId,
+    prNumber: result.prNumber,
+    baseRepository: {
+      id: installationRepo.id,
+      fullName: installationRepo.fullName,
+      installationId: installationRepo.installation.installationId,
+    },
+  });
+
+  if (linkage.status === "linked") {
     log.info(
       "[ingest-repo-execution-results] Ingested execution result for repo",
       {

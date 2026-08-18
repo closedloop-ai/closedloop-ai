@@ -43,7 +43,7 @@ import { createTempDirManager } from "./helpers/temp-dir.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Read-only golden corpus (human-owned, never written to).
+// Read-only golden corpus (frozen, never written to).
 const GOLDEN_SESSIONS_DIR = path.join(
   __dirname,
   "..",

@@ -1,91 +1,46 @@
-import { computeTokenCost } from "@closedloop-ai/loops-api/genai-cost";
 import {
+  BranchBillingMode,
   type BranchPageDetail,
   BranchPhase,
   type BranchSession,
+  BranchStatus,
+  BranchViewerScope,
+} from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import {
+  aggregateBranchCostCompleteness,
   type BranchUsageActorBucket,
   type BranchUsageHourBucket,
   type BranchUsagePhaseStack,
   type BranchUsageSummary,
-  BranchViewerScope,
-  type MergedTraceItem,
-} from "@repo/api/src/types/branch";
+} from "@repo/api/src/types/branch-usage";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { median } from "@repo/api/src/utils/math";
+import {
+  addRow,
+  type BranchTokenRow,
+  branchCostContributions,
+  emptyCounts,
+  priceCounts,
+  type TokenCounts,
+} from "./branch-cost-completeness";
+
+export type { BranchTokenRow } from "./branch-cost-completeness";
 
 /**
- * Pure, surface-agnostic Branches derivations (PLN-983 / Epic A — A3).
- *
- * Every function runs identically in the desktop main-process projector and any
- * renderer composition: NO electron / window / DB / `apps/*` imports. Token cost
- * is delegated to `computeTokenCost` (genai-cost, FEA-1718) — pricing is NEVER
- * reimplemented. Functions degrade to `null` on missing inputs (never throw,
- * never coerce a missing value to 0).
- *
- * A3 owns the EXACT contract signatures here, implemented (not stubbed),
- * including `buildVsReworkSplit` and `activeIdleSpans`. Epic D ADDS only
- * non-contract helpers (partitionBuildVsRework, reconcilePhaseSegments,
- * leadTimeWaterfallSegments, PhaseAggregate) and CONSUMES the functions below.
+ * Pure Branches derivations shared without platform imports; token cost delegates
+ * to `computeTokenCost`. Usage summaries preserve required numeric compatibility
+ * fields while exposing availability through typed completeness.
+ * Per-activity cost rollup lives in `@repo/lib/branches/activity-rollup`.
  */
 
-export type BranchTokenRow = {
-  sessionId: string;
-  owner: string | null;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /** ISO truncated to the hour; when absent, derived from `timestamp`. */
-  hourStart?: string | null;
-  phase?: BranchPhase | null;
-  billingMode?: "subscription" | "api" | null;
-  /** For historical pricing. Also the fallback source for `hourStart`. */
-  timestamp?: Date;
-};
-
-// SSOT pair: keep in sync with `MERGED_TRACE_IDLE_THRESHOLD_MS` in
-// `apps/desktop/src/main/shared-branches-api.ts` — the desktop main synthesizes
+// Keep in sync with `MERGED_TRACE_IDLE_THRESHOLD_MS`; desktop main synthesizes
 // the trace's idle markers at this same gap, and this re-derivation must agree.
 const DEFAULT_IDLE_THRESHOLD_MS = 120_000;
 
-type TokenCounts = {
-  model: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  timestamp?: Date;
-};
-
-function emptyCounts(model: string, timestamp?: Date): TokenCounts {
-  return { model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, timestamp };
-}
-
-function addRow(counts: TokenCounts, row: BranchTokenRow): void {
-  counts.input += row.inputTokens;
-  counts.output += row.outputTokens;
-  counts.cacheRead += row.cacheReadTokens;
-  counts.cacheWrite += row.cacheWriteTokens;
-}
-
-function priceCounts(counts: TokenCounts): number | null {
-  const result = computeTokenCost({
-    model: counts.model,
-    inputTokens: counts.input,
-    outputTokens: counts.output,
-    cacheReadTokens: counts.cacheRead,
-    cacheWriteTokens: counts.cacheWrite,
-    timestamp: counts.timestamp,
-  });
-  return result.priced ? result.costUsd : null;
-}
-
 /**
- * Sum the USD cost of `rows`, grouping by `(keyOf(row), model)` and pricing each
- * group once via `computeTokenCost`. Priced groups are summed; UNPRICED models
- * (reason !== null) are dropped. Returns `null` when no group prices — never 0.
- * Mirrors the per-`(slug, model)`-then-SUM + unpriced-drop pattern in
- * `sqlite.ts` `getArtifactSessionUsage` (FEA-1834).
+ * Sum priced `(keyOf(row), model)` groups, dropping unpriced models. Returns
+ * `null` when no group prices, matching `getArtifactSessionUsage` (FEA-1834).
  */
 function sumPricedCost(
   rows: readonly BranchTokenRow[],
@@ -113,7 +68,7 @@ function sumPricedCost(
   let anyPriced = false;
   for (const byModel of groups.values()) {
     for (const counts of byModel.values()) {
-      const cost = priceCounts(counts);
+      const cost = priceCounts(counts).costUsd;
       if (cost != null) {
         total += cost;
         anyPriced = true;
@@ -134,35 +89,40 @@ export function costPerBranch(rows: BranchTokenRow[]): number | null {
 }
 
 /**
- * Net LOC per dollar. `null` when LOC is null, cost is null, or cost is 0 (never
+ * Total code churn per dollar. `churn` is additions + DELETIONS — removed lines
+ * are work delivered, so they ADD to the numerator; this has never been a NET
+ * figure despite the old `netLoc` parameter name (the callers have always passed
+ * `additions + deletions`). Matches the org-wide Value-per-$ KPI the two
+ * analytics producers compute, so the branch card and its baseline are the same
+ * metric. `null` when churn is null, cost is null, or cost is 0 (never
  * divide-by-zero, never coerce a missing value to 0).
  */
 export function locPerDollar(args: {
-  netLoc: number | null;
+  churn: number | null;
   totalCostUsd: number | null;
 }): number | null {
-  const { netLoc, totalCostUsd } = args;
-  if (netLoc == null || totalCostUsd == null || totalCostUsd === 0) {
+  const { churn, totalCostUsd } = args;
+  if (churn == null || totalCostUsd == null || totalCostUsd === 0) {
     return null;
   }
-  return netLoc / totalCostUsd;
+  return churn / totalCostUsd;
 }
 
 /**
- * 30-day trailing LOC-per-dollar baseline: sum the window's net LOC and cost,
- * then divide. `null` when no entry carries LOC, or the summed cost is null/0.
+ * 30-day trailing churn-per-dollar baseline: sum the window's churn and cost,
+ * then divide. `null` when no entry carries churn, or the summed cost is null/0.
  */
 export function locPerDollarBaseline30d(
-  rowsWindow: { netLoc: number | null; totalCostUsd: number | null }[]
+  rowsWindow: { churn: number | null; totalCostUsd: number | null }[]
 ): number | null {
-  let netLocSum = 0;
+  let churnSum = 0;
   let costSum = 0;
-  let hasNetLoc = false;
+  let hasChurn = false;
   let hasCost = false;
   for (const entry of rowsWindow) {
-    if (entry.netLoc != null) {
-      netLocSum += entry.netLoc;
-      hasNetLoc = true;
+    if (entry.churn != null) {
+      churnSum += entry.churn;
+      hasChurn = true;
     }
     if (entry.totalCostUsd != null) {
       costSum += entry.totalCostUsd;
@@ -170,7 +130,7 @@ export function locPerDollarBaseline30d(
     }
   }
   return locPerDollar({
-    netLoc: hasNetLoc ? netLocSum : null,
+    churn: hasChurn ? churnSum : null,
     totalCostUsd: hasCost ? costSum : null,
   });
 }
@@ -339,7 +299,7 @@ export function perHourPerActorBuckets(
 function sumActorModelCost(perModel: Map<string, TokenCounts>): number {
   let total = 0;
   for (const counts of perModel.values()) {
-    const cost = priceCounts(counts);
+    const cost = priceCounts(counts).costUsd;
     if (cost != null) {
       total += cost;
     }
@@ -562,9 +522,11 @@ export function projectBranchUsageSummary(
   options?: { branchCount?: number; timeZone?: string }
 ): BranchUsageSummary {
   const subscriptionRows = rows.filter(
-    (row) => row.billingMode === "subscription"
+    (row) => row.billingMode === BranchBillingMode.Subscription
   );
-  const apiRows = rows.filter((row) => row.billingMode === "api");
+  const apiRows = rows.filter(
+    (row) => row.billingMode === BranchBillingMode.Api
+  );
   return {
     viewerScope: BranchViewerScope.Self,
     totalBranches: options?.branchCount ?? 0,
@@ -582,6 +544,9 @@ export function projectBranchUsageSummary(
     subscriptionEstimatedCost:
       sumPricedCost(subscriptionRows, (row) => row.sessionId) ?? 0,
     apiEstimatedCost: sumPricedCost(apiRows, (row) => row.sessionId) ?? 0,
+    costCompleteness: aggregateBranchCostCompleteness(
+      branchCostContributions(rows)
+    ),
     hourBuckets: perHourPerActorBuckets(rows, { timeZone: options?.timeZone }),
     phaseStacks: buildPhaseStacks(rows),
     byActor: rollupActors(rows),
@@ -589,82 +554,20 @@ export function projectBranchUsageSummary(
 }
 
 // === Epic D non-contract helpers (added by D; CONSUME the A3 functions above) ===
+//
+// FEA-2276 removed the coarse `partitionBuildVsRework` split (+ its
+// `PhaseAggregate`/`aggregateSessions` helpers): the cost-to-merge panel now
+// consumes the real per-activity `rollupBranchActivity` in
+// `@repo/lib/branches/activity-rollup`. `reconcilePhaseSegments` is retained
+// (taxonomy-agnostic) and reused to residualize the new activity segments.
 
 /**
- * One side of the Build/Rework cost partition: a roll-up of contributing
- * sessions. `costUsd`/`netLoc` are `null` (never 0) when nothing prices / LOC is
- * unavailable, so the panel renders "—" rather than a misleading zero.
+ * A priced phase segment for the cost-to-merge bar. `key` is a free render key
+ * (widened from the old build/rework union to the FEA-2269 taxonomy + the
+ * `unattributed` residual) — `reconcilePhaseSegments` treats it opaquely.
  */
-export type PhaseAggregate = {
-  costUsd: number | null;
-  netLoc: number | null;
-  inputTokens: number;
-  outputTokens: number;
-  sessionCount: number;
-};
-
-const EMPTY_PHASE_AGGREGATE: PhaseAggregate = {
-  costUsd: null,
-  netLoc: null,
-  inputTokens: 0,
-  outputTokens: 0,
-  sessionCount: 0,
-};
-
-function aggregateSessions(
-  sessions: readonly BranchSession[],
-  netLoc: number | null
-): PhaseAggregate {
-  if (sessions.length === 0) {
-    return EMPTY_PHASE_AGGREGATE;
-  }
-  let costUsd: number | null = null;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const session of sessions) {
-    inputTokens += session.inputTokens;
-    outputTokens += session.outputTokens;
-    if (session.estimatedCostUsd != null) {
-      costUsd = (costUsd ?? 0) + session.estimatedCostUsd;
-    }
-  }
-  return {
-    costUsd,
-    netLoc,
-    inputTokens,
-    outputTokens,
-    sessionCount: sessions.length,
-  };
-}
-
-/**
- * Partition a branch's contributing sessions into Build vs Rework aggregates —
- * the SINGLE source the cost-to-merge phase bar (D4) consumes, so the panel and
- * the bar never recompute divergently (D3).
- *
- * v1 has no per-session phase signal and no captured PR-creation pivot, so every
- * session attributes to Build and Rework is empty ("No rework yet"); the split
- * lights up when per-session phase / PR-creation capture lands. `netLoc` is the
- * branch-level additions+deletions (null until LOC enrichment) attributed to
- * Build — never split, never coerced to 0.
- */
-export function partitionBuildVsRework(detail: BranchPageDetail): {
-  build: PhaseAggregate;
-  rework: PhaseAggregate;
-} {
-  const netLoc =
-    detail.additions != null && detail.deletions != null
-      ? detail.additions + detail.deletions
-      : null;
-  return {
-    build: aggregateSessions(detail.sessions, netLoc),
-    rework: EMPTY_PHASE_AGGREGATE,
-  };
-}
-
-/** A priced phase segment for the cost-to-merge bar (D4). */
 export type PhaseSegment = {
-  key: "build" | "subagents" | "autoReview" | "humanReview" | "rework";
+  key: string;
   label: string;
   costUsd: number;
   firstRow: number | null;
@@ -733,31 +636,82 @@ function earliestSessionStartMs(
 }
 
 /**
+ * Whether the branch's PR is merged, derived from the SAME signals the Properties
+ * panel reads — `prState === MERGED` (canonical GitHub state) or the projected
+ * `status === merged` — NOT from the presence of a `mergedAt` timestamp
+ * (FEA-4227). A merged PR whose merge instant has not yet been enriched
+ * (`mergedAt == null`) still reads as merged here, so the lead-time card/breakdown
+ * can no longer contradict the "Merged" chip by claiming the branch "hasn't
+ * merged yet". `mergedAt` is a timing DETAIL of a merged branch, never the merge
+ * SIGNAL itself.
+ */
+export function isBranchMerged(detail: {
+  prState: BranchPageDetail["prState"];
+  status: BranchPageDetail["status"];
+}): boolean {
+  return (
+    detail.prState === GitHubPRState.Merged ||
+    detail.status === BranchStatus.Merged
+  );
+}
+
+/**
  * Lead time for change as an ordered waterfall, anchored on the FIRST session's
  * start (per the explicit AC — NOT branch creation) through merge. v1 has no
  * captured PR-creation / review boundaries, so it emits one development span;
- * more segments slot in when those timestamps land. When the branch has not
- * merged (`mergedAt == null`, or clock skew), the trailing span is open-ended
- * ("merge unknown") and `totalMs` is null rather than closed at an invented
- * endpoint. `totalMs` is the SINGLE lead-time computation D6's headline card
- * also reads, so both render one number.
+ * more segments slot in when those timestamps land.
+ *
+ * Merge state is derived from `isBranchMerged` (`prState`/`status`, the same
+ * source as the Properties panel), NOT the presence of `mergedAt` (FEA-4227):
+ *
+ * - Merged WITH a usable `mergedAt` ≥ anchor → a closed span and a finite total.
+ *   The finite branch requires `merged` too, so a cloud-hydration overlay that
+ *   flips `status`/`prState` back to Open while keeping a stale local `mergedAt`
+ *   does NOT show a completed lead time for an open branch (falls through to the
+ *   open-ended "in progress" case).
+ * - Merged but `mergedAt` is missing/unparseable/clock-skewed → the span is
+ *   closed-state (`mergeUnknown: false`, so no "hasn't merged" copy) but the
+ *   duration is `null` (`durationUnavailable: true`): we KNOW it merged, we just
+ *   can't measure the lead time honestly. Never invent an endpoint.
+ * - No session anchor → pending (nothing to measure FROM), even when merged: the
+ *   missing anchor — not the merge time — is the real gap, so this stays the
+ *   honest "no session activity" pending state, never "merge time hasn't synced".
+ * - Not merged → the trailing span is open-ended ("in progress"), `totalMs` null.
+ *
+ * `totalMs` is the SINGLE lead-time computation D6's headline card also reads, so
+ * both render one number.
  */
 export function leadTimeWaterfallSegments(detail: BranchPageDetail): {
   segments: LeadTimeSegment[];
   totalMs: number | null;
   mergeUnknown: boolean;
+  durationUnavailable: boolean;
   multiPr: boolean;
 } {
   const multiPr = detail.multiPrWarning;
   const anchorMs = earliestSessionStartMs(detail.sessions);
   const mergedMs = detail.mergedAt ? Date.parse(detail.mergedAt) : Number.NaN;
-  const hasMerge = !Number.isNaN(mergedMs);
+  const merged = isBranchMerged(detail);
+  const hasUsableMergedAt = !Number.isNaN(mergedMs);
 
   if (anchorMs == null) {
-    return { segments: [], totalMs: null, mergeUnknown: !hasMerge, multiPr };
+    // No session anchor: there is nothing to measure lead time FROM, so this is a
+    // pending (no-activity) state regardless of merge — `durationUnavailable`
+    // (the merged-but-unmeasured signal) stays false so `describeLeadTime`
+    // resolves the honest "no session activity captured yet" Pending copy rather
+    // than "merge time hasn't synced" (the merge time may be perfectly valid; the
+    // missing session anchor is the real gap). Merged branches still read as
+    // merged (no "in progress" contradiction); unmerged stay merge-unknown.
+    return {
+      segments: [],
+      totalMs: null,
+      mergeUnknown: !merged,
+      durationUnavailable: false,
+      multiPr,
+    };
   }
 
-  if (hasMerge && mergedMs >= anchorMs) {
+  if (merged && hasUsableMergedAt && mergedMs >= anchorMs) {
     const durationMs = mergedMs - anchorMs;
     return {
       segments: [
@@ -765,11 +719,31 @@ export function leadTimeWaterfallSegments(detail: BranchPageDetail): {
       ],
       totalMs: durationMs,
       mergeUnknown: false,
+      durationUnavailable: false,
       multiPr,
     };
   }
 
-  // No merge timestamp (or clock skew) → open-ended trailing span, no total.
+  if (merged) {
+    // Merged per prState/status, but the merge instant is missing/unparseable or
+    // predates the anchor (clock skew). We KNOW it merged — never claim it hasn't
+    // — but can't chart a duration, so emit an unmeasured span (FEA-4227).
+    return {
+      segments: [
+        {
+          key: "development",
+          label: "First session → merge",
+          durationMs: null,
+        },
+      ],
+      totalMs: null,
+      mergeUnknown: false,
+      durationUnavailable: true,
+      multiPr,
+    };
+  }
+
+  // Not merged → open-ended trailing span, no total.
   return {
     segments: [
       {
@@ -781,6 +755,153 @@ export function leadTimeWaterfallSegments(detail: BranchPageDetail): {
     ],
     totalMs: null,
     mergeUnknown: true,
+    durationUnavailable: false,
     multiPr,
   };
+}
+
+/**
+ * Lead-time display status shared by the summary card (D6) and the breakdown
+ * section (D5) so the metric has ONE consistent empty/in-progress framing and
+ * the two surfaces can never drift into "two different things". Both surfaces
+ * derive their state from this ONE helper (the card via `leadTimeCardValue`, the
+ * section via `emptyMessage`), so the split can never re-open (FEA-3974):
+ *
+ * - `merged`  — the branch merged AND has a measurable lead time; both surfaces
+ *   show the same duration.
+ * - `mergedUnavailable` — the branch merged (per `prState`/`status`, the same
+ *   source as the Properties panel) but the merge instant is missing/unparseable,
+ *   so lead time can't be measured honestly. The card shows the muted "No data"
+ *   value (a `null` from `leadTimeCardValue`) and the section OWNS the WHY (merge
+ *   time not synced, via `emptyMessage`) — the card does not echo that sentence
+ *   (FEA-4229 dedupe), and neither surface ever claims the branch "hasn't merged
+ *   yet" (the FEA-4227 self-contradiction bug).
+ * - `inProgress` — a contributing session exists but the branch hasn't merged;
+ *   the card reads "In progress" and the section frames its empty body the same
+ *   way via `emptyMessage`, so the D5 breakdown no longer says "not enough
+ *   activity" beside a confident "In progress" card (the FEA-3974 bug).
+ * - `pending` — no contributing session at all, so neither surface has an anchor
+ *   to measure lead time from. The card shows the muted "No data" value and the
+ *   section OWNS the reason via `emptyMessage`; neither invents an "In progress"
+ *   state.
+ *
+ * The split keys off the SAME signals `leadTimeWaterfallSegments` reads (the
+ * `isBranchMerged` merge signal, the session anchor, and a usable `mergedAt`), so
+ * the card's value and the section's empty framing always describe the same
+ * branch situation.
+ */
+export const LeadTimeDisplayStatus = {
+  Merged: "merged",
+  MergedUnavailable: "merged-unavailable",
+  InProgress: "in-progress",
+  Pending: "pending",
+} as const;
+export type LeadTimeDisplayStatus =
+  (typeof LeadTimeDisplayStatus)[keyof typeof LeadTimeDisplayStatus];
+
+export type LeadTimeDisplay = {
+  status: LeadTimeDisplayStatus;
+  /** Shared empty/context copy; `null` once lead time resolves to a duration. */
+  emptyMessage: string | null;
+};
+
+const LEAD_TIME_IN_PROGRESS_MESSAGE =
+  "The branch hasn't merged yet, so lead time is still accumulating.";
+/**
+ * Empty-state copy when the branch IS merged but the merge timestamp hasn't been
+ * synced, so the lead-time duration can't be measured. Honest about the actual
+ * cause (missing merge time — the branch DID merge), so the breakdown never
+ * contradicts the "Merged" chip in Properties by claiming it "hasn't merged yet"
+ * (FEA-4227). Exported as the SSOT copy the D5 breakdown uses in this state.
+ */
+export const LEAD_TIME_MERGED_UNAVAILABLE_MESSAGE =
+  "This branch merged, but its merge time hasn't synced yet, so lead time is unavailable.";
+/**
+ * Empty-state copy when no contributing session activity has been captured, so
+ * lead time cannot be charted. Kept terse and honest about the actual cause (no
+ * captured activity — not "hasn't merged"), matching the rest of this surface's
+ * empty copy. Exported as the SSOT fallback the D5 breakdown uses when the
+ * shared status resolves without an empty message.
+ */
+export const LEAD_TIME_PENDING_MESSAGE = "No session activity captured yet.";
+
+/**
+ * Whether the lead-time card has NO measurable value (FEA-4236) — both the
+ * merged-but-unmeasurable and the no-activity pending states. The card renders
+ * these as a muted "No data" glyph, not a bold 2xl em-dash. `InProgress` is NOT
+ * unavailable: it carries the real "In progress" value.
+ */
+export function isLeadTimeValueUnavailable(
+  status: LeadTimeDisplayStatus
+): boolean {
+  return (
+    status === LeadTimeDisplayStatus.MergedUnavailable ||
+    status === LeadTimeDisplayStatus.Pending
+  );
+}
+/** The card's unmerged-but-active value; mirrored by the section's in-progress framing. */
+const LEAD_TIME_IN_PROGRESS_VALUE = "In progress";
+
+export function describeLeadTime(detail: BranchPageDetail): LeadTimeDisplay {
+  const { totalMs, mergeUnknown, durationUnavailable } =
+    leadTimeWaterfallSegments(detail);
+  if (totalMs != null && !mergeUnknown) {
+    return { status: LeadTimeDisplayStatus.Merged, emptyMessage: null };
+  }
+  // Merged (per prState/status) but the merge instant is missing → we KNOW it
+  // merged, so never fall through to the "hasn't merged" in-progress copy. Show
+  // the honest merged-but-unmeasurable state, consistent with the Properties
+  // panel's "Merged" chip (FEA-4227).
+  if (durationUnavailable) {
+    return {
+      status: LeadTimeDisplayStatus.MergedUnavailable,
+      emptyMessage: LEAD_TIME_MERGED_UNAVAILABLE_MESSAGE,
+    };
+  }
+  // No session anchor → neither surface can measure lead time (the D6 card has
+  // no start, the D5 track has nothing to span). This is the only true "pending"
+  // state; a branch WITH a session but no merge is "in progress", matching the
+  // card's "In progress" value so the two surfaces never disagree (FEA-3974).
+  if (earliestSessionStartMs(detail.sessions) == null) {
+    return {
+      status: LeadTimeDisplayStatus.Pending,
+      emptyMessage: LEAD_TIME_PENDING_MESSAGE,
+    };
+  }
+  return {
+    status: LeadTimeDisplayStatus.InProgress,
+    emptyMessage: LEAD_TIME_IN_PROGRESS_MESSAGE,
+  };
+}
+
+/**
+ * The D6 card's lead-time value, derived from the SAME `describeLeadTime` status
+ * the D5 breakdown reads, so the card and section can never disagree for one
+ * branch (FEA-3974). `merged` needs the caller's formatted duration (the lib
+ * stays formatter-free); `formatMerged` is applied only in that branch. Returns
+ * `null` for the no-data states (merged-but-unmeasurable, no-session pending) so
+ * the card renders MetricCard's muted "No data" glyph directly from a nullish
+ * value — no dead em-dash literal to keep in sync (FEA-4236). The exhaustive
+ * switch fails typecheck if a new `LeadTimeDisplayStatus` is added without a card
+ * mapping.
+ */
+export function leadTimeCardValue(
+  status: LeadTimeDisplayStatus,
+  formatMerged: () => string
+): string | null {
+  switch (status) {
+    case LeadTimeDisplayStatus.Merged:
+      return formatMerged();
+    case LeadTimeDisplayStatus.InProgress:
+      return LEAD_TIME_IN_PROGRESS_VALUE;
+    // Merged but unmeasurable and no-session pending have no measurable duration:
+    // the card shows "No data" (nullish value) and the breakdown carries the why.
+    case LeadTimeDisplayStatus.MergedUnavailable:
+    case LeadTimeDisplayStatus.Pending:
+      return null;
+    default: {
+      const exhaustive: never = status;
+      return exhaustive;
+    }
+  }
 }

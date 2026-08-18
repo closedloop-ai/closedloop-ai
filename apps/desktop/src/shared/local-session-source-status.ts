@@ -1,7 +1,6 @@
 export const LOCAL_SESSION_SOURCE_STATUSES = {
   starting: "starting",
   ready: "ready",
-  disabled: "disabled",
   unavailable: "unavailable",
 } as const;
 
@@ -10,7 +9,6 @@ export type LocalSessionSourceStatus =
 
 export type AgentMonitorLocalSessionSourcePayload = {
   ready?: boolean;
-  enabled?: boolean;
   localSessionSourceStatus?: unknown;
 };
 
@@ -34,9 +32,6 @@ export function normalizeAgentMonitorLocalSessionSourceStatus(
   if (payload?.ready === true) {
     return LOCAL_SESSION_SOURCE_STATUSES.ready;
   }
-  if (payload?.enabled === false) {
-    return LOCAL_SESSION_SOURCE_STATUSES.disabled;
-  }
   return LOCAL_SESSION_SOURCE_STATUSES.starting;
 }
 
@@ -46,7 +41,6 @@ function isLocalSessionSourceStatus(
   return (
     value === LOCAL_SESSION_SOURCE_STATUSES.starting ||
     value === LOCAL_SESSION_SOURCE_STATUSES.ready ||
-    value === LOCAL_SESSION_SOURCE_STATUSES.disabled ||
     value === LOCAL_SESSION_SOURCE_STATUSES.unavailable
   );
 }

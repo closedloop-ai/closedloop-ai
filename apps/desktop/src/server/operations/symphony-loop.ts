@@ -21,18 +21,19 @@ import type {
   ExecutionResultV2,
   RepoExecutionResult,
 } from "@closedloop-ai/loops-api/execution-result";
+import { parseJwtExpiry } from "../../main/auth/jwt-utils.js";
 import {
-  emitDecisionTableVerificationTelemetry,
-  getDecisionTableVerificationTelemetryOffset,
-} from "../../main/decision-table-verification-telemetry.js";
+  type ModelTokenUsage,
+  parseTokenUsage,
+  resolveClaudeOutputPath,
+} from "../../main/cost/token-usage.js";
 import {
   readLogTail,
   readStderrTail,
   readTextFile,
   sanitizeErrorMessage,
   stripAnsi,
-} from "../../main/diagnostics-helpers.js";
-import { gatewayLog } from "../../main/gateway-logger.js";
+} from "../../main/diagnostics/diagnostics-helpers.js";
 import type {
   JobStore,
   LocalJob,
@@ -41,11 +42,12 @@ import type {
   LocalJobExecuteFinalizationPath,
   LocalJobExecuteFinalizationStatus,
   LocalJobFinalizationSource,
-} from "../../main/job-store.js";
-import { createStubJobStore } from "../../main/job-store.js";
-import { parseJwtExpiry } from "../../main/jwt-utils.js";
+} from "../../main/jobs/job-store.js";
+import { createStubJobStore } from "../../main/jobs/job-store.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
+import { resolveArtifactOutputDir } from "../../main/loop/artifact-output-dir.js";
+import { EXECUTE_NO_WORK_MESSAGE } from "../../main/loop/loop-failure-reason.js";
 import {
-  EXECUTE_NO_WORK_MESSAGE,
   finalizeLoopFromRuntime,
   isExecuteNoWorkCompletion,
   isRetryableFinalizationError,
@@ -54,32 +56,32 @@ import {
   makeHeartbeatFinalizeFn,
   tryUploadArtifacts,
   tryUploadSupportBundle,
-} from "../../main/loop-finalizer.js";
-import type { LoopPopDeps } from "../../main/loop-lifecycle.js";
+} from "../../main/loop/loop-finalizer.js";
+import type { LoopPopDeps } from "../../main/loop/loop-lifecycle.js";
 import {
   getLoopPerfTelemetryOffset,
   type LoopPerfTelemetryWatcherHandle,
   reconcileLoopPerfTelemetry,
   startLoopPerfTelemetryWatcher,
-} from "../../main/loop-perf-telemetry.js";
-import type { LoopSchedulerContext } from "../../main/loop-scheduler-context.js";
+} from "../../main/loop/loop-perf-telemetry.js";
+import type { LoopSchedulerContext } from "../../main/loop/loop-scheduler-context.js";
 import type {
   LoopTokenMeta,
   LoopTokenStore,
-} from "../../main/loop-token-store.js";
-import { Observability } from "../../main/observability.js";
-import type { ExecutePlanSourceDiagnostics } from "../../main/telemetry-protocol.js";
-import {
-  type ModelTokenUsage,
-  parseTokenUsage,
-  resolveClaudeOutputPath,
-} from "../../main/token-usage.js";
+} from "../../main/loop/loop-token-store.js";
+import { findMissingRequiredArtifacts } from "../../main/loop/missing-required-artifacts.js";
 import {
   clearUserVisibleLoopFailureMarker,
   readUserVisibleLoopFailure,
   toUserVisibleLoopFailurePayload,
   USER_VISIBLE_LOOP_FAILURE_SECRET_ENV,
-} from "../../main/user-visible-loop-failure.js";
+} from "../../main/loop/user-visible-loop-failure.js";
+import {
+  emitDecisionTableVerificationTelemetry,
+  getDecisionTableVerificationTelemetryOffset,
+} from "../../main/telemetry/decision-table-verification-telemetry.js";
+import { Observability } from "../../main/telemetry/observability.js";
+import type { ExecutePlanSourceDiagnostics } from "../../main/telemetry/telemetry-protocol.js";
 import {
   IMPORTED_PLAN_MARKDOWN_FILE,
   isRawPlanArtifact,
@@ -116,10 +118,20 @@ import {
   resolveRepoFullName,
 } from "./git-helpers.js";
 import {
+  buildLegacyCompletionResult,
+  buildLegacyTerminalEvent,
+} from "./legacy-completion-result.js";
+import {
   postLoopEvent,
   postLoopEventBounded,
   uploadArtifacts,
 } from "./loop-http.js";
+import {
+  branchExistsAsync,
+  createWorktreeCheckout,
+  removeWorktree,
+  replaceWorktreeCheckout,
+} from "./loop-worktree-git.js";
 import {
   createNativeLoopObservabilitySession,
   type NativeLoopObservabilitySession,
@@ -140,11 +152,9 @@ import type { BootstrapRunResult } from "./symphony-utils.js";
 import {
   CLONE_GIT_TIMEOUT,
   expandHome,
-  fetchOrigin,
   isProcessRunning,
   loopError,
   loopLog,
-  resolveRef,
   resolveWorktreeParentDir,
   runBootstrapIfNeeded,
   runLoopsSetupScript,
@@ -157,7 +167,7 @@ export {
   readLogTail,
   readStderrTail,
   stripAnsi,
-} from "../../main/diagnostics-helpers.js";
+} from "../../main/diagnostics/diagnostics-helpers.js";
 
 // ---------------------------------------------------------------------------
 // WorktreeProvider: abstraction over git worktree operations for testability
@@ -242,6 +252,26 @@ export function getResolvedGitPath(): string {
   return resolveBinaryFromLoginShellSync("git").path;
 }
 
+/**
+ * Async twin of `getResolvedGitPath`, for callers already off the main thread.
+ *
+ * ISS-6132: the sync resolver bottoms out in `getShellPathSync`, which on a
+ * cold cache runs `execFileSync($SHELL, "-ilc", …)` for up to
+ * `SHELL_PATH_TIMEOUT_MS` per arg variant. Converting the git calls to
+ * `execFile` while still resolving the binary synchronously would leave a
+ * multi-second main-thread freeze on the FIRST command — precisely the reported
+ * repro. Placed beside its sync counterpart, mirroring `shell-path.ts`'s own
+ * sync/async pairing.
+ */
+export async function getResolvedGitPathAsync(): Promise<string> {
+  const override = getOverrideBinaryPaths()?.git;
+  const resolved = await resolveBinaryFromLoginShell("git", override);
+  if (resolved.source !== "override_invalid") {
+    return resolved.path;
+  }
+  return (await resolveBinaryFromLoginShell("git")).path;
+}
+
 export function getResolvedGhPath(): string {
   return resolveBinaryFromLoginShellSync("gh", getOverrideBinaryPaths()?.gh)
     .path;
@@ -270,7 +300,7 @@ import {
   LoopArtifactFile,
   LoopArtifactType,
 } from "@closedloop-ai/loops-api/artifacts";
-import { validateResultBundle } from "@closedloop-ai/loops-api/bundles";
+import { missingRequiredArtifactsMessage } from "@closedloop-ai/loops-api/bundles";
 import {
   LoopCommand,
   validateCommandInputs,
@@ -286,10 +316,7 @@ import {
 } from "@closedloop-ai/loops-api/desktop-request";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { LoopEventType } from "@closedloop-ai/loops-api/events";
-import {
-  getPrimaryRepoResult,
-  parseExecutionResultFile,
-} from "@closedloop-ai/loops-api/execution-result";
+import { parseExecutionResultFile } from "@closedloop-ai/loops-api/execution-result";
 import { getMultiRepoPolicy } from "@closedloop-ai/loops-api/multi-repo-policy";
 import {
   buildMountPathsFooter,
@@ -2007,48 +2034,15 @@ async function createWorktreeCheckoutImpl(
   baseBranch: string,
   _loopId: string
 ): Promise<boolean> {
-  if (existsSync(worktreeDir)) {
-    return false;
-  }
-
-  await fs.mkdir(path.dirname(worktreeDir), { recursive: true });
-
-  const gitBin = getResolvedGitPath();
-  try {
-    execSync(`${shellEscape(gitBin)} fetch origin`, {
-      cwd: expandedRepoPath,
-      stdio: "pipe",
-      timeout: 30_000,
-    });
-  } catch {
-    // non-fatal
-  }
-
-  // Resolve base ref
-  let baseRef = `origin/${baseBranch}`;
-  try {
-    execSync(
-      `${shellEscape(gitBin)} rev-parse --verify ${shellEscape(baseRef)}`,
-      {
-        cwd: expandedRepoPath,
-        stdio: "pipe",
-        timeout: 10_000,
-      }
-    );
-  } catch {
-    baseRef = baseBranch;
-  }
-
-  execSync(
-    `${shellEscape(gitBin)} worktree add -B ${shellEscape(branchName)} ${shellEscape(worktreeDir)} ${shellEscape(baseRef)}`,
-    {
-      cwd: expandedRepoPath,
-      stdio: "pipe",
-      timeout: 30_000,
-    }
-  );
-
-  return true;
+  // ISS-6132: the fetch + checkout below used to run through `execSync` on the
+  // Electron main thread, freezing every window for the child's whole lifetime.
+  return await createWorktreeCheckout({
+    gitBin: await getResolvedGitPathAsync(),
+    repoPath: expandedRepoPath,
+    worktreeDir,
+    branchName,
+    baseBranch,
+  });
 }
 
 async function ensureLoopWorktreeMaterialized(args: {
@@ -2068,33 +2062,31 @@ async function ensureLoopWorktreeMaterialized(args: {
     );
   }
 
-  if (existsSync(args.worktreeDir)) {
-    loopLog(
-      args.loopId,
-      `Removing stale loop worktree path before branch materialization: ${args.worktreeDir}`
-    );
-    await defaultWorktreeProvider.removeWorktree(
-      args.worktreeDir,
-      args.expandedRepoPath,
-      args.loopId
-    );
-  }
-
-  const created = await createWorktreeCheckoutImpl(
-    args.expandedRepoPath,
-    args.worktreeDir,
-    args.branchName,
-    args.baseBranch,
-    args.loopId
-  );
+  const created = await replaceWorktreeCheckout({
+    gitBin: await getResolvedGitPathAsync(),
+    repoPath: args.expandedRepoPath,
+    worktreeDir: args.worktreeDir,
+    branchName: args.branchName,
+    baseBranch: args.baseBranch,
+    onStaleWorktree: () => {
+      loopLog(
+        args.loopId,
+        `Removing stale loop worktree path before branch materialization: ${args.worktreeDir}`
+      );
+    },
+    onRemoveFailed: () => {
+      loopLog(args.loopId, "git worktree remove failed, falling back to fs.rm");
+    },
+    afterCreate: async () => {
+      await pushAndRecordLoopBranch(args);
+      await runLoopsSetupScript(args.worktreeDir, args.loopId);
+    },
+  });
   if (!created) {
     throw new Error(
       `Failed to create fresh loop worktree at ${args.worktreeDir}`
     );
   }
-
-  await pushAndRecordLoopBranch(args);
-  await runLoopsSetupScript(args.worktreeDir, args.loopId);
 }
 
 async function ensureLoopWorktreeForRequest(args: {
@@ -2250,8 +2242,10 @@ async function branchExistsImpl(
   repoPath: string,
   branch: string
 ): Promise<boolean> {
-  fetchOrigin(repoPath);
-  return resolveRef(repoPath, branch) !== null;
+  // ISS-6132: both calls previously ran synchronously on the Electron main
+  // thread — the fetch is a network round trip, once per additional repo.
+  const gitBin = await getResolvedGitPathAsync();
+  return await branchExistsAsync(gitBin, repoPath, branch);
 }
 
 // findExistingLoopWorktree was removed — it greedy-matched ANY loop worktree
@@ -2269,39 +2263,19 @@ async function removeWorktreeImpl(
   expandedRepoPath: string,
   loopId?: string
 ): Promise<void> {
-  const gitBin = getResolvedGitPath();
-  try {
-    execSync(
-      `${shellEscape(gitBin)} worktree remove --force ${shellEscape(worktreeDir)}`,
-      {
-        cwd: expandedRepoPath,
-        stdio: "pipe",
-        timeout: 15_000,
+  // ISS-6132: previously two `execSync` git calls on the Electron main thread.
+  await removeWorktree({
+    gitBin: await getResolvedGitPathAsync(),
+    worktreeDir,
+    repoPath: expandedRepoPath,
+    onRemoveFailed: () => {
+      if (loopId) {
+        // This provider backs every loop command, not just GENERATE_PRD, so the
+        // message must not misattribute a PLAN/EXECUTE removal failure.
+        loopLog(loopId, "git worktree remove failed, falling back to fs.rm");
       }
-    );
-  } catch {
-    if (loopId) {
-      loopLog(
-        loopId,
-        "git worktree remove failed for GENERATE_PRD, falling back to fs.rm"
-      );
-    }
-    await fs.rm(worktreeDir, {
-      recursive: true,
-      force: true,
-      maxRetries: 5,
-      retryDelay: 100,
-    });
-    try {
-      execSync(`${shellEscape(gitBin)} worktree prune`, {
-        cwd: expandedRepoPath,
-        stdio: "pipe",
-        timeout: 10_000,
-      });
-    } catch {
-      // Best-effort
-    }
-  }
+    },
+  });
 }
 
 /** Read the current branch name from a worktree directory. */
@@ -5104,9 +5078,7 @@ export async function handleProcessCompletion(
     const rawSessionId = readTextFile(sessionFileForTelemetry);
     const failureSessionId = rawSessionId ? rawSessionId.trim() : undefined;
     runningLoops.delete(loopId);
-    const failureBranchName = worktreeDir
-      ? (wt.getCurrentBranch(worktreeDir) ?? undefined)
-      : undefined;
+    const failureBranchName = resolveWorktreeBranch(wt, worktreeDir);
     const failureWarnings: string[] = [];
     let failureCloudFinalized = false;
     let failureRetryableFailure = false;
@@ -5191,11 +5163,7 @@ export async function handleProcessCompletion(
     }
 
     if (!wasCancelled) {
-      const rawBody = body as unknown as { s3StateKey?: unknown };
-      const bodyS3StateKey =
-        typeof rawBody.s3StateKey === "string" && rawBody.s3StateKey
-          ? rawBody.s3StateKey
-          : undefined;
+      const bodyS3StateKey = body.s3StateKey;
       const supportJob =
         existingJob ??
         ({
@@ -5567,9 +5535,7 @@ export async function handleProcessCompletion(
             finalizationSessionId
           );
           runningLoops.delete(loopId);
-          const finalizationBranchName = worktreeDir
-            ? (wt.getCurrentBranch(worktreeDir) ?? undefined)
-            : undefined;
+          const finalizationBranchName = resolveWorktreeBranch(wt, worktreeDir);
           await postLoopEvent(apiBaseUrl, loopId, () => closedLoopAuthToken, {
             type: LoopEventType.Error,
             code: LoopErrorCode.AuthChallenge,
@@ -5659,7 +5625,9 @@ export async function handleProcessCompletion(
         }
       }
     } else if (command === LoopCommand.Decompose) {
-      artifacts = readDecomposeOutputs(worktreeDir ?? claudeWorkDir);
+      artifacts = readDecomposeOutputs(
+        resolveArtifactOutputDir(command, { claudeWorkDir, worktreeDir })
+      );
     } else if (
       command === LoopCommand.EvaluatePrd ||
       command === LoopCommand.EvaluatePlan ||
@@ -5676,23 +5644,26 @@ export async function handleProcessCompletion(
     ) {
       // REQUEST_PRD_CHANGES re-runs the same PRD agent and writes prd.md to
       // the same worktree path; the read-side artifact extraction is identical.
-      artifacts = readGeneratePrdOutputs(worktreeDir ?? claudeWorkDir);
+      artifacts = readGeneratePrdOutputs(
+        resolveArtifactOutputDir(command, { claudeWorkDir, worktreeDir })
+      );
     } else if (command === LoopCommand.Bootstrap) {
       artifacts = readBootstrapOutputs(claudeWorkDir);
     }
 
-    // Validate result bundle — warn if required artifacts are missing for this command
-    const artifactDir = worktreeDir ?? claudeWorkDir;
-    const presentFiles = Object.values(LoopArtifactFile).filter(
-      (f) =>
-        existsSync(path.join(artifactDir, f)) ||
-        existsSync(path.join(claudeWorkDir, f))
-    );
-    const missingRequired = validateResultBundle(command, presentFiles);
+    // ISS-5872 — validate the result bundle, and make the answer load-bearing.
+    // This used to compute `missingRequired`, log a warning, and discard it, so
+    // a PLAN that never wrote plan.json finalized as COMPLETED with a null
+    // error. Both finalization paths now refuse that: the JobStore path in
+    // `finalizeLoopFromRuntime`, and the legacy path below.
+    const missingRequired = findMissingRequiredArtifacts(command, {
+      claudeWorkDir,
+      worktreeDir,
+    });
     if (missingRequired.length > 0) {
-      gatewayLog.warn(
+      gatewayLog.error(
         "loop-harness",
-        `Missing required artifacts for ${command}: ${missingRequired.join(", ")}, loopId=${loopId}`
+        `${missingRequiredArtifactsMessage(command, missingRequired)}, loopId=${loopId}`
       );
     }
 
@@ -5864,95 +5835,69 @@ export async function handleProcessCompletion(
         path.join(claudeWorkDir, "session-id.txt")
       );
       const normalizedSessionId = sessionId?.trim();
-      Observability.jobCompleted(
-        commandId ?? existingJob.commandId,
-        operationId ?? existingJob.operationId,
-        loopId,
-        undefined,
-        normalizedSessionId && normalizedSessionId.length > 0
-          ? normalizedSessionId
-          : undefined,
-        body.command
-      );
+      // ISS-5872 — the finalizer may have downgraded this run to FAILED for a
+      // missing deliverable. Emitting job.completed anyway would tell telemetry
+      // the opposite of what the cloud was just told, so re-read the persisted
+      // status rather than assuming the finalizer agreed with us.
+      const finalizedJob = jobStore.getByLoopId(loopId);
+      if (finalizedJob?.status !== "FAILED") {
+        Observability.jobCompleted(
+          commandId ?? existingJob.commandId,
+          operationId ?? existingJob.operationId,
+          loopId,
+          undefined,
+          normalizedSessionId && normalizedSessionId.length > 0
+            ? normalizedSessionId
+            : undefined,
+          body.command
+        );
+      }
     } else {
       // Legacy completion path: route-level behavior when no JobStore is present.
       // Upload already ran above (no jobStore branch).
-      const result: Record<string, unknown> = {
-        exitCode,
-        subtype: command.toLowerCase(),
-      };
-      if (command === LoopCommand.Execute && artifacts.executionResult) {
-        const parsed = parseExecutionResultFile(artifacts.executionResult, "");
-        const lookupName = parsed.ok ? (parsed.results[0]?.fullName ?? "") : "";
-        const primary = parsed.ok
-          ? getPrimaryRepoResult(parsed.results, lookupName)
-          : null;
-        if (primary?.status === "success") {
-          result.prUrl = primary.prUrl;
-          result.prNumber = primary.prNumber;
-          result.branchName = primary.branchName;
-          result.has_changes = primary.hasChanges;
-        } else if (primary?.status === "skipped") {
-          // A skipped repo had no changes to push; surface the standard
-          // no-changes shape so consumers handle it uniformly.
-          result.prUrl = null;
-          result.prNumber = null;
-          result.has_changes = false;
-        }
-      }
-      if (command === LoopCommand.Execute && executeFinalization) {
-        result.finalizationSource = "live-exit";
-        result.executeFinalizationStatus = executeFinalization.status;
-        result.executeFinalizationPath = executeFinalization.path;
-        if (executeFinalization.reason) {
-          result.executeFinalizationReason = executeFinalization.reason;
-        }
-      }
-      if (worktreeDir && !result.branchName) {
-        const branch = wt.getCurrentBranch(worktreeDir);
-        if (branch) {
-          result.branchName = branch;
-        }
-      }
       const legacySessionId = sessionId?.trim();
-      if (legacySessionId) {
-        result.sessionId = legacySessionId;
-      }
+      const result = buildLegacyCompletionResult({
+        command,
+        exitCode,
+        artifacts,
+        executeFinalization,
+        worktreeDir,
+        getCurrentBranch: (dir) => wt.getCurrentBranch(dir),
+        sessionId: legacySessionId,
+      });
 
-      const completedEvent: Record<string, unknown> = {
-        type: LoopEventType.Completed,
-        result,
-        tokensUsed: {
-          input: tokensUsed.inputTokens,
-          output: tokensUsed.outputTokens,
-          cacheCreationInputTokens: tokensUsed.cacheCreationInputTokens,
-          cacheReadInputTokens: tokensUsed.cacheReadInputTokens,
-          turns: tokensUsed.turns,
-          models: tokensUsed.models,
-        },
-        tokensByModel,
+      const terminalEvent = buildLegacyTerminalEvent({
+        command,
         loopId,
-        ...(warnings.length > 0 ? { warnings } : {}),
-      };
+        result,
+        missingRequired,
+        tokensUsed,
+        tokensByModel,
+        elapsedMs,
+        sessionId: legacySessionId,
+        warnings,
+      });
 
       const eventResult = await postLoopEvent(
         apiBaseUrl,
         loopId,
         () => closedLoopAuthToken,
-        completedEvent
+        terminalEvent
       );
       if (!eventResult.success) {
         warnings.push("EVENT_POST_FAILED");
       }
 
-      Observability.jobCompleted(
-        commandId,
-        operationId,
-        loopId,
-        undefined,
-        legacySessionId,
-        body.command
-      );
+      if (missingRequired.length === 0) {
+        Observability.jobCompleted(
+          commandId,
+          operationId,
+          loopId,
+          undefined,
+          legacySessionId,
+          body.command
+        );
+      }
       schedulers?.teardownLoop(loopId);
       loopTokenStore?.deleteLoopToken(loopId);
     }
@@ -8310,10 +8255,7 @@ async function handleLoopRequest(
           command: body.command,
           harness: commandRuntime.harness.adapter.harness,
           repo: resolveLoopPrimaryFullName(body, expandedRepoPath) || undefined,
-          branch:
-            (worktreeDir
-              ? (wt.getCurrentBranch(worktreeDir) ?? undefined)
-              : undefined) ?? body.repo?.branch,
+          branch: resolveWorktreeBranch(wt, worktreeDir) ?? body.repo?.branch,
           claudeWorkDir,
           traceContext: {
             commandId,
@@ -8499,10 +8441,7 @@ async function handleLoopRequest(
       const jsonlPath = path.join(claudeWorkDir, "claude-output.jsonl");
       const statePath = path.join(claudeWorkDir, "state.json");
       const command = body.command as LocalJobCommand;
-      const s3StateKey =
-        typeof rawBody.s3StateKey === "string" && rawBody.s3StateKey.length > 0
-          ? rawBody.s3StateKey
-          : existing?.s3StateKey;
+      const s3StateKey = body.s3StateKey || existing?.s3StateKey;
       jobStore.upsert({
         id: body.loopId,
         kind: "SYMPHONY_LOOP",
@@ -8798,4 +8737,13 @@ export function registerSymphonyLoopRoutes(
       await handleLoopKill(context, jobStore);
     }
   );
+}
+
+function resolveWorktreeBranch(
+  wt: WorktreeProvider,
+  worktreeDir: string | null | undefined
+): string | undefined {
+  return worktreeDir
+    ? (wt.getCurrentBranch(worktreeDir) ?? undefined)
+    : undefined;
 }

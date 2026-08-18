@@ -9,24 +9,33 @@ import type { DocumentRowItem } from "@repo/app/documents/components/table/docum
 import { RowEditContext } from "@repo/app/documents/components/table/row-edit-context";
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
 import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
-import { Badge } from "@repo/design-system/components/ui/badge";
+import { cn } from "@repo/design-system/lib/utils";
 import { Link } from "@repo/navigation/link";
 import type { MouseEvent } from "react";
 import { useContext } from "react";
 
 /**
- * Read-only column cells: Type badge, Parent link, Project link, and Updated
+ * Read-only column cells: Type label, Parent link, Project link, and Updated
  * timestamp (FEA-1763 / PLN-874 Phase 3; extracted from document-row.tsx).
  */
 
+/**
+ * Type column: a plain colored text label, not a filled badge (FEA-3947).
+ * Per the design discipline, a filled badge is reserved for genuine status
+ * emphasis; type is low-emphasis metadata, so it reads as a plain colored
+ * string. The color comes from the row-type registry's `labelClassName`,
+ * which derives from the same canonical type-color source the badge used.
+ */
 export function TypeCell({ item }: { item: DocumentRowItem }) {
   const config = getRowTypeConfig(item);
   return (
     <div className={CELL_CLASSES}>
       {config && (
-        <Badge className={config.badgeClassName} variant="secondary">
+        <span
+          className={cn("truncate font-medium text-xs", config.labelClassName)}
+        >
           {config.badgeLabel}
-        </Badge>
+        </span>
       )}
     </div>
   );

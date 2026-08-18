@@ -1,0 +1,67 @@
+import { InsightsScope } from "@closedloop-ai/loops-api/insights";
+import { DashboardScopeControl } from "./dashboard-scope-control";
+
+/**
+ * ISS-5112: the dashboard's Me / Organization scope toggle, in the three states
+ * its two booleans produce.
+ *
+ * `gated` is the one worth having a fixture for. It pins the DISPLAYED value to
+ * Organization while the underlying `scope` state is still `Me`, which is the
+ * right behaviour while the ask is on screen and a bug the moment it outlives
+ * it: the cr-44060 regression was `scope` being cleared without `orgGated`,
+ * leaving this control showing Organization over personal-scope data.
+ *
+ * `analytics-range-toggle.stories.tsx` cannot cover this — it exercises the
+ * generic primitive, and the gating is entirely this wrapper's.
+ */
+const meta = {
+  title: "Desktop/Dashboard/Scope Control",
+  component: DashboardScopeControl,
+  parameters: { layout: "padded" },
+};
+
+export default meta;
+
+/**
+ * Signed in with an organization: both scopes real, the toggle reflects the
+ * actual selection.
+ */
+export const Available = {
+  args: {
+    available: true,
+    gated: false,
+    scope: InsightsScope.Me,
+    onValueChange: () => undefined,
+  },
+};
+
+/**
+ * A guest who selected Organization. The display is HELD on Organization while
+ * the ask stands, so the click does not visibly snap back — note that `scope` is
+ * still `Me` underneath, which is the mismatch this state exists to make
+ * deliberate rather than accidental.
+ */
+export const GatedOnOrganization = {
+  args: {
+    available: true,
+    gated: true,
+    scope: InsightsScope.Me,
+    onValueChange: () => undefined,
+  },
+};
+
+/**
+ * Signed out with guest mode off — the shipped default. `orgScopeAvailable` is
+ * false because the source advertises only personal scope, and the control
+ * renders nothing at all rather than offering a scope the app cannot serve.
+ * This is the state that made an account's value invisible on this page, which
+ * is why guest mode shows the toggle gated instead.
+ */
+export const Unavailable = {
+  args: {
+    available: false,
+    gated: false,
+    scope: InsightsScope.Me,
+    onValueChange: () => undefined,
+  },
+};

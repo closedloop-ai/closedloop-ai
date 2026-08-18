@@ -17,7 +17,16 @@
         "noNonNullAssertion": "off",
         // Biome 2.4: defer substring→slice migration to separate PR
         "noSubstr": "warn",
-        "noDescendingSpecificity": "warn"
+        "noDescendingSpecificity": "warn",
+        // File-size ceiling: no file may exceed 1,000 logical lines
+        // (multi-line string/template literals collapse — this counts code,
+        // not embedded data). Pre-existing offenders are grandfathered in the
+        // SHRINK-ONLY override at the end of `overrides`. See AGENTS.md →
+        // "File Size and Organization".
+        "noExcessiveLinesPerFile": {
+          "level": "error",
+          "options": { "maxLines": 1000, "skipBlankLines": false }
+        }
       },
       "suspicious": {
         "noEmptyBlockStatements": "off",
@@ -30,6 +39,16 @@
     "globals": ["Liveblocks"]
   },
   "overrides": [
+    {
+      // ISS-5810: verbatim `claude plugin list` captures used as a test oracle.
+      // Formatting them would rewrite the exact bytes the fixtures exist to
+      // pin, so the regression test would stop proving anything about what the
+      // Claude CLI actually emits.
+      "includes": ["apps/desktop/test/fixtures/plugin-list/**"],
+      "formatter": { "enabled": false },
+      "linter": { "enabled": false },
+      "assist": { "enabled": false }
+    },
     {
       "includes": [
         "**/__tests__/**",
@@ -128,32 +147,12 @@
     },
     {
       "includes": [
-        "apps/app/components/chat/CollapsibleBlock.tsx",
         "apps/app/components/chat/MessageContent.tsx",
-        "apps/app/components/engineer/CommentChat.tsx",
-        "apps/app/components/engineer/JudgesViewer.tsx",
-        "apps/app/components/engineer/PlanViewer.tsx",
-        "apps/app/components/engineer/RepoPickerDialog.tsx",
-        "apps/app/components/engineer/ReviewChatPane.tsx",
-        "apps/app/components/engineer/ClosedloopChat.tsx",
-        "apps/app/components/engineer/TerminalChatDialog.tsx",
-        "apps/app/components/engineer/TicketCard.tsx",
-        "apps/app/components/engineer/TicketList.tsx",
-        "apps/app/components/engineer/TicketListRow.tsx",
         "apps/app/components/engineer/__tests__/HealthCheckDialog.test.tsx",
-        "apps/app/components/engineer/run-viewer/RunViewerDialog.tsx",
-        "apps/app/components/engineer/run-viewer/viewers/JudgesViewer.tsx",
-        "apps/app/components/engineer/run-viewer/viewers/MarkdownViewer.tsx",
-        "apps/app/hooks/engineer/use-codex-debate.ts",
-        "apps/app/hooks/engineer/use-review-chat.ts",
         "apps/app/hooks/engineer/use-slash-commands.ts",
         "apps/app/lib/chat/chat-markdown.tsx",
         "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/deploy-detect.ts",
-        "apps/app/lib/engineer/relay-client.ts",
-        "apps/app/lib/engineer/repos.ts",
-        "apps/app/lib/engineer/review-split.ts",
-        "apps/app/lib/engineer/worktree-utils.ts"
+        "apps/app/lib/engineer/relay-client.ts"
       ],
       "linter": {
         "rules": {
@@ -167,38 +166,11 @@
     },
     {
       "includes": [
-        "apps/app/components/chat/SubagentBlock.tsx",
-        "apps/app/components/engineer/ActiveTicketCard.tsx",
-        "apps/app/components/engineer/CommentChat.tsx",
-        "apps/app/components/engineer/DeployDialog.tsx",
-        "apps/app/components/engineer/JsonlLogViewer.tsx",
-        "apps/app/components/engineer/LearningsDialog.tsx",
-        "apps/app/components/engineer/PRCommentCard.tsx",
-        "apps/app/components/engineer/RepoPickerDialog.tsx",
-        "apps/app/components/engineer/ReviewChatPane.tsx",
-        "apps/app/components/engineer/ClosedloopChat.tsx",
-        "apps/app/components/engineer/ClosedloopStatus.tsx",
-        "apps/app/components/engineer/TerminalChatDialog.tsx",
-        "apps/app/components/engineer/TicketChatDialog.tsx",
-        "apps/app/components/engineer/TicketList.tsx",
-        "apps/app/components/engineer/TicketListRow.tsx",
         "apps/app/hooks/chat/use-stream-dispatch.ts",
-        "apps/app/hooks/engineer/use-codex-debate.ts",
-        "apps/app/hooks/engineer/use-engineer-features.ts",
-        "apps/app/hooks/engineer/use-review-chat.ts",
-        "apps/app/hooks/engineer/use-review-execution.ts",
-        "apps/app/hooks/engineer/use-start-plan-loop.ts",
-        "apps/app/hooks/engineer/useCommentChat.ts",
-        "apps/app/hooks/engineer/useClosedloopLaunch.ts",
         "apps/app/lib/chat/chat-utils.ts",
-        "apps/app/lib/engineer/claude-stream-utils.ts",
-        "apps/app/lib/engineer/deploy-detect.ts",
         "apps/app/lib/engineer/engineer-fetch-interceptor.ts",
         "apps/app/lib/engineer/queries/health-check.ts",
-        "apps/app/lib/engineer/relay-client.ts",
-        "apps/app/lib/engineer/review-stream.ts",
-        "apps/app/lib/engineer/sessions.ts",
-        "apps/app/lib/engineer/stream-events.ts"
+        "apps/app/lib/engineer/relay-client.ts"
       ],
       "linter": {
         "rules": {
@@ -218,13 +190,6 @@
         // FEA-520: postpone PascalCase -> kebab-case migration to a dedicated rename pass.
         "apps/app/components/chat/**",
         "apps/app/components/engineer/**",
-        "apps/app/hooks/engineer/__tests__/useClosedloopLaunch.test.ts",
-        "apps/app/hooks/engineer/useCommentChat.ts",
-        "apps/app/hooks/engineer/useGitOperations.ts",
-        "apps/app/hooks/engineer/useMediaQuery.ts",
-        "apps/app/hooks/engineer/useClosedloopLaunch.ts",
-        "apps/app/hooks/engineer/useTerminalStatus.ts",
-        "apps/app/hooks/engineer/useUpdateChecker.ts",
         "apps/app/lib/chat/runner-token/**"
       ],
       "linter": {
@@ -289,6 +254,54 @@
                     // tsconfig path alias) that drops the `src/` segment.
                     "group": ["**/desktop/server/operations/**"],
                     "message": "apps/app must never import the privileged Desktop gateway tree (FEA-1511, PRD-430 AC-040.4): apps/desktop/src/server/operations/* runs in the Electron main process with local filesystem/process access and can spawn CLI processes — importing it opens an arbitrary local command execution path. See apps/desktop/AGENTS.md."
+                  },
+                  {
+                    // FEA-4343: the ban that AGENTS.md -> Data Access Pattern
+                    // states outright. It was already enforced on the two
+                    // adjacent surfaces — packages/app and packages/collaboration
+                    // client/shared, both FEA-1510 — but not on apps/app itself,
+                    // so the primary rule was prose while its derivatives were
+                    // gated. It lives in THIS options block for the same reason
+                    // the gateway patterns above do: a second apps/app override
+                    // for noRestrictedImports would clobber the navigation
+                    // `paths`, not merge with them.
+                    "group": ["@repo/database", "@repo/database/**"],
+                    "message": "apps/app must not import @repo/database (FEA-4343): a direct import bypasses the API layer and pulls Prisma and its generated client into the Next.js build. Data access is layered — frontend hooks -> apps/api routes -> services -> database. Remedy: reach apps/api through the app's hooks (useApiClient), and take Prisma enums and shared shapes from @repo/api/src/types/ rather than @repo/database (incl. /generated). See AGENTS.md -> Data Access Pattern."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      // FEA-4343: the paths the navigation override above SUBTRACTS — the Next
+      // adapter, the vitest setup shim, and every test file — are excluded only
+      // because they legitimately reference next/navigation. Nothing about them
+      // licenses a direct database import, and "under apps/app" in the AGENTS.md
+      // rule includes them. This is a SEPARATE override rather than a widening
+      // of the one above because the navigation ban's exclusions must stay; the
+      // clobber foot-gun that comment warns about does not apply here, since the
+      // two include sets are disjoint by construction (this block lists exactly
+      // what the other one negates), so no file is ever matched by both.
+      "includes": [
+        "apps/app/lib/navigation/next-adapter.tsx",
+        "apps/app/vitest.setup.ts",
+        "apps/app/**/__tests__/**",
+        "apps/app/**/*.test.ts",
+        "apps/app/**/*.test.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["@repo/database", "@repo/database/**"],
+                    "message": "apps/app must not import @repo/database (FEA-4343): a direct import bypasses the API layer and pulls Prisma and its generated client into the Next.js build. Data access is layered — frontend hooks -> apps/api routes -> services -> database. Remedy: reach apps/api through the app's hooks (useApiClient), and take Prisma enums and shared shapes from @repo/api/src/types/ rather than @repo/database (incl. /generated). See AGENTS.md -> Data Access Pattern."
                   }
                 ]
               }
@@ -558,7 +571,12 @@
         // The generator's output is canonical: keep Biome (and the pre-commit
         // hook) from reformatting it, which would make the next regeneration
         // produce a spurious diff.
-        "apps/prototypes/lib/registry.generated.ts"
+        "apps/prototypes/lib/registry.generated.ts",
+        // Machine-written by
+        // apps/desktop/scripts/generate-audit-character-roster.mjs (FEA-4013) —
+        // the discovered Audit Bot review-character cast. Same rationale: the
+        // generator's output is canonical, so keep Biome from reformatting it.
+        "apps/desktop/src/shared/audit-character-roster.generated.ts"
       ],
       "formatter": {
         "enabled": false
@@ -580,6 +598,20 @@
           "a11y": {
             "useButtonType": "off",
             "useSemanticElements": "off"
+          }
+        }
+      }
+    },
+    {
+      // FEA-3812: `@repo/crewd`'s package entry point re-exports the fs/CLI-free
+      // scheduler core (Daemon/cascade/model/ports) so apps/desktop can
+      // `import { Daemon, cascade } from "@repo/crewd"`. That single public-API
+      // module is intentionally a barrel.
+      "includes": ["packages/crewd/src/index.ts"],
+      "linter": {
+        "rules": {
+          "performance": {
+            "noBarrelFile": "off"
           }
         }
       }
@@ -615,7 +647,7 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/main/gateway-logger.ts"],
+      "includes": ["apps/desktop/src/main/logging/gateway-logger.ts"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -635,43 +667,43 @@
     // Desktop safety rules restored by this plan remain active.
     {
       "includes": [
-        "apps/desktop/src/main/agent-session-sync-service.ts",
-        "apps/desktop/src/main/anthropic-admin-client.ts",
+        "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
+        "apps/desktop/src/main/cost/anthropic-admin-client.ts",
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/approval-operations.ts",
-        "apps/desktop/src/main/boot-recovery.ts",
-        "apps/desktop/src/main/claude-code-analytics-client.ts",
-        "apps/desktop/src/main/cloud-command-executor.ts",
-        "apps/desktop/src/main/collectors/claude/claude-parser.ts",
+        "apps/desktop/src/main/approvals/approval-operations.ts",
+        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
+        "apps/desktop/src/main/cost/claude-code-analytics-client.ts",
+        "apps/desktop/src/main/cloud/cloud-command-executor.ts",
         "apps/desktop/src/main/collectors/codex/codex-parser.ts",
         "apps/desktop/src/main/collectors/engine/collector-manager.ts",
         "apps/desktop/src/main/collectors/copilot/copilot-parser.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
         "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
-        "apps/desktop/src/main/command-key-target-context.ts",
+        "apps/desktop/src/main/command-signing/command-key-target-context.ts",
         "apps/desktop/src/main/database/dashboard-queries.ts",
         "apps/desktop/src/main/database/db-host/db-host-agent-database.ts",
+        "apps/desktop/src/main/database/import-metadata-builders.ts",
+        "apps/desktop/src/main/database/live-hook.ts",
         "apps/desktop/src/main/database/read-stores.ts",
         "apps/desktop/src/main/database/session-trace.ts",
-        "apps/desktop/src/main/database/sqlite.ts",
         "apps/desktop/src/main/database/sync-source.ts",
+        "apps/desktop/src/main/database/token-cost-maintenance.ts",
         "apps/desktop/src/main/database/transcript.ts",
         "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/loop-finalizer.ts",
-        "apps/desktop/src/main/loop-heartbeat.ts",
-        "apps/desktop/src/main/loop-perf-telemetry.ts",
-        "apps/desktop/src/main/loop-refresh.ts",
-        "apps/desktop/src/main/observability.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
+        "apps/desktop/src/main/loop/loop-heartbeat.ts",
+        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
+        "apps/desktop/src/main/loop/loop-refresh.ts",
+        "apps/desktop/src/main/telemetry/observability.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",
         "apps/desktop/src/main/packs/catalog-store.ts",
-        "apps/desktop/src/main/packs/install-orchestrator.ts",
         "apps/desktop/src/main/packs/pack-scanner.ts",
         "apps/desktop/src/main/plans/plan-store.ts",
         "apps/desktop/src/main/pull-requests/pr-store.ts",
-        "apps/desktop/src/main/reconciliation-worker.ts",
-        "apps/desktop/src/main/settings-store.ts",
+        "apps/desktop/src/main/cost/reconciliation-worker.ts",
+        "apps/desktop/src/main/settings/settings-store.ts",
         "apps/desktop/src/server/operations/binary-paths.ts",
         "apps/desktop/src/server/operations/codex.ts",
         "apps/desktop/src/server/operations/deploy.ts",
@@ -711,7 +743,7 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/main/observability.ts"],
+      "includes": ["apps/desktop/src/main/telemetry/observability.ts"],
       "linter": {
         "rules": {
           "complexity": {
@@ -722,25 +754,25 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts",
-        "apps/desktop/src/main/agent-session-sync-service.ts",
+        "apps/desktop/src/main/dashboard/agent-dashboard-design-system-runtime.ts",
+        "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/boot-recovery.ts",
-        "apps/desktop/src/main/browser-command-key-approval-request.ts",
-        "apps/desktop/src/main/cloud-command-executor.ts",
-        "apps/desktop/src/main/cloud-socket.ts",
+        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
+        "apps/desktop/src/main/command-signing/browser-command-key-approval-request.ts",
+        "apps/desktop/src/main/cloud/cloud-command-executor.ts",
+        "apps/desktop/src/main/cloud/cloud-socket.ts",
         "apps/desktop/src/main/collectors/engine/collector-manager.ts",
         "apps/desktop/src/main/collectors/engine/watcher.ts",
-        "apps/desktop/src/main/command-key-reconciler.ts",
-        "apps/desktop/src/main/cost-reconciliation-service.ts",
-        "apps/desktop/src/main/gateway-recovery.ts",
+        "apps/desktop/src/main/command-signing/command-key-reconciler.ts",
+        "apps/desktop/src/main/cost/cost-reconciliation-service.ts",
+        "apps/desktop/src/main/lifecycle/gateway-recovery.ts",
         "apps/desktop/src/main/index.ts",
         "apps/desktop/src/main/startup.ts",
-        "apps/desktop/src/main/loop-heartbeat.ts",
-        "apps/desktop/src/main/loop-scheduler-context.ts",
-        "apps/desktop/src/main/loop-sleep-recovery.ts",
+        "apps/desktop/src/main/loop/loop-heartbeat.ts",
+        "apps/desktop/src/main/loop/loop-scheduler-context.ts",
+        "apps/desktop/src/main/loop/loop-sleep-recovery.ts",
         "apps/desktop/src/main/packs/install-orchestrator.ts",
-        "apps/desktop/src/main/pending-command-key-notifier.ts",
+        "apps/desktop/src/main/command-signing/pending-command-key-notifier.ts",
         "apps/desktop/src/main/window.ts",
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
         "apps/desktop/src/server/operations/codex.ts",
@@ -789,10 +821,10 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts",
+        "apps/desktop/src/main/dashboard/agent-dashboard-design-system-runtime.ts",
         "apps/desktop/src/main/app.ts",
         "apps/desktop/src/main/database/db-host/db-host-worker.ts",
-        "apps/desktop/src/main/loop-scheduler-context.ts"
+        "apps/desktop/src/main/loop/loop-scheduler-context.ts"
       ],
       "linter": {
         "rules": {
@@ -804,25 +836,23 @@
     },
     {
       "includes": [
-        "apps/desktop/scripts/assert-design-system-boot-off.mjs",
-        "apps/desktop/src/main/admin-key-store.ts",
-        "apps/desktop/src/main/agent-monitor-hooks.ts",
+        "apps/desktop/src/main/cost/admin-key-store.ts",
+        "apps/desktop/src/main/agent-monitor/agent-monitor-hooks.ts",
         "apps/desktop/src/main/app.ts",
         "apps/desktop/src/main/collectors/codex/codex-home.ts",
         "apps/desktop/src/main/collectors/copilot/copilot-home.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-home.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-home.ts",
         "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
-        "apps/desktop/src/main/cost-math.ts",
-        "apps/desktop/src/main/database/sqlite.ts",
+        "apps/desktop/src/main/cost/cost-math.ts",
         "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/decision-table-verification-telemetry.ts",
-        "apps/desktop/src/main/desktop-pop.ts",
-        "apps/desktop/src/main/loop-finalizer.ts",
+        "apps/desktop/src/main/telemetry/decision-table-verification-telemetry.ts",
+        "apps/desktop/src/main/auth/desktop-pop.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",
         "apps/desktop/src/main/packs/pack-scanner.ts",
-        "apps/desktop/src/main/persistent-log.ts",
+        "apps/desktop/src/main/logging/persistent-log.ts",
         "apps/desktop/src/main/plans/plan-store.ts",
         "apps/desktop/src/main/pull-requests/pr-store.ts",
         "apps/desktop/src/main/window.ts",
@@ -846,7 +876,6 @@
         "apps/desktop/src/shared/sandbox-policy.ts",
         "apps/desktop/test/admin-cost-clients.test.ts",
         "apps/desktop/test/admin-key-store.test.ts",
-        "apps/desktop/test/agent-dashboard-boundary.test.ts",
         "apps/desktop/test/agent-monitor-hooks-core.test.ts",
         "apps/desktop/test/app-lifecycle.test.ts",
         "apps/desktop/test/authorized-command-key-store.test.ts",
@@ -879,7 +908,6 @@
         "apps/desktop/test/origin-policy.test.ts",
         "apps/desktop/test/pending-command-key-notifier.test.ts",
         "apps/desktop/test/persistent-log.test.ts",
-        "apps/desktop/test/renderer-logs-static.test.ts",
         "apps/desktop/test/saved-configs.test.ts",
         "apps/desktop/test/shutdown-lifecycle.test.ts",
         "apps/desktop/test/shutdown.test.ts",
@@ -905,10 +933,7 @@
       }
     },
     {
-      "includes": [
-        "apps/desktop/test/symphony-loop-cloud-failures.test.ts",
-        "apps/desktop/test/check-design-system-drift.test.ts"
-      ],
+      "includes": ["apps/desktop/test/symphony-loop-cloud-failures.test.ts"],
       "linter": {
         "rules": {
           "style": {
@@ -919,9 +944,9 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/admin-billing.ts",
+        "apps/desktop/src/main/cost/admin-billing.ts",
         "apps/desktop/src/main/electron-log-main.d.ts",
-        "apps/desktop/src/main/persistent-log.ts"
+        "apps/desktop/src/main/logging/persistent-log.ts"
       ],
       "linter": {
         "rules": {
@@ -934,23 +959,20 @@
     {
       "includes": [
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/cloud-socket.ts",
+        "apps/desktop/src/main/cloud/cloud-socket.ts",
         "apps/desktop/src/main/collectors/codex/codex-parser.ts",
         "apps/desktop/src/main/collectors/cursor/cursor-parser.ts",
         "apps/desktop/src/main/collectors/opencode/opencode-parser.ts",
         "apps/desktop/src/main/collectors/parsing/parser-utils.ts",
-        "apps/desktop/src/main/command-key-app-lifecycle.ts",
-        "apps/desktop/src/main/command-key-target-context.ts",
-        "apps/desktop/src/main/decision-table-verification-telemetry.ts",
-        "apps/desktop/src/main/loop-finalizer.ts",
-        "apps/desktop/src/main/packs/install-orchestrator.ts",
-        "apps/desktop/src/main/reconciliation-store.ts",
+        "apps/desktop/src/main/command-signing/command-key-app-lifecycle.ts",
+        "apps/desktop/src/main/command-signing/command-key-target-context.ts",
+        "apps/desktop/src/main/telemetry/decision-table-verification-telemetry.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
+        "apps/desktop/src/main/cost/reconciliation-store.ts",
         "apps/desktop/src/renderer/components/activity/ActivityPanel.tsx",
         "apps/desktop/src/renderer/components/approvals/ApprovalsPanel.tsx",
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
-        "apps/desktop/src/renderer/components/features/InstallModal.tsx",
         "apps/desktop/src/renderer/components/features/PlansView.tsx",
-        "apps/desktop/src/renderer/components/features/PullRequestsView.tsx",
         "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
         "apps/desktop/src/server/operations/chat-providers.ts",
         "apps/desktop/src/server/operations/health-check.ts",
@@ -980,9 +1002,9 @@
     {
       "includes": [
         "apps/desktop/src/main/database/db-host/db-host-client.ts",
-        "apps/desktop/src/main/gateway-identity.ts",
-        "apps/desktop/src/main/gateway-logger.ts",
-        "apps/desktop/src/main/gateway-recovery.ts",
+        "apps/desktop/src/main/auth/gateway-identity.ts",
+        "apps/desktop/src/main/logging/gateway-logger.ts",
+        "apps/desktop/src/main/lifecycle/gateway-recovery.ts",
         "apps/desktop/src/server/operations/symphony-loop.ts",
         "apps/desktop/test/agent-monitor-listener.test.ts"
       ],
@@ -1030,9 +1052,9 @@
     {
       "includes": [
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/approval-policy.ts",
-        "apps/desktop/src/main/boot-recovery.ts",
-        "apps/desktop/src/main/loop-perf-telemetry.ts",
+        "apps/desktop/src/main/approvals/approval-policy.ts",
+        "apps/desktop/src/main/lifecycle/boot-recovery.ts",
+        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
         "apps/desktop/src/server/operations/output-tailer.ts",
         "apps/desktop/src/server/operations/symphony-loop.ts",
         "apps/desktop/src/server/operations/symphony-status.ts"
@@ -1053,21 +1075,14 @@
         "apps/desktop/src/renderer/components/approvals/ApprovalsPanel.tsx",
         "apps/desktop/src/renderer/components/dashboard/DashboardPage.tsx",
         "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
-        "apps/desktop/src/renderer/components/features/CatalogCard.tsx",
         "apps/desktop/src/renderer/components/features/CoreFeaturesView.tsx",
-        "apps/desktop/src/renderer/components/features/InstallModal.tsx",
-        "apps/desktop/src/renderer/components/features/PacksCatalog.tsx",
         "apps/desktop/src/renderer/components/features/PlansView.tsx",
-        "apps/desktop/src/renderer/components/features/PullRequestsView.tsx",
         "apps/desktop/src/renderer/components/features/Sparkline.tsx",
-        "apps/desktop/src/renderer/components/feed/ActivityFeedView.tsx",
-        "apps/desktop/src/renderer/components/kanban/KanbanView.tsx",
         "apps/desktop/src/renderer/components/layout/Sidebar.tsx",
         "apps/desktop/src/renderer/components/layout/Topbar.tsx",
         "apps/desktop/src/renderer/components/sessions/SessionDetailView.tsx",
         "apps/desktop/src/renderer/components/sessions/SessionsView.tsx",
         "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
-        "apps/desktop/src/renderer/components/workflows/WorkflowsView.tsx",
         "apps/desktop/src/renderer/hooks/useDesktopApi.ts",
         "apps/desktop/src/renderer/hooks/useQueryCache.ts"
       ],
@@ -1094,8 +1109,7 @@
     },
     {
       "includes": [
-        "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx",
-        "apps/desktop/src/renderer/components/features/InstallModal.tsx"
+        "apps/desktop/src/renderer/components/diagnostics/LogsPanel.tsx"
       ],
       "linter": {
         "rules": {
@@ -1107,8 +1121,7 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/agent-monitor-hooks-core.ts",
-        "apps/desktop/src/main/collectors/claude/claude-parser.ts",
+        "apps/desktop/src/main/agent-monitor/agent-monitor-hooks-core.ts",
         "apps/desktop/src/server/operations/output-tailer.ts"
       ],
       "linter": {
@@ -1120,7 +1133,7 @@
       }
     },
     {
-      "includes": ["apps/desktop/src/main/token-usage.ts"],
+      "includes": ["apps/desktop/src/main/cost/token-usage.ts"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -1131,9 +1144,8 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/diagnostics-helpers.ts",
-        "apps/desktop/src/main/loop-perf-telemetry.ts",
-        "apps/desktop/src/main/packs/install-orchestrator.ts"
+        "apps/desktop/src/main/diagnostics/diagnostics-helpers.ts",
+        "apps/desktop/src/main/loop/loop-perf-telemetry.ts"
       ],
       "linter": {
         "rules": {
@@ -1157,7 +1169,7 @@
       "includes": [
         "apps/desktop/src/main/app.ts",
         "apps/desktop/src/main/collectors/engine/collector-manager.ts",
-        "apps/desktop/src/main/loop-finalizer.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/shared/token-cost.ts",
         "apps/desktop/test/ipc-job-reconciliation-race.test.ts"
       ],
@@ -1198,7 +1210,6 @@
       // than a lint-driven rewrite.
       "includes": [
         "packages/lib/harness/parser-utils.ts",
-        "packages/lib/harness/claude/parse-claude.ts",
         "packages/lib/harness/codex/parse-codex.ts"
       ],
       "linter": {
@@ -1222,7 +1233,7 @@
     },
     {
       "includes": [
-        "apps/desktop/src/main/loop-finalizer.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/shared/token-cost.ts"
       ],
       "linter": {
@@ -1237,6 +1248,7 @@
       "includes": [
         "apps/desktop/test/admin-key-store.test.ts",
         "apps/desktop/test/agent-monitor-listener.test.ts",
+        "apps/desktop/test/fixtures/health-check-route.ts",
         "apps/desktop/test/gateway-server.test.ts",
         "apps/desktop/test/gateway-signing-key-store.test.ts",
         "apps/desktop/test/git-branch-worktree.test.ts",
@@ -1270,15 +1282,15 @@
     {
       "includes": [
         "apps/desktop/scripts/reset-dashboard-db.mjs",
-        "apps/desktop/src/main/admin-billing.ts",
-        "apps/desktop/src/main/agent-dashboard-design-system-runtime.ts",
+        "apps/desktop/src/main/cost/admin-billing.ts",
+        "apps/desktop/src/main/dashboard/agent-dashboard-design-system-runtime.ts",
         "apps/desktop/src/main/app.ts",
-        "apps/desktop/src/main/cloud-socket.ts",
-        "apps/desktop/src/main/cost-reconciliation-service.ts",
-        "apps/desktop/src/main/database/sqlite.ts",
+        "apps/desktop/src/main/cloud/cloud-socket.ts",
+        "apps/desktop/src/main/cost/cost-reconciliation-service.ts",
         "apps/desktop/src/main/database/sync-source.ts",
+        "apps/desktop/src/main/database/token-cost-writes.ts",
         "apps/desktop/src/main/database/write-core.ts",
-        "apps/desktop/src/main/loop-finalizer.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
         "apps/desktop/src/main/packs/catalog-contents.ts",
         "apps/desktop/src/main/packs/catalog-fetcher.ts",
         "apps/desktop/src/main/packs/catalog-store.ts",
@@ -1294,6 +1306,7 @@
         "apps/desktop/src/server/operations/ticket-chat.ts",
         "apps/desktop/src/server/process-manager.ts",
         "apps/desktop/test/admin-cost-clients.test.ts",
+        "apps/desktop/test/agent-session-sync-bulk-drain.test.ts",
         "apps/desktop/test/agent-session-sync-sanitization.test.ts",
         "apps/desktop/test/agent-session-sync-service.test.ts",
         "apps/desktop/test/app-lifecycle.test.ts",
@@ -1330,7 +1343,6 @@
         "apps/desktop/test/observability.test.ts",
         "apps/desktop/test/onboarding-popup.test.ts",
         "apps/desktop/test/pending-command-key-notifier.test.ts",
-        "apps/desktop/test/ported-screen-store-contract.test.ts",
         "apps/desktop/test/reconciliation-worker.test.ts",
         "apps/desktop/test/security-sandbox.test.ts",
         "apps/desktop/test/security-upgrade-route.test.ts",
@@ -1378,8 +1390,398 @@
           }
         }
       }
+    },
+    {
+      "includes": ["scripts/deploy/check-database.ts"],
+      "linter": {
+        "rules": {
+          "complexity": {
+            "noExcessiveCognitiveComplexity": "error"
+          }
+        }
+      }
+    },
+    {
+      // ISS-4480: these files record GitHub Actions expressions VERBATIM —
+      // job `if:` conditions and `concurrency.group` values — as the audited
+      // per-context findings the merge_group dispatch guard compares against the
+      // real workflows. `${{ … }}` is GitHub's expression syntax, not a JS
+      // template literal someone quoted by mistake, which is the only thing
+      // noTemplateCurlyInString exists to catch. Escaping or reformatting these
+      // strings would break the byte-for-byte comparison that makes the recorded
+      // audit trustworthy, so the rule is off for exactly these files.
+      //
+      // ISS-4971 adds lint-scripts-gate.test.ts, which pins the `lint-scripts`
+      // job `if:` and the `changes` output mapping the same byte-for-byte way.
+      "includes": [
+        "scripts/lint/merge-group-required-contexts-manifest.ts",
+        "scripts/lint/merge-group-required-contexts.ts",
+        "scripts/lint/merge-group-required-contexts.test.ts",
+        // ISS-4698 split the manifest-vs-live comparison out of the suite above
+        // (the file crossed the 1,000-line ceiling); its fixtures carry the same
+        // verbatim `${{ … }}` audit strings.
+        "scripts/lint/merge-group-required-contexts-drift.test.ts",
+        "scripts/lint/lint-scripts-gate.test.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noTemplateCurlyInString": "off"
+          }
+        }
+      }
+    },
+    {
+      // FILE-SIZE CEILING GRANDFATHER LIST — noExcessiveLinesPerFile (style).
+      // Every file below already exceeded the 1,000 logical-line ceiling when
+      // the rule was introduced. The rule is `error` everywhere else, so no NEW
+      // file — and no edit that pushes a file over the ceiling — can land. This
+      // block is technical debt and is SHRINK-ONLY: when you bring a file back
+      // under 1,000 lines, DELETE its entry here; never add a new one. Prefer
+      // splitting an over-size file you touch by responsibility rather than
+      // piling on (see AGENTS.md → "File Size and Organization"). Next.js
+      // route-group/segment dirs use escaped brackets (\\[param\\]) because
+      // Biome globs treat [ ] as a character class.
+      "includes": [
+        "apps/api/__tests__/api/documents-attachments.test.ts",
+        "apps/api/__tests__/desktop-telemetry-handler.test.ts",
+        "apps/api/__tests__/integration/branch-artifact-flows.test.ts",
+        "apps/api/__tests__/integration/comment-projection-runtime.test.ts",
+        "apps/api/__tests__/unit/branch-service.test.ts",
+        "apps/api/__tests__/unit/cron-timeout-loops.test.ts",
+        "apps/api/__tests__/unit/preview-schemas-service.test.ts",
+        "apps/api/__tests__/unit/webhook-pull-request.test.ts",
+        "apps/api/app/agent-components/__tests__/service.test.ts",
+        "apps/api/app/agent-components/__tests__/token-trend.test.ts",
+        "apps/api/app/agent-sessions/service/analytics-aggregation.test.ts",
+        "apps/api/app/agent-sessions/service/artifact-links/branch-links.test.ts",
+        "apps/api/app/agent-sessions/service/projections.test.ts",
+        "apps/api/app/branch-view/\\[externalLinkId\\]/comments/direct-write-service.ts",
+        "apps/api/app/branch-view/\\[externalLinkId\\]/service.test.ts",
+        "apps/api/app/branch-view/\\[externalLinkId\\]/service.ts",
+        "apps/api/app/branches/branch-read-service.test.ts",
+        "apps/api/app/branches/branch-read-service.ts",
+        "apps/api/app/catalog/__tests__/service.test.ts",
+        "apps/api/app/catalog/service.ts",
+        "apps/api/app/comments/github-projection.ts",
+        "apps/api/app/compute-targets/service.test.ts",
+        "apps/api/app/compute-targets/service.ts",
+        "apps/api/app/documents/__tests__/attachments-service.test.ts",
+        "apps/api/app/documents/attachments-service.ts",
+        "apps/api/app/documents/document-service.ts",
+        "apps/api/app/insights/service.test.ts",
+        "apps/api/app/insights/service.ts",
+        "apps/api/app/integrations/github/service.test.ts",
+        "apps/api/app/integrations/github/service.ts",
+        "apps/api/app/internal/relay/socket-event/service.ts",
+        "apps/api/app/judges-analytics/service.ts",
+        "apps/api/app/loops/__tests__/service.test.ts",
+        "apps/api/app/loops/service.ts",
+        "apps/api/app/trace-comments/service.test.ts",
+        "apps/api/app/trace-comments/service.ts",
+        "apps/api/lib/__tests__/desktop-agent-sessions-handler.test.ts",
+        "apps/api/lib/desktop-command-store.ts",
+        "apps/api/lib/desktop-gateway-socket-server.ts",
+        "apps/api/lib/loops/loop-orchestrator.ts",
+        "apps/app/__tests__/components/loop-detail-container.test.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/__tests__/branch-diff-view.test.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/__tests__/branch-pr-comments-section.test.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-diff-view.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/build/\\[id\\]/components/branch-pr-comments-section.tsx",
+        "apps/app/app/(authenticated)/\\[orgSlug\\]/teams/\\[teamId\\]/projects/\\[projectId\\]/components/__tests__/create-document-modal.test.tsx",
+        "apps/app/lib/__tests__/desktop-managed-onboarding.test.ts",
+        "apps/app/lib/engineer/__tests__/relay-client.test.ts",
+        "apps/app/lib/system-check/pre-loop-system-check-provider.tsx",
+        "apps/desktop/src/main/agent-sync/agent-session-sync-service.ts",
+        "apps/desktop/src/main/app.ts",
+        "apps/desktop/src/main/branch/shared-branches-api.ts",
+        "apps/desktop/src/main/cloud/cloud-command-executor.ts",
+        "apps/desktop/src/main/collectors/copilot/copilot-parser.ts",
+        "apps/desktop/src/main/collectors/parsing/artifact-ref-extractor.ts",
+        "apps/desktop/src/main/dashboard/shared-agent-components-api.ts",
+        "apps/desktop/src/main/database/component-invocations.ts",
+        "apps/desktop/src/main/database/session-trace.ts",
+        "apps/desktop/src/main/database/sync-source.ts",
+        "apps/desktop/src/main/database/write-core.ts",
+        "apps/desktop/src/main/loop/loop-finalizer.ts",
+        "apps/desktop/src/main/loop/loop-perf-telemetry.ts",
+        "apps/desktop/src/main/packs/pack-scanner.ts",
+        "apps/desktop/src/main/session/shared-agent-sessions-api.ts",
+        "apps/desktop/src/main/trace-comments/shared-trace-comments-store.ts",
+        "apps/desktop/src/renderer/components/settings/SettingsPanel.tsx",
+        "apps/desktop/src/server/operations/codex.ts",
+        "apps/desktop/src/server/operations/deploy.ts",
+        "apps/desktop/src/server/operations/health-check.ts",
+        "apps/desktop/src/server/operations/symphony-interactive.ts",
+        "apps/desktop/src/server/operations/symphony-loop.ts",
+        "apps/desktop/src/server/router.ts",
+        "apps/desktop/test/agent-session-sync-service.test.ts",
+        "apps/desktop/test/app-otel-runtime.test.ts",
+        "apps/desktop/test/artifact-ref-extractor.test.ts",
+        "apps/desktop/test/boot-recovery.test.ts",
+        "apps/desktop/test/chat-session.test.ts",
+        "apps/desktop/test/cloud-command-executor.test.ts",
+        "apps/desktop/test/collectors-parsers.test.ts",
+        "apps/desktop/test/component-invocations-materialization.test.ts",
+        "apps/desktop/test/component-model-analytics.test.ts",
+        "apps/desktop/test/data-revision-rebuild.test.ts",
+        "apps/desktop/test/e2e/trace-comments-ipc.spec.ts",
+        "apps/desktop/test/gateway-server.test.ts",
+        "apps/desktop/test/golden/golden-layer2.ts",
+        "apps/desktop/test/golden/golden-layer3-derive.ts",
+        "apps/desktop/test/golden/golden-layer3.ts",
+        "apps/desktop/test/golden/golden-layer4.ts",
+        "apps/desktop/test/health-check-mcp.test.ts",
+        "apps/desktop/test/historical-parse-worker-protocol.test.ts",
+        "apps/desktop/test/ingest-orchestrator.test.ts",
+        "apps/desktop/test/local-insights-contract.test.ts",
+        "apps/desktop/test/loop-finalizer.test.ts",
+        "apps/desktop/test/loop-heartbeat.test.ts",
+        "apps/desktop/test/loop-perf-telemetry.test.ts",
+        "apps/desktop/test/output-tailer-tokens.test.ts",
+        "apps/desktop/test/saved-configs.test.ts",
+        "apps/desktop/test/session-analytics-backfill-batch.test.ts",
+        "apps/desktop/test/session-artifact-markers.test.ts",
+        "apps/desktop/test/shared-agent-components-api.test.ts",
+        "apps/desktop/test/shared-agent-sessions-api.test.ts",
+        "apps/desktop/test/shared-branches-api.test.ts",
+        "apps/desktop/test/sqlite-agent-dashboard-database.test.ts",
+        "apps/desktop/test/symphony-loop-cloud-failures.test.ts",
+        "apps/desktop/test/symphony-loop-execute.test.ts",
+        "apps/desktop/test/symphony-loop-multi-repo-worktree.test.ts",
+        "apps/desktop/test/symphony-loop-output-events.test.ts",
+        "apps/desktop/test/write-core-component-usage.test.ts",
+        "apps/mcp/src/__tests__/oauth-endpoints.test.ts",
+        "apps/mcp/src/index.ts",
+        "apps/relay/src/__tests__/connection-events.test.ts",
+        "apps/relay/src/index.ts",
+        "containers/claude-runner/harness-agent.mjs",
+        "containers/claude-runner/harness-agent.test.mjs",
+        "e2e/branch-view-comments.spec.ts",
+        "packages/api/src/types/agent-session.ts",
+        "packages/app/agents/components/detail/__tests__/agent-session-detail-view.test.tsx",
+        "packages/app/agents/components/detail/agent-session-detail-view.tsx",
+        "packages/app/agents/components/detail/session-trace.tsx",
+        "packages/app/agents/components/workspace/__tests__/agents-grouped-list.test.tsx",
+        "packages/app/agents/hooks/__tests__/use-session-transcript.test.tsx",
+        "packages/app/agents/lib/session-mock-data.ts",
+        "packages/app/documents/hooks/__tests__/use-branch-view.test.ts",
+        "packages/app/styles.css",
+        "packages/database/scripts/seed/__tests__/integration/reset.integration.test.ts",
+        "packages/github/index.ts",
+        "packages/lib/harness/codex/parse-codex.test.ts",
+        "packages/lib/harness/codex/parse-codex.ts",
+        "packages/observability/__tests__/telemetry-schema.test.ts",
+        "packages/telemetry-contract/scripts/test-perf-jsonl-sample.ts",
+        "scripts/deploy/check-prod-alias.test.ts",
+        "scripts/deploy/check-prod-alias.ts",
+        "scripts/deploy/e2e-workflow-source.test.ts",
+        "scripts/deploy/redeploy-services.test.ts",
+        "scripts/lint/check-api-contract-removals.test.ts",
+        "scripts/lint/check-api-contract-removals.ts",
+        "scripts/lint/check-destructive-migrations.test.ts",
+        "scripts/lint/check-destructive-migrations.ts"
+      ],
+      "linter": {
+        "rules": {
+          "style": {
+            "noExcessiveLinesPerFile": "off"
+          }
+        }
+      }
+    },
+    {
+      // FEA-4114 (PRD-564): ban `as unknown as T` and chained `as A as B`
+      // double casts in production source, via the GritQL plugin in
+      // biome-plugins/. Biome 2.5.2 has no `noRestrictedSyntax` rule, and a
+      // plugin declared at the top level cannot be switched off by a later
+      // override (`plugins` is additive, not overridable), so the scoping
+      // lives here in this override's own `includes`.
+      "includes": [
+        "**/*",
+        // Documented test-fixture exception: partial mocks and fixtures may
+        // cast, because building the full shape is often impractical. Mirrors
+        // the test globs on the vitest-globals override at the top of this
+        // array, plus the fixture/story/e2e dirs that override doesn't need.
+        "!**/__tests__/**",
+        "!**/test/**",
+        "!**/tests/**",
+        "!**/e2e/**",
+        "!**/type-tests/**",
+        "!**/__mocks__/**",
+        "!**/*.spec.cts",
+        "!**/*.spec.js",
+        "!**/*.spec.jsx",
+        "!**/*.spec.mjs",
+        "!**/*.spec.mts",
+        "!**/*.spec.ts",
+        "!**/*.spec.tsx",
+        "!**/*.test.cts",
+        "!**/*.test.js",
+        "!**/*.test.jsx",
+        "!**/*.test.mjs",
+        "!**/*.test.mts",
+        "!**/*.test.ts",
+        "!**/*.test.tsx",
+        "!**/*.stories.ts",
+        "!**/*.stories.tsx",
+        "!**/vitest.setup.cts",
+        "!**/vitest.setup.js",
+        "!**/vitest.setup.jsx",
+        "!**/vitest.setup.mjs",
+        "!**/vitest.setup.mts",
+        "!**/vitest.setup.ts",
+        "!**/vitest.setup.tsx",
+        // Test-only support code that does not match a conventional test
+        // filename but is exempt for the same reason (partial fixtures/mocks).
+        // Narrow, per-directory entries on purpose: a `**/test-fixtures/**`
+        // pattern would silently exempt any future directory that happens to
+        // carry the name. Add a line when a new test-support dir appears.
+        "!apps/app/vitest-mocks/**",
+        "!packages/app/shared/test-fixtures/**",
+        // SHRINK-ONLY allowlist — pre-existing double casts predating the gate
+        // (28 files / 56 casts at landing). Same discipline as the
+        // noExcessiveLinesPerFile grandfather list above: NEVER add an entry to
+        // route around the gate; delete a file's entry once its casts are gone
+        // (verify with `./node_modules/.bin/biome check <file>` — `npx biome`
+        // is a broken wrapper in this repo). Per-file only, no directory globs.
+        // Next route segments need escaped brackets (`\\[id\\]`) — Biome globs
+        // read `[...]` as a character class, so an unescaped `[id]` matches
+        // nothing and silently allowlists nothing.
+        "!apps/api/app/compute-targets/service.ts",
+        "!apps/api/app/documents/\\[id\\]/context-attachments/validators.ts",
+        "!apps/api/app/loops/\\[id\\]/stream/route.ts",
+        "!apps/api/app/webhooks/github/handlers/installation-handler.ts",
+        "!apps/api/app/webhooks/github/handlers/installation-repositories-handler.ts",
+        "!apps/api/lib/desktop-command-store.ts",
+        "!apps/api/lib/loops/loop-orchestrator.ts",
+        "!apps/app/app/(authenticated)/\\[orgSlug\\]/users/\\[userId\\]/components/documents-by-type-chart.tsx",
+        "!apps/desktop/src/main/app.ts",
+        "!apps/desktop/src/main/jobs/job-store.ts",
+        "!apps/desktop/src/main/settings/settings-migrations.ts",
+        "!apps/desktop/src/main/settings/settings-store.ts",
+        "!apps/desktop/src/main/telemetry/relay-telemetry-transport.ts",
+        "!apps/desktop/src/main/transcript/desktop-transcripts-client.ts",
+        "!apps/desktop/src/main/transcript/transcript-read-cache.ts",
+        "!apps/desktop/src/main/window.ts",
+        "!apps/desktop/src/server/operations/symphony-loop-request.ts",
+        "!apps/desktop/src/server/operations/symphony-loop.ts",
+        "!apps/mcp/src/index.ts",
+        "!apps/web/proxy.ts",
+        "!packages/analytics/node.ts",
+        "!packages/app/shared/components/date-range-filter.tsx",
+        "!packages/database/index.ts",
+        "!packages/database/scripts/backfill-definition-versions.ts",
+        "!packages/database/scripts/backfill-pack-definition-versions.ts",
+        "!packages/database/scripts/backfill-search-documents.ts",
+        "!packages/design-system/providers/theme.tsx"
+      ],
+      "plugins": ["./biome-plugins/no-double-cast.grit"]
+    },
+    {
+      // FEA-4115 (PRD-564): @repo/design-system holds only generic,
+      // project-agnostic components — primitives and patterns that could be
+      // dropped into any project unchanged. A component that encodes Closedloop
+      // domain concepts, or that imports domain types/status configs or the
+      // database client, belongs in its feature slice of packages/app.
+      //
+      // This is a SEPARATE override on purpose. The apps/app navigation override
+      // near the top of this array carries the only other noRestrictedImports
+      // `options` block that must not be split (PLN-806 `paths` + FEA-1511
+      // `patterns` co-habit there because Biome does not deep-merge a rule's
+      // options across overlapping overrides). `packages/design-system/**` does
+      // not overlap `apps/app/**`, so this stands alone safely — but anything
+      // that later widens THIS scope to apps/app must merge into that block
+      // rather than adding another override.
+      //
+      // Coverage caveat: `files.includes` below excludes
+      // packages/design-system/{components/ui,lib,hooks} from Biome entirely
+      // (shadcn upstream conventions), and those are the bulk of the package —
+      // Biome never lints a domain import added there. The AST backstop
+      // scripts/lint/check-design-system-domain-imports.ts scans the WHOLE
+      // package and is what actually closes the boundary; this rule is the
+      // in-editor, fail-fast half.
+      //
+      // FEA-4296 added the @repo/loops-api group. It carries NO exception here
+      // on purpose, even though two files still import that package: both
+      // (components/ui/types.ts and components/ui/primitives/metric-card.tsx)
+      // sit under components/ui, which the `files.includes` exclusion above
+      // already hides from Biome. The exception list they need lives in the AST
+      // backstop — the only half that can see them — as LOOPS_API_EXCEPTIONS.
+      // Do not "fix" the apparent asymmetry by adding a carve-out override
+      // here; it would be dead config, and a real Biome-visible violation
+      // (e.g. under storybook/ or providers/) must keep failing.
+      //
+      // FEA-4116 (`globalThis` over `window`): append your own override after
+      // this one. It needs `linter.rules.*.noRestrictedGlobals` — a different
+      // rule from this one and from FEA-4114's `plugins` key, so nothing
+      // clobbers. Do NOT reuse FEA-4114's GritQL plugin: `window` is a global
+      // identifier, not a syntax shape.
+      "includes": ["packages/design-system/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                // Groups are disjoint so an import matches exactly one message.
+                // Each lists the bare specifier AND the subpath glob, because
+                // domain code is imported by subpath far more often than by
+                // package root (e.g. @repo/api/src/types/loop).
+                "patterns": [
+                  {
+                    "group": ["@repo/app", "@repo/app/**"],
+                    "message": "@repo/design-system is generic and project-agnostic (FEA-4115): it must not import the app layer. A component that knows about branches, sessions, documents, loops, or projects belongs in @repo/app/<feature>/components/, composing this package's primitives — not here. See packages/design-system/AGENTS.md."
+                  },
+                  {
+                    "group": ["@repo/database", "@repo/database/**"],
+                    "message": "@repo/design-system is generic, project-agnostic client code (FEA-4115): no @repo/database (incl. /generated). Domain data and its types belong in @repo/app/<feature>/, which reaches apps/api via the shared api client. See packages/design-system/AGENTS.md."
+                  },
+                  {
+                    "group": ["@repo/api", "@repo/api/**"],
+                    "message": "@repo/design-system is generic and project-agnostic (FEA-4115): @repo/api/src/types/* are Closedloop domain contracts. A component that needs them is domain code and belongs in @repo/app/<feature>/components/. See packages/design-system/AGENTS.md."
+                  },
+                  {
+                    "group": ["@repo/loops-api", "@repo/loops-api/**"],
+                    "message": "@repo/design-system is generic and project-agnostic (FEA-4296): @repo/loops-api owns the Closedloop status vocabularies (SessionStatus, LoopStatus, DocumentStatus, IssueStatus, Priority, LoopErrorCode). A component or fixture that needs them is domain code and belongs in @repo/app/<feature>/ — domain Storybook sample data goes in @repo/app/<feature>/lib/. Two files under components/ui carry a named shrink-only exception (see LOOPS_API_EXCEPTIONS in scripts/lint/check-design-system-domain-imports.ts); do not add a third. See packages/design-system/AGENTS.md."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
     }
   ],
+  // ISS-5383. `.gitignore` is the second traversal filter, next to
+  // `files.includes` below. Without this block Biome never consults it, so every
+  // future `.gitignore` entry for generated output needs a hand-written `!`
+  // twin here or Biome walks into it.
+  //
+  // It is NOT a speed win, and the file count says so: on a clean checkout this
+  // moved the full-repo run by 0 files (8,474 -> 8,474) and 0 warnings (0 -> 0),
+  // because Biome's own defaults already keep it out of `.next`, `dist`, and
+  // `.turbo`.
+  //
+  // What it actually fixes is a correctness failure on a working checkout. Git
+  // worktrees live under `.claude/worktrees/`, which `.gitignore` covers (via
+  // `**/.claude/*`) and which Biome, without this block, walks straight into —
+  // where it finds each worktree's own root `biome.jsonc` and aborts the entire
+  // run with "Found a nested root configuration". Measured on a checkout with
+  // four such worktrees: without the block Biome exits 1 having checked nothing;
+  // with it the run completes (8,494 files, 0 warnings, exit 0). CI clones have
+  // no worktrees, so this never showed up as a red gate — only as a local
+  // `pnpm lint` nobody could run.
+  //
+  // The risk it introduces is the mirror image: `.gitignore` is written for Git,
+  // not Biome, so a tracked-but-ignored file would silently stop being linted.
+  // `scripts/lint/biome-vcs-ignore-file.test.ts` executes that property against
+  // Biome itself rather than trusting it.
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
   "files": {
     "includes": [
       "**/*",
@@ -1394,24 +1796,47 @@
       // exact bytes are owned by the contract codegen and asserted by the drift
       // guards — Biome must NOT reformat them or the byte-identity checks break.
       "!packages/telemetry-contract/collector",
+      // FEA-2647 Layer 2 golden snapshots: generated by the golden-layer2 runner
+      // (GOLDEN_L2_WRITE_SNAPSHOTS=1) and frozen under the human-only amendment
+      // policy — Biome must NOT reformat them or every regeneration produces a
+      // spurious whole-file diff against the runner's JSON.stringify output.
+      "!apps/desktop/test/golden/layer2-snapshots/*.json",
+      // PLN-1389 golden web-sync derived payloads: reproduced byte-for-byte by
+      // apps/desktop/scripts/regen-golden-sync-payloads.ts (JSON.stringify) and
+      // asserted for regen determinism — Biome must NOT reformat them or every
+      // regeneration produces a spurious whole-file diff.
+      "!apps/api/__tests__/fixtures/golden-web-sync/*.json",
+      // ISS-5373 golden-session normalized dossiers (PRD-516): generated oracle
+      // data frozen under packages/golden-sessions/AGENTS.md's human-only
+      // amendment policy — Biome must NOT reformat them. Four of them exceed
+      // Biome's 1 MiB files.maxSize, so every full-repo run read all ~1.3 MiB
+      // of each only to reject it and emit a warning. `files.includes` with `!`
+      // is the ONLY mechanism that prunes traversal: an `overrides` entry and a
+      // suppression comment both still read the file.
+      "!packages/golden-sessions/**/normalized.json",
       "!packages/collaboration/config.ts",
       "!docs/components/ui",
       "!docs/lib",
       "!docs/hooks",
       "!apps/app/public/*.svg",
-      "!apps/docs/**/*.json",
-      "!apps/docs/**/*.svg",
       "!apps/desktop/app-icon.svg",
       "!apps/desktop/resources/*.svg",
       "!apps/desktop/src/renderer/design-system/index.html",
       "!apps/email/.react-email",
       "!apps/storybook/.storybook/preview-head.html",
+      // ISS-4550 generated prototype-sandbox handbook export (3.2 MiB) — exceeds
+      // Biome's 1 MiB file-size limit; it is a generated HTML asset, not code.
+      "!docs/design/prototype-sandbox-handbook.html",
       "!apps/web/public/**/*.html",
       "!apps/web/public/**/*.svg",
       "!packages/design-system/brand/icons/**/*.svg",
       "!packages/design-system/brand/logos/**/*.svg",
       "!**/playwright-report",
-      "!**/playwright-report-e2e"
+      "!**/playwright-report-e2e",
+      // .dagger/ is the Dagger CI module (FEA-2289 / FEA-2294). Its TypeScript SDK
+      // requires parameter decorators (@argument/@object/@func) that Biome cannot
+      // parse, and .dagger/sdk is generated SDK output — exclude the whole dir.
+      "!.dagger"
     ]
   }
 }

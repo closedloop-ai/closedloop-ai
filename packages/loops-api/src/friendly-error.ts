@@ -39,7 +39,7 @@ type TemplateVariables = {
 export const DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE =
   "Signed loop launch requires a desktop-managed key with request signing; the active config uses a manually configured key or cannot load its signing key. Re-run managed onboarding." as const;
 
-const GitGatewayErrorCategory = {
+export const GitGatewayErrorCategory = {
   ComputeTargetOffline: "compute_target_offline",
   ComputeTargetUnavailable: "compute_target_unavailable",
   GitCommandFailed: "git_command_failed",
@@ -50,10 +50,10 @@ const GitGatewayErrorCategory = {
   SpawnFailed: "spawn_failed",
 } as const;
 
-type GitGatewayErrorCategory =
+export type GitGatewayErrorCategory =
   (typeof GitGatewayErrorCategory)[keyof typeof GitGatewayErrorCategory];
 
-const GitHookType = {
+export const GitHookType = {
   Format: "format",
   Lint: "lint",
   Test: "test",
@@ -61,7 +61,7 @@ const GitHookType = {
   Unknown: "unknown",
 } as const;
 
-type GitHookType = (typeof GitHookType)[keyof typeof GitHookType];
+export type GitHookType = (typeof GitHookType)[keyof typeof GitHookType];
 
 const ExternalRunnerErrorSubcode = {
   MaxIterationsNoProgress: "MAX_ITERATIONS_NO_PROGRESS",
@@ -270,6 +270,15 @@ const loopErrorMessages = {
       "Restart with a more specific request if work is still needed.",
     ],
   },
+  [LoopErrorCode.MissingRequiredArtifacts]: {
+    title: "Required output was never written",
+    description:
+      "The loop finished without writing the artifact it exists to produce, so there is nothing to review.",
+    remediation: [
+      "Open the run log to see how far the loop got before it stopped.",
+      "Re-run the loop; the artifact from this run cannot be recovered.",
+    ],
+  },
   [LoopErrorCode.ContextLimitExceeded]: {
     title: "Context limit exceeded",
     description:
@@ -293,6 +302,21 @@ const loopErrorMessages = {
     remediation: [
       "Refresh the loop page.",
       "Start a new loop if the work still needs to run.",
+    ],
+  },
+  // LAUNCH_FAILED covers everything that can throw while a run is being
+  // prepared and handed off -- resolving the Anthropic key and the GitHub
+  // token, building the run context, pinning the runner token, and the dispatch
+  // itself. The copy therefore stays generic across that whole scope; naming
+  // compute-target reachability as *the* remediation would be wrong advice for
+  // the credential and context-construction failures it also covers.
+  [LoopErrorCode.LaunchFailed]: {
+    title: "The run could not be started",
+    description:
+      "Closedloop could not get this run ready and hand it to its compute target, so it never began.",
+    remediation: [
+      "Start the run again — setup failures are often transient.",
+      "If it keeps failing, check that this run's Anthropic API key and GitHub access are configured, and that its compute target is online.",
     ],
   },
   [LoopErrorCode.RepoNotInProjectPool]: {

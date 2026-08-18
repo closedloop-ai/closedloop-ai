@@ -1,57 +1,39 @@
 "use client";
 
 /**
- * Thin client wrapper for the web Agents workspace list, supplying the GitHub
- * connection state that drives the Owner-column Connect-GitHub CTA
- * (FEA-2923 follow-up).
+ * Thin client wrapper for the web Agents workspace list.
  *
  * Kept as a separate client component so that agents/page.tsx remains a
  * Server Component (able to export Next.js `metadata`).
  *
- * NOTE: `getComponentHref` is intentionally NOT passed — the per-component
- * detail page is not built yet, so rows are non-clickable to avoid navigating
- * to a 404. Re-add the href factory once the detail route lands.
+ * Rows navigate to the per-component detail route (`/{org}/agents/{slug}`) via
+ * the component's org-identity `slug` — NOT its `id` (the DB UUID). The detail
+ * endpoint (`GET /agent-components/{slug}`) resolves by that identity slug.
+ *
+ * FEA-4098 (Slice 3): the Owner column (and its GitHub-connection-driven
+ * Connect-GitHub CTA, FEA-2923) was removed — authorship is now the
+ * `collaborators` people-set derived server-side from the DefinitionVersion
+ * lineage, which needs no GitHub connection — so this wrapper no longer resolves
+ * or threads any GitHub connection state.
+ *
+ * FEA-4085 (merged from main): the web adapter does NOT mount the Packs
+ * distribution catalog under the Plugins tab — it passes no `pluginsFooter`, so
+ * the web Plugins tab shows only the installed inventory. (The Packs workspace
+ * remains a desktop-panel surface.)
  */
 
 import { AgentsGroupedList } from "@repo/app/agents/components/workspace/agents-grouped-list";
-import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
-import {
-  resolveGitHubConnectMode,
-  resolveGitHubDataConnected,
-} from "@repo/app/insights/lib/github-connect-mode";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
-import { MemberPacksDashboard } from "./member-packs-dashboard";
 
 export function AgentsGroupedListContainer() {
   const orgSlug = useOrgSlug();
 
-  // Owner attribution (git-identity → cloud user) needs a GitHub connection.
-  // Resolve the additive data-connection predicate via the insights helper so
-  // the Owner column shows the reused Connect-GitHub CTA when it is missing.
-  const { data: githubStatus } = useGitHubIntegrationStatus();
-  const githubConnected = resolveGitHubDataConnected(githubStatus);
-
-  // Build the connect target the same way Insights does: pick the right OAuth
-  // flow (install vs authorize) and set `returnTo` to the Agents route so the
-  // OAuth callback brings the user back to this surface instead of dropping
-  // them on /settings. The server-side allowlist
-  // (getCanonicalBranchViewReturnPath) must honor the /agents return target.
-  const githubConnectHref = getGitHubConnectUrl(
-    resolveGitHubConnectMode(githubStatus),
-    { returnTo: `/${orgSlug}/agents` }
-  );
-
   return (
     <AgentsGroupedList
-      githubConnected={githubConnected}
-      githubConnectHref={githubConnectHref}
+      getComponentHref={(item) =>
+        `/${orgSlug}/agents/${encodeURIComponent(item.slug)}`
+      }
       persistKey="agents:web"
-      // Self-service Plugins tab: mount the shared, prototype-styled Packs
-      // workspace (member, read-only) below the plugin component list — the same
-      // footer-slot integration the desktop panel uses, so a regular member gets
-      // the admin-parity browse/detail UX for their org's Packs.
-      pluginsFooter={<MemberPacksDashboard />}
     />
   );
 }

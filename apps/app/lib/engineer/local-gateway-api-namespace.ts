@@ -22,7 +22,8 @@ function getRawFetch(): typeof globalThis.fetch {
     return globalThis.fetch;
   }
   return (
-    (window as InterceptorWindow).__engineerOriginalFetch ?? globalThis.fetch
+    (globalThis.window as InterceptorWindow).__engineerOriginalFetch ??
+    globalThis.fetch
   );
 }
 

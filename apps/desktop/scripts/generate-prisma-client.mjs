@@ -5,12 +5,19 @@
  * The generated client is ignored output under src/main/database/generated.
  * A fingerprint keeps repeated dev launches from paying `prisma generate`
  * when schema/config/dependency inputs are identical.
+ *
+ * This file is the shell: it resolves paths and runs the generator. The
+ * fingerprint and the freshness decision live in
+ * `generate-prisma-client-lib.mjs` so they can be driven directly by tests.
  */
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  inputFingerprint,
+  isGeneratedClientFresh,
+} from "./generate-prisma-client-lib.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.join(scriptDir, "..");
@@ -25,14 +32,24 @@ const requiredOutputs = [
   path.join("internal", "prismaNamespace.ts"),
 ];
 
-const fingerprint = inputFingerprint([
-  path.join(appDir, "prisma", "schema.prisma"),
-  path.join(appDir, "prisma.config.ts"),
-  path.join(appDir, "package.json"),
-  path.join(repoRoot, "pnpm-lock.yaml"),
-]);
+const fingerprint = inputFingerprint(
+  [
+    path.join(appDir, "prisma", "schema.prisma"),
+    path.join(appDir, "prisma.config.ts"),
+    path.join(appDir, "package.json"),
+    path.join(repoRoot, "pnpm-lock.yaml"),
+  ],
+  repoRoot
+);
 
-if (isGeneratedClientFresh(fingerprint)) {
+if (
+  isGeneratedClientFresh({
+    fingerprintFile,
+    generatedDir,
+    requiredOutputs,
+    fingerprintValue: fingerprint,
+  })
+) {
   process.stdout.write("prisma-generate: unchanged\n");
   process.exit(0);
 }
@@ -53,30 +70,3 @@ if (result.status !== 0) {
 
 mkdirSync(generatedDir, { recursive: true });
 writeFileSync(fingerprintFile, `${fingerprint}\n`, "utf8");
-
-function isGeneratedClientFresh(fingerprintValue) {
-  if (!existsSync(fingerprintFile)) {
-    return false;
-  }
-
-  if (readFileSync(fingerprintFile, "utf8").trim() !== fingerprintValue) {
-    return false;
-  }
-
-  return requiredOutputs.every((relativePath) =>
-    existsSync(path.join(generatedDir, relativePath))
-  );
-}
-
-function inputFingerprint(filePaths) {
-  const hash = createHash("sha256");
-
-  for (const filePath of filePaths) {
-    hash.update(path.relative(repoRoot, filePath));
-    hash.update("\0");
-    hash.update(readFileSync(filePath));
-    hash.update("\0");
-  }
-
-  return hash.digest("hex");
-}

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   normalizeAndValidateOrigin,
   normalizeWebAppOrigin,
-} from "../src/main/origin-policy.js";
+} from "../src/main/settings/origin-policy.js";
 
 test("accepts https api origin", () => {
   assert.equal(

@@ -5,7 +5,7 @@ import { CollectorTailSamplingPolicy } from "../collector-tail-sampling-policy";
  * Synthetic OTLP/HTTP trace builder for the collector tail-sampling mechanical
  * verification (FEA-2182).
  *
- * Each scenario produces whole single-span traces (distinct trace IDs) shaped to
+ * Each scenario produces whole traces (distinct trace IDs) shaped to
  * exercise exactly one keep-policy leg of the committed `tail_sampling` fragment,
  * plus a `baseline` cohort that only the probabilistic policy can retain. The
  * builder is a pure function of {@link CollectorTailSamplingPolicy} (no literal
@@ -55,11 +55,13 @@ export type OtlpTracePayload = {
 };
 
 export type SyntheticTraffic = {
-  /** One payload per trace, ready to POST to `/v1/traces`. */
+  /** Export payloads, ready to POST to `/v1/traces`. */
   readonly payloads: readonly OtlpTracePayload[];
+  /** Delay before each payload export; aligned by index with `payloads`. */
+  readonly payloadDelaysMs: readonly number[];
   /** Per-scenario expected outcome, for asserting decisions after the run. */
   readonly manifest: readonly ScenarioManifestEntry[];
-  /** Total traces sent across all scenarios (canonical; == `payloads.length`). */
+  /** Total distinct traces sent across all scenarios. */
   readonly totalSent: number;
 };
 
@@ -96,6 +98,10 @@ function spanIdFor(index: number): string {
   return deterministicHexId(`tail-sampling-verify/span/${index}`, 8);
 }
 
+function childSpanIdFor(index: number): string {
+  return deterministicHexId(`tail-sampling-verify/child-span/${index}`, 8);
+}
+
 function buildSpan(args: {
   readonly index: number;
   readonly scenario: Scenario;
@@ -125,7 +131,10 @@ function buildSpan(args: {
   };
 }
 
-function wrapTrace(span: Record<string, unknown>): OtlpTracePayload {
+function wrapTrace(
+  span: Record<string, unknown>,
+  ...spans: Record<string, unknown>[]
+): OtlpTracePayload {
   return {
     resourceSpans: [
       {
@@ -140,7 +149,7 @@ function wrapTrace(span: Record<string, unknown>): OtlpTracePayload {
         scopeSpans: [
           {
             scope: { name: "collector-tail-sampling-verification" },
-            spans: [span],
+            spans: [span, ...spans],
           },
         ],
       },
@@ -153,7 +162,7 @@ function wrapTrace(span: Record<string, unknown>): OtlpTracePayload {
  *
  * - error → span status ERROR (`keep-error-status`)
  * - server-error → `http.response.status_code` in [min,max] (`keep-server-errors`)
- * - slow → root-span duration above `slowLatencyThresholdMs` (`keep-slow`)
+ * - slow → child IPC span with `duration_ms` above `slowLatencyThresholdMs` (`keep-slow`) exported before its cl-desktop root closes after `decision_wait`
  * - baseline → fast, status-unset, no 5xx; only `baseline` can retain it
  */
 export function buildScenarioTraces(
@@ -162,67 +171,104 @@ export function buildScenarioTraces(
 ): SyntheticTraffic {
   const policy = CollectorTailSamplingPolicy;
   const fastDuration = 1_000_000n; // 1ms — comfortably below the slow threshold.
-  // One millisecond past the threshold so the boundary is unambiguous.
-  const slowDuration = BigInt(policy.slowLatencyThresholdMs + 1) * 1_000_000n;
+  const lateRootCloseDelayMs = (policy.decisionWaitSeconds + 1) * 1000;
+  const lateRootDurationNanos = BigInt(lateRootCloseDelayMs) * 1_000_000n;
+  const slowDurationMs = policy.slowLatencyMaxMs;
   const serverErrorStatus = policy.serverErrorStatusRange.min; // e.g. 500.
 
   const payloads: OtlpTracePayload[] = [];
+  const payloadDelaysMs: number[] = [];
   let index = 0;
 
-  const push = (
-    n: number,
-    make: (i: number) => Record<string, unknown>
-  ): void => {
+  const pushPayload = (payload: OtlpTracePayload, delayBeforeMs = 0): void => {
+    payloads.push(payload);
+    payloadDelaysMs.push(delayBeforeMs);
+  };
+
+  const push = (n: number, make: (i: number) => OtlpTracePayload): void => {
     for (let i = 0; i < n; i += 1) {
-      payloads.push(wrapTrace(make(index)));
+      pushPayload(make(index));
       index += 1;
     }
   };
 
   push(counts.errors, (i) =>
-    buildSpan({
-      index: i,
-      scenario: Scenario.Error,
-      baseTimeUnixNano: options.baseTimeUnixNano,
-      durationNanos: fastDuration,
-      statusCode: SPAN_STATUS_ERROR,
-    })
+    wrapTrace(
+      buildSpan({
+        index: i,
+        scenario: Scenario.Error,
+        baseTimeUnixNano: options.baseTimeUnixNano,
+        durationNanos: fastDuration,
+        statusCode: SPAN_STATUS_ERROR,
+      })
+    )
   );
 
   push(counts.serverErrors, (i) =>
-    buildSpan({
-      index: i,
-      scenario: Scenario.ServerError,
-      baseTimeUnixNano: options.baseTimeUnixNano,
-      durationNanos: fastDuration,
-      statusCode: SPAN_STATUS_UNSET,
-      extraAttributes: [
-        {
-          key: policy.serverErrorAttributeKey,
-          value: { intValue: String(serverErrorStatus) },
-        },
-      ],
-    })
+    wrapTrace(
+      buildSpan({
+        index: i,
+        scenario: Scenario.ServerError,
+        baseTimeUnixNano: options.baseTimeUnixNano,
+        durationNanos: fastDuration,
+        statusCode: SPAN_STATUS_UNSET,
+        extraAttributes: [
+          {
+            key: policy.serverErrorAttributeKey,
+            value: { intValue: String(serverErrorStatus) },
+          },
+        ],
+      })
+    )
   );
 
-  push(counts.slow, (i) =>
-    buildSpan({
-      index: i,
+  const delayedRootPayloads: OtlpTracePayload[] = [];
+  for (let i = 0; i < counts.slow; i += 1) {
+    const traceIndex = index;
+    index += 1;
+    const root = buildSpan({
+      index: traceIndex,
       scenario: Scenario.Slow,
       baseTimeUnixNano: options.baseTimeUnixNano,
-      durationNanos: slowDuration,
+      durationNanos: lateRootDurationNanos,
       statusCode: SPAN_STATUS_UNSET,
-    })
-  );
+    });
+    const child = {
+      ...buildSpan({
+        index: traceIndex,
+        scenario: Scenario.Slow,
+        baseTimeUnixNano: options.baseTimeUnixNano,
+        durationNanos: fastDuration,
+        statusCode: SPAN_STATUS_UNSET,
+        extraAttributes: [
+          {
+            key: policy.slowLatencyAttributeKey,
+            value: { intValue: String(slowDurationMs) },
+          },
+        ],
+      }),
+      spanId: childSpanIdFor(traceIndex),
+      name: "ipc.list",
+      parentSpanId: root.spanId,
+    };
+    pushPayload(wrapTrace(child));
+    delayedRootPayloads.push(wrapTrace({ ...root, name: "cl-desktop" }));
+  }
+
+  for (const [rootIndex, rootPayload] of delayedRootPayloads.entries()) {
+    pushPayload(rootPayload, rootIndex === 0 ? lateRootCloseDelayMs : 0);
+  }
 
   push(counts.baseline, (i) =>
-    buildSpan({
-      index: i,
-      scenario: Scenario.Baseline,
-      baseTimeUnixNano: options.baseTimeUnixNano,
-      durationNanos: fastDuration,
-      statusCode: SPAN_STATUS_UNSET,
-    })
+    wrapTrace(
+      buildSpan({
+        index: i,
+        scenario: Scenario.Baseline,
+        baseTimeUnixNano: options.baseTimeUnixNano,
+        durationNanos: fastDuration,
+        statusCode: SPAN_STATUS_UNSET,
+      })
+    )
   );
 
   const manifest: ScenarioManifestEntry[] = [
@@ -255,5 +301,11 @@ export function buildScenarioTraces(
     },
   ];
 
-  return { payloads, manifest, totalSent: payloads.length };
+  return {
+    payloads,
+    payloadDelaysMs,
+    manifest,
+    totalSent:
+      counts.errors + counts.serverErrors + counts.slow + counts.baseline,
+  };
 }

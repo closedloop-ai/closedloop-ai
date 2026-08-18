@@ -1,5 +1,6 @@
 "use client";
 
+import { APP_VERSION_CHECK_ID } from "@closedloop-ai/loops-api/compute-target";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { getRenderableHealthChecks } from "@/lib/engineer/queries/health-check";
 
@@ -85,27 +86,33 @@ export function isHealthCheckCacheEntryFresh({
     return false;
   }
 
-  const checks =
-    getRenderableHealthChecks(entry.data, expectedMcpUrl)?.filter(
-      (check) => !requiredOnly || check.required
-    ) ?? [];
-  if (checks.length === 0) {
-    return ageMs <= HEALTH_CHECK_DEFAULT_FRESHNESS_MS;
-  }
+  const renderableChecks =
+    getRenderableHealthChecks(entry.data, expectedMcpUrl) ?? [];
 
+  // Context invalidations are about the cached entry's identity, not about how
+  // blocking a row is, so they run against every renderable row. `app-version`
+  // in particular is deliberately non-required (ISS-5369), and gating this
+  // behind `requiredOnly` would stop the pre-loop cache expiring on a release.
   if (
     latestVersion &&
-    checks.some((check) => check.id === "app-version") &&
+    renderableChecks.some((check) => check.id === APP_VERSION_CHECK_ID) &&
     entry.latestVersion !== latestVersion
   ) {
     return false;
   }
 
   if (
-    checks.some((check) => isMcpCheckId(check.id)) &&
+    renderableChecks.some((check) => isMcpCheckId(check.id)) &&
     (entry.expectedMcpUrl ?? null) !== expectedMcpUrl
   ) {
     return false;
+  }
+
+  const checks = requiredOnly
+    ? renderableChecks.filter((check) => check.required)
+    : renderableChecks;
+  if (checks.length === 0) {
+    return ageMs <= HEALTH_CHECK_DEFAULT_FRESHNESS_MS;
   }
 
   return checks.every((check) => ageMs <= getFreshnessWindowMs(check.id));

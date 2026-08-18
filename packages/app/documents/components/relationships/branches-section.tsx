@@ -6,30 +6,35 @@ import {
   LinkDirection,
   LinkQueryMode,
 } from "@repo/api/src/types/artifact";
-import {
-  type GenerationStatus,
-  isActiveGenerationStatus,
-  type PullRequestInfo,
+import type {
+  GenerationStatus,
+  PullRequestInfo,
 } from "@repo/api/src/types/document";
-import { GenerationStatusIndicator } from "@repo/app/documents/components/generation-status-indicator";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { OverflowMenu } from "@repo/app/documents/components/relationships/overflow-menu";
+import { RunInFlightReason } from "@repo/app/documents/components/run-action-availability";
 import {
   useDeleteArtifactLink,
   useResolvedArtifactLinks,
 } from "@repo/app/documents/hooks/use-artifact-links";
 import { useDocumentPullRequest } from "@repo/app/documents/hooks/use-documents";
+import { isRunInFlightForCommand } from "@repo/app/documents/lib/generation-status-utils";
 import {
   getPullRequestLifecycle,
   PullRequestLifecycleLabels,
 } from "@repo/app/github/lib/pull-request-lifecycle";
-import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import {
+  useFeatureFlagEnabled,
+  useFeatureFlagEnabledOptional,
+} from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import { SectionHeader } from "@repo/design-system/components/ui/section-header";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { Link } from "@repo/navigation/link";
 import { useOrgPath } from "@repo/navigation/use-org-path";
 import { GitBranchIcon, PlayIcon, PlusIcon } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { SelectPullRequestDialog } from "./select-pr-dialog";
 
 type BranchesSectionProps = {
@@ -49,7 +54,13 @@ export function BranchesSection({
 }: Readonly<BranchesSectionProps>) {
   const [showSelectPr, setShowSelectPr] = useState(false);
   const [isOpen, setIsOpen] = useState(true);
+  const reasonId = useId();
   const branchPrEnabled = useFeatureFlagEnabled("branch-pr");
+  // ISS-5508: closed by default. OFF, "Start Building" keeps the native
+  // `disabled` it has always rendered and no explanation exists.
+  const explainUnavailable = useFeatureFlagEnabledOptional(
+    ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY
+  );
   const { data: resolvedLinks = [] } = useResolvedArtifactLinks(documentId, {
     mode: LinkQueryMode.Tree,
     direction: LinkDirection.Target,
@@ -86,9 +97,18 @@ export function BranchesSection({
     }
     return byId;
   }, [pullRequests]);
-  const isExecutingPlan =
-    generationStatus?.command === "execute" &&
-    isActiveGenerationStatus(generationStatus.status);
+  // ISS-5474: `generationStatus` gates the "Start Building" action only — it
+  // must not surface run state to the user. The removed indicator rendered a
+  // Loop-linked "Executing plan..." line here.
+  //
+  // ISS-5508: it may now also say WHY the gate is closed, which is a different
+  // claim — that this control is unavailable, not what the run is doing. Nothing
+  // below names the run, its status, its outcome, or links to it.
+  const isExecutingPlan = isRunInFlightForCommand({
+    generationStatus,
+    targetCommand: RunLoopCommand.Execute,
+  });
+  const explainStartBuilding = explainUnavailable && isExecutingPlan;
 
   return (
     <div className="bg-background">
@@ -106,59 +126,65 @@ export function BranchesSection({
           <PlusIcon className="h-4 w-4" />
         </Button>
       </SectionHeader>
-      {isOpen ? (
-        <>
-          {hasBranches ? (
-            <div className="flex flex-col">
-              {branchLinks.map((link) => (
-                <BranchRow
-                  key={link.id}
-                  link={link}
-                  onUnlink={handleUnlink}
-                  pullRequest={pullRequestsByBranchId.get(link.target.id)}
-                />
-              ))}
-            </div>
-          ) : (
-            <div className="flex items-center py-3">
-              <div className="flex flex-1 flex-col gap-4">
-                <p className="text-base text-muted-foreground">
-                  No branch exists yet
-                </p>
-                <div className="flex gap-4">
-                  {planId ? (
-                    <Button
-                      disabled={isExecutingPlan}
-                      onClick={onStartBuild}
-                      size="sm"
-                      variant="secondary"
-                    >
-                      Start Building
-                      <PlayIcon className="h-4 w-4" />
-                    </Button>
-                  ) : (
-                    <Button disabled size="sm" variant="secondary">
-                      Need approved plan to build
-                    </Button>
-                  )}
+      {isOpen &&
+        (hasBranches ? (
+          <div className="flex flex-col">
+            {branchLinks.map((link) => (
+              <BranchRow
+                key={link.id}
+                link={link}
+                onUnlink={handleUnlink}
+                pullRequest={pullRequestsByBranchId.get(link.target.id)}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center py-3">
+            <div className="flex flex-1 flex-col gap-4">
+              <p className="text-base text-muted-foreground">
+                No branch exists yet
+              </p>
+              <div className="flex gap-4">
+                {planId ? (
                   <Button
-                    onClick={() => setShowSelectPr(true)}
+                    aria-describedby={
+                      explainStartBuilding ? reasonId : undefined
+                    }
+                    aria-disabled={explainStartBuilding || undefined}
+                    className="aria-disabled:pointer-events-none aria-disabled:opacity-50"
+                    disabled={isExecutingPlan && !explainStartBuilding}
+                    onClick={explainStartBuilding ? undefined : onStartBuild}
                     size="sm"
-                    variant="outline"
+                    variant="secondary"
                   >
-                    Select Existing PR
+                    Start Building
+                    <PlayIcon className="h-4 w-4" />
                   </Button>
-                </div>
+                ) : (
+                  <Button disabled size="sm" variant="secondary">
+                    Need approved plan to build
+                  </Button>
+                )}
+                <Button
+                  onClick={() => setShowSelectPr(true)}
+                  size="sm"
+                  variant="outline"
+                >
+                  Select Existing PR
+                </Button>
               </div>
+              {/* `live`: the user pressed this button, so focus is still on it
+                  when the poll flips seconds later. Adding `aria-describedby` to
+                  an already-focused element is not re-announced, so this one
+                  instance needs a live region. The menu note does not — a menu
+                  is opened after the fact, and a live region there would fire on
+                  every open. */}
+              {explainStartBuilding ? (
+                <RunInFlightReason id={reasonId} live />
+              ) : null}
             </div>
-          )}
-          {isExecutingPlan && (
-            <div className="px-2 py-1">
-              <GenerationStatusIndicator generationStatus={generationStatus} />
-            </div>
-          )}
-        </>
-      ) : null}
+          </div>
+        ))}
       <SelectPullRequestDialog
         documentId={documentId}
         onOpenChange={setShowSelectPr}

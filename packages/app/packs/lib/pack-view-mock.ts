@@ -60,6 +60,8 @@ export const mockPackViews: PackView[] = [
         name: "plan-agent",
         kind: PackContentKind.Agent,
         description: "Designs implementation plans",
+        content:
+          "# Plan agent\n\nDesign implementation plans from ticket scope.",
       },
       {
         name: "code-reviewer",
@@ -100,9 +102,17 @@ export const mockPackViews: PackView[] = [
       installTrend: [3, 4, 4, 5, 6, 6, 7, 8],
     },
     performance: {
-      klocPerDollar: 3.2,
+      locPerDollar: 3.2,
+      locDelta: 18,
+      successRate: 74,
+      successDelta: 9,
+      tokenEfficiencyDelta: 12,
+      efficiencyTrend: [4, 5, 5, 6, 6, 7, 7, 8],
       invocations: 1284,
       sessions: 412,
+      mergedPrs: 96,
+      qualityScore: null,
+      qualityDelta: null,
       usageTrend: [8, 10, 12, 11, 14, 15, 17, 18],
     },
     distribution: {
@@ -114,6 +124,8 @@ export const mockPackViews: PackView[] = [
       installedCount: 8,
       pendingCount: 0,
       failedCount: 0,
+      targetingEntries: [],
+      adoptionLoaded: true,
       targets: mockPackUsers.map((u, i) => ({
         id: `t-${i}`,
         user: u,
@@ -162,9 +174,17 @@ export const mockPackViews: PackView[] = [
       installTrend: [0, 1, 1, 2, 2, 3, 3, 4],
     },
     performance: {
-      klocPerDollar: 1.4,
+      locPerDollar: 1.4,
+      locDelta: -6,
+      successRate: 58,
+      successDelta: -3,
+      tokenEfficiencyDelta: 5,
+      efficiencyTrend: [2, 2, 3, 3, 3, 4, 4, 4],
       invocations: 210,
       sessions: 63,
+      mergedPrs: 14,
+      qualityScore: null,
+      qualityDelta: null,
       usageTrend: [2, 3, 3, 4, 5, 5, 6, 6],
     },
     distribution: null,
@@ -237,4 +257,76 @@ export const mockPackActivity: PackActivityEvent[] = [
     packName: "code",
     agoLabel: "2 hours ago",
   },
+];
+
+// A minimal same-named `PackView` for the collision-state fixture below.
+function collidingPack(
+  overrides: Partial<PackView> & { id: string; name: string }
+): PackView {
+  return {
+    publisher: "closedloop-ai",
+    verified: false,
+    harnesses: ["claude"],
+    installedHarnesses: [],
+    installedByMe: false,
+    stars: 40,
+    contents: [],
+    teamUsage: {
+      installers: mockPackUsers.slice(0, 4),
+      installedCount: 4,
+      teamSize: mockPackUsers.length,
+      installTrend: [1, 2, 2, 3, 3, 4, 4, 4],
+    },
+    ...overrides,
+  };
+}
+
+/**
+ * Two same-named packs on every disambiguation axis, so the collision-state
+ * story renders how each qualifier reads (FEA-3972): a category split, a version
+ * split, and the person-actionable last resort (distinct publishers).
+ */
+export const mockCollidingPackViews: PackView[] = [
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000001",
+    name: "test-strategist",
+    category: PackContentKind.Agent,
+    description: "Same name, different kind — disambiguated by category.",
+  }),
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000002",
+    name: "test-strategist",
+    category: PackContentKind.Skill,
+    description: "Same name, different kind — disambiguated by category.",
+  }),
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000003",
+    name: "release-captain",
+    category: PackContentKind.Agent,
+    version: "1.4.0",
+    description: "Same name and kind — disambiguated by version.",
+  }),
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000004",
+    name: "release-captain",
+    category: PackContentKind.Agent,
+    version: "2.0.0",
+    description: "Same name and kind — disambiguated by version.",
+  }),
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000005",
+    name: "audit-ledger",
+    category: PackContentKind.Agent,
+    version: "1.0.0",
+    publisher: "acme-labs",
+    description: "Name, kind, and version all match — last resort: publisher.",
+  }),
+  collidingPack({
+    id: "0192f000-a1b2-7c00-8000-000000000006",
+    name: "audit-ledger",
+    category: PackContentKind.Agent,
+    version: "1.0.0",
+    publisher: "globex",
+    description: "Name, kind, and version all match — last resort: publisher.",
+  }),
 ];

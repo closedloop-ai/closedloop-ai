@@ -25,9 +25,9 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
-import { JobStore } from "../src/main/job-store.js";
-import { Observability } from "../src/main/observability.js";
-import type { EnrichedTelemetryEvent } from "../src/main/telemetry-service.js";
+import { JobStore } from "../src/main/jobs/job-store.js";
+import { Observability } from "../src/main/telemetry/observability.js";
+import type { EnrichedTelemetryEvent } from "../src/main/telemetry/telemetry-service.js";
 import { resetResolvedClaudePath } from "../src/server/operations/symphony-loop.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
@@ -307,9 +307,7 @@ test("EXECUTE: no PR URL in upload when worktree has no changes (git status empt
   // The completed event is posted after upload-artifacts, so poll until it appears.
   const completedEvent = await waitForCompletedEvent(mock.requests, loopId);
   assert.ok(
-    !(completedEvent.warnings as string[] | undefined)?.includes(
-      "GIT_PUSH_FAILED"
-    ),
+    !completedEvent.warnings?.includes("GIT_PUSH_FAILED"),
     `Expected no GIT_PUSH_FAILED warning in completed event for no-changes path, got warnings: ${JSON.stringify(completedEvent.warnings)}`
   );
   assert.equal(
@@ -2232,7 +2230,7 @@ async function waitForJobTerminal(
   jobStore: JobStore,
   loopId: string,
   timeoutMs = 20_000
-): Promise<import("../src/main/job-store.js").LocalJob> {
+): Promise<import("../src/main/jobs/job-store.js").LocalJob> {
   const terminalStatuses = new Set([
     "COMPLETED",
     "FAILED",
@@ -2260,7 +2258,7 @@ async function waitForJobRunning(
   jobStore: JobStore,
   loopId: string,
   timeoutMs = 10_000
-): Promise<import("../src/main/job-store.js").LocalJob> {
+): Promise<import("../src/main/jobs/job-store.js").LocalJob> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const job = jobStore.getByLoopId(loopId);

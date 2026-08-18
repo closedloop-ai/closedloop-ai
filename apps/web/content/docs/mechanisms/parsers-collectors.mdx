@@ -1,0 +1,62 @@
+---
+title: Parsers and collectors
+description: How the desktop client ingests transcripts from five AI coding harnesses into one normalized session model.
+---
+
+The desktop client watches your machine for AI coding sessions and turns each raw harness transcript into a single normalized record it can store, analyze, and sync. This ingestion layer is the parsers-and-collectors pipeline. It runs entirely on your machine inside the desktop client. Parsing itself keeps everything local; what leaves the device is scoped to the two outbound [sync lanes](./synchronization): the metadata lane pushes the compacted session projection (which strips the per-turn `tokenSeries` but still carries timestamped `tokenEvents`), and, once transcript sync is enabled, the transcript lane uploads secret-redacted Claude and Codex JSONL — so conversation text and source excerpts can still leave the device, just with secrets redacted rather than as raw transcripts.
+
+## Five harnesses, one shape
+
+A generic collector engine drives five thin harness collectors: `claude`, `codex`, `cursor`, `copilot`, and `opencode`. Each collector is just three things — a `home` (where its transcripts live and how to resolve the paths), a `parser` (raw on-disk format → one normalized session), and a small descriptor. Every harness-specific quirk lives in those two files; the engine itself is harness-agnostic.
+
+Every parser emits exactly one `NormalizedSession` per session. That normalized record is the **importer boundary** — the single shape the importer consumes to write SQLite rows, regardless of which harness produced it. Downstream layers do not re-read `NormalizedSession`: the analytics aggregates read the imported SQLite tables, and the sync lanes build from their own contracts and source files (the metadata projection and the on-disk transcript). `NormalizedSession` is the contract into the store, not a shape every consumer reads.
+
+| Harness | Source on disk | Notable coverage |
+|---|---|---|
+| `claude` | One `.jsonl` transcript (hooks or file watcher) | Fills nearly everything: teams, slash commands, compactions, permission mode, diff stats, and sub-agents (both sidechain and sidecar `agent-*.jsonl`). |
+| `codex` | Rollout `.jsonl` with descendants folded in | The only harness that fills `plans`; diff stats from `apply_patch`; sub-agents are folded descendant rollouts. |
+| `cursor` | Transcript directory | Core message and token data; no diff stats, sub-agents, or plans. |
+| `copilot` | Chat `.json` or CLI `events.jsonl` | Dual on-disk format; tool errors ride on individual tool uses. |
+| `opencode` | The whole `opencode.db` SQLite file, read in batch | Fills slug, permission mode, and diff stats from DB columns. See [OpenCode](./opencode). |
+
+## How a session gets collected
+
+Ingestion runs as a one-time **boot import** plus a **live channel** that keeps up with sessions as they happen.
+
+The live channel per harness is chosen by a single source of truth — the collection-mode resolver. Claude uses the Closedloop **hook** handler when its hook config is installed, and falls back to the live **file watcher** otherwise. Every other harness always uses the file watcher, unless its per-tool collector toggle is off — a valid **disabled** mode that runs neither live channel (only the idempotent one-time boot import). So a harness is captured by *at most* one live channel, not exactly one. Running both the hook handler and the watcher for one harness would double-count every tool call, so the two are held mutually exclusive; a monitor records a violation event if both channels ever emit the *same harness session* before a mode reset (a mode change resets the monitor, so it catches a live overlap within a mode window, not any collision across the entire process lifetime).
+
+The boot import walks the existing on-disk history once. A per-file catchup cache fingerprints each transcript by modification time and size, so an unchanged file is skipped with a single `stat()` call instead of a full re-parse on every launch.
+
+## Tokens, dedup, and cost
+
+Token accounting is the subtle part of parsing, and each harness needs a different strategy.
+
+- **Claude** transcripts physically duplicate each API turn's usage across every streamed line that shares a message id. Summing the raw usage would inflate token counts several-fold, so the Claude parser folds duplicates through a dedup map before totaling.
+- **Codex** reports cumulative token counts, so its parser converts them to per-turn deltas, drops burst duplicates, and replays forks.
+- **Cursor**, **Copilot**, and **OpenCode** each collapse to a single token bucket with a harness-default model key.
+
+Pricing is authoritative from the bundled pricing library. Each session is also stamped with a **billing mode** (metered, subscription, or unknown), detected at ingest from whether the machine has the relevant credential present — it never reads the secret's contents. Headline cost excludes subscription usage, since that spend is a hypothetical "would-have-cost" rather than a metered charge.
+
+## Idempotent import
+
+The importer consumes a normalized session read-only and writes SQLite rows. It is deliberately **idempotent**: deterministic record ids, delete-then-reinsert per record group, and a parent gate that commits the session and its main agent before dependent rows. Re-parsing a session, catching up after a restart, and a full data-revision rebuild all converge on exactly the same rows — importing the same session twice never doubles anything.
+
+Re-derivation is version-gated. Every session row is stamped with a data-revision at import time; when the parser's extraction semantics change, bumping that revision causes stale sessions to be re-parsed from their source transcript on the next launch. Separate version constants govern artifact-reference extraction, activity-segment classification, and the catchup cache, so a change to one concern re-derives only that concern.
+
+## Enrichment and derived signals
+
+Beyond the raw parse, several passes derive higher-level signal from the normalized session: an artifact-reference extractor links sessions to the branches, commits, and pull requests they produced; an activity-segment classifier tiles each session into activity phases for spend attribution; and a pull-based enrichment sweep fills GitHub state (PR status, merge outcome) on the artifacts a session created. These derived rows feed the [aggregated data](./aggregated-data) surfaces.
+
+## Related reading
+
+<Cards>
+  <Card title="Aggregated data" href="./aggregated-data">
+    How normalized sessions roll up into the Insights dashboards.
+  </Card>
+  <Card title="Synchronization" href="./synchronization">
+    How the compacted session metadata reaches the cloud control plane.
+  </Card>
+  <Card title="Agent components" href="./agent-components">
+    The inventory of sub-agents, commands, skills, and tools the parsers observe.
+  </Card>
+</Cards>

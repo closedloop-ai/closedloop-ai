@@ -29,6 +29,15 @@ export const Installed: Story = {
   },
 };
 
+// The catalog-relative "trending" marker (FEA-3236). The workspace decides which
+// packs qualify over the full catalog (`trendingPackIds`) and passes it in; the
+// card just renders it, so the story sets the flag directly.
+export const Trending: Story = {
+  args: {
+    trending: true,
+  },
+};
+
 export const WebAdmin: Story = {
   args: {
     context: createPacksContext(PacksMode.WebAdmin),

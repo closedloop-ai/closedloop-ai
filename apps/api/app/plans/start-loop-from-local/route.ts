@@ -1,4 +1,4 @@
-import { success } from "@repo/api/src/types/common";
+import { type ApiResult, success } from "@repo/api/src/types/common";
 import type { LoopAlreadyActiveBody } from "@repo/api/src/types/loop";
 import type { StartPlanLoopResponse } from "@repo/api/src/types/plan-loop";
 import { log } from "@repo/observability/log";
@@ -12,6 +12,12 @@ import {
 import { repoSchema } from "@/app/loops/validators";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchPlanLoop } from "@/lib/loops/launch-plan-loop";
+import {
+  CALLBACK_UNAVAILABLE_DISPATCH_MESSAGE,
+  LAUNCH_FAILED_DISPATCH_MESSAGE,
+  MISSING_ANTHROPIC_API_KEY_MESSAGE,
+  PARENT_STATE_UNAVAILABLE_DISPATCH_MESSAGE,
+} from "@/lib/loops/loop-dispatch-utils";
 import {
   badRequestResponse,
   errorResponse,
@@ -123,34 +129,7 @@ export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
       });
 
       if (!launchResult.ok) {
-        if (launchResult.error === "compute_target_not_found") {
-          return notFoundResponse("Compute target");
-        }
-        if (launchResult.error === "callback_unavailable") {
-          return errorResponse(
-            "Loop dispatch failed because the desktop app could not reach the cloud callback endpoint. Check cloud connection in the desktop app and retry.",
-            null
-          );
-        }
-        if (launchResult.error === "launch_failed") {
-          return errorResponse(
-            "Loop dispatch failed. The desktop app may be disconnected.",
-            null
-          );
-        }
-        if (launchResult.error === "no_online_targets") {
-          return badRequestResponse(
-            "No online compute targets found. Ensure the desktop app is running."
-          );
-        }
-        if (launchResult.error === "multiple_targets") {
-          return badRequestResponse(
-            "Multiple compute targets are online. Specify a computeTargetId to select one."
-          );
-        }
-        return badRequestResponse(
-          "Compute target is offline. Ensure the desktop app is running."
-        );
+        return planLaunchFailureResponse(launchResult.error);
       }
 
       log.info("[start-loop-from-local] Plan loop launched", {
@@ -173,3 +152,46 @@ export const POST = withAnyAuth<StartPlanLoopRouteResponse>(
   },
   { requiredScopes: ["write"] }
 );
+
+/**
+ * Maps a failed `launchPlanLoop` result to its route response. Extracted from
+ * the handler rather than inlined: the handler was already at the cognitive
+ * complexity ceiling, and adding the `parent_state_unavailable` arm pushed it
+ * over. Exhaustive by construction — the final `badRequestResponse` is the
+ * compute-target-offline case, not a silent catch-all for unhandled codes.
+ */
+function planLaunchFailureResponse(
+  error: Extract<
+    Awaited<ReturnType<typeof launchPlanLoop>>,
+    { ok: false }
+  >["error"]
+): NextResponse<ApiResult<never>> {
+  switch (error) {
+    case "compute_target_not_found":
+      return notFoundResponse("Compute target");
+    case "missing_anthropic_api_key":
+      return badRequestResponse(MISSING_ANTHROPIC_API_KEY_MESSAGE);
+    case "parent_state_unavailable":
+      // Not reachable today (this route launches PLAN, which has no
+      // `requiresParent` handler), but handled explicitly so the code can never
+      // fall through to the offline-desktop copy, which would be untrue for a
+      // guard that never dispatched anything.
+      return badRequestResponse(PARENT_STATE_UNAVAILABLE_DISPATCH_MESSAGE);
+    case "callback_unavailable":
+      return errorResponse(CALLBACK_UNAVAILABLE_DISPATCH_MESSAGE, null);
+    case "launch_failed":
+      return errorResponse(LAUNCH_FAILED_DISPATCH_MESSAGE, null);
+    case "no_online_targets":
+      return badRequestResponse(
+        "No online compute targets found. Ensure the desktop app is running."
+      );
+    case "multiple_targets":
+      return badRequestResponse(
+        "Multiple compute targets are online. Specify a computeTargetId to select one."
+      );
+    default:
+      return badRequestResponse(
+        "Compute target is offline. Ensure the desktop app is running."
+      );
+  }
+}

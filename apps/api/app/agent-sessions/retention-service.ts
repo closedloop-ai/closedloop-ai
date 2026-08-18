@@ -6,6 +6,7 @@ import {
 } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { purgeTranscriptObjectsBestEffort } from "@/lib/transcript-object-purge";
+import { resolvePositiveEnvNumber } from "./service/env-config";
 
 /**
  * Governance retention window (days) for synced desktop agent sessions when
@@ -16,6 +17,17 @@ import { purgeTranscriptObjectsBestEffort } from "@/lib/transcript-object-purge"
 export const FALLBACK_SESSION_RETENTION_DAYS = 365;
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Abandoned invocation generations may contain private definition content. */
+export const INCOMPLETE_INVOCATION_GENERATION_RETENTION_HOURS = 24;
+
+/** Bounds cascade work for generation parts and invocation rows per transaction. */
+export const INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE = 100;
+
+export type IncompleteInvocationGenerationBatchResult = {
+  candidateCount: number;
+  deleted: number;
+};
 
 /**
  * Max sessions deleted per transaction. Bounds both the cascade-delete
@@ -45,12 +57,10 @@ type DbClient = TxClient | PrismaClient;
  * preview-schema cleanup pattern).
  */
 export function getSessionRetentionDays(): number {
-  const raw = process.env.SESSION_RETENTION_DAYS;
-  if (raw === undefined || raw === "") {
-    return FALLBACK_SESSION_RETENTION_DAYS;
-  }
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : FALLBACK_SESSION_RETENTION_DAYS;
+  return resolvePositiveEnvNumber(
+    "SESSION_RETENTION_DAYS",
+    FALLBACK_SESSION_RETENTION_DAYS
+  );
 }
 
 /** Cutoff instant: sessions with no genuine activity since this are expired. */
@@ -154,6 +164,39 @@ export async function purgeExpiredSessionsBatch(
   };
 }
 
+/**
+ * Deletes one bounded batch of abandoned invocation generations across every
+ * session. The delete repeats the incomplete + cutoff predicates so a row that
+ * completes or receives a fresh part after candidate selection is preserved.
+ */
+export async function purgeIncompleteInvocationGenerationsBatch(
+  db: DbClient,
+  cutoff: Date,
+  batchSize: number = INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE
+): Promise<IncompleteInvocationGenerationBatchResult> {
+  const incompleteWhere = {
+    activeAt: null,
+    completedAt: null,
+    updatedAt: { lt: cutoff },
+  } satisfies Prisma.AgentComponentInvocationGenerationWhereInput;
+  const generations = await db.agentComponentInvocationGeneration.findMany({
+    where: incompleteWhere,
+    select: { id: true },
+    orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+    take: batchSize,
+  });
+  if (generations.length === 0) {
+    return { candidateCount: 0, deleted: 0 };
+  }
+  const result = await db.agentComponentInvocationGeneration.deleteMany({
+    where: {
+      id: { in: generations.map((generation) => generation.id) },
+      ...incompleteWhere,
+    },
+  });
+  return { candidateCount: generations.length, deleted: result.count };
+}
+
 export const sessionRetentionService = {
   /**
    * Purges synced desktop sessions whose last genuine activity predates the
@@ -165,7 +208,33 @@ export const sessionRetentionService = {
     retentionDays: number = getSessionRetentionDays()
   ): Promise<SessionRetentionResult> {
     const cutoff = retentionCutoff(now, retentionDays);
+    const incompleteInvocationCutoff = new Date(
+      now.getTime() -
+        INCOMPLETE_INVOCATION_GENERATION_RETENTION_HOURS * 60 * 60 * 1000
+    );
     try {
+      let deletedIncompleteInvocationGenerations = 0;
+      for (;;) {
+        const batch = await withDb.tx((tx) =>
+          purgeIncompleteInvocationGenerationsBatch(
+            tx,
+            incompleteInvocationCutoff
+          )
+        );
+        deletedIncompleteInvocationGenerations += batch.deleted;
+        // Stop on the number selected, not the number deleted. A candidate can
+        // receive a fresh part or activate between the SELECT and guarded
+        // DELETE; that preservation must not hide stale rows beyond this page.
+        // On the next transaction the preserved row no longer matches, so a
+        // fully raced batch advances rather than looping over the same rows.
+        if (
+          batch.candidateCount <
+          INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE
+        ) {
+          break;
+        }
+      }
+
       // Delete in bounded per-batch transactions: each batch finds + deletes
       // atomically (so a session receiving a fresh sync mid-batch is not purged
       // half-updated), and the loop converges a large backlog within one run
@@ -189,7 +258,7 @@ export const sessionRetentionService = {
         }
       }
       return {
-        summary: `Deleted ${deleted} expired desktop session(s) inactive > ${retentionDays}d (cutoff ${cutoff.toISOString()})`,
+        summary: `Deleted ${deleted} expired desktop session(s) inactive > ${retentionDays}d (cutoff ${cutoff.toISOString()}) and ${deletedIncompleteInvocationGenerations} incomplete invocation generation(s) older than ${INCOMPLETE_INVOCATION_GENERATION_RETENTION_HOURS}h`,
         cutoff: cutoff.toISOString(),
         retentionDays,
         deleted,

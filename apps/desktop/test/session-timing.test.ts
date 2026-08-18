@@ -79,3 +79,57 @@ test("all agent events produce no waitingUserMs", () => {
   assert.equal(result.activeAgentMs, 7000);
   assert.equal(result.waitingUserMs, 0);
 });
+
+// ── FEA-3582: active/idle time must never exceed the session's wall window ──────
+
+test("bounds clamp active time to wall when the timeline overruns the span", () => {
+  // startedAt = 1000, endedAt = 6000 => wall = 5000ms. A timeline event predates
+  // the declared start (an early metadata.messages row) and another runs past the
+  // resolved end (a folded concurrent-subagent event). Unclamped, the summed
+  // active gap would be 8000ms — GREATER than the 5000ms wall. Clamping caps it.
+  const events = [
+    ev("UserPromptSubmit", 0), // human, before startMs (1000)
+    ev("PostToolUse", 3000), // agent, in-window
+    ev("Stop", 8000), // agent, past endMs (6000)
+  ];
+  const unclamped = computeSessionTiming(events);
+  assert.equal(unclamped.activeAgentMs, 8000); // 3000 + 5000 raw gaps
+
+  const clamped = computeSessionTiming(events, { startMs: 1000, endMs: 6000 });
+  // gap [0,3000) clamped to [1000,3000) = 2000; gap [3000,8000) clamped to
+  // [3000,6000) = 3000; total active = 5000 == wall, never exceeding it.
+  assert.equal(clamped.activeAgentMs, 5000);
+  assert.ok(
+    clamped.activeAgentMs + clamped.waitingUserMs <= 6000 - 1000,
+    "active + waiting must be <= wall"
+  );
+});
+
+test("bounds leave a clean in-window timeline unchanged", () => {
+  // Every event sits inside [startMs, endMs]; clamping is a no-op vs unclamped.
+  const events = [
+    ev("UserPromptSubmit", 1000), // human
+    ev("PostToolUse", 3000), // agent (human->agent = active 2000)
+    ev("Stop", 4000), // agent (agent->agent = active 1000)
+    ev("UserPromptSubmit", 6000), // human (agent->human = waiting 2000)
+  ];
+  const clamped = computeSessionTiming(events, { startMs: 0, endMs: 10_000 });
+  assert.equal(clamped.activeAgentMs, 3000);
+  assert.equal(clamped.waitingUserMs, 2000);
+});
+
+test("a gap wholly outside the window contributes nothing", () => {
+  const events = [
+    ev("UserPromptSubmit", 100), // human
+    ev("PostToolUse", 500), // agent — entire gap precedes startMs
+  ];
+  const clamped = computeSessionTiming(events, { startMs: 1000, endMs: 2000 });
+  assert.equal(clamped.activeAgentMs, 0);
+  assert.equal(clamped.waitingUserMs, 0);
+});
+
+test("ignores a degenerate window (endMs < startMs) and sums raw gaps", () => {
+  const events = [ev("UserPromptSubmit", 0), ev("PostToolUse", 4000)];
+  const result = computeSessionTiming(events, { startMs: 9000, endMs: 1000 });
+  assert.equal(result.activeAgentMs, 4000);
+});

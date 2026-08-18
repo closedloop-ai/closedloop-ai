@@ -1,4 +1,17 @@
 import { InsightsSection } from "@repo/api/src/types/insights";
+import { INSIGHTS_SPEND_OUTCOME_FLAG_KEY } from "@repo/api/src/types/insights-spend-outcome-flag";
+import {
+  InsightsKpiKey,
+  KPI_METRIC_POLARITY,
+} from "@repo/app/insights/lib/kpi-polarity";
+import type { DonutSliceTexture } from "@repo/design-system/components/ui/donut-slice-textures";
+import type { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import {
+  SPEND_OUTCOME_COLORS,
+  SPEND_OUTCOME_TEXTURE_MARK_COLORS,
+  SPEND_OUTCOME_TEXTURES,
+  SPEND_OUTCOME_ZERO_MESSAGE,
+} from "./spend-outcome-palette";
 
 export const TileKind = {
   Kpi: "kpi",
@@ -16,11 +29,10 @@ export type TileGroupBy = {
   label: string;
 };
 
-export type TileDescriptor = {
+type TileDescriptorBase = {
   id: string;
   section: InsightsSection;
   title: string;
-  kind: TileKind;
   dataKey: string;
   metricKey: string;
   metricLabel: string;
@@ -31,8 +43,100 @@ export type TileDescriptor = {
   // tooltip) so it's readable at a glance. Opt-in per tile; category-bar only.
   showValueLabels?: boolean;
   infoKey?: string;
+  /**
+   * Cross-surface feature-flag key this tile is gated behind, or undefined for
+   * an always-on tile. A gated tile is filtered out of BOTH reachable entry
+   * points when its flag is off — the metric picker (so it cannot be added) and
+   * the dashboard grid (so an already-pinned tile stops rendering) — via
+   * {@link isTileEnabled}. The catalog stays a pure data table; resolving the
+   * flag itself belongs to the components, which hold the flag adapter.
+   */
+  featureFlag?: string;
+  /**
+   * Fixed category-key → colour map for a tile whose categories are SEMANTIC,
+   * not merely categorical. The generic index palette assigns colour by
+   * position, which on a good/bad/unknown split paints meaning the data does not
+   * have (and can accidentally suggest the opposite). Undefined keeps the index
+   * palette, which is right for every open-ended dimension (models, repos,
+   * tools).
+   */
+  colorByKey?: Readonly<Record<string, string>>;
+  /**
+   * Fixed category-key → texture map, adding a REDUNDANT non-colour channel for
+   * category identity (ISS-5362). Donut tiles only, and only where the tile's
+   * palette is SEMANTIC and therefore cannot be re-picked for colour-vision
+   * separation without giving up the meaning it carries — see
+   * {@link SPEND_OUTCOME_TEXTURES}. Undefined renders solid slices, which is
+   * right for every dimension whose palette is free to be CVD-safe on its own.
+   */
+  textureByKey?: Readonly<Record<string, DonutSliceTexture>>;
+  /**
+   * Per-category override for the colour a texture's MARKS are drawn in
+   * (ISS-5362, #4514 review). Marks default to the card token so a texture
+   * reads as gaps punched in the slice; a category drawn faintly against that
+   * same card has no ink to give up and names a darker achromatic colour here
+   * instead — see {@link SPEND_OUTCOME_TEXTURE_MARK_COLORS}. Meaningless
+   * without {@link TileDescriptorBase.textureByKey}.
+   */
+  textureMarkColorByKey?: Readonly<Record<string, string>>;
+  /**
+   * Print each slice's share of the whole in the legend. Donut tiles only, and
+   * only where the tile's question IS "what share?" — a ring has no on-screen
+   * denominator, so otherwise the reader is left estimating arcs.
+   */
+  showSharePercent?: boolean;
+  /**
+   * Message for a MEASURED zero — the query ran, the period is real, and every
+   * bucket came back 0. Distinct from an ABSENT field (a peer that does not
+   * compute this chart), which keeps the generic "no data" empty state. Without
+   * this, "we looked and you spent nothing" and "we have nothing to show you"
+   * render identically. Undefined keeps the existing shared empty state.
+   */
+  zeroStateMessage?: string;
   grid: { w: number; h: number };
 };
+
+/**
+ * A KPI tile. `polarity` is REQUIRED here (not optional with a default) so the
+ * delta chip's good/bad colour is always an explicit per-metric decision.
+ */
+export type KpiTileDescriptor = TileDescriptorBase & {
+  kind: typeof TileKind.Kpi;
+  /** Narrowed from the base `string`: a KPI tile's metric is a known KPI key. */
+  metricKey: InsightsKpiKey;
+  polarity: MetricPolarity;
+};
+
+/** A chart tile — no single period-over-period delta, so no polarity. */
+export type ChartTileDescriptor = TileDescriptorBase & {
+  kind: Exclude<TileKind, typeof TileKind.Kpi>;
+  /**
+   * ISS-5507: the chart-SHAPE half of a heading whose metric noun is
+   * surface-dependent — "over time", "by day", "heatmap".
+   *
+   * The catalog is one cross-surface table, so a `title` written here is the
+   * same string for every peer. That is wrong for a tile whose POPULATION
+   * differs by surface: `chart:klocTrend` draws merged-PR KLOC on the cloud
+   * dashboard and captured-PR KLOC on desktop — the merged-vs-captured split
+   * FEA-2947 and the desktop "KLOC captured" KPI exist to keep straight — and
+   * each producer already labels its own series accordingly. A tile that
+   * declares a suffix has its heading rebuilt at render time from the
+   * response's own metric noun plus this suffix, so the card cannot say "KLOC
+   * merged over time" above a legend reading "KLOC captured".
+   *
+   * `title` stays the surface-agnostic default (used while the response is
+   * still loading, and by every catalog reader that has no response in hand —
+   * the metric picker, the share/export copy). It MUST read
+   * `${metricLabel} ${titleSuffix}` so the two cannot drift; the catalog test
+   * pins that.
+   *
+   * Undefined for every tile whose heading is fixed copy, which is the common
+   * case — a suffix is only worth carrying where the surfaces disagree.
+   */
+  titleSuffix?: string;
+};
+
+export type TileDescriptor = KpiTileDescriptor | ChartTileDescriptor;
 
 const KPI_GRID = { w: 3, h: 2 } as const;
 const CHART_GRID = { w: 6, h: 4 } as const;
@@ -40,11 +144,11 @@ const WIDE_GRID = { w: 12, h: 4 } as const;
 
 function kpiTile(
   section: InsightsSection,
-  key: string,
+  key: InsightsKpiKey,
   title: string,
   metricLabel = title,
   unitLabel?: string
-): TileDescriptor {
+): KpiTileDescriptor {
   return {
     id: `kpi:${key}`,
     section,
@@ -53,16 +157,17 @@ function kpiTile(
     dataKey: key,
     metricKey: key,
     metricLabel,
+    polarity: KPI_METRIC_POLARITY[key],
     ...(unitLabel ? { unitLabel } : {}),
     grid: KPI_GRID,
   };
 }
 
 function chartTile(
-  input: Omit<TileDescriptor, "grid"> & {
+  input: Omit<ChartTileDescriptor, "grid"> & {
     wide?: boolean;
   }
-): TileDescriptor {
+): ChartTileDescriptor {
   return {
     ...input,
     grid: input.wide ? WIDE_GRID : CHART_GRID,
@@ -71,33 +176,43 @@ function chartTile(
 
 export const INSIGHTS_TILES: TileDescriptor[] = [
   // Delivery & efficiency.
-  kpiTile(InsightsSection.Delivery, "merged", "Merged PRs", "Pull requests"),
   kpiTile(
     InsightsSection.Delivery,
-    "ttm",
+    InsightsKpiKey.Merged,
+    "Merged PRs",
+    "Pull requests"
+  ),
+  kpiTile(
+    InsightsSection.Delivery,
+    InsightsKpiKey.Ttm,
     "Median time to merge",
     "Time to merge"
   ),
   kpiTile(
     InsightsSection.Delivery,
-    "kloc",
+    InsightsKpiKey.Kloc,
     "KLOC merged",
     "KLOC merged",
     "KLOC"
   ),
-  kpiTile(InsightsSection.Delivery, "cost", "Cost"),
-  kpiTile(InsightsSection.Delivery, "merge-rate", "Merge rate"),
+  kpiTile(InsightsSection.Delivery, InsightsKpiKey.Cost, "Cost"),
+  kpiTile(InsightsSection.Delivery, InsightsKpiKey.MergeRate, "Merge rate"),
   kpiTile(
     InsightsSection.Delivery,
-    "pr-size",
+    InsightsKpiKey.PrSize,
     "Median PR size",
     "Median PR size",
     "lines"
   ),
+  // ISS-5507: the KLOC trend's metric noun is surface-dependent (cloud sums
+  // merged PRs, desktop sums captured ones), so all three variants carry a
+  // `titleSuffix` and let the response name the metric — see
+  // {@link ChartTileDescriptor.titleSuffix}.
   chartTile({
     id: "chart:klocTrend",
     section: InsightsSection.Delivery,
     title: "KLOC merged over time",
+    titleSuffix: "over time",
     kind: TileKind.TimeSeries,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -110,6 +225,7 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     id: "chart:klocTrend:bar",
     section: InsightsSection.Delivery,
     title: "KLOC merged by day",
+    titleSuffix: "by day",
     kind: TileKind.TimeSeriesBar,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -122,6 +238,7 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     id: "chart:klocTrend:heatmap",
     section: InsightsSection.Delivery,
     title: "KLOC merged heatmap",
+    titleSuffix: "heatmap",
     kind: TileKind.Heatmap,
     dataKey: "klocTrend",
     metricKey: "kloc",
@@ -301,10 +418,14 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   }),
 
   // Utilization.
-  kpiTile(InsightsSection.Utilization, "sessions", "Sessions"),
-  kpiTile(InsightsSection.Utilization, "runtime", "Agent runtime"),
-  kpiTile(InsightsSection.Utilization, "backlog", "Review backlog"),
-  kpiTile(InsightsSection.Utilization, "events", "Events"),
+  kpiTile(InsightsSection.Utilization, InsightsKpiKey.Sessions, "Sessions"),
+  kpiTile(InsightsSection.Utilization, InsightsKpiKey.Runtime, "Agent runtime"),
+  kpiTile(
+    InsightsSection.Utilization,
+    InsightsKpiKey.Backlog,
+    "Review backlog"
+  ),
+  kpiTile(InsightsSection.Utilization, InsightsKpiKey.Events, "Events"),
   chartTile({
     id: "chart:eventActivity",
     section: InsightsSection.Utilization,
@@ -458,16 +579,33 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   }),
 
   // Agents & tools.
-  kpiTile(InsightsSection.Agents, "tokens", "Tokens"),
-  kpiTile(InsightsSection.Agents, "input-tokens", "Input tokens"),
-  kpiTile(InsightsSection.Agents, "output-tokens", "Output tokens"),
-  kpiTile(InsightsSection.Agents, "cache-tokens", "Cache saved"),
-  kpiTile(InsightsSection.Agents, "models", "Models in use"),
-  kpiTile(InsightsSection.Agents, "tool-runs", "Tool runs"),
+  // ISS-5004 (review thread): the CARD names its basis too, not just the chart.
+  // Retitling only the chart left the reconciliation one-sided — "All tokens by
+  // class" reads as a contrast only if you already know the card above it
+  // excludes cache, and nothing on the card said so (the info popover did, but
+  // that is a click away). With both named, the pair reconciles on first read,
+  // with "Cache saved" sitting between them as the difference.
+  kpiTile(
+    InsightsSection.Agents,
+    InsightsKpiKey.Tokens,
+    "Input + output tokens"
+  ),
+  kpiTile(InsightsSection.Agents, InsightsKpiKey.InputTokens, "Input tokens"),
+  kpiTile(InsightsSection.Agents, InsightsKpiKey.OutputTokens, "Output tokens"),
+  kpiTile(InsightsSection.Agents, InsightsKpiKey.CacheTokens, "Cache saved"),
+  kpiTile(InsightsSection.Agents, InsightsKpiKey.Models, "Models in use"),
+  kpiTile(InsightsSection.Agents, InsightsKpiKey.ToolRuns, "Tool runs"),
+  // ISS-5004: titled for the population it actually decomposes, not "Token
+  // distribution". Sitting under the "Tokens" KPI, the old title read as that
+  // card's breakdown — but the card counts input + output while these slices add
+  // cache read and write, so the chart's population ran far wider than the number
+  // above it and neither said so. The card is the correct one (the desktop golden
+  // oracle pins `input + output == kpi:tokens`), so the chart names its own basis
+  // instead; the info copy reconciles the two explicitly.
   chartTile({
     id: "chart:tokenDistribution",
     section: InsightsSection.Agents,
-    title: "Token distribution",
+    title: "All tokens by class",
     kind: TileKind.Donut,
     dataKey: "tokenDistribution",
     metricKey: "tokens",
@@ -478,7 +616,9 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:tokenDistribution:bar",
     section: InsightsSection.Agents,
-    title: "Token distribution",
+    // Same series, same basis — kept byte-identical to the donut's title so the
+    // two renderings of one chart can't drift into naming different populations.
+    title: "All tokens by class",
     kind: TileKind.CategoryBar,
     dataKey: "tokenDistribution",
     metricKey: "tokens",
@@ -594,11 +734,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime",
     section: InsightsSection.Agents,
-    title: "Model spend over time",
+    title: "Model cost over time",
     kind: TileKind.TimeSeries,
     dataKey: "modelUsageOverTime",
     metricKey: "cost",
-    metricLabel: "Spend",
+    metricLabel: "Cost",
     groupBy: { key: "model", label: "Model" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -606,11 +746,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime:bar",
     section: InsightsSection.Agents,
-    title: "Model spend by day",
+    title: "Model cost by day",
     kind: TileKind.TimeSeriesBar,
     dataKey: "modelUsageOverTime",
     metricKey: "cost",
-    metricLabel: "Spend",
+    metricLabel: "Cost",
     groupBy: { key: "date", label: "Date" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -618,11 +758,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelUsageOverTime:heatmap",
     section: InsightsSection.Agents,
-    title: "Model spend heatmap",
+    title: "Model cost heatmap",
     kind: TileKind.Heatmap,
     dataKey: "modelUsageOverTime",
     metricKey: "cost",
-    metricLabel: "Spend",
+    metricLabel: "Cost",
     groupBy: { key: "date", label: "Date" },
     infoKey: "chart:modelUsageOverTime",
     wide: true,
@@ -630,11 +770,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelBreakdown",
     section: InsightsSection.Agents,
-    title: "Spend by model",
+    title: "Cost by model",
     kind: TileKind.CategoryBar,
     dataKey: "modelBreakdown",
     metricKey: "cost",
-    metricLabel: "Spend",
+    metricLabel: "Cost",
     groupBy: { key: "model", label: "Model" },
     horizontal: true,
     showValueLabels: true,
@@ -655,11 +795,11 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
   chartTile({
     id: "chart:modelBreakdown:donut",
     section: InsightsSection.Agents,
-    title: "Spend share by model",
+    title: "Cost share by model",
     kind: TileKind.Donut,
     dataKey: "modelBreakdown",
     metricKey: "cost",
-    metricLabel: "Spend",
+    metricLabel: "Cost",
     groupBy: { key: "model", label: "Model" },
     infoKey: "chart:modelBreakdown",
   }),
@@ -674,7 +814,51 @@ export const INSIGHTS_TILES: TileDescriptor[] = [
     groupBy: { key: "model", label: "Model" },
     infoKey: "chart:modelBreakdown",
   }),
+  // ISS-4463 (TokenOps): spend split by the originating session's outcome.
+  // Sits in Agents beside "Spend by model" because it reads the SAME spend
+  // basis over the same window, so the two describe the same dollars.
+  chartTile({
+    id: "chart:spendByOutcome",
+    section: InsightsSection.Agents,
+    title: "Spend by session outcome",
+    kind: TileKind.CategoryBar,
+    dataKey: "spendByOutcome",
+    metricKey: "cost",
+    metricLabel: "Spend",
+    groupBy: { key: "outcome", label: "Session outcome" },
+    horizontal: true,
+    showValueLabels: true,
+    infoKey: "chart:spendByOutcome",
+    featureFlag: INSIGHTS_SPEND_OUTCOME_FLAG_KEY,
+    colorByKey: SPEND_OUTCOME_COLORS,
+    zeroStateMessage: SPEND_OUTCOME_ZERO_MESSAGE,
+  }),
+  chartTile({
+    id: "chart:spendByOutcome:donut",
+    section: InsightsSection.Agents,
+    title: "Spend share by session outcome",
+    kind: TileKind.Donut,
+    dataKey: "spendByOutcome",
+    metricKey: "cost",
+    metricLabel: "Spend",
+    groupBy: { key: "outcome", label: "Session outcome" },
+    infoKey: "chart:spendByOutcome",
+    featureFlag: INSIGHTS_SPEND_OUTCOME_FLAG_KEY,
+    colorByKey: SPEND_OUTCOME_COLORS,
+    textureByKey: SPEND_OUTCOME_TEXTURES,
+    textureMarkColorByKey: SPEND_OUTCOME_TEXTURE_MARK_COLORS,
+    showSharePercent: true,
+    zeroStateMessage: SPEND_OUTCOME_ZERO_MESSAGE,
+  }),
 ];
+
+/**
+ * Narrows a catalog tile to a KPI tile, so a surface that renders KPI cards can
+ * read the required `polarity` without a cast or an invented default.
+ */
+export function isKpiTile(tile: TileDescriptor): tile is KpiTileDescriptor {
+  return tile.kind === TileKind.Kpi;
+}
 
 export function getSectionTiles(section: InsightsSection): TileDescriptor[] {
   return INSIGHTS_TILES.filter((tile) => tile.section === section);
@@ -709,3 +893,21 @@ export const DEFAULT_DASHBOARD_TILE_IDS: string[] = [
   "chart:prTrend",
   "chart:prByRepo",
 ];
+
+/**
+ * Whether `tile` may be shown, given the caller's resolved flag state.
+ *
+ * An ungated tile is always enabled. A gated tile is enabled only when
+ * `isFlagEnabled` returns true for its key — so it fails CLOSED under a caller
+ * that cannot resolve flags (the ISS-4779 closed-by-default policy), rather than
+ * leaking a dark-launched tile. Both reachable entry points (the metric picker's
+ * add list and the dashboard grid's render list) filter through this one helper
+ * so a gated tile can never be addable-but-unrenderable, or stay pinned on a
+ * dashboard after its flag is turned back off.
+ */
+export function isTileEnabled(
+  tile: TileDescriptor,
+  isFlagEnabled: (key: string) => boolean
+): boolean {
+  return tile.featureFlag === undefined || isFlagEnabled(tile.featureFlag);
+}

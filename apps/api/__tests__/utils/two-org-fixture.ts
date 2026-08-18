@@ -5,9 +5,14 @@ import {
   type DesktopAgentSessionsPayload,
   type SyncedAgentSession,
 } from "@repo/api/src/types/agent-session";
-import { BranchPushSource } from "@repo/api/src/types/artifact";
-import { normalizeRepoFullName } from "@repo/api/src/types/branch";
-import { withDb } from "@repo/database";
+import { BranchPushSource, LinkType } from "@repo/api/src/types/artifact";
+import {
+  BranchParticipationKind,
+  normalizeRepoFullName,
+} from "@repo/api/src/types/branch";
+import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
+import { GitHubInstallationStatus, withDb } from "@repo/database";
+import { persistedGitHubRepositoryAuthority } from "@/__tests__/fixtures/repository-default-authority";
 import { agentSessionsService } from "@/app/agent-sessions/service";
 import { branchService } from "@/app/branches/branch-service";
 import {
@@ -66,12 +71,15 @@ async function seedRepo(
         accountId: `acct-${label}`,
         accountLogin: "acme",
         accountType: "Organization",
+        status: GitHubInstallationStatus.ACTIVE,
         senderLogin: "sender",
         senderId: `sender-${label}`,
         repositories: {
           create: {
-            githubRepoId: `repo-${label}`,
-            fullName: SHARED_REPO_FULL_NAME,
+            ...persistedGitHubRepositoryAuthority({
+              githubRepoId: `repo-${label}`,
+              fullName: SHARED_REPO_FULL_NAME,
+            }),
             name: "app",
             owner: "acme",
             private: false,
@@ -180,6 +188,25 @@ async function seedSession(
   return row.artifactId;
 }
 
+async function linkSessionToBranch(
+  organizationId: string,
+  sessionArtifactId: string,
+  branchArtifactId: string
+): Promise<void> {
+  await withDb((db) =>
+    db.artifactLink.create({
+      data: {
+        organizationId,
+        sourceId: sessionArtifactId,
+        targetId: branchArtifactId,
+        linkType: LinkType.RelatesTo,
+        branchParticipation: BranchParticipationKind.Wrote,
+        metadata: { linkKind: SessionArtifactLinkKind.SessionBranch },
+      },
+    })
+  );
+}
+
 async function seedOneOrg(label: string, batchId: string): Promise<SeededOrg> {
   const organizationId = await createTestOrganization();
   const user = await createTestUser(organizationId);
@@ -208,6 +235,16 @@ async function seedOneOrg(label: string, batchId: string): Promise<SeededOrg> {
       computeTargetId: computeTarget.id,
     },
     batchId
+  );
+  // FEA-4225: the agent Branches surface represents only session-discovered
+  // branches, so a valid session→branch link is what makes this fixture's branch
+  // eligible for the list/detail/usage reads. Without it the branch would be
+  // GitHub-head-only and correctly excluded. An active-write `SessionBranch` link
+  // mirrors a real session that wrote the branch.
+  await linkSessionToBranch(
+    organizationId,
+    sessionArtifactId,
+    branchArtifactId
   );
   return {
     organizationId,

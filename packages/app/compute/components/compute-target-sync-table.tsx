@@ -18,6 +18,23 @@ export type ComputeTargetSyncRow = {
   ownerLabel: string;
   online: boolean;
   lastSyncLabel: string;
+  /**
+   * ISS-4828 (review, PR #4256): when this target's session rows last LANDED,
+   * as distinct from `lastSyncLabel` — the last batch the cloud ACCEPTED.
+   *
+   * The two answer different questions — "is this machine connected and syncing"
+   * versus "is it actually sending anything" — and correcting `lastSyncLabel` to
+   * mean the accepted batch would otherwise have taken the landed-data signal
+   * off the screen entirely.
+   *
+   * ISS-5280 (review): REQUIRED. It was optional while a flag could withhold it,
+   * which left the column's visibility keyed off `rows.some(...)` — one row
+   * supplying a label turned the column on for every row, and the rows without
+   * one rendered a third word ("Unknown") for a state this column already spells
+   * "Never". Requiring it makes that half-populated column unrepresentable
+   * rather than merely uncovered.
+   */
+  lastDataLabel: string;
   lastSeenLabel: string;
 };
 
@@ -47,6 +64,12 @@ export function ComputeTargetSyncTable({
           <TableHead>Owner</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Last Sync</TableHead>
+          {/* ISS-5280 (review): three relative-time columns sit side by side and
+              all render the same shape of value, so the header is the only thing
+              telling them apart. "Last New Data" names the question this one
+              answers — when did this target last have something to send — which
+              "Last Data" left a reader to infer from its neighbour. */}
+          <TableHead>Last New Data</TableHead>
           <TableHead>Last Seen</TableHead>
         </TableRow>
       </TableHeader>
@@ -61,6 +84,7 @@ export function ComputeTargetSyncTable({
               </Badge>
             </TableCell>
             <TableCell>{row.lastSyncLabel}</TableCell>
+            <TableCell>{row.lastDataLabel}</TableCell>
             <TableCell>{row.lastSeenLabel}</TableCell>
           </TableRow>
         ))}

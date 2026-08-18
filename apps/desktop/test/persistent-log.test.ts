@@ -4,14 +4,16 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import {
   electronLog,
+  initializePersistentLogging,
   parsePreviousSessionLogLine,
   parsePreviousSessionLogTail,
   readPreviousSessionLogTail,
   writeGatewayLogEntry,
-} from "../src/main/persistent-log.js";
+} from "../src/main/logging/persistent-log.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 
 const { makeTempDir } = createTempDirManager("desktop-persistent-log-");
+const PRE_INIT_TAG = "gpu-workaround";
 
 describe("persistent log tail parsing", () => {
   test("parses GatewayLogger JSON lines as previous-session entries", () => {
@@ -107,6 +109,35 @@ describe("persistent log tail parsing", () => {
     );
   });
 
+  // ISS-4916 (codex review). These two run in order on purpose: the module's
+  // initialized-once state is what the pair is pinning, and it cannot be reset.
+  test("a write before initialization touches no file at all", () => {
+    // Until initializePersistentLogging configures the redirect, electron-log's
+    // file transport still resolves the PRODUCTION path — so the macOS
+    // GPU-workaround line, the single-instance-lock line and the migration lines
+    // all landed in the operator's real main.log even on a redirected launch.
+    const preInitPath = electronLog.transports.file.getFile().path;
+    const sizeBefore = fs.existsSync(preInitPath)
+      ? fs.statSync(preInitPath).size
+      : 0;
+
+    writeGatewayLogEntry({
+      timestamp: "2026-05-08T12:34:55.000Z",
+      level: "info",
+      tag: PRE_INIT_TAG,
+      message: "disable-mac-overlays applied",
+    });
+
+    const sizeAfter = fs.existsSync(preInitPath)
+      ? fs.statSync(preInitPath).size
+      : 0;
+    assert.equal(
+      sizeAfter,
+      sizeBefore,
+      `a pre-initialization write must not reach ${preInitPath}`
+    );
+  });
+
   test("writeGatewayLogEntry creates the file parent without electron-log console fallback", () => {
     const dir = makeTempDir();
     const logPath = path.join(dir, "missing", "main.log");
@@ -120,6 +151,9 @@ describe("persistent log tail parsing", () => {
     };
 
     try {
+      // Initializing flushes what the previous test buffered — into THIS
+      // (redirected) file, which is the whole point of the buffer.
+      initializePersistentLogging();
       writeGatewayLogEntry({
         timestamp: "2026-05-08T12:34:56.789Z",
         level: "info",
@@ -128,9 +162,11 @@ describe("persistent log tail parsing", () => {
       });
 
       assert.equal(consoleWrites, 0);
-      assert.match(
-        fs.readFileSync(logPath, "utf8"),
-        /closedloop-gateway-log .*"tag":"startup"/
+      const written = fs.readFileSync(logPath, "utf8");
+      assert.match(written, /closedloop-gateway-log .*"tag":"startup"/);
+      assert.ok(
+        written.includes(`"tag":"${PRE_INIT_TAG}"`),
+        `the buffered pre-initialization line was replayed here: ${written}`
       );
     } finally {
       electronLog.transports.file.resolvePathFn = originalResolvePathFn;

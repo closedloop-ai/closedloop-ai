@@ -1,7 +1,7 @@
 import { LinkType } from "@repo/api/src/types/artifact";
 import type { JsonObject } from "@repo/api/src/types/common";
 import { Priority } from "@repo/api/src/types/common";
-import { DocumentType, FeatureStatus } from "@repo/api/src/types/document";
+import { DocumentType, IssueStatus } from "@repo/api/src/types/document";
 import type {
   DecomposeFeature,
   DecomposeResult,
@@ -167,7 +167,7 @@ async function ingestDecomposeArtifacts(
             PRIORITY_MAP[feature.priority ?? "MEDIUM"] ?? Priority.Medium,
           // Agent-generated Features land in TRIAGE so a human assesses them
           // before they enter the delivery flow (PRD-495).
-          status: FeatureStatus.Triage,
+          status: IssueStatus.Triage,
         }
       );
 

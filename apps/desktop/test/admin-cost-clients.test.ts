@@ -1,8 +1,8 @@
 /**
  * @file admin-cost-clients.test.ts
  * @description Unit tests for the vendor billing clients (FEA-1435/1436):
- * src/main/anthropic-admin-client.ts, src/main/openai-admin-client.ts, and the
- * shared network-allowlist guard in src/main/admin-billing.ts.
+ * src/main/cost/anthropic-admin-client.ts, src/main/cost/openai-admin-client.ts, and the
+ * shared network-allowlist guard in src/main/cost/admin-billing.ts.
  *
  * Reviewed invariants:
  *   (1) assertAllowedAdminHost only permits https to the exact vendor host —
@@ -34,9 +34,9 @@ import {
   assertAllowedAdminHost,
   redactKeyLikeTokens,
   requestAdminJson,
-} from "../src/main/admin-billing.js";
-import { AnthropicAdminClient } from "../src/main/anthropic-admin-client.js";
-import { OpenAiAdminClient } from "../src/main/openai-admin-client.js";
+} from "../src/main/cost/admin-billing.js";
+import { AnthropicAdminClient } from "../src/main/cost/anthropic-admin-client.js";
+import { OpenAiAdminClient } from "../src/main/cost/openai-admin-client.js";
 import { makeFetch } from "./helpers/admin-fetch.js";
 
 // ── assertAllowedAdminHost ────────────────────────────────────────────────────

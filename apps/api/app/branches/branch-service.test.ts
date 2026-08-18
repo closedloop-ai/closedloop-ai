@@ -9,9 +9,28 @@ vi.mock("@repo/database", async () => {
   });
 });
 
-import { BranchBaseBranchSource, LinkType } from "@repo/api/src/types/artifact";
+import {
+  BranchBaseBranchSource,
+  BranchHeadShaSource,
+  LinkType,
+} from "@repo/api/src/types/artifact";
 import { RepositoryRole, SnapshotSource } from "@repo/api/src/types/document";
+import { GitHubPRState } from "@repo/api/src/types/github";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchMechanism,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultReason,
+  RepositoryDefaultSource,
+  repositoryDefaultAuthorityValidator,
+  repositoryDefaultUnavailableObservationValidator,
+} from "@repo/api/src/types/repository-default-identity";
 import { Result, Status } from "@repo/api/src/types/result";
+import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
 import { ArtifactType } from "@repo/database";
 import {
   getMockWithDb,
@@ -29,6 +48,28 @@ const baseInput = {
   repositoryFullName: "closedloop-ai/sidecar",
   branchName: "symphony/fea-1132-sidecar",
   defaultBranch: "main",
+  repositoryDefaultObservation: {
+    authority: repositoryDefaultAuthorityValidator.parse({
+      repository: {
+        provider: VcsProviderKind.GitHub,
+        providerRepositoryId: "123",
+        fullName: "closedloop-ai/sidecar",
+      },
+      evidence: {
+        availability: RepositoryDefaultAvailability.Available,
+        completeness: RepositoryDefaultCompleteness.Complete,
+        defaultBranch: "main",
+      },
+      provenance: {
+        source: RepositoryDefaultSource.PullRequestRest,
+        mechanism: GitHubFetchMechanism.Rest,
+        trigger: GitHubFetchTrigger.UserAction,
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: "observation-1",
+        observedAt: "2026-08-11T12:00:00.000Z",
+      },
+    }),
+  },
   projectId: "project-1",
   sourceArtifactId: "source-1",
   baseBranch: "main",
@@ -42,6 +83,15 @@ describe("branchService.upsertBranchArtifact", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTx = {
+      $queryRaw: vi
+        .fn()
+        .mockImplementation((query: { sql?: string }) =>
+          Promise.resolve(
+            query.sql?.includes("public_repositories")
+              ? []
+              : [persistedRepositoryAuthority()]
+          )
+        ),
       artifact: {
         findFirst: vi.fn().mockResolvedValue({
           id: "source-1",
@@ -59,6 +109,7 @@ describe("branchService.upsertBranchArtifact", () => {
           },
         }),
         create: vi.fn().mockResolvedValue({ id: "branch-artifact-1" }),
+        update: vi.fn().mockResolvedValue({}),
         findUnique: vi.fn().mockResolvedValue({
           id: "branch-artifact-1",
           pullRequest: null,
@@ -67,6 +118,25 @@ describe("branchService.upsertBranchArtifact", () => {
       },
       branchDetail: {
         findUnique: vi.fn().mockResolvedValue(null),
+        update: vi.fn().mockResolvedValue({}),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      branchStatusCheck: {
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      gitHubInstallationRepository: {
+        findMany: vi.fn().mockResolvedValue([persistedRepositoryAuthority()]),
+      },
+      publicRepository: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        upsert: vi.fn().mockResolvedValue({ id: "pr-detail-1" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      repositoryDefaultObservationReceipt: {
+        createMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       artifactLink: {
         upsert: vi.fn().mockResolvedValue({ id: "link-1" }),
@@ -86,7 +156,10 @@ describe("branchService.upsertBranchArtifact", () => {
         projectId: "project-1",
         type: ArtifactType.DOCUMENT,
       }),
-      select: { document: { select: { repositorySnapshot: true } } },
+      select: {
+        createdById: true,
+        document: { select: { repositorySnapshot: true } },
+      },
     });
     expect(mockTx.artifact.create).not.toHaveBeenCalled();
     expect(mockTx.artifactLink.upsert).not.toHaveBeenCalled();
@@ -120,6 +193,166 @@ describe("branchService.upsertBranchArtifact", () => {
       },
       update: {},
     });
+  });
+
+  it("suppresses receipt-derived activity when a producer explicitly has no occurrence time", async () => {
+    const observedAt = new Date("2026-08-12T20:00:00.000Z");
+
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      headSha: "head-sha",
+      headShaObservedAt: observedAt,
+      activityAt: null,
+      sourceArtifactTargetRepoAuthorization: {
+        provenance:
+          SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback,
+        repositoryFullNames: ["closedloop-ai/sidecar"],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockTx.artifact.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          branch: expect.objectContaining({
+            create: expect.objectContaining({
+              headShaObservedAt: observedAt,
+              lastActivityAt: null,
+            }),
+          }),
+        }),
+      })
+    );
+  });
+
+  it("preserves the head-observation activity fallback when activity is omitted", async () => {
+    const observedAt = new Date("2026-08-12T20:00:00.000Z");
+
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      headSha: "head-sha",
+      headShaObservedAt: observedAt,
+      sourceArtifactTargetRepoAuthorization: {
+        provenance:
+          SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback,
+        repositoryFullNames: ["closedloop-ai/sidecar"],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockTx.artifact.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          branch: expect.objectContaining({
+            create: expect.objectContaining({
+              headShaObservedAt: observedAt,
+              lastActivityAt: observedAt,
+            }),
+          }),
+        }),
+      })
+    );
+  });
+
+  it("does not advance existing-Branch activity from a receipt-only head change", async () => {
+    const observedAt = new Date("2026-08-12T20:00:00.000Z");
+    mockTx.branchDetail.findUnique.mockResolvedValue(
+      existingBranchDetail("old-head", BranchHeadShaSource.HarnessInput)
+    );
+
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      headSha: "new-head",
+      headShaSource: BranchHeadShaSource.PullRequestWebhook,
+      headShaObservedAt: observedAt,
+      activityAt: null,
+      sourceArtifactTargetRepoAuthorization: {
+        provenance:
+          SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback,
+        repositoryFullNames: ["closedloop-ai/sidecar"],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("preserves the observed-time fallback for an existing same-SHA push", async () => {
+    const observedAt = new Date("2026-08-12T20:00:00.000Z");
+    mockTx.branchDetail.findUnique.mockResolvedValue(
+      existingBranchDetail("same-head", BranchHeadShaSource.HarnessInput)
+    );
+
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      beforeSha: "prior-head",
+      headSha: "same-head",
+      headShaSource: BranchHeadShaSource.PushWebhook,
+      headShaObservedAt: observedAt,
+      sourceArtifactTargetRepoAuthorization: {
+        provenance:
+          SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback,
+        repositoryFullNames: ["closedloop-ai/sidecar"],
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: {
+        artifactId: "branch-artifact-1",
+        OR: [{ lastActivityAt: null }, { lastActivityAt: { lt: observedAt } }],
+      },
+      data: { lastActivityAt: observedAt },
+    });
+  });
+
+  it("authorizes a fork head through its verified PR base repository", async () => {
+    mockTx.pullRequestDetail.findFirst.mockResolvedValue({
+      headRepositoryGithubId: null,
+      headRepositoryFullName: null,
+      headRepositoryDefaultBranchName: null,
+      headRepositoryDefaultBranchAvailability: null,
+      headRepositoryDefaultBranchCompleteness: null,
+      headRepositoryDefaultBranchReason: null,
+      headRepositoryDefaultBranchSource: null,
+      headRepositoryDefaultBranchMechanism: null,
+      headRepositoryDefaultBranchTrigger: null,
+      headRepositoryDefaultBranchCredentialType: null,
+      headRepositoryDefaultBranchCredentialOwnerId: null,
+      headRepositoryDefaultBranchObservationKey: null,
+      headRepositoryDefaultBranchObservedAt: null,
+      headRepositoryDefaultBranchEventAt: null,
+    });
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      repositoryId: null,
+      pullRequestRepositoryId: "base-repo-1",
+      pullRequestBaseRepositoryFullName: "ClosedLoop-AI/Primary.git",
+      pullRequest: {
+        githubId: "pr-1",
+        number: 17,
+        title: "Fork contribution",
+        htmlUrl: "https://github.com/closedloop-ai/primary/pull/17",
+        state: GitHubPRState.Open,
+        headRepositoryObservation: baseInput.repositoryDefaultObservation,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockTx.artifact.create).toHaveBeenCalled();
+    expect(mockTx.pullRequestDetail.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ repositoryId: "base-repo-1" }),
+      })
+    );
+    expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          headRepositoryFullName: "closedloop-ai/sidecar",
+          headRepositoryDefaultBranchName: "main",
+        }),
+      })
+    );
   });
 
   it("does not trust a legacy raw allowlist without loop callback provenance", async () => {
@@ -175,7 +408,83 @@ describe("branchService.upsertBranchArtifact", () => {
     expect(mockTx.artifact.create).not.toHaveBeenCalled();
     expect(mockTx.artifactLink.upsert).not.toHaveBeenCalled();
   });
+
+  it("does not fall back to stored authority for a fresh unavailable observation", async () => {
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      repositoryDefaultObservation: {
+        unavailable: repositoryDefaultUnavailableObservationValidator.parse({
+          reason: RepositoryDefaultReason.ProviderError,
+          provenance: {
+            source: RepositoryDefaultSource.PullRequestRest,
+            mechanism: GitHubFetchMechanism.Rest,
+            trigger: GitHubFetchTrigger.UserAction,
+            credentialType: GitHubFetchCredentialType.GitHubApp,
+            observationKey: "failed-observation",
+            observedAt: "2026-08-11T13:00:00.000Z",
+          },
+        }),
+      },
+    });
+
+    expect(result).toEqual(Result.err(Status.BadRequest));
+    expect(mockTx.$queryRaw).toHaveBeenCalled();
+    expect(mockTx.artifact.create).not.toHaveBeenCalled();
+  });
+
+  it("ignores a falsified legacy defaultBranch assertion", async () => {
+    const result = await branchService.upsertBranchArtifact({
+      ...baseInput,
+      branchName: "main",
+      defaultBranch: "develop",
+    });
+
+    expect(result).toEqual(Result.err(Status.BadRequest));
+    expect(mockTx.artifact.create).not.toHaveBeenCalled();
+  });
 });
+
+function persistedRepositoryAuthority() {
+  return {
+    githubRepoId: "123",
+    fullName: "closedloop-ai/sidecar",
+    defaultBranchName: "main",
+    defaultBranchAvailability: RepositoryDefaultAvailability.Available,
+    defaultBranchCompleteness: RepositoryDefaultCompleteness.Complete,
+    defaultBranchReason: null,
+    defaultBranchSource: RepositoryDefaultSource.RepositoryRest,
+    defaultBranchMechanism: GitHubFetchMechanism.Rest,
+    defaultBranchTrigger: GitHubFetchTrigger.SurfaceOpen,
+    defaultBranchCredentialType: GitHubFetchCredentialType.GitHubApp,
+    defaultBranchCredentialOwnerId: null,
+    defaultBranchObservationKey: "persisted-observation",
+    defaultBranchObservedAt: new Date("2026-08-11T11:00:00.000Z"),
+    defaultBranchEventAt: null,
+  };
+}
+
+function existingBranchDetail(
+  headSha: string,
+  headShaSource: BranchHeadShaSource
+) {
+  return {
+    artifactId: "branch-artifact-1",
+    organizationId: "org-1",
+    repositoryId: "repo-1",
+    repositoryFullName: "closedloop-ai/sidecar",
+    branchName: "symphony/fea-1132-sidecar",
+    baseBranch: "main",
+    baseBranchSource: BranchBaseBranchSource.HarnessInput,
+    headSha,
+    headShaSource,
+    headShaObservedAt: new Date("2026-08-12T19:00:00.000Z"),
+    lastPushBeforeSha: null,
+    firstPushedAt: null,
+    pushSource: null,
+    deletedAt: null,
+    artifact: { createdById: null, status: GitHubPRState.Open },
+  };
+}
 
 describe("branchService.deleteBranchArtifact", () => {
   const validUuid = "11111111-1111-4111-8111-111111111111";

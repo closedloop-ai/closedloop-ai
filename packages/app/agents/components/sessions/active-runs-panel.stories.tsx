@@ -3,7 +3,22 @@ import { ACTIVE_RUN_STALL_TIMEOUT_MS } from "../../lib/active-runs";
 import { ActiveRunsPanel } from "./active-runs-panel";
 import { createAgentSessionListItemFixture } from "./session-list-fixtures";
 
-const now = Date.now();
+/**
+ * Fixed "now" for both the fixtures below and the panel itself (ISS-5286).
+ *
+ * Pinning only the fixtures would not have been enough. The panel reads
+ * `Date.now()` at mount and re-reads it every 10s, so with a pinned base every
+ * elapsed timer drifted by however long collection-to-render took and then
+ * advanced on a timer — and pinning the fixtures to a fixed past date without
+ * pinning the panel would classify all three runs as stalled, collapsing the
+ * working/awaiting/stalled spread these stories exist to show. So the panel takes
+ * the same instant through its `pinnedNowMs` prop, which also stops the ticking.
+ *
+ * Local date components, not a parsed ISO string: `"2025-06-11"` parses as UTC
+ * midnight and would shift the rendered day by timezone.
+ */
+const NOW = new Date(2025, 5, 11, 12, 0, 0);
+const now = NOW.getTime();
 
 const working = createAgentSessionListItemFixture({
   id: "ses-working",
@@ -59,6 +74,7 @@ const meta = {
     getSessionHref: (run) => `/sessions/${run.id}`,
     isLoading: false,
     items: [working, awaiting, stalled],
+    pinnedNowMs: now,
   },
 } satisfies Meta<typeof ActiveRunsPanel>;
 

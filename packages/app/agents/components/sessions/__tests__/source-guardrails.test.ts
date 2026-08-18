@@ -1,5 +1,10 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import {
+  importsOf,
+  parseSourceFileAt,
+  type SourceImport,
+} from "@repo/app/shared/testing/source-ast";
 import { describe, expect, it } from "vitest";
 
 const AGENT_COMPONENTS_DIR = join(import.meta.dirname, "..", "..");
@@ -58,15 +63,28 @@ const FORBIDDEN_SHARED_SOURCE_RE =
   /window\.desktopApi|globalThis\.desktopApi|desktop:[A-Za-z]|from\s+["'][^"']*apps\/desktop|from\s+["']node:|from\s+["']electron["']|\bipcRenderer\b|\bipcMain\b|\bcontextBridge\b|process\.env|from\s+["']@repo\/database|from\s+["']@repo\/observability/;
 const FORBIDDEN_DETAIL_CONTRACT_RE =
   /breadcrumbsHref|FeatureFlagged|DESKTOP_AGENT_SESSION_SYNC_FEATURE_FLAG_KEY|\bHeader\b|useOrgSlug|useRouteParams/;
+// The activity feed must not CONSTRUCT routes itself: no hardcoded `/sessions/`
+// path literals and no route-prefix/document-path helpers. Route/href
+// construction stays callback-owned (the injected `getSessionHref`), which keeps
+// the shared slice surface-agnostic. Rendering a pre-built href through the
+// `@repo/navigation` `Link` port is explicitly allowed (and required): FEA-4051
+// swapped a raw `<a href>` for `Link` so the desktop renderer's hash-store
+// adapter intercepts the click (a raw anchor was a dead click there), and the
+// package's own hard-import rule already mandates `@repo/navigation` for Link.
+// `Link` consumes an href the callback already built — it does not construct
+// routes — so it is not part of this guardrail.
 const FORBIDDEN_PACKAGE_ROUTE_RE =
-  /["'`]\/(?:\$\{[^}]+\}\/)?sessions\/|buildScopedDocumentPath|getRoutePrefixForType|@repo\/navigation\/link/;
+  /["'`]\/(?:\$\{[^}]+\}\/)?sessions\/|buildScopedDocumentPath|getRoutePrefixForType/;
 const MACHINE_SPECIFIC_ABSOLUTE_PATH_RE =
   /["'`]\/(?:Users|home)\/[^"'`]+\/(?:source|Source|repos?|workspace|code)\//;
 const PATH_SEPARATOR_RE = /[\\/]/;
-const PROJECTS_IMPORT_COMMENT_RE =
-  /Projects owns project metadata;[\s\S]*import \{ useProjects \} from "\.\.\/\.\.\/\.\.\/projects\/hooks\/use-projects";/;
-const TEAMS_IMPORT_COMMENT_RE =
-  /Teams owns team metadata;[\s\S]*import \{ useTeams \} from "\.\.\/\.\.\/\.\.\/teams\/hooks\/use-teams";/;
+// Project and team metadata are owned by their own slices; the analytics view
+// consumes them through those slices' hooks rather than re-deriving either.
+// The durable contract is the import edge itself, so it is asserted on the
+// parsed AST (FEA-4112) — an explanatory comment beside the import is prose a
+// guard cannot depend on.
+const PROJECTS_HOOK_MODULE = "../../../projects/hooks/use-projects";
+const TEAMS_HOOK_MODULE = "../../../teams/hooks/use-teams";
 const TYPESCRIPT_SOURCE_RE = /\.(ts|tsx)$/;
 const DETAIL_OWNED_ANALYTICS_MODULES = new Set([
   "agent-tree-utils.ts",
@@ -113,14 +131,17 @@ describe("shared sessions list source guardrails", () => {
     expect(violations).toEqual([]);
   });
 
-  it("documents analytics cross-slice metadata imports at the import site", () => {
-    const source = readFileSync(
-      join(AGENT_COMPONENTS_DIR, "analytics", "agent-telemetry-analytics.tsx"),
-      "utf8"
+  it("imports analytics cross-slice metadata from the owning slices", () => {
+    const imports = importsOf(
+      parseSourceFileAt(
+        join(AGENT_COMPONENTS_DIR, "analytics", "agent-telemetry-analytics.tsx")
+      )
     );
 
-    expect(source).toMatch(PROJECTS_IMPORT_COMMENT_RE);
-    expect(source).toMatch(TEAMS_IMPORT_COMMENT_RE);
+    expect(namesImportedFrom(imports, PROJECTS_HOOK_MODULE)).toContain(
+      "useProjects"
+    );
+    expect(namesImportedFrom(imports, TEAMS_HOOK_MODULE)).toContain("useTeams");
   });
 
   it("does not leave an app-local synced sessions table re-export shim", () => {
@@ -195,4 +216,13 @@ function listProductionSourceFiles(dir: string): string[] {
     (filePath) =>
       !(filePath.includes("__tests__") || filePath.endsWith(".stories.tsx"))
   );
+}
+
+function namesImportedFrom(
+  imports: readonly SourceImport[],
+  specifier: string
+): string[] {
+  return imports
+    .filter((entry) => entry.specifier === specifier)
+    .flatMap((entry) => entry.names);
 }

@@ -5,6 +5,8 @@ import {
   FeedSidebar,
   FeedTab,
 } from "@repo/app/documents/components/feed-sidebar/feed-sidebar";
+import { activitySource } from "@repo/app/documents/components/feed-sidebar/sources/activity-source";
+import { ActivitySourceProvider } from "@repo/app/documents/components/feed-sidebar/sources/activity-source-provider";
 import {
   DEFAULT_LIVEBLOCKS_FILTER_STATE,
   type LiveblocksFilterState,
@@ -20,6 +22,11 @@ import { useMemo, useState } from "react";
 
 type DocumentFeedRailProps = {
   artifactType: FeedArtifactType;
+  /**
+   * The artifact whose activity timeline the Activity source reads via
+   * `GET /documents/[id]/activity`. Threaded to `ActivitySourceProvider`.
+   */
+  documentId: string;
   organizationId: string;
   /**
    * When false, renders nothing. Lets callers gate the rail on a
@@ -51,8 +58,6 @@ type DocumentFeedRailProps = {
   chatPanel?: ReactNode;
 };
 
-const DOC_SOURCES = [liveblocksCommentSource] as const;
-
 export function buildDocumentFeedRailInitialSourceState({
   currentVersion,
   isViewingHistorical,
@@ -74,6 +79,7 @@ export function buildDocumentFeedRailInitialSourceState({
 
 export function DocumentFeedRail({
   artifactType,
+  documentId,
   organizationId,
   enabled,
   visible,
@@ -85,6 +91,12 @@ export function DocumentFeedRail({
   chatPanel,
 }: Readonly<DocumentFeedRailProps>) {
   const [activeTab, setActiveTab] = useState<FeedTab>(FeedTab.Feed);
+  const sources = useMemo(() => [liveblocksCommentSource, activitySource], []);
+
+  const activitySourceContextValue = useMemo(
+    () => ({ documentId }),
+    [documentId]
+  );
 
   const initialSourceState = useMemo<Record<string, unknown> | undefined>(
     () =>
@@ -114,18 +126,20 @@ export function DocumentFeedRail({
   }
   return (
     <LiveblocksSourceProvider value={sourceContextValue}>
-      <FeedSidebar
-        activeTab={activeTab}
-        artifactType={artifactType}
-        chatPanel={chatPanel ?? null}
-        initialSourceState={initialSourceState}
-        key={filterSeedKey}
-        onActiveTabChange={setActiveTab}
-        onClose={onClose}
-        organizationId={organizationId}
-        sources={DOC_SOURCES}
-        visible={visible}
-      />
+      <ActivitySourceProvider value={activitySourceContextValue}>
+        <FeedSidebar
+          activeTab={activeTab}
+          artifactType={artifactType}
+          chatPanel={chatPanel ?? null}
+          initialSourceState={initialSourceState}
+          key={filterSeedKey}
+          onActiveTabChange={setActiveTab}
+          onClose={onClose}
+          organizationId={organizationId}
+          sources={sources}
+          visible={visible}
+        />
+      </ActivitySourceProvider>
     </LiveblocksSourceProvider>
   );
 }

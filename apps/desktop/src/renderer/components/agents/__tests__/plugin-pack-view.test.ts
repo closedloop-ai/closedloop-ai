@@ -4,6 +4,7 @@
  * mapping logic (no React / design-system), so it runs fast and isolates the
  * field-mapping contract the Plugins UX depends on.
  */
+import type { PackAnalyticsResponse } from "@repo/api/src/types/analytics";
 import { PackContentKind } from "@repo/app/packs/lib/pack-view";
 import { describe, expect, it } from "vitest";
 import type {
@@ -15,6 +16,7 @@ import {
   buildPackViews,
   buildPackViewsFromInstalledMap,
   catalogEntryToPackView,
+  packAnalyticsToBlocks,
 } from "../plugin-pack-view";
 
 function makeEntry(over: Partial<CatalogEntry> = {}): CatalogEntry {
@@ -86,19 +88,50 @@ describe("catalogEntryToPackView", () => {
 
   it("maps cached contents to PackContentEntries with coerced kinds", () => {
     const contents: CatalogContentItem[] = [
-      { name: "plan-agent", type: "agent", description: "plans" },
+      {
+        name: "plan-agent",
+        type: "agent",
+        description: "plans",
+        content: "# Plan agent",
+      },
       { name: "/code", type: "command" },
       { name: "weird", type: "totally-unknown" },
+      {
+        name: "malformed",
+        type: "skill",
+        content: { body: "not a string" },
+      } as unknown as CatalogContentItem,
     ];
     const view = catalogEntryToPackView(
       makeEntry({ contentsCache: contents }),
       []
     );
     expect(view.contents).toEqual([
-      { name: "plan-agent", kind: PackContentKind.Agent, description: "plans" },
-      { name: "/code", kind: PackContentKind.Command, description: null },
+      {
+        name: "plan-agent",
+        kind: PackContentKind.Agent,
+        description: "plans",
+        content: "# Plan agent",
+      },
+      {
+        name: "/code",
+        kind: PackContentKind.Command,
+        description: null,
+        content: null,
+      },
       // Unknown kinds fall back to the generic `plugin` bucket.
-      { name: "weird", kind: PackContentKind.Plugin, description: null },
+      {
+        name: "weird",
+        kind: PackContentKind.Plugin,
+        description: null,
+        content: null,
+      },
+      {
+        name: "malformed",
+        kind: PackContentKind.Skill,
+        description: null,
+        content: null,
+      },
     ]);
   });
 
@@ -109,7 +142,12 @@ describe("catalogEntryToPackView", () => {
       [{ name: "fresh", type: "skill" }]
     );
     expect(view.contents).toEqual([
-      { name: "fresh", kind: PackContentKind.Skill, description: null },
+      {
+        name: "fresh",
+        kind: PackContentKind.Skill,
+        description: null,
+        content: null,
+      },
     ]);
   });
 
@@ -191,5 +229,60 @@ describe("buildPackViewsFromInstalledMap", () => {
     expect(buildPackViewsFromInstalledMap(catalog, installedByPackId)).toEqual(
       buildPackViews(catalog, installed)
     );
+  });
+});
+
+/**
+ * ISS-6462: the desktop half of the merged-PR coverage carry. `mergedPrs` is a
+ * count over the first `COHORT_SCAN_CAP` cohort sessions, and this mapper used
+ * to drop the flag that says so, so the overlay's Performance tile printed a
+ * capped scan as an exact count.
+ */
+describe("packAnalyticsToBlocks merged-PR coverage", () => {
+  function makeAnalytics(
+    over: Partial<PackAnalyticsResponse> = {}
+  ): PackAnalyticsResponse {
+    return {
+      packId: "code",
+      invocations: 1284,
+      sessions: 412,
+      locPerDollar: 3.2,
+      owners: ["Maya Chen"],
+      deviceCount: 12,
+      locDelta: 18,
+      successRate: 74,
+      successDelta: 9,
+      tokenEfficiencyDelta: 12,
+      efficiencyTrend: [4, 5, 6],
+      mergedPrs: 996,
+      mergedPrsTruncated: false,
+      qualityScore: null,
+      qualityDelta: null,
+      ...over,
+    };
+  }
+
+  it("carries a declared coverage flag through in both directions", () => {
+    expect(
+      packAnalyticsToBlocks(makeAnalytics({ mergedPrsTruncated: true }))
+        .performance.mergedPrsTruncated
+    ).toBe(true);
+    expect(
+      packAnalyticsToBlocks(makeAnalytics({ mergedPrsTruncated: false }))
+        .performance.mergedPrsTruncated
+    ).toBe(false);
+  });
+
+  it("preserves an omitted flag as unknown rather than folding it to false", () => {
+    // A cloud predating the disclosure applies the same cap and cannot report
+    // it, so reading omission as "not truncated" would re-assert full-cohort
+    // coverage exactly when it does not hold.
+    const analytics = makeAnalytics();
+    Reflect.deleteProperty(analytics, "mergedPrsTruncated");
+
+    const { performance } = packAnalyticsToBlocks(analytics);
+
+    expect(performance.mergedPrsTruncated).toBeUndefined();
+    expect(performance.mergedPrsTruncated).not.toBe(false);
   });
 });

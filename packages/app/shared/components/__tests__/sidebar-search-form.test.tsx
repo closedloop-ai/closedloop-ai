@@ -114,4 +114,84 @@ describe("SidebarSearchForm", () => {
 
     expect(handleClear).toHaveBeenCalledTimes(1);
   });
+
+  it("always exposes a 'press Enter to search' instruction to assistive tech", () => {
+    render(
+      <SidebarSearchForm
+        onClear={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        showClear={false}
+        value=""
+      />
+    );
+
+    const input = screen.getByRole("textbox", { name: "Search" });
+    const describedBy = input.getAttribute("aria-describedby");
+    expect(describedBy).not.toBeNull();
+    const description = document.getElementById(describedBy as string);
+    expect(description).toHaveTextContent("Press Enter to search");
+  });
+
+  it("shows the return-key hint once a pending query is typed", () => {
+    render(
+      <SidebarSearchForm
+        onClear={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        showClear={false}
+        value="alpha"
+      />
+    );
+
+    expect(screen.getByText("Enter")).toBeInTheDocument();
+  });
+
+  it("hides the return-key hint when the field is empty", () => {
+    render(
+      <SidebarSearchForm
+        onClear={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        showClear={false}
+        value=""
+      />
+    );
+
+    expect(screen.queryByText("Enter")).not.toBeInTheDocument();
+  });
+
+  it("hides the return-key hint for whitespace-only input", () => {
+    render(
+      <SidebarSearchForm
+        onClear={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        showClear={false}
+        value="   "
+      />
+    );
+
+    expect(screen.queryByText("Enter")).not.toBeInTheDocument();
+  });
+
+  it("keeps the return-key hint visible alongside the clear affordance", () => {
+    // Both web and desktop adapters flip showClear true as soon as any text is
+    // typed, so the visible hint has to coexist with the clear button rather
+    // than yield the slot — otherwise it would never render on a real surface.
+    render(
+      <SidebarSearchForm
+        onClear={vi.fn()}
+        onSubmit={vi.fn()}
+        onValueChange={vi.fn()}
+        showClear
+        value="alpha"
+      />
+    );
+
+    expect(screen.getByText("Enter")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Clear search" })
+    ).toBeInTheDocument();
+  });
 });

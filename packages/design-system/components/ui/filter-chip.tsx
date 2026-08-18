@@ -37,7 +37,9 @@ export function FilterChip({
               className="flex max-w-[160px] items-center gap-1 px-2 py-1 hover:bg-muted"
               type="button"
             >
-              <span className="truncate">{label}</span>
+              <span className="truncate" title={label}>
+                {label}
+              </span>
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent
@@ -49,7 +51,9 @@ export function FilterChip({
         </DropdownMenu>
       ) : (
         <span className="flex max-w-[160px] items-center gap-1 px-2 py-1">
-          <span className="truncate">{label}</span>
+          <span className="truncate" title={label}>
+            {label}
+          </span>
         </span>
       )}
       <button

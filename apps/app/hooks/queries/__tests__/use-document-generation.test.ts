@@ -10,6 +10,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   useCreateAndGenerateDocument,
+  useGeneratePrdFromDocument,
   useGeneratePrdLaunch,
 } from "../use-document-generation";
 import { createWrapper } from "./test-utils";
@@ -510,6 +511,333 @@ describe("useCreateAndGenerateDocument", () => {
       command: RunLoopCommand.Plan,
       computeTargetId: "target-1",
     });
+  });
+});
+
+describe("useGeneratePrdFromDocument", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("seeds a PRD from the Document then launches GENERATE_PRD against it", async () => {
+    const seededPrd = createMockDocument({
+      id: "prd-seeded",
+      projectId: "project-9",
+    });
+
+    // 1. POST /documents/doc-1/generate-prd-from-doc → the seeded DRAFT PRD
+    // 2. POST /documents/prd-seeded/run-loop → launch success
+    mockApiClient.post
+      .mockResolvedValueOnce(seededPrd)
+      .mockResolvedValueOnce({ loopId: "loop-1", status: "PENDING" });
+
+    const { result } = renderHook(() => useGeneratePrdFromDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({
+        documentId: "doc-1",
+        projectId: "project-9",
+        title: "From Doc",
+      });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    // First call seeds the PRD from the source Document + target project.
+    expect(mockApiClient.post).toHaveBeenNthCalledWith(
+      1,
+      "/documents/doc-1/generate-prd-from-doc",
+      { projectId: "project-9", title: "From Doc" }
+    );
+
+    // Second call launches the existing GENERATE_PRD engine against the new PRD.
+    expect(mockApiClient.post).toHaveBeenNthCalledWith(
+      2,
+      "/documents/prd-seeded/run-loop",
+      expect.objectContaining({ command: RunLoopCommand.GeneratePrd })
+    );
+
+    expect(result.current.data).toEqual({
+      artifact: seededPrd,
+      status: "launched",
+    });
+  });
+
+  test("surfaces a generic launch failure so the seeded PRD is not silently stranded", async () => {
+    const seededPrd = createMockDocument({
+      id: "prd-seeded",
+      projectId: "project-9",
+    });
+    const launchError = new Error("launch failed");
+
+    // Seed succeeds, then the run-loop launch throws a non-conflict error.
+    mockApiClient.post
+      .mockResolvedValueOnce(seededPrd)
+      .mockRejectedValueOnce(launchError);
+
+    const { result } = renderHook(() => useGeneratePrdFromDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({ documentId: "doc-1", projectId: "project-9" });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    // The seeded PRD already committed, so the failure must be toasted, not swallowed.
+    expect(mockToastError).toHaveBeenCalledWith("launch failed");
+  });
+
+  test("does not launch a loop when the seed request fails", async () => {
+    const seedError = new Error("seed failed");
+    mockApiClient.post.mockRejectedValueOnce(seedError);
+
+    const { result } = renderHook(() => useGeneratePrdFromDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({ documentId: "doc-1", projectId: "project-9" });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    // Only the seed call was attempted; no run-loop launch was fired.
+    expect(mockApiClient.post).toHaveBeenCalledTimes(1);
+    expect(mockApiClient.post).toHaveBeenCalledWith(
+      "/documents/doc-1/generate-prd-from-doc",
+      { projectId: "project-9" }
+    );
+  });
+
+  test("on target conflict, selectTarget replays only the launch and never re-seeds a duplicate PRD", async () => {
+    const seededPrd = createMockDocument({
+      id: "prd-seeded",
+      projectId: "project-9",
+    });
+    const conflictError = new ApiError("Multiple targets", 409, undefined, {
+      data: {
+        error: "multiple_targets",
+        message: "Multiple compute targets available",
+        availableTargets: [
+          { id: "target-1", machineName: "machine-1", status: "online" },
+        ],
+      },
+    });
+
+    // 1. seed → committed DRAFT PRD
+    // 2. run-loop launch → multiple_targets conflict
+    // (get) refresh full compute-target snapshot including the selection
+    // 3. run-loop replay against the SAME seeded PRD → success
+    mockApiClient.post
+      .mockResolvedValueOnce(seededPrd)
+      .mockRejectedValueOnce(conflictError)
+      .mockResolvedValueOnce({ loopId: "loop-1", status: "PENDING" });
+    mockApiClient.get.mockResolvedValueOnce([
+      makeComputeTargetWire("target-1"),
+    ]);
+
+    const { result } = renderHook(() => useGeneratePrdFromDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    act(() => {
+      result.current.mutate({ documentId: "doc-1", projectId: "project-9" });
+    });
+
+    await waitFor(() => expect(result.current.multiTargetState).not.toBeNull());
+    expect(result.current.multiTargetState?.pendingArtifact.id).toBe(
+      "prd-seeded"
+    );
+
+    await act(async () => {
+      await result.current.selectTarget("target-1");
+    });
+
+    // Exactly one seed POST across the whole flow — the replay is launch-only.
+    const seedCalls = mockApiClient.post.mock.calls.filter(([path]) =>
+      String(path).endsWith("/generate-prd-from-doc")
+    );
+    expect(seedCalls).toHaveLength(1);
+
+    // The replay launch targets the already-seeded PRD.
+    expect(mockApiClient.post).toHaveBeenNthCalledWith(
+      3,
+      "/documents/prd-seeded/run-loop",
+      expect.objectContaining({
+        command: RunLoopCommand.GeneratePrd,
+        computeTargetId: "target-1",
+      })
+    );
+    expect(result.current.multiTargetState).toBeNull();
+  });
+});
+
+/**
+ * ISS-5687 acceptance: "a dispatch that cannot broker surfaces an explicit,
+ * honest error — never a silent no-op."
+ *
+ * Both mutations set `meta: { suppressDefaultErrorToast: true }` and their call
+ * sites pass no `onError`, so the ONLY thing standing between a refused launch
+ * and total silence is the trailing `toast.error` in `handleRunLoopResponse`.
+ * Nothing pinned that, and deleting it would restore the silence the ticket was
+ * filed about while every other test stayed green. These lock it — exactly
+ * once, so a second call site cannot start double-reporting either.
+ */
+describe("launch failures are surfaced, never silently absorbed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test("useCreateAndGenerateDocument toasts a generic run-loop failure", async () => {
+    const mockArtifact = createMockDocument({ id: "plan-1" });
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockRejectedValueOnce(
+        new ApiError("Compute target offline", 503, undefined, {
+          data: { error: "offline" },
+        })
+      );
+
+    const { result } = renderHook(() => useCreateAndGenerateDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({
+          input: {
+            title: "Plan",
+            type: DocumentType.ImplementationPlan,
+            content: "",
+          },
+        })
+        .catch(() => undefined);
+    });
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("Compute target offline")
+    );
+  });
+
+  test("useGeneratePrdLaunch toasts a generic run-loop failure", async () => {
+    const mockArtifact = createMockDocument({ id: "prd-1" });
+    mockApiClient.post.mockRejectedValueOnce(
+      new ApiError("No AI harness available", 422, undefined, {
+        data: { error: "no_harness" },
+      })
+    );
+
+    const { result } = renderHook(() => useGeneratePrdLaunch(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({ artifact: mockArtifact })
+        .catch(() => undefined);
+    });
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("No AI harness available")
+    );
+  });
+
+  /**
+   * The 429 concurrent-loop-limit branch was the one hole left in that
+   * guarantee. `handleRunLoopResponse` routed it through the OPTIONAL
+   * `onRateLimited` and returned unconditionally — and no call site in this
+   * file passes that callback, so hitting the limit produced nothing at all:
+   * no toast, no error, no state change. Indistinguishable from a launch that
+   * simply never happened, which is the exact silence ISS-5687 was filed about.
+   * These pin the fallback for a 429 with no handler.
+   */
+  test("useCreateAndGenerateDocument toasts a 429 concurrent-loop refusal", async () => {
+    const mockArtifact = createMockDocument({ id: "plan-429" });
+    mockApiClient.post
+      .mockResolvedValueOnce(mockArtifact)
+      .mockRejectedValueOnce(
+        new ApiError("Too many concurrent loops", 429, undefined, {
+          data: { error: "rate_limited" },
+        })
+      );
+
+    const { result } = renderHook(() => useCreateAndGenerateDocument(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({
+          input: {
+            title: "Plan",
+            type: DocumentType.ImplementationPlan,
+            content: "",
+          },
+        })
+        .catch(() => undefined);
+    });
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("Too many concurrent loops")
+    );
+  });
+
+  test("useGeneratePrdLaunch toasts a 429 concurrent-loop refusal", async () => {
+    const mockArtifact = createMockDocument({ id: "prd-429" });
+    mockApiClient.post.mockRejectedValueOnce(
+      new ApiError("Too many concurrent loops", 429, undefined, {
+        data: { error: "rate_limited" },
+      })
+    );
+
+    const { result } = renderHook(() => useGeneratePrdLaunch(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({ artifact: mockArtifact })
+        .catch(() => undefined);
+    });
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("Too many concurrent loops")
+    );
+  });
+
+  test("a multiple-targets conflict opens the picker instead of toasting", async () => {
+    const mockArtifact = createMockDocument({ id: "prd-2" });
+    mockApiClient.post.mockRejectedValueOnce(
+      new ApiError("Multiple targets", 409, undefined, {
+        data: {
+          error: "multiple_targets",
+          message: "Multiple compute targets available",
+          availableTargets: [
+            { id: "target-1", machineName: "machine-1", status: "online" },
+          ],
+        },
+      })
+    );
+
+    const { result } = renderHook(() => useGeneratePrdLaunch(), {
+      wrapper: createWrapper(),
+    });
+
+    await act(async () => {
+      await result.current
+        .mutateAsync({ artifact: mockArtifact })
+        .catch(() => undefined);
+    });
+
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 });
 

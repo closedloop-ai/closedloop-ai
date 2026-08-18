@@ -1,0 +1,14 @@
+-- FEA-3555: durable repo attribution on the session row.
+-- DESKTOP_SYNC re-derived `repositoryFullName` at sync time by running
+-- `git remote get-url origin` in the session's live worktree
+-- (resolveRepoFullName / resolveRepoFullNameAsync). For an old completed
+-- session whose worktree was later deleted, the live lookup returns null and
+-- the session loses its repo / diff / lines attribution on every subsequent
+-- sync. This column is a durable CACHE of the last successfully live-resolved
+-- repo full name (org/repo): written back only from a successful live git
+-- resolution of that exact cwd/worktree, and read as a fallback when the live
+-- lookup fails. It is never authored from anything but a real live resolution,
+-- so it can never carry a wrong repo. Additive nullable column. SQLite ADD
+-- COLUMN has no IF NOT EXISTS guard; re-run safety comes from the migration
+-- runner's checksum tracking, which applies each named migration exactly once.
+ALTER TABLE "sessions" ADD COLUMN "repo_full_name" TEXT;

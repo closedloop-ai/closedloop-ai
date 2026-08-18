@@ -470,7 +470,7 @@ test("createGoldenCollectors returns [] for an empty corpus (only scaffolding an
 // ── CORPUS-SANITY (real read-only corpus) ────────────────────────────────────
 
 test("real golden corpus: listDossierDirs matches the expectations.yaml inventory", () => {
-  // Uses the human-owned corpus read-only — never stages in place, never writes.
+  // Uses the frozen corpus read-only — never stages in place, never writes.
   // Staging is done to a temp dir to avoid touching corpus state (the AGENTS.md
   // requirement). We only call listDossierDirs to count; no parse or write.
   const stagingDir = makeTempDir("real-corpus-staging-");
@@ -478,7 +478,7 @@ test("real golden corpus: listDossierDirs matches the expectations.yaml inventor
   stageGoldenCorpus(REAL_CORPUS_DIR, stagingDir);
 
   // Cross-check enumeration against an independent signal: every dossier dir
-  // carries a human-signed expectations.yaml. A hardcoded count would go stale
+  // carries a signed expectations.yaml. A hardcoded count would go stale
   // every time the corpus grows (it moved 21→22 mid-build).
   const dossiers = listDossierDirs(REAL_CORPUS_DIR);
   const expectationsDirs = readdirSync(REAL_CORPUS_DIR).filter(

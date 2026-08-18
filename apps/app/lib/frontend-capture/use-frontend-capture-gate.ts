@@ -1,13 +1,14 @@
 "use client";
 
 import { useAnalytics, useFeatureFlag } from "@repo/analytics/client";
+import { isStaffEmail } from "@repo/app/shared/auth/staff-email";
 import { useUser } from "@repo/auth/client";
 import { useEffect } from "react";
 import {
   disableDatadogRumStaffCapture,
   enableDatadogRumStaffCapture,
 } from "@/lib/datadog-rum/staff-capture";
-import { isStaffEmail, WEB_FRONTEND_CAPTURE_FLAG_KEY } from "./flag";
+import { WEB_FRONTEND_CAPTURE_FLAG_KEY } from "./flag";
 
 /**
  * Staff-gated frontend capture (FEA-2400).

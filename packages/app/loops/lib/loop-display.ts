@@ -57,6 +57,12 @@ const COMMAND_LABELS: Partial<Record<LoopCommand, CommandLabels>> = {
     completed: "Bootstrapped",
     failed: "Bootstrap failed",
   },
+  [LoopCommand.Manual]: {
+    noun: "Manual",
+    progress: "Running",
+    completed: "Completed",
+    failed: "Failed",
+  },
   [LoopCommand.Decompose]: {
     noun: "Decompose",
     progress: "Decomposing",
@@ -82,10 +88,10 @@ const COMMAND_LABELS: Partial<Record<LoopCommand, CommandLabels>> = {
     failed: "Plan eval failed",
   },
   [LoopCommand.EvaluateFeature]: {
-    noun: "Feature eval",
-    progress: "Evaluating feature",
-    completed: "Feature evaluated",
-    failed: "Feature eval failed",
+    noun: "Issue eval",
+    progress: "Evaluating issue",
+    completed: "Issue evaluated",
+    failed: "Issue eval failed",
   },
   [LoopCommand.EvaluateCode]: {
     noun: "Code eval",
@@ -129,4 +135,48 @@ export function deriveIsLocal(loop: {
   computeTarget?: unknown | null;
 }): boolean {
   return loop.computeTarget != null;
+}
+
+/** How many leading id characters to show when falling back to a short id. */
+const SHORT_LOOP_ID_LENGTH = 8;
+
+/** Short leading slice of a loop id, e.g. `3f2a91b4`, for disambiguation. */
+export function shortLoopId(id: string): string {
+  return id.slice(0, SHORT_LOOP_ID_LENGTH);
+}
+
+/**
+ * Human-readable identity for a loop, used where a loop must be named on its
+ * own (the loop-detail breadcrumb). Mirrors how branch/artifact detail
+ * breadcrumbs name their record so several open loop tabs stay distinguishable
+ * and the label never reads a generic placeholder.
+ *
+ * Leads with the command noun (which survives the header's tail truncation and
+ * distinguishes a Plan loop from a Code loop on the same artifact), then the
+ * artifact it implements (the FEA/PRD title) when loaded — e.g.
+ * `Plan: FEA-3979 title`. A document-less loop has no title to append, so the
+ * bare noun would collide across every chat/manual loop in the org; append a
+ * short id in that case (`Chat 3f2a91b4`). `getCommandLabels` always returns a
+ * non-empty noun (its fallback echoes the raw command), so an empty noun only
+ * arises for a blank/whitespace command — fall back to a short id there too.
+ *
+ * `artifactTitle` is the loaded document/artifact title when the loop targets
+ * one (`loop.documentId`); it may be absent for document-less loops. Callers
+ * that gate a document fetch on `loop.documentId` should hold their loading
+ * placeholder until the fetch settles rather than passing an empty title while
+ * the artifact loads, so the crumb does not flash the bare noun.
+ */
+export function getLoopBreadcrumbLabel(
+  loop: { command: LoopCommand; id: string },
+  artifactTitle?: string | null
+): string {
+  const noun = getCommandLabels(loop.command).noun.trim();
+  const trimmedTitle = artifactTitle?.trim();
+  if (noun && trimmedTitle) {
+    return `${noun}: ${trimmedTitle}`;
+  }
+  if (noun) {
+    return `${noun} ${shortLoopId(loop.id)}`;
+  }
+  return `Loop ${shortLoopId(loop.id)}`;
 }

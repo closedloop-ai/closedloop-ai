@@ -10,6 +10,7 @@ import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { resolveProjectId } from "@/lib/identifier-utils";
 
 import {
+  badRequestResponse,
   deleteResponse,
   errorResponse,
   notFoundResponse,
@@ -20,7 +21,7 @@ import {
   applyCustomFieldsFromBody,
   mergeCustomFieldsIntoResponse,
 } from "../../custom-fields/route-helpers";
-import { projectsService } from "../service";
+import { InvalidProjectTeamsError, projectsService } from "../service";
 import { updateProjectValidator } from "../validators";
 
 /**
@@ -139,6 +140,9 @@ export const PUT = withAnyAuth<ProjectWithDetails, "/projects/[id]">(
 
       return successResponse(projectWithDetails);
     } catch (error) {
+      if (error instanceof InvalidProjectTeamsError) {
+        return badRequestResponse(error.message);
+      }
       return errorResponse("Failed to update project", error);
     }
   },

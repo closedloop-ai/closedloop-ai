@@ -1,13 +1,13 @@
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { detectSuccessFromOutput } from "../../main/cost/token-usage.js";
 import {
   isTerminalJobStatus,
   type JobStore,
   type LocalJobStatus,
-} from "../../main/job-store.js";
-import { detectSuccessFromOutput } from "../../main/token-usage.js";
+} from "../../main/jobs/job-store.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
 import { readActiveAgents, readPlanProgress } from "./agent-utils.js";

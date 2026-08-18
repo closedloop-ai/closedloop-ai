@@ -1,11 +1,10 @@
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionState,
   AgentSessionSyncMode,
 } from "@repo/api/src/types/agent-session";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionsService } from "../../service";
 import {
   buildDefaultAgentSessionEventMocks,
   buildDefaultAgentSessionMocks,
@@ -13,16 +12,22 @@ import {
   buildSlugCounterMock,
   buildSyncedSession,
   installDb,
+  SESSION_STARTED_AT,
   SESSION_UPDATED_AT,
-} from "../../service.test-harness";
+} from "@/__tests__/support/agent-sessions/service.test-harness";
+import { agentSessionsService } from "../../service";
 
 vi.mock("@repo/database", async () => {
-  const { databaseModuleMock } = await import("../../service.test-mocks");
+  const { databaseModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return databaseModuleMock();
 });
 
 vi.mock("@repo/observability/telemetry/metrics", async () => {
-  const { telemetryModuleMock } = await import("../../service.test-mocks");
+  const { telemetryModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return telemetryModuleMock();
 });
 
@@ -132,6 +137,11 @@ describe("agentSessionsService", () => {
             ? {
                 artifactId: "persisted-session-1",
                 agents: persistedRecord.agents,
+                // ISS-4946: the upsert reads the persisted time columns as its
+                // freshness watermark, so the simulated row must carry them.
+                sessionStartedAt: persistedRecord.sessionStartedAt,
+                sessionUpdatedAt: persistedRecord.sessionUpdatedAt,
+                sessionEndedAt: persistedRecord.sessionEndedAt,
               }
             : null
         ),
@@ -186,7 +196,7 @@ describe("agentSessionsService", () => {
         batchId: "0196f2df-5b7d-7e72-9e4c-8d8af9fba002",
         sessions: [
           buildSyncedSession({
-            status: SESSION_STATUS.COMPLETED,
+            status: SESSION_STATUS.INACTIVE,
             branch: "fea-1771-resynced",
             linesAdded: 20,
             linesRemoved: 4,
@@ -210,7 +220,11 @@ describe("agentSessionsService", () => {
     );
     expect(detail).toMatchObject({
       id: "persisted-session-1",
-      status: SESSION_STATUS.COMPLETED,
+      // ISS-5648: the resync's retired `completed` spelling is accepted but
+      // folded to the canonical `inactive` on the way to the column. The point
+      // of this case is the persisted `state` surviving the resync, which the
+      // fold does not touch.
+      status: SESSION_STATUS.INACTIVE,
       state: AgentSessionState.Blocked,
       branch: "fea-1771-resynced",
       linesAdded: 20,
@@ -238,6 +252,11 @@ describe("agentSessionsService", () => {
           artifactId: "persisted-session-1",
           agents: [],
           dataRevision: null,
+          // ISS-4946: the upsert reads the persisted time columns as its
+          // freshness watermark, so a persisted-row stub must carry them.
+          sessionStartedAt: SESSION_STARTED_AT,
+          sessionUpdatedAt: SESSION_UPDATED_AT,
+          sessionEndedAt: null,
         }),
         upsert: sessionUpsert,
       }),

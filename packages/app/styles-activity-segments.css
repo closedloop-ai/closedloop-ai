@@ -1,0 +1,237 @@
+/* FEA-3705 / FEA-4238: the Session-detail Activity phases strip.
+   Extracted from styles.css (a grandfathered over-size stylesheet) so the
+   phase-strip / disclosure rules live in a focused sibling and stop growing
+   the shared stylesheet. Imported by styles.css. All colors/spacing are the
+   .sd3-* design layer's own tokens/idioms — this is a move, not a restyle. */
+
+/* FEA-3705: raw activity-segment tiling (activitySegmentRows) rendered as a
+   bounded phase strip below the cost-bar timeline. Positioned slices on a
+   single fixed-height track (no nested scroll region) so the parent trace
+   scroll is untouched. All colors/tokens are design-system vars. */
+/* The strip is the Session Timeline's sibling but a DIFFERENT scale (segment
+   min/max, not session duration). Its own titled header ("Activity phases") and
+   the inset body below (a single left rule that offsets the track from the
+   full-width bars) keep the two strips from reading as one continuous x-axis, so
+   the section needs only its stacking margin — not a second rule on top of that.
+   (Round 4: dropped the redundant top border; the inset carries the separation.) */
+.sd3-segs {
+  margin-top: 14px;
+  padding-bottom: 4px;
+}
+
+/* Header uses the Session Timeline convention (.sd3-act-head / .sd3-act-title),
+   matching the sibling meta-section stacked above it in the sticky detail head;
+   this modifier only drops the section top margin, since the strip sits inside
+   its own padded .sd3-segs section. The count + legend share the right-hand slot
+   .sd3-act-head lays out via space-between. */
+.sd3-segs-head {
+  margin: 0 0 7px;
+}
+
+.sd3-segs-headmeta {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 3px 12px;
+}
+
+/* FEA-4238: the phase strip is always a disclosure — the "Activity phases" header
+   is a toggle button on every session (open by default when there's real work,
+   collapsed when idle dominates), so the control is stable rather than appearing
+   only on some sessions. The button reuses the .sd3-act-head header treatment and
+   strips the default button chrome so it reads as a header, not a form control. */
+.sd3-segs-summary {
+  width: 100%;
+  cursor: pointer;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+/* Title + chevron form the disclosure's left group; the count + notes sit in the
+   right slot .sd3-act-head lays out via space-between. */
+.sd3-segs-titlegroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The chevron is the same lucide glyph (sized via the size-3.5 utility) that the
+   trace rows, subagent blocks, and reason toggle use, so the screen shows one
+   disclosure glyph. */
+.sd3-segs-chev {
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+/* The disclosed body wrapper — the legend row plus the strip — is revealed only
+   when the disclosure is open, so a folded strip never keys colors nobody sees. */
+.sd3-segs-legendrow {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+/* The always-visible honest caveats on the summary (e.g. "98% idle", "later
+   phases truncated") — exactly the notes that must survive a fold, so they ride
+   the summary rather than the collapsible body. Muted, matching the neighboring
+   .sd3-segs-note qualifier's 12px. */
+.sd3-segs-summary-note {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+/* The strip body is INSET from the full-width cost bars above so the two never
+   share a left edge — a reader can't line a phase up under the bar directly over
+   it, because they visibly don't start at the same x. This single left rule is
+   what breaks the shared-axis illusion: the phase strip runs on the classified
+   segment window's own min/max, not the cost bars' session-duration scale. */
+.sd3-segs-body {
+  margin-left: 20px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+/* One scale caption under the strip — "phases span <dur>" — stating the window's
+   own total span, so the independent scale is named without repeating the same
+   duration across a start tick, an end tick, and a caption. */
+.sd3-segs-scale {
+  min-width: 0;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sd3-segs-track {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--muted) 40%, transparent);
+  overflow: hidden;
+  list-style: none;
+}
+
+.sd3-seg {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--primary);
+  /* Slices are absolutely positioned, so `gap` can't separate them; a hairline
+     seam in the page background keeps a run of adjacent segments legible as
+     distinct tiles instead of fusing into one continuous bar. */
+  box-shadow: inset -1px 0 0 0 var(--background);
+  /* Passive KEY, not a navigable event: the default cursor (never a pointer)
+     tells the reader this strip surfaces phase on hover but promises no jump,
+     unlike the clickable cost bars / event dots stacked above it. */
+  cursor: default;
+}
+
+/* Read-only inspect affordance on hover: a faint brightness lift, deliberately
+   NOT the cost bars' primary-tinted click outline, so the strip reads as a
+   hover-to-inspect key rather than a clickable sibling of the bars. The hidden
+   truncation fills are decorative (aria-hidden, no tooltip), so they neither
+   lift nor intercept the pointer (see .sd3-seg[data-kind="hidden"] below). */
+.sd3-seg:not([data-kind="hidden"]):hover {
+  filter: brightness(1.12);
+}
+
+.sd3-seg[data-kind="idle"] {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 4px
+  );
+}
+
+.sd3-seg[data-kind="unavailable"] {
+  background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+
+/* Truncation-collapsed spans: real activity we dropped for legibility, painted
+   faintly so the run reads as "there was work here, just not shown" instead of
+   leaving a bare gap that lies as idle. Sits under the kept slices. */
+.sd3-seg[data-kind="hidden"] {
+  background: color-mix(in oklab, var(--muted-foreground) 16%, transparent);
+  box-shadow: none;
+  pointer-events: none;
+}
+
+.sd3-segs-note {
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+/* Inline key next to the count, mirroring the .bq-act-legend chart-legend
+   pattern. Swatches reuse the same fills as the track slices so the key and the
+   strip can't drift. */
+.sd3-segs-legend {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sd3-segs-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sd3-segs-lg-sw {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+  background: var(--primary);
+}
+
+.sd3-segs-lg-sw[data-kind="idle"] {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 4px
+  );
+}
+
+.sd3-segs-lg-sw[data-kind="unavailable"] {
+  background: color-mix(in oklab, var(--muted-foreground) 45%, transparent);
+}
+
+.sd3-segs-lg-sw[data-kind="hidden"] {
+  background: color-mix(in oklab, var(--muted-foreground) 16%, transparent);
+}
+
+.sd3-segs-lg-name {
+  color: var(--muted-foreground);
+  /* ISS-4790: the legend takes its bucket words from the canonical
+     ACTIVITY_PHASE_LABEL map (one spelling repo-wide) and lowercases them HERE,
+     so the chart-annotation look is presentation rather than a second, divergent
+     copy of the strings. */
+  text-transform: lowercase;
+  /* The legend is the only decoder for the strip's fills, so it can't sit at the
+     11px whisper size — 12px matches the .sd3-segs-note qualifier below and reads
+     without leaning in (the established small-meta step on this strip). */
+  font-size: 12px;
+  white-space: nowrap;
+}

@@ -1,8 +1,6 @@
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { app, Menu, nativeImage, Tray } from "electron";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { Menu, nativeImage, Tray } from "electron";
+import { resolveResourcesDir } from "./resources-dir.js";
 
 export type TrayState = "starting" | "ready" | "degraded" | "error";
 
@@ -31,7 +29,6 @@ export class DesktopTray {
   private state: TrayState = "starting";
   private paused = false;
   private pendingApprovals = 0;
-  private agentMonitorEnabled = false;
   private handlers: DesktopTrayHandlers = {};
 
   constructor(options?: DesktopTrayOptions) {
@@ -88,11 +85,6 @@ export class DesktopTray {
     this.refreshContextMenu();
   }
 
-  setAgentMonitorEnabled(enabled: boolean): void {
-    this.agentMonitorEnabled = enabled;
-    this.refreshContextMenu();
-  }
-
   dispose(): void {
     if (!this.tray) {
       return;
@@ -125,16 +117,12 @@ export class DesktopTray {
             this.handlers.onManageCommandKeys?.();
           },
         },
-        ...(this.agentMonitorEnabled
-          ? [
-              {
-                label: "Open Agent Dashboard",
-                click: () => {
-                  this.handlers.onOpenClaudeDashboard?.();
-                },
-              },
-            ]
-          : []),
+        {
+          label: "Open Agent Dashboard",
+          click: () => {
+            this.handlers.onOpenClaudeDashboard?.();
+          },
+        },
         {
           label: this.paused ? "Resume" : "Pause",
           click: () => {
@@ -160,11 +148,8 @@ export class DesktopTray {
 function createTrayIcon(_pendingApprovals: number) {
   // On macOS, Electron automatically picks trayIconTemplate.png and trayIconTemplate@2x.png
   // when the filename contains "Template" and setTemplateImage is true.
-  const resourcesDir = app.isPackaged
-    ? process.resourcesPath
-    : path.join(__dirname, "..", "..", "resources");
   const icon = nativeImage.createFromPath(
-    path.join(resourcesDir, "trayIconTemplate.png")
+    path.join(resolveResourcesDir(), "trayIconTemplate.png")
   );
   if (process.platform === "darwin") {
     icon.setTemplateImage(true);

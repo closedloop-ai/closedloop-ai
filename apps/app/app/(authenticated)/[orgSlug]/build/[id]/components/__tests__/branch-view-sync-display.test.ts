@@ -7,7 +7,7 @@ import {
   type BranchViewSyncState,
   BranchViewSyncThrottleReason,
 } from "@repo/api/src/types/branch-view";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BranchViewData } from "../../types";
 import {
   getFileCacheDisplayMessage,
@@ -66,6 +66,15 @@ function branch(
 }
 
 describe("Branch View sync display helpers", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-27T17:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it.each([
     [BranchViewSyncThrottleReason.LocalDedupe, "Refresh available in 7s"],
     [
@@ -176,5 +185,117 @@ describe("Branch View sync display helpers", () => {
     });
 
     expect(message).toBe("File comparison is unavailable for this branch.");
+  });
+
+  it("shows the immediate refreshing label for an in-progress sync without a retry state", () => {
+    const label = getLifecycleSyncDisplayLabel({
+      syncRetryState: null,
+      isBranchSyncPending: false,
+      syncState: syncState({
+        presentation: BranchViewSyncPresentationState.Refreshing,
+      }),
+    });
+
+    expect(label).toBe("Refreshing");
+  });
+
+  it("reports PR sync status unavailable when a lifecycle error has no synced timestamp yet", () => {
+    const label = getLifecycleSyncDisplayLabel({
+      syncRetryState: null,
+      isBranchSyncPending: false,
+      syncState: syncState({
+        branchLastSyncedAt: null,
+        lastOutcome: {
+          code: BranchViewSyncErrorCode.PrLifecycleUnavailable,
+          httpStatus: 502,
+          message: "server fallback text",
+          retryAfterSeconds: null,
+          source: BranchViewSyncOutcomeSource.PullRequestLifecycle,
+          synced: false,
+        },
+        lifecycleLastSyncedAt: null,
+        presentation: BranchViewSyncPresentationState.ShowingLastKnown,
+      }),
+    });
+
+    expect(label).toBe("PR sync status unavailable");
+  });
+
+  it.each([
+    ["2026-05-27T16:55:00.000Z", "Showing last synced 5 min ago"],
+    [null, "Showing last known"],
+  ])("shows the last-known fallback label for lifecycleLastSyncedAt=%s", (lifecycleLastSyncedAt, expected) => {
+    const label = getLifecycleSyncDisplayLabel({
+      syncRetryState: null,
+      isBranchSyncPending: false,
+      syncState: syncState({
+        lifecycleLastSyncedAt,
+        presentation: BranchViewSyncPresentationState.ShowingLastKnown,
+      }),
+    });
+
+    expect(label).toBe(expected);
+  });
+
+  it("falls back to sync status unknown when no timestamp or outcome is available", () => {
+    const label = getLifecycleSyncDisplayLabel({
+      syncRetryState: null,
+      isBranchSyncPending: false,
+      syncState: syncState({
+        branchLastSyncedAt: null,
+        lifecycleLastSyncedAt: null,
+        presentation: BranchViewSyncPresentationState.Unknown,
+      }),
+    });
+
+    expect(label).toBe("Sync status unknown");
+  });
+
+  it("returns no file-cache message when no branch has loaded yet", () => {
+    expect(
+      getFileCacheDisplayMessage({
+        branch: null,
+        committedFileCount: 3,
+        syncState: undefined,
+      })
+    ).toBeNull();
+  });
+
+  it.each([
+    [0, "Could not refresh file changes from GitHub."],
+    [
+      5,
+      "Showing last synced file changes. Could not refresh file changes from GitHub.",
+    ],
+  ])("reports the compare-failed file-cache message for committedFileCount=%s", (committedFileCount, expected) => {
+    const message = getFileCacheDisplayMessage({
+      branch: branch(),
+      committedFileCount,
+      syncState: syncState({
+        lastOutcome: {
+          code: BranchViewFileCacheSyncErrorCode.CompareFailed,
+          httpStatus: 502,
+          message: "raw provider text",
+          retryAfterSeconds: null,
+          source: BranchViewSyncOutcomeSource.FileCache,
+          synced: false,
+        },
+      }),
+    });
+
+    expect(message).toBe(expected);
+  });
+
+  it.each([
+    [0, "The latest file refresh failed."],
+    [5, "Showing last synced file changes. The latest file refresh failed."],
+  ])("reports the failed file-cache-status message for committedFileCount=%s", (committedFileCount, expected) => {
+    const message = getFileCacheDisplayMessage({
+      branch: branch({ fileCacheStatus: BranchFileCacheStatus.Failed }),
+      committedFileCount,
+      syncState: undefined,
+    });
+
+    expect(message).toBe(expected);
   });
 });

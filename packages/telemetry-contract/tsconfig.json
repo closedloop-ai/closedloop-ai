@@ -1,6 +1,12 @@
 {
   "extends": "@repo/typescript-config/base.json",
   "compilerOptions": {
+    // This package's `typescript` devDep is the @typescript/typescript6 alias
+    // (tsup's dts step needs the JS compiler API that typescript@7 dropped).
+    // tsup injects `baseUrl` into that dts program, which the TS6 compiler
+    // rejects as deprecated — this silences it. Remove with the alias when
+    // tsup supports the TS 7.1 API.
+    "ignoreDeprecations": "6.0",
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },

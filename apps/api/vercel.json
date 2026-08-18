@@ -15,6 +15,14 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/cron/sample-session-ingestion-health",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/cron/sample-merge-queue-stall",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/cron/cleanup-preview-schemas",
       "schedule": "17 6 * * *"
     },
@@ -23,8 +31,24 @@
       "schedule": "41 4 * * *"
     },
     {
+      "path": "/cron/cleanup-phantom-sessions",
+      "schedule": "53 4 * * *"
+    },
+    {
+      "path": "/cron/reconcile-stale-sessions",
+      "schedule": "17 * * * *"
+    },
+    {
+      "path": "/cron/backfill-orphan-transcripts",
+      "schedule": "11 5 * * *"
+    },
+    {
       "path": "/cron/reconcile-attachments",
       "schedule": "23 5 * * *"
+    },
+    {
+      "path": "/cron/reconcile-attachment-rows",
+      "schedule": "47 5 * * *"
     },
     {
       "path": "/cron/drain-check-run-retries",
@@ -33,6 +57,18 @@
     {
       "path": "/cron/cleanup-loop-state",
       "schedule": "47 3 * * *"
+    },
+    {
+      "path": "/cron/drain-audit-outbox",
+      "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/cron/reconcile-pull-requests",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/cron/bootstrap-repo-sync-states",
+      "schedule": "37 * * * *"
     }
   ]
 }

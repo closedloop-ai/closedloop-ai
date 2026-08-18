@@ -1,3 +1,4 @@
+import { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -18,7 +19,7 @@ function classification(
   return {
     threadVersion: undefined,
     isCurrentVersion: false,
-    anchorStatus: "artifact-level",
+    anchorStatus: DocumentThreadAnchorStatus.ArtifactLevel,
     ...overrides,
   };
 }
@@ -95,13 +96,13 @@ describe("passesLiveblocksFilter", () => {
     it("Anchored keeps anchored only", () => {
       expect(
         passesLiveblocksFilter(
-          classification({ anchorStatus: "anchored" }),
+          classification({ anchorStatus: DocumentThreadAnchorStatus.Anchored }),
           filter({ commentType: FeedFilterCommentType.Anchored })
         )
       ).toBe(true);
       expect(
         passesLiveblocksFilter(
-          classification({ anchorStatus: "floating" }),
+          classification({ anchorStatus: DocumentThreadAnchorStatus.Floating }),
           filter({ commentType: FeedFilterCommentType.Anchored })
         )
       ).toBe(false);
@@ -110,19 +111,21 @@ describe("passesLiveblocksFilter", () => {
     it("DocumentLevel collapses floating and artifact-level", () => {
       expect(
         passesLiveblocksFilter(
-          classification({ anchorStatus: "floating" }),
+          classification({ anchorStatus: DocumentThreadAnchorStatus.Floating }),
           filter({ commentType: FeedFilterCommentType.DocumentLevel })
         )
       ).toBe(true);
       expect(
         passesLiveblocksFilter(
-          classification({ anchorStatus: "artifact-level" }),
+          classification({
+            anchorStatus: DocumentThreadAnchorStatus.ArtifactLevel,
+          }),
           filter({ commentType: FeedFilterCommentType.DocumentLevel })
         )
       ).toBe(true);
       expect(
         passesLiveblocksFilter(
-          classification({ anchorStatus: "anchored" }),
+          classification({ anchorStatus: DocumentThreadAnchorStatus.Anchored }),
           filter({ commentType: FeedFilterCommentType.DocumentLevel })
         )
       ).toBe(false);

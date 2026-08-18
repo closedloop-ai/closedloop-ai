@@ -8,12 +8,13 @@
  * watchdog spammed/misfired, the signal would be worse than none.
  */
 import assert from "node:assert/strict";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import {
   installProcessCrashLogging,
   measureOp,
   startHeapWatchdog,
 } from "../src/main/database/db-host/db-host-memory-watchdog.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 const GET_INSIGHTS_OP_LOG = /db-host op "dashboard\.getInsights" heap/;
 const GET_ALL_OP_LOG = /db-host op "sessions\.getAll"/;
@@ -117,7 +118,7 @@ test("installProcessCrashLogging logs AND exits so the worker restarts", () => {
 });
 
 test("startHeapWatchdog logs HEAP PRESSURE once on the rising edge, then stops", () => {
-  mock.timers.enable({ apis: ["setInterval"] });
+  nodeTestTimers.enable(["setInterval"]);
   try {
     const logs: string[] = [];
     // warnHeapBytes: 1 → heapUsed is always over the threshold, so the first
@@ -127,16 +128,16 @@ test("startHeapWatchdog logs HEAP PRESSURE once on the rising edge, then stops",
       warnHeapBytes: 1,
       sampleIntervalMs: 1000,
     });
-    mock.timers.tick(1000);
-    mock.timers.tick(1000);
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
+    nodeTestTimers.tick(1000);
+    nodeTestTimers.tick(1000);
     const pressureLines = logs.filter((l) => l.includes("HEAP PRESSURE"));
     assert.equal(pressureLines.length, 1);
 
     watchdog.stop();
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
     assert.equal(logs.filter((l) => l.includes("HEAP PRESSURE")).length, 1);
   } finally {
-    mock.timers.reset();
+    nodeTestTimers.reset();
   }
 });

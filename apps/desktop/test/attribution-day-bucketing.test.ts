@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 
 // FEA-2430: pinned so the localtime characterization below is deterministic
 // across machines/CI. The UTC-dialect tests are TZ-independent (substr /
@@ -28,7 +28,8 @@ test("SQLite: UTC substr day bucketing groups token events by UTC calendar day",
   // (local-insights.ts / dashboard-queries.ts — see the localtime
   // characterization below and test/localtime-halfhour-characterization.test.ts).
   // These UTC-dialect tests remain to characterize the raw substr/strftime
-  // semantics still used for STORAGE-side derivations (write-core started_day).
+  // semantics still used for STORAGE-side derivations
+  // (session-analytics-rollup.ts / component-invocations.ts started_day).
   const dir = await mkdtemp(path.join(os.tmpdir(), "fea1459-tz-"));
   const { db } = await openMigrationDatabase(path.join(dir, "tz.sqlite"));
   try {

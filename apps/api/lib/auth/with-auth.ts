@@ -1,16 +1,20 @@
 import "server-only";
 
 import type { ApiKeyScope } from "@repo/api/src/types/api-key";
+import {
+  AuthErrorCode,
+  ORG_UNVERIFIABLE_MESSAGE,
+} from "@repo/api/src/types/auth-error";
 import type { ApiResult } from "@repo/api/src/types/common";
 import { failure } from "@repo/api/src/types/common";
 import type { User } from "@repo/api/src/types/user";
 import { auth } from "@repo/auth/server";
-import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
 import { type NextRequest, NextResponse } from "next/server";
 import {
   forbiddenResponse,
   logRequestCompleted,
+  serviceUnavailableResponse,
   unauthorizedResponse,
 } from "../route-utils";
 import { findOrCreateUser } from "./find-or-create-user";
@@ -108,7 +112,31 @@ export function withAuth<TResponse, TRoute extends string = string>(
         orgRole ?? undefined
       );
       if (orgResolution.kind === "forbidden") {
-        response = forbiddenResponse();
+        // Coded, because this 403 is session-level, not resource-level
+        // (ISS-5095). `resolveOrgHeader` answered "no" here: Clerk was reached
+        // and reported that this caller is not a member of the org the request
+        // named — an org-switch race, or a membership revoked mid-session. A
+        // lookup that FAILED is deliberately NOT this branch (ISS-5118); it is
+        // `unverifiable`, handled six lines below, because nobody decided
+        // anything in that case. Since every authenticated request carries the
+        // org header, either condition fails every query at once. The web
+        // shell's re-auth surface no longer trips on a bare 403 (a forbidden
+        // resource is not a dead session), so without this code the only
+        // recovery affordance would disappear for the one 403 that genuinely
+        // needs it. Additive and optional on the wire: a client that does not
+        // know the code still sees a plain 403.
+        response = forbiddenResponse({ code: AuthErrorCode.OrgForbidden });
+        return response;
+      }
+      if (orgResolution.kind === "unverifiable") {
+        // ISS-5118: the org lookup FAILED rather than answering "no". That is an
+        // availability problem, not an authorization decision, so it must not
+        // wear a 403 — telemetry could not tell an outage from a denial, and the
+        // client's 403 copy told the user to re-authenticate, which cannot fix a
+        // provider outage. A retryable 503 with its own code says what happened.
+        response = serviceUnavailableResponse(ORG_UNVERIFIABLE_MESSAGE, {
+          code: AuthErrorCode.OrgUnverifiable,
+        });
         return response;
       }
       const effectiveClerkOrgId = orgResolution.clerkOrgId;
@@ -146,7 +174,6 @@ function authErrorResponse(
   error: unknown,
   status = 500
 ): NextResponse<ApiResult<never>> {
-  const errorMessage = parseError(error);
-  log.error(message, { error: errorMessage });
+  log.error(message, { error });
   return NextResponse.json(failure(message), { status });
 }

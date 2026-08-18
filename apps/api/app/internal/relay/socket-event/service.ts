@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { analytics } from "@repo/analytics/server";
 import { DESKTOP_AGENT_SESSIONS_SOCKET_EVENT } from "@repo/api/src/types/agent-session";
 import type { JsonObject, JsonValue } from "@repo/api/src/types/common";
 import type { ComputeTargetServerCapabilities } from "@repo/api/src/types/compute-target";
@@ -34,10 +33,8 @@ import {
   isComputeTargetSigningEligible,
 } from "@/lib/compute-target-signing-eligibility";
 import { handleDesktopAgentSessionsEvent } from "@/lib/desktop-agent-sessions-handler";
-import {
-  type DesktopAnalyticsCaptureInput,
-  handleDesktopAnalyticsEvent,
-} from "@/lib/desktop-analytics-handler";
+import { captureDesktopAnalytics } from "@/lib/desktop-analytics-capture";
+import { handleDesktopAnalyticsEvent } from "@/lib/desktop-analytics-handler";
 import { DESKTOP_ANALYTICS_SOCKET_EVENT } from "@/lib/desktop-analytics-schema";
 import { acknowledgeDesktopCommand } from "@/lib/desktop-command-ack-handler";
 import { desktopCommandStore } from "@/lib/desktop-command-store";
@@ -64,10 +61,6 @@ import { runStage, timeStage } from "@/lib/with-timeout";
 // ---------------------------------------------------------------------------
 // Dispatch — routes an incoming socket event to the appropriate handler
 // ---------------------------------------------------------------------------
-
-function captureDesktopAnalytics(input: DesktopAnalyticsCaptureInput): void {
-  analytics.capture(input);
-}
 
 export type SocketEventInput = {
   event: string;

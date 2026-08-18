@@ -1,0 +1,126 @@
+---
+title: Sessions
+description: The Sessions surface — the list, detail, and trace of every AI coding run Closedloop.ai observes, plus the filters, status model, cost buckets, and PR/branch attribution behind it.
+---
+
+A **session** is a single AI coding run — one Claude, Codex, Cursor, Copilot, or OpenCode invocation — that the desktop client observed, [normalized](./parsers-collectors), and (when signed in) [synced](./synchronization) to the cloud. The Sessions surface is where you read them: a filterable **list** of every run, a **detail** page per run with a turn-by-turn **trace**, and the summary KPIs that roll up across the current filter. It renders from the same shared package on both the web app and the desktop client, so the two surfaces show the same rows.
+
+This page describes the Sessions surface itself. The [aggregated-data](./aggregated-data) layer covers the Insights dashboards that roll these sessions up; the [agent-components](./agent-components) inventory covers the sub-agents, skills, and commands a session used; and the [agent-sessions MCP tools](../mcp/agent-sessions) expose the same data programmatically.
+
+## The list
+
+The Sessions list is one row per run. Each row carries the owner, harness, model, repository, working branch, duration, estimated cost, and a status badge, plus links to any PR or branch the run touched. The row's token counts feed the [cost](#cost-buckets) derivation but are not surfaced as a per-run column, so the list is not a token-usage comparison. Rows are sortable by user, status, repository, harness, model, duration, cost, start time, or last activity.
+
+The list is windowed by design. On the desktop client, row-loading list reads default to a rolling 90-day window (all-time is an explicit toggle), while the summary aggregates stay all-time because they are cheap to compute in SQL — see [aggregated data](./aggregated-data) for why the list and the aggregates can be scoped differently. On the web app the list reads the authenticated `/agent-sessions` routes against synced cloud metadata.
+
+### Substantive vs. idle
+
+An **idle** session is a run with zero turns, zero tokens, and zero tool uses — typically a harness that opened and closed without doing billable work. The server can narrow reads to `substantive` (excludes idle rows), `idle` (only idle rows), or `all` (both) via a `quality` param, and that narrowing applies identically to the list, the usage/analytics aggregations, and export so the counts stay consistent.
+
+The current web and desktop-renderer clients do **not** send `quality` (the earlier Substantive | Idle | All segment control was reverted in FEA-4194 as an unapproved taxonomy), so the effective default everywhere is `all` — idle rows are shown. The `quality` contract is kept server-side because it is version-skewed: an older desktop build that still sends an explicit `quality` narrows only its own read.
+
+## Filters
+
+The filter menu is a single source of truth shared across every surface that filters sessions — the shared menu, the cloud query builder, and the desktop local matcher classify a recognized value identically, so for the vocabulary the menu offers the web cloud path and the desktop local path agree. (The residual per-path differences — unrecognized spellings and rollout-gated predicates — are called out below.) The facets are:
+
+| Facet | What it matches |
+|---|---|
+| **Owner** | The user attributed as the run's owner. Options are data-derived from the usage `byUser` breakdown; the selection filters on the canonical `userIds`. |
+| **Status** | Active, Waiting, Inactive, Failed, Stale, Unknown (see the status model below). |
+| **Harness** | The agent that produced the run (Claude, Codex, Cursor, Copilot, OpenCode). Options are derived from the sessions actually present. |
+| **Model** | The model the run used. Options are data-derived from the usage summary. |
+| **Repository** | The repository the run worked in. |
+| **Cost** | Coarse cost-range buckets (see [cost buckets](#cost-buckets)). |
+| **Autonomy tier** | How autonomously the run operated. |
+| **Change presence** | Whether the run produced changes (`has_changes` / `no_changes`), defined against the same files-changed / lines-added / lines-removed columns the detail row renders. |
+| **PR association** | Whether the run is linked to a pull request (`has_pr` / `no_pr`). |
+
+Multi-select facets **OR** within a facet and **AND** across facets, so selecting two cost buckets widens the cost slice while a repository selection narrows it. Unknown values are not uniformly harmless. The **fixed-vocabulary** facets — autonomy tier, cost, change presence, and PR association — match against a known id set, so an unrecognized id is simply ignored. But **data-derived** facets — Harness, Model, Repository (and Owner) — feed their values straight into equality filters on both the cloud and local paths, so a stale value that no longer matches any session just empties the list rather than being ignored. Status sits between the two: its options are a fixed vocabulary rather than data-derived, and most of them filter through a purpose-built predicate rather than a plain equality. Since ISS-5592 no spelling is folded on arrival from a bookmark or a saved view — the retired `completed`/`abandoned` included — so an unrecognized status falls through to a plain equality — and the two paths compare differently. The cloud query matches only rows that literally store that string, while the local path lowercases both sides first, so a request for `FutureState` can match a locally stored `futurestate` that the cloud path would miss. That case fold is now the whole of the local canonicalization: ISS-5592 also removed the arm that mapped a locally stored `running` onto `active`, having established that no desktop write path has ever produced the value. What such a row would read is NOT the same on both surfaces, and the difference is worth stating rather than glossing: locally it now reads `unknown`, while the cloud copy of the same session reads `active`, because sync folds an unrecognized status on the way in and stores the fail-open value rather than the raw word. Only a row that literally reached the cloud column as `running` — a write predating that fold — reads `unknown` on the web too. Both populations are unreachable, which is why the removal is safe; neither is a claim that the two surfaces agree on a value nothing produces. On either path a value nothing stores just empties the list rather than being ignored. The quality segment is the one facet that rejects an unsupported value outright, so the segment and the query builder can never disagree.
+
+Date filters carry a specific meaning per read. On the cloud path the list, the usage summary, and the CSV export all treat `startDate`/`endDate` as an **activity window** on the run's last-activity time (`lastActivityAt`) — the window keeps the sessions whose `lastActivityAt` falls inside it, so a session that started before the window is still included when its last activity landed there, while one that was active during the window and then active again after it ends is excluded, because only that final `lastActivityAt` is tested. The export deliberately windows on the same field so it paints the same cohort as the table. A row with no `lastActivityAt` (pre-backfill) falls back to its `sessionStartedAt` for that window rather than being dropped. Only the **analytics** aggregation bounds the session **start** time (`sessionStartedAt`), on the principle that a session belongs to the period it started in — and that window has no fallback, so a row with a null `sessionStartedAt` is excluded from it rather than silently counted, as is a row with neither timestamp on the activity window.
+
+### Cost buckets
+
+The Cost facet buckets sessions into four coarse USD ranges, compared on the **displayed** (2-decimal) cost value so the filter and the Cost cell always agree:
+
+| Bucket | Range |
+|---|---|
+| ≤ $1 | `[0, $1]` (inclusive of $1.00) |
+| $1 to $10 | `($1, $10]` |
+| $10 to $50 | `($10, $50]` |
+| $50+ | `> $50` |
+
+The buckets partition the displayed cost grid with no gap and no overlap: each upper bound is inclusive and each lower bound (except the first) is exclusive, so a row the Cost cell renders as exactly `$1.00` falls in **≤ $1**, not **$1 to $10**. Selecting several buckets ORs them into a broader "high-cost sessions" slice.
+
+Buckets are numeric predicates only — they never match an **unknown** cost. A session's cost is *known* when it was priced from captured usage (`estimatedCost > 0`) or is billed through a subscription; those render a `$` figure. A session with no priced cost and no subscription is *unknown* — whether it burned tokens with no pricing data for its model, or did no billable work at all — and renders the honest `—` sentinel instead of a misleading `$0.00`. Unknown-cost sessions are excluded from every numeric cost bucket, exactly as a row with no usable timestamp is excluded from a date window; they are never coerced to a placeholder `$0` that would wrongly satisfy the "≤ $1" bucket.
+
+## The status model
+
+The Status facet offers six values, rendered with the labels below. Only three of them are lifecycle values the product writes — `active`, `inactive`, and `error`; the other three are derived by a read rather than written by any current producer:
+
+| Status | Label | Meaning |
+|---|---|---|
+| `active` | Active | The run is in progress. |
+| `waiting` | Waiting | The run is paused awaiting user input. Normally derived from the awaiting-input timestamp rather than the stored status — though a compatibility row that literally stores `waiting` also displays it. |
+| `inactive` | Inactive | The run is over and did not fail. |
+| `error` | Failed | The run failed. |
+| `stale` | Stale | The run is stored as `active` but has been silent past the 24-hour display cutoff (anchored on last activity, falling back to the start time when none was recorded), so the stored value is no longer backed by evidence. A run awaiting input is exempt — it stays Waiting. Derived per render. |
+| `unknown` | Unknown | The stored status is not a value this build recognizes (version skew), or the row literally stores `unknown`. It asserts nothing about the run, which may still be in progress. Derived per render. |
+
+**Active and Waiting share one persisted value.** A run that is awaiting user input is stored as `active` but *displays* as **Waiting** whenever it has an awaiting-input marker and has not yet ended — unconditionally on the cloud path, and on Desktop's local path once its parity toggle is on. The displayed status is projected once at the read boundary so the badge, the Status-column sort, and the Status facet filter can key off one value, but full three-way agreement is still rolling out behind the `sessions-displayed-status-parity` flag: the cloud already projects the served status and the Status sort for every viewer and gates only its facet predicates on the flag (resolved per viewer; an unavailable evaluation holds the viewer's last known decision, failing closed only when none was ever made), while Desktop gates its local lane behind a Labs toggle, default off. Where the flag is off the old gaps remain: a long-silent local row can badge Stale yet sort under Active, and the Active and Waiting predicates on both paths keep their pre-parity edge cases. Stale and Unknown are projected the same way, and they stay distinct from each other on purpose: "this run has said nothing for a day" is a fact about the session, "we cannot read this status" is a fact about the build reading it, and only one of them is something a reader can act on.
+
+**`completed` and `abandoned` were retired.** Both meant "the run is over and did not fail", so both collapsed into `inactive`; the stored rows were backfilled and neither word is offered by the facet or rendered by the list any more. ISS-5592 removed the last of their tolerance: they are now ordinary unrecognized values. A write from a not-yet-updated client is still accepted rather than rejected — rejecting an unrecognized status would leave a finished run reading as still running — but it is not stored as sent: cloud ingest NO LONGER folds `completed` and `abandoned` — since ISS-5592 they are unrecognized, so the fail-open branch stores `active`. A client still sending one therefore records a finished run as live; it will read as Active, or as Stale once past the display cutoff. The **surface** no longer folds them either, but that does not make such a row read as Active: the display derivation is `resolveDisplayedSessionStatus`, so a stored row badges **Unknown** — or **Waiting**, when it carries an awaiting-input marker and has not ended, since that projection runs ahead of the unrecognized fold. The raw filter fallback can still exact-match the stored spelling. What keeps all of these empty is the zero-row invariant, not an inability to reach them. The cloud Inactive predicate used to widen onto the retired values and no longer does, because the ingest fold makes the value unwritable and a production count confirmed the column holds none (the desktop store is re-collapsed at boot, so its facet never needed the expansion). A bookmarked `?status=completed` no longer folds onto the **Inactive** facet option — it is an unrecognized filter value and resolves nothing, on both surfaces. That surface fold is display-side only: the cloud list read returns whatever the row stores, while the desktop-local list serves the canonicalized spelling instead. And the retired pair is no longer the whole width of that wire contract. Sync still accepts any non-empty status string from a version-skewed client, but the ingest now folds every accepted spelling onto one of the three lifecycle values before the write — `waiting` to `active`, and a spelling this build does not model to `active` as well — so a newly written row carries nothing else. ISS-5592 retired the last aliases: `running` and `failed` join `completed`/`abandoned` as unmodelled, so a client still sending `failed` records a run that is LIVE, not failed. Send `error`. Folding `waiting` loses nothing: the awaiting-input signal is a timestamp the same write preserves, and the Waiting badge is re-derived from it on every read. A terminal-status-wins guard on updates still discards a non-terminal spelling arriving for an already-finished row. Rows written before that fold became total were not backfilled, so a read can still return one verbatim: a stored `waiting` is real (the facet that gathers it sits behind the parity flag above), and an unrecognized spelling is served as `unknown`. An API or [MCP](../mcp/agent-sessions) consumer should treat the six-value vocabulary as what it may *send*, and the three lifecycle values as what a new write stores — not as a bound on the spellings a read may return.
+
+`inactive` and `error` are the **terminal** statuses: the run is over, so it can never be genuinely "awaiting input". `stale` and `unknown` are deliberately *not* terminal — a run that has gone quiet has not been observed to end, and an unreadable status asserts nothing either way — but neither is treated as live either: a row's Duration cell grows against the clock only while it displays as Active or Waiting, so an indeterminate row's cell is not credited with time it may never have spent. The session-detail page projects a terminal row onto its own outcome vocabulary, where `error` reads **Failed** and `inactive` reads **Completed** — on the cloud path that derivation is a fallback: a stored legacy state that still parses takes precedence for any row, so a version-skewed row can show something else entirely, while the desktop-local read derives the detail state from the raw status and timestamps alone. So a finished run typically reads Inactive in the list and Completed on its detail page — one outcome under two words, which is a known inconsistency between the two surfaces rather than a distinction to read anything into.
+
+## Summary KPIs
+
+Above the list, the summary cards roll up token totals, estimated cost, and session counts across the **current filter**. The cost figure splits estimated spend into subscription-covered usage versus API-key (metered) compute: headline cost is the metered spend, because subscription usage is a hypothetical "would-have-cost" rather than a real charge. Sessions whose billing source isn't known yet fold into the API-key figure rather than being assumed subscription-covered.
+
+Every KPI is aggregate-backed — a headline total is never a sum of one page of a paginated list, which is why the summary count and the count you get by paging the list can be computed differently. On the cloud path (and the desktop SQL summary path) the total is a true SQL aggregate or a known-complete collection. On the desktop client there is one bounded exception: when a **Repository** or a local-only facet filter forces the hydrated fallback, the working set is capped at 5,000 sessions (`MAX_WORKING_SET_SESSIONS`), so on a corpus larger than that the summary cards for those filters can trail the true list total rather than reconciling exactly. A KPI that needs data the current context doesn't have (for example a GitHub-gated metric on an org with GitHub disconnected) reports itself as unavailable rather than rendering a misleading zero.
+
+## The detail page and trace
+
+Opening a session row navigates to its detail page: the run's metadata, its linked artifacts (PRs, branches, commits, and Closedloop documents), an activity breakdown, and the **trace** — a turn-by-turn timeline of the run reconstructed from its transcript. The trace renders each user turn, assistant turn, tool call, and any **sub-agent** the run spawned as a nested sub-trace, with the sub-agent's own identity. Token usage is reported at the parent-run level, not per sub-agent — there is no truthful per-sub-agent token source today, so the trace does not attribute tokens to an individual sub-agent. Trace comments can be attached to a text selection in the trace and read back over the [MCP tools](../mcp/agent-sessions).
+
+The transcript itself — the raw JSONL trajectory the trace is built from — always stays on the local machine. A copy leaves the device only when **full transcript sync** is enabled: the desktop client uploads a session's contents only under the `full` sync-observability consent tier (PRD-532 §7), and only after applying secret-pattern **redaction** to each JSONL line before it is staged to S3. So the raw source is never copied to cloud; what is archived and readable here — and, for available files, over the [transcript MCP tool](../mcp/agent-sessions) — is that pattern-redacted JSONL copy, present only for sessions synced while the full tier was in effect.
+
+## Session → PR and branch attribution
+
+A session's **attribution** — the branches, PRs, and commits it gets *credit* for creating — is **not** taken from the harness-reported git branch. That field records the branch of the session's working-directory checkout, which is wrong for every worktree flow (the session sits in the main checkout while all real work happens through a worktree) and goes stale after any mid-session checkout. The extractor still mints a `workspace` branch reference directly from `session.gitBranch` (the start branch is workspace context, not a created branch), but a workspace reference never attributes; attribution derives only from the structured **created** references the extractor mints at parse time from the run's actual tool use.
+
+The extractor scans each run's shell tool uses across every supported harness and splits branch, PR, and commit references by evidence:
+
+- **Write methods** — `git push`, `gh pr create`, `git commit` — mint a `created` relation. These are what attribute a branch, PR, or commit to the run.
+- **Read methods** — the session's start branch, `git checkout`, `git worktree add` — stay a `workspace` relation and never attribute.
+- A **failed** push or `gh pr create` mints no reference at all, so a failed attempt never mis-attributes.
+
+A created PR's head branch resolves evidence-first — from `gh`'s own create output or an explicit `--head` flag, else the run's nearest preceding branch write — and default branches (`main`, `master`, `develop`, `HEAD`) are always rejected, so a PR opened from a worktree on `feat/x` is never mis-attributed to `main`.
+
+Each reference is identified by the concrete thing it points at, not by the shell command's text or a content hash. A commit reference is minted only for the SHA inside a real `[<branch> <sha>] <subject>` git-commit summary line — never for an arbitrary hex token echoed in output — a PR is identified by its repository full name plus PR number (so the same PR number in two different repositories never collides), and a branch by its name. Because each reference resolves to a specific SHA / repo+number / branch name rather than the surrounding output, the same run parsed on three machines resolves to the same set of references. (This is distinct from the component-content identity in [agent components](./agent-components), where FEA-4335 keys a *component* to the hash of its definition bytes.)
+
+Sub-agent work is attributed to the parent run. When a session spawns a Task sub-agent — or a nested workflow sub-agent — that sub-agent's `gh pr create` / `git commit` / `git push` is folded into the parent session's landed code, deduplicated by tool-use id so nothing is double-counted. This is why an orchestrator or night-crew run gets credit for the PRs and branches its sub-agents actually opened.
+
+## Both surfaces
+
+Everything above renders on both the web app and the desktop client through one shared package and one wire contract. Source selection on the desktop client is auth-driven: signed in and online, reads go to the cloud routes (byte-identical to web); signed out or offline, the client falls back to its own local SQLite session store (personal scope only). The two paths aim to classify, filter, and bucket a session identically — the cost buckets and the leaf status folds live in shared modules, but the status projection and the facet predicates are hand-kept mirrors (one per path), and the cloud and local mappers derive some fields independently. Keep the two in sync when you touch either; the known residual differences are the ones the Filters and status-model sections above call out.
+
+## Related reading
+
+<Cards>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    How each harness transcript becomes a normalized session.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    The Insights dashboards that roll these sessions up.
+  </Card>
+  <Card title="Agent components" href="./agent-components">
+    The sub-agents, skills, and commands a session used.
+  </Card>
+  <Card title="Synchronization" href="./synchronization">
+    How local session metadata reaches the cloud.
+  </Card>
+  <Card title="Agent session reporting (MCP)" href="../mcp/agent-sessions">
+    Read the same session data programmatically.
+  </Card>
+</Cards>

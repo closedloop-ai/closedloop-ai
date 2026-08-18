@@ -1,23 +1,16 @@
 "use client";
 
 import {
-  type ArtifactLinkEndpoint,
   LinkDirection,
   LinkQueryMode,
   LinkType,
 } from "@repo/api/src/types/artifact";
-import { Priority } from "@repo/api/src/types/common";
-import {
-  type Document,
-  DocumentStatus,
-  DocumentType,
-  SnapshotSource,
-} from "@repo/api/src/types/document";
 import { ArtifactRow } from "@repo/app/documents/components/relationships/artifact-row";
 import {
   useDeleteArtifactLink,
   useResolvedArtifactLinks,
 } from "@repo/app/documents/hooks/use-artifact-links";
+import { endpointToDocument } from "@repo/app/documents/lib/artifact-row-adapter";
 import { SectionHeader } from "@repo/design-system/components/ui/section-header";
 import { useMemo, useState } from "react";
 import {
@@ -93,39 +86,4 @@ function AssociatedArtifactsBody({
       ))}
     </div>
   );
-}
-
-/**
- * Adapts an ArtifactLinkEndpoint to the legacy Document shape that ArtifactRow
- * still expects. The endpoint omits some fields that ArtifactRow doesn't use
- * for navigation (assignee object, approver, etc.) so this lossy adapter is
- * acceptable here.
- */
-function endpointToDocument(endpoint: ArtifactLinkEndpoint): Document {
-  return {
-    id: endpoint.id,
-    organizationId: endpoint.organizationId,
-    projectId: endpoint.projectId,
-    type: (endpoint.subtype ?? DocumentType.Feature) as DocumentType,
-    title: endpoint.name,
-    slug: endpoint.slug ?? "",
-    fileName: null,
-    status: (endpoint.status as DocumentStatus) ?? DocumentStatus.Draft,
-    priority: endpoint.priority ?? Priority.Medium,
-    latestVersion: 1,
-    createdById: endpoint.createdById ?? "",
-    assigneeId: endpoint.assigneeId,
-    assignee: null,
-    approverId: null,
-    approver: null,
-    tokenUsage: null,
-    // Endpoint projection from artifact-links lineage doesn't carry the
-    // immutable repository snapshot — surface an empty `source: 'none'`
-    // snapshot so the navigation-only adapter still satisfies the type.
-    repositorySnapshot: { repositories: [], source: SnapshotSource.None },
-    templateForType: null,
-    sortOrder: endpoint.sortOrder,
-    createdAt: endpoint.createdAt,
-    updatedAt: endpoint.updatedAt,
-  };
 }

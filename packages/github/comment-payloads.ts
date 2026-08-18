@@ -1,3 +1,8 @@
+import {
+  type GitHubActorType,
+  normalizeGitHubActorType,
+} from "@repo/api/src/types/github-actor";
+
 /**
  * Stable subset of a GitHub user payload used by PR comment sync and webhook
  * projection. `id` is the numeric GitHub database id when REST provides it.
@@ -7,6 +12,7 @@ export type GitHubCommentAuthor = {
   login: string;
   node_id: string | null;
   avatar_url: string;
+  actorType?: GitHubActorType;
 };
 
 /**
@@ -59,7 +65,7 @@ export type GitHubPullRequestReviewComment = {
 /** Stable subset of a pull request review returned by the GitHub REST reviews list. */
 export type GitHubPullRequestReview = {
   id: number;
-  user: { login: string; avatar_url: string } | null;
+  user: Pick<GitHubCommentAuthor, "login" | "avatar_url" | "actorType"> | null;
   state: string;
   body: string | null;
   submitted_at: string | null;
@@ -81,6 +87,7 @@ type GitHubCommentAuthorPayload = {
   login: string;
   node_id?: string | null;
   avatar_url: string;
+  type?: unknown;
 } | null;
 
 /**
@@ -94,11 +101,29 @@ export function mapGitHubCommentAuthor(
     return null;
   }
 
+  const actorType = normalizeGitHubActorType(user.type);
+
   return {
     id: user.id ?? null,
     login: user.login,
     node_id: user.node_id ?? null,
     avatar_url: user.avatar_url,
+    ...(actorType ? { actorType } : {}),
+  };
+}
+
+/** Normalize a review-body author without widening the established review DTO. */
+export function mapGitHubPullRequestReviewAuthor(
+  user: GitHubCommentAuthorPayload
+): GitHubPullRequestReview["user"] {
+  const author = mapGitHubCommentAuthor(user);
+  if (!author) {
+    return null;
+  }
+  return {
+    login: author.login,
+    avatar_url: author.avatar_url,
+    ...(author.actorType ? { actorType: author.actorType } : {}),
   };
 }
 

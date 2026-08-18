@@ -6,8 +6,10 @@ import {
   type BranchPrComment,
   type BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
+import { Chip } from "@repo/design-system/components/ui/chip";
 import { AlertCircleIcon, MessageSquareIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { PrCommentMarkdown } from "./pr-comment-markdown";
 
 export function PrCommentsPanel({
   comments,
@@ -117,15 +119,27 @@ function CommentCard({ comment }: { comment: BranchPrComment }) {
           </span>
         ) : null}
         {comment.stale ? (
-          <span className="rounded border border-amber-300 px-1.5 py-0.5 text-amber-700">
+          <Chip size="sm" variant="warning">
             stale
-          </span>
+          </Chip>
         ) : null}
       </div>
-      <p className="mt-2 whitespace-pre-wrap text-sm">{comment.body}</p>
+      <PrCommentMarkdown className="mt-2 text-sm" text={comment.body} />
       {comment.bodyTruncated ? (
         <p className="mt-2 text-[var(--muted-foreground)] text-xs">
-          Comment body truncated to the display budget.
+          Comment shortened.{" "}
+          {comment.providerUrl ? (
+            <a
+              className="text-[var(--primary)] underline underline-offset-2"
+              href={comment.providerUrl}
+              rel="noreferrer noopener"
+              target="_blank"
+            >
+              Read the full comment on GitHub.
+            </a>
+          ) : (
+            "Read the full comment on GitHub."
+          )}
         </p>
       ) : null}
     </article>

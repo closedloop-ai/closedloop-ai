@@ -5,14 +5,14 @@ import {
   DOCUMENT_STATUS_OPTIONS,
   type DocumentStatus,
   DocumentType,
-  FEATURE_STATUS_OPTIONS,
-  type FeatureStatus,
+  ISSUE_STATUS_OPTIONS,
+  type IssueStatus,
 } from "@repo/api/src/types/document";
 import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import {
   DOCUMENT_STATUS_LABELS,
-  FEATURE_STATUS_LABELS,
+  ISSUE_STATUS_LABELS,
 } from "@repo/app/projects/lib/project-constants";
 import { StatusMetadataSection as SharedStatusMetadataSection } from "@repo/design-system/components/ui/status-metadata-section";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
@@ -57,12 +57,10 @@ function statusOptionsForType(documentType: DocumentType) {
   if (documentType === DocumentType.Feature) {
     // Full Feature vocabulary, including TRIAGE — humans may set any status
     // (TRIAGE is only excluded as the human-create *default*, not as an option).
-    return FEATURE_STATUS_OPTIONS.map((statusOption) => ({
+    return ISSUE_STATUS_OPTIONS.map((statusOption) => ({
       value: statusOption,
-      label: FEATURE_STATUS_LABELS[statusOption] ?? statusOption,
-      icon: (
-        <FeatureStatusIcon size={16} status={statusOption as FeatureStatus} />
-      ),
+      label: ISSUE_STATUS_LABELS[statusOption] ?? statusOption,
+      icon: <IssueStatusIcon size={16} status={statusOption as IssueStatus} />,
     }));
   }
   return DOCUMENT_STATUS_OPTIONS.map((statusOption) => ({

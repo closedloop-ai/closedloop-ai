@@ -59,6 +59,7 @@ vi.mock("@/lib/loops/loop-commands", () => ({
   COMMAND_HANDLERS: {},
 }));
 
+import { LoopStatus } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { InvalidStatusTransitionError } from "@/app/loops/loop-errors";
 import { loopsService } from "@/app/loops/service";
@@ -251,6 +252,77 @@ describe("loopsService.updateStatus transitions", () => {
   });
 });
 
+/**
+ * ISS-5711: a terminal transition backfills `startedAt` so a run whose "started"
+ * event was lost still reads as having run. A run that provably never started
+ * (dispatch threw before the runner was reachable) must NOT get that backfill,
+ * or the loop detail surface renders a fabricated "Started" timestamp and a
+ * duration for a run that never began. An explicit `startedAt: null` opts out.
+ *
+ * Both directions are pinned here: the omitted case is the positive control
+ * that proves the negative assertion below is not vacuous.
+ */
+describe("loopsService.updateStatus startedAt backfill", () => {
+  /**
+   * Terminal transitions run the CAS inside `withDb.tx`; the `startedAt`
+   * backfill and the post-CAS re-fetch are the only plain-`withDb` calls. So
+   * every plain-`withDb` `loop.updateMany` invocation IS a backfill.
+   */
+  function captureBackfillCalls(): { calls: unknown[] } {
+    const captured: unknown[] = [];
+    installTxHandles(1);
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: {
+          updateMany: vi.fn().mockImplementation((args: unknown) => {
+            captured.push(args);
+            return Promise.resolve({ count: 1 });
+          }),
+          findUnique: vi
+            .fn()
+            .mockResolvedValue(buildLoop({ status: "FAILED" })),
+        },
+      })
+    );
+    return { calls: captured };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("backfills startedAt when the caller omits it (positive control)", async () => {
+    const backfill = captureBackfillCalls();
+
+    await loopsService.updateStatus("loop-1", "org-1", LoopStatus.Failed, {
+      error: { code: "SOME_CODE", message: "boom" },
+    });
+
+    expect(backfill.calls).toContainEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({ startedAt: null }),
+        data: expect.objectContaining({ startedAt: expect.any(Date) }),
+      })
+    );
+  });
+
+  it("skips the backfill when the caller passes an explicit startedAt: null", async () => {
+    const backfill = captureBackfillCalls();
+
+    await loopsService.updateStatus("loop-1", "org-1", LoopStatus.Failed, {
+      error: { code: "LAUNCH_FAILED", message: "never started" },
+      startedAt: null,
+    });
+
+    // Same selector as the positive control above, so this is not vacuous.
+    expect(backfill.calls).not.toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ startedAt: expect.any(Date) }),
+      })
+    );
+  });
+});
+
 describe("loopsService.cancel transitions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -284,6 +356,34 @@ describe("loopsService.cancel transitions", () => {
           type: "tokens_cleared",
           eventSource: "system",
         }),
+      })
+    );
+  });
+
+  // ISS-5711 moved the LAUNCH-failure path off `cancel` and onto a FAILED
+  // write. `cancel` is now reserved for genuine user cancellation, so the
+  // status it stamps is a contract in its own right: nothing may quietly
+  // repoint it at another terminal status.
+  it("RUNNING -> CANCELLED: the CAS stamps CANCELLED, not another terminal status", async () => {
+    const cancelledLoop = buildLoop({ status: LoopStatus.Cancelled });
+    const tx = installTxHandles(1);
+
+    mockWithDb.mockImplementation((callback: (db: unknown) => unknown) =>
+      callback({
+        loop: { findUnique: vi.fn().mockResolvedValue(cancelledLoop) },
+      })
+    );
+
+    await loopsService.cancel("loop-1", "org-1");
+
+    expect(tx.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: LoopStatus.Cancelled }),
+      })
+    );
+    expect(tx.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: LoopStatus.Failed }),
       })
     );
   });

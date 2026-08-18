@@ -22,21 +22,6 @@ import {
 } from "../hooks/use-attachments";
 
 export const INLINE_DOCUMENT_IMAGES_FEATURE_FLAG_KEY = "inline-document-images";
-const INLINE_IMAGE_LOG_PREFIX = "[inline-document-images]";
-
-function logInlineImageEditorInfo(
-  message: string,
-  metadata: Record<string, unknown>
-) {
-  console.info(`${INLINE_IMAGE_LOG_PREFIX} ${message}`, metadata);
-}
-
-function logInlineImageEditorWarn(
-  message: string,
-  metadata: Record<string, unknown>
-) {
-  console.warn(`${INLINE_IMAGE_LOG_PREFIX} ${message}`, metadata);
-}
 
 type RichTextEditorHostProps = {
   documentId?: string;
@@ -108,49 +93,15 @@ export function useInlineImageEditorOptions(
   const resolveInlineImages = useResolveInlineImages(documentId ?? "");
   const canUseInlineImages = inlineImagesEnabled && !!documentId;
 
-  useEffect(() => {
-    if (canUseInlineImages) {
-      logInlineImageEditorInfo("editor gate enabled", {
-        documentId,
-        featureFlag: INLINE_DOCUMENT_IMAGES_FEATURE_FLAG_KEY,
-        reason: "enabled",
-      });
-      return;
+  const validateInlineImageFile = useCallback((file: File) => {
+    if (!isImageMimeType(file.type)) {
+      return `Inline images must be ${IMAGE_MIME_TYPES.join(", ")}`;
     }
-
-    logInlineImageEditorInfo("editor gate disabled", {
-      documentId: documentId ?? null,
-      featureFlag: INLINE_DOCUMENT_IMAGES_FEATURE_FLAG_KEY,
-      reason: inlineImagesEnabled ? "missing_document_id" : "feature_disabled",
-    });
-  }, [canUseInlineImages, documentId, inlineImagesEnabled]);
-
-  const validateInlineImageFile = useCallback(
-    (file: File) => {
-      const metadata = {
-        documentId: documentId ?? null,
-        mimeType: file.type,
-        purpose: "inline",
-        sizeBytes: file.size,
-      };
-      if (!isImageMimeType(file.type)) {
-        logInlineImageEditorWarn("validation rejected", {
-          ...metadata,
-          reason: "unsupported_mime",
-        });
-        return `Inline images must be ${IMAGE_MIME_TYPES.join(", ")}`;
-      }
-      if (file.size > MAX_ATTACHMENT_FILE_SIZE_BYTES) {
-        logInlineImageEditorWarn("validation rejected", {
-          ...metadata,
-          reason: "file_too_large",
-        });
-        return "Inline images must be 10 MiB or smaller";
-      }
-      return null;
-    },
-    [documentId]
-  );
+    if (file.size > MAX_ATTACHMENT_FILE_SIZE_BYTES) {
+      return "Inline images must be 10 MiB or smaller";
+    }
+    return null;
+  }, []);
 
   return useMemo(
     () => ({

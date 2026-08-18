@@ -11,14 +11,26 @@ import { Loader2Icon } from "lucide-react";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import StaffParsingBugFlagProvider from "./staff-parsing-bug-flag-provider";
 
 type OrgIdentityProviderProps = {
   readonly orgSlug: string;
+  /**
+   * ISS-4406: computed server-side by the owning layout from
+   * `isLocalTrustedAuthActive()`. Under `AUTH_MODE=local_trusted` the server
+   * holds a synthetic session but the browser has no Clerk session at all, so
+   * `activeOrgSlug` can never match and this component would spin forever.
+   * Always `false` under real Clerk, which leaves the production render path
+   * behaviorally identical. Defaults to `false` so an omitted prop can never
+   * open the gate.
+   */
+  readonly bypassClientOrgGate?: boolean;
   readonly children: ReactNode;
 };
 
 export default function OrgIdentityProvider({
   orgSlug,
+  bypassClientOrgGate = false,
   children,
 }: OrgIdentityProviderProps) {
   const navigation = useNavigation();
@@ -44,7 +56,12 @@ export default function OrgIdentityProvider({
   // authorized and on the right org — render without consulting the membership
   // list. That list is paginated (and large for users in many orgs) and is not
   // a reliable "am I on this org" signal: it can omit the active org entirely.
-  const onRequestedOrg = authLoaded && activeOrgSlug === orgSlug;
+  //
+  // This is a UX/navigation gate, not the access decision: the server layout's
+  // `auth()` and every API route still enforce membership. `bypassClientOrgGate`
+  // therefore skips only the client-side org handshake, never authorization.
+  const onRequestedOrg =
+    bypassClientOrgGate || (authLoaded && activeOrgSlug === orgSlug);
 
   const allPagesLoaded = isLoaded && !membershipsLoading && !hasNextPage;
   const membership = isLoaded
@@ -108,7 +125,9 @@ export default function OrgIdentityProvider({
   ]);
 
   if (onRequestedOrg) {
-    return <>{children}</>;
+    return (
+      <StaffParsingBugFlagProvider>{children}</StaffParsingBugFlagProvider>
+    );
   }
 
   if (switchFailed.current) {

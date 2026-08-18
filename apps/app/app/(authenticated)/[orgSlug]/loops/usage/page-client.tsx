@@ -8,12 +8,10 @@ import {
 import { ApiError } from "@repo/app/shared/api/api-error";
 import { loopCommandLabels } from "@repo/app/shared/components/status-badge";
 import {
-  DATE_RANGE_LABELS,
-  type DateRange,
   formatCost,
+  formatCurrencyWhole,
   formatNumber,
   formatTokenCount,
-  getStartDateForRange,
 } from "@repo/app/shared/lib/format-utils";
 import {
   Alert,
@@ -33,10 +31,19 @@ import { Separator } from "@repo/design-system/components/ui/separator";
 import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import { AlertCircleIcon } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Header } from "@/app/(authenticated)/components/header";
 import {
   LoopUsageCommandTable,
   LoopUsageUserTable,
 } from "./components/loop-usage-tables";
+import {
+  formatAsOf,
+  getUsageScopeStartIso,
+  parseUsageScope,
+  USAGE_SCOPE_LABELS,
+  USAGE_SCOPES,
+  type UsageScope,
+} from "./lib/usage-scope";
 
 function formatCommand(command: string): string {
   return command
@@ -83,7 +90,17 @@ function UsageErrorAlert({ isForbidden }: { isForbidden: boolean }) {
   );
 }
 
-function SummaryCards({ usage }: { usage: LoopUsageSummary | undefined }) {
+function SummaryCards({
+  usage,
+  scopeLabel,
+}: {
+  usage: LoopUsageSummary | undefined;
+  scopeLabel: string;
+}) {
+  // FEA-1541: the headline cost is an accumulated usage total over the selected
+  // window (not a unit rate), so the detail line names the window to remove the
+  // "is this a rate or a total?" ambiguity the spec flagged.
+  const windowNote = `accumulated over ${scopeLabel.toLowerCase()}`;
   return (
     <>
       <MetricCard
@@ -109,8 +126,9 @@ function SummaryCards({ usage }: { usage: LoopUsageSummary | undefined }) {
         )}
       />
       <MetricCard
+        detail={windowNote}
         label="Estimated Cost"
-        value={formatCost(usage?.totalEstimatedCost ?? 0)}
+        value={formatCurrencyWhole(usage?.totalEstimatedCost ?? 0)}
       />
     </>
   );
@@ -129,9 +147,11 @@ function TableSkeleton() {
 function UsageDashboard({
   usage,
   isLoading,
+  scopeLabel,
 }: {
   usage: LoopUsageSummary | undefined;
   isLoading: boolean;
+  scopeLabel: string;
 }) {
   const commandRows = useMemo(
     () =>
@@ -178,7 +198,7 @@ function UsageDashboard({
             <SummaryCardSkeleton />
           </>
         ) : (
-          <SummaryCards usage={usage} />
+          <SummaryCards scopeLabel={scopeLabel} usage={usage} />
         )}
       </div>
 
@@ -187,7 +207,9 @@ function UsageDashboard({
         <CardHeader>
           <CardTitle>Breakdown by Command</CardTitle>
           <CardDescription>
-            Token usage and costs grouped by loop command type.
+            Accumulated token usage and estimated cost over{" "}
+            {scopeLabel.toLowerCase()}, grouped by loop command type. These are
+            usage totals, not per-token unit rates.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -204,7 +226,9 @@ function UsageDashboard({
         <CardHeader>
           <CardTitle>Breakdown by User</CardTitle>
           <CardDescription>
-            Token usage and costs per team member.
+            Accumulated token usage and estimated cost over{" "}
+            {scopeLabel.toLowerCase()}, per team member. These are usage totals,
+            not per-token unit rates.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -220,46 +244,85 @@ function UsageDashboard({
 }
 
 export default function LoopUsagePageClient() {
-  const [dateRange, setDateRange] = useState<DateRange>("30d");
+  const [scope, setScope] = useState<UsageScope>("30d");
 
   const filters: LoopUsageFilters = useMemo(
     () => ({
-      startDate: getStartDateForRange(dateRange),
+      startDate: getUsageScopeStartIso(scope),
     }),
-    [dateRange]
+    [scope]
   );
 
-  const { data: usage, isLoading, isError, error } = useLoopUsage(filters);
+  const {
+    data: usage,
+    isLoading,
+    isError,
+    error,
+    dataUpdatedAt,
+  } = useLoopUsage(filters);
   const isForbidden = error instanceof ApiError && error.isForbidden();
 
+  // "As of" stamp (AC-007.2): React Query's `dataUpdatedAt` is the epoch-ms
+  // instant the currently-displayed payload was last successfully computed. It
+  // advances on every fresh fetch — including an in-place scope switch
+  // (AC-007.3) — so it is the authoritative freshness signal (0 until the first
+  // success, which we treat as "not yet available").
+  const asOf = dataUpdatedAt > 0 ? new Date(dataUpdatedAt) : null;
+
+  const scopeLabel = USAGE_SCOPE_LABELS[scope];
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="font-semibold text-2xl tracking-tight">
-            Usage Dashboard
-          </h1>
-          <p className="text-muted-foreground">
-            Token consumption and estimated costs for AI loops.
-          </p>
+    // ISS-4477: the Loops list (the Usage Dashboard's former entry point) is
+    // retired, so this flag-gated route is now reached only by direct URL. Give
+    // it the standard Header so it is not a doorless screen — the SidebarTrigger
+    // and breadcrumb restore the way back out that the removed list page's chrome
+    // used to provide.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <Header breadcrumbs={[{ label: "Usage" }]} suppressPageHeading />
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-auto p-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="font-semibold text-2xl tracking-tight">
+              Usage Dashboard
+            </h1>
+            <p className="text-muted-foreground">
+              Token consumption and estimated costs for AI loops.
+            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <AnalyticsRangeToggle
+              onValueChange={(value) => setScope(parseUsageScope(value))}
+              options={USAGE_SCOPES.map((value) => ({
+                value,
+                label: USAGE_SCOPE_LABELS[value],
+              }))}
+              value={scope}
+            />
+            {asOf && !isError ? (
+              <p
+                className="text-muted-foreground text-xs"
+                data-testid="usage-as-of"
+              >
+                Showing {scopeLabel.toLowerCase()} · as of{" "}
+                <time dateTime={asOf.toISOString()}>{formatAsOf(asOf)}</time>
+              </p>
+            ) : null}
+          </div>
         </div>
-        <AnalyticsRangeToggle
-          onValueChange={(value) => setDateRange(value as DateRange)}
-          options={Object.entries(DATE_RANGE_LABELS).map(([value, label]) => ({
-            value,
-            label,
-          }))}
-          value={dateRange}
-        />
+
+        <Separator />
+
+        {isError ? (
+          <UsageErrorAlert isForbidden={isForbidden} />
+        ) : (
+          <UsageDashboard
+            isLoading={isLoading}
+            scopeLabel={scopeLabel}
+            usage={usage}
+          />
+        )}
       </div>
-
-      <Separator />
-
-      {isError ? (
-        <UsageErrorAlert isForbidden={isForbidden} />
-      ) : (
-        <UsageDashboard isLoading={isLoading} usage={usage} />
-      )}
     </div>
   );
 }

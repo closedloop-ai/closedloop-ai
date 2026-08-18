@@ -8,10 +8,9 @@ import { DesktopAuthorizeConsent } from "../desktop-authorize-consent";
 
 // Hoisted so the (hoisted) vi.mock factories below can reference them without
 // hitting the temporal dead zone.
-const { mockApiClient, redirectMock, flagEnabledMock } = vi.hoisted(() => ({
+const { mockApiClient, redirectMock } = vi.hoisted(() => ({
   mockApiClient: { postRaw: vi.fn() },
   redirectMock: vi.fn(),
-  flagEnabledMock: vi.fn((_key: string) => true),
 }));
 
 vi.mock("../../../shared/api/use-api-client", () => ({
@@ -23,10 +22,6 @@ vi.mock("../../lib/desktop-authorize-redirect", async (importActual) => {
     await importActual<typeof import("../../lib/desktop-authorize-redirect")>();
   return { ...actual, redirectToDesktopLoopback: redirectMock };
 });
-
-vi.mock("../../../shared/feature-flags/use-feature-flag-enabled", () => ({
-  useFeatureFlagEnabled: (key: string) => flagEnabledMock(key),
-}));
 
 const LOOPBACK = "http://127.0.0.1:49152/cb";
 const GATEWAY_PUBLIC_KEY =
@@ -66,22 +61,20 @@ function createWrapper() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  flagEnabledMock.mockReturnValue(true);
 });
 
 describe("DesktopAuthorizeConsent", () => {
-  it("is gated behind the feature flag and renders nothing actionable when off", () => {
-    flagEnabledMock.mockReturnValue(false);
-
+  it("renders the consent step for a valid authorize link with no feature gate", () => {
+    // FEA-4133: the web loopback-auth flag graduated to always-on. The consent
+    // page renders unconditionally for a valid link — there is no "Not available"
+    // dead-end branch to hit.
     render(<DesktopAuthorizeConsent searchParams={validSearchParams()} />, {
       wrapper: createWrapper(),
     });
 
-    expect(screen.getByText("Not available")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Connect" })
-    ).not.toBeInTheDocument();
-    expect(mockApiClient.postRaw).not.toHaveBeenCalled();
+    expect(screen.getByText("Connect this device?")).toBeInTheDocument();
+    expect(screen.queryByText("Not available")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
   });
 
   it("renders the consent step for a valid authorize link", () => {
@@ -199,5 +192,25 @@ describe("DesktopAuthorizeConsent", () => {
 
     expect(screen.getByText("Connection cancelled")).toBeInTheDocument();
     expect(mockApiClient.postRaw).not.toHaveBeenCalled();
+  });
+
+  it("tells the desktop it was cancelled instead of leaving it waiting", () => {
+    // The whole bug: this used to be client-side only, so the tab said "return
+    // to the desktop app" while the desktop sat in its awaiting-redirect state
+    // until the sign-in timeout fired.
+    render(<DesktopAuthorizeConsent searchParams={validSearchParams()} />, {
+      wrapper: createWrapper(),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(redirectMock).toHaveBeenCalledTimes(1);
+    const url = new URL(redirectMock.mock.calls[0][0] as string);
+    expect(url.searchParams.get("error")).toBe("access_denied");
+    // `state` round-trips so the desktop can tell this callback is its own.
+    expect(url.searchParams.get("state")).toBe(
+      validSearchParams().state as string
+    );
+    expect(url.searchParams.get("code")).toBeNull();
   });
 });

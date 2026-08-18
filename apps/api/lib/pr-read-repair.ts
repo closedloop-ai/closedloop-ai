@@ -8,18 +8,34 @@ import {
   BranchViewPrLifecycleRepairStatus,
 } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
-import { GitHubFetchTrigger } from "@repo/api/src/types/github-read-model";
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model";
 import {
   ArtifactType,
   GitHubInstallationStatus,
   type TransactionClient,
   withDb,
 } from "@repo/database";
-import { getSinglePullRequest } from "@repo/github";
+import {
+  GitHubProviderResultStatus,
+  getSinglePullRequestWithProviderResult,
+} from "@repo/github";
+import type { Octokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import pLimit from "p-limit";
+import {
+  createPullRequestRestAuthorityProvenance,
+  toPullRequestRestAuthorityObservation,
+} from "@/app/branches/pull-request-authority-producer";
+import {
+  persistPullRequestHeadRepositoryAuthority,
+  pullRequestHeadRepositoryObservation,
+} from "@/app/branches/pull-request-head-authority";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import { acquireInstallationClient } from "@/lib/github/installation-client";
 import {
   gitHubFetchProvenanceData,
   githubAppRestFetchProvenance,
@@ -27,7 +43,9 @@ import {
 import {
   buildBranchTreeUrl,
   type GitHubPullRequestLifecycle,
+  type PrLifecycleRefreshTarget,
   refreshPullRequestLifecycle,
+  stampPrLifecycleRefreshAttemptFailure,
 } from "./pr-lifecycle-refresh";
 
 const STALENESS_THRESHOLD_MS = 24 * 60 * 60 * 1000;
@@ -423,6 +441,11 @@ async function backfillBranchArtifact({
         where: { artifactId: created.id },
         data: { currentPullRequestDetailId: currentDetailId },
       });
+      await persistPullRequestHeadRepositoryAuthority(
+        tx,
+        { organizationId, pullRequestDetailId: currentDetailId },
+        pullRequestHeadRepositoryObservation(freshPr)
+      );
     }
   } catch (createError) {
     if (getPrismaErrorCode(createError) === "P2002") {
@@ -474,7 +497,6 @@ async function repairSinglePrLink(
   if (!installationId) {
     return;
   }
-
   const repositoryId = repoLookup.resolution?.repositoryId ?? null;
   const existingDetail = await withDb((db) =>
     db.pullRequestDetail.findFirst({
@@ -494,6 +516,9 @@ async function repairSinglePrLink(
     // resolved a concrete App-installation repo that differs from the stored id;
     // an unresolved lookup leaves the (possibly null) stored id untouched. When
     // relink fires the next id is always a concrete repository id.
+    // The relink is pure database work, so it runs before the client is
+    // resolved — a GitHub credential failure must not strand a stale
+    // repositoryId that needs no GitHub call to correct.
     const resolvedRepositoryId = repoLookup.resolution?.repositoryId ?? null;
     if (
       resolvedRepositoryId &&
@@ -509,9 +534,8 @@ async function repairSinglePrLink(
     }
     const activeRepositoryId =
       resolvedRepositoryId ?? existingDetail.repositoryId;
-    await refreshPullRequestLifecycle({
+    const lifecycleTarget = {
       organizationId,
-      installationId,
       owner,
       repo,
       pullNumber,
@@ -523,26 +547,54 @@ async function repairSinglePrLink(
       artifactPatch: {
         updateBranchIdentity: true,
       },
+    };
+    const lifecycleClient = await resolveRepairClient(
+      installationId,
+      input.id,
+      lifecycleTarget
+    );
+    if (!lifecycleClient) {
+      return;
+    }
+    await refreshPullRequestLifecycle({
+      ...lifecycleTarget,
+      octokit: lifecycleClient,
     });
     return;
   }
 
-  const freshPr = await getSinglePullRequest(
+  const backfillClient = await resolveRepairClient(
     installationId,
+    input.id,
+    null
+  );
+  if (!backfillClient) {
+    return;
+  }
+  const authorityProvenance = createPullRequestRestAuthorityProvenance({
+    credentialType: GitHubFetchCredentialType.GitHubApp,
+    observedAt: new Date(),
+    trigger: GitHubFetchTrigger.Backfill,
+  });
+  const providerResult = await getSinglePullRequestWithProviderResult(
+    backfillClient,
     owner,
     repo,
-    pullNumber
+    pullNumber,
+    toPullRequestRestAuthorityObservation(authorityProvenance)
   );
 
-  if (!freshPr) {
-    log.warn("[pr-read-repair] getSinglePullRequest returned null, skipping", {
+  if (providerResult.status !== GitHubProviderResultStatus.Success) {
+    log.warn("[pr-read-repair] PR provider read failed, skipping", {
       branchArtifactId: input.id,
       owner,
       repo,
       pullNumber,
+      providerStatus: providerResult.status,
     });
     return;
   }
+  const freshPr = providerResult.value;
 
   await withDb.tx(async (tx) => {
     await backfillBranchArtifact({
@@ -621,4 +673,30 @@ async function runPrReadRepair(
       })
     )
   );
+}
+
+/**
+ * Resolve the installation client for one repaired link. A failed mint stamps
+ * the refresh attempt when the link has a target row, so the one-hour debounce
+ * engages instead of every subsequent read rescheduling the same repair, and
+ * returns null so the caller skips the GitHub work without throwing.
+ */
+async function resolveRepairClient(
+  installationId: string,
+  branchArtifactId: string,
+  target: PrLifecycleRefreshTarget | null
+): Promise<Octokit | null> {
+  const acquired = await acquireInstallationClient(installationId);
+  if (acquired.status !== GitHubProviderResultStatus.Success) {
+    log.warn("[pr-read-repair] Installation client mint failed", {
+      branchArtifactId,
+      installationId,
+      status: acquired.status,
+    });
+    if (target) {
+      await stampPrLifecycleRefreshAttemptFailure(target);
+    }
+    return null;
+  }
+  return acquired.value;
 }

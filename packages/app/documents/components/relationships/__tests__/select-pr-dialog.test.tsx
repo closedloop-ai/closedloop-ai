@@ -208,6 +208,9 @@ describe("SelectPullRequestDialog", () => {
           mergeCommitSha: null,
           projectId: "project-1",
           title: "PR #101: Fix direct feature PR linking",
+          // ISS-4664: with no plan, the issue is both the link owner and the
+          // tag source.
+          sourceArtifactId: "feature-1",
         })
       );
     });
@@ -242,6 +245,16 @@ describe("SelectPullRequestDialog", () => {
         targetId: "pr-artifact-101",
       });
     });
+
+    // ISS-4664: the plan owns the branch relationship link, but the tags to
+    // propagate are the *implementing issue's* — so the tag source sent to the
+    // API is the ISS document ("feature-1"), NOT the plan. Plan tags are a
+    // separate set; sourcing them here would miss the ISS tags this flow is
+    // supposed to carry.
+    expect(mockPost).toHaveBeenCalledWith(
+      "/artifact-links/pull-requests",
+      expect.objectContaining({ sourceArtifactId: "feature-1" })
+    );
   });
 
   it("hides tracked PRs that are linked elsewhere", async () => {

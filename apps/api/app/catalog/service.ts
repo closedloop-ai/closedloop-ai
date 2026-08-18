@@ -4,9 +4,11 @@ import type {
   ContextPackAgent,
   ContextPackRepoConfig,
 } from "@closedloop-ai/loops-api/context-pack";
+import { catalogTargetKindToComponentKind } from "@repo/api/src/catalog-component-kind";
 import {
   type CatalogItemDto,
   CatalogItemSource,
+  type ImportPackZipResponse,
 } from "@repo/api/src/types/distribution";
 import { Result } from "@repo/api/src/types/result";
 import {
@@ -20,13 +22,21 @@ import {
 } from "@repo/aws";
 import {
   GitHubInstallationStatus,
-  type Prisma,
+  Prisma,
+  SourceOccurrenceType,
   type TransactionClient,
   withDb,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
+import { v7 as uuidv7 } from "uuid";
+import { registerDefinitionVersion } from "@/app/definition-registry/service";
+import {
+  agentComponentProjection,
+  type SearchProjectionInput,
+} from "@/app/search/search-index-service";
 import { BoundedCache } from "@/lib/bounded-cache";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import { flushCatalogSearchIndex } from "./catalog-search-index";
 import { deriveComponentUuid } from "./component-uuid";
 import type { ParsedComponent } from "./pack-component-parse";
 import { fetchRepoComponents } from "./pack-repo-import";
@@ -204,7 +214,7 @@ type BulkIngestInput = {
   criticGates?: Record<string, unknown>;
 };
 
-export type BulkIngestCatalogItemsResult = {
+type BulkIngestCatalogItemsResult = {
   created: number;
   updated: number;
   items: Array<{ id: string; role: string | null; name: string }>;
@@ -271,6 +281,8 @@ async function runBulkIngestTransaction(
   let created = 0;
   let updated = 0;
   const items: BulkIngestCatalogItemsResult["items"] = [];
+  // FEA-4011 Slice A: collected inside the tx, flushed fail-open after commit.
+  const pendingSearchIndex: SearchProjectionInput[] = [];
 
   await withDb.tx(async (tx) => {
     const dedupedAgents = dedupeByRole(input.agents);
@@ -304,7 +316,8 @@ async function runBulkIngestTransaction(
           organizationId,
           userId,
           agent,
-          input
+          input,
+          pendingSearchIndex
         );
         items.push({ id: newItem.id, role: newItem.role, name: newItem.name });
         created++;
@@ -322,6 +335,7 @@ async function runBulkIngestTransaction(
     }
   });
 
+  flushCatalogSearchIndex(pendingSearchIndex);
   return { created, updated, items };
 }
 
@@ -412,7 +426,8 @@ async function createNewItem(
   organizationId: string,
   userId: string,
   agent: AgentIngestInput,
-  input: BulkIngestInput
+  input: BulkIngestInput,
+  pendingSearchIndex?: SearchProjectionInput[]
 ) {
   const agentSlug = await generateUniqueAgentSlug(
     tx,
@@ -466,15 +481,19 @@ async function createNewItem(
   // row now, using the same deterministic (compute_target_id, component_kind,
   // external_component_id) mapping the migration used so the two tables stay in
   // sync on write and a later backfill re-run is a no-op.
-  await materializeCloudAgentComponent(tx, {
-    organizationId,
-    catalogItemId: newItem.id,
-    name: agent.name,
-    componentKey: agentSlug,
-    description: agent.description ?? null,
-    sourceRepo: input.sourceRepo,
-    createdById: userId,
-  });
+  await materializeCloudAgentComponent(
+    tx,
+    {
+      organizationId,
+      catalogItemId: newItem.id,
+      name: agent.name,
+      componentKey: agentSlug,
+      description: agent.description ?? null,
+      sourceRepo: input.sourceRepo,
+      createdById: userId,
+    },
+    pendingSearchIndex
+  );
 
   return newItem;
 }
@@ -558,7 +577,11 @@ async function materializeCloudAgentComponent(
     description: string | null;
     sourceRepo: string;
     createdById: string;
-  }
+  },
+  // FEA-4011 Slice A: the upserted component's search projection is pushed here
+  // and flushed by the top-level caller AFTER the transaction commits (fail-open,
+  // post-commit — the index write must never roll back this catalog write).
+  pendingSearchIndex?: SearchProjectionInput[]
 ): Promise<void> {
   const sentinelId = await ensureCloudSentinelTarget(tx, params.organizationId);
   if (!sentinelId) {
@@ -569,7 +592,7 @@ async function materializeCloudAgentComponent(
   const sourceUrl = params.sourceRepo === "" ? null : params.sourceRepo;
   const now = new Date();
 
-  await tx.agentComponent.upsert({
+  const upserted = await tx.agentComponent.upsert({
     where: {
       computeTargetId_componentKind_externalComponentId: {
         computeTargetId: sentinelId,
@@ -607,6 +630,101 @@ async function materializeCloudAgentComponent(
       lastSeenAt: now,
     },
   });
+
+  pendingSearchIndex?.push(
+    agentComponentProjection({
+      id: upserted.id,
+      organizationId: upserted.organizationId,
+      componentKind: upserted.componentKind,
+      name: upserted.name,
+      componentKey: upserted.componentKey,
+      externalComponentId: upserted.externalComponentId,
+      description: upserted.description,
+      updatedAt: upserted.updatedAt,
+      // FEA-4335: route the search hit to the content-hash detail URI when the
+      // row carries a hash (null for this cloud-authored row ⇒ name-level slug).
+      contentHash: upserted.contentHash,
+    })
+  );
+}
+
+/**
+ * Batch variant of {@link materializeCloudAgentComponent} for pack import:
+ * materialize the `agent_components` rows for a set of freshly-created,
+ * agent-kind pack components in a single `createMany` instead of one upsert per
+ * agent. The org's cloud-sentinel target is resolved ONCE (shared by every
+ * agent in the import) rather than re-read per component. A plain insert is
+ * safe here (no upsert needed) because each row carries a brand-new catalogItem
+ * id, so its `cloud:agent:<id>` external component id is guaranteed unique and
+ * cannot collide with an existing row.
+ */
+async function materializeCloudAgentComponentsBatch(
+  tx: TransactionClient,
+  params: {
+    organizationId: string;
+    createdById: string;
+    components: ReadonlyArray<{
+      catalogItemId: string;
+      name: string;
+      description: string | null;
+    }>;
+  },
+  // FEA-4011 Slice A: each materialized component's search projection is pushed
+  // here and flushed by the top-level caller AFTER the transaction commits.
+  pendingSearchIndex?: SearchProjectionInput[]
+): Promise<void> {
+  if (params.components.length === 0) {
+    return;
+  }
+  const sentinelId = await ensureCloudSentinelTarget(tx, params.organizationId);
+  if (!sentinelId) {
+    return;
+  }
+  const now = new Date();
+  // Pre-derive each row's UUIDv7 id (matching schema.prisma's @default(uuid(7)))
+  // so the search projection can carry the component id without a per-row
+  // read-back after the batched createMany.
+  const rows = params.components.map((component) => ({
+    id: uuidv7(),
+    organizationId: params.organizationId,
+    computeTargetId: sentinelId,
+    componentKind: "subagent",
+    externalComponentId: `cloud:agent:${component.catalogItemId}`,
+    harness: "claude",
+    name: component.name,
+    componentKey: component.name,
+    version: "1.0.0",
+    description: component.description,
+    sourceUrl: null,
+    scope: "org",
+    metadata: {
+      cloudAuthored: true,
+      catalogItemId: component.catalogItemId,
+      legacyAgentId: null,
+      source: "org_custom",
+      createdById: params.createdById,
+    },
+    firstSeenAt: now,
+    lastSeenAt: now,
+  }));
+  await tx.agentComponent.createMany({ data: rows });
+
+  if (pendingSearchIndex) {
+    for (const row of rows) {
+      pendingSearchIndex.push(
+        agentComponentProjection({
+          id: row.id,
+          organizationId: row.organizationId,
+          componentKind: row.componentKind,
+          name: row.name,
+          componentKey: row.componentKey,
+          externalComponentId: row.externalComponentId,
+          description: row.description,
+          updatedAt: now,
+        })
+      );
+    }
+  }
 }
 
 async function upsertRepoBootstrapConfig(
@@ -892,6 +1010,82 @@ type GetCatalogDetailInput = {
 
 type GetCatalogDetailError = 404;
 
+type LatestChildContentRow = {
+  catalogItemId: string;
+  content: string | null;
+};
+
+/**
+ * Resolve the latest authored body for each child component, keyed by child id.
+ *
+ * One query, not one per child (FEA-3299). The previous shape issued a
+ * `findFirst` per child inside `Promise.all`, and because `withDb` hands back the
+ * pooled client rather than holding a connection, each of those borrowed its own
+ * pg connection. A pack can carry ~300 components via repo import
+ * (`MAX_COMPONENT_FILES`) or ~5000 via zip (`ZIP_MAX_ENTRIES`), and this read has
+ * no cap, so a single `GET /catalog/{id}` could demand many times the whole
+ * 20-connection pool and starve every other route — the 2026-07-15 outage shape
+ * (PRD-528).
+ *
+ * `DISTINCT ON` collapses the unbounded version history to the latest row per
+ * child in the DB, mirroring `judges-analytics/service.ts`. Fetching every
+ * version with `findMany` and reducing in memory would also remove the fan-out,
+ * but `CatalogItemVersion.content` is `@db.Text` and version history is
+ * unbounded, so it would ship every revision's full body to keep only the newest
+ * — trading pooled connections for transfer and heap.
+ *
+ * Ordering is by `version DESC`, not `createdAt`: `version` is the authored
+ * revision identity and carries the `@@unique([catalogItemId, version])`.
+ *
+ * Org-scoping: the join re-asserts the caller's visibility predicate (org-owned
+ * OR curated/global) rather than trusting that `childIds` were already filtered.
+ * The ids ARE pre-authorized by `childRows` below, so this is redundant today —
+ * deliberately. `catalog_item_versions` carries no `organization_id` of its own
+ * (its scope is inherited through `catalog_items`), and a cross-org content leak
+ * is the exact failure this route's child filter exists to prevent, so the
+ * invariant must not rest on caller discipline: `apps/api/AGENTS.md` says org
+ * scoping takes no "trust the caller" patterns.
+ *
+ * Only the *security* half is re-asserted. `parentPackId` / `archived` are
+ * filtering, not authorization, and stay solely on `childRows` — duplicating
+ * those here would create two predicates that can drift.
+ *
+ * `organization_id` is nullable (curated/global rows have none), so
+ * `= ${organizationId}` is NULL → false for them and the second branch is what
+ * admits them — mirroring the Prisma `OR` exactly.
+ *
+ * The ids bind as a single `uuid[]` parameter via `= ANY(...)` rather than the
+ * `IN (${Prisma.join(...)})` form used elsewhere in this app: a pack can hold
+ * thousands of components (`ZIP_MAX_ENTRIES`), and one array parameter stays
+ * flat where `Prisma.join` would emit one bind parameter per child and push
+ * toward Postgres's parameter ceiling — the reason other call sites have to
+ * chunk. `db.$queryRaw` is available on `TransactionClient` (it is not on
+ * Prisma's interactive-transaction deny list).
+ */
+async function fetchLatestContentByChildId(
+  db: TransactionClient,
+  childIds: string[],
+  organizationId: string
+): Promise<Map<string, string | null>> {
+  if (childIds.length === 0) {
+    return new Map();
+  }
+  const rows = await db.$queryRaw<LatestChildContentRow[]>(Prisma.sql`
+    SELECT DISTINCT ON (v."catalog_item_id")
+      v."catalog_item_id" AS "catalogItemId",
+      v."content" AS "content"
+    FROM "catalog_item_versions" v
+    JOIN "catalog_items" c ON c."id" = v."catalog_item_id"
+    WHERE v."catalog_item_id" = ANY(${childIds}::uuid[])
+      AND (
+        c."organization_id" = ${organizationId}::uuid
+        OR (c."scope" = 'global' AND c."source" = 'curated')
+      )
+    ORDER BY v."catalog_item_id", v."version" DESC
+  `);
+  return new Map(rows.map((r) => [r.catalogItemId, r.content]));
+}
+
 /**
  * Return a single CatalogItem by id, scoped to the calling org.
  * Curated items are visible to all orgs; org_custom items are org-private.
@@ -936,20 +1130,16 @@ export async function getCatalogItemDetail(
       select: CATALOG_ITEM_SELECT,
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     });
-    const childContents = await Promise.all(
-      childRows.map((child) =>
-        db.catalogItemVersion.findFirst({
-          where: { catalogItemId: child.id },
-          orderBy: { version: "desc" },
-          select: { content: true },
-        })
-      )
+    const contentByChildId = await fetchLatestContentByChildId(
+      db,
+      childRows.map((child) => child.id),
+      input.organizationId
     );
     return {
       row,
       content: latest?.content ?? null,
       childRows,
-      childContents,
+      contentByChildId,
     };
   });
 
@@ -959,11 +1149,11 @@ export async function getCatalogItemDetail(
 
   const dto = await rowToDto(data.row);
   const components = await Promise.all(
-    data.childRows.map(async (child, index) => {
+    data.childRows.map(async (child) => {
       const childDto = await rowToDto(child);
       return {
         ...childDto,
-        content: data.childContents[index]?.content ?? null,
+        content: data.contentByChildId.get(child.id) ?? null,
       };
     })
   );
@@ -1019,7 +1209,12 @@ type CreateCatalogError = 404 | 403;
 async function createCatalogItemInTx(
   tx: TransactionClient,
   input: CreateCatalogInput,
-  options: { skipParentValidation?: boolean } = {}
+  options: {
+    skipParentValidation?: boolean;
+    // FEA-4011 Slice A: the materialized agent component's search projection is
+    // pushed here for the top-level caller to flush fail-open after commit.
+    pendingSearchIndex?: SearchProjectionInput[];
+  } = {}
 ): Promise<Result<CatalogRow, CreateCatalogError>> {
   // Validate the parent Pack (when attaching a component) BEFORE inserting the
   // child so a foreign-org / curated / non-pack parent is rejected atomically.
@@ -1068,7 +1263,7 @@ async function createCatalogItemInTx(
   // Persist the authored body as the item's first version so it is versioned
   // from creation (each later edit appends a new CatalogItemVersion).
   if (input.content != null) {
-    await tx.catalogItemVersion.create({
+    const version = await tx.catalogItemVersion.create({
       data: {
         catalogItemId: created.id,
         version: 1,
@@ -1076,7 +1271,20 @@ async function createCatalogItemInTx(
         content: input.content,
         changedById: input.userId,
       },
+      select: { id: true },
     });
+    // FEA-3909 (F4): a content-bearing PACK MEMBER links its exact body to the
+    // F1 registry and records a `pack` occurrence. Standalone (non-pack) items
+    // are out of F4 scope — only members inside a Pack get the pack seam.
+    if (input.parentPackId != null) {
+      await linkPackMemberDefinition(tx, {
+        organizationId: input.organizationId,
+        packId: input.parentPackId,
+        catalogItemVersionId: version.id,
+        targetKind: input.targetKind,
+        content: input.content,
+      });
+    }
   }
 
   // FEA-2923 (Gap A, second forward path): POST /catalog is the other live
@@ -1089,15 +1297,19 @@ async function createCatalogItemInTx(
   // and a later backfill re-run is a no-op. This admin-create path has no
   // agentSlug, so componentKey falls back to the agent name in the helper.
   if (created.targetKind === "agent") {
-    await materializeCloudAgentComponent(tx, {
-      organizationId: input.organizationId,
-      catalogItemId: created.id,
-      name: input.name,
-      componentKey: input.name,
-      description: input.description ?? null,
-      sourceRepo: "",
-      createdById: input.userId,
-    });
+    await materializeCloudAgentComponent(
+      tx,
+      {
+        organizationId: input.organizationId,
+        catalogItemId: created.id,
+        name: input.name,
+        componentKey: input.name,
+        description: input.description ?? null,
+        sourceRepo: "",
+        createdById: input.userId,
+      },
+      options.pendingSearchIndex
+    );
   }
 
   return Result.ok<CatalogRow, CreateCatalogError>(created);
@@ -1124,11 +1336,17 @@ export async function createCatalogItem(
   // inventory row is materialized atomically with the catalog row.
   // ensureCloudSentinelTarget (inside materializeCloudAgentComponent) may
   // create the org's sentinel compute target and therefore needs the tx.
-  const result = await withDb.tx((tx) => createCatalogItemInTx(tx, input));
+  // FEA-4011 Slice A: collect the component search projection inside the tx and
+  // flush it fail-open after commit.
+  const pendingSearchIndex: SearchProjectionInput[] = [];
+  const result = await withDb.tx((tx) =>
+    createCatalogItemInTx(tx, input, { pendingSearchIndex })
+  );
 
   if (!result.ok) {
     return result;
   }
+  flushCatalogSearchIndex(pendingSearchIndex);
   const dto = await rowToDto(result.value);
   return Result.ok(dto);
 }
@@ -1183,6 +1401,9 @@ export async function updateCatalogItem(
         organizationId: true,
         createdById: true,
         sourceRepo: true,
+        // Pack membership: a content edit on a MEMBER must re-link its new version
+        // to the F1 registry (FEA-3909 F4), the same as the create/import paths.
+        parentPackId: true,
       },
     })
   );
@@ -1243,7 +1464,7 @@ export async function updateCatalogItem(
         orderBy: { version: "desc" },
         select: { version: true },
       });
-      await tx.catalogItemVersion.create({
+      const editedVersion = await tx.catalogItemVersion.create({
         data: {
           catalogItemId: input.id,
           version: (last?.version ?? 0) + 1,
@@ -1251,7 +1472,21 @@ export async function updateCatalogItem(
           content: input.content,
           changedById: input.userId,
         },
+        select: { id: true },
       });
+      // FEA-3909 (F4): an edit to a PACK MEMBER links the newly-appended version's
+      // exact body to the F1 registry and records its `pack` occurrence — the same
+      // seam the create + import paths write. Standalone (non-member) edits stay out
+      // of F4 scope; empty bodies are left unlinked by the shared conservative guard.
+      if (existing.parentPackId != null) {
+        await linkPackMemberDefinition(tx, {
+          organizationId: input.organizationId,
+          packId: existing.parentPackId,
+          catalogItemVersionId: editedVersion.id,
+          targetKind: existing.targetKind,
+          content: input.content,
+        });
+      }
     }
 
     return Result.ok<CatalogRow, UpdateCatalogError>(row);
@@ -1389,15 +1624,22 @@ type ImportPackZipInput = {
   userId: string;
 };
 
+// The pack-import transaction takes a per-pack advisory lock as its first
+// statement (see createPackComponents), so a concurrent second import of the
+// same pack *blocks inside its own transaction* until the first import commits.
+// That wait is added to this transaction's own dedupe read + batched child
+// writes, so the total time a blocked import spends open can far exceed Prisma's
+// 5s default interactive-transaction timeout — a blocked import would then abort
+// with a transaction timeout instead of gracefully waiting, re-reading the
+// committed children, and deduping. Raise both bounds to give the lock wait
+// ample room, matching the long-running-writer convention used elsewhere in
+// apps/api (e.g. the GitHub backfill projection writer): 30s work timeout, 5s
+// max wait to acquire a pool connection (FEA-3251).
+const PACK_IMPORT_TRANSACTION_TIMEOUT_MS = 30_000;
+const PACK_IMPORT_TRANSACTION_MAX_WAIT_MS = 5000;
+
 /** 404 not found · 403 curated · 400 no zip uploaded · 413 zip over size/entry budget. */
 type ImportPackZipError = 404 | 403 | 400 | 413;
-
-export type ImportPackZipResult = {
-  created: number;
-  skipped: number;
-  /** Recognized entries dropped because they failed create-path validation. */
-  invalid: number;
-};
 
 /**
  * Create each parsed component under the Pack, skipping ones already present
@@ -1417,18 +1659,24 @@ export type ImportPackZipResult = {
  * length + 1 MB content cap), so an oversized/malformed entry is rejected
  * (counted as `invalid`) instead of persisting an unusable component version.
  *
- * Atomicity: the existing-children read and every child create run inside one
- * `withDb.tx`, and the dedupe set is (re)built from the children read *inside*
- * that transaction. So a retried POST or a concurrent second import re-reads the
- * committed children and skips what the first run already wrote, rather than
- * racing on a stale pre-transaction snapshot and double-inserting. Each child is
- * created via `createCatalogItemInTx` so it is versioned from creation and — for
- * agents — materialized in `agent_components`.
+ * Atomicity & concurrency: the existing-children read and every child create
+ * run inside one `withDb.tx`, guarded by a per-pack transaction-scoped advisory
+ * lock taken first. The lock serializes concurrent imports of the same pack, so
+ * a retried POST or a concurrent second import waits for the first to commit,
+ * then re-reads the committed children and skips what it already wrote. Without
+ * the lock the shared READ COMMITTED transaction would let two simultaneous
+ * imports each read the same pre-image and both insert the full set — duplicate
+ * children, since only agent kinds have a DB unique guard (FEA-3251). Children
+ * are inserted in batched `createMany` calls (items, then their first versions,
+ * then the agent `agent_components` materialization) rather than one item at a
+ * time, so a large pack no longer holds the write transaction open across
+ * hundreds of serial round-trips. Every child is still versioned from creation
+ * and — for agents — materialized in `agent_components`.
  */
 async function createPackComponents(
   input: { id: string; organizationId: string; userId: string },
   components: ReadonlyArray<{ kind: string; name: string; content: string }>
-): Promise<ImportPackZipResult> {
+): Promise<ImportPackZipResponse> {
   // Validate every recognized entry against the same schema the manual create
   // path uses before we open a write transaction. Invalid entries (oversized
   // content, out-of-range name) are dropped rather than persisted as unusable
@@ -1451,56 +1699,169 @@ async function createPackComponents(
     }
   }
 
-  const { created, skipped } = await withDb.tx(async (tx) => {
-    // Read the current children *inside* the transaction so the dedupe set
-    // reflects what is already committed (including rows a concurrent/earlier
-    // import wrote), making re-runs idempotent against duplicate children.
-    const existing = await tx.catalogItem.findMany({
-      where: { parentPackId: input.id },
-      select: { name: true, targetKind: true },
-    });
-    const existingKeys = new Set(
-      existing.map((item) => `${item.targetKind}:${item.name.toLowerCase()}`)
-    );
+  // FEA-4011 Slice A: collected inside the import tx, flushed fail-open after it
+  // commits so a projection failure can never roll back the pack import.
+  const pendingSearchIndex: SearchProjectionInput[] = [];
+  const { created, skipped } = await withDb.tx(
+    async (tx) => {
+      // Serialize concurrent imports of the SAME pack before the dedupe
+      // read+write. There is no DB unique constraint on
+      // (parentPackId, targetKind, lower(name)) for non-agent kinds, and the
+      // transaction runs at Postgres' default READ COMMITTED isolation, so two
+      // imports of one pack running at once (an admin double-click, or a retried
+      // import-repo request) each read the same pre-image and neither sees the
+      // other's uncommitted child inserts — both then insert the full set,
+      // creating duplicate skill/command/hook/mcp children (FEA-3251). A
+      // per-pack, transaction-scoped advisory lock makes the second import block
+      // until the first commits, then re-read the now-committed children and skip
+      // them (keeping the re-run idempotent) — without a schema change or forcing
+      // Serializable isolation on the whole transaction. Auto-released on
+      // commit/rollback; keyed per pack so imports of different packs never
+      // contend.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`catalog:pack-import:${input.id}`}))`;
 
-    let createdCount = 0;
-    let skippedCount = 0;
-    for (const component of validComponents) {
-      const key = `${component.kind}:${component.name.toLowerCase()}`;
-      if (existingKeys.has(key)) {
-        skippedCount++;
-        continue;
-      }
-      existingKeys.add(key);
-      // The pack was already validated by the caller (org-owned,
-      // targetKind==="pack"), so skip the redundant per-child parent lookup.
-      // Passing a request-derived parentPackId here without that upfront check
-      // would be unsafe (cross-org child leak).
-      const childResult = await createCatalogItemInTx(
-        tx,
-        {
-          organizationId: input.organizationId,
-          userId: input.userId,
-          targetKind: component.kind,
-          name: component.name,
-          parentPackId: input.id,
-          content: component.content,
-        },
-        { skipParentValidation: true }
+      // Read the current children *inside* the transaction so the dedupe set
+      // reflects what is already committed (including rows a concurrent/earlier
+      // import wrote), making re-runs idempotent against duplicate children.
+      const existing = await tx.catalogItem.findMany({
+        where: { parentPackId: input.id },
+        select: { name: true, targetKind: true },
+      });
+      const existingKeys = new Set(
+        existing.map((item) => `${item.targetKind}:${item.name.toLowerCase()}`)
       );
-      // With validation skipped this can't return an error, but consume the
-      // Result explicitly so a future change can't silently miscount.
-      if (!childResult.ok) {
-        throw new Error(
-          `Pack component import failed parent validation (status ${childResult.error}) for pack ${input.id}`
-        );
+
+      // Build every child row client-side — pre-deriving the uuidv7 id (matching
+      // the schema's @default(uuid(7))) so the version and agent_components rows
+      // can reference it without a per-row read-back — then persist them in a
+      // handful of batched writes (`createMany`) instead of the ~3-4 serial
+      // round-trips per component the old per-item loop made. The whole thing
+      // still runs inside the one write transaction and rebuilds the dedupe set
+      // from the in-tx children read, so atomicity and idempotency are unchanged;
+      // there are just far fewer round-trips holding the transaction open.
+      //
+      // The pack was already validated by the caller (org-owned,
+      // targetKind==="pack"), which is why `createCatalogItemInTx` was previously
+      // called with skipParentValidation; inlining the inserts here preserves
+      // that (no per-child parent lookup). Passing a request-derived parentPackId
+      // without that upfront check would be unsafe (cross-org child leak).
+      const itemRows: Prisma.CatalogItemCreateManyInput[] = [];
+      const versionRows: Prisma.CatalogItemVersionCreateManyInput[] = [];
+      const agentComponents: {
+        catalogItemId: string;
+        name: string;
+        description: string | null;
+      }[] = [];
+      // FEA-3909 (F4): members whose exact body must be linked to the F1 registry
+      // + get a `pack` occurrence, after their version rows are batch-created.
+      const packMembers: {
+        catalogItemVersionId: string;
+        targetKind: string;
+        content: string;
+      }[] = [];
+      let skippedCount = 0;
+
+      for (const component of validComponents) {
+        const key = `${component.kind}:${component.name.toLowerCase()}`;
+        if (existingKeys.has(key)) {
+          skippedCount++;
+          continue;
+        }
+        existingKeys.add(key);
+
+        const id = uuidv7();
+        itemRows.push({
+          id,
+          organizationId: input.organizationId,
+          targetKind: component.kind,
+          source: "org_custom",
+          scope: "org",
+          name: component.name,
+          description: null,
+          sortOrder: 0,
+          coaching: false,
+          parentPackId: input.id,
+          // Content-addressed identity for the imported component (same
+          // derivation createCatalogItemInTx uses).
+          componentUuid: deriveComponentUuid({
+            content: component.content,
+            sourceRepo: undefined,
+            organizationId: input.organizationId,
+          }),
+          createdById: input.userId,
+        });
+        // Persist the imported body as the item's first version (versioned from
+        // creation), mirroring createCatalogItemInTx. Pre-derive the version id
+        // so the F1 link can be stamped after the batched createMany without a
+        // per-row read-back.
+        const versionId = uuidv7();
+        versionRows.push({
+          id: versionId,
+          catalogItemId: id,
+          version: 1,
+          name: component.name,
+          content: component.content,
+          changedById: input.userId,
+        });
+        packMembers.push({
+          catalogItemVersionId: versionId,
+          targetKind: component.kind,
+          content: component.content,
+        });
+        // For agents, mirror createCatalogItemInTx's agent_components
+        // materialization so the imported agent is visible in the Agents
+        // workspace; batched below via the shared cloud sentinel.
+        if (component.kind === "agent") {
+          agentComponents.push({
+            catalogItemId: id,
+            name: component.name,
+            description: null,
+          });
+        }
       }
-      createdCount++;
+
+      if (itemRows.length > 0) {
+        await tx.catalogItem.createMany({ data: itemRows });
+        await tx.catalogItemVersion.createMany({ data: versionRows });
+        await materializeCloudAgentComponentsBatch(
+          tx,
+          {
+            organizationId: input.organizationId,
+            createdById: input.userId,
+            components: agentComponents,
+          },
+          pendingSearchIndex
+        );
+        // FEA-3909 (F4): link each newly-created pack member's exact body to the
+        // F1 registry and record its `pack` occurrence. Sequential on purpose —
+        // this runs inside the pinned pack-import transaction (one connection),
+        // where a fan-out would only serialize on that same connection while
+        // risking the interactive-transaction timeout; import batches are the
+        // pack's component count, well within budget.
+        for (const member of packMembers) {
+          await linkPackMemberDefinition(tx, {
+            organizationId: input.organizationId,
+            packId: input.id,
+            catalogItemVersionId: member.catalogItemVersionId,
+            targetKind: member.targetKind,
+            content: member.content,
+          });
+        }
+      }
+
+      return { created: itemRows.length, skipped: skippedCount };
+    },
+    {
+      // A concurrent import blocks on the advisory lock inside this transaction
+      // until the first import commits, so the wait must not trip Prisma's 5s
+      // default interactive-transaction timeout (which would abort the blocked
+      // import instead of letting it dedupe). See PACK_IMPORT_TRANSACTION_*.
+      maxWait: PACK_IMPORT_TRANSACTION_MAX_WAIT_MS,
+      timeout: PACK_IMPORT_TRANSACTION_TIMEOUT_MS,
     }
+  );
 
-    return { created: createdCount, skipped: skippedCount };
-  });
-
+  flushCatalogSearchIndex(pendingSearchIndex);
   return { created, skipped, invalid };
 }
 
@@ -1517,7 +1878,7 @@ async function createPackComponents(
  */
 export async function importPackZipComponents(
   input: ImportPackZipInput
-): Promise<Result<ImportPackZipResult, ImportPackZipError>> {
+): Promise<Result<ImportPackZipResponse, ImportPackZipError>> {
   const pack = await withDb((db) =>
     db.catalogItem.findFirst({
       where: { id: input.id, organizationId: input.organizationId },
@@ -1597,7 +1958,7 @@ type ImportPackRepoError = 404 | 403 | 400;
  */
 export async function importPackRepoComponents(
   input: ImportPackRepoInput
-): Promise<Result<ImportPackZipResult, ImportPackRepoError>> {
+): Promise<Result<ImportPackZipResponse, ImportPackRepoError>> {
   const pack = await withDb((db) =>
     db.catalogItem.findFirst({
       where: { id: input.id, organizationId: input.organizationId },
@@ -1816,4 +2177,77 @@ export async function confirmAssetUpload(
 
   const dto = await rowToDto(updated);
   return Result.ok(dto);
+}
+
+/**
+ * FEA-3909 / PRD-527 F4 — map a pack member's exact definition to the F1
+ * `DefinitionVersion` registry and record a `pack` `SourceOccurrence`.
+ *
+ * Called for a content-bearing pack member (a child `CatalogItem` with
+ * `parentPackId != null`) right after its first `CatalogItemVersion` is written.
+ * Delegates to {@link registerDefinitionVersion} — the SSOT — which
+ * provenance-freely fingerprints the body (`computeDefinitionHash`, never a local
+ * hash), upserts the exact version on `(org, definitionHash)`, and idempotently
+ * upserts a `SourceOccurrence(occurrenceType = pack, packId)`. This closes the
+ * previously-never-written `pack` seam (the writer only ever passed `local`).
+ *
+ * Then it stamps the resulting `definitionVersionId` onto the version row just
+ * created, so the catalog is linked to the registry (readers prefer this link
+ * over the provenance-tainted `componentUuid`, which is preserved alongside).
+ *
+ * Many-to-many (PD3): the same body in N packs upserts ONE `DefinitionVersion`
+ * and one `pack` occurrence per distinct `packId` — the version is referenced,
+ * never copied. The Pack itself is never versioned (PD2).
+ *
+ * Conservative (PD5-aligned): a member with no stored body never reaches here
+ * (the caller only invokes it when `content != null`), so it can never mint an
+ * invented version. Runs on the caller's `tx` so the registry rows land atomically
+ * with the member create.
+ */
+async function linkPackMemberDefinition(
+  tx: TransactionClient,
+  args: {
+    organizationId: string;
+    packId: string;
+    catalogItemVersionId: string;
+    targetKind: string;
+    content: string;
+  }
+): Promise<void> {
+  // Conservative (PD5): mint a version ONLY from real stored bytes. An empty body
+  // is left unlinked (definitionVersionId stays NULL) on EVERY live writer, so the
+  // live create/edit/import paths and the conservative backfill
+  // (`backfill-pack-definition-versions.ts`, which skips `content.length === 0`)
+  // classify the same empty-content member identically — no live-vs-backfill drift.
+  if (!isLinkableDefinitionContent(args.content)) {
+    return;
+  }
+  const definitionVersionId = await registerDefinitionVersion(tx, {
+    organizationId: args.organizationId,
+    // Canonicalize the catalog's `targetKind` (`"agent"` → `subagent`) before it
+    // is folded into the fingerprint, so a pack-imported member and a device-synced
+    // `subagent` of identical bytes dedupe to ONE F1 `DefinitionVersion`. The
+    // conservative backfill applies the SAME mapping, so a live-linked member and a
+    // backfilled one share the `definitionHash`.
+    componentKind: catalogTargetKindToComponentKind(args.targetKind),
+    content: args.content,
+    occurrenceType: SourceOccurrenceType.pack,
+    packId: args.packId,
+  });
+
+  await tx.catalogItemVersion.update({
+    where: { id: args.catalogItemVersionId },
+    data: { definitionVersionId },
+  });
+}
+
+/**
+ * Whether a member's stored body is real bytes we can conservatively fingerprint
+ * (PD5). The SSOT guard shared by every live pack-member writer so the empty /
+ * absent-body classification never forks from the conservative backfill.
+ */
+function isLinkableDefinitionContent(
+  content: string | null
+): content is string {
+  return content != null && content.length > 0;
 }

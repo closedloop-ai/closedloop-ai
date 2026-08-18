@@ -7,11 +7,7 @@
  * 3. getUserJudgeRatings where clause uses evaluation.artifactId
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  getMockWithDb,
-  mockWithDbCall,
-  mockWithDbTx,
-} from "../utils/db-helpers";
+import { mockWithDbCall } from "../utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
@@ -51,14 +47,13 @@ const JUDGE_SCORE_ID = "a0000000-0000-7000-8000-000000000001";
 describe("submitJudgeRating — where clause shape", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getMockWithDb().tx = vi.fn();
   });
 
   it("finds judge score via evaluation.artifactId and evaluation.organizationId", async () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     await submitJudgeRating(ORG_ID, USER_ID, ARTIFACT_ID, JUDGE_SCORE_ID, 0.5);
 
@@ -83,7 +78,6 @@ describe("submitJudgeRating — where clause shape", () => {
 describe("submitJudgeRating — cross-org isolation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    getMockWithDb().tx = vi.fn();
   });
 
   it("returns null when judge score belongs to a different org's evaluation", async () => {
@@ -91,7 +85,7 @@ describe("submitJudgeRating — cross-org isolation", () => {
     const db = {
       judgeScore: { findFirst: vi.fn().mockResolvedValue(null) },
     };
-    mockWithDbTx(db);
+    mockWithDbCall(db);
 
     const result = await submitJudgeRating(
       OTHER_ORG_ID,

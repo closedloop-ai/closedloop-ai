@@ -58,6 +58,16 @@ import {
 } from "../types";
 import { handleBranchViewCommentActionResult } from "./branch-comment-action-result";
 import { BranchCommentWriteIdentityPrompt } from "./branch-comment-write-identity-prompt";
+import { BranchDiffErrorState } from "./branch-diff-access-denied";
+import {
+  buildBracketByRow,
+  buildFindingsByRow,
+  buildThreadsByRow,
+  type ClassifiedBranchReviewFinding,
+  getInlineCommentRanges,
+  gutterRowKey,
+  type LineBracketInfo,
+} from "./branch-diff-gutter-rows";
 import {
   clampRangeToContiguous,
   collectRenderedLineNumbers,
@@ -73,7 +83,6 @@ import {
 } from "./branch-diff-target";
 import {
   type BranchReviewFinding,
-  type BranchReviewFindingAnchorClassification,
   BranchReviewFindingAnchorStatus,
   classifyBranchReviewFindingAnchor,
   getBranchReviewFindingAnchorStatusLabel,
@@ -358,11 +367,6 @@ type BranchFileDiffViewerRenderGutterData = Parameters<
   >
 >[0];
 
-type ClassifiedBranchReviewFinding = {
-  classification: BranchReviewFindingAnchorClassification;
-  finding: BranchReviewFinding;
-};
-
 /** A single-line or multi-line inline selection. `startLine === endLine` for single line. */
 type LineSelection = {
   side: GitHubDiffSide;
@@ -381,79 +385,6 @@ type InlineComposerProps = {
 
 const EMPTY_THREADS: readonly CommentThread[] = [];
 const EMPTY_FINDINGS: readonly ClassifiedBranchReviewFinding[] = [];
-
-/** Stable key for a gutter row, shared by the lookup maps and the gutter lookup. */
-function gutterRowKey(
-  side: GitHubDiffSide | null,
-  line: number | null
-): string {
-  return `${side}:${line}`;
-}
-
-/** Group inline threads by their root's (side, line) anchor for O(1) gutter lookup. */
-function buildThreadsByRow(
-  threads: CommentThread[]
-): Map<string, CommentThread[]> {
-  const map = new Map<string, CommentThread[]>();
-  for (const thread of threads) {
-    const key = gutterRowKey(thread.root.side ?? null, thread.root.line);
-    const existing = map.get(key);
-    if (existing) {
-      existing.push(thread);
-    } else {
-      map.set(key, [thread]);
-    }
-  }
-  return map;
-}
-
-/** Group current-anchored findings by (side, line) for O(1) gutter lookup. */
-function buildFindingsByRow(
-  findings: ClassifiedBranchReviewFinding[]
-): Map<string, ClassifiedBranchReviewFinding[]> {
-  const map = new Map<string, ClassifiedBranchReviewFinding[]>();
-  for (const item of findings) {
-    if (
-      item.classification.status !== BranchReviewFindingAnchorStatus.Current
-    ) {
-      continue;
-    }
-    const key = gutterRowKey(
-      item.classification.side,
-      item.classification.line
-    );
-    const existing = map.get(key);
-    if (existing) {
-      existing.push(item);
-    } else {
-      map.set(key, [item]);
-    }
-  }
-  return map;
-}
-
-/**
- * Expand multi-line comment ranges into a per-(side, line) bracket lookup so the
- * gutter resolves bracket state in O(1) instead of scanning every range per row.
- * First range covering a line wins, matching the prior linear-scan behavior.
- */
-function buildBracketByRow(
-  ranges: InlineCommentRange[]
-): Map<string, LineBracketInfo> {
-  const map = new Map<string, LineBracketInfo>();
-  for (const range of ranges) {
-    for (let line = range.startLine; line <= range.endLine; line++) {
-      const key = gutterRowKey(range.side, line);
-      if (!map.has(key)) {
-        map.set(key, {
-          isEnd: line === range.endLine,
-          isStart: line === range.startLine,
-        });
-      }
-    }
-  }
-  return map;
-}
 
 function BranchDiffContent({
   diffData,
@@ -499,11 +430,7 @@ function BranchDiffContent({
   }
 
   if (diffError) {
-    return (
-      <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-        Failed to load diff
-      </div>
-    );
+    return <BranchDiffErrorState error={diffError} />;
   }
 
   if (diffData?.isBinary) {
@@ -533,6 +460,13 @@ function BranchDiffContent({
       <td
         className="relative align-top"
         data-testid={`inline-gutter-${side}-${line ?? "empty"}`}
+        // react-diff-viewer-continued 4.4.0 emits an UNLAYERED
+        // `.diffContainer td { vertical-align: baseline }` reset that, being
+        // unlayered, outranks the layered Tailwind `align-top` utility above and
+        // would drop this gutter's comment threads/composer to the diff-row
+        // baseline. Pin top alignment inline (inline styles beat the unlayered
+        // author rule) so the gutter stays row-top aligned.
+        style={{ verticalAlign: "top" }}
       >
         {bracketInfo ? <RangeBracket info={bracketInfo} /> : null}
         <InlineCommentRowSlot
@@ -561,11 +495,6 @@ function BranchDiffContent({
       }
       diffData={diffData}
       diffError={diffError}
-      errorFallback={
-        <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-          Failed to load diff
-        </div>
-      }
       isDiffLoading={isDiffLoading}
       leadingContent={
         unplacedFindings.length > 0 ? (
@@ -1754,33 +1683,6 @@ function rangeLineHighlightIds(selection: LineSelection): string[] {
     ids.push(makeId(line));
   }
   return ids;
-}
-
-type InlineCommentRange = {
-  side: GitHubDiffSide;
-  startLine: number;
-  endLine: number;
-};
-
-type LineBracketInfo = { isStart: boolean; isEnd: boolean };
-
-/** Multi-line spans for existing range comments, keyed off their start/end anchors. */
-function getInlineCommentRanges(
-  threads: CommentThread[]
-): InlineCommentRange[] {
-  const ranges: InlineCommentRange[] = [];
-  for (const { root } of threads) {
-    const side = root.startSide ?? root.side;
-    if (
-      side &&
-      root.startLine != null &&
-      root.line != null &&
-      root.startLine < root.line
-    ) {
-      ranges.push({ endLine: root.line, side, startLine: root.startLine });
-    }
-  }
-  return ranges;
 }
 
 function RangeBracket({ info }: Readonly<{ info: LineBracketInfo }>) {

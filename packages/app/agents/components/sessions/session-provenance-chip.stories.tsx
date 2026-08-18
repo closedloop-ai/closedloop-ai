@@ -1,0 +1,43 @@
+import { BranchProvenance } from "@repo/api/src/types/branch";
+import type { Meta, StoryObj } from "@storybook/react";
+import { SessionProvenanceChip } from "./session-provenance-chip";
+
+/**
+ * ISS-5451: the session provenance marker, isolated.
+ *
+ * FEA-3575: a quiet, informational marker for automated runs, mirroring the
+ * Branches provenance chip so the two surfaces label origin identically. The
+ * point of the set is that {@link Human} and {@link Unknown} render NOTHING —
+ * the chip marks the exception, not every row, so a human-authored session
+ * carries no badge at all. That absence is the design, and without a story for
+ * it a reader has to guess whether a missing chip is intentional or a bug.
+ */
+const meta = {
+  title: "App Core/Agents/Session Provenance Chip",
+  component: SessionProvenanceChip,
+  tags: ["autodocs"],
+  parameters: { layout: "centered" },
+  args: { provenance: BranchProvenance.Agent },
+} satisfies Meta<typeof SessionProvenanceChip>;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+/** An agent-minted worktree session. */
+export const Agent: Story = {};
+
+/** An automated dependency/bot run. */
+export const Bot: Story = {
+  args: { provenance: BranchProvenance.Bot },
+};
+
+/** A human-authored session renders no chip. The empty frame is correct. */
+export const Human: Story = {
+  args: { provenance: BranchProvenance.Human },
+};
+
+/** Unclassified provenance also renders nothing rather than guessing. */
+export const Unknown: Story = {
+  args: { provenance: null },
+};

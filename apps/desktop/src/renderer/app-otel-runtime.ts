@@ -1,5 +1,9 @@
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
+import {
+  SpanStatusCode as OTelSpanStatusCode,
+  trace,
+} from "@opentelemetry/api";
 import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base";
 import {
   SimpleSpanProcessor,
@@ -16,6 +20,7 @@ import {
   RENDERER_RENDER_COMMIT_SAMPLE_RATE,
   type RendererOtelBridgePayload,
   type RendererOtelBridgeRecord,
+  type RendererOtelExceptionAttributes,
   type RendererOtelExportResult,
 } from "../shared/renderer-otel-bridge-constants";
 import {
@@ -23,6 +28,8 @@ import {
   isTerminalRendererOtelResult,
   normalizeAttributes,
   normalizeInstrumentationScope,
+  normalizeSpanKind,
+  normalizeSpanStatus,
 } from "../shared/renderer-otel-bridge-utils";
 
 export type RendererOtelRuntime = {
@@ -52,6 +59,8 @@ const RENDERER_BOOTSTRAP_RECORD: RendererOtelBridgeRecord = {
   instrumentationScope: { name: "closedloop-desktop-renderer" },
   name: "desktop.renderer.otel.bootstrap",
 };
+const RENDERER_TRACER_NAME = "closedloop-desktop-renderer";
+const RENDERER_EXCEPTION_SPAN_NAME = "exception";
 
 export function createRendererOtelRuntime({
   exportTelemetry,
@@ -67,38 +76,41 @@ export function createRendererOtelRuntime({
 
   return {
     start() {
-      if (terminalNoop || started) {
-        return Promise.resolve();
-      }
-      if (!exportTelemetry) {
-        terminalNoop = true;
-        return Promise.resolve();
-      }
-      if (!startPromise) {
-        startPromise = startRendererRuntime(exportTelemetry)
-          .catch(() => {
-            terminalNoop = true;
-          })
-          .finally(() => {
-            startPromise = null;
-          });
-      }
-      return startPromise;
+      return ensureStarted();
     },
     reportException(input) {
       if (!exportTelemetry || terminalNoop) {
         return;
       }
-      const record = rendererExceptionToBridgeRecord(input);
-      exportTelemetry({ records: [record] })
-        .then((result) => {
-          if (isTerminalRendererOtelResult(result)) {
-            terminalNoop = true;
-          }
+      if (!started) {
+        exportTelemetry({
+          records: [
+            {
+              signal: DesktopOtelSignal.Log,
+              name: RENDERER_EXCEPTION_SPAN_NAME,
+              attributes: rendererExceptionAttributes(input),
+            },
+          ],
         })
-        .catch(() => {
-          terminalNoop = true;
-        });
+          .then((result) => {
+            if (isTerminalRendererOtelResult(result)) {
+              terminalNoop = true;
+            }
+          })
+          .catch(() => {
+            terminalNoop = true;
+          });
+        return;
+      }
+      withStartedRendererRuntime(() => {
+        const span = trace
+          .getTracer(RENDERER_TRACER_NAME)
+          .startSpan(RENDERER_EXCEPTION_SPAN_NAME, {
+            attributes: rendererExceptionAttributes(input),
+          });
+        span.setStatus({ code: OTelSpanStatusCode.ERROR });
+        span.end();
+      });
     },
     reportRenderCommit(input) {
       if (!exportTelemetry || terminalNoop) {
@@ -113,16 +125,13 @@ export function createRendererOtelRuntime({
       ) {
         return;
       }
-      const record = buildRenderCommitBridgeRecord(input);
-      exportTelemetry({ records: [record] })
-        .then((result) => {
-          if (isTerminalRendererOtelResult(result)) {
-            terminalNoop = true;
-          }
-        })
-        .catch(() => {
-          terminalNoop = true;
-        });
+      withStartedRendererRuntime(() => {
+        const record = buildRenderCommitBridgeRecord(input);
+        trace
+          .getTracer(RENDERER_TRACER_NAME)
+          .startSpan(record.name ?? "", { attributes: record.attributes })
+          .end();
+      });
     },
     async shutdown() {
       terminalNoop = true;
@@ -165,11 +174,47 @@ export function createRendererOtelRuntime({
     provider.register();
     started = true;
   }
+
+  function ensureStarted(): Promise<void> {
+    if (terminalNoop || started) {
+      return Promise.resolve();
+    }
+    if (!exportTelemetry) {
+      terminalNoop = true;
+      return Promise.resolve();
+    }
+    if (!startPromise) {
+      startPromise = startRendererRuntime(exportTelemetry)
+        .catch(() => {
+          terminalNoop = true;
+        })
+        .finally(() => {
+          startPromise = null;
+        });
+    }
+    return startPromise;
+  }
+
+  function withStartedRendererRuntime(callback: () => void): void {
+    if (started) {
+      callback();
+      return;
+    }
+    ensureStarted()
+      .then(() => {
+        if (started && !terminalNoop) {
+          callback();
+        }
+      })
+      .catch(() => {
+        terminalNoop = true;
+      });
+  }
 }
 
-function rendererExceptionToBridgeRecord(
+function rendererExceptionAttributes(
   input: RendererExceptionReportInput
-): RendererOtelBridgeRecord {
+): RendererOtelExceptionAttributes {
   const attributes = sanitizeDesktopException({
     error: input.error,
     origin: AppExceptionOrigin.Renderer,
@@ -177,25 +222,21 @@ function rendererExceptionToBridgeRecord(
   });
 
   return {
-    signal: DesktopOtelSignal.Log,
-    name: "exception",
-    attributes: {
-      [TelemetryAttribute.ExceptionType]:
-        attributes[TelemetryAttribute.ExceptionType],
-      [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
-      ...(attributes[TelemetryAttribute.ExceptionMessage]
-        ? {
-            [TelemetryAttribute.ExceptionMessage]:
-              attributes[TelemetryAttribute.ExceptionMessage],
-          }
-        : {}),
-      ...(attributes[TelemetryAttribute.ExceptionStacktrace]
-        ? {
-            [TelemetryAttribute.ExceptionStacktrace]:
-              attributes[TelemetryAttribute.ExceptionStacktrace],
-          }
-        : {}),
-    },
+    [TelemetryAttribute.ExceptionType]:
+      attributes[TelemetryAttribute.ExceptionType],
+    [TelemetryAttribute.AppExceptionOrigin]: AppExceptionOrigin.Renderer,
+    ...(attributes[TelemetryAttribute.ExceptionMessage]
+      ? {
+          [TelemetryAttribute.ExceptionMessage]:
+            attributes[TelemetryAttribute.ExceptionMessage],
+        }
+      : {}),
+    ...(attributes[TelemetryAttribute.ExceptionStacktrace]
+      ? {
+          [TelemetryAttribute.ExceptionStacktrace]:
+            attributes[TelemetryAttribute.ExceptionStacktrace],
+        }
+      : {}),
   };
 }
 
@@ -248,16 +289,30 @@ class RendererOtelSpanExporter implements SpanExporter {
 }
 
 function spanToBridgeRecord(span: ReadableSpan): RendererOtelBridgeRecord {
+  const spanContext = span.spanContext();
   return {
     signal: DesktopOtelSignal.Trace,
     instrumentationScope: normalizeInstrumentationScope(
       span.instrumentationScope
     ),
     timestampUnixNano: hrTimeToUnixNanoString(span.endTime),
+    traceId: spanContext.traceId,
+    spanId: spanContext.spanId,
+    ...(span.parentSpanContext
+      ? { parentSpanId: span.parentSpanContext.spanId }
+      : {}),
+    kind: normalizeSpanKind(span.kind),
+    status: normalizeSpanStatus(span.status),
     name: span.name,
     attributes: normalizeAttributes(span.attributes),
-    droppedAttributesCount: span.droppedAttributesCount,
-    droppedEventsCount: span.droppedEventsCount,
-    droppedLinksCount: span.droppedLinksCount,
+    ...(span.droppedAttributesCount === 0
+      ? {}
+      : { droppedAttributesCount: span.droppedAttributesCount }),
+    ...(span.droppedEventsCount === 0
+      ? {}
+      : { droppedEventsCount: span.droppedEventsCount }),
+    ...(span.droppedLinksCount === 0
+      ? {}
+      : { droppedLinksCount: span.droppedLinksCount }),
   };
 }

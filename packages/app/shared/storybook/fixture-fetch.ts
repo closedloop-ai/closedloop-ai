@@ -64,7 +64,13 @@ export function createFixtureFetch(
 }
 
 function defaultFixtureData(method: string, pathname: string): unknown {
-  if (method === "GET" && pathname.endsWith("/trace-comments")) {
+  if (
+    method === "GET" &&
+    (pathname.endsWith("/trace-comments") || pathname.endsWith("/users"))
+  ) {
+    // List reads default to an empty array so array-consuming hooks (e.g.
+    // useOrganizationUsers for @-mention resolution, FEA-3490) never receive a
+    // non-iterable `{}` under the harness when a route is not registered.
     return [];
   }
   return {};

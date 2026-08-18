@@ -1,5 +1,7 @@
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import type { DocumentTypeGroup } from "@repo/api/src/types/judges-analytics";
+import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { SearchX } from "lucide-react";
 import { DocumentTypeSection } from "./document-type-section";
 
 type ReportTypeSectionProps = {
@@ -11,7 +13,7 @@ const REPORT_TYPE_LABEL: Record<EvaluationReportType, string> = {
   [EvaluationReportType.Code]: "Code",
   [EvaluationReportType.Prd]: "PRD",
   [EvaluationReportType.Plan]: "Plan",
-  [EvaluationReportType.Feature]: "Feature",
+  [EvaluationReportType.Feature]: "Issue",
 };
 
 const REPORT_TYPE_DESCRIPTION: Record<EvaluationReportType, string> = {
@@ -22,7 +24,7 @@ const REPORT_TYPE_DESCRIPTION: Record<EvaluationReportType, string> = {
   [EvaluationReportType.Plan]:
     "LLM plan-judge scores compared against artifact ratings.",
   [EvaluationReportType.Feature]:
-    "LLM feature-judge scores compared against artifact ratings.",
+    "LLM issue-judge scores compared against artifact ratings.",
 };
 
 export function ReportTypeSection({
@@ -40,12 +42,11 @@ export function ReportTypeSection({
         </p>
       </div>
       {groups.length === 0 ? (
-        <div className="rounded-lg border border-border bg-muted/50 p-6 text-center">
-          <p className="text-muted-foreground">
-            No judge evaluations found for this report type in the selected date
-            range.
-          </p>
-        </div>
+        <EmptyState
+          className="min-h-24 py-6"
+          icon={SearchX}
+          title={`No ${REPORT_TYPE_LABEL[reportType]} evaluations in this range`}
+        />
       ) : (
         <div className="space-y-8">
           {groups.map((group) => (

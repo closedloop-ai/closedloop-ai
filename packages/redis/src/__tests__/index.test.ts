@@ -121,6 +121,39 @@ describe("createRedisClient", () => {
     });
   });
 
+  it("uses the default console logger for prefixless and prefixed lifecycle events", () => {
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    createRedisClient({ url: "redis://localhost:6379" });
+
+    const handlersFor = (event: string) =>
+      mockOn.mock.calls
+        .filter((call) => call[0] === event)
+        .map((call) => call[1] as (arg?: unknown) => void);
+
+    handlersFor("connect")[0]?.();
+    handlersFor("close")[0]?.();
+    handlersFor("error")[0]?.(new Error("default logger error"));
+
+    expect(consoleLog).toHaveBeenCalledWith("[redis] connected");
+    expect(consoleLog).toHaveBeenCalledWith("[redis] connection closed");
+    expect(consoleWarn).toHaveBeenCalledWith("[redis] connection error", {
+      error: "default logger error",
+    });
+
+    createRedisClient({
+      url: "redis://localhost:6379",
+      keyPrefix: "worker:",
+    });
+    handlersFor("connect").at(-1)?.();
+
+    expect(consoleLog).toHaveBeenCalledWith("[redis] connected", {
+      keyPrefix: "worker:",
+    });
+    consoleLog.mockRestore();
+    consoleWarn.mockRestore();
+  });
+
   it("prefers onError over the logger for connection errors", () => {
     const logger = { info: vi.fn(), warn: vi.fn() };
     const onError = vi.fn();

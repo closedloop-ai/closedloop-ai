@@ -8,6 +8,11 @@ import {
 } from "@repo/api/src/types/db-health";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDatabaseTransportPosture, withDb } from "../index";
+import {
+  DB_POOL_ACQUIRE_TIMEOUT_MS,
+  DB_POOL_MAX_DATABASE_URL_DEFAULT,
+  DB_POOL_MAX_IAM,
+} from "../pool-config";
 
 const ENV_KEYS = [
   "ALLOW_INSECURE_SSL",
@@ -24,9 +29,38 @@ const ENV_KEYS = [
 const mocks = vi.hoisted(() => {
   const poolConfigs: unknown[] = [];
 
+  // Exposes `on`/`connect`/`options` because getPool() now instruments the pool
+  // (FEA-3300): it binds acquire/release/remove listeners and wraps `connect`.
+  // A plain class would throw "pool.on is not a function" and fail every case in
+  // this file, including the TLS assertions below.
   class MockPool {
+    options: { max: number };
+
+    totalCount = 0;
+
+    idleCount = 0;
+
+    waitingCount = 0;
+
     constructor(config: unknown) {
       poolConfigs.push(config);
+      // Mirrors pg-pool's own default resolution (`max || poolSize || 10`), so
+      // the DATABASE_URL branch reports 10 and the IAM branch its explicit 20.
+      const max = (config as { max?: number } | undefined)?.max;
+      this.options = { max: max || 10 };
+    }
+
+    on() {
+      return this;
+    }
+
+    connect(cb?: (err: unknown, client: unknown, done: () => void) => void) {
+      const client = { release: () => undefined };
+      if (typeof cb === "function") {
+        cb(null, client, () => undefined);
+        return;
+      }
+      return Promise.resolve(client);
     }
   }
 
@@ -217,6 +251,46 @@ describe("withDb runtime pool TLS policy", () => {
       verifiedRdsTls: false,
       error: DbHealthTransportError.TlsInsecure,
     });
+  });
+
+  // FEA-3315: both branches must pass an explicit ceiling and an explicit
+  // acquire timeout. Deleting either option from getPool() fails here, which is
+  // what stops the DATABASE_URL branch from silently returning to an untimed
+  // queue — the shape `pool-acquire-timeout.test.ts` proves is an infinite wait.
+  it("configures an explicit ceiling and acquire timeout on the DATABASE_URL pool", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/app";
+    Reflect.deleteProperty(process.env, "ALLOW_INSECURE_SSL");
+
+    await withDb(() => null);
+
+    expect(mocks.poolConfigs).toHaveLength(1);
+    expect(mocks.poolConfigs[0]).toEqual(
+      expect.objectContaining({
+        max: DB_POOL_MAX_DATABASE_URL_DEFAULT,
+        connectionTimeoutMillis: DB_POOL_ACQUIRE_TIMEOUT_MS,
+      })
+    );
+  });
+
+  it("configures an explicit ceiling and acquire timeout on the IAM pool", async () => {
+    Reflect.deleteProperty(process.env, "DATABASE_URL");
+    Reflect.deleteProperty(process.env, "ALLOW_INSECURE_SSL");
+    process.env.AWS_REGION = "us-east-1";
+    process.env.AWS_ROLE_ARN = "arn:aws:iam::123456789012:role/test";
+    process.env.PGDATABASE = "app";
+    process.env.PGHOST = "db.example.rds.amazonaws.com";
+    process.env.PGPORT = "5432";
+    process.env.PGUSER = "app_user";
+
+    await withDb(() => null);
+
+    expect(mocks.poolConfigs).toHaveLength(1);
+    expect(mocks.poolConfigs[0]).toEqual(
+      expect.objectContaining({
+        max: DB_POOL_MAX_IAM,
+        connectionTimeoutMillis: DB_POOL_ACQUIRE_TIMEOUT_MS,
+      })
+    );
   });
 });
 

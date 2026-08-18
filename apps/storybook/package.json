@@ -8,9 +8,12 @@
     "chromatic": "chromatic --exit-zero-on-changes",
     "catalog:sync": "node ./scripts/sync-component-catalog.mjs",
     "validate:catalog": "node ./scripts/validate-story-titles.mjs",
-    "clean": "git clean -xdf .cache .turbo dist node_modules"
+    "clean": "git clean -xdf .cache .turbo dist node_modules",
+    "test": "vitest run"
   },
   "dependencies": {
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/utilities": "^3.2.2",
     "@hookform/resolvers": "^5.2.2",
     "@repo/app": "workspace:*",
     "@repo/design-system": "workspace:@closedloop-ai/design-system@*",
@@ -20,8 +23,8 @@
     "input-otp": "^1.4.2",
     "lucide-react": "^0.556.0",
     "next": "catalog:",
-    "react": "19.2.5",
-    "react-dom": "19.2.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "react-hook-form": "^7.71.1",
     "recharts": "^3.7.0",
     "sonner": "^2.0.7",
@@ -34,13 +37,17 @@
     "@storybook/addon-themes": "^10.4.6",
     "@storybook/nextjs": "^10.4.6",
     "@storybook/react": "^10.4.6",
+    "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
-    "chromatic": "^18.0.1",
+    "chromatic": "^18.1.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.5.10",
     "storybook": "^10.4.6",
     "tailwindcss": "^4.1.18",
-    "typescript": "^5.9.3"
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "typescript6": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^4.1.9"
   }
 }

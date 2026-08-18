@@ -1,7 +1,7 @@
 import type {
   AgentSessionUsageByBranch,
   AgentSessionUsageByPr,
-} from "@repo/api/src/types/agent-session";
+} from "@repo/api/src/types/agent-session-usage-breakdown";
 import type {
   ArtifactSessionUsageByModel,
   ArtifactSessionUsageSummary,
@@ -18,6 +18,7 @@ import { toNumber } from "./prisma-number";
 import {
   hasMatchingSessionPrLinks,
   SESSION_PR_LINK_WHERE,
+  scopeToSessionsWithPrLinks,
   visitSessionDetailPages,
 } from "./session-pr-links";
 
@@ -133,7 +134,7 @@ export async function aggregateSessionAttributionLenses(
   const prMap = new Map<string, PrAttributionAccumulator>();
 
   await visitSessionDetailPages(
-    where,
+    scopeToSessionsWithPrLinks(where),
     attributionLensSelect,
     (sessions: AttributionLensRecord[]) => {
       for (const session of sessions) {
@@ -281,15 +282,15 @@ function aggregateArtifactUsageByModelShares(
       estimatedCost: 0,
     };
     existing.inputTokens +=
-      tokenCountToNumber(row.inputTokens) / sessionShare.denominator;
+      toNumber(row.inputTokens) / sessionShare.denominator;
     existing.outputTokens +=
-      tokenCountToNumber(row.outputTokens) / sessionShare.denominator;
+      toNumber(row.outputTokens) / sessionShare.denominator;
     existing.cacheReadTokens +=
-      tokenCountToNumber(row.cacheReadTokens) / sessionShare.denominator;
+      toNumber(row.cacheReadTokens) / sessionShare.denominator;
     existing.cacheWriteTokens +=
-      tokenCountToNumber(row.cacheWriteTokens) / sessionShare.denominator;
+      toNumber(row.cacheWriteTokens) / sessionShare.denominator;
     existing.estimatedCost +=
-      decimalToNumber(row.estimatedCost) / sessionShare.denominator;
+      toNumber(row.estimatedCost) / sessionShare.denominator;
     byModel.set(row.model, existing);
   }
 
@@ -445,6 +446,10 @@ function accumulatePrShare(
   });
 }
 
+// Purpose precedence (strongest first): Authored > Reviewed > Referenced. FEA-3585:
+// a Reviewed signal must survive when merged with a weaker Referenced one (a PR
+// the session reviewed AND had mentioned), but must never outrank Authored — a
+// review is not authoring output (preserves FEA-3584's Authored gating).
 function chooseStrongerSessionPrPurpose(
   left: SessionPrPurpose,
   right: SessionPrPurpose
@@ -454,6 +459,12 @@ function chooseStrongerSessionPrPurpose(
     right === SessionPrPurposeValues.Authored
   ) {
     return SessionPrPurposeValues.Authored;
+  }
+  if (
+    left === SessionPrPurposeValues.Reviewed ||
+    right === SessionPrPurposeValues.Reviewed
+  ) {
+    return SessionPrPurposeValues.Reviewed;
   }
   if (
     left === SessionPrPurposeValues.Referenced ||
@@ -469,12 +480,11 @@ function toAttributionShare(
   denominator: number
 ): Omit<AttributionAccumulator, "sessionCount"> {
   return {
-    inputTokens: tokenCountToNumber(session.inputTokens) / denominator,
-    outputTokens: tokenCountToNumber(session.outputTokens) / denominator,
-    cacheReadTokens: tokenCountToNumber(session.cacheReadTokens) / denominator,
-    cacheWriteTokens:
-      tokenCountToNumber(session.cacheWriteTokens) / denominator,
-    estimatedCost: decimalToNumber(session.estimatedCost) / denominator,
+    inputTokens: toNumber(session.inputTokens) / denominator,
+    outputTokens: toNumber(session.outputTokens) / denominator,
+    cacheReadTokens: toNumber(session.cacheReadTokens) / denominator,
+    cacheWriteTokens: toNumber(session.cacheWriteTokens) / denominator,
+    estimatedCost: toNumber(session.estimatedCost) / denominator,
   };
 }
 
@@ -499,16 +509,6 @@ function addAttributionShare(
   accumulator.cacheReadTokens += share.cacheReadTokens;
   accumulator.cacheWriteTokens += share.cacheWriteTokens;
   accumulator.estimatedCost += share.estimatedCost;
-}
-
-function decimalToNumber(
-  value: Prisma.Decimal | number | null | undefined
-): number {
-  return toNumber(value);
-}
-
-function tokenCountToNumber(value: bigint | number | null | undefined): number {
-  return toNumber(value);
 }
 
 function roundCost(value: number): number {

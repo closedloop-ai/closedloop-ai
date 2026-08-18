@@ -22,3 +22,15 @@ paths = [
   '''\.spec\.(ts|tsx|js|jsx|mjs|cts|mts)$''',
   '''(^|/)docs/github-app-setup\.md$''',  # example RSA key in setup instructions
 ]
+
+# False positive: the generic-api-key rule fires on the entropy of a DOC COMMENT
+# in the desktop command-signing controller —
+#   "keys, approving/rejecting organization keys, and raising the pending-key"
+# There is no credential on that line. Matched against the LINE rather than
+# allowlisting the path (that file genuinely manages signing keys, so a path
+# allowlist would be far too broad) and rather than pinning a fingerprint (line
+# numbers shift on every upstream sync).
+regexTarget = "line"
+regexes = [
+  '''keys, approving/rejecting organization keys''',
+]

@@ -1,7 +1,7 @@
-import { ApiKeySource } from "@repo/database";
 import { waitUntil } from "@vercel/functions";
 import { apiKeysService } from "@/app/api-keys/service";
 import { usersService } from "@/app/users/service";
+import { isDesktopManagedPopEligible } from "@/lib/auth/api-key-context";
 import {
   getDesktopManagedPopFailure,
   verifyDesktopManagedPop,
@@ -83,11 +83,7 @@ export async function authenticateDesktopManagedPopRequest(
       status: 403,
     };
   }
-  if (
-    keyContext.source !== ApiKeySource.DESKTOP_MANAGED ||
-    !keyContext.boundPublicKey ||
-    !keyContext.gatewayId
-  ) {
+  if (!isDesktopManagedPopEligible(keyContext)) {
     return {
       ok: false,
       reason: DesktopManagedPopAuthFailure.NotDesktopManaged,

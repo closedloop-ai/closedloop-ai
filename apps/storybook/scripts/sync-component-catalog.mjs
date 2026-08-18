@@ -79,11 +79,14 @@ const designSystemCategoriesById = {
   table: "Data Display",
   "table-filter-menu": "Data Display",
   "table-pagination": "Data Display",
+  // ISS-4681: the shared paginated-table footer sits beside the control it
+  // composes, so it categorizes with it rather than defaulting to Primitives.
+  "table-pagination-footer": "Data Display",
   "table-placeholder-actions": "Data Display",
   tabs: "Navigation & Shell",
   "theme-submenu": "Navigation & Shell",
+  "tone-label": "Data Display",
   "version-actions-toolbar": "Documents & Conversation",
-  "workflow-stat-tile": "Data Display/Data Visualization",
 };
 
 const designSystemOverridesById = {

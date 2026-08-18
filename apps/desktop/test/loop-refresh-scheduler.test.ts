@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-refresh-scheduler.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-refresh-scheduler.ts
  *
  * Covers:
  *   - scheduler fires at correct time relative to expiresAt (delay = expiresAt - skew - now)
@@ -15,10 +15,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import type { LoopSchedulerDeps } from "../src/main/loop-lifecycle.js";
-import { LoopSchedulerContext } from "../src/main/loop-scheduler-context.js";
-import type { LoopTokenStore } from "../src/main/loop-token-store.js";
+import { afterEach, beforeEach, describe, test } from "node:test";
+import type { LoopSchedulerDeps } from "../src/main/loop/loop-lifecycle.js";
+import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
+import type { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 // Per-test scheduler context; disposed in afterEach so timers cannot leak.
 let ctx: LoopSchedulerContext;
@@ -100,7 +101,7 @@ afterEach(async () => {
   stopAll();
 
   // Restore mocked timers before re-enabling or resetting in the next test.
-  mock.timers.reset();
+  nodeTestTimers.reset();
 
   // Restore global fetch.
   globalThis.fetch = originalFetch;
@@ -126,7 +127,7 @@ describe("loop-refresh-scheduler: timing", () => {
     // Use a deterministic skew of 10_000 ms via env override.
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "10000";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // Date.now() == 0 after mock.timers.enable.
     // Set expiresAt 60 seconds from now (ms): 60_000 ms.
@@ -148,7 +149,7 @@ describe("loop-refresh-scheduler: timing", () => {
     start("loop-timing", expiresAt, makeDeps(store));
 
     // Tick just before the expected delay — must not fire.
-    mock.timers.tick(49_999);
+    nodeTestTimers.tick(49_999);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -157,7 +158,7 @@ describe("loop-refresh-scheduler: timing", () => {
     );
 
     // Tick the remaining 1 ms — must fire exactly once.
-    mock.timers.tick(1);
+    nodeTestTimers.tick(1);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -169,7 +170,7 @@ describe("loop-refresh-scheduler: timing", () => {
   test("fires immediately (delay=0) when expiresAt - skew is already in the past", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "10000";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // Date.now() == 0. expiresAt = 5_000 ms, skew = 10_000 ms.
     // delay = max(5_000 - 10_000 - 0, 0) = 0.
@@ -188,7 +189,7 @@ describe("loop-refresh-scheduler: timing", () => {
     start("loop-past", expiresAt, makeDeps(store));
 
     // Tick 0 ms (fires timers with delay=0).
-    mock.timers.tick(0);
+    nodeTestTimers.tick(0);
     await flushAsync();
     assert.equal(fetchCallCount, 1, "fetch must fire immediately when delay=0");
   });
@@ -202,7 +203,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
   test("reschedules after a successful refresh that includes a new expiresAt", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "5000";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // First token expires at 20_000 ms. Skew = 5_000.
     // First tick delay = 20_000 - 5_000 - 0 = 15_000 ms.
@@ -228,7 +229,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
     start("loop-resched", firstExpiresAt, makeDeps(store));
 
     // Fire the first tick.
-    mock.timers.tick(15_000);
+    nodeTestTimers.tick(15_000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -238,7 +239,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
 
     // Date.now() is now 15_000 ms after mock.timers.enable.
     // Second tick delay = 40_000 - 5_000 - 15_000 = 20_000 ms.
-    mock.timers.tick(19_999);
+    nodeTestTimers.tick(19_999);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -246,7 +247,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
       "fetch must NOT be called before second scheduled delay"
     );
 
-    mock.timers.tick(1);
+    nodeTestTimers.tick(1);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -258,7 +259,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
   test("does not reschedule when the refreshed token has no expiresAt (opaque token)", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "0";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // expiresAt = 1_000 ms, skew = 0 -> fires at 1_000 ms.
     // After refresh, response token is opaque (no JWT exp).
@@ -279,12 +280,12 @@ describe("loop-refresh-scheduler: rescheduling", () => {
     start("loop-opaque", 1000, makeDeps(store));
 
     // Fire the first tick.
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
     await flushAsync();
     assert.equal(fetchCallCount, 1, "first fetch must fire");
 
     // Advance a large interval — no second call should occur.
-    mock.timers.tick(1_000_000);
+    nodeTestTimers.tick(1_000_000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -296,7 +297,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
   test("does not reschedule when the refresh fails", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "0";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     let fetchCallCount = 0;
     globalThis.fetch = (async () => {
@@ -308,11 +309,11 @@ describe("loop-refresh-scheduler: rescheduling", () => {
     store.setLoopToken("loop-fail", { token: "tok" });
     start("loop-fail", 1000, makeDeps(store));
 
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
     await flushAsync();
     assert.equal(fetchCallCount, 1, "first fetch must fire on failure");
 
-    mock.timers.tick(1_000_000);
+    nodeTestTimers.tick(1_000_000);
     await flushAsync();
     assert.equal(fetchCallCount, 1, "no reschedule after a failed refresh");
   });
@@ -324,7 +325,7 @@ describe("loop-refresh-scheduler: rescheduling", () => {
 
 describe("loop-refresh-scheduler: opaque tokens", () => {
   test("start() with undefined expiresAt skips scheduling entirely", async () => {
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     let fetchCallCount = 0;
     globalThis.fetch = (async () => {
@@ -337,7 +338,7 @@ describe("loop-refresh-scheduler: opaque tokens", () => {
     // Pass undefined expiresAt — must not schedule any timer.
     start("loop-opaque-skip", undefined, makeDeps(store));
 
-    mock.timers.tick(10_000_000);
+    nodeTestTimers.tick(10_000_000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -356,7 +357,7 @@ describe("loop-refresh-scheduler: CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS override", ()
     // Override skew to 2_000 ms.
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "2000";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // expiresAt = 7_000 ms, skew = 2_000 ms -> delay = 5_000 ms.
     const expiresAt = 7000;
@@ -376,12 +377,12 @@ describe("loop-refresh-scheduler: CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS override", ()
     start("loop-env", expiresAt, makeDeps(store));
 
     // Tick just before the env-var-determined delay — must not fire.
-    mock.timers.tick(4999);
+    nodeTestTimers.tick(4999);
     await flushAsync();
     assert.equal(fetchCallCount, 0, "must not fire before env-var skew delay");
 
     // Tick the remaining 1 ms — must fire.
-    mock.timers.tick(1);
+    nodeTestTimers.tick(1);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -394,7 +395,7 @@ describe("loop-refresh-scheduler: CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS override", ()
     // Set an invalid env var value — the scheduler should fall back to the 30-minute default.
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "not-a-number";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     // Default skew = 30 * 60 * 1000 = 1_800_000 ms.
     // expiresAt = 1_900_000 ms -> delay = 1_900_000 - 1_800_000 - 0 = 100_000 ms.
@@ -415,12 +416,12 @@ describe("loop-refresh-scheduler: CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS override", ()
     start("loop-invalid", expiresAt, makeDeps(store));
 
     // Default skew is 30 minutes. Tick 99_999 ms — must not fire.
-    mock.timers.tick(99_999);
+    nodeTestTimers.tick(99_999);
     await flushAsync();
     assert.equal(fetchCallCount, 0, "must not fire before default-skew delay");
 
     // Tick 1 more ms — must fire.
-    mock.timers.tick(1);
+    nodeTestTimers.tick(1);
     await flushAsync();
     assert.equal(fetchCallCount, 1, "must fire at the default-skew delay");
   });
@@ -434,7 +435,7 @@ describe("loop-refresh-scheduler: stop", () => {
   test("stop() cancels a pending refresh and prevents it from firing", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "0";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     let fetchCallCount = 0;
     globalThis.fetch = (async () => {
@@ -449,7 +450,7 @@ describe("loop-refresh-scheduler: stop", () => {
     // Cancel before the timer fires.
     stop("loop-stop");
 
-    mock.timers.tick(5000);
+    nodeTestTimers.tick(5000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -466,7 +467,7 @@ describe("loop-refresh-scheduler: stop", () => {
   test("stopAll() cancels all active schedules", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "0";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     let fetchCallCount = 0;
     globalThis.fetch = (async () => {
@@ -484,7 +485,7 @@ describe("loop-refresh-scheduler: stop", () => {
 
     stopAll();
 
-    mock.timers.tick(3000);
+    nodeTestTimers.tick(3000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -496,7 +497,7 @@ describe("loop-refresh-scheduler: stop", () => {
   test("replacing an existing schedule via start() cancels the old timer", async () => {
     process.env.CLOSEDLOOP_TOKEN_REFRESH_SKEW_MS = "0";
 
-    mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    nodeTestTimers.enable(["Date", "setTimeout"]);
 
     let fetchCallCount = 0;
     globalThis.fetch = (async () => {
@@ -518,7 +519,7 @@ describe("loop-refresh-scheduler: stop", () => {
     start("loop-replace", 10_000, makeDeps(store));
 
     // Tick past the original delay — original timer must have been cancelled.
-    mock.timers.tick(1000);
+    nodeTestTimers.tick(1000);
     await flushAsync();
     assert.equal(
       fetchCallCount,
@@ -527,7 +528,7 @@ describe("loop-refresh-scheduler: stop", () => {
     );
 
     // Tick to the replacement delay.
-    mock.timers.tick(9000);
+    nodeTestTimers.tick(9000);
     await flushAsync();
     assert.equal(
       fetchCallCount,

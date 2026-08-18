@@ -103,7 +103,7 @@ describe("resolveOrgHeader", () => {
     );
   });
 
-  it("returns forbidden when header differs and Clerk API throws", async () => {
+  it("returns unverifiable, not forbidden, when the Clerk lookup throws", async () => {
     vi.mocked(clerkService.getOrganizationMembershipRole).mockRejectedValue(
       new Error("Clerk API unavailable")
     );
@@ -115,6 +115,9 @@ describe("resolveOrgHeader", () => {
       SESSION_ORG_ROLE
     );
 
-    expect(result).toEqual({ kind: "forbidden" });
+    // ISS-5118: the provider never answered, so nothing about this caller's
+    // membership was decided. Reporting it as `forbidden` would claim a denial
+    // that no one made.
+    expect(result).toEqual({ kind: "unverifiable" });
   });
 });

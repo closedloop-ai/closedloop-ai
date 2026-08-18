@@ -7,7 +7,6 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { CollectorTailSamplingPolicy } from "../collector-tail-sampling-policy";
@@ -174,14 +173,17 @@ export async function runVerification(
   const image = options.image ?? OTELCOL_IMAGE;
   const counts = options.counts ?? DEFAULT_COUNTS;
 
-  // Synthetic traffic is a pure value — build it up front so `totalSent` has a
-  // single canonical source (the payload count) instead of a re-summed literal.
-  const { payloads, manifest, totalSent } = buildScenarioTraces(counts, {
-    baseTimeUnixNano:
-      options.baseTimeUnixNano ?? BigInt(Date.now()) * 1_000_000n,
-  });
+  // Synthetic traffic is a pure value — build it up front so `totalSent` stays
+  // trace-based even when a trace is exported across multiple payloads.
+  const { payloads, payloadDelaysMs, manifest, totalSent } =
+    buildScenarioTraces(counts, {
+      baseTimeUnixNano:
+        options.baseTimeUnixNano ?? BigInt(Date.now()) * 1_000_000n,
+    });
 
-  const workDir = mkdtempSync(join(tmpdir(), "tail-sampling-verify-"));
+  const cacheDir = join(process.cwd(), "node_modules", ".cache");
+  mkdirSync(cacheDir, { recursive: true });
+  const workDir = mkdtempSync(join(cacheDir, "tail-sampling-verify-"));
   const configPath = join(workDir, "config.yaml");
   const outputDir = join(workDir, "output");
   const exportFileHostPath = join(outputDir, "traces.json");
@@ -224,7 +226,7 @@ export async function runVerification(
       `127.0.0.1::${DEFAULT_VERIFICATION_ENDPOINTS.metricsPort}`,
       ...posixUserArgs(),
       "-v",
-      `${configPath}:/etc/otelcol-contrib/config.yaml:ro`,
+      `${workDir}:/etc/otelcol-contrib:ro`,
       "-v",
       `${outputDir}:/output`,
       image,
@@ -244,8 +246,10 @@ export async function runVerification(
     await waitForHttp(metricsUrl, 30_000, log);
     log("collector ready; sending synthetic traffic…");
 
-    await sendPayloads(otlpUrl, payloads);
-    log(`sent ${payloads.length} synthetic traces; awaiting decisions…`);
+    await sendPayloads(otlpUrl, payloads, payloadDelaysMs, log);
+    log(
+      `sent ${payloads.length} synthetic payloads for ${totalSent} traces; awaiting decisions…`
+    );
 
     const metrics = await awaitDecisions({
       metricsUrl,
@@ -282,9 +286,16 @@ export async function runVerification(
 
 async function sendPayloads(
   otlpUrl: string,
-  payloads: readonly { resourceSpans: readonly unknown[] }[]
+  payloads: readonly { resourceSpans: readonly unknown[] }[],
+  payloadDelaysMs: readonly number[],
+  log: (message: string) => void
 ): Promise<void> {
-  for (const payload of payloads) {
+  for (const [index, payload] of payloads.entries()) {
+    const delayBeforeMs = payloadDelaysMs[index] ?? 0;
+    if (delayBeforeMs > 0) {
+      log(`waiting ${delayBeforeMs}ms before synthetic payload ${index + 1}`);
+      await delay(delayBeforeMs);
+    }
     const response = await fetch(otlpUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleActivateEvent } from "../src/main/app-lifecycle.js";
+import { handleActivateEvent } from "../src/main/lifecycle/app-lifecycle.js";
 
 test("activate handler logs rejected async work without rethrowing", async () => {
   const logs: string[] = [];

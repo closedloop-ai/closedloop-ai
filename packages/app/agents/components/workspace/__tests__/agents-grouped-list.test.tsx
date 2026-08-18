@@ -3,10 +3,13 @@ import {
   AgentComponentKind,
   type AgentComponentListResponse,
   type AgentComponentQueryFilters,
-  Harness,
-  SourceType,
 } from "@repo/api/src/types/agent-component";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  FIXTURE_COMPONENTS,
+  makeComponent,
+} from "@repo/app/agents/components/workspace/agent-component-fixtures";
+import { AGENT_COMPONENT_AUTHORS_LABEL } from "@repo/app/agents/lib/agent-component-authors";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
@@ -16,47 +19,10 @@ import { AgentComponentsDataSourceProvider } from "../../../data-source/provider
 import { AgentsGroupedList } from "../agents-grouped-list";
 
 // ---------------------------------------------------------------------------
-// Fixture helpers
+// Fixtures — the factory + inventory are shared with the desktop parity suite
+// via `agent-component-fixtures` so the two "renders consistently on both
+// surfaces" parity claims cannot drift against different component shapes.
 // ---------------------------------------------------------------------------
-
-function makeComponent(overrides: Partial<AgentComponent>): AgentComponent {
-  return {
-    id: overrides.id ?? "uuid-default",
-    name: overrides.name ?? "Default Component",
-    kind: overrides.kind ?? AgentComponentKind.Subagent,
-    sourceType: SourceType.Repo,
-    source: "repo-a",
-    harness: Harness.Claude,
-    invocations: 10,
-    sessions: 3,
-    klocPerDollar: 2.5,
-    trend: [],
-    owner: "alice",
-    collaborators: [],
-    computeTargetIds: [],
-    firstSeenAt: "2026-01-01T00:00:00.000Z",
-    lastSeenAt: "2026-06-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
-const FIXTURE_COMPONENTS: AgentComponent[] = [
-  makeComponent({
-    id: "uuid-sub-1",
-    name: "My Orchestrator Agent",
-    kind: AgentComponentKind.Subagent,
-  }),
-  makeComponent({
-    id: "uuid-cmd-1",
-    name: "Code Review Command",
-    kind: AgentComponentKind.Command,
-  }),
-  makeComponent({
-    id: "uuid-skill-1",
-    name: "Python Expert Skill",
-    kind: AgentComponentKind.Skill,
-  }),
-];
 
 // ---------------------------------------------------------------------------
 // Test data source factory
@@ -111,12 +77,22 @@ const RE_SKILLS_TAB = /skills/i;
 const RE_PLUGINS_TAB = /plugins/i;
 const RE_LOADING = /loading components/i;
 const RE_NO_MATCH = /no components match/i;
-// Exact plural aria-labels (kindMeta().plural) for the flag-gated kinds.
-const RE_MCP_TAB = /^MCP tools$/;
+const RE_LOAD_ERROR = /couldn't load components/i;
+// FEA-4019: kind-named empty state for an empty tab (no facet/search filter).
+const RE_NO_SKILLS = /no skills yet/i;
+// Exact plural aria-labels (kindMeta().plural) for the FEA-4019 graduated kinds.
+const RE_MCP_TAB = /^MCPs$/;
 const RE_TOOLS_TAB = /^Tools$/;
 const RE_HOOKS_TAB = /^Hooks$/;
 const RE_NEXT_PAGE = /go to next page/i;
 const RE_LAST_60_DAYS = /last 60 days/i;
+// FEA-3202 / FEA-4098: filter-popover trigger + authors facet submenu + the
+// `bob` author option that must survive as a zero-count entry when the window
+// narrows. FEA-4266: the facet's visible label is now "Authors"
+// (AGENT_COMPONENT_AUTHORS_LABEL); the `collaborators` filter key is unchanged.
+const RE_FILTER_BUTTON = /^Filter$/;
+const RE_AUTHORS_FACET = new RegExp(`^${AGENT_COMPONENT_AUTHORS_LABEL}$`);
+const RE_BOB_COLLABORATOR_OPTION = /bob/i;
 // ISO-8601 datetime prefix — asserts the windowed query carries a startDate.
 const RE_ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 // FEA-3178: MetricCard delta chip renders `{positive?"+":""}{delta}%`.
@@ -124,8 +100,14 @@ const RE_PLUS_100_PCT = /\+100%/;
 const RE_MINUS_50_PCT = /-50%/;
 // Any signed-percentage delta chip — used to assert NONE render for "All".
 const RE_ANY_PCT_CHIP = /[+-]\d+%/;
-// FEA-3176: accessible name of the newly-discovered "New" badge.
+// FEA-3176 / FEA-3620: accessible name of the newly-discovered "New" indicator
+// (unified from a text pill into a pulsing dot; the label is preserved).
 const RE_NEW_BADGE = /discovered in the last 7 days/i;
+// FEA-3620: the visible "New" text is gone once the badge becomes a dot.
+const RE_NEW_TEXT = /^New$/;
+// FEA-3054: accessible name (aria-label) of the inventory search box. Anchors
+// the control by its a11y contract so the test breaks if the label regresses.
+const RE_SEARCH_BOX = /^Search components$/;
 
 // Near-now vs. well-outside-the-window fixed timestamps for the New-badge tests.
 const RECENT_FIRST_SEEN = new Date(
@@ -135,10 +117,10 @@ const OLD_FIRST_SEEN = new Date(
   Date.now() - 30 * 24 * 60 * 60 * 1000
 ).toISOString();
 
-// FEA-3152: desktop Labs flag key surfacing Tools/MCPs/Hooks as first-class
-// kinds in the listing. Redeclared here (rather than imported) to keep the test
-// asserting the exact wire key the shared component gates on.
-const AGENTS_SHOW_TOOLS_MCPS_HOOKS_FLAG = "agents-show-tools-mcps-hooks";
+// FEA-4019: Tools/MCPs/Hooks are first-class top-level type tabs by DEFAULT on
+// both web and desktop — no feature flag. The `agents-show-tools-mcps-hooks`
+// Labs gate that previously scoped them out (FEA-3152) has been removed from the
+// shared component.
 
 const FIXTURE_WITH_TMH: AgentComponent[] = [
   ...FIXTURE_COMPONENTS,
@@ -219,6 +201,28 @@ describe("AgentsGroupedList", () => {
     );
 
     expect(screen.getByText(RE_LOADING)).toBeInTheDocument();
+  });
+
+  it("shows an error state (not the empty state) when the list query rejects", async () => {
+    const rejectingSource: AgentComponentsDataSource = {
+      scope: "test-error",
+      list: () => Promise.reject(new Error("network down")),
+      detail: () => Promise.reject(new Error("detail unused")),
+    };
+
+    render(
+      <Wrapper dataSource={rejectingSource}>
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    // A rejected query must surface a real error, never the "no components
+    // match" empty state — that would tell the user "no agents" during an
+    // outage (FEA-3994 review).
+    await waitFor(() => {
+      expect(screen.getByText(RE_LOAD_ERROR)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
   });
 
   it("clicking a kind tab filters rows to only that kind", async () => {
@@ -323,7 +327,7 @@ describe("AgentsGroupedList", () => {
     expect(screen.queryByTestId("plugins-footer")).not.toBeInTheDocument();
   });
 
-  it("shows empty-state message when no rows match the filter", async () => {
+  it("shows a kind-named empty state (not the filter copy) for an empty tab", async () => {
     const user = userEvent.setup();
 
     // Data source with only a Subagent
@@ -343,51 +347,30 @@ describe("AgentsGroupedList", () => {
 
     await screen.findByText("My Agent");
 
-    // Click Plugins — no plugins exist
-    await user.click(screen.getByRole("radio", { name: RE_PLUGINS_TAB }));
+    // Click Skills — no skills exist. FEA-4019: with no facet/search filter
+    // set, the empty state names the kind ("No skills yet.") instead of the
+    // misleading "no components match the current filters" copy, which would
+    // send the user off to clear a filter they never set. The default window is
+    // "All", so the message has no time-window clause.
+    await user.click(screen.getByRole("radio", { name: RE_SKILLS_TAB }));
 
     await waitFor(() => {
-      expect(screen.getByText(RE_NO_MATCH)).toBeInTheDocument();
+      expect(screen.getByText(RE_NO_SKILLS)).toBeInTheDocument();
     });
+    expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------
-  // FEA-3152: Tools/MCPs/Hooks first-class rows behind the desktop Labs flag
+  // FEA-4019: Tools/MCPs/Hooks are first-class top-level type tabs by DEFAULT
+  // (no feature flag) on both web and desktop — the shared component drives
+  // both surfaces, so removing the old Labs gate lights the tabs up everywhere.
   // -------------------------------------------------------------------------
 
-  it("flag OFF: tool/mcp/hook are NOT first-class top-level type tabs", async () => {
+  it("renders Tools/MCPs/Hooks as first-class top-level type tabs by default (no flag)", async () => {
     render(
+      // No enabledFlags — proves the tabs show WITHOUT any opt-in, matching the
+      // desktop tab set on the web surface (FEA-4019).
       <Wrapper dataSource={testDataSource(FIXTURE_WITH_TMH)}>
-        <AgentsGroupedList />
-      </Wrapper>
-    );
-
-    // Core tabs still present.
-    expect(
-      await screen.findByRole("radio", { name: RE_AGENTS_TAB })
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("radio", { name: RE_PLUGINS_TAB })
-    ).toBeInTheDocument();
-
-    // No MCP / Tools / Hooks top-level tab (scoped-out, reachable via All only).
-    expect(
-      screen.queryByRole("radio", { name: RE_MCP_TAB })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("radio", { name: RE_TOOLS_TAB })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("radio", { name: RE_HOOKS_TAB })
-    ).not.toBeInTheDocument();
-  });
-
-  it("flag ON: tool/mcp/hook surface as first-class top-level type tabs", async () => {
-    render(
-      <Wrapper
-        dataSource={testDataSource(FIXTURE_WITH_TMH)}
-        enabledFlags={[AGENTS_SHOW_TOOLS_MCPS_HOOKS_FLAG]}
-      >
         <AgentsGroupedList />
       </Wrapper>
     );
@@ -400,7 +383,7 @@ describe("AgentsGroupedList", () => {
       screen.getByRole("radio", { name: RE_PLUGINS_TAB })
     ).toBeInTheDocument();
 
-    // The three previously scoped-out kinds now have their own tabs.
+    // Tools / MCPs / Hooks now have their own top-level tabs, no flag required.
     expect(screen.getByRole("radio", { name: RE_MCP_TAB })).toBeInTheDocument();
     expect(
       screen.getByRole("radio", { name: RE_TOOLS_TAB })
@@ -410,14 +393,11 @@ describe("AgentsGroupedList", () => {
     ).toBeInTheDocument();
   });
 
-  it("flag ON: the Tools tab filters rows to only tool-kind components", async () => {
+  it("the Tools tab filters rows to only tool-kind components (default, no flag)", async () => {
     const user = userEvent.setup();
 
     render(
-      <Wrapper
-        dataSource={testDataSource(FIXTURE_WITH_TMH)}
-        enabledFlags={[AGENTS_SHOW_TOOLS_MCPS_HOOKS_FLAG]}
-      >
+      <Wrapper dataSource={testDataSource(FIXTURE_WITH_TMH)}>
         <AgentsGroupedList />
       </Wrapper>
     );
@@ -528,6 +508,91 @@ describe("AgentsGroupedList", () => {
   });
 
   // -------------------------------------------------------------------------
+  // FEA-3054: inventory search box (the control this PR renders)
+  // -------------------------------------------------------------------------
+
+  it("narrows the rendered rows to the typed query and resets to page 1", async () => {
+    const user = userEvent.setup();
+    // 60 "Alpha" + 60 "Beta" = 120 rows across 3 pages on the All tab. Names are
+    // zero-padded so the default Name-Asc sort is index order, letting us assert
+    // WHICH page's rows are visible. Typing "Alpha" leaves 60 rows (still 2
+    // pages, NOT empty), so surfacing "Alpha 00" can ONLY come from a
+    // reset-to-page-1 — the empty-state clamp cannot, since the set is non-empty.
+    const alphas = Array.from({ length: 60 }, (_, i) =>
+      makeComponent({
+        id: `uuid-alpha-${i}`,
+        name: `Alpha ${String(i).padStart(2, "0")}`,
+        kind: AgentComponentKind.Subagent,
+      })
+    );
+    const betas = Array.from({ length: 60 }, (_, i) =>
+      makeComponent({
+        id: `uuid-beta-${i}`,
+        name: `Beta ${String(i).padStart(2, "0")}`,
+        kind: AgentComponentKind.Subagent,
+      })
+    );
+
+    render(
+      <Wrapper dataSource={testDataSource([...alphas, ...betas])}>
+        <AgentsGroupedList getComponentHref={(c) => `/agents/${c.id}`} />
+      </Wrapper>
+    );
+
+    // Page 1 of the All tab shows the first 50 rows (Alpha 00…Alpha 49).
+    await waitFor(() => expect(rowLinks()).toHaveLength(50));
+    // Advance to page 2 (rows 51-100) — "Alpha 00" is no longer on screen.
+    await user.click(screen.getByLabelText(RE_NEXT_PAGE));
+    await waitFor(() =>
+      expect(screen.queryByText("Alpha 00")).not.toBeInTheDocument()
+    );
+
+    // Enter a query in the search box: only the 60 "Alpha …" rows should remain,
+    // and a correct filter reset lands back on page 1 (so "Alpha 00" reappears)
+    // while the "Beta …" rows drop out entirely. A single `fireEvent.change`
+    // models the control's `onChange(handleFiltersChange)` in one shot — the
+    // render→state→filter→page-reset wiring under test — without paying for a
+    // per-keystroke re-render of the 120-row set (which times out under load).
+    const searchBox = screen.getByLabelText(RE_SEARCH_BOX);
+    fireEvent.change(searchBox, { target: { value: "Alpha" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Alpha 00")).toBeInTheDocument();
+    });
+    // Page 1 of the 60 filtered Alphas is a FULL page of 50 — proving page 1
+    // (page 2 would show the remaining 10), i.e. an explicit reset, not the
+    // empty-state clamp (which would show 0).
+    expect(rowLinks()).toHaveLength(50);
+    expect(screen.queryByText("Beta 00")).not.toBeInTheDocument();
+    expect(screen.queryByText(RE_NO_MATCH)).not.toBeInTheDocument();
+  });
+
+  it("shows the empty state when the search query matches nothing", async () => {
+    const user = userEvent.setup();
+
+    render(
+      <Wrapper dataSource={testDataSource()}>
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    await screen.findByText("My Orchestrator Agent");
+
+    // A query that matches no component name drives the empty state.
+    await user.type(
+      screen.getByLabelText(RE_SEARCH_BOX),
+      "zzz-no-such-component"
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(RE_NO_MATCH)).toBeInTheDocument();
+      expect(
+        screen.queryByText("My Orchestrator Agent")
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Time-window (All / 30 / 60 / 90 day) filter
   // -------------------------------------------------------------------------
 
@@ -556,6 +621,71 @@ describe("AgentsGroupedList", () => {
       const windowed = captured.find((f) => typeof f.startDate === "string");
       expect(windowed?.startDate).toMatch(RE_ISO_DATETIME);
     });
+  });
+
+  it("keeps Authors facet options for authors with no in-window usage when the window narrows (FEA-3202)", async () => {
+    // FEA-3160 made the window server-enforced: the windowed list drops
+    // usage-trackable components with zero in-window usage. The Authors/
+    // Source filter options must NOT collapse with it — they are seeded from the
+    // UNWINDOWED inventory (value universe) so an author whose components had no
+    // recent usage stays selectable as a zero-count option. Model a windowed
+    // (HTTP) source that returns only Alice when a `startDate` is present and
+    // both Alice + Bob when it is absent.
+    const user = userEvent.setup();
+    const allTime = [
+      makeComponent({
+        id: "u-alice",
+        name: "Alice Agent",
+        collaborators: ["alice"],
+      }),
+      makeComponent({
+        id: "u-bob",
+        name: "Bob Agent",
+        collaborators: ["bob"],
+      }),
+    ];
+    const windowed = [
+      makeComponent({
+        id: "u-alice",
+        name: "Alice Agent",
+        collaborators: ["alice"],
+      }),
+    ];
+    const dataSource: AgentComponentsDataSource = {
+      scope: "agent-components:http",
+      list: (filters) =>
+        Promise.resolve({
+          items: typeof filters.startDate === "string" ? windowed : allTime,
+          total: 0,
+        } satisfies AgentComponentListResponse),
+      detail: () => Promise.reject(new Error("detail unused in list tests")),
+    };
+
+    render(
+      <Wrapper dataSource={dataSource}>
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    // All-time: both authors' rows render.
+    await screen.findByText("Alice Agent");
+    expect(screen.getByText("Bob Agent")).toBeInTheDocument();
+
+    // Narrow to the last 60 days — the server drops Bob (no in-window usage).
+    await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
+    await waitFor(() =>
+      expect(screen.queryByText("Bob Agent")).not.toBeInTheDocument()
+    );
+
+    // …but the Authors filter menu still lists `bob` as a (zero-count)
+    // option.
+    await user.click(screen.getByRole("button", { name: RE_FILTER_BUTTON }));
+    await user.hover(screen.getByRole("menuitem", { name: RE_AUTHORS_FACET }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("menuitem", { name: RE_BOB_COLLABORATOR_OPTION })
+      ).toBeVisible()
+    );
   });
 
   it("summary Invocations sums the full server-windowed set, not the page", async () => {
@@ -625,20 +755,20 @@ describe("AgentsGroupedList", () => {
     const user = userEvent.setup();
     // Current window: 2 components, 30 invocations total. Previous window: 1
     // component, 15 invocations. Components: (2-1)/1 = +100%. Invocations:
-    // (30-15)/15 = +100%. Owners: current {alice,bob}=2 vs previous {alice}=1 =
-    // +100%.
+    // (30-15)/15 = +100%. Authors: current {alice,bob}=2 vs previous
+    // {alice}=1 = +100%.
     const current = [
       makeComponent({
         id: "cur-1",
         name: "Current A",
         invocations: 20,
-        owner: "alice",
+        collaborators: ["alice"],
       }),
       makeComponent({
         id: "cur-2",
         name: "Current B",
         invocations: 10,
-        owner: "bob",
+        collaborators: ["bob"],
       }),
     ];
     const previous = [
@@ -646,7 +776,7 @@ describe("AgentsGroupedList", () => {
         id: "prev-1",
         name: "Prev A",
         invocations: 15,
-        owner: "alice",
+        collaborators: ["alice"],
       }),
     ];
 
@@ -660,8 +790,8 @@ describe("AgentsGroupedList", () => {
     await screen.findByText("Current A");
     await user.click(screen.getByRole("radio", { name: RE_LAST_60_DAYS }));
 
-    // At least one +100% delta chip renders (Components / Invocations / Owners
-    // all moved +100%). The chip text carries the sign + percentage.
+    // At least one +100% delta chip renders (Components / Invocations /
+    // Authors all moved +100%). The chip text carries the sign + percentage.
     await waitFor(() => {
       expect(screen.getAllByText(RE_PLUS_100_PCT).length).toBeGreaterThan(0);
     });
@@ -792,10 +922,11 @@ describe("AgentsGroupedList", () => {
   });
 
   // -------------------------------------------------------------------------
-  // FEA-3176: newly-discovered "New" badge (firstSeenAt within the last 7 days)
+  // FEA-3176 / FEA-3620: newly-discovered "New" indicator — a pulsing dot
+  // (unified from the old text pill) when firstSeenAt is within the last 7 days.
   // -------------------------------------------------------------------------
 
-  it("renders a New badge for a component discovered in the last 7 days", async () => {
+  it("renders a New dot (not a text pill) for a component discovered in the last 7 days", async () => {
     render(
       <Wrapper
         dataSource={testDataSource([
@@ -812,10 +943,15 @@ describe("AgentsGroupedList", () => {
     );
 
     await screen.findByText("Freshly Discovered Agent");
-    expect(screen.getByLabelText(RE_NEW_BADGE)).toBeInTheDocument();
+    // FEA-3620: the indicator is now a pulsing dot carrying the accessible label…
+    const dot = screen.getByTestId("agent-new-dot");
+    expect(dot).toBeInTheDocument();
+    expect(dot).toHaveAccessibleName(RE_NEW_BADGE);
+    // …with no visible "New" text pill anymore.
+    expect(screen.queryByText(RE_NEW_TEXT)).not.toBeInTheDocument();
   });
 
-  it("does not render a New badge for a component discovered long ago", async () => {
+  it("does not render a New dot for a component discovered long ago", async () => {
     render(
       <Wrapper
         dataSource={testDataSource([
@@ -832,7 +968,41 @@ describe("AgentsGroupedList", () => {
     );
 
     await screen.findByText("Long-Lived Agent");
+    expect(screen.queryByTestId("agent-new-dot")).not.toBeInTheDocument();
     expect(screen.queryByLabelText(RE_NEW_BADGE)).not.toBeInTheDocument();
+  });
+
+  it("renders the New and Active dots inline together for a fresh, recently-invoked component", async () => {
+    // FEA-3620: both signals now share the pulsing-dot vocabulary, so a single
+    // row that is BOTH newly discovered AND active in the last hour carries the
+    // two dots side-by-side in the same Name lead span — differentiated by tone,
+    // not by two different UI vocabularies.
+    const recentInvoke = new Date(Date.now() - 60 * 1000).toISOString();
+    render(
+      <Wrapper
+        dataSource={testDataSource([
+          makeComponent({
+            id: "uuid-new-and-active",
+            name: "Fresh Active Agent",
+            kind: AgentComponentKind.Subagent,
+            firstSeenAt: RECENT_FIRST_SEEN,
+            lastInvokedAt: recentInvoke,
+          }),
+        ])}
+      >
+        <AgentsGroupedList />
+      </Wrapper>
+    );
+
+    await screen.findByText("Fresh Active Agent");
+    const newDot = screen.getByTestId("agent-new-dot");
+    const activeDot = screen.getByTestId("agent-active-dot");
+    expect(newDot).toBeInTheDocument();
+    expect(activeDot).toBeInTheDocument();
+    // Both dots are siblings of the name within the same lead-cell span.
+    const nameSpan = screen.getByText("Fresh Active Agent").parentElement;
+    expect(nameSpan).toContainElement(newDot);
+    expect(nameSpan).toContainElement(activeDot);
   });
 
   // -------------------------------------------------------------------------

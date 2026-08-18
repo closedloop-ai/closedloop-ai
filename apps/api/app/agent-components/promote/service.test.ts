@@ -173,6 +173,28 @@ describe("promoteAgentComponent", () => {
     expect(distributionCreate).not.toHaveBeenCalled();
   });
 
+  it("rejects an observable-only Orchestration kind as not_promotable (FEA-2642)", async () => {
+    const { itemCreate, distributionCreate } = installDb(
+      makeComponent({ componentKind: "orchestration" })
+    );
+
+    const result = await promoteAgentComponent({
+      organizationId: ORG,
+      userId: USER,
+      agentComponentId: COMPONENT_ID,
+    });
+
+    // Agent-runtime / harness tools are runtime primitives — never a
+    // CatalogItem / Distribution, same as Tool.
+    expect(result).toEqual({
+      ok: false,
+      reason: "not_promotable",
+      kind: "orchestration",
+    });
+    expect(itemCreate).not.toHaveBeenCalled();
+    expect(distributionCreate).not.toHaveBeenCalled();
+  });
+
   it("snapshots an installable CatalogItemVersion (non-empty content) so the auto-install distribution has something installable", async () => {
     const { versionCreate } = installDb(makeComponent());
 

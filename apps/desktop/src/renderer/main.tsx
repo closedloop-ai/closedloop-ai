@@ -5,6 +5,7 @@ import "@closedloop-ai/design-system/styles/globals.css";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 import "./globals.css";
+import { RendererReadyPhase } from "../shared/renderer-ready-phase";
 import App from "./App";
 import { createRendererOtelRuntime } from "./app-otel-runtime";
 import { RenderCommitTelemetryProvider } from "./components/sessions/render-commit-telemetry-context";
@@ -62,7 +63,11 @@ function RendererReadySignal() {
     }
 
     rendererReadyNotified = true;
-    window.desktopApi.notifyRendererReady();
+    // ISS-5346: the MOUNTED phase — this effect runs after React commits the
+    // first render, so it is the signal the initial window reveal waits for.
+    // `renderer-ready-signal.ts` already sent the pre-mount `Shell` phase, which
+    // only arms the (bounded) wait.
+    window.desktopApi.notifyRendererReady(RendererReadyPhase.Mounted);
   }, []);
 
   return null;

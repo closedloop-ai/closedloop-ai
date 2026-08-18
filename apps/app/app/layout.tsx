@@ -11,7 +11,7 @@ import { AnalyticsProvider } from "@repo/analytics/provider";
 import { AuthProvider } from "@repo/auth/provider";
 import { DesignSystemProvider } from "@repo/design-system";
 import { fonts } from "@repo/design-system/lib/fonts";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Silkscreen } from "next/font/google";
 import { headers } from "next/headers";
 import type { ReactNode } from "react";
@@ -27,6 +27,16 @@ export const metadata: Metadata = {
   icons: {
     icon: envIconPath[appEnvironment],
   },
+};
+
+// FEA-3861: `viewport-fit=cover` lets the app draw into the notch/home-indicator
+// area so `env(safe-area-inset-*)` resolves to real values on iOS PWA/WebView;
+// without it the insets read 0 and the mobile bottom-nav would sit under the
+// home indicator.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 type RootLayoutProperties = {

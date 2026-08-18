@@ -154,6 +154,78 @@ describe("structured console preserves Error instances in meta", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Redaction at the REAL sink. `redact.test.ts` proves `redactLogValue` scrubs a
+// token; it does not prove the logger ever calls it. `jsonReplacer` unwraps
+// `Error` instances BEFORE redacting and relies on JSON.stringify re-visiting
+// the expanded object for the message/stack to be scrubbed — nothing pinned
+// that. These cases drive `log.error` itself with DD_LOGS_JSON=1 and assert on
+// what actually reaches the console, so gutting the replacer's redaction call
+// fails here rather than shipping a live credential to the log drain.
+// ---------------------------------------------------------------------------
+describe("structured console redacts secrets on the way to the drain", () => {
+  // A Google OAuth access token, under an innocent (non-sensitive) key, so only
+  // the VALUE-based rule can catch it.
+  const LIVE_ACCESS_TOKEN = "ya29.a0AfB_bZlFAKEtokenVALUE1234567890abcdefXYZ";
+
+  it("scrubs a bare ya29. token embedded in a plain string meta value", async () => {
+    vi.stubEnv("DD_LOGS_JSON", "1");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const log = await importLogStructured();
+    errSpy.mockClear();
+
+    log.error("[google/import] Failed to export doc", {
+      detail: `invalid authentication credential ${LIVE_ACCESS_TOKEN}`,
+    });
+
+    const line = errSpy.mock.calls[0][0] as string;
+    expect(line).not.toContain(LIVE_ACCESS_TOKEN);
+    expect(line).not.toContain("ya29.");
+    // The surrounding message survives — this is redaction, not deletion.
+    expect(JSON.parse(line).detail).toContain("invalid authentication");
+  });
+
+  it("scrubs a token inside an Error's message, through the Error-unwrap branch", async () => {
+    vi.stubEnv("DD_LOGS_JSON", "1");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const log = await importLogStructured();
+    errSpy.mockClear();
+
+    log.error("[google/import] Failed to export doc", {
+      error: new Error(
+        `Request failed 403: Authorization: ${LIVE_ACCESS_TOKEN}`
+      ),
+    });
+
+    const line = errSpy.mock.calls[0][0] as string;
+    expect(line).not.toContain(LIVE_ACCESS_TOKEN);
+    expect(line).not.toContain("ya29.");
+    // The Error is still expanded rather than collapsed to {} …
+    const parsed = JSON.parse(line);
+    expect(parsed.error.name).toBe("Error");
+    // … and its message is still present, just scrubbed.
+    expect(parsed.error.message).toContain("Request failed 403");
+  });
+
+  it("scrubs a token that appears only in an Error's stack", async () => {
+    vi.stubEnv("DD_LOGS_JSON", "1");
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const log = await importLogStructured();
+    errSpy.mockClear();
+
+    const error = new Error("export failed");
+    error.stack = `Error: export failed\n    at googleapis (/app/node_modules/googleapis/index.js:1:1) token=${LIVE_ACCESS_TOKEN}`;
+    log.error("[google/import] Failed to export doc", { error });
+
+    const line = errSpy.mock.calls[0][0] as string;
+    expect(line).not.toContain(LIVE_ACCESS_TOKEN);
+    expect(JSON.parse(line).error.stack).toContain("Error: export failed");
+  });
+});
+
 describe("structured console never throws on non-serializable meta", () => {
   it("falls back to the readable form when JSON.stringify throws (circular meta)", async () => {
     vi.stubEnv("DD_LOGS_JSON", "1");

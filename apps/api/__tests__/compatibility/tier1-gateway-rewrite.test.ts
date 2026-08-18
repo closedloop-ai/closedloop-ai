@@ -1,5 +1,13 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import {
+  HEALTH_CHECK_REPAIR_OPERATION_ID,
+  HEALTH_CHECK_REPAIR_PATH,
+} from "@repo/api/src/types/compute-target";
+import {
+  MEMBER_PACK_INSTALL_OPERATION_ID,
+  MEMBER_PACK_INSTALL_PATH,
+} from "@repo/api/src/types/member-pack-install";
 import { describe, expect, it } from "vitest";
 import {
   EXACT_OPERATION_IDS,
@@ -11,6 +19,18 @@ describe("EXACT_OPERATION_IDS", () => {
   it("maps /api/gateway/health-check to health_check", () => {
     expect(EXACT_OPERATION_IDS["/api/gateway/health-check"]).toBe(
       "health_check"
+    );
+  });
+
+  it("maps the System Check Repair path to its own operation id", () => {
+    // Repair MUTATES the machine, so it must not resolve to the read-only
+    // health_check id; leaving it unmapped made relay delivery fail the
+    // operation id / path check (ISS-5389 review).
+    expect(EXACT_OPERATION_IDS[HEALTH_CHECK_REPAIR_PATH]).toBe(
+      HEALTH_CHECK_REPAIR_OPERATION_ID
+    );
+    expect(resolveOperationId(HEALTH_CHECK_REPAIR_PATH)).toBe(
+      HEALTH_CHECK_REPAIR_OPERATION_ID
     );
   });
 
@@ -157,6 +177,15 @@ describe("resolveOperationId", () => {
 
   it("resolves exact match: /api/gateway/repos → repos_config", () => {
     expect(resolveOperationId("/api/gateway/repos")).toBe("repos_config");
+  });
+
+  it("resolves the member pack-install path so it stays in sync with Electron (FEA-4082)", () => {
+    expect(resolveOperationId(MEMBER_PACK_INSTALL_PATH)).toBe(
+      MEMBER_PACK_INSTALL_OPERATION_ID
+    );
+    expect(EXACT_OPERATION_IDS[MEMBER_PACK_INSTALL_PATH]).toBe(
+      MEMBER_PACK_INSTALL_OPERATION_ID
+    );
   });
 
   it("resolves prefix match: /api/gateway/symphony/status/<id> → symphony_status", () => {

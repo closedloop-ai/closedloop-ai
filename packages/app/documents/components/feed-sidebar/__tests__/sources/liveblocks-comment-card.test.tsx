@@ -12,6 +12,12 @@ import { createLiveblocksUiMock } from "../__helpers__/liveblocks-ui-mock";
 
 vi.mock("@liveblocks/react-ui", () => createLiveblocksUiMock());
 
+// The DS chrome override (`LiveblocksDsComment`) resolves the author via
+// `useUser`; stub it so the card can render outside a RoomProvider.
+vi.mock("@liveblocks/react", () => ({
+  useUser: () => ({ user: undefined, isLoading: true, error: undefined }),
+}));
+
 import { CommentPermalinkProvider } from "../../comment-permalink-context";
 import { LiveblocksCommentCard } from "../../sources/liveblocks-comment-card";
 

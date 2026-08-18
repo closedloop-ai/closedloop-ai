@@ -1,13 +1,10 @@
 "use client";
 
-import type {
-  DocumentStatus,
-  FeatureStatus,
-} from "@repo/api/src/types/document";
+import type { DocumentStatus, IssueStatus } from "@repo/api/src/types/document";
 import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { getDocumentRoute } from "@repo/app/documents/lib/document-navigation";
 import {
   ARTIFACT_STATUS_LABELS,
@@ -50,7 +47,7 @@ export function ArtifactRow({
   // render the icon for this artifact's exact type.
   const statusIcon =
     artifact.type === DocumentType.Feature ? (
-      <FeatureStatusIcon size={16} status={artifact.status as FeatureStatus} />
+      <IssueStatusIcon size={16} status={artifact.status as IssueStatus} />
     ) : (
       <DocumentStatusIcon
         size={16}

@@ -1,13 +1,21 @@
+import { randomUUID } from "node:crypto";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
   type DesktopAgentSessionsPayload,
   type SyncedAgentSession,
 } from "@repo/api/src/types/agent-session";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch";
+import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
+import {
+  branchRef,
+  pullRequestRef,
+  seedPublicRepo,
+} from "@/__tests__/integration/agent-session-pr-sync-helpers";
 import {
   autoRollbackTransaction,
   createTestOrganization,
@@ -54,7 +62,9 @@ describeIfDb(
     // alone would not catch.
     it("carries >2^31 token counts and >$10k cost without truncation", async () => {
       await autoRollbackTransaction(async () => {
-        const organizationId = await createTestOrganization();
+        const organizationId = await createTestOrganization({
+          sessionSyncPolicyEnabled: true,
+        });
         const user = await createTestUser(organizationId, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -119,7 +129,9 @@ describeIfDb(
   () => {
     it("ingests old-desktop payloads carrying removed issues / attribution.issueId", async () => {
       await autoRollbackTransaction(async () => {
-        const organizationId = await createTestOrganization();
+        const organizationId = await createTestOrganization({
+          sessionSyncPolicyEnabled: true,
+        });
         const user = await createTestUser(organizationId, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -185,8 +197,12 @@ describeIfDb(
   () => {
     it("rejects a sync that targets another org's compute target and never cross-writes", async () => {
       await autoRollbackTransaction(async () => {
-        // Org A is the authenticated caller.
-        const orgA = await createTestOrganization();
+        // Org A is the authenticated caller. Its session-sync policy is ON so
+        // the positive-control sync to its OWN target succeeds; the FEA-4169
+        // org-policy gate keys off the authenticated org id (orgA).
+        const orgA = await createTestOrganization({
+          sessionSyncPolicyEnabled: true,
+        });
         const userA = await createTestUser(orgA, {
           clerkId: mocks.auth.clerkUserId,
         });
@@ -231,6 +247,99 @@ describeIfDb(
         );
         expect(owner).toBe(orgA);
         await expect(countOrgSessions(orgB)).resolves.toBe(0);
+      });
+    });
+  }
+);
+
+describeIfDb(
+  "POST /desktop/agent-sessions/sync PR-detail cross-branch collision (FEA-3917)",
+  () => {
+    it("returns 200 (not 500) when the same PR is synced under a second branch artifact", async () => {
+      await autoRollbackTransaction(async () => {
+        const organizationId = await createTestOrganization({
+          sessionSyncPolicyEnabled: true,
+        });
+        const user = await createTestUser(organizationId, {
+          clerkId: mocks.auth.clerkUserId,
+        });
+        mocks.auth.user = { id: user.id, organizationId };
+        const computeTarget = await createComputeTarget(
+          organizationId,
+          user.id
+        );
+        const repo = "acme/route-widgets";
+        await seedPublicRepo(organizationId, repo);
+
+        const first = await POST(
+          batchRequest(
+            buildBatchPayload(
+              buildSyncedSession({
+                externalSessionId: "fea3917-route-a",
+                artifactRefs: [
+                  branchRef(repo, "feature/a"),
+                  pullRequestRef({
+                    repositoryFullName: repo,
+                    prNumber: 321,
+                    branchName: "feature/a",
+                    state: GitHubPRState.Open,
+                  }),
+                ],
+              })
+            ),
+            computeTarget.id
+          ),
+          routeContext()
+        );
+        expect(first.status).toBe(200);
+
+        // Same (repo, number) under a DIFFERENT head branch → a different branch
+        // artifact. Before FEA-3917 the desktop PR upsert's branchArtifactId-keyed
+        // lookup missed the existing row and the create collided (P2002), 500ing
+        // the whole batch. A fresh batchId avoids any batch-level idempotency skip.
+        const second = await POST(
+          new NextRequest(
+            `https://api.example.test/desktop/agent-sessions/sync?computeTargetId=${computeTarget.id}`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                ...buildBatchPayload(
+                  buildSyncedSession({
+                    externalSessionId: "fea3917-route-b",
+                    artifactRefs: [
+                      branchRef(repo, "feature/b"),
+                      pullRequestRef({
+                        repositoryFullName: repo,
+                        prNumber: 321,
+                        branchName: "feature/b",
+                        state: GitHubPRState.Open,
+                      }),
+                    ],
+                  })
+                ),
+                batchId: randomUUID(),
+              }),
+            }
+          ),
+          routeContext()
+        );
+        expect(second.status).toBe(200);
+        expect(await second.json()).toEqual({
+          success: true,
+          data: { synced: true },
+        });
+
+        // Exactly one PR-detail row survives (no duplicate, no collision).
+        const rowCount = await withDb((db) =>
+          db.pullRequestDetail.count({
+            where: {
+              organizationId,
+              repositoryFullName: normalizeRepoFullName(repo),
+              number: 321,
+            },
+          })
+        );
+        expect(rowCount).toBe(1);
       });
     });
   }

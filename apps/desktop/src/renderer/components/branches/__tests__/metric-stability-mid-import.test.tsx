@@ -3,11 +3,15 @@ import {
   BranchKpiState,
   BranchViewerScope,
 } from "@repo/api/src/types/branch";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics";
+import { unavailableBranchTraceResult } from "@repo/api/src/types/branch-trace";
 import {
   kpi,
   makeBranchAnalytics,
+  makeBranchListMetrics,
 } from "@repo/app/branches/components/branch-analytics-fixtures";
 import type { BranchesDataSource } from "@repo/app/branches/data-source/branches-data-source";
+import { branchesKeys } from "@repo/app/branches/hooks/use-branches";
 import { QueryClient } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -67,6 +71,15 @@ vi.mock("@repo/app/branches/hooks/use-branch-view-state", () => ({
 function analyticsWithActive(activeBranchCount: number): BranchAnalytics {
   return makeBranchAnalytics({
     activeBranchCount: kpi(BranchKpiState.Available, activeBranchCount),
+    canonicalMetrics: makeBranchListMetrics({
+      cohortSize: activeBranchCount,
+      activeBranches: {
+        current: {
+          state: BranchMetricAvailability.Complete,
+          value: activeBranchCount,
+        },
+      },
+    }),
   });
 }
 
@@ -112,44 +125,73 @@ beforeEach(() => {
   });
 });
 
+/** `activeBranchCount` distinct open-PR rows matching the canonical count. */
+function openRows(activeBranchCount: number) {
+  return Array.from({ length: activeBranchCount }, (_, i) => ({
+    ...wireRow,
+    id: `owner%2Frepo::feature-${i}`,
+    branchName: `feature/x-${i}`,
+  }));
+}
+
 describe("Branches ACTIVE BRANCHES KPI stability mid-import (FEA-2938)", () => {
   it("does not regress across a nav-away+back while the import advances", async () => {
     // The importer ingests more branches between the two mounts, so the second
-    // analytics read reports a higher count than the first.
+    // canonical page-data read advances the active count from 1 to 9.
     let activeBranchCount = 1;
+    const list = () => {
+      const items = openRows(activeBranchCount);
+      return Promise.resolve({
+        items,
+        total: items.length,
+        viewerScope: BranchViewerScope.Self,
+      });
+    };
+    // The producer emits the same active count in the canonical bundle and the
+    // compatibility KPI field; the approved renderer reads the canonical one.
     const analytics = vi.fn(() =>
       Promise.resolve(analyticsWithActive(activeBranchCount))
     );
+    // The view fetches list + analytics together via `pageData` (FEA-3056
+    // follow-up), so the cache-stability contract this spec pins now lives on
+    // that combined query — `pageData` composes the same two reads.
     const dataSource: BranchesDataSource = {
       scope: "local",
-      list: () =>
-        Promise.resolve({
-          items: [wireRow],
-          total: 1,
-          viewerScope: BranchViewerScope.Self,
-        }),
+      list,
       detail: () => new Promise<never>(() => undefined),
       comments: () => new Promise<never>(() => undefined),
-      trace: () => Promise.resolve([]),
+      trace: () => Promise.resolve(unavailableBranchTraceResult()),
       usage: () => new Promise<never>(() => undefined),
       analytics,
+      pageData: async () => ({
+        list: await list(),
+        analytics: await analytics(),
+      }),
     };
 
-    // A shared cache with a 0 stale-time: the remount reuses the cached value
-    // immediately, then reconciles up to the fresher import count.
+    // The view sets an explicit staleTime on the combined page-data query
+    // (matches production), so — as in production — the refresh driver here is
+    // an explicit invalidation (the live bridge's `desktop:db:changed` push),
+    // not staleness elapsing. desktop's real QueryClient runs `staleTime:
+    // Infinity` as a pure push model for exactly this reason.
     const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: 0 } },
+      defaultOptions: { queries: { retry: false } },
     });
 
     // Mid-import the user reads "1".
     const first = renderView(dataSource, queryClient);
     await waitFor(() => expect(activeBranchesValue(first.container)).toBe("1"));
 
-    // Nav away — the branches view unmounts, but the analytics query stays cached.
+    // Nav away — the branches view unmounts, but the page-data query stays
+    // cached.
     first.unmount();
 
-    // The import advances further while the user is away.
+    // The import advances further while the user is away, and the live bridge
+    // invalidates the page-data query on the resulting DB-changed push.
     activeBranchCount = 9;
+    await queryClient.invalidateQueries({
+      queryKey: branchesKeys.pageDataRoot(),
+    });
 
     // Nav back. The cached "1" must paint straight away — never a lower number
     // and never the "—" loading placeholder — before it reconciles up to "9".

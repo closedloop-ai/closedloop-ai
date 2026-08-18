@@ -2,10 +2,6 @@
 
 import type { Priority } from "@repo/api/src/types/common";
 import type { ArtifactStatus } from "@repo/api/src/types/document";
-import type {
-  LoopSummariesResponse,
-  LoopWithUser,
-} from "@repo/api/src/types/loop";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import { createContext } from "react";
 
@@ -22,24 +18,17 @@ export type RowEditHandlers = {
   onUpdateStatus?: (itemId: string, status: ArtifactStatus) => void;
   /** Team members for the UserSelectPopover. */
   teamMembers?: User[];
-  /** Active loops for displaying per-artifact loop status. */
-  activeLoops?: LoopWithUser[];
-  /**
-   * Optional O(1) lookup of the active loop per document id, derived once from
-   * `activeLoops` by the provider. When present, loop cells use this instead of
-   * an O(activeLoops) linear scan per row (avoids O(rows × activeLoops)).
-   * Falls back to scanning `activeLoops` when absent. Keyed by the first active
-   * loop seen for a given document id, matching the previous `.find` semantics.
-   */
-  activeLoopsByDocumentId?: Map<string, LoopWithUser>;
   /** Parent entity title, injected per-row for the Parent column cell. */
   parentTitle?: string;
   /** Parent entity route, injected per-row for the Parent column cell. */
   parentHref?: string | null;
-  /** Selects which LoopCell variant to render. Default = legacy behavior. */
-  loopVariant?: "team" | "my-tasks";
-  /** Per-document loop summaries (recursive descendant aggregation). */
-  loopSummaries?: LoopSummariesResponse;
+  /**
+   * Which surface variant the row renders in. `my-tasks` renders editable cells
+   * in a compact form (see `table/cells/edit-cells.tsx`) and opts that surface
+   * into the constant-column collapse (`collapseConstantColumns` in
+   * `table/column-collapse.ts`).
+   */
+  surfaceVariant?: "team" | "my-tasks";
 };
 
 export const RowEditContext = createContext<RowEditHandlers>({});

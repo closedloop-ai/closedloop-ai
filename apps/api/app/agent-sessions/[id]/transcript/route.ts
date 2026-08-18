@@ -1,12 +1,10 @@
 import type { TranscriptAccessResponse } from "@repo/api/src/types/desktop-transcripts";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
-  forbiddenResponse,
   type IdRouteParams,
   notFoundResponse,
   successResponse,
 } from "@/lib/route-utils";
-import { getAgentSessionViewerScope } from "../../route-helpers";
 import { transcriptReadService } from "../../transcript-read-service";
 
 /**
@@ -15,22 +13,17 @@ import { transcriptReadService } from "../../transcript-read-service";
  * file (main + subagents) with the FR8 availability state and a short-lived
  * signed S3 GET URL for readable files; the browser fetches raw JSONL directly.
  *
- * Access mirrors the session detail route exactly: the same `monitoringEnabled`
- * viewer-scope gate plus org-scoping, so a caller who cannot open the session's
- * detail gets a 404 here too — no transcript content or URL leaks (PRD AC10).
+ * Access mirrors the session detail route exactly: org-scoping is the boundary,
+ * so a transcript for a session in another org 404s and no content or signed URL
+ * leaks (PRD AC10). FEA-4155 removed the `monitoringEnabled` flag gate here in
+ * lockstep with the detail route so the always-on Sessions surface's transcript
+ * reads don't 403 as the winding-down `DESKTOP_AGENT_SESSION_SYNC` flag resolves
+ * false.
  */
 export const GET = withAnyAuth<
   TranscriptAccessResponse,
   "/agent-sessions/[id]/transcript"
->(async ({ user, clerkUserId }, _request, params) => {
-  const viewerScope = await getAgentSessionViewerScope({
-    userId: user.id,
-    clerkUserId,
-  });
-  if (!viewerScope.monitoringEnabled) {
-    return forbiddenResponse();
-  }
-
+>(async ({ user }, _request, params) => {
   const { id } = (await params) as Awaited<IdRouteParams["params"]>;
   const access = await transcriptReadService.findTranscriptAccess({
     id,

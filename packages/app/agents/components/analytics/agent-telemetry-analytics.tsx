@@ -1,19 +1,19 @@
 "use client";
 
 import type {
-  AgentSessionLastSyncTarget,
   AgentSessionListItem,
-  AgentSessionUsageByBranch,
   AgentSessionUsageByModel,
-  AgentSessionUsageByPr,
   AgentSessionUsageByUser,
 } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
-import { ComputeTargetSyncTable } from "@repo/app/compute/components/compute-target-sync-table";
-import { formatRelativeTime } from "@repo/app/shared/lib/date-utils";
+import type {
+  AgentSessionUsageByBranch,
+  AgentSessionUsageByPr,
+} from "@repo/api/src/types/agent-session-usage-breakdown";
 import {
   type DateRange,
   formatCost,
+  formatCurrencyWhole,
   formatNumber,
   formatTokenCount,
   getStartDateForRange,
@@ -50,7 +50,6 @@ import {
   BotIcon,
   Clock3Icon,
   FolderGit2Icon,
-  HardDriveDownloadIcon,
   InfoIcon,
   MonitorIcon,
   UserIcon,
@@ -66,6 +65,7 @@ import {
   useAgentSessions,
   useAgentSessionUsage,
 } from "../../hooks/use-agent-sessions";
+import { SESSIONS_GLANCEABLE_COLUMNS } from "../../hooks/use-sessions-view-state";
 import { SESSION_STATUS_FILTER_OPTIONS } from "../../lib/session-status-filters";
 import { ModelUsageTable } from "../model-usage-table";
 import { SyncedSessionsTable } from "../sessions/synced-sessions-table";
@@ -77,6 +77,7 @@ import {
   RepositoryBreakdownTable,
   ToolUsageBreakdownTable,
 } from "./analytics-breakdown-tables";
+import { ContextCards } from "./context-cards";
 import {
   MobileBreakdownFact,
   MobileBreakdownRow,
@@ -544,7 +545,7 @@ function SummaryMetrics({
           usage?.subscriptionEstimatedCost ?? 0
         )}
         label="Cost"
-        value={formatCost(usage?.totalEstimatedCost ?? 0)}
+        value={formatCurrencyWhole(usage?.totalEstimatedCost ?? 0)}
       />
     </div>
   );
@@ -589,7 +590,7 @@ function UsageBreakdown({
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_1fr]">
+      <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -668,7 +669,7 @@ function AttributionBreakdowns({
   }
 
   return (
-    <div className="grid gap-6 xl:grid-cols-2">
+    <div className="grid gap-6 lg:grid-cols-2">
       {branchRows.length > 0 ? (
         <Card>
           <CardHeader>
@@ -859,7 +860,7 @@ function AnalyticsBreakdowns({
   return (
     <>
       <Separator />
-      <div className="grid gap-6 xl:grid-cols-2">
+      <div className="grid gap-6 lg:grid-cols-2">
         <ToolUsageBreakdownTable data={analyticsQuery.data.byTool} />
         <AgentTypeBreakdownTable data={analyticsQuery.data.byAgentType} />
       </div>
@@ -957,84 +958,11 @@ function SessionsCard({
             getSessionHref={getSessionHref}
             items={items}
             renderExtraColumn={renderExtraColumn}
+            visibleColumns={SESSIONS_GLANCEABLE_COLUMNS}
           />
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function ContextCards({
-  targets,
-}: Readonly<{
-  targets: AgentSessionLastSyncTarget[];
-}>) {
-  return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock3Icon className="h-4 w-4" />
-            Compute Target Freshness
-          </CardTitle>
-          <CardDescription>
-            Last successful sync timestamps per compute target.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <ComputeTargetSyncTable
-            rows={targets.map((target) => ({
-              id: target.computeTargetId,
-              lastSeenLabel: formatRelativeTime(target.lastSeenAt),
-              lastSyncLabel: target.lastAgentSessionSyncAt
-                ? formatRelativeTime(target.lastAgentSessionSyncAt)
-                : "Never",
-              machineName: target.machineName,
-              online: target.isOnline,
-              ownerLabel:
-                [target.owner.firstName, target.owner.lastName]
-                  .filter(Boolean)
-                  .join(" ") || target.owner.email,
-            }))}
-          />
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <FolderGit2Icon className="h-4 w-4" />
-            Working Context
-          </CardTitle>
-          <CardDescription>
-            The monitoring view preserves repository and worktree hints from the
-            desktop sync.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4 text-sm">
-          <div className="flex items-start gap-3">
-            <HardDriveDownloadIcon className="mt-0.5 h-4 w-4 text-muted-foreground" />
-            <div>
-              <div className="font-medium">Historical backfill</div>
-              <p className="text-muted-foreground">
-                Once a compute target reconnects, historical sessions are
-                backfilled into the org view automatically.
-              </p>
-            </div>
-          </div>
-          <Separator />
-          <div className="flex items-start gap-3">
-            <ArrowRightIcon className="mt-0.5 h-4 w-4 text-muted-foreground" />
-            <div>
-              <div className="font-medium">Session detail</div>
-              <p className="text-muted-foreground">
-                Open any session row to inspect token usage, agents, and the
-                event timeline captured from the desktop monitor.
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
   );
 }
 

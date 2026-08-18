@@ -25,6 +25,15 @@ vi.mock("@repo/observability/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// FEA-3951: buildContextPackInMemory resolves RelatesTo links via
+// artifactLinksService (its real impl hits the DB). This suite covers template
+// injection with no linked evergreen Documents, so stub it to return no links.
+vi.mock("@/app/artifact-links/service", () => ({
+  artifactLinksService: {
+    findSourceLinks: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 vi.mock("@/app/documents/document-version-service", () => ({
   documentVersionService: {
     getLatest: vi.fn(),

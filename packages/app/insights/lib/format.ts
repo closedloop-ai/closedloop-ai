@@ -1,10 +1,23 @@
+import { formatDeltaPct } from "@closedloop-ai/loops-api/insights";
 import {
   type KpiFormat,
   KpiFormat as KpiFormatValues,
 } from "@repo/api/src/types/insights";
-import { formatCompact } from "@repo/app/shared/lib/format-utils";
+import {
+  formatCompact,
+  formatCurrencyTileValue,
+  KPI_NO_VALUE as SHARED_KPI_NO_VALUE,
+} from "@repo/app/shared/lib/format-utils";
 
-const HOUR_MS = 3_600_000;
+/**
+ * Re-exported from the shared SSOT (`shared/lib/format-utils`) so existing
+ * insights callers keep importing `KPI_NO_VALUE` from here unchanged while the
+ * canonical definition lives slice-agnostically in `shared/` — a slice-agnostic
+ * component (the shared CostMetricCard) can then import the sentinel without an
+ * agents → insights dependency.
+ */
+export const KPI_NO_VALUE = SHARED_KPI_NO_VALUE;
+
 const MINUTE_MS = 60_000;
 const THOUSAND = 1000;
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US", {
@@ -38,9 +51,6 @@ export function metricAllowsFractions(metricKey: string): boolean {
 }
 
 /** Format a KPI numeric value for display according to its format hint. */
-/** Rendered when a KPI has no computable value (unknown, not `0`). */
-export const KPI_NO_VALUE = "—";
-
 export function formatKpiValue(
   value: number | null | undefined,
   format: KpiFormat
@@ -66,19 +76,48 @@ export function formatKpiValue(
   }
 }
 
-/** Format a signed percent delta, or null when not applicable. */
-export function formatDelta(deltaPct: number | null): string | null {
-  if (deltaPct === null) {
-    return null;
+/**
+ * Format a KPI value for an AGGREGATE spend/cost tile (FEA-3431).
+ *
+ * Identical to {@link formatKpiValue} for every format EXCEPT `Currency`, where
+ * it renders whole dollars (`$9,061`) via the shared {@link formatCurrencyWhole}
+ * — matching the Branches/Sessions "AI spend" summary cards — instead of the
+ * compact, precision-cliffed `$9.1k` that `formatKpiValue` produces. Use this
+ * for the overview headline spend/cost KPIs (AI spend, estimated cost,
+ * cost-per-merged-PR) so the same magnitude reads the same on web and desktop.
+ *
+ * Non-currency formats are delegated unchanged so a mixed tile grid (percent,
+ * duration, tokens, …) still formats each metric correctly. The honest-empty
+ * `—` sentinel for null / non-finite values is preserved (never `$0`).
+ */
+export function formatKpiTileValue(
+  value: number | null | undefined,
+  format: KpiFormat
+): string {
+  if (format !== KpiFormatValues.Currency) {
+    return formatKpiValue(value, format);
   }
-  const sign = deltaPct > 0 ? "+" : "";
-  return `${sign}${deltaPct}%`;
+  // Whole-dollar currency-tile formatting (with the honest-empty `—` sentinel
+  // for null/non-finite) is the shared SSOT guard, so the same cost value reads
+  // identically on the KPI tiles and the shared CostMetricCard.
+  return formatCurrencyTileValue(value);
 }
 
-/** A positive delta is "good" for most metrics; callers may invert per-metric. */
-export function deltaIsPositive(deltaPct: number | null): boolean {
-  return (deltaPct ?? 0) >= 0;
+/**
+ * Format a signed percent delta, or null when not applicable. Delegates to the
+ * shared `formatDeltaPct` SSOT (`@closedloop-ai/loops-api/insights`) so the Insights
+ * `TrendBadge` and the design-system `MetricCard` chip render the identical cap
+ * treatment ("<-999%" / ">999%") and can't drift (FEA-3959/3960).
+ */
+export function formatDelta(deltaPct: number | null): string | null {
+  return formatDeltaPct(deltaPct);
 }
+
+// ISS-4633 removed `deltaIsPositive` from this module. It answered "did the
+// number go up?" while every caller used it to answer "is this good?", which
+// coloured a rising spend green. Sentiment now comes from `deltaSentiment` in
+// `@repo/design-system/components/ui/primitives/metric-polarity`, which takes
+// the metric's declared polarity; the KPI catalog owns that declaration.
 
 export function formatNumber(value: number): string {
   return NUMBER_FORMATTER.format(value);
@@ -95,11 +134,15 @@ function formatDuration(ms: number): string {
   if (ms <= 0) {
     return "—";
   }
-  if (ms >= HOUR_MS) {
-    const hours = Math.floor(ms / HOUR_MS);
-    const minutes = Math.round((ms % HOUR_MS) / MINUTE_MS);
+  // Round to whole minutes *first*, then split into h/m. Rounding the minute
+  // remainder independently of the hours lets a 59.5m remainder round up to
+  // 60 and render a malformed "1h 60m" (or "60m" below the hour); carrying
+  // from the total minutes avoids that.
+  const totalMinutes = Math.max(1, Math.round(ms / MINUTE_MS));
+  if (totalMinutes >= 60) {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
     return `${hours}h ${minutes}m`;
   }
-  const minutes = Math.max(1, Math.round(ms / MINUTE_MS));
-  return `${minutes}m`;
+  return `${totalMinutes}m`;
 }

@@ -21,7 +21,7 @@ export function DocumentsEmptyState({
   if (!hasAnyItems) {
     return (
       <EmptyState
-        description="Create a PRD, feature, or plan to get started."
+        description="Create a PRD, issue, or plan to get started."
         icon={FileTextIcon}
         title="No artifacts yet"
       />

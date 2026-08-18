@@ -66,6 +66,9 @@ describe("computeDeliveryKpis — merge rate (decided denominator)", () => {
 });
 
 describe("computeDeliveryKpis — PR size (median, enriched-only)", () => {
+  // PRD-522 R4.1 mutation-sanity guard: dropping `onlyEnriched` from PrSize would
+  // fold the un-enriched 999-line row into the median (→ 160), so pinning it to 20
+  // fails if the enriched-only filter regresses.
   it("uses the MEDIAN not the mean, over enriched merged PRs only", () => {
     // enriched line-totals: 10, 20, 300 → median 20 (mean would be 110).
     // The un-enriched 999-line row must be excluded.

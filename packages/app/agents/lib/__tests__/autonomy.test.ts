@@ -29,11 +29,16 @@ const cases: Case[] = [
     label: "Unknown autonomy",
     shortLabel: "Unknown",
   },
+  // FEA-3781: boundaries recalibrated to 70/35 against the distribution the
+  // attended-time score actually produces. 88/70 left "mixed" empty on the real
+  // corpus — the same dead-tier defect FEA-3266 had fixed one tier over. See
+  // AUTONOMY_TIER_MIN_SCORE for the measured sweep.
   { value: 0, tier: "guided", label: "Guided autonomy", shortLabel: "Guided" },
-  { value: 49, tier: "guided", label: "Guided autonomy", shortLabel: "Guided" },
+  { value: 34, tier: "guided", label: "Guided autonomy", shortLabel: "Guided" },
+  { value: 35, tier: "mixed", label: "Mixed autonomy", shortLabel: "Mixed" },
   { value: 50, tier: "mixed", label: "Mixed autonomy", shortLabel: "Mixed" },
-  { value: 79, tier: "mixed", label: "Mixed autonomy", shortLabel: "Mixed" },
-  { value: 80, tier: "high", label: "High autonomy", shortLabel: "High" },
+  { value: 69, tier: "mixed", label: "Mixed autonomy", shortLabel: "Mixed" },
+  { value: 70, tier: "high", label: "High autonomy", shortLabel: "High" },
   { value: 100, tier: "high", label: "High autonomy", shortLabel: "High" },
 ];
 

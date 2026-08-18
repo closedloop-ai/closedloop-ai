@@ -7,7 +7,8 @@
         "value": 1,
         "format": "number",
         "sub": "PRs found in local sessions",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "computed"
       },
       {
         "key": "mergedCount",
@@ -16,6 +17,7 @@
         "format": "number",
         "sub": "PRs merged in range",
         "deltaPct": null,
+        "deltaBasis": "not_computed",
         "internal": true
       },
       {
@@ -24,41 +26,85 @@
         "value": 480000,
         "format": "duration",
         "sub": "session start \u2192 PR",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "kloc",
         "label": "KLOC captured",
-        "value": 0,
+        "value": null,
         "format": "number",
-        "sub": "thousands of lines changed in captured PRs",
-        "deltaPct": null
+        "sub": "thousands of lines changed in captured PRs \u00b7 sized 0 of 1 captured PRs scanned",
+        "deltaPct": null,
+        "deltaBasis": "computed"
+      },
+      {
+        "key": "capturedPrsWithoutLoc",
+        "label": "Captured PRs without size",
+        "value": 1,
+        "format": "number",
+        "sub": "captured PRs the projection cannot size",
+        "deltaPct": null,
+        "deltaBasis": "not_computed",
+        "internal": true
+      },
+      {
+        "key": "capturedPrsScanned",
+        "label": "Captured PRs scanned",
+        "value": 1,
+        "format": "number",
+        "sub": "captured PRs the size coverage is taken of",
+        "deltaPct": null,
+        "deltaBasis": "not_computed",
+        "internal": true
+      },
+      {
+        "key": "mergedKloc",
+        "label": "KLOC merged",
+        "value": null,
+        "format": "number",
+        "sub": "thousand lines landed",
+        "deltaPct": null,
+        "deltaBasis": "not_computed",
+        "internal": true
       },
       {
         "key": "cost",
         "label": "Cost",
         "value": 0.04918,
         "format": "currency",
-        "sub": "estimated AI spend in window",
-        "deltaPct": null
+        "sub": "estimated cost in range, including subscription-covered usage",
+        "deltaPct": null,
+        "deltaBasis": "computed"
       },
       {
         "key": "merge-rate",
         "label": "Merge rate",
-        "value": 0,
+        "value": null,
         "format": "percent",
         "sub": "of decided PRs (merged or closed)",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "pr-size",
         "label": "Median PR size",
         "value": null,
         "format": "number",
-        "sub": "median lines changed per captured PR",
-        "deltaPct": null
+        "sub": "median lines changed per captured PR \u00b7 sized 0 of 1 captured PRs scanned",
+        "deltaPct": null,
+        "deltaBasis": "computed"
       }
     ],
+    "tileAvailability": {
+      "kpi:merged": "available",
+      "kpi:ttm": "available",
+      "kpi:merge-rate": "unavailable",
+      "chart:branchesWithoutPr": "available",
+      "chart:branchesWithoutPr:donut": "available",
+      "chart:checkStatus": "unavailable",
+      "chart:checkStatus:bar": "unavailable"
+    },
     "charts": {
       "prTrend": {
         "series": [
@@ -802,562 +848,6 @@
           }
         ]
       },
-      "klocTrend": {
-        "series": [
-          {
-            "key": "kloc",
-            "label": "KLOC captured"
-          }
-        ],
-        "points": [
-          {
-            "date": "2026-03-22",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-23",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-24",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-25",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-26",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-27",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-28",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-29",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-30",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-03-31",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-01",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-02",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-03",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-04",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-05",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-06",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-07",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-08",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-09",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-10",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-11",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-12",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-13",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-14",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-15",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-16",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-17",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-18",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-19",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-20",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-21",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-22",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-23",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-24",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-25",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-26",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-27",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-28",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-29",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-04-30",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-01",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-02",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-03",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-04",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-05",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-06",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-07",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-08",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-09",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-10",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-11",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-12",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-13",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-14",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-15",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-16",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-17",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-18",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-19",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-20",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-21",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-22",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-23",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-24",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-25",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-26",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-27",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-28",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-29",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-30",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-05-31",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-01",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-02",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-03",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-04",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-05",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-06",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-07",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-08",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-09",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-10",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-11",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-12",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-13",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-14",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-15",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-16",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-17",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-18",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-19",
-            "values": {
-              "kloc": 0
-            }
-          },
-          {
-            "date": "2026-06-20",
-            "values": {
-              "kloc": 0
-            }
-          }
-        ]
-      },
       "prByRepo": [],
       "meanTimeToMerge": [
         {
@@ -1367,17 +857,17 @@
         },
         {
           "key": "4to12h",
-          "label": "4–12h",
+          "label": "4\u201312h",
           "value": 0
         },
         {
           "key": "12to24h",
-          "label": "12–24h",
+          "label": "12\u201324h",
           "value": 0
         },
         {
           "key": "1to3d",
-          "label": "1–3d",
+          "label": "1\u20133d",
           "value": 0
         },
         {
@@ -1386,13 +876,7 @@
           "value": 0
         }
       ],
-      "prByState": [
-        {
-          "key": "captured",
-          "label": "Captured locally",
-          "value": 1
-        }
-      ],
+      "prByState": [],
       "branchLifespan": [
         {
           "key": "short",
@@ -1401,7 +885,7 @@
         },
         {
           "key": "med",
-          "label": "Medium (1–7d)",
+          "label": "Medium (1\u20137d)",
           "value": 0
         },
         {
@@ -1410,18 +894,11 @@
           "value": 0
         }
       ],
-      "checkStatus": [
-        {
-          "key": "captured",
-          "label": "Captured locally",
-          "value": 1
-        }
-      ],
       "branchesWithoutPr": [
         {
           "key": "has-pr",
           "label": "Has a pull request",
-          "value": 1
+          "value": 0
         },
         {
           "key": "no-pr",
@@ -1439,7 +916,8 @@
         "value": 3,
         "format": "number",
         "sub": "agent sessions run",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "runtime",
@@ -1447,7 +925,8 @@
         "value": 4980000,
         "format": "duration",
         "sub": "hours of agent execution",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "backlog",
@@ -1455,7 +934,8 @@
         "value": 1,
         "format": "number",
         "sub": "open PRs awaiting review",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "events",
@@ -1463,9 +943,16 @@
         "value": 12,
         "format": "number",
         "sub": "captured local events",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       }
     ],
+    "tileAvailability": {
+      "kpi:backlog": "unavailable",
+      "chart:reviewQueue": "unavailable",
+      "chart:reviewQueue:donut": "unavailable",
+      "chart:reviewerLoad": "unavailable"
+    },
     "charts": {
       "eventActivity": {
         "series": [
@@ -2708,28 +2195,12 @@
       ],
       "sessionsByStatus": [
         {
-          "key": "completed",
-          "label": "Completed",
+          "key": "inactive",
+          "label": "Inactive",
           "value": 3
         }
       ],
-      "reviewQueue": [
-        {
-          "key": "captured",
-          "label": "Captured locally",
-          "value": 1
-        },
-        {
-          "key": "changes",
-          "label": "Changes requested",
-          "value": 0
-        },
-        {
-          "key": "approved",
-          "label": "Approved",
-          "value": 0
-        }
-      ]
+      "reviewQueue": []
     }
   },
   "agents": {
@@ -2740,7 +2211,8 @@
         "value": 6300,
         "format": "tokens",
         "sub": "consumed in range",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "input-tokens",
@@ -2748,7 +2220,8 @@
         "value": 3700,
         "format": "tokens",
         "sub": "prompt tokens",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "output-tokens",
@@ -2756,7 +2229,8 @@
         "value": 2600,
         "format": "tokens",
         "sub": "completion tokens",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "cache-tokens",
@@ -2764,7 +2238,8 @@
         "value": 1400,
         "format": "tokens",
         "sub": "cache read/write tokens",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "models",
@@ -2772,7 +2247,8 @@
         "value": 2,
         "format": "number",
         "sub": "distinct models",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       },
       {
         "key": "tool-runs",
@@ -2780,7 +2256,8 @@
         "value": 4,
         "format": "number",
         "sub": "tool invocations",
-        "deltaPct": null
+        "deltaPct": null,
+        "deltaBasis": "not_computed"
       }
     ],
     "charts": {
@@ -3168,6 +2645,390 @@
           }
         ]
       },
+      "modelTokensOverTime": {
+        "series": [
+          {
+            "key": "claude-sonnet-4-5",
+            "label": "claude-sonnet-4-5"
+          },
+          {
+            "key": "gpt-5",
+            "label": "gpt-5"
+          }
+        ],
+        "points": [
+          {
+            "date": "2026-03-22",
+            "values": {}
+          },
+          {
+            "date": "2026-03-23",
+            "values": {}
+          },
+          {
+            "date": "2026-03-24",
+            "values": {}
+          },
+          {
+            "date": "2026-03-25",
+            "values": {}
+          },
+          {
+            "date": "2026-03-26",
+            "values": {}
+          },
+          {
+            "date": "2026-03-27",
+            "values": {}
+          },
+          {
+            "date": "2026-03-28",
+            "values": {}
+          },
+          {
+            "date": "2026-03-29",
+            "values": {}
+          },
+          {
+            "date": "2026-03-30",
+            "values": {}
+          },
+          {
+            "date": "2026-03-31",
+            "values": {}
+          },
+          {
+            "date": "2026-04-01",
+            "values": {}
+          },
+          {
+            "date": "2026-04-02",
+            "values": {}
+          },
+          {
+            "date": "2026-04-03",
+            "values": {}
+          },
+          {
+            "date": "2026-04-04",
+            "values": {}
+          },
+          {
+            "date": "2026-04-05",
+            "values": {}
+          },
+          {
+            "date": "2026-04-06",
+            "values": {}
+          },
+          {
+            "date": "2026-04-07",
+            "values": {}
+          },
+          {
+            "date": "2026-04-08",
+            "values": {}
+          },
+          {
+            "date": "2026-04-09",
+            "values": {}
+          },
+          {
+            "date": "2026-04-10",
+            "values": {}
+          },
+          {
+            "date": "2026-04-11",
+            "values": {}
+          },
+          {
+            "date": "2026-04-12",
+            "values": {}
+          },
+          {
+            "date": "2026-04-13",
+            "values": {}
+          },
+          {
+            "date": "2026-04-14",
+            "values": {}
+          },
+          {
+            "date": "2026-04-15",
+            "values": {}
+          },
+          {
+            "date": "2026-04-16",
+            "values": {}
+          },
+          {
+            "date": "2026-04-17",
+            "values": {}
+          },
+          {
+            "date": "2026-04-18",
+            "values": {}
+          },
+          {
+            "date": "2026-04-19",
+            "values": {}
+          },
+          {
+            "date": "2026-04-20",
+            "values": {}
+          },
+          {
+            "date": "2026-04-21",
+            "values": {}
+          },
+          {
+            "date": "2026-04-22",
+            "values": {}
+          },
+          {
+            "date": "2026-04-23",
+            "values": {}
+          },
+          {
+            "date": "2026-04-24",
+            "values": {}
+          },
+          {
+            "date": "2026-04-25",
+            "values": {}
+          },
+          {
+            "date": "2026-04-26",
+            "values": {}
+          },
+          {
+            "date": "2026-04-27",
+            "values": {}
+          },
+          {
+            "date": "2026-04-28",
+            "values": {}
+          },
+          {
+            "date": "2026-04-29",
+            "values": {}
+          },
+          {
+            "date": "2026-04-30",
+            "values": {}
+          },
+          {
+            "date": "2026-05-01",
+            "values": {}
+          },
+          {
+            "date": "2026-05-02",
+            "values": {}
+          },
+          {
+            "date": "2026-05-03",
+            "values": {}
+          },
+          {
+            "date": "2026-05-04",
+            "values": {}
+          },
+          {
+            "date": "2026-05-05",
+            "values": {}
+          },
+          {
+            "date": "2026-05-06",
+            "values": {}
+          },
+          {
+            "date": "2026-05-07",
+            "values": {}
+          },
+          {
+            "date": "2026-05-08",
+            "values": {}
+          },
+          {
+            "date": "2026-05-09",
+            "values": {}
+          },
+          {
+            "date": "2026-05-10",
+            "values": {}
+          },
+          {
+            "date": "2026-05-11",
+            "values": {}
+          },
+          {
+            "date": "2026-05-12",
+            "values": {}
+          },
+          {
+            "date": "2026-05-13",
+            "values": {}
+          },
+          {
+            "date": "2026-05-14",
+            "values": {}
+          },
+          {
+            "date": "2026-05-15",
+            "values": {}
+          },
+          {
+            "date": "2026-05-16",
+            "values": {}
+          },
+          {
+            "date": "2026-05-17",
+            "values": {}
+          },
+          {
+            "date": "2026-05-18",
+            "values": {}
+          },
+          {
+            "date": "2026-05-19",
+            "values": {}
+          },
+          {
+            "date": "2026-05-20",
+            "values": {}
+          },
+          {
+            "date": "2026-05-21",
+            "values": {}
+          },
+          {
+            "date": "2026-05-22",
+            "values": {}
+          },
+          {
+            "date": "2026-05-23",
+            "values": {}
+          },
+          {
+            "date": "2026-05-24",
+            "values": {}
+          },
+          {
+            "date": "2026-05-25",
+            "values": {}
+          },
+          {
+            "date": "2026-05-26",
+            "values": {}
+          },
+          {
+            "date": "2026-05-27",
+            "values": {}
+          },
+          {
+            "date": "2026-05-28",
+            "values": {}
+          },
+          {
+            "date": "2026-05-29",
+            "values": {}
+          },
+          {
+            "date": "2026-05-30",
+            "values": {}
+          },
+          {
+            "date": "2026-05-31",
+            "values": {}
+          },
+          {
+            "date": "2026-06-01",
+            "values": {}
+          },
+          {
+            "date": "2026-06-02",
+            "values": {}
+          },
+          {
+            "date": "2026-06-03",
+            "values": {}
+          },
+          {
+            "date": "2026-06-04",
+            "values": {}
+          },
+          {
+            "date": "2026-06-05",
+            "values": {}
+          },
+          {
+            "date": "2026-06-06",
+            "values": {}
+          },
+          {
+            "date": "2026-06-07",
+            "values": {}
+          },
+          {
+            "date": "2026-06-08",
+            "values": {}
+          },
+          {
+            "date": "2026-06-09",
+            "values": {}
+          },
+          {
+            "date": "2026-06-10",
+            "values": {}
+          },
+          {
+            "date": "2026-06-11",
+            "values": {}
+          },
+          {
+            "date": "2026-06-12",
+            "values": {}
+          },
+          {
+            "date": "2026-06-13",
+            "values": {}
+          },
+          {
+            "date": "2026-06-14",
+            "values": {}
+          },
+          {
+            "date": "2026-06-15",
+            "values": {}
+          },
+          {
+            "date": "2026-06-16",
+            "values": {
+              "claude-sonnet-4-5": 2400
+            }
+          },
+          {
+            "date": "2026-06-17",
+            "values": {
+              "gpt-5": 800
+            }
+          },
+          {
+            "date": "2026-06-18",
+            "values": {
+              "claude-sonnet-4-5": 4500
+            }
+          },
+          {
+            "date": "2026-06-19",
+            "values": {}
+          },
+          {
+            "date": "2026-06-20",
+            "values": {}
+          }
+        ]
+      },
       "autonomyTrend": {
         "series": [
           {
@@ -3179,517 +3040,517 @@
           {
             "date": "2026-03-22",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-23",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-24",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-25",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-26",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-27",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-28",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-29",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-30",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-03-31",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-01",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-02",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-03",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-04",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-05",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-06",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-07",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-08",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-09",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-10",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-11",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-12",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-13",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-14",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-15",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-16",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-17",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-18",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-19",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-20",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-21",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-22",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-23",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-24",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-25",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-26",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-27",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-28",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-29",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-04-30",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-01",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-02",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-03",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-04",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-05",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-06",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-07",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-08",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-09",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-10",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-11",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-12",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-13",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-14",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-15",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-16",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-17",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-18",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-19",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-20",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-21",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-22",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-23",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-24",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-25",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-26",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-27",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-28",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-29",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-30",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-05-31",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-01",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-02",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-03",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-04",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-05",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-06",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-07",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-08",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-09",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-10",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-11",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-12",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-13",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-14",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-15",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
@@ -3713,13 +3574,13 @@
           {
             "date": "2026-06-19",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           },
           {
             "date": "2026-06-20",
             "values": {
-              "autonomy": 0
+              "autonomy": null
             }
           }
         ]
@@ -3775,6 +3636,21 @@
           "value": 1
         }
       ],
+      "agentPipeline": {
+        "nodes": [
+          {
+            "subagentType": "main",
+            "total": 3,
+            "completed": 3,
+            "errors": 0,
+            "sessions": 3,
+            "successRate": 100,
+            "avgDuration": 1660,
+            "trend": []
+          }
+        ],
+        "edges": []
+      },
       "agentsByStatus": [
         {
           "key": "completed",
@@ -4344,7 +4220,29 @@
             }
           }
         ]
-      }
+      },
+      "spendByOutcome": [
+        {
+          "key": "clean",
+          "label": "Ended clean",
+          "value": 0.05
+        },
+        {
+          "key": "errored",
+          "label": "Ended with error",
+          "value": 0
+        },
+        {
+          "key": "running",
+          "label": "Still running",
+          "value": 0
+        },
+        {
+          "key": "unknown",
+          "label": "Not recorded",
+          "value": 0
+        }
+      ]
     }
   },
   "tokenAnalytics": {

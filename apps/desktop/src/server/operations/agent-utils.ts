@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { gatewayLog } from "../../main/gateway-logger.js";
-import type { TaskProgress } from "../../main/job-store.js";
+import type { TaskProgress } from "../../main/jobs/job-store.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import {
   getActiveAgents,
   isNativeLoop,

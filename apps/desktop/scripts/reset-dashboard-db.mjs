@@ -14,34 +14,9 @@
  * Cross-platform DB path resolution mirrors `app.getPath("userData")` from the
  * Electron main process (`<userData>/agent-dashboard.pgdata`).
  */
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import net from "node:net";
-import { homedir, platform } from "node:os";
-import { join } from "node:path";
-
-const APP_NAME = "Closedloop";
-const DB_DIR = "agent-dashboard.pgdata";
-
-function dashboardDbPath() {
-  switch (platform()) {
-    case "darwin":
-      return join(
-        homedir(),
-        "Library",
-        "Application Support",
-        APP_NAME,
-        DB_DIR
-      );
-    case "win32":
-      return join(
-        process.env.APPDATA || join(homedir(), "AppData", "Roaming"),
-        APP_NAME,
-        DB_DIR
-      );
-    default:
-      return join(homedir(), ".config", APP_NAME, DB_DIR);
-  }
-}
+import { dashboardDbPath, removeAll } from "./reset-dashboard-db-lib.mjs";
 
 async function appIsRunning(port = 4820) {
   return new Promise((resolve) => {
@@ -55,13 +30,6 @@ async function appIsRunning(port = 4820) {
       resolve(false);
     });
   });
-}
-
-function removeAll(dbPath) {
-  if (existsSync(dbPath)) {
-    rmSync(dbPath, { recursive: true, force: true });
-    console.log(`[reset-dashboard-db] removed ${dbPath}`);
-  }
 }
 
 async function main() {

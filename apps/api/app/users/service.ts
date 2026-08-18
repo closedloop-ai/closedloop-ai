@@ -1,15 +1,80 @@
-import type { DocumentType } from "@repo/api/src/types/document";
-import { LoopStatus } from "@repo/api/src/types/loop";
 import type {
-  ContributionDay,
   CreateUserInput,
-  DocumentsByType,
   UpdateUserInput,
   UpdateUserProfileFromClerkInput,
-  UserProfileStats,
+  User,
 } from "@repo/api/src/types/user";
-import { ArtifactType, GitHubPRState, withDb } from "@repo/database";
-import { log } from "@repo/observability/log";
+import { type Prisma, withDb } from "@repo/database";
+
+/** A scalar column name on the `User` model (excludes every relation). */
+type UserScalarColumn =
+  (typeof Prisma.UserScalarFieldEnum)[keyof typeof Prisma.UserScalarFieldEnum];
+
+/**
+ * The exact column set the public `User` contract declares.
+ *
+ * Every read or write whose result is serialized to a client goes through this
+ * select instead of returning the whole Prisma row. The `User` model carries six
+ * columns that appear in neither the shared `User` type nor the public OpenAPI
+ * `User` schema, and an unselected query handed all six — `claudeApiKeyEncrypted`
+ * among them — to any read-scoped API key, for every user in the organization
+ * (ISS-5195). The surface that owns that field narrows it deliberately: see
+ * `apiKeyService.getUserKeyInfo`, which returns only `{isSet, lastFour, setAt}`.
+ *
+ * `satisfies Record<keyof User, true>` is deliberately NOT intersected with
+ * `Prisma.UserSelect`. The intersection looks stricter and is in fact weaker:
+ * TypeScript treats a key as known when it appears in ANY constituent, and
+ * `Prisma.UserSelect` declares all 21 columns plus every relation, so
+ * `claudeApiKeyEncrypted: true` would have compiled clean. Against the bare
+ * `Record` the key set is closed to `keyof User`, so re-adding a withheld column
+ * — or naming one that does not exist — is a compile error, and dropping a
+ * contract field is one too. A NEW Prisma column cannot leak through here: it is
+ * simply absent from this set, and `USER_COLUMNS_WITHHELD_FROM_CLIENTS` below is
+ * what forces someone to classify it rather than let it drift in unnoticed.
+ */
+export const USER_CONTRACT_SELECT = {
+  id: true,
+  clerkId: true,
+  organizationId: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  avatarUrl: true,
+  phoneNumber: true,
+  role: true,
+  linearId: true,
+  slackId: true,
+  githubUsername: true,
+  active: true,
+  createdAt: true,
+  updatedAt: true,
+} as const satisfies Record<keyof User, true>;
+
+/**
+ * `User` columns deliberately kept off the wire (ISS-5195).
+ *
+ * The Claude-key trio is credential material — ciphertext, its last four, and
+ * when it was set — and the compute-preference trio is private per-user routing
+ * state each of its owning surfaces already reads through its own narrow select
+ * (`compute-preference/route.ts`, `compute-target-resolver.ts`). Together with
+ * `USER_CONTRACT_SELECT` this partitions every scalar column on the model, which
+ * is what lets the service test assert exhaustiveness against
+ * `Prisma.UserScalarFieldEnum`: add a column to the schema and that test fails
+ * until it is classified as exposed or withheld.
+ *
+ * Typed against the scalar-field enum rather than `keyof Prisma.UserSelect`,
+ * which also admits every relation name — a withheld entry naming a relation
+ * would compile while protecting nothing, and the partition claim above would
+ * quietly stop being true.
+ */
+export const USER_COLUMNS_WITHHELD_FROM_CLIENTS = [
+  "claudeApiKeyEncrypted",
+  "claudeApiKeyLastFour",
+  "claudeApiKeySetAt",
+  "preferredComputeMode",
+  "preferredComputeTargetId",
+  "preferredHarness",
+] as const satisfies readonly UserScalarColumn[];
 
 /**
  * Users service - handles database operations for user management
@@ -18,6 +83,8 @@ export const usersService = {
   /**
    * Find all users in an organization
    * @returns Only active users (filters out soft-deleted users)
+   * @note Selects the public `User` contract columns only — this read is served
+   *       to any API key holder via GET /users (ISS-5195).
    */
   findByOrganization(organizationId: string) {
     return withDb((db) =>
@@ -26,6 +93,7 @@ export const usersService = {
           organizationId,
           active: true,
         },
+        select: USER_CONTRACT_SELECT,
         orderBy: { createdAt: "desc" },
       })
     );
@@ -40,11 +108,17 @@ export const usersService = {
    *       - Webhook processing that needs to update deactivated users
    *       - Admin operations that need to view/manage inactive users
    *       For user lists visible to end users, use findByOrganization() instead.
+   * @note Selects the public `User` contract columns only — this read is served
+   *       directly to clients by GET /me and GET /users/:id (ISS-5195). Callers
+   *       that need a withheld column (the Claude-key or compute-preference
+   *       trio) issue their own narrow select against `db.user`, as
+   *       `api-key-service.ts` and `compute-target-resolver.ts` already do.
    */
   findById(id: string, organizationId: string) {
     return withDb((db) =>
       db.user.findUnique({
         where: { id, organizationId },
+        select: USER_CONTRACT_SELECT,
       })
     );
   },
@@ -55,6 +129,11 @@ export const usersService = {
    * @note Does NOT filter by active status - returns both active and inactive users.
    *       This is intentional to support authentication and webhook processing.
    *       Used by withAuth() middleware to authenticate requests from deactivated users.
+   * @note Selects the public `User` contract columns only. This row is what
+   *       `findOrCreateUser` returns as its declared `User`, and it becomes
+   *       `AuthContext.user` on every Clerk-session route — so without the
+   *       select the type was a lie and the three auth paths produced
+   *       structurally different `user` objects (ISS-5195).
    */
   findByClerkIdAndOrg(clerkId: string, organizationId: string) {
     return withDb((db) =>
@@ -65,6 +144,7 @@ export const usersService = {
             organizationId,
           },
         },
+        select: USER_CONTRACT_SELECT,
       })
     );
   },
@@ -94,6 +174,9 @@ export const usersService = {
    * @note Uses composite unique constraint (clerkId, organizationId) for idempotency
    * @note Reactivates previously deactivated users by setting active: true
    * @note Does NOT update organizationId on existing records (composite key is immutable)
+   * @note Selects the public `User` contract columns only — the other half of
+   *       `findOrCreateUser`'s declared `User` return, alongside
+   *       `findByClerkIdAndOrg` (ISS-5195).
    */
   upsertByClerkIdAndOrg(input: CreateUserInput) {
     const profileFields = {
@@ -122,18 +205,30 @@ export const usersService = {
           ...profileFields,
           active: true,
         },
+        select: USER_CONTRACT_SELECT,
       })
     );
   },
 
   /**
-   * Update an existing user by ID
+   * Update an existing user by ID, scoped to their organization
+   * @note `organizationId` is in the `where` clause, not merely checked by the
+   *       caller. The route happens to pre-check via findById, but a service
+   *       method must not depend on that: org scoping belongs in the query so a
+   *       second caller cannot write across a tenant boundary by omitting it.
+   * @note Selects the public `User` contract columns only — PUT /users/:id
+   *       returns this row to the caller (ISS-5195).
    */
-  update(id: string, input: Omit<UpdateUserInput, "id">) {
+  update(
+    id: string,
+    organizationId: string,
+    input: Omit<UpdateUserInput, "id">
+  ) {
     return withDb((db) =>
       db.user.update({
-        where: { id },
+        where: { id, organizationId },
         data: input,
+        select: USER_CONTRACT_SELECT,
       })
     );
   },
@@ -198,224 +293,4 @@ export const usersService = {
       })
     );
   },
-
-  /**
-   * Get aggregate profile statistics for a user.
-   * Runs multiple count queries in parallel for performance.
-   */
-  async getUserStats(
-    userId: string,
-    organizationId: string
-  ): Promise<UserProfileStats> {
-    try {
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-
-      const [
-        totalArtifacts,
-        artifactsByTypeRaw,
-        totalComments,
-        totalPRsLanded,
-        totalLoops,
-        contributionData,
-        loopConcurrencyData,
-        loopTokenAggregate,
-      ] = await Promise.all([
-        // Total document artifacts created
-        withDb((db) =>
-          db.artifact.count({
-            where: {
-              createdById: userId,
-              organizationId,
-              type: ArtifactType.DOCUMENT,
-            },
-          })
-        ),
-        // Document artifacts grouped by subtype (legacy DocumentType)
-        withDb((db) =>
-          db.artifact.groupBy({
-            by: ["subtype"],
-            where: {
-              createdById: userId,
-              organizationId,
-              type: ArtifactType.DOCUMENT,
-            },
-            _count: { id: true },
-          })
-        ),
-        // Total comments authored (org-scoped via thread)
-        withDb((db) =>
-          db.comment.count({
-            where: {
-              authorId: userId,
-              thread: { organizationId },
-            },
-          })
-        ),
-        // Merged branches with current PR evidence created by the user.
-        withDb((db) =>
-          db.artifact.count({
-            where: {
-              organizationId,
-              type: ArtifactType.BRANCH,
-              createdById: userId,
-              branch: {
-                currentPullRequestDetail: { prState: GitHubPRState.MERGED },
-              },
-            },
-          })
-        ),
-        // Total loops initiated
-        withDb((db) =>
-          db.loop.count({
-            where: { userId, organizationId },
-          })
-        ),
-        // Contribution heatmap: document artifact creations over last year
-        withDb((db) =>
-          db.artifact.findMany({
-            where: {
-              createdById: userId,
-              organizationId,
-              type: ArtifactType.DOCUMENT,
-              createdAt: { gte: oneYearAgo },
-            },
-            select: { createdAt: true },
-          })
-        ),
-        // Loop concurrency: loops with timing data
-        withDb((db) =>
-          db.loop.findMany({
-            where: {
-              userId,
-              organizationId,
-              startedAt: { not: null },
-            },
-            select: { startedAt: true, completedAt: true, status: true },
-          })
-        ),
-        // Loop token/cost totals
-        withDb((db) =>
-          db.loop.aggregate({
-            where: { userId, organizationId },
-            _sum: {
-              tokensInput: true,
-              tokensOutput: true,
-              estimatedCost: true,
-            },
-          })
-        ),
-      ]);
-
-      const artifactsByType: DocumentsByType[] = artifactsByTypeRaw.flatMap(
-        (row) => {
-          if (row.subtype === null) {
-            return [];
-          }
-          return [{ type: row.subtype as DocumentType, count: row._count.id }];
-        }
-      );
-
-      const contributionHeatmap = buildContributionHeatmap(contributionData);
-      const avgConcurrency = computeAvgLoopConcurrency(loopConcurrencyData);
-
-      return {
-        totalDocuments: totalArtifacts,
-        documentsByType: artifactsByType,
-        totalComments,
-        totalPRsLanded,
-        totalLoops,
-        avgConcurrency,
-        contributionHeatmap,
-        totalTokensInput: loopTokenAggregate._sum.tokensInput ?? 0,
-        totalTokensOutput: loopTokenAggregate._sum.tokensOutput ?? 0,
-        totalEstimatedCost: Number(loopTokenAggregate._sum.estimatedCost ?? 0),
-      };
-    } catch (error) {
-      log.error("[users-service] Failed to get user stats", {
-        error: error instanceof Error ? error.message : String(error),
-        userId,
-        organizationId,
-      });
-      throw error;
-    }
-  },
 };
-
-/** Format a Date as YYYY-MM-DD using UTC date parts. */
-function toDateKey(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-/** Build a dense 52-week contribution heatmap from artifact creation dates. */
-function buildContributionHeatmap(
-  data: { createdAt: Date }[]
-): ContributionDay[] {
-  const countsByDate = new Map<string, number>();
-  for (const item of data) {
-    const key = toDateKey(item.createdAt);
-    countsByDate.set(key, (countsByDate.get(key) ?? 0) + 1);
-  }
-
-  const result: ContributionDay[] = [];
-  const today = new Date();
-  const totalDays = 364; // 52 weeks
-  for (let i = totalDays - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const key = toDateKey(d);
-    result.push({ date: key, count: countsByDate.get(key) ?? 0 });
-  }
-  return result;
-}
-
-/**
- * Compute average loop concurrency: when this user has a loop running,
- * how many loops are they running simultaneously on average?
- *
- * For each loop's start time, counts how many other loops overlapped,
- * then averages those counts.
- */
-const TERMINAL_LOOP_STATUSES = new Set<string>([
-  LoopStatus.Completed,
-  LoopStatus.Failed,
-  LoopStatus.Cancelled,
-  LoopStatus.TimedOut,
-]);
-
-function computeAvgLoopConcurrency(
-  loops: {
-    startedAt: Date | null;
-    completedAt: Date | null;
-    status: string;
-  }[]
-): number {
-  const now = new Date();
-
-  const intervals = loops
-    .filter((l): l is typeof l & { startedAt: Date } => l.startedAt !== null)
-    .map((l) => ({
-      start: l.startedAt,
-      end:
-        TERMINAL_LOOP_STATUSES.has(l.status) && l.completedAt
-          ? l.completedAt
-          : now,
-    }));
-
-  if (intervals.length === 0) {
-    return 0;
-  }
-
-  let totalConcurrent = 0;
-  for (const point of intervals) {
-    let concurrent = 0;
-    for (const interval of intervals) {
-      if (interval.start <= point.start && interval.end >= point.start) {
-        concurrent++;
-      }
-    }
-    totalConcurrent += concurrent;
-  }
-
-  return Math.round((totalConcurrent / intervals.length) * 10) / 10;
-}

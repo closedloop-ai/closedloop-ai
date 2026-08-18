@@ -1,7 +1,13 @@
+import { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   broadcastRoomEvent,
+  createArtifactLevelThread,
   createArtifactThread,
+  deleteArtifactThread,
+  markArtifactThreadResolved,
+  markArtifactThreadUnresolved,
+  replyToArtifactThread,
 } from "../server/room-management";
 import { RoomEventType } from "../shared/room-events";
 
@@ -18,12 +24,18 @@ vi.mock("../server/yjs-anchor", () => ({
 const mockCreateThread = vi.fn();
 const mockDeleteThread = vi.fn();
 const mockBroadcastEvent = vi.fn();
+const mockCreateComment = vi.fn();
+const mockMarkThreadAsResolved = vi.fn();
+const mockMarkThreadAsUnresolved = vi.fn();
 
 vi.mock("@liveblocks/node", () => {
   class MockLiveblocks {
     createThread = mockCreateThread;
     deleteThread = mockDeleteThread;
     broadcastEvent = mockBroadcastEvent;
+    createComment = mockCreateComment;
+    markThreadAsResolved = mockMarkThreadAsResolved;
+    markThreadAsUnresolved = mockMarkThreadAsUnresolved;
   }
 
   return {
@@ -78,7 +90,10 @@ describe("createArtifactThread", () => {
               ],
             },
           },
-          metadata: { resolved: false },
+          metadata: {
+            resolved: false,
+            anchorStatus: DocumentThreadAnchorStatus.Anchored,
+          },
         },
       });
 
@@ -229,6 +244,120 @@ describe("createArtifactThread", () => {
   });
 });
 
+describe("createArtifactLevelThread", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates an artifact-level thread with version metadata and no anchor operations", async () => {
+    const fakeThread = {
+      type: "thread",
+      id: "thread-artifact-level",
+      roomId: "org:artifact:slug",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      comments: [],
+      metadata: {
+        resolved: false,
+        anchorStatus: DocumentThreadAnchorStatus.ArtifactLevel,
+        version: 7,
+      },
+    };
+    mockCreateThread.mockResolvedValueOnce(fakeThread);
+
+    const result = await createArtifactLevelThread({
+      roomId: "org:artifact:slug",
+      userId: "user-1",
+      bodyText: "Artifact-wide note",
+      version: 7,
+    });
+
+    expect(mockCreateThread).toHaveBeenCalledWith({
+      roomId: "org:artifact:slug",
+      data: {
+        comment: {
+          userId: "user-1",
+          body: {
+            version: 1,
+            content: [
+              {
+                type: "paragraph",
+                children: [{ text: "Artifact-wide note" }],
+              },
+            ],
+          },
+        },
+        metadata: {
+          resolved: false,
+          anchorStatus: DocumentThreadAnchorStatus.ArtifactLevel,
+          version: 7,
+        },
+      },
+    });
+    expect(mockFindAnchorText).not.toHaveBeenCalled();
+    expect(mockAnchorThreadToText).not.toHaveBeenCalled();
+    expect(mockDeleteThread).not.toHaveBeenCalled();
+    expect(result).toBe(fakeThread);
+  });
+
+  it("throws a descriptive error when LIVEBLOCKS_SECRET is not set", async () => {
+    vi.resetModules();
+    vi.doMock("../server/keys", () => ({
+      keys: () => ({ LIVEBLOCKS_SECRET: undefined }),
+    }));
+
+    const { createArtifactLevelThread: createArtifactLevelThreadNoSecret } =
+      await import("../server/room-management");
+
+    await expect(
+      createArtifactLevelThreadNoSecret({
+        roomId: "org:artifact:slug",
+        userId: "user-1",
+        bodyText: "Hello world",
+      })
+    ).rejects.toThrow("LIVEBLOCKS_SECRET is not configured");
+  });
+});
+
+describe("deleteArtifactThread", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes the Liveblocks thread for the supplied room", async () => {
+    mockDeleteThread.mockResolvedValueOnce(undefined);
+
+    await deleteArtifactThread({
+      roomId: "org:artifact:slug",
+      threadId: "thread-artifact-level",
+    });
+
+    expect(mockDeleteThread).toHaveBeenCalledWith({
+      roomId: "org:artifact:slug",
+      threadId: "thread-artifact-level",
+    });
+  });
+
+  it("no-ops when LIVEBLOCKS_SECRET is not configured", async () => {
+    vi.resetModules();
+    vi.doMock("../server/keys", () => ({
+      keys: () => ({ LIVEBLOCKS_SECRET: undefined }),
+    }));
+
+    const { deleteArtifactThread: deleteArtifactThreadNoSecret } = await import(
+      "../server/room-management"
+    );
+
+    await expect(
+      deleteArtifactThreadNoSecret({
+        roomId: "org:artifact:slug",
+        threadId: "thread-artifact-level",
+      })
+    ).resolves.toBeUndefined();
+    expect(mockDeleteThread).not.toHaveBeenCalled();
+  });
+});
+
 describe("broadcastRoomEvent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -290,5 +419,78 @@ describe("broadcastRoomEvent", () => {
 
     expect(result).toEqual({ success: true });
     expect(mockBroadcastEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("replyToArtifactThread (FEA-3950)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates a flat reply comment on the thread and returns it", async () => {
+    const fakeComment = { type: "comment", id: "cm_reply", threadId: "th_1" };
+    mockCreateComment.mockResolvedValueOnce(fakeComment);
+
+    const result = await replyToArtifactThread({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      userId: "user-1",
+      bodyText: "A reply",
+    });
+
+    expect(mockCreateComment).toHaveBeenCalledWith({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      data: {
+        userId: "user-1",
+        body: {
+          version: 1,
+          content: [{ type: "paragraph", children: [{ text: "A reply" }] }],
+        },
+      },
+    });
+    expect(result).toBe(fakeComment);
+  });
+});
+
+describe("markArtifactThreadResolved / markArtifactThreadUnresolved (FEA-3950)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("marks the thread resolved, attributing to the acting user", async () => {
+    const resolvedThread = { type: "thread", id: "th_1" };
+    mockMarkThreadAsResolved.mockResolvedValueOnce(resolvedThread);
+
+    const result = await markArtifactThreadResolved({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      userId: "user-1",
+    });
+
+    expect(mockMarkThreadAsResolved).toHaveBeenCalledWith({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      data: { userId: "user-1" },
+    });
+    expect(result).toBe(resolvedThread);
+  });
+
+  it("marks the thread unresolved, attributing to the acting user", async () => {
+    const openThread = { type: "thread", id: "th_1" };
+    mockMarkThreadAsUnresolved.mockResolvedValueOnce(openThread);
+
+    const result = await markArtifactThreadUnresolved({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      userId: "user-1",
+    });
+
+    expect(mockMarkThreadAsUnresolved).toHaveBeenCalledWith({
+      roomId: "org:artifact:slug",
+      threadId: "th_1",
+      data: { userId: "user-1" },
+    });
+    expect(result).toBe(openThread);
   });
 });

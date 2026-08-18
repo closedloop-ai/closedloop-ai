@@ -19,6 +19,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OptimizationAnalyticsPanel } from "../optimization-analytics-panel";
 
 const ACROSS_5_SESSIONS = /across 5 sessions/;
+const RE_THIS_VERSION = /This version · #aaaaaaaa/;
+const RE_ALL_VERSIONS = /All versions of this component/;
+const RE_NO_USAGE_VERSION = /No usage for this version/;
+const RE_NO_USAGE_VERSION_WINDOW =
+  /No usage for this version in the last 30 days/;
 
 function makeTrend(): ComponentModelTrendResponse {
   return {
@@ -178,6 +183,188 @@ describe("OptimizationAnalyticsPanel (AC-022)", () => {
 
     await waitFor(() =>
       expect(screen.getByTestId("trend-empty")).toBeDefined()
+    );
+  });
+});
+
+// ISS-4403: content-scoped reads + version-honest UI.
+describe("OptimizationAnalyticsPanel content scope (ISS-4403)", () => {
+  const FINGERPRINT = "a".repeat(64);
+  const SHORT = "aaaaaaaa";
+
+  it("does NOT append a trailing fingerprint arg when unscoped (legacy arity)", async () => {
+    // The historical call shapes: an older preload forwards a trailing explicit
+    // `undefined` as an extra IPC argument, so an unscoped target must use the
+    // pre-ISS-4403 arity — 4 / 2 / 1 args — with NO trailing undefined.
+    const getComponentModelTrend = vi.fn().mockResolvedValue(makeTrend());
+    const getSubagentFrequency = vi.fn().mockResolvedValue(makeFrequency());
+    const isSkillLoaded = vi.fn().mockResolvedValue(makeSkillLoaded());
+    installDesktopApi({
+      getComponentModelTrend,
+      getSubagentFrequency,
+      isSkillLoaded,
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{ kind: "subagent", key: "bug-hunter", name: "Bug Hunter" }}
+      />
+    );
+
+    await waitFor(() => expect(getComponentModelTrend).toHaveBeenCalled());
+    expect(getComponentModelTrend.mock.calls[0]).toEqual([
+      "subagent",
+      "bug-hunter",
+      undefined,
+      30,
+    ]);
+    expect(getSubagentFrequency.mock.calls[0]).toEqual(["bug-hunter", 30]);
+  });
+
+  it("appends the fingerprint as the trailing content-scope arg when scoped", async () => {
+    const getComponentModelTrend = vi.fn().mockResolvedValue(makeTrend());
+    const getSubagentFrequency = vi.fn().mockResolvedValue(makeFrequency());
+    installDesktopApi({ getComponentModelTrend, getSubagentFrequency });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{
+          kind: "subagent",
+          key: "bug-hunter",
+          name: "Bug Hunter",
+          fingerprint: FINGERPRINT,
+          shortFingerprint: SHORT,
+        }}
+      />
+    );
+
+    await waitFor(() => expect(getComponentModelTrend).toHaveBeenCalled());
+    expect(getComponentModelTrend.mock.calls[0]).toEqual([
+      "subagent",
+      "bug-hunter",
+      undefined,
+      30,
+      FINGERPRINT,
+    ]);
+    expect(getSubagentFrequency.mock.calls[0]).toEqual([
+      "bug-hunter",
+      30,
+      FINGERPRINT,
+    ]);
+  });
+
+  it("scopes isSkillLoaded by fingerprint when scoped", async () => {
+    const isSkillLoaded = vi.fn().mockResolvedValue(makeSkillLoaded());
+    installDesktopApi({
+      getComponentModelTrend: vi.fn().mockResolvedValue(makeTrend()),
+      isSkillLoaded,
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{
+          kind: "skill",
+          key: "gstack",
+          name: "GStack",
+          fingerprint: FINGERPRINT,
+          shortFingerprint: SHORT,
+        }}
+      />
+    );
+
+    await waitFor(() => expect(isSkillLoaded).toHaveBeenCalled());
+    expect(isSkillLoaded.mock.calls[0]).toEqual(["gstack", FINGERPRINT]);
+  });
+
+  it("shows a version subhead with the short fingerprint when scoped", () => {
+    installDesktopApi({
+      getComponentModelTrend: vi.fn().mockResolvedValue(makeTrend()),
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{
+          kind: "command",
+          key: "foo",
+          name: "Foo",
+          fingerprint: FINGERPRINT,
+          shortFingerprint: SHORT,
+        }}
+      />
+    );
+
+    expect(screen.getByText(RE_THIS_VERSION)).toBeDefined();
+  });
+
+  it("shows an all-versions subhead when unscoped (name-level)", () => {
+    installDesktopApi({
+      getComponentModelTrend: vi.fn().mockResolvedValue(makeTrend()),
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{ kind: "command", key: "foo", name: "Foo" }}
+      />
+    );
+
+    expect(screen.getByText(RE_ALL_VERSIONS)).toBeDefined();
+  });
+
+  it("uses neutral (not warning) skill copy for a version with no usage", async () => {
+    installDesktopApi({
+      getComponentModelTrend: vi.fn().mockResolvedValue(makeTrend()),
+      isSkillLoaded: vi
+        .fn()
+        .mockResolvedValue(
+          makeSkillLoaded({ hasUsage: false, totalInvocations: 0 })
+        ),
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{
+          kind: "skill",
+          key: "gstack",
+          name: "GStack",
+          fingerprint: FINGERPRINT,
+          shortFingerprint: SHORT,
+        }}
+      />
+    );
+
+    // Neutral, scope-honest copy — never the name-level "Not loading" alarm.
+    await waitFor(() =>
+      expect(screen.getByText(RE_NO_USAGE_VERSION)).toBeDefined()
+    );
+    expect(screen.queryByText("Not loading")).toBeNull();
+  });
+
+  it("carries the version scope in the trend empty state", async () => {
+    installDesktopApi({
+      getComponentModelTrend: vi.fn().mockResolvedValue({
+        componentKind: "command",
+        componentKey: "foo",
+        windowDays: 30,
+        points: [],
+      }),
+    });
+
+    render(
+      <OptimizationAnalyticsPanel
+        target={{
+          kind: "command",
+          key: "foo",
+          name: "Foo",
+          fingerprint: FINGERPRINT,
+          shortFingerprint: SHORT,
+        }}
+      />
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("trend-empty").textContent).toMatch(
+        RE_NO_USAGE_VERSION_WINDOW
+      )
     );
   });
 });

@@ -1,14 +1,16 @@
 import {
   AttachmentPurpose,
+  type AttachmentUploadError,
   type CreateAttachmentResponse,
   type FileAttachment,
 } from "@repo/api/src/types/attachment";
-import { failure } from "@repo/api/src/types/common";
 import { log } from "@repo/observability/log";
-import { NextResponse } from "next/server";
+import {
+  attachmentUploadRateLimitResponse,
+  forbiddenAttachmentUploadResponse,
+} from "@/app/documents/attachment-route-responses";
 import { isMcpAttachmentUploadEnabled } from "@/app/documents/attachment-upload-feature";
 import {
-  type AttachmentUploadError,
   attachmentsService,
   DOCUMENT_NOT_FOUND_ERROR,
   INVALID_INLINE_ATTACHMENT_UPLOAD_ERROR,
@@ -181,28 +183,6 @@ export const GET = withAnyAuth<FileAttachment[], "/documents/[id]/attachments">(
     }
   }
 );
-
-function forbiddenAttachmentUploadResponse() {
-  return NextResponse.json(
-    failure("MCP attachment upload is disabled", {
-      code: "mcp_attachment_upload_disabled",
-    }),
-    { status: 403 }
-  );
-}
-
-function attachmentUploadRateLimitResponse(retryAfterSeconds: number) {
-  return NextResponse.json(
-    failure("Attachment upload rate limit exceeded", {
-      code: "attachment_upload_rate_limited",
-      details: { retryAfterSeconds },
-    }),
-    {
-      status: 429,
-      headers: { "Retry-After": String(retryAfterSeconds) },
-    }
-  );
-}
 
 function mapAttachmentUploadFailure(error: AttachmentUploadError) {
   return attachmentUploadRateLimitResponse(error.retryAfterSeconds);

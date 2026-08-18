@@ -1,7 +1,7 @@
 /**
  * @file cost-math.test.ts
  * @description Unit tests for the integer micro-cents money math used by nightly
- * cost reconciliation (FEA-1435), src/main/cost-math.ts.
+ * cost reconciliation (FEA-1435), src/main/cost/cost-math.ts.
  *
  * The reviewed invariant is that money is converted ONCE to integer micro-cents
  * at the boundary and all aggregation/drift is then EXACT integer arithmetic
@@ -22,7 +22,7 @@ import {
   parseDecimalCentsToMicroCents,
   sumMicroCents,
   usdToMicroCents,
-} from "../src/main/cost-math.js";
+} from "../src/main/cost/cost-math.js";
 
 test("conversion factors are the documented constants", () => {
   assert.equal(MICRO_CENTS_PER_CENT, 10_000);

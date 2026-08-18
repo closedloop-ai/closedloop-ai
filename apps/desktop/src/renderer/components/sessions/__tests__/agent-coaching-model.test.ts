@@ -4,13 +4,18 @@ import type {
   EventWithSession,
   WorkflowQueryData,
 } from "../../../../shared/agent-db-contract";
-import { buildAgentCoachingTips } from "../agent-coaching-model";
+import {
+  buildAgentCoachingTips,
+  extractShellCommand,
+} from "../agent-coaching-model";
 import type {
   AgentCoachingFeedbackEvent,
   AgentCoachingInput,
 } from "../agent-coaching-types";
 
 const GENERATED_AT = new Date("2026-06-18T12:00:00.000Z");
+const GARBLED_SESSION_ID_SLUG_PATTERN = /session-id-[0-9a-f-]{8,}/;
+const GIANT_SLUG_PATTERN = /[a-z0-9]+(?:-[a-z0-9]+){8,}/;
 
 describe("buildAgentCoachingTips", () => {
   it("creates a reusable-skill recommendation from repeated local shell probes", () => {
@@ -28,6 +33,40 @@ describe("buildAgentCoachingTips", () => {
     ).toBeGreaterThan(0);
     expect(tokenTip?.detail.whyThisRecommendation).toContain(
       "nightly-review-worktree-preflight appeared"
+    );
+  });
+
+  it("emits a resilience tip from a peak frustration moment (FEA-3399)", () => {
+    const recentEvents: EventWithSession[] = [
+      frustrationUserEvent(
+        "STOP this is WRONG again, revert it please seriously!!"
+      ),
+      frustrationErrorEvent(),
+    ];
+
+    const tips = buildAgentCoachingTips(makeInput({ recentEvents }));
+    const resilienceTip = tips.find(
+      (tip) => tip.id === "resilience-frustration-reset"
+    );
+
+    expect(resilienceTip?.category).toBe("resilience");
+    expect(resilienceTip?.detail.whyThisRecommendation).toContain(
+      "frustration peak"
+    );
+    expect(
+      resilienceTip?.evidence.some((line) => line.includes("intensity score"))
+    ).toBe(true);
+  });
+
+  it("omits the resilience tip when there is no confident peak (FEA-3399)", () => {
+    const recentEvents: EventWithSession[] = [
+      frustrationUserEvent("please add a test for the parser"),
+    ];
+
+    const tips = buildAgentCoachingTips(makeInput({ recentEvents }));
+
+    expect(tips.some((tip) => tip.id === "resilience-frustration-reset")).toBe(
+      false
     );
   });
 
@@ -159,6 +198,213 @@ describe("buildAgentCoachingTips", () => {
   });
 });
 
+// FEA-3687 #1: the garbled-recommendation regression. A shell event whose
+// `data` is the WHOLE serialized tool JSON must yield the real command (never
+// the raw blob), and the tip prose / skill name must be clean.
+describe("extractShellCommand (FEA-3687)", () => {
+  const baseEvent = {
+    agentId: null,
+    createdAt: "2026-06-17T00:00:00.000Z",
+    eventType: "tool_use",
+    id: "e1",
+    sessionId: "session-1",
+    sessionName: "s",
+    summary: null,
+    toolName: "Bash",
+  };
+
+  it("pulls tool_input.command out of a raw serialized event blob", () => {
+    const event = {
+      ...baseEvent,
+      data: JSON.stringify({
+        session_id: "65950db3-bb90-4438-babe-c66ba9c378f2",
+        tool_input: { command: "cd apps/desktop && pnpm test" },
+      }),
+    };
+    expect(extractShellCommand(event)).toBe("cd apps/desktop && pnpm test");
+  });
+
+  it("handles a bare {command} data object", () => {
+    const event = {
+      ...baseEvent,
+      data: JSON.stringify({ command: "git status" }),
+    };
+    expect(extractShellCommand(event)).toBe("git status");
+  });
+
+  it("returns null (never the blob) when a JSON data object has no command", () => {
+    const event = {
+      ...baseEvent,
+      data: JSON.stringify({ session_id: "abc", tool_name: "Bash" }),
+    };
+    expect(extractShellCommand(event)).toBeNull();
+  });
+
+  it("uses a plain summary string when present", () => {
+    const event = { ...baseEvent, summary: "rg foo src/", data: null };
+    expect(extractShellCommand(event)).toBe("rg foo src/");
+  });
+
+  it("returns null for an unparseable blobby data field", () => {
+    const event = { ...baseEvent, data: '{"session_id":"broken' };
+    expect(extractShellCommand(event)).toBeNull();
+  });
+});
+
+// FEA-3687 #1 end-to-end: a repeated-command corpus whose events carry raw
+// serialized tool JSON must produce a CLEAN token-efficiency tip — no
+// `{"session_id":…}` blob or giant `session-id-…-command-…-skill` slug leaking
+// into the title, body, why, or skill name.
+describe("buildAgentCoachingTips with raw-JSON event.data (FEA-3687)", () => {
+  it("does not leak raw event JSON or a garbled slug into the tip", () => {
+    const recentEvents: EventWithSession[] = Array.from(
+      { length: 6 },
+      (_, index) => ({
+        agentId: null,
+        createdAt: "2026-06-17T00:00:00.000Z",
+        data: JSON.stringify({
+          session_id: "65950db3-bb90-4438-babe-c66ba9c378f2",
+          tool_input: {
+            command: `pnpm turbo test --filter=desktop --run ${1600 + index}`,
+          },
+        }),
+        eventType: "tool_use",
+        id: `blob-${index}`,
+        sessionId: "session-1",
+        sessionName: "PR review",
+        summary: null,
+        toolName: "Bash",
+      })
+    );
+
+    const tips = buildAgentCoachingTips(makeInput({ recentEvents }));
+    const tokenTip = tips.find(
+      (tip) => tip.id === "shell-probe-reusable-skill"
+    );
+    expect(tokenTip).toBeDefined();
+
+    const prose = [
+      tokenTip?.title ?? "",
+      tokenTip?.body ?? "",
+      tokenTip?.detail.whyThisRecommendation ?? "",
+      ...(tokenTip?.evidence ?? []),
+      tokenTip?.detail.candidateFromThisDryRun?.suggestedWrapper ?? "",
+      ...(tokenTip?.actions.map((action) => action.result) ?? []),
+    ].join("\n");
+
+    // No raw serialized event JSON.
+    expect(prose).not.toContain("session_id");
+    expect(prose).not.toContain('"tool_input"');
+    // No giant slugified identifier mashed from the blob.
+    expect(prose).not.toMatch(GARBLED_SESSION_ID_SLUG_PATTERN);
+    expect(prose).not.toMatch(GIANT_SLUG_PATTERN);
+    // The skill name / family is derived from the real command (pnpm turbo),
+    // proving the command was extracted from tool_input.command not the blob.
+    expect(prose).toContain("pnpm turbo");
+  });
+});
+
+// FEA-3265: the candidate-pool behavior — end to end through
+// buildAgentCoachingTips (not just the pure ranker).
+describe("buildAgentCoachingTips candidate pool (FEA-3265)", () => {
+  it("surfaces a diverse pool — no two tips share a category/lever", () => {
+    const tips = buildAgentCoachingTips(makeInput());
+
+    const categories = tips.map((tip) => tip.category);
+    expect(categories.length).toBeGreaterThan(1);
+    // Diversity guarantee: every surfaced tip is a different lever.
+    expect(new Set(categories).size).toBe(categories.length);
+  });
+
+  it("does not force a skill-creation tip when a non-skill lever is stronger", () => {
+    // Heavy token spend + long sessions, but NO repeated shell commands and no
+    // skills — so the reuse/skill lever cannot even be built, and the cost and
+    // wall-time levers dominate. This is the "no forced skill quota" case.
+    const analytics = makeAnalytics();
+    analytics.tokens.totalInputTokens = 1_500_000;
+    analytics.tokens.totalOutputTokens = 400_000;
+    analytics.tokens.byDay = [
+      {
+        day: "2026-06-17",
+        inputTokens: 0,
+        outputTokens: 0,
+        estimatedCostUsd: 180,
+      },
+    ];
+    analytics.tokens.byModel = [
+      {
+        model: "opus",
+        inputTokens: 1_400_000,
+        outputTokens: 380_000,
+        sessions: 8,
+      },
+      {
+        model: "haiku",
+        inputTokens: 100_000,
+        outputTokens: 20_000,
+        sessions: 2,
+      },
+    ];
+    // No shell tools → no repeated-command / skill-reuse candidate.
+    analytics.toolUsage = [
+      { count: 40, toolName: "Read" },
+      { count: 20, toolName: "Agent" },
+    ];
+
+    const workflow = makeWorkflow();
+    workflow.stats.avgDurationSec = 1800; // 30 min sessions
+
+    const tips = buildAgentCoachingTips(
+      makeInput({
+        analytics,
+        workflow,
+        recentEvents: [],
+        skills: [],
+      })
+    );
+
+    const ids = tips.map((tip) => tip.id);
+    // The skill-creation tip is NOT present (no evidence for it).
+    expect(ids).not.toContain("shell-probe-reusable-skill");
+    expect(ids).not.toContain("promote-review-workflow");
+    // The cost lever surfaced instead.
+    expect(ids).toContain("rebalance-model-spend");
+  });
+
+  it("ranks the strongest non-skill lever first (most impactful, deck order)", () => {
+    // Cost is enormous; the only competing lever is the context tip. The
+    // presentation order is most → least impactful, so the cost tip is first.
+    const analytics = makeAnalytics();
+    analytics.tokens.totalInputTokens = 1_900_000;
+    analytics.tokens.totalOutputTokens = 500_000;
+    analytics.tokens.byDay = [
+      {
+        day: "2026-06-17",
+        inputTokens: 0,
+        outputTokens: 0,
+        estimatedCostUsd: 190,
+      },
+    ];
+    analytics.tokens.byModel = [
+      {
+        model: "opus",
+        inputTokens: 1_900_000,
+        outputTokens: 500_000,
+        sessions: 9,
+      },
+    ];
+    analytics.toolUsage = [{ count: 10, toolName: "Read" }];
+
+    const tips = buildAgentCoachingTips(
+      makeInput({ analytics, recentEvents: [], skills: [] })
+    );
+
+    expect(tips.length).toBeGreaterThan(0);
+    // Most impactful (cost) is presented first (Tip 1 of N).
+    expect(tips[0]?.id).toBe("rebalance-model-spend");
+  });
+});
+
 function makeInput(
   overrides: Partial<AgentCoachingInput> = {}
 ): AgentCoachingInput {
@@ -261,4 +507,36 @@ function makeEvents(): EventWithSession[] {
       "git fetch origin && mkdir -p /tmp/nrev && git worktree add /tmp/nrev/tina bot/nightly-testing-tina-2026-06-17 && gh pr view 1656 --json files",
     toolName: "Bash",
   }));
+}
+
+let frustrationSeq = 0;
+
+function frustrationUserEvent(summary: string): EventWithSession {
+  frustrationSeq += 1;
+  return {
+    agentId: null,
+    createdAt: "2026-06-17T00:00:00.000Z",
+    data: null,
+    eventType: "UserMessage",
+    id: `user-${frustrationSeq}`,
+    sessionId: "session-1",
+    sessionName: "Crash-out session",
+    summary,
+    toolName: null,
+  };
+}
+
+function frustrationErrorEvent(): EventWithSession {
+  frustrationSeq += 1;
+  return {
+    agentId: null,
+    createdAt: "2026-06-17T00:00:00.000Z",
+    data: null,
+    eventType: "error",
+    id: `error-${frustrationSeq}`,
+    sessionId: "session-1",
+    sessionName: "Crash-out session",
+    summary: "command failed",
+    toolName: null,
+  };
 }

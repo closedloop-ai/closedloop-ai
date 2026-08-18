@@ -1,9 +1,9 @@
 import {
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { sectionIcon } from "@repo/app/documents/components/table/group-section-icon";
 import { GroupByMode } from "@repo/app/documents/lib/group-by";
 import { render } from "@testing-library/react";
@@ -21,7 +21,7 @@ describe("sectionIcon", () => {
       })
     );
     const canonicalFeatureIcon = render(
-      <FeatureStatusIcon status={FeatureStatus.InReview} />
+      <IssueStatusIcon status={IssueStatus.InReview} />
     );
 
     expect(section.container.innerHTML).toBe(

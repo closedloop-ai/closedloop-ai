@@ -4,7 +4,6 @@ import {
   BranchViewCommentWriteIdentityStatus,
   GitHubCommentThreadKind,
   GitHubDiffSide,
-  PRReviewCommentState,
 } from "@repo/api/src/types/branch-view";
 import { ThreadSource, ThreadStatus } from "@repo/api/src/types/comment";
 import { withDb } from "@repo/database";
@@ -15,6 +14,19 @@ import {
   updatePullRequestReviewCommentWithUserToken,
 } from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  authContext,
+  isProjectedCommentLookup,
+  type ProjectedCommentQuery,
+  prContext,
+  projectedCommentRow,
+  providerComment,
+  reviewTargetRow,
+  testUser,
+  WRITE_OCTOKIT,
+  writeIdentity,
+  writeIdentityStatus,
+} from "@/__tests__/support/branch-view/direct-write.test-fixtures";
 import { requireGitHubWriteIdentity } from "@/app/comments/github-identity";
 import { upsertGitHubReviewCommentThread } from "@/app/comments/github-projection";
 import {
@@ -26,19 +38,14 @@ import {
   resolveReviewThread,
 } from "./direct-write-service";
 
-type EditReviewCommentInput = Parameters<typeof editReviewComment>[0];
-type CreateInlineReviewCommentInput = Parameters<
-  typeof createInlineReviewComment
->[0];
-type ReplyToReviewCommentInput = Parameters<typeof replyToReviewComment>[0];
-type DeleteReviewCommentInput = Parameters<typeof deleteReviewComment>[0];
-
 const mocks = vi.hoisted(() => {
   const withDbMock = vi.fn();
   return {
     branchFileChangeFindUnique: vi.fn(),
     commentFindFirst: vi.fn(),
     commentUpdate: vi.fn(),
+    commentThreadUpdate: vi.fn(),
+    threadProjectionUpdate: vi.fn(),
     createPullRequestReviewCommentWithUserToken: vi.fn(),
     createReplyForReviewCommentWithUserToken: vi.fn(),
     deletePullRequestReviewCommentWithUserToken: vi.fn(),
@@ -202,18 +209,7 @@ describe("editReviewComment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installReviewTargetDb();
-    mocks.requireGitHubWriteIdentity.mockResolvedValue({
-      ok: true,
-      value: {
-        githubUserConnectionId: "github-user-connection-1",
-        githubUserId: "42",
-        login: "author",
-        organizationId: "org-1",
-        scopes: ["repo"],
-        token: "user-token",
-        userId: "user-1",
-      },
-    });
+    mocks.requireGitHubWriteIdentity.mockResolvedValue(writeIdentity());
   });
 
   it("rejects locally deleted unified comments before provider edit projection can revive them", async () => {
@@ -374,7 +370,7 @@ describe("createInlineReviewComment", () => {
       },
     });
     expect(createPullRequestReviewCommentWithUserToken).toHaveBeenCalledWith(
-      "user-token",
+      WRITE_OCTOKIT,
       "closedloop",
       "runtime",
       1197,
@@ -662,7 +658,7 @@ describe("replyToReviewComment", () => {
       },
     });
     expect(createReplyForReviewCommentWithUserToken).toHaveBeenCalledWith(
-      "user-token",
+      WRITE_OCTOKIT,
       "closedloop",
       "runtime",
       1197,
@@ -866,157 +862,6 @@ function projectionWriteCallCounts() {
   };
 }
 
-function testUser(): EditReviewCommentInput["user"] {
-  return {
-    active: true,
-    avatarUrl: null,
-    clerkId: "clerk-user-1",
-    createdAt: new Date("2026-05-21T00:00:00.000Z"),
-    email: "author@example.test",
-    firstName: "Test",
-    githubUsername: "author",
-    id: "user-1",
-    lastName: "Author",
-    linearId: null,
-    organizationId: "org-1",
-    phoneNumber: null,
-    role: "ENGINEER",
-    slackId: null,
-    updatedAt: new Date("2026-05-21T00:00:00.000Z"),
-  };
-}
-
-function authContext(): EditReviewCommentInput["auth"] {
-  return {
-    authMethod: "session",
-    clerkOrgId: "org-1",
-    clerkUserId: "clerk-user-1",
-    user: testUser(),
-  };
-}
-
-function prContext():
-  | CreateInlineReviewCommentInput["ctx"]
-  | ReplyToReviewCommentInput["ctx"]
-  | EditReviewCommentInput["ctx"]
-  | DeleteReviewCommentInput["ctx"] {
-  return {
-    externalLink: {
-      createdBy: { githubUsername: "author" },
-      externalUrl: "https://github.com/closedloop/runtime/pull/1197",
-      id: "branch-artifact-1",
-      metadata: null,
-      organizationId: "org-1",
-      projectId: "project-1",
-      status: "OPEN",
-      title: "FEA-1197",
-    },
-    prMetadata: {
-      baseBranch: "main",
-      headBranch: "fea-1197",
-      number: 1197,
-      state: "OPEN",
-    },
-    owner: "closedloop",
-    repo: "runtime",
-    pullNumber: 1197,
-    installationId: "installation-1",
-    repositoryId: "repo-1",
-    branch: {
-      artifactId: "branch-artifact-1",
-      baseBranch: "main",
-      baseBranchSource: "test",
-      branchName: "fea-1197",
-      checksStatus: "passing",
-      checksDetailHeadSha: null,
-      checksDetailTotalCount: 0,
-      checksDetailTruncated: false,
-      checksDetailProviderState: null,
-      checksDetailUnavailableReason: null,
-      checksDetailUpdatedAt: null,
-      statusChecks: [],
-      currentPullRequestDetailId: "pull-request-detail-1",
-      fileCacheFileCount: 1,
-      fileCacheHeadSha: "head-sha",
-      fileCachePatchBytes: 100,
-      fileCacheStatus: "fresh",
-      fileCacheUpdatedAt: null,
-      headSha: "head-sha",
-      headShaObservedAt: null,
-      headShaSource: "test",
-      lastPushBeforeSha: null,
-      lastSyncCompletedAt: null,
-      lastSyncErrorCode: null,
-      lastSyncErrorMessage: null,
-      lastSyncStartedAt: null,
-      repositoryId: "repo-1",
-      syncStatus: "fresh",
-    },
-    gitHubPullRequest: {
-      baseBranch: "main",
-      checksStatus: "passing",
-      documentId: null,
-      githubId: "github-pr-1197",
-      headBranch: "fea-1197",
-      headSha: "head-sha",
-      htmlUrl: "https://github.com/closedloop/runtime/pull/1197",
-      id: "pull-request-detail-1",
-      isDraft: false,
-      number: 1197,
-      repositoryId: "repo-1",
-      reviewDecision: null,
-      state: "OPEN",
-      title: "FEA-1197",
-    },
-  };
-}
-
-function reviewTargetRow(input: {
-  deletedAt: Date | null;
-  githubDeletedAt: Date | null;
-  authorLogin?: string;
-  authorGithubUserId?: string;
-  path?: string | null;
-  resolvable?: boolean;
-  reviewThreadId?: string | null;
-  status?: ThreadStatus;
-}) {
-  return {
-    id: "comment-1",
-    deletedAt: input.deletedAt,
-    githubProjection: {
-      githubCommentId: "123456",
-      githubDeletedAt: input.githubDeletedAt,
-      externalAuthor: {
-        providerLogin: input.authorLogin ?? "author",
-        providerUserId: input.authorGithubUserId ?? "42",
-      },
-    },
-    thread: {
-      id: "thread-1",
-      source: ThreadSource.Github,
-      status: input.status ?? ThreadStatus.Open,
-      githubProjection: {
-        commitSha: "head-sha",
-        htmlUrl:
-          "https://github.com/closedloop/runtime/pull/1197#discussion_r123456",
-        line: 10,
-        path: input.path === undefined ? "src/runtime.ts" : input.path,
-        reviewId: "review-1",
-        reviewThreadId:
-          input.reviewThreadId === undefined
-            ? "review-thread-1"
-            : input.reviewThreadId,
-        rootCommentId: "123456",
-        side: GitHubDiffSide.Right,
-        startLine: null,
-        startSide: null,
-        resolvable: input.resolvable ?? true,
-      },
-    },
-  };
-}
-
 function installBranchFileCacheDb() {
   mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
     callback({
@@ -1081,117 +926,3 @@ function installProjectionTx() {
     );
   });
 }
-
-function writeIdentity() {
-  return {
-    ok: true,
-    value: {
-      githubUserConnectionId: "github-user-connection-1",
-      githubUserId: "42",
-      login: "author",
-      organizationId: "org-1",
-      scopes: ["repo"],
-      token: "user-token",
-      userId: "user-1",
-    },
-  };
-}
-
-function writeIdentityStatus() {
-  return {
-    ok: true,
-    value: {
-      status: BranchViewCommentWriteIdentityStatus.Active,
-      githubUserId: "42",
-      login: "author",
-    },
-  };
-}
-
-function providerComment(input: { id: number; inReplyToId?: number | null }) {
-  return {
-    id: input.id,
-    body: input.inReplyToId ? "reply" : "inline",
-    path: "src/index.ts",
-    line: 3,
-    side: GitHubDiffSide.Right,
-    start_line: null,
-    start_side: null,
-    commit_id: "head-sha",
-    html_url: `https://github.com/closedloop/runtime/pull/1197#discussion_r${input.id}`,
-    pull_request_review_id: 777,
-    review_thread_node_id: "review-thread-node-1",
-    in_reply_to_id: input.inReplyToId ?? null,
-    created_at: "2026-05-21T00:00:00.000Z",
-    updated_at: "2026-05-21T00:00:00.000Z",
-    user: {
-      id: 42,
-      login: "author",
-      avatar_url: "https://avatars.example.test/author.png",
-      html_url: "https://github.com/author",
-      type: "User",
-    },
-  };
-}
-
-function projectedCommentRow(query: unknown) {
-  const githubCommentId =
-    ((query as ProjectedCommentQuery).where.githubProjection.is
-      .githubCommentId as string) ?? "123456";
-  const inReplyToId = githubCommentId === "123457" ? "123456" : null;
-  const body = inReplyToId ? "reply" : "inline";
-  return {
-    id: `comment-${githubCommentId}`,
-    body: { type: "github_markdown", markdown: body },
-    plainText: body,
-    createdAt: new Date("2026-05-21T00:00:00.000Z"),
-    githubProjection: {
-      githubCommentId,
-      githubInReplyToCommentId: inReplyToId,
-      githubHtmlUrl: `https://github.com/closedloop/runtime/pull/1197#discussion_r${githubCommentId}`,
-      externalAuthor: {
-        providerLogin: "author",
-        avatarUrl: "https://avatars.example.test/author.png",
-        profileUrl: "https://github.com/author",
-      },
-    },
-    thread: {
-      id: "thread-1",
-      source: ThreadSource.Github,
-      status: ThreadStatus.Open,
-      githubProjection: {
-        legacyState: PRReviewCommentState.Pending,
-        threadKind: GitHubCommentThreadKind.ReviewThread,
-        reviewId: "777",
-        htmlUrl: `https://github.com/closedloop/runtime/pull/1197#discussion_r${githubCommentId}`,
-        path: "src/index.ts",
-        line: 3,
-        commitSha: "head-sha",
-        side: GitHubDiffSide.Right,
-        startLine: null,
-        startSide: null,
-        resolvable: true,
-      },
-    },
-  };
-}
-
-function isProjectedCommentLookup(query: unknown): boolean {
-  return Boolean(
-    query &&
-      typeof query === "object" &&
-      "where" in query &&
-      (query as { where?: { deletedAt?: unknown } }).where?.deletedAt === null
-  );
-}
-
-type ProjectedCommentQuery = {
-  where: {
-    id?: string;
-    deletedAt?: null;
-    githubProjection: {
-      is: { githubCommentId: unknown; githubDeletedAt?: null };
-    };
-    thread?: unknown;
-  };
-};

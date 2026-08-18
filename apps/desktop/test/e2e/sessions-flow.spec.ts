@@ -17,7 +17,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { gotoNav, launchDesktopApp } from "./helpers/desktop-app";
+import {
+  breadcrumbParentLink,
+  gotoNav,
+  launchDesktopApp,
+} from "./helpers/desktop-app";
 import { type SeedSession, seedClaudeTranscripts } from "./helpers/seed";
 
 const SEEDED: SeedSession[] = [
@@ -27,11 +31,13 @@ const SEEDED: SeedSession[] = [
 ];
 
 test.describe("Sessions flow", () => {
-  // QUARANTINED (FEA-2187): flaky since the FEA-1791 store rewrite (PR #2016,
-  // reader pool). The seeded rows intermittently don't appear in the Sessions
-  // list — a read-your-writes WAL visibility race against the pooled reader
-  // connections. Un-fixme once the store fix lands.
-  // biome-ignore lint/suspicious/noSkippedTests: quarantined flake tracked by FEA-2187
+  // QUARANTINED (ISS-5717, expires 2026-11-27): flaky since the FEA-1791 store
+  // rewrite (PR #2016, reader pool). The seeded rows intermittently don't
+  // appear in the Sessions list — a read-your-writes WAL visibility race
+  // against the pooled reader connections. FEA-2187 shipped that fix and is
+  // DONE, but nothing un-fixme'd this case, so ISS-5717 owns verifying it
+  // (>= 20 consecutive passes) before the modifier comes off.
+  // biome-ignore lint/suspicious/noSkippedTests: quarantined flake tracked by ISS-5717
   test.fixme("seeded sessions list, open detail, and navigate back", async () => {
     const claudeHome = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-sessions-claude-")
@@ -61,17 +67,14 @@ test.describe("Sessions flow", () => {
       }
 
       // Open the first session's detail by clicking its row. The shared list
-      // renders each row as a link to desktopSessionDetailHashHref; clicking
+      // renders each row as a link to desktopSessionDetailHref; clicking
       // the slug text inside it triggers the hash navigation.
       await page.getByText(SEEDED[0].slug).first().click();
 
-      // On the detail page the Topbar breadcrumb gains a "Sessions" parent
-      // *link* (on the list page "Sessions" is the current-page span, not a
-      // link) — a reliable "detail mounted" signal and the back affordance now
-      // that the in-page "Back to Sessions" bar is gone. Scope to the Breadcrumb
-      // nav so the sidebar's Sessions link can't satisfy it.
-      const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
-      const backLink = breadcrumb.getByRole("link", { name: "Sessions" });
+      // The breadcrumb's "Sessions" parent link is both the "detail mounted"
+      // signal and the back affordance now that the in-page "Back to Sessions"
+      // bar is gone.
+      const backLink = breadcrumbParentLink(page, "Sessions");
       await expect(backLink).toBeVisible({ timeout: 15_000 });
 
       // Clicking it returns to the list. Confirm we actually left the detail

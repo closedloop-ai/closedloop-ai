@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.renderer.json",
+  "compilerOptions": {
+    // Playwright Electron specs drive the renderer (DOM types, `@repo/app`
+    // React modules — inherited from tsconfig.renderer.json) but run in Node,
+    // so unlike the renderer program they need the node globals too.
+    "types": ["node"]
+  },
+  "include": ["test/e2e/**/*.ts"]
+}

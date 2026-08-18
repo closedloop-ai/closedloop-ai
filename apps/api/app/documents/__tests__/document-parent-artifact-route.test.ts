@@ -122,7 +122,6 @@ function createDocument() {
     assignee: null,
     approverId: null,
     approver: null,
-    tokenUsage: null,
     repositorySnapshot: {
       createdAt: now.toISOString(),
       repositories: [],

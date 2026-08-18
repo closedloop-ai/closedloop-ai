@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  classifyBrowserCommandKeyApprovalRequestCommand,
-  handleBrowserCommandKeyApprovalRequestCommand,
-} from "../src/main/browser-command-key-approval-request.js";
 import type {
   DesktopCommandAckEvent,
   DesktopCommandEvent,
   DesktopCommandStreamEvent,
-} from "../src/main/cloud-protocol.js";
+} from "../src/main/cloud/cloud-protocol.js";
+import {
+  classifyBrowserCommandKeyApprovalRequestCommand,
+  handleBrowserCommandKeyApprovalRequestCommand,
+} from "../src/main/command-signing/browser-command-key-approval-request.js";
 import {
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_INVALID_REASON,
   BROWSER_COMMAND_KEY_APPROVAL_REQUEST_METHOD,

@@ -1,9 +1,11 @@
+import { BranchStatus } from "@repo/api/src/types/branch";
 import {
-  type BranchAnalytics,
-  type BranchKpi,
-  BranchKpiState,
-  BranchStatus,
-} from "@repo/api/src/types/branch";
+  BranchMetricAvailability,
+  BranchMetricDisclosure,
+  type BranchMetricResult,
+} from "@repo/api/src/types/branch-metrics";
+import { BranchVisibleLifecyclePhase } from "@repo/api/src/types/branch-phase-attribution";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -11,218 +13,165 @@ import {
   makeBranchDetail as detail,
   makeBranchSession as session,
 } from "../../__tests__/branch-fixtures";
-import { BranchCostToMerge } from "../branch-cost-to-merge";
 import { BranchHeadlineCards } from "../branch-headline-cards";
 import { BranchLeadTimeWaterfall } from "../branch-lead-time-waterfall";
 import { BranchMultiPrNotice } from "../branch-multi-pr-notice";
 import { BranchPropertiesPanel } from "../branch-properties-panel";
 
-const IN_PROGRESS_RE = /in progress/i;
-const BASELINE_UNAVAILABLE_RE = /baseline unavailable/;
-const MULTI_PR_COST_RE = /attributed per phase/i;
-const TWO_PRS_RE = /2 linked pull requests/;
-const PR_LIST_RE = /#42, #43/;
+const OUTCOME_UNAVAILABLE_RE =
+  /selected-cycle outcome evidence is unavailable or not applicable/i;
 const PROPERTIES_RE = /properties/i;
 const LONG_BRANCH_NAME =
   "feature/narrow-responsive-properties-panel-with-a-very-long-branch-name";
 const LONG_REPOSITORY_NAME =
   "closedloop-ai/repository-with-a-very-long-name-for-responsive-panels";
-const LONG_PR_TITLE =
-  "Keep the properties panel readable when pull request titles are unusually long";
+const SELECTED_PR_TITLE =
+  "Selected pull request title belongs outside Properties";
 
-function kpi(over: Partial<BranchKpi> = {}): BranchKpi {
-  return {
-    value: 1,
-    state: BranchKpiState.Available,
-    baseline30d: null,
-    deltaPct: null,
-    ...over,
-  };
-}
-
-function analytics(over: Partial<BranchAnalytics> = {}): BranchAnalytics {
-  return {
-    viewerScope: "self",
-    medianPrSize: kpi(),
-    mergeRate: kpi(),
-    medianTimeToMergeMs: kpi(),
-    activePrCount: kpi(),
-    mergedCount: kpi(),
-    leadTimeForChangeMs: kpi(),
-    locPerDollar: kpi(),
-    totalSpendUsd: kpi(),
-    activeBranchCount: kpi(),
-    buildVsReworkSplit: {
-      buildPct: null,
-      reworkPct: null,
-      state: BranchKpiState.Unavailable,
-    },
-    ...over,
-  };
-}
-
-describe("BranchCostToMerge (D4)", () => {
-  it("renders the cost section with the priced total and a Build phase", () => {
-    render(
-      <BranchCostToMerge
-        detail={detail({
-          estimatedCostUsd: 1.5,
-          mergedAt: "2026-06-11T00:00:00.000Z",
-          sessions: [session({ estimatedCostUsd: 1.5 })],
-        })}
-      />
-    );
-    expect(screen.getByText("Cost to merge")).toBeInTheDocument();
-    expect(screen.getByText("$1.50")).toBeInTheDocument();
-    expect(screen.getByText("Build")).toBeInTheDocument();
-  });
-
-  it('heads "Cost to date" while the branch is unmerged', () => {
-    render(
-      <BranchCostToMerge
-        detail={detail({ estimatedCostUsd: 1.5, mergedAt: null })}
-      />
-    );
-    expect(screen.getByText("Cost to date")).toBeInTheDocument();
-    expect(screen.queryByText("Cost to merge")).not.toBeInTheDocument();
-  });
-
-  it("suppresses the per-phase split with a note when multi-PR", () => {
-    render(
-      <BranchCostToMerge
-        detail={detail({ estimatedCostUsd: 1.5, sessions: [session()] })}
-        suppressSplits
-      />
-    );
-    expect(screen.queryByText("Build")).not.toBeInTheDocument();
-    expect(screen.getByText(MULTI_PR_COST_RE)).toBeInTheDocument();
-  });
-});
-
-describe("BranchLeadTimeWaterfall (D5)", () => {
-  it('shows "in progress" when the branch has not merged', () => {
+describe("BranchLeadTimeWaterfall", () => {
+  it("does not fabricate an outcome track for an open Branch", () => {
     render(
       <BranchLeadTimeWaterfall detail={detail({ sessions: [session()] })} />
     );
-    expect(screen.getByText(IN_PROGRESS_RE)).toBeInTheDocument();
-  });
-
-  it("renders the multi-PR asterisk", () => {
-    render(
-      <BranchLeadTimeWaterfall
-        detail={detail({ sessions: [session()], multiPrWarning: true })}
-      />
-    );
-    expect(screen.getByText("*")).toBeInTheDocument();
-  });
-});
-
-describe("BranchHeadlineCards (D6)", () => {
-  it("renders Value per $ and Lead time cards", () => {
-    render(<BranchHeadlineCards detail={detail({ sessions: [session()] })} />);
-    expect(screen.getByText("Value per $")).toBeInTheDocument();
+    expect(screen.getByText(OUTCOME_UNAVAILABLE_RE)).toBeInTheDocument();
     expect(screen.getByText("Lead time for change")).toBeInTheDocument();
   });
 
-  it("labels baseline unavailable and shows no delta when analytics is absent", () => {
-    render(<BranchHeadlineCards detail={detail({ sessions: [session()] })} />);
-    expect(screen.queryByText("vs. prior 30 days")).not.toBeInTheDocument();
-    expect(screen.getAllByText(BASELINE_UNAVAILABLE_RE).length).toBeGreaterThan(
-      0
-    );
-  });
-
-  it("shows a 30-day delta when the KPI carries a baseline", () => {
+  it("does not render a measured track when a merged Branch lacks merge time", () => {
     render(
-      <BranchHeadlineCards
-        analytics={analytics({
-          locPerDollar: kpi({ baseline30d: 100, deltaPct: 12 }),
-          leadTimeForChangeMs: kpi({ baseline30d: null, deltaPct: null }),
+      <BranchLeadTimeWaterfall
+        detail={detail({
+          mergedAt: null,
+          prState: GitHubPRState.Merged,
+          sessions: [session()],
+          status: BranchStatus.Merged,
         })}
-        detail={detail({ sessions: [session()] })}
       />
     );
-    expect(screen.getByText("vs. prior 30 days")).toBeInTheDocument();
+    expect(screen.getByText(OUTCOME_UNAVAILABLE_RE)).toBeInTheDocument();
+    expect(screen.queryByText("First code pushed")).not.toBeInTheDocument();
   });
 });
 
-describe("BranchMultiPrNotice (D7)", () => {
-  it("renders a non-blocking note listing the linked PRs", () => {
-    render(<BranchMultiPrNotice linkedPrNumbers={[42, 43]} />);
-    const note = screen.getByRole("note");
-    expect(note).toHaveTextContent(TWO_PRS_RE);
-    expect(note).toHaveTextContent(PR_LIST_RE);
-  });
-});
+describe("BranchHeadlineCards", () => {
+  it("renders exactly the three approved metric labels", () => {
+    render(<BranchHeadlineCards detail={detail()} />);
 
-describe("BranchPropertiesPanel (D8)", () => {
-  it("renders collapsed by default showing preview chips, not grid labels", () => {
-    render(<BranchPropertiesPanel detail={detail()} />);
-    // Collapsed → preview chips (branch name); no grid labels yet.
-    expect(screen.getByText("feature/x")).toBeInTheDocument();
-    expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
+    expect(screen.getByText("LOC per $")).toBeInTheDocument();
+    expect(screen.getByText("Lead time for change")).toBeInTheDocument();
+    expect(screen.getByText("Abandonment Duration")).toBeInTheDocument();
+    expect(screen.queryByText("LOC / $")).not.toBeInTheDocument();
   });
 
-  it("shows the status label in the preview", () => {
+  it("renders canonical complete, not-applicable, and no-data states", () => {
     render(
-      <BranchPropertiesPanel detail={detail({ status: BranchStatus.Merged })} />
+      <BranchHeadlineCards
+        detail={detail({
+          canonicalMetrics: metricBundle({
+            abandonmentTimeMs: noData(),
+            leadTimeMs: notApplicable(),
+            locPerDollar: complete(21),
+          }),
+        })}
+      />
     );
-    expect(screen.getByText("Merged")).toBeInTheDocument();
+
+    expect(screen.getByText("21")).toBeInTheDocument();
+    expect(screen.getByText("N/A")).toBeInTheDocument();
+    expect(screen.getByText("No data")).toBeInTheDocument();
   });
 
-  it("expands to the grid showing only the wired fields", async () => {
+  it("marks a partial canonical value and carries its disclosure", () => {
+    render(
+      <BranchHeadlineCards
+        detail={detail({
+          canonicalMetrics: metricBundle({ locPerDollar: partial(18.5) }),
+        })}
+      />
+    );
+
+    expect(screen.getByText("19*")).toBeInTheDocument();
+    expect(
+      screen.getByText((content) =>
+        content.includes(BranchMetricDisclosure.DefaultIncomplete)
+      )
+    ).toBeInTheDocument();
+  });
+
+  it("humanizes only the multi-day headline lead time", () => {
+    render(
+      <BranchHeadlineCards
+        detail={detail({
+          canonicalMetrics: metricBundle({
+            abandonmentTimeMs: complete(333_601_000),
+            leadTimeMs: partial(333_601_000),
+          }),
+        })}
+      />
+    );
+
+    expect(screen.getByText("3d 20h*")).toBeInTheDocument();
+    expect(screen.getByText("5560m 1s")).toBeInTheDocument();
+  });
+});
+
+describe("BranchMultiPrNotice", () => {
+  it("lists every linked pull request without blocking the page", () => {
+    render(<BranchMultiPrNotice linkedPrNumbers={[42, 43]} />);
+    expect(screen.getByRole("note")).toHaveTextContent("#42, #43");
+  });
+});
+
+describe("BranchPropertiesPanel", () => {
+  it("keeps Reviewer and selected-PR title out of Properties", async () => {
     const user = userEvent.setup();
-    render(<BranchPropertiesPanel detail={detail()} />);
+    render(
+      <BranchPropertiesPanel
+        detail={detail({ prNumber: 42, prTitle: SELECTED_PR_TITLE })}
+      />
+    );
+
     await user.click(getBranchPropertiesToggle());
-    // Wired fields render; Reviewer keeps its explicit empty state.
+    expect(screen.queryByText("Reviewer")).not.toBeInTheDocument();
+    expect(screen.queryByText(SELECTED_PR_TITLE)).not.toBeInTheDocument();
     expect(screen.getByText("Repository")).toBeInTheDocument();
-    expect(screen.getByText("Reviewer")).toBeInTheDocument();
-    expect(screen.getByText("Unassigned")).toBeInTheDocument();
-    // The unwired placeholder fields are hidden, not fabricated.
-    for (const removed of [
-      "Owner",
-      "Base",
-      "Checks",
-      "Behind / ahead",
-      "Approvals",
-      "Story points",
-      "Issues",
-    ]) {
-      expect(screen.queryByText(removed)).not.toBeInTheDocument();
-    }
+    expect(screen.getByText("Branch")).toBeInTheDocument();
   });
 
-  it("exposes the expanded state to assistive tech via aria-expanded", async () => {
+  it("exposes collapsed and expanded state to assistive technology", async () => {
     const user = userEvent.setup();
     render(<BranchPropertiesPanel detail={detail()} />);
-    const toggle = screen.getByRole("button", { name: PROPERTIES_RE });
+    const toggle = getBranchPropertiesToggle();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("keeps long branch and pull request values inside shrinkable text nodes", async () => {
+  it("uses one focusable disclosure for the collapsed header and preview", () => {
+    const { container } = render(<BranchPropertiesPanel detail={detail()} />);
+
+    const section = container.querySelector(".prd-props-section");
+    expect(section).not.toBeNull();
+    expect(
+      section?.querySelectorAll("button, a, input, select, textarea")
+    ).toHaveLength(1);
+    expect(getBranchPropertiesToggle()).toHaveTextContent("Properties");
+    expect(getBranchPropertiesToggle()).toHaveTextContent(detail().branchName);
+  });
+
+  it("keeps long Branch and repository values inside shrinkable nodes", async () => {
     const user = userEvent.setup();
     render(
       <BranchPropertiesPanel
         detail={detail({
           branchName: LONG_BRANCH_NAME,
-          prNumber: 1234,
-          prTitle: LONG_PR_TITLE,
           repoFullName: LONG_REPOSITORY_NAME,
         })}
       />
     );
 
-    const previewBranch = screen.getByText(LONG_BRANCH_NAME);
-    expect(previewBranch).toHaveClass("truncate");
-    expect(previewBranch.closest(".sd3-pp")).toHaveAttribute(
-      "title",
-      LONG_BRANCH_NAME
-    );
-
+    expect(screen.getByText(LONG_BRANCH_NAME)).toHaveClass("truncate");
     await user.click(getBranchPropertiesToggle());
-
     expect(screen.getByText(LONG_BRANCH_NAME)).toHaveAttribute(
       "title",
       LONG_BRANCH_NAME
@@ -231,21 +180,60 @@ describe("BranchPropertiesPanel (D8)", () => {
       "title",
       LONG_REPOSITORY_NAME
     );
-    const prTitle = screen.getByText(LONG_PR_TITLE);
-    expect(prTitle).toHaveClass("truncate");
-    expect(prTitle.closest(".sd3-pp")).toHaveAttribute(
-      "title",
-      `#1234 ${LONG_PR_TITLE}`
-    );
   });
 });
 
-function getBranchPropertiesToggle() {
-  const propertiesToggle = screen
-    .getAllByRole("button", { name: PROPERTIES_RE })
-    .find((element) => element.classList.contains("prd-props-header"));
-  if (!propertiesToggle) {
+function getBranchPropertiesToggle(): HTMLElement {
+  const toggle = screen.getByRole("button", { name: PROPERTIES_RE });
+  if (!toggle) {
     throw new Error("Branch properties header toggle was not rendered");
   }
-  return propertiesToggle;
+  return toggle;
+}
+
+function metricBundle(
+  overrides: Partial<{
+    abandonmentTimeMs: BranchMetricResult<number>;
+    leadTimeMs: BranchMetricResult<number>;
+    locPerDollar: BranchMetricResult<number>;
+  }> = {}
+) {
+  const unavailable = unavailableMetric();
+  return {
+    abandonmentTimeMs: unavailable,
+    idleTimeMs: unavailable,
+    leadTimeMs: unavailable,
+    locPerDollar: unavailable,
+    phaseCostUsd: {
+      [BranchVisibleLifecyclePhase.Build]: unavailable,
+      [BranchVisibleLifecyclePhase.Review]: unavailable,
+      [BranchVisibleLifecyclePhase.Rework]: unavailable,
+    },
+    totalCostUsd: unavailable,
+    ...overrides,
+  };
+}
+
+function complete(value: number): BranchMetricResult<number> {
+  return { state: BranchMetricAvailability.Complete, value };
+}
+
+function partial(value: number): BranchMetricResult<number> {
+  return {
+    state: BranchMetricAvailability.Partial,
+    value,
+    disclosure: BranchMetricDisclosure.DefaultIncomplete,
+  };
+}
+
+function notApplicable(): BranchMetricResult<number> {
+  return { state: BranchMetricAvailability.NotApplicable, value: null };
+}
+
+function noData(): BranchMetricResult<number> {
+  return { state: BranchMetricAvailability.NoData, value: null };
+}
+
+function unavailableMetric(): BranchMetricResult<number> {
+  return { state: BranchMetricAvailability.Unavailable, value: null };
 }

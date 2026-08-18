@@ -11,6 +11,7 @@
  * - @repo/observability/log (logging)
  */
 
+import type * as GitHubModule from "@repo/github";
 import {
   afterEach,
   beforeEach,
@@ -20,6 +21,11 @@ import {
   type Mock,
   vi,
 } from "vitest";
+
+const { mockGetInstallationOctokit, mockOctokit } = vi.hoisted(() => ({
+  mockGetInstallationOctokit: vi.fn(),
+  mockOctokit: { marker: "installation-octokit" },
+}));
 
 // Mock modules before importing
 vi.mock("@repo/database", () => {
@@ -47,13 +53,25 @@ vi.mock("@repo/database", () => {
   };
 });
 
-vi.mock("@repo/github", () => ({
-  GitHubProviderResultStatus: {
-    Success: "success",
-    ProviderRateLimit: "provider_rate_limit",
-    ProviderUnavailable: "provider_unavailable",
-  },
-  queryStatusCheckRollupWithProviderResult: vi.fn(),
+vi.mock("@repo/github", async (importOriginal) => {
+  const actual = await importOriginal<typeof GitHubModule>();
+  return {
+    GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
+    queryStatusCheckRollupWithProviderResult: vi.fn(),
+    // Real classifier (a plain function, immune to restoreAllMocks) so the
+    // mint-failure tests pin the production rate-limit-vs-unavailable
+    // classification instead of a mock's reimplementation.
+  };
+});
+
+vi.mock("@repo/github/installation-auth", () => ({
+  // Spy wrapper (not a bare vi.fn implementation) so this suite's
+  // restoreAllMocks pass can never strip the marker client the handler
+  // threads into the rollup query. Mint-failure tests inject a one-shot
+  // rejection through the spy; any non-undefined spy result wins over the
+  // resolved marker client fallback.
+  getInstallationOctokit: (installationId: string) =>
+    mockGetInstallationOctokit(installationId) ?? Promise.resolve(mockOctokit),
 }));
 
 vi.mock("@repo/observability/log", () => ({
@@ -64,162 +82,46 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { mapRollupStateToChecksStatus } from "@repo/api/src/github-checks-status";
-import {
-  BranchViewCheckKind,
-  BranchViewChecksProviderState,
-} from "@repo/api/src/types/branch-view";
-import { StatusCheckRollupFailureReason } from "@repo/api/src/types/github";
-import { GitHubInstallationStatus } from "@repo/database";
+vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
+  GitHubBranchActivityEventName: { CheckRun: "check_run" },
+  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
+    status: "persisted",
+    persistenceStatus: "inserted",
+  }),
+}));
+
+import { BranchViewCheckKind } from "@repo/api/src/types/branch-view";
 // Import after mocking
-import {
-  GitHubProviderResultStatus,
-  queryStatusCheckRollupWithProviderResult,
-} from "@repo/github";
+import { queryStatusCheckRollupWithProviderResult } from "@repo/github";
+import { log } from "@repo/observability/log";
 import { getMockWithDb } from "@/__tests__/utils/db-helpers";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handleCheckRun } from "@/app/webhooks/github/handlers/check-run-handler";
-import { CheckRunRetryState } from "@/lib/branch-status-check-retry";
-import { makePrDetailRow } from "../utils/pr-detail-helpers";
-import { statusRollup } from "../utils/status-check-helpers";
+import {
+  createCheckRunDbDoubles,
+  createCheckRunEvent,
+  makeBranchDetailRow,
+} from "../utils/check-run-helpers";
+import { providerSuccess, statusRollup } from "../utils/status-check-helpers";
 
 // Type aliases for mocked functions
 const mockWithDb = getMockWithDb();
 const mockQueryStatusCheckRollupWithProviderResult =
   queryStatusCheckRollupWithProviderResult as unknown as Mock;
+const mockPersistGitHubBranchActivity =
+  persistGitHubBranchActivity as unknown as Mock;
 
 // Mock database clients
 let mockDb: any;
 let mockTx: any;
 
-function makeBranchDetailRow(
-  partial: Parameters<typeof makePrDetailRow>[0] & {
-    branchName?: string;
-    currentPullRequestDetailId?: string | null;
-  }
-) {
-  const pr = makePrDetailRow(partial);
-  return {
-    artifactId: partial.artifactId,
-    branchName: partial.branchName ?? "feature/test-branch",
-    checksStatus: partial.checksStatus ?? "UNKNOWN",
-    headSha: partial.headSha ?? null,
-    currentPullRequestDetailId:
-      partial.currentPullRequestDetailId ?? "pr-detail-1",
-    currentPullRequestDetail: {
-      number: partial.number ?? 0,
-      title: partial.title ?? "",
-      htmlUrl: partial.externalUrl ?? "",
-    },
-    artifact: {
-      ...pr.artifact,
-      organizationId: partial.organizationId ?? "org-1",
-    },
-  };
-}
-
-/**
- * Helper to create a minimal check_run event for testing
- */
-function createCheckRunEvent(partial?: {
-  action?: string;
-  headSha?: string;
-  headBranch?: string;
-  repositoryId?: number;
-  repositoryFullName?: string;
-  installationId?: number | null;
-  checkRunId?: number;
-  checkRunName?: string;
-  conclusion?: string;
-}) {
-  const hasInstallation = partial?.installationId !== null;
-  return {
-    action: partial?.action ?? "completed",
-    check_run: {
-      id: partial?.checkRunId ?? 1,
-      name: partial?.checkRunName ?? "ci / test",
-      head_sha: partial?.headSha ?? "abc123def456abc123def456abc123def456abc1",
-      conclusion: partial?.conclusion ?? "success",
-      check_suite: {
-        head_branch: partial?.headBranch ?? "feature/test-branch",
-      },
-    },
-    repository: {
-      id: partial?.repositoryId ?? 12_345,
-      full_name: partial?.repositoryFullName ?? "org/repo",
-    },
-    ...(hasInstallation !== false && {
-      installation: {
-        id: partial?.installationId ?? 99,
-      },
-    }),
-  } as any;
-}
-
-describe("mapRollupStateToChecksStatus", () => {
-  it("maps SUCCESS to PASSING", () => {
-    expect(mapRollupStateToChecksStatus("SUCCESS")).toBe("PASSING");
-  });
-
-  it("maps FAILURE to FAILING", () => {
-    expect(mapRollupStateToChecksStatus("FAILURE")).toBe("FAILING");
-  });
-
-  it("maps ERROR to FAILING", () => {
-    expect(mapRollupStateToChecksStatus("ERROR")).toBe("FAILING");
-  });
-
-  it("maps PENDING to PENDING", () => {
-    expect(mapRollupStateToChecksStatus("PENDING")).toBe("PENDING");
-  });
-
-  it("maps EXPECTED to PENDING", () => {
-    expect(mapRollupStateToChecksStatus("EXPECTED")).toBe("PENDING");
-  });
-});
-
 describe("handleCheckRun", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockDb = {
-      gitHubInstallationRepository: {
-        findFirst: vi.fn(),
-      },
-      branchDetail: {
-        findFirst: vi.fn(),
-      },
-    };
-
-    mockTx = {
-      $executeRaw: vi.fn(),
-      branchDetail: {
-        findFirst: vi.fn(),
-        findUnique: vi.fn(),
-        update: vi.fn(),
-        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-      },
-      branchStatusCheck: {
-        deleteMany: vi.fn(),
-        upsert: vi.fn(),
-      },
-      pullRequestDetail: {
-        update: vi.fn(),
-      },
-      workstreamEvent: {
-        create: vi.fn(),
-      },
-    };
-
-    mockTx.branchDetail.findFirst.mockImplementation(async (args: any) => {
-      const row = await mockTx.branchDetail.findUnique();
-      if (!row || row.deletedAt || row.headSha !== args.where.headSha) {
-        return null;
-      }
-      return {
-        artifactId: args.where.artifactId,
-        checksStatus: row.checksStatus,
-      };
-    });
+    ({ mockDb, mockTx } = createCheckRunDbDoubles());
     mockWithDb.mockImplementation((fn: any) => fn(mockDb));
     mockWithDb.tx.mockImplementation((fn: any) => fn(mockTx));
   });
@@ -229,262 +131,13 @@ describe("handleCheckRun", () => {
     vi.restoreAllMocks();
   });
 
-  describe("action guard", () => {
-    it("returns early without calling withDb when action is 'created'", async () => {
-      const event = createCheckRunEvent({ action: "created" });
-
-      const response = await handleCheckRun(event);
-
-      expect(mockWithDb).not.toHaveBeenCalled();
-      expect(
-        mockQueryStatusCheckRollupWithProviderResult
-      ).not.toHaveBeenCalled();
-
-      const data = await response.json();
-      expect(data.ok).toBe(true);
-    });
-
-    it("returns early without calling withDb when action is 'rerequested'", async () => {
-      const event = createCheckRunEvent({ action: "rerequested" });
-
-      const response = await handleCheckRun(event);
-
-      expect(mockWithDb).not.toHaveBeenCalled();
-      expect(
-        mockQueryStatusCheckRollupWithProviderResult
-      ).not.toHaveBeenCalled();
-
-      const data = await response.json();
-      expect(data.ok).toBe(true);
-    });
-  });
-
-  describe("installation guard", () => {
-    it("returns 400 when installation field is missing", async () => {
-      const event = createCheckRunEvent({ installationId: null });
-      // Remove installation property entirely (use undefined to satisfy Biome noDelete rule)
-      event.installation = undefined;
-
-      const response = await handleCheckRun(event);
-
-      expect(response.status).toBe(400);
-
-      const data = await response.json();
-      expect(data.ok).toBe(false);
-      expect(data.message).toBe("Missing installation");
-
-      expect(mockWithDb).not.toHaveBeenCalled();
-      expect(
-        mockQueryStatusCheckRollupWithProviderResult
-      ).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("repository lookup", () => {
-    it("returns ok:true without calling rollup when repository is not found", async () => {
-      const event = createCheckRunEvent({ repositoryId: 99_999 });
-
-      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue(null);
-
-      const response = await handleCheckRun(event);
-
-      expect(
-        mockDb.gitHubInstallationRepository.findFirst
-      ).toHaveBeenCalledWith({
-        where: {
-          githubRepoId: String(event.repository.id),
-          fullName: event.repository.full_name,
-          removedAt: null,
-          installation: {
-            installationId: String(event.installation.id),
-            status: GitHubInstallationStatus.ACTIVE,
-          },
-        },
-        select: {
-          id: true,
-          installation: { select: { organizationId: true } },
-          name: true,
-          owner: true,
-        },
-      });
-      expect(
-        mockQueryStatusCheckRollupWithProviderResult
-      ).not.toHaveBeenCalled();
-      expect(mockWithDb.tx).not.toHaveBeenCalled();
-
-      const data = await response.json();
-      expect(data.ok).toBe(true);
-    });
-  });
-
-  describe("PR lookup", () => {
-    it("returns ok:true without calling rollup when no open PR matches headSha", async () => {
-      const headSha = "abc123def456abc123def456abc123def456abc1";
-      const event = createCheckRunEvent({ headSha });
-
-      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
-        id: "repo-uuid-123",
-        owner: "org",
-        name: "repo",
-      });
-      mockDb.branchDetail.findFirst.mockResolvedValue(null);
-
-      const response = await handleCheckRun(event);
-
-      expect(mockDb.branchDetail.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            repositoryId: "repo-uuid-123",
-          }),
-        })
-      );
-      expect(
-        mockQueryStatusCheckRollupWithProviderResult
-      ).not.toHaveBeenCalled();
-      expect(mockWithDb.tx).not.toHaveBeenCalled();
-
-      const data = await response.json();
-      expect(data.ok).toBe(true);
-    });
-  });
-
-  describe("GraphQL rollup", () => {
-    it("skips DB writes when queryStatusCheckRollupWithProviderResult returns null", async () => {
-      const headSha = "abc123def456abc123def456abc123def456abc1";
-      const installationId = 99;
-      const event = createCheckRunEvent({ headSha, installationId });
-
-      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
-        id: "repo-uuid-123",
-        owner: "org",
-        name: "repo",
-      });
-      mockDb.branchDetail.findFirst.mockResolvedValue(
-        makeBranchDetailRow({
-          artifactId: "artifact-pr-123",
-          number: 42,
-          title: "Test PR",
-          externalUrl: "https://github.com/org/repo/pull/42",
-          headSha,
-          workstreamId: "ws-uuid-123",
-          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
-        })
-      );
-
-      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
-        providerSuccess({
-          ok: false,
-          reason: StatusCheckRollupFailureReason.GraphqlError,
-        })
-      );
-      mockTx.branchDetail.findUnique.mockResolvedValue({
-        headSha,
-        checksStatus: "UNKNOWN",
-        deletedAt: null,
-      });
-      mockTx.branchDetail.updateMany.mockImplementation((args: any) => {
-        if (
-          args?.data?.checkRunRetryState === CheckRunRetryState.Pending &&
-          args?.where?.checkRunRetryResourceId !== undefined
-        ) {
-          return Promise.resolve({ count: 0 });
-        }
-        return Promise.resolve({ count: 1 });
-      });
-
-      const response = await handleCheckRun(event);
-
-      expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
-        String(installationId),
-        "org",
-        "repo",
-        headSha
-      );
-      expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
-      expect(mockTx.branchDetail.updateMany).toHaveBeenCalledWith({
-        data: expect.objectContaining({
-          checksDetailProviderState:
-            BranchViewChecksProviderState.ProviderUnavailable,
-          checksDetailUnavailableReason:
-            StatusCheckRollupFailureReason.GraphqlError,
-        }),
-        where: {
-          artifact: { organizationId: "org-1" },
-          artifactId: "artifact-pr-123",
-          deletedAt: null,
-          headSha,
-        },
-      });
-
-      const data = await response.json();
-      expect(data.ok).toBe(true);
-    });
-
-    it("schedules rate-limited check_run retries with provider retry metadata", async () => {
-      const headSha = "abc123def456abc123def456abc123def456abc1";
-      const event = createCheckRunEvent({
-        checkRunId: 24_681,
-        headSha,
-        installationId: 99,
-      });
-      const now = new Date("2026-07-03T01:00:00Z");
-      vi.useFakeTimers();
-      vi.setSystemTime(now);
-
-      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
-        id: "repo-uuid-123",
-        owner: "org",
-        name: "repo",
-      });
-      mockDb.branchDetail.findFirst.mockResolvedValue(
-        makeBranchDetailRow({
-          artifactId: "artifact-pr-123",
-          number: 42,
-          title: "Test PR",
-          externalUrl: "https://github.com/org/repo/pull/42",
-          headSha,
-          workstreamId: "ws-uuid-123",
-          linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
-        })
-      );
-      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue({
-        status: GitHubProviderResultStatus.ProviderRateLimit,
-        retryAfterSeconds: 37,
-      });
-      mockTx.branchDetail.findUnique.mockResolvedValue({
-        headSha,
-        checksStatus: "UNKNOWN",
-        deletedAt: null,
-      });
-
-      const response = await handleCheckRun(event);
-
-      expect(mockTx.branchDetail.updateMany).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            checkRunRetryNextAt: new Date("2026-07-03T01:00:37Z"),
-            checkRunRetryReason: StatusCheckRollupFailureReason.RateLimited,
-            checkRunRetryState: CheckRunRetryState.Pending,
-          }),
-          where: expect.objectContaining({
-            artifact: { organizationId: "org-1" },
-            artifactId: "artifact-pr-123",
-            deletedAt: null,
-            headSha,
-            repositoryId: "repo-uuid-123",
-          }),
-        })
-      );
-      expect(response.status).toBe(200);
-    });
-  });
-
   describe("successful check_run.completed for matching open PR", () => {
     it("calls rollup and updates checksStatus when status changes", async () => {
       const headSha = "abc123def456abc123def456abc123def456abc1";
       const installationId = 99;
       const repositoryId = 12_345;
       const event = createCheckRunEvent({
+        headBranch: "",
         headSha,
         installationId,
         repositoryId,
@@ -495,7 +148,7 @@ describe("handleCheckRun", () => {
         owner: "org",
         name: "repo",
       });
-      mockDb.branchDetail.findFirst.mockResolvedValue(
+      mockDb.branchDetail.findMany.mockResolvedValue([
         makeBranchDetailRow({
           artifactId: "artifact-pr-123",
           number: 42,
@@ -504,8 +157,8 @@ describe("handleCheckRun", () => {
           headSha,
           workstreamId: "ws-uuid-123",
           linkedDoc: { id: "artifact-doc-123", slug: "test-slug" },
-        })
-      );
+        }),
+      ]);
 
       mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
         providerSuccess(statusRollup("SUCCESS"))
@@ -520,11 +173,18 @@ describe("handleCheckRun", () => {
       });
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
-      const response = await handleCheckRun(event);
+      const response = await handleCheckRun(event, {
+        deliveryId: "check-run-delivery-1",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
 
-      // Verify GraphQL call
+      // Verify GraphQL call goes out with the client minted for this event's
+      // installation
+      expect(mockGetInstallationOctokit).toHaveBeenCalledWith(
+        String(installationId)
+      );
       expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
-        String(installationId),
+        mockOctokit,
         "org",
         "repo",
         headSha
@@ -556,9 +216,110 @@ describe("handleCheckRun", () => {
         data: expect.objectContaining({ checksStatus: "PASSING" }),
       });
       expect(mockTx.pullRequestDetail.update).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+        eventName: GitHubBranchActivityEventName.CheckRun,
+        deliveryId: "check-run-delivery-1",
+        payload: event,
+        attribution: {
+          organizationId: "org-1",
+          branchArtifactId: "artifact-pr-123",
+        },
+      });
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+      expect(log.info).toHaveBeenCalledWith(
+        "[handleCheckRun] Completed check_run webhook handling",
+        expect.objectContaining({
+          checksStatusChanged: true,
+          outcome: "processed_checks_changed",
+          provider: "github",
+        })
+      );
+    });
+
+    it("no-writes activity when a head-SHA fallback is ambiguous", async () => {
+      const headSha = "abc123def456abc123def456abc123def456abc1";
+      const event = createCheckRunEvent({ headBranch: "", headSha });
+      const firstBranch = makeBranchDetailRow({
+        artifactId: "artifact-first-same-sha",
+        headSha,
+        number: 42,
+        title: "First branch",
+      });
+      const secondBranch = makeBranchDetailRow({
+        artifactId: "artifact-second-same-sha",
+        headSha,
+        number: 43,
+        title: "Second branch",
+      });
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-123",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findMany.mockResolvedValue([
+        firstBranch,
+        secondBranch,
+      ]);
+      mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue(
+        providerSuccess(statusRollup("SUCCESS"))
+      );
+      mockTx.branchDetail.findUnique.mockResolvedValue({
+        headSha,
+        checksStatus: "UNKNOWN",
+        deletedAt: null,
+        currentPullRequestDetailId: "pr-detail-1",
+      });
+
+      await handleCheckRun(event, {
+        deliveryId: "check-run-ambiguous-delivery",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
+
+      expect(mockDb.branchDetail.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 2 })
+      );
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
+    });
+
+    it("fails closed when a repository rename leaves duplicate branch-name matches", async () => {
+      const event = createCheckRunEvent({
+        headBranch: "feature/renamed-repository",
+      });
+      const firstBranch = makeBranchDetailRow({
+        artifactId: "artifact-old-repository-name",
+        branchName: "feature/renamed-repository",
+      });
+      const secondBranch = makeBranchDetailRow({
+        artifactId: "artifact-new-repository-name",
+        branchName: "feature/renamed-repository",
+      });
+
+      mockDb.gitHubInstallationRepository.findFirst.mockResolvedValue({
+        id: "repo-uuid-renamed",
+        owner: "org",
+        name: "repo",
+      });
+      mockDb.branchDetail.findMany.mockResolvedValue([
+        firstBranch,
+        secondBranch,
+      ]);
+
+      const response = await handleCheckRun(event, {
+        deliveryId: "check-run-duplicate-branch-name",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
+
+      expect(mockDb.branchDetail.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 2 })
+      );
+      expect(
+        mockQueryStatusCheckRollupWithProviderResult
+      ).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
+      expect(await response.json()).toMatchObject({ ok: true });
     });
 
     it("persists status check rows with one batch upsert statement", async () => {
@@ -623,6 +384,14 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+      expect(log.info).toHaveBeenCalledWith(
+        "[handleCheckRun] Completed check_run webhook handling",
+        expect.objectContaining({
+          checksStatusChanged: false,
+          outcome: "processed",
+          provider: "github",
+        })
+      );
     });
 
     it("prefers the check suite head branch over another branch with the same head SHA", async () => {
@@ -750,6 +519,14 @@ describe("handleCheckRun", () => {
 
       const data = await response.json();
       expect(data.ok).toBe(true);
+      expect(log.info).toHaveBeenCalledWith(
+        "[handleCheckRun] Completed check_run webhook handling",
+        expect.objectContaining({
+          checksStatusChanged: false,
+          outcome: "processed",
+          provider: "github",
+        })
+      );
     });
   });
 
@@ -794,6 +571,15 @@ describe("handleCheckRun", () => {
       expect(mockWithDb.tx).toHaveBeenCalledTimes(1);
       expect(mockTx.branchDetail.updateMany).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+        eventName: GitHubBranchActivityEventName.CheckRun,
+        deliveryId: undefined,
+        payload: event,
+        attribution: {
+          organizationId: "org-1",
+          branchArtifactId: "artifact-pr-toctou",
+        },
+      });
 
       const data = await response.json();
       expect(data.ok).toBe(true);
@@ -1032,10 +818,3 @@ describe("handleCheckRun", () => {
     });
   });
 });
-
-function providerSuccess<T>(value: T) {
-  return {
-    status: GitHubProviderResultStatus.Success,
-    value,
-  };
-}

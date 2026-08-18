@@ -1,3 +1,5 @@
+import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
+import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
@@ -5,9 +7,11 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ExternalLinkIcon, FilterXIcon } from "lucide-react";
 import { AgentSessionsListContent } from "./agent-sessions-list";
 import {
+  createAgentSessionListItemFixture,
   mixedAgentSessionListFixtures,
   populatedAgentSessionListFixtures,
 } from "./session-list-fixtures";
+import { SessionsRecoveryAction } from "./sessions-recovery-action";
 import { SyncedSessionsTable } from "./synced-sessions-table";
 
 const meta = {
@@ -31,6 +35,56 @@ export const Populated: Story = {};
 export const EmptyList: Story = {
   render: () => (
     <AgentSessionsListContent
+      getSessionHref={(item) => `/sessions/${item.id}`}
+      isLoading={false}
+      items={[]}
+    />
+  ),
+};
+
+// PRD-536 §5: a connected org with zero matching rows keeps the neutral
+// "filters" message.
+export const EmptyWithConnectedAgent: Story = {
+  render: () => (
+    <AgentSessionsListContent
+      getSessionHref={(item) => `/sessions/${item.id}`}
+      hasConnectedAgent
+      isLoading={false}
+      items={[]}
+    />
+  ),
+};
+
+// PRD-536 §5: an org that has never connected an agent gets the onboarding CTA,
+// including the host-supplied action button that routes to compute-target setup.
+export const EmptyOnboarding: Story = {
+  render: () => (
+    <AgentSessionsListContent
+      getSessionHref={(item) => `/sessions/${item.id}`}
+      hasConnectedAgent={false}
+      isLoading={false}
+      items={[]}
+      onboardingAction={<Button size="sm">Connect a compute target</Button>}
+    />
+  ),
+};
+
+// ISS-4534: the errored/unavailable Sessions-list state, whose single primary
+// affordance is the host-supplied `SessionsRecoveryAction` recovery Link. This
+// is the only state where that button is the sole way out, so it gets a canvas
+// here — matching how `EmptyOnboarding` above canvases `onboardingAction`.
+export const Errored: Story = {
+  render: () => (
+    <AgentSessionsListContent
+      emptySignals={{ isUnavailable: true, hasActiveFilters: true }}
+      errorRecoveryAction={
+        <SessionsRecoveryAction
+          href="/sessions"
+          onClearFilters={() => {
+            // presentational-only: the real host resets filter state here.
+          }}
+        />
+      }
       getSessionHref={(item) => `/sessions/${item.id}`}
       isLoading={false}
       items={[]}
@@ -92,4 +146,49 @@ export const AttentionStates: Story = {
       </Badge>
     ),
   },
+};
+
+// ISS-4774 / ISS-5036: the consolidated "Syncing" Status pill. A still-uploading
+// row renders ONE pill reading "Syncing" in the Status column — replacing the
+// "Active" pill, not joining it — while the inline name-cell sync pills are
+// dropped and liveness rides a green dot beside the session name. The second row
+// is the contrast: a synced Active row keeps its ordinary "Active" pill and no
+// dot, because that pill already carries liveness.
+//
+// The fold keys on `transcriptDisposition === "syncing"`, NOT on
+// `cloudSyncState` (ISS-4846: `reconcileCloudSyncState` maps both `syncing` and
+// `failedTransient` onto `pending`, so a `pending`-only fixture would either not
+// fold or, worse, imply a retrying row is a healthy one). The fixture carries the
+// verdict for that reason.
+//
+// ISS-5697: this used to carry a bare `AppCoreStoryProviders` wrapper, annotated
+// as being what "resolves the flag on". It never did — the wrapper passed no
+// `enabledFlags`, so it was identical to the harness default — and there is no
+// flag left to resolve either way: `isSyncStateFoldActive` reads only the
+// visible-column set, ISS-5366 having retired the gate to its enabled state.
+// The wrapper is gone (the preview mounts the harness globally, ISS-5665) and
+// the fold presentation below is unchanged.
+const syncStateStoryItems = [
+  createAgentSessionListItemFixture({
+    id: "uploading-session",
+    name: "Uploading session",
+    status: "active",
+    cloudSyncState: AgentSessionCloudSyncState.Pending,
+    transcriptDisposition: TranscriptDisposition.Syncing,
+  }),
+  createAgentSessionListItemFixture({
+    id: "synced-session",
+    name: "Synced session",
+    status: "active",
+    cloudSyncState: AgentSessionCloudSyncState.Synced,
+  }),
+];
+
+export const SyncingStatusPill: Story = {
+  render: () => (
+    <SyncedSessionsTable
+      getSessionHref={(item) => `/sessions/${item.id}`}
+      items={syncStateStoryItems}
+    />
+  ),
 };

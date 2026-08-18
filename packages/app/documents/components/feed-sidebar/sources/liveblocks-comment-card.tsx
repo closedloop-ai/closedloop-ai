@@ -12,6 +12,15 @@ import { activateOnEnterOrSpace } from "@repo/design-system/lib/keyboard-activat
 import { LinkIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCommentPermalink } from "../comment-permalink-context";
+import { LiveblocksDsComment } from "./liveblocks-ds-comment";
+
+/**
+ * Renders every comment in the live thread with the shared DS chrome
+ * (`LiveblocksDsComment`) so the editor-rail card matches the DB-projected
+ * artifact card. Module-level so the `<Thread>` `components` object identity is
+ * stable across renders and does not re-mount the thread on each parent render.
+ */
+const DS_THREAD_COMPONENTS = { Comment: LiveblocksDsComment } as const;
 
 export type LiveblocksCommentCardProps = {
   thread: ThreadData;
@@ -172,6 +181,7 @@ export function LiveblocksCommentCard({
         )}
         <Thread
           commentDropdownItems={commentDropdownItems}
+          components={DS_THREAD_COMPONENTS}
           showComposer={composerOpen}
           thread={thread}
         />

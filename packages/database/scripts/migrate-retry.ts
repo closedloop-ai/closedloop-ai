@@ -197,6 +197,11 @@ export async function withRetry<T>(
     jitter?: boolean;
     random?: () => number;
     operation?: string;
+    // Telemetry (ISS-4392): reports the current attempt number as each attempt
+    // begins, so the caller ends holding the total attempts consumed (1 on a
+    // first-try success; up to `attempts` when a P1002 exhausts the budget).
+    // Best-effort — never affects retry behavior.
+    onAttempts?: (attempt: number) => void;
   }
 ): Promise<T> {
   const sleep = opts.sleep ?? defaultSleep;
@@ -207,6 +212,9 @@ export async function withRetry<T>(
   let lastErr: unknown;
 
   for (let attempt = 1; attempt <= opts.attempts; attempt++) {
+    // Telemetry (ISS-4392) — isolated so a throwing callback can never abort the
+    // retry attempt that must run next.
+    reportAttempt(opts.onAttempts, attempt);
     try {
       const result = await fn();
       if (attempt > 1) {
@@ -352,3 +360,45 @@ export const MIGRATE_DEPLOY_RETRY = {
   jitter: true,
   operation: "Migrate deploy",
 } as const;
+
+/**
+ * Invoke the ISS-4392 attempt-telemetry callback WITHOUT ever affecting retry
+ * behavior — a throwing callback here would otherwise skip the attempt that must
+ * run next. Kept out of `withRetry`'s loop to hold its cognitive complexity down.
+ */
+function reportAttempt(
+  onAttempts: ((attempt: number) => void) | undefined,
+  attempt: number
+): void {
+  if (!onAttempts) {
+    return;
+  }
+  try {
+    onAttempts(attempt);
+  } catch {
+    // Best-effort; telemetry must never change retry behavior.
+  }
+}
+
+/**
+ * The child's OWN captured output, without the Error's message folded in.
+ *
+ * `subprocessErrorOutput` above deliberately joins the message too, because its
+ * callers scan for a code (P1001, P3009) that may sit in any of the three. This
+ * is for the other question — "did the CLI actually say anything?" — which
+ * ISS-6558 needs a distinct answer to: an error carrying no captured output
+ * must yield "", so a caller reporting the message separately does not print it
+ * twice. `stderr` leads, being where Prisma writes the error code and the
+ * failing migration name.
+ */
+export function subprocessCapturedOutput(err: unknown): string {
+  if (!(err instanceof Error)) {
+    return "";
+  }
+  return [
+    readSubprocessField(err, "stderr"),
+    readSubprocessField(err, "stdout"),
+  ]
+    .filter((stream) => stream.length > 0)
+    .join("\n");
+}

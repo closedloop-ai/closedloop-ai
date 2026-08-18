@@ -6,7 +6,7 @@ import {
   handleUncaughtException,
   handleUnhandledRejection,
   showStartupCrashDialog,
-} from "../src/main/error-handlers.js";
+} from "../src/main/lifecycle/error-handlers.js";
 
 function createRecorder(
   calls: Record<string, unknown[][]>,
@@ -39,14 +39,14 @@ function createStubDeps(): {
   };
 }
 
-test("spawn ENOENT (code=ENOENT, syscall=spawn) -- log called, exit NOT called", () => {
+test("spawn ENOENT (code=ENOENT, syscall=spawn) -- log called, exit NOT called", async () => {
   const deps = createStubDeps();
   const error = Object.assign(new Error("spawn enoent"), {
     code: "ENOENT",
     syscall: "spawn",
   });
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(deps.calls.log?.length > 0, "log should be called");
   assert.match(
@@ -58,14 +58,14 @@ test("spawn ENOENT (code=ENOENT, syscall=spawn) -- log called, exit NOT called",
   assert.ok(!deps.calls.emitException, "telemetry should NOT be called");
 });
 
-test("spawn ENOENT with syscall='spawn claude' (prefix match) -- suppressed, no exit", () => {
+test("spawn ENOENT with syscall='spawn claude' (prefix match) -- suppressed, no exit", async () => {
   const deps = createStubDeps();
   const error = Object.assign(new Error("spawn claude ENOENT"), {
     code: "ENOENT",
     syscall: "spawn claude",
   });
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(deps.calls.log?.length > 0, "log should be called");
   assert.match(deps.calls.log[0][0] as string, /suppressed spawn ENOENT/);
@@ -73,11 +73,11 @@ test("spawn ENOENT with syscall='spawn claude' (prefix match) -- suppressed, no 
   assert.ok(!deps.calls.emitException, "telemetry should NOT be called");
 });
 
-test("generic Error with no code/syscall -- exit(1) called and log called", () => {
+test("generic Error with no code/syscall -- exit(1) called and log called", async () => {
   const deps = createStubDeps();
   const error = new Error("something went wrong");
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.deepEqual(deps.order, ["emitException", "log", "exit"]);
   assert.deepEqual(deps.calls.emitException?.[0], [error]);
@@ -88,14 +88,14 @@ test("generic Error with no code/syscall -- exit(1) called and log called", () =
   );
 });
 
-test("generic Error still exits when exception telemetry throws", () => {
+test("generic Error still exits when exception telemetry throws", async () => {
   const deps = createStubDeps();
   const error = new Error("something went wrong");
   deps.emitException = () => {
     throw new Error("telemetry failed");
   };
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(deps.calls.log?.length > 0, "log should be called");
   assert.ok(
@@ -104,14 +104,14 @@ test("generic Error still exits when exception telemetry throws", () => {
   );
 });
 
-test("ENOENT with syscall=open -- exit(1) IS called (not suppressed)", () => {
+test("ENOENT with syscall=open -- exit(1) IS called (not suppressed)", async () => {
   const deps = createStubDeps();
   const error = Object.assign(new Error("open enoent"), {
     code: "ENOENT",
     syscall: "open",
   });
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(
     deps.calls.exit?.some(([code]) => code === 1),
@@ -120,14 +120,14 @@ test("ENOENT with syscall=open -- exit(1) IS called (not suppressed)", () => {
   assert.deepEqual(deps.calls.emitException?.[0], [error]);
 });
 
-test("handleUnhandledRejection with spawn ENOENT Error reason -- suppressed, no exit", () => {
+test("handleUnhandledRejection with spawn ENOENT Error reason -- suppressed, no exit", async () => {
   const deps = createStubDeps();
   const reason = Object.assign(new Error("spawn enoent rejection"), {
     code: "ENOENT",
     syscall: "spawn",
   });
 
-  handleUnhandledRejection(reason, deps);
+  await handleUnhandledRejection(reason, deps);
 
   assert.ok(deps.calls.log?.length > 0, "log should be called");
   assert.match(
@@ -139,13 +139,11 @@ test("handleUnhandledRejection with spawn ENOENT Error reason -- suppressed, no 
   assert.ok(!deps.calls.emitException, "telemetry should NOT be called");
 });
 
-test("handleUnhandledRejection with non-Error reason (plain string) -- does NOT throw", () => {
+test("handleUnhandledRejection with non-Error reason (plain string) -- does NOT throw", async () => {
   const deps = createStubDeps();
   const reason = "some plain string reason";
 
-  assert.doesNotThrow(() => {
-    handleUnhandledRejection(reason, deps);
-  });
+  await assert.doesNotReject(() => handleUnhandledRejection(reason, deps));
 
   assert.deepEqual(deps.order, ["emitException", "log"]);
   assert.deepEqual(deps.calls.emitException?.[0], [reason]);
@@ -156,11 +154,11 @@ test("handleUnhandledRejection with non-Error reason (plain string) -- does NOT 
   assert.ok(!deps.calls.exit, "exit should NOT be called");
 });
 
-test("handleUnhandledRejection with non-Error object preserves non-exit behavior and attempts telemetry", () => {
+test("handleUnhandledRejection with non-Error object preserves non-exit behavior and attempts telemetry", async () => {
   const deps = createStubDeps();
   const reason = { kind: "plain-object-rejection" };
 
-  handleUnhandledRejection(reason, deps);
+  await handleUnhandledRejection(reason, deps);
 
   assert.deepEqual(deps.order, ["emitException", "log"]);
   assert.deepEqual(deps.calls.emitException?.[0], [reason]);
@@ -171,11 +169,11 @@ test("handleUnhandledRejection with non-Error object preserves non-exit behavior
   assert.ok(!deps.calls.exit, "exit should NOT be called");
 });
 
-test("handleUnhandledRejection with non-ENOENT Error reason -- deps.exit(1) IS called (programming error preserved)", () => {
+test("handleUnhandledRejection with non-ENOENT Error reason -- deps.exit(1) IS called (programming error preserved)", async () => {
   const deps = createStubDeps();
   const reason = new Error("database connection failed");
 
-  handleUnhandledRejection(reason, deps);
+  await handleUnhandledRejection(reason, deps);
 
   assert.deepEqual(deps.order, ["emitException", "log", "exit"]);
   assert.deepEqual(deps.calls.emitException?.[0], [reason]);
@@ -200,11 +198,11 @@ function createStubDepsWithDialog(): ReturnType<typeof createStubDeps> & {
   };
 }
 
-test("showDialog is called before exit(1) for generic uncaught Error", () => {
+test("showDialog is called before exit(1) for generic uncaught Error", async () => {
   const deps = createStubDepsWithDialog();
   const error = new Error("constructor blew up");
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.deepEqual(deps.order, ["emitException", "log", "showDialog", "exit"]);
   assert.equal(deps.calls.showDialog?.[0]?.[0], CRASH_DIALOG_TITLE);
@@ -219,27 +217,27 @@ test("showDialog is called before exit(1) for generic uncaught Error", () => {
   );
 });
 
-test("showDialog is NOT called for suppressed spawn ENOENT", () => {
+test("showDialog is NOT called for suppressed spawn ENOENT", async () => {
   const deps = createStubDepsWithDialog();
   const error = Object.assign(new Error("spawn enoent"), {
     code: "ENOENT",
     syscall: "spawn",
   });
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(!deps.calls.showDialog, "showDialog should NOT be called");
   assert.ok(!deps.calls.exit, "exit should NOT be called");
 });
 
-test("showDialog throwing does NOT prevent exit(1)", () => {
+test("showDialog throwing does NOT prevent exit(1)", async () => {
   const deps = createStubDepsWithDialog();
   deps.showDialog = () => {
     throw new Error("dialog.showErrorBox failed");
   };
   const error = new Error("boot crash");
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(
     deps.calls.exit?.some(([code]) => code === 1),
@@ -247,11 +245,11 @@ test("showDialog throwing does NOT prevent exit(1)", () => {
   );
 });
 
-test("showDialog is called for unhandled Error rejection (non-ENOENT)", () => {
+test("showDialog is called for unhandled Error rejection (non-ENOENT)", async () => {
   const deps = createStubDepsWithDialog();
   const reason = new Error("database connection failed");
 
-  handleUnhandledRejection(reason, deps);
+  await handleUnhandledRejection(reason, deps);
 
   assert.deepEqual(deps.order, ["emitException", "log", "showDialog", "exit"]);
   assert.equal(deps.calls.showDialog?.[0]?.[0], CRASH_DIALOG_TITLE);
@@ -262,10 +260,10 @@ test("showDialog is called for unhandled Error rejection (non-ENOENT)", () => {
   );
 });
 
-test("showDialog is NOT called for non-Error unhandled rejection", () => {
+test("showDialog is NOT called for non-Error unhandled rejection", async () => {
   const deps = createStubDepsWithDialog();
 
-  handleUnhandledRejection("some string reason", deps);
+  await handleUnhandledRejection("some string reason", deps);
 
   assert.ok(
     !deps.calls.showDialog,
@@ -274,14 +272,14 @@ test("showDialog is NOT called for non-Error unhandled rejection", () => {
   assert.ok(!deps.calls.exit, "exit should NOT be called");
 });
 
-test("showDialog is NOT called for spawn ENOENT unhandled rejection", () => {
+test("showDialog is NOT called for spawn ENOENT unhandled rejection", async () => {
   const deps = createStubDepsWithDialog();
   const reason = Object.assign(new Error("spawn enoent"), {
     code: "ENOENT",
     syscall: "spawn",
   });
 
-  handleUnhandledRejection(reason, deps);
+  await handleUnhandledRejection(reason, deps);
 
   assert.ok(
     !deps.calls.showDialog,
@@ -290,14 +288,14 @@ test("showDialog is NOT called for spawn ENOENT unhandled rejection", () => {
   assert.ok(!deps.calls.exit, "exit should NOT be called");
 });
 
-test("getLogFilePath throwing does NOT prevent exit(1)", () => {
+test("getLogFilePath throwing does NOT prevent exit(1)", async () => {
   const deps = createStubDepsWithDialog();
   deps.getLogFilePath = () => {
     throw new Error("electron-log not initialized");
   };
   const error = new Error("early crash");
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(
     deps.calls.exit?.some(([code]) => code === 1),
@@ -318,7 +316,7 @@ test("getLogFilePath throwing does NOT prevent exit(1)", () => {
   );
 });
 
-test("showDialog present but getLogFilePath absent — dialog shown without log path", () => {
+test("showDialog present but getLogFilePath absent — dialog shown without log path", async () => {
   const base = createStubDeps();
   const record = createRecorder(base.calls, base.order);
   const deps = {
@@ -328,7 +326,7 @@ test("showDialog present but getLogFilePath absent — dialog shown without log 
   };
   const error = new Error("no log path configured");
 
-  handleUncaughtException(error, deps);
+  await handleUncaughtException(error, deps);
 
   assert.ok(deps.calls.showDialog?.length > 0, "showDialog should be called");
   const dialogBody = deps.calls.showDialog?.[0]?.[1] as string;

@@ -28,18 +28,22 @@ const timeZoneValidator = z
     timeZone ? (canonicalizeTimeZone(timeZone) ?? undefined) : undefined
   );
 
-const rawInsightsQueryValidator = z.object({
-  period: z.enum(INSIGHTS_PERIOD_OPTIONS).default(InsightsPeriod.Quarter),
-  scope: z.enum(INSIGHTS_SCOPE_OPTIONS).default(InsightsScope.Me),
-  teamId: z.string().uuid("Must be a valid UUID").optional(),
-  timeZone: timeZoneValidator,
-});
-const rawInsightsQueryPreprocessor = z.object({
-  period: z.enum(INSIGHTS_PERIOD_OPTIONS).optional(),
-  scope: z.enum(INSIGHTS_SCOPE_OPTIONS).optional(),
-  teamId: z.string().uuid("Must be a valid UUID").optional(),
-  timeZone: z.string().optional(),
-});
+const rawInsightsQueryValidator = z
+  .object({
+    period: z.enum(INSIGHTS_PERIOD_OPTIONS).default(InsightsPeriod.Quarter),
+    scope: z.enum(INSIGHTS_SCOPE_OPTIONS).default(InsightsScope.Me),
+    teamId: z.string().uuid("Must be a valid UUID").optional(),
+    timeZone: timeZoneValidator,
+  })
+  .strict();
+const rawInsightsQueryPreprocessor = z
+  .object({
+    period: z.enum(INSIGHTS_PERIOD_OPTIONS).optional(),
+    scope: z.enum(INSIGHTS_SCOPE_OPTIONS).optional(),
+    teamId: z.string().uuid("Must be a valid UUID").optional(),
+    timeZone: z.string().optional(),
+  })
+  .passthrough();
 
 export const insightsQueryValidator = z
   .preprocess((value) => {

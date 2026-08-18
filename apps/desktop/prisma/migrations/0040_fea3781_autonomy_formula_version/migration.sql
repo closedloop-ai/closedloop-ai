@@ -1,0 +1,22 @@
+-- FEA-3781 (PLN-1545 T9): record which autonomy formula a sync lane last
+-- uploaded under, so replacing the formula re-sends already-synced sessions.
+--
+-- The autonomy score is computed at SYNC-PAYLOAD BUILD time and is not stored in
+-- this database, so a formula change moves no local row and never touches
+-- `sessions.updated_at`. The durable keyset cursor would therefore walk straight
+-- past the entire historical corpus and the cloud would keep serving the old
+-- score indefinitely. `sync_state.data_revision` cannot stand in for this: it
+-- tracks re-derivation FROM the transcript, and no derived row changes here.
+--
+-- NULLABLE ON PURPOSE, NO DEFAULT: NULL means "written before this column
+-- existed", i.e. pre-FEA-3781, which is exactly the state that must trigger the
+-- one-time re-walk. Defaulting it to the current version would silently mark
+-- every legacy cursor as already-migrated and strand the backfill.
+--
+-- Only the agent-session lane reads this column. The component-inventory lane
+-- shares this table under a different source-kind prefix and carries no autonomy
+-- score; the component-invocation lane keeps its cursor in its own
+-- `agent_component_invocation_sync_cursors` table and never touches this one.
+-- The write path stamps the column for both lanes that use this table, which is
+-- harmless. Metadata-only op.
+ALTER TABLE "sync_state" ADD COLUMN "autonomy_formula_version" INTEGER;

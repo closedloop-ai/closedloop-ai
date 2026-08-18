@@ -1,27 +1,24 @@
 "use client";
 
 import { OnboardingStep } from "@repo/api/src/types/onboarding";
+import { useCompleteWizard } from "@repo/app/onboarding/hooks/use-onboarding";
+import { useNavigation } from "@repo/navigation/use-navigation";
 import { useCallback, useEffect, useState } from "react";
 import {
+  clampStep,
   clearWizardState,
   loadWizardState,
   ONBOARDING_STEPS,
+  POST_WIZARD_ROUTE,
   saveWizardState,
   type WizardState,
 } from "../lib/onboarding-constants";
-import { AddAnthropicKeyStep } from "./add-anthropic-key-step";
-import { CompleteStep } from "./complete-step";
-import { ConnectGitHubStep } from "./connect-github-step";
-import { ConnectOptionalIntegrationsStep } from "./connect-optional-integrations-step";
 import { CreateProjectStep } from "./create-project-step";
 import { CreateTeamStep } from "./create-team-step";
-import { DownloadElectronAppStep } from "./download-electron-app-step";
-import { InviteTeamStep } from "./invite-team-step";
-import { WelcomeStep } from "./welcome-step";
 import { WizardShell } from "./wizard-shell";
 
 const DEFAULT_STATE: WizardState = {
-  currentStep: OnboardingStep.Welcome,
+  currentStep: OnboardingStep.CreateTeam,
   createdTeamId: null,
   createdTeamName: null,
   createdProjectId: null,
@@ -32,22 +29,25 @@ export function OnboardingWizard() {
   const [state, setState] = useState<WizardState>(() => {
     return loadWizardState() ?? DEFAULT_STATE;
   });
+  const navigation = useNavigation();
+  const completeWizard = useCompleteWizard();
+
+  const currentStep = clampStep(state);
 
   // Persist wizard state to sessionStorage on every change
   useEffect(() => {
     saveWizardState(state);
   }, [state]);
 
-  const goToStep = useCallback((step: OnboardingStep) => {
-    setState((prev) => ({ ...prev, currentStep: step }));
-  }, []);
-
   const goBack = useCallback(() => {
-    const currentIndex = ONBOARDING_STEPS.indexOf(state.currentStep);
+    const currentIndex = ONBOARDING_STEPS.indexOf(currentStep);
     if (currentIndex > 0) {
-      goToStep(ONBOARDING_STEPS[currentIndex - 1]);
+      setState((prev) => ({
+        ...prev,
+        currentStep: ONBOARDING_STEPS[currentIndex - 1],
+      }));
     }
-  }, [state.currentStep, goToStep]);
+  }, [currentStep]);
 
   const handleTeamCreated = useCallback((teamId: string, teamName: string) => {
     setState((prev) => ({
@@ -58,37 +58,46 @@ export function OnboardingWizard() {
     }));
   }, []);
 
-  const handleProjectCreated = useCallback(
-    (projectId: string, projectName: string) => {
-      setState((prev) => ({
-        ...prev,
-        createdProjectId: projectId,
-        createdProjectName: projectName,
-        currentStep: OnboardingStep.ConnectGitHub,
-      }));
-    },
-    []
-  );
-
   const handleComplete = useCallback(() => {
     clearWizardState();
   }, []);
 
+  const handleProjectCreated = useCallback(
+    (projectId: string, projectName: string) => {
+      // Backstop behind the disabled Continue the step renders while this is in
+      // flight: a second call issues a second PUT — another read-modify-write of
+      // the whole Organization.settings blob — and a second navigate.
+      if (completeWizard.isPending) {
+        return;
+      }
+
+      setState((prev) => ({
+        ...prev,
+        createdProjectId: projectId,
+        createdProjectName: projectName,
+      }));
+
+      // Creating the project IS finishing the wizard; there is no later step to
+      // own the call.
+      completeWizard.mutate(
+        {
+          createdTeamId: state.createdTeamId ?? undefined,
+          createdProjectId: projectId,
+        },
+        {
+          onSuccess: () => {
+            handleComplete();
+            navigation.navigate(POST_WIZARD_ROUTE);
+          },
+        }
+      );
+    },
+    [completeWizard, state.createdTeamId, handleComplete, navigation]
+  );
+
   return (
-    <WizardShell currentStep={state.currentStep} onBack={goBack}>
-      {state.currentStep === OnboardingStep.Welcome && (
-        <WelcomeStep
-          onNext={() => goToStep(OnboardingStep.DownloadElectronApp)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.DownloadElectronApp && (
-        <DownloadElectronAppStep
-          onNext={() => goToStep(OnboardingStep.CreateTeam)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.CreateTeam && (
+    <WizardShell currentStep={currentStep} onBack={goBack}>
+      {currentStep === OnboardingStep.CreateTeam && (
         <CreateTeamStep
           createdTeamId={state.createdTeamId}
           createdTeamName={state.createdTeamName}
@@ -96,47 +105,16 @@ export function OnboardingWizard() {
         />
       )}
 
-      {state.currentStep === OnboardingStep.CreateProject &&
+      {currentStep === OnboardingStep.CreateProject &&
         state.createdTeamId !== null && (
           <CreateProjectStep
+            completing={completeWizard.isPending}
             createdProjectId={state.createdProjectId}
             createdProjectName={state.createdProjectName}
             onNext={handleProjectCreated}
             teamId={state.createdTeamId}
           />
         )}
-
-      {state.currentStep === OnboardingStep.ConnectGitHub && (
-        <ConnectGitHubStep
-          onNext={() => goToStep(OnboardingStep.AddAnthropicKey)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.AddAnthropicKey && (
-        <AddAnthropicKeyStep
-          onNext={() => goToStep(OnboardingStep.ConnectOptionalIntegrations)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.ConnectOptionalIntegrations && (
-        <ConnectOptionalIntegrationsStep
-          onNext={() => goToStep(OnboardingStep.InviteTeammates)}
-        />
-      )}
-
-      {state.currentStep === OnboardingStep.InviteTeammates && (
-        <InviteTeamStep onNext={() => goToStep(OnboardingStep.Complete)} />
-      )}
-
-      {state.currentStep === OnboardingStep.Complete && (
-        <CompleteStep
-          createdProjectId={state.createdProjectId}
-          createdProjectName={state.createdProjectName}
-          createdTeamId={state.createdTeamId}
-          createdTeamName={state.createdTeamName}
-          onComplete={handleComplete}
-        />
-      )}
     </WizardShell>
   );
 }

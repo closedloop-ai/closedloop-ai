@@ -5,8 +5,7 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@repo/design-system/components/ui/alert";
-import { cn } from "@repo/design-system/lib/utils";
-import { AlertCircleIcon } from "lucide-react";
+import { AlertCircleIcon, ChevronRightIcon } from "lucide-react";
 
 type FriendlyErrorAlertProps = {
   error: FriendlyErrorInput;
@@ -26,11 +25,8 @@ export function FriendlyErrorAlert({
   const hasTechnicalDetails = technicalDetails !== "{}";
 
   return (
-    <Alert
-      className={cn("border-destructive/30 bg-destructive/10", className)}
-      variant="destructive"
-    >
-      <AlertCircleIcon className="h-4 w-4" />
+    <Alert className={className} variant="error">
+      <AlertCircleIcon />
       <AlertTitle>{friendly.title}</AlertTitle>
       <AlertDescription>
         <div className="space-y-3">
@@ -44,10 +40,11 @@ export function FriendlyErrorAlert({
           )}
           {hasTechnicalDetails && (
             <details className="group">
-              <summary className="cursor-pointer font-medium text-xs">
+              <summary className="flex cursor-pointer list-none items-center gap-1 font-medium text-xs [&::-webkit-details-marker]:hidden">
+                <ChevronRightIcon className="size-3.5 transition-transform group-open:rotate-90" />
                 Technical details
               </summary>
-              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background/70 p-2 text-xs">
+              <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2 text-xs">
                 {technicalDetails}
               </pre>
             </details>

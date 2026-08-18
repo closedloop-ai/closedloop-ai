@@ -54,6 +54,7 @@ import {
   BROWSER_KEY_REVOCATION_PATH,
   BrowserKeyTargetAccess,
 } from "@repo/api/src/types/compute-target";
+import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 import { publicKeysService } from "./service";
 
 const createdAt = new Date("2026-05-08T22:00:00.000Z");
@@ -238,6 +239,76 @@ describe("publicKeysService.listOrganizationPublicKeys", () => {
     ).resolves.toEqual([]);
 
     expect(findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("publicKeysService browser-key notification fan-out (FEA-3299)", () => {
+  // Sized off the bound, not hardcoded: must always exceed
+  // DB_FANOUT_MAX_CONCURRENCY or the assertion has no power.
+  const TARGET_COUNT = DB_FANOUT_MAX_CONCURRENCY * 2 + 2;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.validateCommandPublicKeyRegistration.mockReturnValue({
+      ok: true,
+      fingerprint: "cl:abcdefghijklmnopqrstuv",
+    });
+  });
+
+  it("bounds concurrent command writes across the requester's online targets", async () => {
+    // One pooled `desktopCommand.create` per online target. In practice a user
+    // owns a handful of machines, but nothing enforces that — the query has no
+    // `take` and the schema caps no per-user target count — so the bound is
+    // structural rather than resting on the assumption.
+    const targetRows = Array.from({ length: TARGET_COUNT }, (_, i) => ({
+      id: `owned-target-${i}`,
+      userId: "user-1",
+      gatewayId: null,
+      capabilities: {},
+      isOnline: true,
+      isSharedWithOrg: false,
+    }));
+    installDb({
+      userPublicKey: {
+        upsert: vi.fn().mockResolvedValue({
+          id: "key-1",
+          userId: "user-1",
+          organizationId: "org-1",
+          publicKeyBase64: "public-key",
+          fingerprint: "cl:abcdefghijklmnopqrstuv",
+          createdAt,
+        }),
+      },
+      computeTarget: { findMany: vi.fn().mockResolvedValue(targetRows) },
+    });
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    mocks.desktopCreateCommand.mockImplementation(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight -= 1;
+      return { command: { commandId: "cmd-1" } };
+    });
+    mocks.dispatchRelayCommandToRelay.mockResolvedValue({ delivered: true });
+
+    await publicKeysService.registerUserPublicKey({
+      userId: "user-1",
+      organizationId: "org-1",
+      payload: {
+        publicKeyBase64: "public-key",
+        fingerprint: "cl:abcdefghijklmnopqrstuv",
+      },
+    });
+
+    // Every target is still notified...
+    expect(mocks.desktopCreateCommand).toHaveBeenCalledTimes(TARGET_COUNT);
+    // ...but an unbounded Promise.all would have peaked at 12.
+    expect(peakInFlight).toBeLessThanOrEqual(DB_FANOUT_MAX_CONCURRENCY);
+    expect(peakInFlight).toBeGreaterThan(1);
   });
 });
 

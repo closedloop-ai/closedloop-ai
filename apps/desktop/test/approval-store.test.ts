@@ -1,7 +1,7 @@
 /**
  * @file approval-store.test.ts
  * @description Unit tests for the main-owned human-in-the-loop approval gate,
- * src/main/approval-store.ts. The ApprovalStore is security-critical: it
+ * src/main/approvals/approval-store.ts. The ApprovalStore is security-critical: it
  * deduplicates pending approval requests by fingerprint, blocks gateway
  * operations until a human resolves them, and persists/rehydrates the pending
  * queue through electron-store.
@@ -24,10 +24,11 @@
  * clearResolved()) in beforeEach/afterEach to stay independent.
  */
 import assert from "node:assert/strict";
-import { afterEach, beforeEach, mock, test } from "node:test";
+import { afterEach, beforeEach, test } from "node:test";
 import Store from "electron-store";
-import { ApprovalStore } from "../src/main/approval-store.js";
+import { ApprovalStore } from "../src/main/approvals/approval-store.js";
 import type { RiskTier } from "../src/shared/contracts.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 const APPROVAL_STORE_NAME = "desktop-approvals";
 const MAX_RESOLVED = 50;
@@ -71,7 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  mock.timers.reset();
+  nodeTestTimers.reset();
   resetApprovalStoreFile();
 });
 
@@ -163,13 +164,13 @@ test("waitForDecision resolves with the decision when the approval is approved",
 });
 
 test("waitForDecision resolves expired once the timeout elapses", async () => {
-  mock.timers.enable({ apis: ["setTimeout"] });
+  nodeTestTimers.enable(["setTimeout"]);
   const store = new ApprovalStore();
   const pending = store.enqueue(makeEnqueueInput());
 
   const decisionPromise = store.waitForDecision(pending.id, 5000);
 
-  mock.timers.tick(5000);
+  nodeTestTimers.tick(5000);
 
   assert.equal(await decisionPromise, "expired");
   // Expiry removes the entry from the pending queue.

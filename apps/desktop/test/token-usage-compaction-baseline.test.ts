@@ -3,12 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { upsertSessionAnalyticsRollup } from "../src/main/database/session-analytics-rollup.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import { createSqliteSessionSyncSource } from "../src/main/database/sync-source.js";
 import {
-  repriceUnpricedTokenUsage,
-  upsertSessionAnalyticsRollup,
-} from "../src/main/database/write-core.js";
+  createSqliteSessionSyncSource,
+  getArtifactSessionUsage,
+} from "../src/main/database/sync-source.js";
+import { repriceUnpricedTokenUsage } from "../src/main/database/token-cost-maintenance.js";
+import { createSessionAttributionResolverCache } from "../src/main/session/shared-agent-sessions-api.js";
+import { estimateTokenCost } from "../src/shared/token-cost.js";
+import { ROLLUP_OPTS } from "./rollup-options-test-utils.js";
 
 type SqliteDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
 
@@ -45,6 +49,20 @@ async function insertSession(db: SqliteDb, id: string): Promise<void> {
   );
 }
 
+// A metered (real per-token API) session: `billing_mode='api'` so the
+// reconciliation reader's shared billing-mode rule includes it.
+async function insertMeteredSession(db: SqliteDb, id: string): Promise<void> {
+  await db.run(
+    `INSERT INTO sessions (id, status, harness, started_at, updated_at, billing_mode)
+     VALUES ($1, $2, $3, $4, $5, 'api')`,
+    id,
+    "completed",
+    "claude_code",
+    "2026-06-20T08:00:00.000Z",
+    NOW
+  );
+}
+
 // Insert a token_usage row whose pre-compaction totals were rolled into
 // baseline_* by upsertTokenUsage's Gap 5 / compaction-resilience path.
 async function insertCompactedToken(
@@ -71,6 +89,37 @@ async function insertCompactedToken(
     opts.baselineInput,
     "2026-06-20T08:00:00.000Z",
     opts.cost
+  );
+}
+
+// Link a session to a closedloop_artifact, mirroring the fixture in
+// model-pricing-sqlite.test.ts (the artifacts / session_artifact_links rows
+// carry several NOT NULL columns, so a bare id/slug insert would fail).
+async function linkClosedloopArtifact(
+  db: SqliteDb,
+  sessionId: string,
+  slug: string
+): Promise<void> {
+  const observedAt = "2026-06-20T12:00:00.000Z";
+  const artifactId = `artifact-${slug}`;
+  await db.run(
+    `INSERT INTO artifacts
+       (id, identity_key, kind, slug, observed_at, created_at, last_seen_at)
+     VALUES ($1, $2, 'closedloop_artifact', $3, $4, $4, $4)`,
+    artifactId,
+    `cldoc:${slug}`,
+    slug,
+    observedAt
+  );
+  await db.run(
+    `INSERT INTO session_artifact_links
+       (id, session_id, artifact_id, relation, method, evidence, is_primary,
+        status, extractor_version, observed_at, created_at)
+     VALUES ($1, $2, $3, 'referenced', 'test_fixture', '{}', FALSE, 'candidate', 1, $4, $4)`,
+    `${sessionId}:${artifactId}:referenced`,
+    sessionId,
+    artifactId,
+    observedAt
   );
 }
 
@@ -135,7 +184,7 @@ test("boot re-pricing prices the effective total (current + baseline) of a compa
     // one row is unpriced).
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, "sess-compacted", NOW)
+        upsertSessionAnalyticsRollup(tx, "sess-compacted", NOW, ROLLUP_OPTS)
       )
     );
     assert.equal((await analytics(db, "sess-compacted")).estCost, 0);
@@ -181,7 +230,7 @@ test("boot re-pricing repairs an already-costed compacted row and is convergent"
 
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, "sess-precosted", NOW)
+        upsertSessionAnalyticsRollup(tx, "sess-precosted", NOW, ROLLUP_OPTS)
       )
     );
     // The rollup already sums est_cost from the (undercounted) per-row cost.
@@ -259,7 +308,7 @@ test("session_analytics rollup counts the effective (current + baseline) tokens"
 
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, "sess-counts", NOW)
+        upsertSessionAnalyticsRollup(tx, "sess-counts", NOW, ROLLUP_OPTS)
       )
     );
 
@@ -287,9 +336,7 @@ test("tokenUsageByModel sync projection ships the effective (current + baseline)
       cost: EFFECTIVE_COST,
     });
 
-    const [session] = await createSqliteSessionSyncSource(
-      db.prisma
-    ).loadUsageSessions(["sess-sync"]);
+    const [session] = await loadUsageSessions(db, ["sess-sync"]);
     const perModel = session?.tokenUsageByModel?.[0];
     assert.ok(perModel, "expected a per-model token usage row");
 
@@ -301,6 +348,201 @@ test("tokenUsageByModel sync projection ships the effective (current + baseline)
     // Cost (effective-priced) and counts (now effective) agree — no
     // cost/count mismatch inside the synced per-model row.
     assert.equal(perModel.estimatedCostUsd, EFFECTIVE_COST);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3317: the desktop insights usage aggregate (`aggregateUsage`) reprices an
+// unpriced (pricing-miss) row on the fly via resolveTokenUsageCostUsd over its
+// unpriced-token sums. For a compacted session, those sums must carry the
+// EFFECTIVE total (current + baseline), matching the boot reprice and the sync
+// projection — otherwise the on-the-fly cost undercounts the pre-compaction spend.
+test("insights aggregateUsage reprices an unpriced compacted row on the effective (current + baseline) total", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-insights-unpriced");
+    // A post-compaction pricing miss: cost NULL, but baseline_* preserves the
+    // pre-compaction tokens. The aggregate must reprice on current + baseline.
+    await insertCompactedToken(
+      db,
+      "sess-insights-unpriced",
+      "claude-opus-4-5",
+      {
+        currentInput: CURRENT_INPUT,
+        baselineInput: BASELINE_INPUT,
+        cost: null,
+      }
+    );
+
+    const aggregate = await aggregateUsage(db);
+    const group = aggregate.tokenGroups.find(
+      (g) => g.model === "claude-opus-4-5"
+    );
+    assert.ok(group, "expected a token group for the compacted model");
+
+    // Repriced on the effective total, NOT the post-compaction subset (the bug
+    // priced CURRENT_INPUT alone → CURRENT_ONLY_COST).
+    assert.equal(group.estimatedCostUsd, EFFECTIVE_COST);
+    assert.notEqual(group.estimatedCostUsd, CURRENT_ONLY_COST);
+    // FEA-3317: the REPORTED tokens must also carry the effective total so the
+    // baseline-priced cost is not shown against an undercounted token count —
+    // SQL-vs-hydrate parity (the sync projection folds baseline unconditionally).
+    assert.equal(group.inputTokens, CURRENT_INPUT + BASELINE_INPUT);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3317: a NON-compacted unpriced row (default-0 baseline) must reprice to the
+// current-only cost — the effective-total fold reduces to current when baseline=0.
+test("insights aggregateUsage reprices a non-compacted unpriced row on the current-only total", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-insights-plain");
+    await insertCompactedToken(db, "sess-insights-plain", "claude-opus-4-5", {
+      currentInput: CURRENT_INPUT,
+      baselineInput: 0,
+      cost: null,
+    });
+
+    const aggregate = await aggregateUsage(db);
+    const group = aggregate.tokenGroups.find(
+      (g) => g.model === "claude-opus-4-5"
+    );
+    assert.ok(group, "expected a token group for the non-compacted model");
+    assert.equal(group.estimatedCostUsd, CURRENT_ONLY_COST);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("unpriced aggregate and artifact fallbacks include the one-hour cache-write premium", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    const sessionId = "sess-ttl-unpriced";
+    const artifactSlug = "FEA-3419-unpriced";
+    await insertSession(db, sessionId);
+    await insertCompactedToken(db, sessionId, "claude-opus-4-5", {
+      currentInput: 0,
+      baselineInput: 0,
+      cost: null,
+    });
+    await db.run(
+      `UPDATE token_usage
+       SET cache_write_tokens = 1000,
+           cache_write_5m_tokens = 600,
+           cache_write_1h_tokens = 400,
+           cost_usd_estimated = NULL
+       WHERE session_id = $1`,
+      sessionId
+    );
+    await linkClosedloopArtifact(db, sessionId, artifactSlug);
+    const expected = estimateTokenCost({
+      model: "claude-opus-4-5",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 1000,
+      cacheWrite1hTokens: 400,
+      observedAt: NOW,
+    });
+    assert.ok(expected);
+
+    const aggregate = await aggregateUsage(db);
+    const group = aggregate.tokenGroups.find(
+      (entry) => entry.model === "claude-opus-4-5"
+    );
+    assert.equal(group?.estimatedCostUsd, expected.costUsd);
+
+    const [artifactUsage] = await getArtifactSessionUsage(db.prisma, [
+      artifactSlug,
+    ]);
+    assert.equal(artifactUsage?.estimatedCostUsd, expected.costUsd);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3317: the analytics repository breakdown reports per-repo token totals
+// from `aggregateSqliteAnalytics`'s per_session_tokens CTE. Those must carry the
+// effective (current + baseline) total for a compacted row so the SQL analytics
+// path matches the hydrate `buildAnalytics` repository fold (sumTokenUsage over the
+// effective tokenUsageByModel). A current-only rollup would undercount tokens.
+//
+// FEA-4299: the session carries a stored `repo_full_name` but no live git remote
+// (the deleted-worktree case). The analytics `byRepository` fold must fall back
+// to that durable stored repo — matching the LIST/render path and the usage
+// facet — instead of dropping the row's tokens. Without the fallback the repo
+// the row still renders would contribute 0 to `byRepository` (the codex P1
+// regression this test guards).
+test("analytics byRepository reports the effective (current + baseline) tokens for a compacted row", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-analytics-compacted");
+    await db.run(
+      "UPDATE sessions SET repo_full_name = $1 WHERE id = $2",
+      "acme/widgets",
+      "sess-analytics-compacted"
+    );
+    await insertCompactedToken(
+      db,
+      "sess-analytics-compacted",
+      "claude-opus-4-5",
+      {
+        currentInput: CURRENT_INPUT,
+        baselineInput: BASELINE_INPUT,
+        cost: null,
+      }
+    );
+
+    const analyticsAggregate = await aggregateAnalytics(db);
+    const repoInputTokens = analyticsAggregate.byRepository.reduce(
+      (sum, group) => sum + group.inputTokens,
+      0
+    );
+    assert.equal(repoInputTokens, CURRENT_INPUT + BASELINE_INPUT);
+    // The stored repo is the group identity (no live remote resolved in tests).
+    assert.ok(
+      analyticsAggregate.byRepository.some(
+        (group) => group.repositoryFullName === "acme/widgets"
+      )
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3317: getArtifactSessionUsage must also report the effective (current +
+// baseline) tokens and reprice an unpriced compacted row on that total, matching
+// the other sync-source aggregate sites. A current-only rollup would undercount
+// both the reported tokens and the on-the-fly repriced cost.
+test("getArtifactSessionUsage reports effective tokens and reprices on the effective total for a compacted row", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-artifact-compacted");
+    await insertCompactedToken(
+      db,
+      "sess-artifact-compacted",
+      "claude-opus-4-5",
+      {
+        currentInput: CURRENT_INPUT,
+        baselineInput: BASELINE_INPUT,
+        cost: null,
+      }
+    );
+    const artifactSlug = "FEA-3317-compacted-artifact";
+    await linkClosedloopArtifact(db, "sess-artifact-compacted", artifactSlug);
+
+    const [usage] = await getArtifactSessionUsage(db.prisma, [artifactSlug]);
+    assert.ok(usage, "expected artifact usage for the compacted session");
+    assert.equal(usage.inputTokens, CURRENT_INPUT + BASELINE_INPUT);
+    assert.equal(usage.estimatedCostUsd, EFFECTIVE_COST);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -338,7 +580,7 @@ test("non-compacted sessions (default-0 baseline) produce correct token counts",
     // SqliteDb wrapper straight to a function typed for Prisma.TransactionClient.
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, "sess-non-compacted", NOW)
+        upsertSessionAnalyticsRollup(tx, "sess-non-compacted", NOW, ROLLUP_OPTS)
       )
     );
     const snap = await analytics(db, "sess-non-compacted");
@@ -346,9 +588,7 @@ test("non-compacted sessions (default-0 baseline) produce correct token counts",
     assert.notEqual(snap.inputTokens, Number.NaN);
 
     // Sync projection must also produce correct counts.
-    const [session] = await createSqliteSessionSyncSource(
-      db.prisma
-    ).loadUsageSessions(["sess-non-compacted"]);
+    const [session] = await loadUsageSessions(db, ["sess-non-compacted"]);
     const perModel = session?.tokenUsageByModel?.[0];
     assert.ok(perModel, "expected a per-model token usage row");
     assert.equal(perModel.inputTokens, CURRENT_INPUT);
@@ -358,3 +598,183 @@ test("non-compacted sessions (default-0 baseline) produce correct token counts",
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// FEA-3390: the metered-billing reconciliation reader must fold baseline_* into
+// the token totals it compares against the provider bill. A compacted session
+// that ships only its post-compaction subset would understate the local
+// estimate and falsely read as a provider overcharge.
+test("metered reconciliation rows fold the effective (current + baseline) tokens", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertMeteredSession(db, "sess-metered");
+    await insertCompactedToken(db, "sess-metered", "claude-opus-4-5", {
+      currentInput: CURRENT_INPUT,
+      baselineInput: BASELINE_INPUT,
+      cost: EFFECTIVE_COST,
+    });
+
+    const rows = await db.loadMeteredUsageRows("2026-06-01T00:00:00.000Z");
+    assert.equal(rows.length, 1);
+    const row = rows[0];
+    assert.equal(row.sessionId, "sess-metered");
+    // Effective input total, NOT the post-compaction subset.
+    assert.equal(row.inputTokens, CURRENT_INPUT + BASELINE_INPUT);
+    assert.notEqual(row.inputTokens, CURRENT_INPUT);
+    // Non-input columns had no baseline here, so they are unchanged (0).
+    assert.equal(row.outputTokens, 0);
+    assert.equal(row.cacheReadTokens, 0);
+    assert.equal(row.cacheWriteTokens, 0);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3390: a NON-compacted metered session (baseline_* = 0) must reconcile the
+// unchanged current-only totals — the fold reduces to the raw counts.
+test("metered reconciliation rows are unchanged for a non-compacted session", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertMeteredSession(db, "sess-metered-plain");
+    await insertCompactedToken(db, "sess-metered-plain", "claude-opus-4-5", {
+      currentInput: CURRENT_INPUT,
+      baselineInput: 0,
+      cost: CURRENT_ONLY_COST,
+    });
+
+    const rows = await db.loadMeteredUsageRows("2026-06-01T00:00:00.000Z");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].inputTokens, CURRENT_INPUT);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3391: per-artifact session usage must fold baseline_* into the token
+// totals it attributes to the artifact. A compacted session would otherwise
+// attribute only its post-compaction subset.
+test("artifact session usage folds the effective (current + baseline) tokens", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-artifact");
+    await insertCompactedToken(db, "sess-artifact", "claude-opus-4-5", {
+      currentInput: CURRENT_INPUT,
+      baselineInput: BASELINE_INPUT,
+      cost: EFFECTIVE_COST,
+    });
+    await linkClosedloopArtifact(db, "sess-artifact", "FEA-3391-artifact");
+
+    const [usage] = await getArtifactSessionUsage(db.prisma, [
+      "FEA-3391-artifact",
+    ]);
+    assert.ok(usage, "expected an artifact usage row");
+    assert.equal(usage.sessionCount, 1);
+    // Effective input total, NOT the post-compaction subset.
+    assert.equal(usage.inputTokens, CURRENT_INPUT + BASELINE_INPUT);
+    assert.notEqual(usage.inputTokens, CURRENT_INPUT);
+    // Cost comes from the stored (effective-priced) per-row estimate.
+    assert.equal(usage.estimatedCostUsd, EFFECTIVE_COST);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3391: the unpriced-repricing path in getArtifactSessionUsage reprices
+// from the folded totals. A compacted row with a NULL stored cost must be
+// repriced on the EFFECTIVE (current + baseline) total, not the current-only
+// subset — otherwise both the token total AND the derived cost undercount.
+test("artifact session usage reprices unpriced rows from the effective total", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-artifact-unpriced");
+    // NULL stored cost forces getArtifactSessionUsage's on-read repricing path.
+    await insertCompactedToken(
+      db,
+      "sess-artifact-unpriced",
+      "claude-opus-4-5",
+      {
+        currentInput: CURRENT_INPUT,
+        baselineInput: BASELINE_INPUT,
+        cost: null,
+      }
+    );
+    await linkClosedloopArtifact(
+      db,
+      "sess-artifact-unpriced",
+      "FEA-3391-unpriced"
+    );
+
+    const [usage] = await getArtifactSessionUsage(db.prisma, [
+      "FEA-3391-unpriced",
+    ]);
+    assert.ok(usage, "expected an artifact usage row");
+    // Tokens are the effective total.
+    assert.equal(usage.inputTokens, CURRENT_INPUT + BASELINE_INPUT);
+    // Cost is repriced on the effective total ($0.010), not current-only
+    // ($0.005) and not zero.
+    assert.equal(usage.estimatedCostUsd, EFFECTIVE_COST);
+    assert.notEqual(usage.estimatedCostUsd, CURRENT_ONLY_COST);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3391: a NON-compacted linked session (baseline_* = 0) must attribute the
+// unchanged current-only totals and cost — the fold reduces to raw counts.
+test("artifact session usage is unchanged for a non-compacted session", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    await insertSession(db, "sess-artifact-plain");
+    await insertCompactedToken(db, "sess-artifact-plain", "claude-opus-4-5", {
+      currentInput: CURRENT_INPUT,
+      baselineInput: 0,
+      cost: CURRENT_ONLY_COST,
+    });
+    await linkClosedloopArtifact(db, "sess-artifact-plain", "FEA-3391-plain");
+
+    const [usage] = await getArtifactSessionUsage(db.prisma, [
+      "FEA-3391-plain",
+    ]);
+    assert.ok(usage, "expected an artifact usage row");
+    assert.equal(usage.inputTokens, CURRENT_INPUT);
+    assert.equal(usage.estimatedCostUsd, CURRENT_ONLY_COST);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// `loadUsageSessions`, `aggregateUsage`, and `aggregateAnalytics` are OPTIONAL
+// on the AgentSessionSyncSource contract (sources without them fall back to the
+// full hydrate). The sqlite source implements all three, so a missing method is
+// a real regression in the source — these helpers prove it is there before the
+// assertions run instead of failing somewhere downstream.
+async function loadUsageSessions(db: SqliteDb, ids: string[]) {
+  const source = createSqliteSessionSyncSource(db.prisma);
+  if (!source.loadUsageSessions) {
+    throw new Error("sqlite sync source must implement loadUsageSessions");
+  }
+  return await source.loadUsageSessions(ids);
+}
+
+async function aggregateUsage(db: SqliteDb) {
+  const source = createSqliteSessionSyncSource(db.prisma);
+  if (!source.aggregateUsage) {
+    throw new Error("sqlite sync source must implement aggregateUsage");
+  }
+  return await source.aggregateUsage({});
+}
+
+async function aggregateAnalytics(db: SqliteDb) {
+  const source = createSqliteSessionSyncSource(db.prisma);
+  if (!source.aggregateAnalytics) {
+    throw new Error("sqlite sync source must implement aggregateAnalytics");
+  }
+  return await source.aggregateAnalytics(
+    {},
+    createSessionAttributionResolverCache()
+  );
+}

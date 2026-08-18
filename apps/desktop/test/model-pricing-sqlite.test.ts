@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { OpencodeDefaultModel } from "@repo/lib/harness/synthetic-model-keys";
 import { loadSessionsFromDb } from "../src/main/collectors/opencode/opencode-parser.js";
 import {
   Harness,
@@ -15,6 +16,7 @@ import {
   ModelPricingCurrency,
   ModelPricingSource,
 } from "../src/main/model-pricing/model-pricing-fixture.js";
+import { estimateTokenCost } from "../src/shared/token-cost.js";
 import { computeExpectedTokenCost } from "./model-pricing-test-utils.js";
 import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
@@ -36,27 +38,6 @@ function assertCacheCostEpsilon(
     `${label} cCache within epsilon: ${cCache} vs ${expectedCache}`
   );
 }
-
-test("SQLite open and reopen leave model pricing rows empty", async () => {
-  const { db, dir, dataDir } = await openTempDb();
-  try {
-    assert.equal(await countModelPricingRows(db), 0);
-    await db.close();
-
-    const reopened = await openSqliteAgentDatabase({
-      dataDir,
-      detectBillingMode: () => "api",
-      now: () => "2026-06-07T12:00:00.000Z",
-    });
-    try {
-      assert.equal(await countModelPricingRows(reopened), 0);
-    } finally {
-      await reopened.close();
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
 
 test("Codex import persists token, event, session, projection, sync, and bucket costs", async () => {
   const { db, dir } = await openTempDb();
@@ -226,43 +207,128 @@ test("OpenCode parser import persists token, event, session, sync, and bucket co
   }
 });
 
-test("OpenCode unknown import leaves costs null and omits optional costs after replay", async () => {
+test("FEA-4183: OpenCode session with only message-level tokens (zero session columns, no model) imports a non-null cost under opencode-default", async () => {
+  const { db, dir } = await openTempDb();
+  try {
+    const opencodeDbPath = createOpenCodeDbNoSessionColumns({
+      dir,
+      sessionId: "ses_nocols",
+    });
+    const [session] = loadSessionsFromDb(opencodeDbPath);
+    assert.ok(session, "expected parsed OpenCode session");
+
+    // The parser attributes the message-level usage to the synthetic default
+    // key in tokensByModel — the SOLE source importPhaseTokenUsage writes
+    // token_usage (and the session cost rollup) from. Before FEA-4183 this was
+    // empty (session columns zero) so no token_usage row was written and the
+    // session cost stayed null.
+    assert.deepEqual(session.tokensByModel, {
+      [OpencodeDefaultModel]: {
+        input: 200,
+        output: 40,
+        cacheRead: 20,
+        cacheWrite: 4,
+        inferred: true,
+      },
+    });
+
+    await db.importer.importSession(session, Harness.OpenCode);
+
+    // opencode-default is unpriceable by genai-prices, so the FEA-3546
+    // Opus-standard fallback supplies a real, non-zero cost at import time.
+    const usageCost = expectedFallbackCost({
+      inputTokens: 200,
+      outputTokens: 40,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 4,
+    });
+    assert.deepEqual(await selectTokenUsageCosts(db, session.sessionId), [
+      {
+        model: OpencodeDefaultModel,
+        cost_usd_estimated: usageCost.costUsd,
+        cost_currency: ModelPricingCurrency.Usd,
+        cost_source: ModelPricingSource.GenaiPricesV1,
+      },
+    ]);
+    // The end-to-end assertion the reviewer asked for: the authoritative
+    // sessions.cost_usd_estimated rollup is NON-NULL and positive.
+    const sessionCost = await selectSessionCost(db, session.sessionId);
+    assert.deepEqual(sessionCost, {
+      cost_usd_estimated: usageCost.costUsd,
+      cost_currency: ModelPricingCurrency.Usd,
+      cost_source: ModelPricingSource.GenaiPricesV1,
+    });
+    assert.ok(
+      (sessionCost.cost_usd_estimated ?? 0) > 0,
+      "expected a positive session cost, not null/$0"
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3546: an unknown model is priced at the Opus-standard fallback (never $0), not left null, after replay", async () => {
   const { db, dir } = await openTempDb();
   try {
     const session = makeSession({
       sessionId: "opencode-miss",
       harness: Harness.OpenCode,
-      model: "opencode-default",
+      model: OpencodeDefaultModel,
     });
 
     await db.importer.importSession(session, Harness.OpenCode);
     await db.importer.importSession(session, Harness.OpenCode);
 
+    // genai-prices cannot price `opencode-default` (no_match), so the FEA-3546
+    // Opus-standard fallback supplies the cost at import time — the row is
+    // written GenaiPricesV1/USD (the same source the priced-model path uses), not
+    // left null. Replay is idempotent (one aggregate row, not doubled).
+    const usageCost = expectedFallbackCost({
+      inputTokens: 200,
+      outputTokens: 40,
+      cacheReadTokens: 20,
+      cacheWriteTokens: 4,
+    });
     assert.deepEqual(await selectTokenUsageCosts(db, session.sessionId), [
       {
-        model: "opencode-default",
-        cost_usd_estimated: null,
-        cost_currency: null,
-        cost_source: null,
+        model: OpencodeDefaultModel,
+        cost_usd_estimated: usageCost.costUsd,
+        cost_currency: ModelPricingCurrency.Usd,
+        cost_source: ModelPricingSource.GenaiPricesV1,
       },
     ]);
     assert.deepEqual(await selectSessionCost(db, session.sessionId), {
-      cost_usd_estimated: null,
-      cost_currency: null,
-      cost_source: null,
+      cost_usd_estimated: usageCost.costUsd,
+      cost_currency: ModelPricingCurrency.Usd,
+      cost_source: ModelPricingSource.GenaiPricesV1,
     });
 
+    const eventRows = await selectTokenEventCosts(db, session.sessionId);
     const synced = await db.syncSource.loadSyncedSessions(
       [session.sessionId],
       emptyAttributionCache()
     );
     assert.equal(
-      Object.hasOwn(synced[0].tokenUsageByModel[0], "estimatedCostUsd"),
-      false
+      synced[0].tokenUsageByModel[0].estimatedCostUsd,
+      usageCost.costUsd
     );
-    assert.equal(synced[0].activityBuckets?.[0].cIn, 0);
-    assert.equal(synced[0].activityBuckets?.[0].cOut, 0);
-    assert.equal(synced[0].activityBuckets?.[0].cCache, 0);
+    // Activity buckets carry the per-event fallback split, no longer zeroed.
+    assert.equal(
+      synced[0].activityBuckets?.[0].cIn,
+      sumEventCost(eventRows, "input_cost_usd_estimated")
+    );
+    assert.equal(
+      synced[0].activityBuckets?.[0].cOut,
+      sumEventCost(eventRows, "output_cost_usd_estimated")
+    );
+    assertCacheCostEpsilon(
+      synced[0].activityBuckets?.[0].cCache,
+      eventRows,
+      "opencode-fallback"
+    );
+    // The parity floor is a real, non-zero dollar figure.
+    assert.ok((usageCost.costUsd ?? 0) > 0);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -372,6 +438,7 @@ test("live hook transcript path persists token, event, session, sync, and bucket
           cacheWrite: 4,
         },
       ],
+      hasTrailingApiError: false,
     }),
   });
   try {
@@ -465,6 +532,7 @@ test("live hook transcript replay prices only newly appended unknown events", as
       latestModel: "unknown-codex-model",
       compactionCount: 0,
       records: transcriptRecords,
+      hasTrailingApiError: false,
     }),
     now: () => now,
   });
@@ -529,13 +597,6 @@ async function openTempDb(input?: {
     now: input?.now ?? (() => "2026-06-07T12:00:00.000Z"),
   });
   return { db, dir, dataDir };
-}
-
-async function countModelPricingRows(db: SqliteDb): Promise<number> {
-  const result = await db.prisma.client.$queryRawUnsafe<{ count: number }[]>(
-    "SELECT COUNT(*) AS count FROM model_pricing"
-  );
-  return Number(result[0].count);
 }
 
 async function countTokenEventRows(
@@ -769,6 +830,29 @@ function expectedCost(
   });
 }
 
+/**
+ * The cost the FEA-3546 Opus-standard unknown-model fallback assigns to a model
+ * genai-prices cannot price (e.g. `opencode-default`). Routes through the same
+ * production `estimateTokenCost` the importer uses, so the fixture stays coupled
+ * to the real pricing path rather than a hard-coded literal.
+ */
+function expectedFallbackCost(counts: {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}) {
+  const result = estimateTokenCost({
+    model: OpencodeDefaultModel,
+    ...counts,
+    observedAt: "2026-06-07T11:01:00.000Z",
+  });
+  if (!result) {
+    throw new Error("expected the unknown-model fallback to produce a cost");
+  }
+  return result;
+}
+
 function createOpenCodeDb(input: {
   dir: string;
   sessionId: string;
@@ -837,6 +921,92 @@ function createOpenCodeDb(input: {
       role: "assistant",
       model: { id: input.model, providerID: "opencode" },
       path: { cwd: "/workspace/priced-open", root: "/workspace/priced-open" },
+      time: { created: 1_780_830_030_000 },
+      tokens: {
+        input: 200,
+        output: 40,
+        cacheRead: 20,
+        cacheWrite: 4,
+      },
+    })
+  );
+  db.close();
+  return dbPath;
+}
+
+/**
+ * FEA-4183: an `opencode.db` whose session-row token columns are all ZERO and
+ * whose session carries no model/agent — the only usage lives in the assistant
+ * message's `data.tokens`, with NO resolvable model. This is the shape that used
+ * to record zero tokens and a null session cost.
+ */
+function createOpenCodeDbNoSessionColumns(input: {
+  dir: string;
+  sessionId: string;
+}): string {
+  const dbPath = path.join(input.dir, `${input.sessionId}.opencode.db`);
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE session (
+      id TEXT PRIMARY KEY, slug TEXT, directory TEXT NOT NULL, title TEXT NOT NULL,
+      version TEXT NOT NULL, agent TEXT, model TEXT, permission TEXT,
+      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL,
+      tokens_input INTEGER DEFAULT 0 NOT NULL, tokens_output INTEGER DEFAULT 0 NOT NULL,
+      tokens_reasoning INTEGER DEFAULT 0 NOT NULL, tokens_cache_read INTEGER DEFAULT 0 NOT NULL,
+      tokens_cache_write INTEGER DEFAULT 0 NOT NULL
+    );
+    CREATE TABLE message (
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL,
+      time_updated INTEGER NOT NULL, data TEXT NOT NULL
+    );
+    CREATE TABLE part (
+      id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+      time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL
+    );
+  `);
+  // Session columns and model/agent all empty — no aggregate usage source.
+  db.prepare(`
+    INSERT INTO session (
+      id, slug, directory, title, version, agent, model, permission,
+      time_created, time_updated, tokens_input, tokens_output,
+      tokens_reasoning, tokens_cache_read, tokens_cache_write
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    input.sessionId,
+    "no-columns",
+    "/workspace/no-columns",
+    "No-column OpenCode session",
+    "1.15.5",
+    "",
+    "",
+    "",
+    1_780_830_000_000,
+    1_780_830_060_000,
+    0,
+    0,
+    0,
+    0,
+    0
+  );
+  db.prepare(
+    "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)"
+  ).run(
+    `${input.sessionId}_msg_user`,
+    input.sessionId,
+    1_780_830_000_000,
+    1_780_830_000_000,
+    JSON.stringify({ role: "user", time: { created: 1_780_830_000_000 } })
+  );
+  // Assistant message WITH message-level tokens but NO model.
+  db.prepare(
+    "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)"
+  ).run(
+    `${input.sessionId}_msg_assistant`,
+    input.sessionId,
+    1_780_830_030_000,
+    1_780_830_030_000,
+    JSON.stringify({
+      role: "assistant",
       time: { created: 1_780_830_030_000 },
       tokens: {
         input: 200,

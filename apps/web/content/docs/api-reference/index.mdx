@@ -1,0 +1,111 @@
+---
+title: "API Reference"
+description: "The Closedloop REST API — manage projects, documents, threads, links, and loops over HTTPS."
+---
+
+The Closedloop REST API lets you manage projects, documents, artifacts, comment
+threads, and loops programmatically. Every endpoint on this page is generated
+from the OpenAPI specification, so the request and response shapes stay in sync
+with the live API.
+
+## Base URL
+
+All API requests are sent to the following base URL:
+
+```
+https://api.closedloop.ai
+```
+
+## Authentication
+
+Every request must include a Bearer token in the `Authorization` header. API
+keys use the format `sk_live_*`.
+
+```bash
+curl https://api.closedloop.ai/documents \
+  -H "Authorization: Bearer sk_live_your_api_key_here"
+```
+
+### API-key scopes
+
+Each API key carries one or more scopes. Endpoints require a scope based on the
+operation they perform:
+
+| Scope    | Grants                                                    |
+| -------- | --------------------------------------------------------- |
+| `read`   | `GET` requests (list and retrieve).                       |
+| `write`  | `POST`, `PUT`, and `PATCH` requests (create and update).  |
+| `delete` | `DELETE` requests.                                        |
+
+A request made with a key that lacks the required scope returns `403 Forbidden`.
+
+## Response envelope
+
+Every endpoint returns a consistent JSON envelope. Successful responses set
+`success: true` and carry the result under `data`:
+
+```json
+{
+  "success": true,
+  "data": { "...": "..." }
+}
+```
+
+Error responses set `success: false` and carry a human-readable `error`
+message, optionally with a machine-readable `code`:
+
+```json
+{
+  "success": false,
+  "error": "Tag not found",
+  "code": "NOT_FOUND"
+}
+```
+
+Common status codes: `400` (invalid request), `401` (missing/invalid API key),
+`403` (insufficient scope or forbidden), `404` (not found), `409` (conflict),
+and `429` (rate/concurrency limit).
+
+## Entity hierarchy
+
+Closedloop organizes work in three levels:
+
+| Level | Entity        | Description                                                                       |
+| ----- | ------------- | --------------------------------------------------------------------------------- |
+| 1     | **Project**   | Top-level container for a product area or initiative.                             |
+| 2     | **Workstream**| A focused track of work within a project.                                         |
+| 3     | **Document**  | A typed artifact (PRD, Implementation Plan, Feature, or Template) in a workstream. |
+
+## Slug conventions
+
+Documents are addressable by either a UUID or a typed slug. Slugs follow a
+prefix convention based on document type:
+
+| Prefix   | Document type                 | Example    |
+| -------- | ----------------------------- | ---------- |
+| `PRD-*`  | Product Requirements Document | `PRD-42`   |
+| `PLN-*`  | Implementation Plan           | `PLN-7`    |
+| `FEA-*`  | Feature specification         | `FEA-1035` |
+
+Projects and workstreams also have slugs, which can be used wherever an `id`
+parameter is accepted.
+
+## Quick start: create a document
+
+The following example creates a PRD document inside a workstream:
+
+```bash
+curl -X POST https://api.closedloop.ai/documents \
+  -H "Authorization: Bearer sk_live_your_api_key_here" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "PRD",
+    "title": "Checkout Redesign",
+    "projectId": "550e8400-e29b-41d4-a716-446655440000",
+    "workstreamId": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+    "content": "## Overview\n\nThis PRD describes the checkout redesign initiative..."
+  }'
+```
+
+Browse the endpoints in the sidebar for the full request and response schema of
+each operation.

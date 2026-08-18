@@ -1,0 +1,434 @@
+"use client";
+
+import { LinkType } from "@repo/api/src/types/artifact";
+import { Priority } from "@repo/api/src/types/common";
+import {
+  DocumentType,
+  type DocumentWithProject,
+  ISSUE_STATUS_OPTIONS,
+  IssueStatus,
+} from "@repo/api/src/types/document";
+import { useCreateArtifactLink } from "@repo/app/documents/hooks/use-artifact-links";
+import {
+  useCreateDocument,
+  useDocumentsByProject,
+} from "@repo/app/documents/hooks/use-documents";
+import { useProjectsByTeam } from "@repo/app/projects/hooks/use-projects";
+import { DOCUMENT_TYPE_LABELS } from "@repo/app/projects/lib/project-constants";
+import {
+  issuePriorityLabels,
+  issueStatusLabels,
+} from "@repo/app/shared/components/status-badge";
+import { transformApiUserToSelectUser } from "@repo/app/shared/lib/user-utils";
+import { useTeamMembers } from "@repo/app/teams/hooks/use-teams";
+import {
+  Alert,
+  AlertDescription,
+} from "@repo/design-system/components/ui/alert";
+import { Badge } from "@repo/design-system/components/ui/badge";
+import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@repo/design-system/components/ui/command";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/design-system/components/ui/dialog";
+import { Input } from "@repo/design-system/components/ui/input";
+import { Label } from "@repo/design-system/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@repo/design-system/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@repo/design-system/components/ui/select";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import {
+  type User,
+  UserSelectPopover,
+} from "@repo/design-system/components/ui/user-select-popover";
+import { useNavigation } from "@repo/navigation/use-navigation";
+import { ChevronDownIcon, FileTextIcon, LoaderIcon, XIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import { useOrgSlug } from "@/hooks/use-org-slug";
+
+type CreateIssueModalProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  projectId?: string;
+  teamId: string;
+};
+
+export function CreateIssueModal({
+  open,
+  onOpenChange,
+  projectId,
+  teamId,
+}: CreateIssueModalProps) {
+  const navigation = useNavigation();
+  const orgSlug = useOrgSlug();
+
+  // Project selection (when projectId prop is not provided)
+  const showProjectSelector = !projectId;
+  const [selectedProjectId, setSelectedProjectId] = useState(projectId ?? "");
+  const { data: teamProjects = [], isLoading: isLoadingProjects } =
+    useProjectsByTeam(teamId, { enabled: open && showProjectSelector });
+
+  // Form state
+  const [title, setTitle] = useState("");
+  const [selectedArtifacts, setSelectedArtifacts] = useState<
+    DocumentWithProject[]
+  >([]);
+  const [selectedAssignee, setSelectedAssignee] = useState<User | null>(null);
+  const [priority, setPriority] = useState<Priority>(Priority.Medium);
+  // Human-created Features default to BACKLOG (PRD-495).
+  const [status, setStatus] = useState<IssueStatus>(IssueStatus.Backlog);
+  const [error, setError] = useState<string | null>(null);
+  const [relationshipsOpen, setRelationshipsOpen] = useState(false);
+
+  // Queries
+  const { data: teamMembers = [], isLoading: isLoadingUsers } = useTeamMembers(
+    teamId,
+    { enabled: open }
+  );
+  const transformedUsers = useMemo(
+    () => teamMembers.map((m) => transformApiUserToSelectUser(m.user)),
+    [teamMembers]
+  );
+
+  const { data: artifacts = [] } = useDocumentsByProject(selectedProjectId, {
+    enabled: open && !!selectedProjectId,
+  });
+  // Filter out already-selected artifacts
+  const availableArtifacts = useMemo(() => {
+    const selectedIds = new Set(selectedArtifacts.map((a) => a.id));
+    return artifacts.filter((a) => !selectedIds.has(a.id));
+  }, [artifacts, selectedArtifacts]);
+
+  // Mutations
+  const createFeatureMutation = useCreateDocument();
+  const createArtifactLinkMutation = useCreateArtifactLink();
+
+  const isSubmitting =
+    createFeatureMutation.isPending || createArtifactLinkMutation.isPending;
+
+  const handleAddArtifact = (artifact: DocumentWithProject) => {
+    setSelectedArtifacts((prev) => [...prev, artifact]);
+    setRelationshipsOpen(false);
+  };
+
+  const handleRemoveArtifact = (documentId: string) => {
+    setSelectedArtifacts((prev) => prev.filter((a) => a.id !== documentId));
+  };
+
+  const handleProjectChange = (newProjectId: string) => {
+    setSelectedProjectId(newProjectId);
+    // Clear project-scoped state so stale selections don't carry over
+    setSelectedArtifacts([]);
+  };
+
+  const resetForm = () => {
+    setTitle("");
+    setSelectedArtifacts([]);
+    setSelectedAssignee(null);
+    setPriority(Priority.Medium);
+    setStatus(IssueStatus.Backlog);
+    setError(null);
+    setRelationshipsOpen(false);
+    if (showProjectSelector) {
+      setSelectedProjectId("");
+    }
+  };
+
+  const handleClose = () => {
+    onOpenChange(false);
+    resetForm();
+  };
+
+  const handleSubmit = () => {
+    setError(null);
+    if (!selectedProjectId) {
+      setError("Please select a project");
+      return;
+    }
+    if (!title.trim()) {
+      setError("Please enter a title");
+      return;
+    }
+
+    createFeatureMutation.mutate(
+      {
+        type: DocumentType.Feature,
+        projectId: selectedProjectId,
+        title: title.trim(),
+        content: "",
+        status,
+        priority,
+        assigneeId: selectedAssignee?.id,
+      },
+      {
+        onSuccess: async (feature) => {
+          if (selectedArtifacts.length > 0) {
+            try {
+              await Promise.all(
+                selectedArtifacts.map((artifact) =>
+                  createArtifactLinkMutation.mutateAsync({
+                    sourceId: artifact.id,
+                    targetId: feature.id,
+                    linkType: LinkType.Produces,
+                  })
+                )
+              );
+            } catch {
+              toast.error(
+                "Issue created, but some relationships failed to save."
+              );
+            }
+          }
+          handleClose();
+          navigation.navigate(`/${orgSlug}/issues/${feature.slug}`);
+        },
+        onError: () => {
+          setError("Failed to create issue. Please try again.");
+        },
+      }
+    );
+  };
+
+  return (
+    <Dialog
+      onOpenChange={(newOpen) => {
+        if (newOpen) {
+          onOpenChange(true);
+        } else {
+          handleClose();
+        }
+      }}
+      open={open}
+    >
+      <DialogContent className="sm:max-w-[500px]">
+        <DialogHeader>
+          <DialogTitle>Create New Issue</DialogTitle>
+          <DialogDescription className="sr-only">
+            Create a new issue for this project.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-6">
+          {error ? (
+            <Alert variant="error">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          {showProjectSelector ? (
+            <div className="space-y-2">
+              <Label
+                className="font-normal text-muted-foreground text-xs"
+                htmlFor="feature-project"
+              >
+                Project<span className="text-destructive">*</span>
+              </Label>
+              <Select
+                disabled={isLoadingProjects}
+                onValueChange={handleProjectChange}
+                value={selectedProjectId}
+              >
+                <SelectTrigger id="feature-project">
+                  <SelectValue
+                    placeholder={
+                      isLoadingProjects
+                        ? "Loading projects..."
+                        : "Select a project..."
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {teamProjects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+
+          <div className="space-y-2">
+            <Label
+              className="font-normal text-muted-foreground text-xs"
+              htmlFor="feature-title"
+            >
+              Issue Title<span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="feature-title"
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Issue Title"
+              value={title}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="font-normal text-muted-foreground text-xs">
+              Add Relationships
+            </Label>
+            <Popover
+              onOpenChange={setRelationshipsOpen}
+              open={relationshipsOpen}
+            >
+              <PopoverTrigger asChild>
+                <Button
+                  className="w-full justify-between font-normal text-muted-foreground"
+                  variant="outline"
+                >
+                  Select additional context...
+                  <ChevronDownIcon className="h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[460px] p-0">
+                <Command label="Search artifacts">
+                  <CommandInput placeholder="Search artifacts..." />
+                  <CommandList>
+                    <CommandEmpty>No artifacts found.</CommandEmpty>
+                    <CommandGroup>
+                      {availableArtifacts.map((artifact) => (
+                        <CommandItem
+                          key={artifact.id}
+                          onSelect={() => handleAddArtifact(artifact)}
+                        >
+                          <FileTextIcon className="h-4 w-4 shrink-0" />
+                          <span className="flex-1 truncate">
+                            {artifact.title}
+                          </span>
+                          <span className="ml-2 text-muted-foreground text-xs">
+                            {DOCUMENT_TYPE_LABELS[artifact.type] ??
+                              artifact.type}
+                          </span>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
+            {selectedArtifacts.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {selectedArtifacts.map((artifact) => (
+                  <Badge
+                    className="gap-1 pl-2"
+                    key={artifact.id}
+                    variant="outline"
+                  >
+                    <FileTextIcon className="h-3 w-3" />
+                    {artifact.title}
+                    <button
+                      className="ml-1 rounded-sm opacity-70 hover:opacity-100"
+                      onClick={() => handleRemoveArtifact(artifact.id)}
+                      type="button"
+                    >
+                      <XIcon className="h-3 w-3" />
+                      <span className="sr-only">Remove {artifact.title}</span>
+                    </button>
+                  </Badge>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label className="font-normal text-muted-foreground text-xs">
+              Assignee
+            </Label>
+            <UserSelectPopover
+              className="w-full"
+              disabled={isLoadingUsers}
+              onSelect={setSelectedAssignee}
+              placeholder={
+                isLoadingUsers ? "Loading users..." : "Select Assignee"
+              }
+              users={transformedUsers}
+              value={selectedAssignee}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label className="font-normal text-muted-foreground text-xs">
+              Priority
+            </Label>
+            <Select
+              onValueChange={(v: Priority) => setPriority(v)}
+              value={priority}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Not Set" />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.values(Priority).map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {issuePriorityLabels[p]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label className="font-normal text-muted-foreground text-xs">
+              Status
+            </Label>
+            <Select
+              onValueChange={(v: IssueStatus) => setStatus(v)}
+              value={status}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ISSUE_STATUS_OPTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {issueStatusLabels[s]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button onClick={handleClose} type="button" variant="outline">
+            Cancel
+          </Button>
+          <Button
+            disabled={!(title.trim() && selectedProjectId) || isSubmitting}
+            onClick={handleSubmit}
+          >
+            {isSubmitting ? (
+              <>
+                <LoaderIcon className="h-4 w-4 animate-spin" />
+                Creating...
+              </>
+            ) : (
+              "Create Issue"
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

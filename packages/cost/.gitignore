@@ -1,0 +1,3 @@
+# Stryker mutation-testing output (opt-in `pnpm mutation`) — never committed
+reports/
+.stryker-tmp/

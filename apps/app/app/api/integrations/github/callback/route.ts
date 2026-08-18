@@ -34,15 +34,11 @@ type ConnectGitHubResponseBody = { data?: ConnectGitHubResponse };
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     // Read cookies before any branch can return so every callback clears stale
-    // OAuth state, Branch View return, and onboarding cookies consistently.
+    // OAuth state and Branch View return cookies consistently.
     const cookieStore = await cookies();
-    const onboardingReturn = cookieStore.get("onboarding_return")?.value;
-    const onboardingReturnTo = onboardingReturn ? "/onboarding" : undefined;
 
     const makeErrorRedirect = (code: GitHubErrorCode): NextResponse => {
-      const response = NextResponse.redirect(
-        getErrorRedirectUrl(code, onboardingReturnTo)
-      );
+      const response = NextResponse.redirect(getErrorRedirectUrl(code));
       clearGithubOAuthCookies(response);
       return response;
     };
@@ -105,12 +101,14 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       return makeErrorRedirect(GITHUB_ERROR_CODES.INVALID_STATE);
     }
 
+    // `?? undefined` because the verifier reports "no valid return cookie" as
+    // `null` and the redirect helpers take an optional string.
     const returnTo =
       verifyGitHubOAuthReturnToCookie({
         cookieValue: cookieStore.get(GITHUB_OAUTH_RETURN_TO_COOKIE)?.value,
         now: Date.now(),
         state,
-      }) ?? onboardingReturnTo;
+      }) ?? undefined;
 
     // Send code + installationId to API for token exchange
     // Token exchange happens in API to keep client_secret there
@@ -192,7 +190,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
 function clearGithubOAuthCookies(response: NextResponse): void {
   response.cookies.set(GITHUB_OAUTH_STATE_COOKIE, "", { maxAge: 0, path: "/" });
-  response.cookies.set("onboarding_return", "", { maxAge: 0, path: "/" });
   response.cookies.set(GITHUB_OAUTH_RETURN_TO_COOKIE, "", {
     maxAge: 0,
     path: GITHUB_OAUTH_RETURN_TO_COOKIE_PATH,

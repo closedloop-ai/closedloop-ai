@@ -1,7 +1,7 @@
 /**
  * @file reconciliation-worker.test.ts
  * @description Unit tests for the nightly cost-reconciliation worker
- * (FEA-1435/1436), src/main/reconciliation-worker.ts.
+ * (FEA-1435/1436), src/main/cost/reconciliation-worker.ts.
  *
  * Reviewed invariants:
  *   (1) the local genai-prices estimate is aggregated per (day × vendor × model)
@@ -25,17 +25,17 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { usdToMicroCents } from "../src/main/cost-math.js";
+import { usdToMicroCents } from "../src/main/cost/cost-math.js";
 import {
   type ReconciliationRow,
   ReconciliationStore,
-} from "../src/main/reconciliation-store.js";
+} from "../src/main/cost/reconciliation-store.js";
 import {
   ANTHROPIC_TOOLS_MODEL,
   type MeteredUsageRow,
   OPENAI_DAY_GRAIN_MODEL,
   runReconciliation,
-} from "../src/main/reconciliation-worker.js";
+} from "../src/main/cost/reconciliation-worker.js";
 import { computeTokenCost } from "../src/shared/token-cost.js";
 
 const FIXED_NOW = () => new Date("2026-05-28T00:00:00Z");

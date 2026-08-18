@@ -4,8 +4,11 @@ import fs from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
 import type { ContentBlock } from "@closedloop-ai/loops-api/stream-types";
-import { gatewayLog } from "../../main/gateway-logger.js";
-import { type RetrySpawnDeps, retrySpawn } from "../../main/spawn-retry.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
+import {
+  type RetrySpawnDeps,
+  retrySpawn,
+} from "../../main/util/spawn-retry.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import {
   type ClaudeCodeShellEnvProvider,

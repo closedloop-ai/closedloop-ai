@@ -23,14 +23,17 @@
  * FEA-1224).
  */
 
+import { z } from "zod";
 import type {
   CatalogContentItem,
   CatalogContentsConfig,
   CatalogEntry,
   InstallRunRecord,
 } from "../../shared/agent-db-contract.js";
+import { numberOrZero } from "../database/db-helpers.js";
 import { Prisma } from "../database/generated/client.js";
 import type { DbHostPrisma, DesktopPrisma } from "../database/prisma-client.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,8 +56,13 @@ interface CatalogRow extends Record<string, unknown> {
   description: string | null;
   description_live: string | null;
   harnesses: string[] | null;
-  install_commands: Record<string, unknown> | null;
-  uninstall_commands: Record<string, unknown> | null;
+  // `unknown`, not `Record<string, unknown>`: these arrive over
+  // `$queryRawUnsafe`, so the row carries whatever the column actually holds — a
+  // JSON TEXT blob under libSQL, and on a corrupt or tampered DB an array or a
+  // scalar. `stringRecordOrNull` is the validating boundary; typing them as
+  // objects here would assert a shape nothing has checked yet.
+  install_commands: unknown;
+  uninstall_commands: unknown;
   install_notes: string | null;
   placeholder_reason: string | null;
   verified: boolean;
@@ -154,16 +162,74 @@ function parseJsonColumn<T>(value: unknown): T | null {
   return value as T;
 }
 
+/**
+ * A harness→command map as persisted in `install_commands`/`uninstall_commands`.
+ *
+ * VALID-OR-ABSENT, deliberately strict on BOTH axes (ISS-5248):
+ * - the value must be a plain object — `z.record` rejects arrays, strings,
+ *   numbers, booleans, and `null`;
+ * - EVERY entry must be a string, so a half-string/half-garbage row is dropped
+ *   whole rather than normalized into a partially-corrupt command map.
+ *
+ * Rejecting arrays is the point. `Object.entries(["touch /tmp/x"])` yields
+ * `[["0", "touch /tmp/x"]]`, so a persisted ARRAY normalized entry-by-entry
+ * became a real command under the numeric key `"0"` — and `"0"` is a perfectly
+ * ordinary externally-supplied harness name, so it passes the downstream
+ * `isNonEmptyString` gate in `install-command-resolver.ts` and reaches `sh -c`.
+ * (`listedHarnesses` even falls back to the map's OWN keys when the row lists no
+ * harnesses, so nothing else in the chain has to cooperate.) The entries-only
+ * filter this replaced could not see that, because it inspected values and never
+ * the container.
+ */
+const HARNESS_COMMAND_MAP_SCHEMA = z.record(z.string(), z.string());
+
+/**
+ * Validate a parsed JSON command-map column, or reject the whole row's map.
+ *
+ * The result is NULL-PROTOTYPE (ISS-5248). The map's own KEYS are ours — only
+ * `upsertCatalogSeed` writes these columns, from the bundled `catalog-seed.json`
+ * (the cloud fetch path, `applyFetchResult`, touches only stars/forks/
+ * description/last_release). What is NOT ours is the LOOKUP key: every consumer
+ * reads `map?.[harness]`, and `harness` reaches `resolveRunCommand` from the
+ * cloud via the relay and the local gateway's member-pack install. On a plain
+ * object a lookup for `"constructor"`, `"toString"`, or `"valueOf"` returns an
+ * inherited FUNCTION off `Object.prototype` — truthy, so a bare `if (command)`
+ * downstream accepts it as real command text and can hand it to the installer as
+ * the script to run. With no prototype an unconfigured harness reads as
+ * `undefined` whatever it is named, which closes every main-process read at once
+ * instead of one call site at a time. (Structured clone restores
+ * `Object.prototype` on the far side of IPC, so a future RENDERER-side reader
+ * would not inherit this protection and needs its own guard.)
+ *
+ * A rejected map degrades to "this pack has no configured commands" — the
+ * resolver's existing `NoCommand` path — never to a bogus one. The row is bad
+ * data from a corrupt or tampered local DB, so it is warned about (main-process
+ * Node, the `gatewayLog` path the rest of `packs/` already uses) rather than
+ * silently coerced. The offending value is NOT logged: it is precisely the
+ * attacker-controlled command text this function exists to keep out of the log
+ * and out of `sh -c`.
+ */
 function stringRecordOrNull(
-  value: Record<string, unknown> | null
+  packId: string,
+  column: "install_commands" | "uninstall_commands",
+  value: unknown
 ): Record<string, string> | null {
-  if (!value) {
+  if (value === null || value === undefined) {
     return null;
   }
-  const entries = Object.entries(value).filter(
-    (entry): entry is [string, string] => typeof entry[1] === "string"
-  );
-  return Object.fromEntries(entries);
+  const parsed = HARNESS_COMMAND_MAP_SCHEMA.safeParse(value);
+  if (!parsed.success) {
+    gatewayLog.warn(
+      "catalog-store",
+      `pack '${packId}': ${column} is not a harness→command map of strings; dropping it. The pack will report no ${column === "install_commands" ? "install" : "uninstall"} command rather than run an unvalidated one.`
+    );
+    return null;
+  }
+  const record: Record<string, string> = Object.create(null);
+  for (const [key, entryValue] of Object.entries(parsed.data)) {
+    record[key] = entryValue;
+  }
+  return record;
 }
 
 function catalogContentsOrNull(
@@ -219,10 +285,14 @@ function toCatalogEntry(
     descriptionLive: row.description_live,
     harnesses: parseJsonColumn<string[]>(row.harnesses) ?? [],
     installCommands: stringRecordOrNull(
-      parseJsonColumn<Record<string, unknown>>(row.install_commands)
+      row.pack_id,
+      "install_commands",
+      parseJsonColumn<unknown>(row.install_commands)
     ),
     uninstallCommands: stringRecordOrNull(
-      parseJsonColumn<Record<string, unknown>>(row.uninstall_commands)
+      row.pack_id,
+      "uninstall_commands",
+      parseJsonColumn<unknown>(row.uninstall_commands)
     ),
     installNotes: row.install_notes,
     placeholderReason: row.placeholder_reason,
@@ -247,8 +317,7 @@ function toCatalogEntry(
     installedHarnesses: splitInstalledHarnesses(row.installed_harnesses),
     // COUNT(*) from the listCatalog/getCatalog $queryRawUnsafe path can surface
     // as bigint through the adapter; Number() keeps it IPC/JSON-serializable.
-    skillCount:
-      row.installed_skill_count == null ? 0 : Number(row.installed_skill_count),
+    skillCount: numberOrZero(row.installed_skill_count),
     usageCount: usage?.tool_calls ?? 0,
     history,
   };
@@ -345,6 +414,7 @@ export async function upsertCatalogSeed(
         where: { packId: pack.pack_id },
         create: { packId: pack.pack_id, ...seedFields },
         update: seedFields,
+        select: { packId: true },
       })
     );
 
@@ -518,6 +588,7 @@ export async function applyFetchResult(
           forks: forks ?? null,
         },
         update: { stars: stars ?? null, forks: forks ?? null },
+        select: { packId: true, fetchedAt: true },
       });
     }
   });

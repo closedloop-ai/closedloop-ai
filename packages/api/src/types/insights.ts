@@ -1,5 +1,8 @@
 import type {
   ActivityHeatmap as LoopsActivityHeatmap,
+  AgentPipelineEdge as LoopsAgentPipelineEdge,
+  AgentPipelineGraphData as LoopsAgentPipelineGraphData,
+  AgentPipelineNode as LoopsAgentPipelineNode,
   AgentsInsightsResponse as LoopsAgentsInsightsResponse,
   CategoryBucket as LoopsCategoryBucket,
   DeliveryInsightsResponse as LoopsDeliveryInsightsResponse,
@@ -11,6 +14,7 @@ import type {
   InsightsSection as LoopsInsightsSection,
   InsightsTileAvailabilityMap as LoopsInsightsTileAvailabilityMap,
   InsightsTileAvailabilityState as LoopsInsightsTileAvailabilityState,
+  KpiDeltaBasis as LoopsKpiDeltaBasis,
   KpiFormat as LoopsKpiFormat,
   KpiStat as LoopsKpiStat,
   ReviewerRow as LoopsReviewerRow,
@@ -29,6 +33,7 @@ import {
   InsightsSection as loopsInsightsSection,
   INSIGHTS_SECTION_OPTIONS as loopsInsightsSectionOptions,
   InsightsTileAvailabilityState as loopsInsightsTileAvailabilityState,
+  KpiDeltaBasis as loopsKpiDeltaBasis,
   KpiFormat as loopsKpiFormat,
 } from "@closedloop-ai/loops-api/insights";
 
@@ -41,6 +46,7 @@ export const INSIGHTS_SECTION_OPTIONS = loopsInsightsSectionOptions;
 export const InsightsScope = loopsInsightsScope;
 export const INSIGHTS_SCOPE_OPTIONS = loopsInsightsScopeOptions;
 export const KpiFormat = loopsKpiFormat;
+export const KpiDeltaBasis = loopsKpiDeltaBasis;
 export const InsightsTileAvailabilityState = loopsInsightsTileAvailabilityState;
 
 export type InsightsPeriod = LoopsInsightsPeriod;
@@ -49,6 +55,7 @@ export type InsightsGitHubProvenance = LoopsInsightsGitHubProvenance;
 export type InsightsSection = LoopsInsightsSection;
 export type InsightsScope = LoopsInsightsScope;
 export type KpiFormat = LoopsKpiFormat;
+export type KpiDeltaBasis = LoopsKpiDeltaBasis;
 export type InsightsTileAvailabilityState = LoopsInsightsTileAvailabilityState;
 export type InsightsTileAvailabilityMap = LoopsInsightsTileAvailabilityMap;
 export type KpiStat = LoopsKpiStat;
@@ -70,3 +77,6 @@ export type UtilizationInsightsResponse = LoopsUtilizationInsightsResponse & {
 export type AgentsInsightsResponse = LoopsAgentsInsightsResponse & {
   tileAvailability?: InsightsTileAvailabilityMap;
 };
+export type AgentPipelineNode = LoopsAgentPipelineNode;
+export type AgentPipelineEdge = LoopsAgentPipelineEdge;
+export type AgentPipelineGraphData = LoopsAgentPipelineGraphData;

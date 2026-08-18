@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type * as TiptapReact from "@tiptap/react";
 import mermaid from "mermaid";
 import React, { type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MermaidComponent } from "./mermaid-extension";
+import { MermaidComponent, MermaidExtension } from "./mermaid-extension";
 
 const MERMAID_SVG_DARK =
   '<svg viewBox="0 0 10 10"><text>dark render</text></svg>';
@@ -17,7 +17,7 @@ const MERMAID_SEQUENCE_SVG =
 const mocks = vi.hoisted(() => ({
   renderControls: [] as Array<{
     code: string;
-    reject: (error: Error) => void;
+    reject: (error: unknown) => void;
     resolve: (result: { svg: string }) => void;
   }>,
   resolvedTheme: "light",
@@ -219,6 +219,157 @@ describe("MermaidComponent render ordering", () => {
     expect(await screen.findByText("legacy render")).toBeTruthy();
     expect(document.body.innerHTML).not.toContain("<script");
     expect(document.body.innerHTML).not.toContain("bad()");
+  });
+});
+
+describe("MermaidComponent public actions", () => {
+  it("adds, saves, and deletes a diagram from the empty state", () => {
+    const props = createNodeViewProps({ content: "" });
+    const { container } = render(<MermaidComponent {...props} selected />);
+
+    expect(container.querySelector(".ring-2")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add Mermaid Diagram" })
+    );
+
+    const textarea = screen.getByRole("textbox", {
+      name: "Mermaid diagram source",
+    });
+    fireEvent.change(textarea, { target: { value: "graph TD; A-->B;" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(props.updateAttributes).toHaveBeenCalledWith({
+      content: "graph TD; A-->B;",
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add Mermaid Diagram" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(props.deleteNode).toHaveBeenCalledOnce();
+  });
+
+  it("cancels edits and restores the node's current content", async () => {
+    const props = createNodeViewProps({ content: "graph TD; A;" });
+    render(<MermaidComponent {...props} />);
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledOnce());
+    mocks.renderControls[0].resolve({ svg: MERMAID_SVG_LIGHT });
+    await screen.findByTestId("mermaid-viewer");
+
+    mocks.viewerCalls[0].onEdit();
+    const textarea = await screen.findByRole("textbox", {
+      name: "Mermaid diagram source",
+    });
+    fireEvent.change(textarea, { target: { value: "temporary" } });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(props.updateAttributes).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("textbox", { name: "Mermaid diagram source" })
+    ).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add Mermaid Diagram" })
+    );
+    expect(
+      screen.getByRole<HTMLInputElement>("textbox", {
+        name: "Mermaid diagram source",
+      }).value
+    ).toBe("graph TD; A;");
+  });
+
+  it("surfaces Error and non-Error render failures and opens the editor", async () => {
+    const { rerender } = render(
+      <MermaidComponent {...createNodeViewProps({ content: "bad one" })} />
+    );
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledOnce());
+    mocks.renderControls[0].reject(new Error("parse failed"));
+
+    expect(await screen.findByText("parse failed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Edit Diagram" }));
+    expect(
+      screen.getByRole("textbox", { name: "Mermaid diagram source" })
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    rerender(
+      <MermaidComponent {...createNodeViewProps({ content: "bad two" })} />
+    );
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(3));
+    mocks.renderControls[2].reject("not an Error");
+    expect(await screen.findByText("Failed to render diagram")).toBeTruthy();
+  });
+
+  it("opens the legacy rendered diagram from its public Edit action", async () => {
+    render(
+      <MermaidComponent
+        {...createNodeViewProps({
+          content: "graph TD; A;",
+          enhancementsEnabled: false,
+        })}
+      />
+    );
+    await waitFor(() => expect(mermaid.render).toHaveBeenCalledOnce());
+    mocks.renderControls[0].resolve({ svg: MERMAID_SVG_LIGHT });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(
+      screen.getByRole("textbox", { name: "Mermaid diagram source" })
+    ).toBeTruthy();
+  });
+});
+
+describe("MermaidExtension public schema", () => {
+  it("parses Mermaid pre blocks and rejects other preformatted code", () => {
+    const parseRules = MermaidExtension.config.parseHTML?.call(
+      MermaidExtension as never
+    );
+    const preRule = parseRules?.find((rule) => rule.tag === "pre");
+    if (!(preRule && "getAttrs" in preRule && preRule.getAttrs)) {
+      throw new Error("Mermaid pre parse rule was not registered");
+    }
+    const mermaidPre = document.createElement("pre");
+    mermaidPre.innerHTML = '<code class="language-mermaid"></code>';
+    const code = mermaidPre.querySelector("code");
+    if (!code) {
+      throw new Error("test code element was not created");
+    }
+    code.textContent = "";
+
+    expect(preRule.getAttrs(mermaidPre)).toEqual({ content: "" });
+    expect(preRule.getAttrs(document.createElement("pre"))).toBe(false);
+  });
+
+  it("executes its insertion, markdown, node-view, and plugin contracts", () => {
+    const extension = MermaidExtension.configure({ enhancementsEnabled: true });
+    const insertContent = vi.fn(() => true);
+    const addCommands = extension.config.addCommands;
+    const addNodeView = extension.config.addNodeView;
+    if (!addCommands) {
+      throw new Error("Mermaid commands were not registered");
+    }
+    const commands = addCommands.call(extension as never);
+    const setMermaid = commands.setMermaid;
+    if (!setMermaid) {
+      throw new Error("setMermaid command was not registered");
+    }
+
+    expect(
+      setMermaid({ content: "graph TD" })({
+        commands: { insertContent } as never,
+      } as never)
+    ).toBe(true);
+    expect(insertContent).toHaveBeenCalledWith({
+      attrs: { content: "graph TD" },
+      type: "mermaid",
+    });
+    expect(
+      extension.config.renderMarkdown?.({}, {} as never, {} as never)
+    ).toBe("```mermaid\n\n```\n\n");
+    expect(addNodeView?.call(extension as never)).toBeTypeOf("function");
+    expect(
+      extension.config.addProseMirrorPlugins?.call(extension as never)
+    ).toHaveLength(1);
   });
 });
 

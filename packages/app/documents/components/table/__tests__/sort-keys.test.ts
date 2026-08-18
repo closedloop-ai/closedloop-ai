@@ -23,6 +23,7 @@ describe("SortKey", () => {
       "title",
       "type",
       "dueDate",
+      "updated",
       "assignee",
       "priority",
       "score",

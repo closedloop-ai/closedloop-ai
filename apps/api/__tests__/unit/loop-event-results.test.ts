@@ -94,7 +94,11 @@ vi.mock("@/lib/loops/loop-commands", () => ({
 
 // --- Imports (after mocks) ---
 
-import { LoopEventCompletedSchema } from "@closedloop-ai/loops-api/events";
+import {
+  LoopEventCompletedSchema,
+  LoopReconciliationStatus,
+  LoopSessionOrigin,
+} from "@closedloop-ai/loops-api/events";
 import { loopsService } from "@/app/loops/service";
 import { handleLoopEvent } from "@/lib/loops/loop-orchestrator";
 import { buildLoop } from "../fixtures/loop";
@@ -377,6 +381,168 @@ describe("backward compatibility: completed event without results[] is valid", (
         prNumber: 1,
       });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// usageReconciliation round-trip: the authoritative accounting must survive the
+// rebuild of loop_events.data, or none of PRD-538's provenance reaches a
+// historical read (ISS-5349).
+// ---------------------------------------------------------------------------
+
+/** The full harness-stdout block, as the desktop finalizer emits it. */
+const RECONCILIATION = {
+  sessionOrigin: LoopSessionOrigin.HarnessStdout,
+  authoritativeCostUsd: 1.2345,
+  derivedCostUsd: 1.23,
+  reconciliationStatus: LoopReconciliationStatus.Matched,
+  reconciliationDeltaUsd: -0.0045,
+  harnessNumTurns: 7,
+  harnessDurationMs: 42_000,
+  harnessDurationApiMs: 30_000,
+  harnessStopReason: "end_turn",
+  harnessUsage: {
+    input: 100,
+    output: 50,
+    cacheRead: 900,
+    cacheWrite: 200,
+    webSearchRequests: 3,
+  },
+  harnessModelUsage: {
+    "claude-opus-4-5": {
+      input: 100,
+      output: 50,
+      cacheRead: 900,
+      cacheCreation: 200,
+      costUsd: 1.2345,
+    },
+  },
+  harnessPermissionDenials: [{ toolName: "Bash", toolUseId: "toolu_01" }],
+};
+
+const BASE_COMPLETED_EVENT = {
+  type: "completed" as const,
+  result: {},
+  tokensUsed: { input: 1000, output: 500 },
+  timestamp: "2026-01-01T00:00:00.000Z",
+};
+
+/** The `data` payload the orchestrator handed to `addEvent`. */
+function persistedEventData(): Record<string, unknown> {
+  const addEventCall = mockLoopsService.addEvent.mock.calls[0];
+  return addEventCall[2].data;
+}
+
+describe("usageReconciliation round-trip through the API persistence path", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDownloadMetadata.mockResolvedValue(null);
+  });
+
+  it("persists the authoritative accounting block into loop_events.data", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      ...BASE_COMPLETED_EVENT,
+      usageReconciliation: RECONCILIATION,
+    });
+
+    // Without this the block reaches the POST and is then discarded when the
+    // orchestrator rebuilds `data`, so no historical read ever sees it.
+    expect(persistedEventData().usageReconciliation).toEqual(RECONCILIATION);
+  });
+
+  it("omits the key entirely when the event carries no accounting", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", BASE_COMPLETED_EVENT);
+
+    // Absent must stay absent, never become a stored null that reads as
+    // "we looked and there was nothing".
+    expect(persistedEventData()).not.toHaveProperty("usageReconciliation");
+  });
+
+  it("persists the SCHEMA-PARSED value, stripping keys the contract does not declare", async () => {
+    setupLoop();
+
+    // Bound to a variable rather than written inline: the extra key is exactly
+    // what a NEWER desktop build puts on the wire, which our in-process types
+    // forbid but the runtime boundary must still survive.
+    const fromNewerDesktopBuild = {
+      ...RECONCILIATION,
+      undeclaredField: { arbitrary: "payload" },
+    };
+
+    await handleLoopEvent("loop-1", "org-1", {
+      ...BASE_COMPLETED_EVENT,
+      usageReconciliation: fromNewerDesktopBuild,
+    });
+
+    // The route's validator throws away its safeParse output, so this is the
+    // only gate that turns the raw wire object into the schema's output.
+    expect(persistedEventData().usageReconciliation).toEqual(RECONCILIATION);
+  });
+
+  it("drops a corrupt aggregate while persisting the accounting that did validate", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      ...BASE_COMPLETED_EVENT,
+      usageReconciliation: {
+        ...RECONCILIATION,
+        harnessUsage: { ...RECONCILIATION.harnessUsage, input: -1 },
+      },
+    });
+
+    const persisted = persistedEventData().usageReconciliation as Record<
+      string,
+      unknown
+    >;
+    expect(persisted).not.toHaveProperty("harnessUsage");
+    expect(persisted.authoritativeCostUsd).toBe(1.2345);
+    expect(persisted.sessionOrigin).toBe(LoopSessionOrigin.HarnessStdout);
+  });
+
+  it("persists a pre-PRD-538 desktop's usage block, reading its absent webSearchRequests as zero", async () => {
+    setupLoop();
+    // The in-process type declares `webSearchRequests` required, but this
+    // payload arrives over HTTP from an already-installed peer build that
+    // predates the field — a runtime shape the type cannot describe and the
+    // cross-repo rule requires be exercised. Delete the key rather than cast.
+    const preIss5368Usage = { ...RECONCILIATION.harnessUsage };
+    Reflect.deleteProperty(preIss5368Usage, "webSearchRequests");
+
+    await handleLoopEvent("loop-1", "org-1", {
+      ...BASE_COMPLETED_EVENT,
+      usageReconciliation: {
+        ...RECONCILIATION,
+        harnessUsage: preIss5368Usage,
+      },
+    });
+
+    // ISS-5368: an already-installed desktop build that predates the field must
+    // not lose four sound token counters to one additive omission. Absent is
+    // KNOWN-ZERO for this per-request line item, so the block persists whole.
+    expect(persistedEventData().usageReconciliation).toEqual({
+      ...RECONCILIATION,
+      harnessUsage: { ...preIss5368Usage, webSearchRequests: 0 },
+    });
+  });
+
+  it("omits the whole block when a load-bearing figure is corrupt, without losing the completion", async () => {
+    setupLoop();
+
+    await handleLoopEvent("loop-1", "org-1", {
+      ...BASE_COMPLETED_EVENT,
+      usageReconciliation: { ...RECONCILIATION, authoritativeCostUsd: -1 },
+    });
+
+    const data = persistedEventData();
+    // Valid-or-absent: never a half-trustworthy row...
+    expect(data).not.toHaveProperty("usageReconciliation");
+    // ...and never at the cost of the completion event itself.
+    expect(data.tokensUsed).toEqual({ input: 1000, output: 500 });
+    expect(mockLoopsService.updateStatus).toHaveBeenCalled();
   });
 });
 

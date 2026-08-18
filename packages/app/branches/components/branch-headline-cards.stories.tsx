@@ -1,0 +1,57 @@
+import {
+  BranchMetricAvailability,
+  BranchMetricDisclosure,
+} from "@repo/api/src/types/branch-metrics";
+import type { Meta, StoryObj } from "@storybook/react";
+import { makeBranchDetail } from "../__tests__/branch-fixtures";
+import { BranchHeadlineCards } from "./branch-headline-cards";
+import { completeMetrics } from "./branch-story-metric-fixtures";
+
+const meta = {
+  title: "App Core/Branches/Branch Headline Cards",
+  component: BranchHeadlineCards,
+  tags: ["autodocs"],
+  parameters: { layout: "padded" },
+} satisfies Meta<typeof BranchHeadlineCards>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Complete: Story = {
+  args: {
+    detail: makeBranchDetail({ canonicalMetrics: completeMetrics() }),
+  },
+};
+
+export const Partial: Story = {
+  args: {
+    detail: makeBranchDetail({
+      canonicalMetrics: {
+        ...completeMetrics(),
+        locPerDollar: {
+          state: BranchMetricAvailability.Partial,
+          value: 42.5,
+          disclosure: BranchMetricDisclosure.DefaultIncomplete,
+        },
+      },
+    }),
+  },
+};
+
+export const NotApplicable: Story = {
+  args: {
+    detail: makeBranchDetail({
+      canonicalMetrics: {
+        ...completeMetrics(),
+        leadTimeMs: {
+          state: BranchMetricAvailability.NotApplicable,
+          value: null,
+        },
+        abandonmentTimeMs: {
+          state: BranchMetricAvailability.NotApplicable,
+          value: null,
+        },
+      },
+    }),
+  },
+};

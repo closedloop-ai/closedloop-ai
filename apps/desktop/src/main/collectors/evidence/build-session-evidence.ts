@@ -22,19 +22,26 @@ import { copilotAdapter } from "./adapters/copilot-adapter.js";
 import { cursorAdapter } from "./adapters/cursor-adapter.js";
 import { fallbackAdapter } from "./adapters/fallback-adapter.js";
 import { opencodeAdapter } from "./adapters/opencode-adapter.js";
+import { CommandEffect, classifyCommandEffect } from "./command-semantics.js";
+import { blankQuotedSpans, stripHeredocBodies } from "./command-tokens.js";
 import {
   type DeclaredEvidence,
   DeclaredKind,
+  declaredCategoryFor,
+  declaredCategoryForTracePhase,
   EvidenceLayer,
   type EvidenceUnit,
   emptyCategoryMix,
   type HarnessAdapter,
+  MUTATION_CATEGORIES,
   type SessionEvidence,
   type StructuralCategory,
   type StructuralEvidence,
   TOOL_CATEGORY_VALUES,
   ToolCategory,
 } from "./evidence-model.js";
+import { mutationCategoryForTargets } from "./mutation-kind.js";
+import { isTestInvocation } from "./test-invocation.js";
 
 /** One thin adapter per known harness. The core imports all of them + fallback. */
 const EVIDENCE_ADAPTERS: Record<Harness, HarnessAdapter> = {
@@ -46,11 +53,10 @@ const EVIDENCE_ADAPTERS: Record<Harness, HarnessAdapter> = {
 };
 
 // Command-content classification regexes. These match UNIVERSAL shell-command
-// text (git/gh/test runners), NOT harness tool names, so they are harness-blind
-// and live in the core. `TestRun` is a conservative refinement of `RunCommand`
-// (a miss safely degrades to RunCommand); start narrow (PLN-1202 §8).
-const TEST_COMMAND_RE =
-  /\b(?:vitest|jest|mocha|pytest|rspec|phpunit|ctest|tox|(?:pnpm|npm|yarn|bun)\s+(?:run\s+)?test|go\s+test|cargo\s+test|gradle\s+(?:test|check)|mvn\s+test|dotnet\s+test)\b/i;
+// text (git/gh lifecycle), NOT harness tool names, so they are harness-blind and
+// live in the core. Test detection moved to `test-invocation.ts` (AA-09): it
+// needs the line PARSED, not scanned, because a runner's name in an argument
+// (`which pytest`, `cat vitest.config.mts`) is not a test run.
 const GIT_LIFECYCLE_RE =
   /\bgit\s+(?:commit|push|checkout|switch|worktree|branch|merge|rebase|tag|cherry-pick)\b|\bgh\s+pr\s+create\b/;
 const GIT_COMMIT_RE = /\bgit\s+commit\b/;
@@ -67,61 +73,150 @@ type CategorizedTool = {
   category: StructuralCategory | null;
   commit: boolean;
   prCreate: boolean;
+  /**
+   * The paths a MUTATING tool use touched. Extracted here because the AA-09 C1
+   * refinement below needs them to pick the mutation kind, and carried on the
+   * result so `aggregateStructural` reuses them rather than re-parsing every
+   * Codex patch (the corpus's largest is 32 KB) a second time. Empty for every
+   * non-mutating tool.
+   */
+  mutationTargets: readonly string[];
 };
+
+/** Shared empty tail for the non-mutating paths, so they don't each allocate. */
+const NO_MUTATION_TARGETS: readonly string[] = [];
 
 /**
  * The single vendor-aware step (`adapter.categorize`) followed by the
- * harness-blind shell-command refinement: a `RunCommand` becomes `TestRun` or
- * `GitLifecycle` from its (universal) command text, and git-lifecycle counters
- * are read off the same text.
+ * harness-blind refinements: a `MutateCode` becomes `MutateDocument`/
+ * `MutateScratch` from what it TOUCHED (AA-09 C1), and a `RunCommand` becomes
+ * `TestRun`, `GitLifecycle`, or (AA-04) `ReadSearch` from its (universal) command
+ * text, off which the git-lifecycle counters are also read.
+ *
+ * Refinement PRECEDENCE is load-bearing and unchanged at the top: git/PR
+ * lifecycle wins over test runners (a `git commit -m "fix jest flake"` is a
+ * lifecycle action, not a test run), and both win over the AA-04 read-only check
+ * so no existing categorization moves. Only a command that would otherwise have
+ * stayed an un-refined `RunCommand` can become `ReadSearch`.
  */
 function categorizeToolUse(
   adapter: HarnessAdapter,
   tool: NormalizedToolUse
 ): CategorizedTool {
   const category = adapter.categorize(tool);
-  if (category !== ToolCategory.RunCommand) {
-    return { category, commit: false, prCreate: false };
+  if (category === ToolCategory.MutateCode) {
+    const targets = mutationTargetsFor(adapter, tool);
+    return {
+      category: mutationCategoryForTargets(
+        targets,
+        // The HARNESS's opinion only. Plugin/tooling state is harness-independent
+        // and is applied by the taxonomy itself, so no caller can omit it.
+        (path) => adapter.isAgentStatePath?.(path) ?? false
+      ),
+      commit: false,
+      prCreate: false,
+      mutationTargets: targets,
+    };
   }
-  const command = shellCommand(tool);
+  if (category !== ToolCategory.RunCommand) {
+    return {
+      category,
+      commit: false,
+      prCreate: false,
+      mutationTargets: NO_MUTATION_TARGETS,
+    };
+  }
+  // Strip heredoc BODIES once, before anything reads the line, so all three
+  // readers below see the same command. A heredoc body is authored CONTENT, not
+  // commands the shell will run, and each reader that missed this read the prose
+  // as instructions: a document whose body mentions `git commit` landed on
+  // GitLifecycle, and one whose body quoted a test plan landed on TestRun.
+  // Stripping first is also what makes the openers safe to blank — doing it in
+  // the other order rewrites a quoted delimiter (`<<'EOF'`) into one the closing
+  // line can never match, so the body runs to end-of-string and swallows the real
+  // commands after it.
+  const command = stripHeredocBodies(shellCommand(tool));
+  // Match the lifecycle vocabulary against QUOTED-BLANKED text: a tool name
+  // inside a search pattern or a commit message is text being looked for, not a
+  // tool being run, so `rg 'pnpm test'` is a search and not a test run.
+  const spoken = blankQuotedSpans(command);
   let refined: StructuralCategory = ToolCategory.RunCommand;
   // Check git/PR lifecycle BEFORE test runners: a lifecycle command whose
   // message embeds a test-runner keyword (e.g. `git commit -m "fix jest flake"`)
   // is a lifecycle action, not a test run.
-  if (GIT_LIFECYCLE_RE.test(command)) {
+  if (GIT_LIFECYCLE_RE.test(spoken)) {
     refined = ToolCategory.GitLifecycle;
-  } else if (TEST_COMMAND_RE.test(command)) {
+  } else if (isTestInvocation(command)) {
     refined = ToolCategory.TestRun;
+  } else if (classifyCommandEffect(command) === CommandEffect.ReadOnly) {
+    // AA-04: read-only shell work IS exploration. Before this, investigating
+    // through the shell (`grep`, `sed -n`, `git log`, `cat`) produced no explore
+    // signal at all, so `explore` was structurally near-unreachable and a
+    // shell-only harness could never explore. Only a CONFIDENTLY read-only line
+    // qualifies — `Mutating` and `Unknown` both stay `RunCommand`.
+    refined = ToolCategory.ReadSearch;
   }
   return {
     category: refined,
-    commit: GIT_COMMIT_RE.test(command),
-    prCreate: GH_PR_CREATE_RE.test(command),
+    commit: GIT_COMMIT_RE.test(spoken),
+    prCreate: GH_PR_CREATE_RE.test(spoken),
+    mutationTargets: NO_MUTATION_TARGETS,
   };
 }
 
-/** Best-effort, harness-agnostic mutated-path extraction from a tool's input. */
-function mutationTarget(tool: NormalizedToolUse): string | null {
+/**
+ * Best-effort, harness-agnostic mutated-path extraction from a tool's input.
+ *
+ * The harness ADAPTER gets first refusal (FEA-4010 / AA-09 C1): only it knows
+ * shapes this field-name scan cannot read — Codex's `apply_patch`, where the
+ * whole multi-file patch IS the input string. An adapter returning `[]` has
+ * answered; the fallback below serves adapters with no opinion (`null`).
+ */
+function mutationTargetsFor(
+  adapter: HarnessAdapter,
+  tool: NormalizedToolUse
+): string[] {
+  const declared = adapter.mutationTargets?.(tool);
+  if (declared) {
+    return declared;
+  }
   const input = tool.input;
   if (typeof input === "string") {
-    return input.trim() || null;
+    const trimmed = input.trim();
+    // A path never spans lines. This previously returned the string
+    // unconditionally, which is how an entire patch blob (median 1.5 KB, max
+    // 32 KB) was stored as a "mutated path" for every Codex edit. Declining to
+    // answer is the right failure: a consumer can tell "unknown" from a
+    // fabricated path, and MAX_MUTATION_TARGETS stays a bound on paths rather
+    // than on blobs.
+    return trimmed && !trimmed.includes("\n") ? [trimmed] : [];
   }
   if (input && typeof input === "object") {
     const obj = input as Record<string, unknown>;
     for (const key of MUTATION_PATH_KEYS) {
       const value = obj[key];
       if (typeof value === "string" && value.length > 0) {
-        return value;
+        return [value];
       }
     }
   }
-  return null;
+  return [];
 }
 
 /**
  * The declared layer (highest rank): session slash commands + per-tool declared
  * signals (skill / MCP) + DB-derived trace-phase boundaries supplied by the
- * caller. No single source is required.
+ * caller. No single source is required. Each signal's abstract category is
+ * classified by name through {@link declaredCategoryFor}: a plan-specific
+ * declaration (`/create-plan`, `ExitPlanMode`) becomes `DeclaredPlan` — the ONLY
+ * declaration that gates `plan` (FEA-4184) — and everything the core does not
+ * positively recognize as work intent falls to the INERT
+ * `DeclaredUtility` (AA-03), so an auth/model/plugin command or a work-tracking
+ * MCP call no longer fabricates `declared` provenance or a confidence boost.
+ * Trace phases are the exception: they declare the work phase itself, so
+ * {@link declaredCategoryForTracePhase} keeps them on genuine `DeclaredIntent`.
+ * Classification is centralized here (adapters emit the raw kind+name) so the
+ * gate and the inert default each have exactly one owner.
  */
 function collectDeclared(
   session: NormalizedSession,
@@ -134,21 +229,30 @@ function collectDeclared(
       kind: DeclaredKind.SlashCommand,
       name: slashCommand.name,
       timestamp: slashCommand.timestamp,
-      category: ToolCategory.DeclaredIntent,
+      category: declaredCategoryFor(slashCommand.name),
     });
   }
   for (const tool of session.toolUses) {
     const toolDeclared = adapter.declaredFromTool(tool);
     if (toolDeclared) {
-      declared.push(toolDeclared);
+      declared.push({
+        ...toolDeclared,
+        category: declaredCategoryFor(toolDeclared.name),
+      });
     }
   }
   for (const phase of tracePhaseSources) {
+    const name = phase.label ?? phase.phaseKey;
     declared.push({
       kind: DeclaredKind.TracePhase,
-      name: phase.label ?? phase.phaseKey,
+      name,
       timestamp: phase.startedAt,
-      category: ToolCategory.DeclaredIntent,
+      // A trace phase carries its intent in both the machine key and the label;
+      // classify from whichever names the phase (key is the stable one). Unlike a
+      // command/skill/MCP name this is a first-class declaration of the work phase
+      // itself, so a non-plan phase keeps genuine `DeclaredIntent` provenance
+      // rather than AA-03's inert default for name-derived signals.
+      category: declaredCategoryForTracePhase(phase.phaseKey, name),
     });
   }
   return declared;
@@ -157,13 +261,38 @@ function collectDeclared(
 /**
  * The harness-blind structural aggregate over the session's tool uses:
  * abstract-category mix, mutated file paths, git-lifecycle counts, and human
- * steering density. `declaredCount` folds the declared-signal count into the
- * complete `categoryMix` so the classifier reads one shape.
+ * steering density. `declared` folds the declared-signal counts into the complete
+ * `categoryMix` BY CATEGORY (`DeclaredIntent` vs the plan-specific `DeclaredPlan`,
+ * FEA-4184) so the classifier reads one shape and the plan gate sees only genuine
+ * plan declarations.
  */
+/**
+ * Append one mutating tool's distinct paths, respecting the collection bound.
+ *
+ * The bound is re-checked per PATH, not once per tool: a single tool use can
+ * name several files (a Codex patch commonly does; one corpus patch names 14),
+ * so a large patch arriving near the limit would otherwise overshoot it.
+ */
+function collectMutationTargets(
+  targets: readonly string[],
+  into: string[],
+  seen: Set<string>
+): void {
+  for (const target of targets) {
+    if (into.length >= MAX_MUTATION_TARGETS) {
+      return;
+    }
+    if (!seen.has(target)) {
+      seen.add(target);
+      into.push(target);
+    }
+  }
+}
+
 function aggregateStructural(
   session: NormalizedSession,
   adapter: HarnessAdapter,
-  declaredCount: number
+  declared: readonly DeclaredEvidence[]
 ): StructuralEvidence {
   const categoryMix = emptyCategoryMix();
   const mutationTargets: string[] = [];
@@ -173,25 +302,23 @@ function aggregateStructural(
   let prsCreated = 0;
 
   for (const tool of session.toolUses) {
-    const { category, commit, prCreate } = categorizeToolUse(adapter, tool);
-    if (commit) {
+    const categorized = categorizeToolUse(adapter, tool);
+    const { category } = categorized;
+    if (categorized.commit) {
       commits += 1;
     }
-    if (prCreate) {
+    if (categorized.prCreate) {
       prsCreated += 1;
     }
     if (category) {
       categoryMix[category] += 1;
     }
-    if (
-      category === ToolCategory.MutateCode &&
-      mutationTargets.length < MAX_MUTATION_TARGETS
-    ) {
-      const target = mutationTarget(tool);
-      if (target && !mutationSeen.has(target)) {
-        mutationSeen.add(target);
-        mutationTargets.push(target);
-      }
+    if (category && MUTATION_CATEGORIES.has(category)) {
+      collectMutationTargets(
+        categorized.mutationTargets,
+        mutationTargets,
+        mutationSeen
+      );
     }
     if (tool.gitBranch && branchesTouched.size < MAX_BRANCHES_TOUCHED) {
       branchesTouched.add(tool.gitBranch);
@@ -200,7 +327,9 @@ function aggregateStructural(
 
   const humanTurns = session.userMessages;
   categoryMix[ToolCategory.HumanTurn] = humanTurns;
-  categoryMix[ToolCategory.DeclaredIntent] = declaredCount;
+  for (const signal of declared) {
+    categoryMix[signal.category] += 1;
+  }
 
   return {
     categoryMix,
@@ -263,9 +392,41 @@ export function buildSessionEvidence(
     harness,
     harnessKnown: Object.hasOwn(EVIDENCE_ADAPTERS, harness),
     declared,
-    structural: aggregateStructural(session, adapter, declared.length),
+    structural: aggregateStructural(session, adapter, declared),
     linguistic: [],
   };
+}
+
+/**
+ * FEA-2271: the same vendor-aware categorization {@link buildSessionEvidence}
+ * applies to a whole session, scoped to an ARBITRARY tool-use list — a subagent's
+ * own `toolUses`. The subagent purpose classifier scores a delegated sub-task from
+ * its own evidence through the IDENTICAL FEA-2268 adapter boundary (never a forked
+ * heuristic), then `scoreWindow`s the returned mix to one purpose phase. Counts
+ * each recognized tool's refined abstract category and folds a declared-from-tool
+ * (MCP) signal into `DeclaredIntent`; `HumanTurn` stays 0 (a subagent has no human
+ * turns). Pure; an unknown harness/tool degrades to structural-only (or nothing),
+ * never throws — the same degrade-to-nothing rule the aggregate applies.
+ */
+export function categoryMixForToolUses(
+  toolUses: readonly NormalizedToolUse[],
+  harness: Harness
+): Record<ToolCategory, number> {
+  const adapter = EVIDENCE_ADAPTERS[harness] ?? fallbackAdapter;
+  const mix = emptyCategoryMix();
+  for (const tool of toolUses) {
+    const { category } = categorizeToolUse(adapter, tool);
+    if (category) {
+      mix[category] += 1;
+    }
+    const toolDeclared = adapter.declaredFromTool(tool);
+    if (toolDeclared) {
+      // Classify plan-specificity by name (FEA-4184) so a subagent's own plan
+      // declaration gates its purpose phase the same way the session timeline does.
+      mix[declaredCategoryFor(toolDeclared.name)] += 1;
+    }
+  }
+  return mix;
 }
 
 // Ranks for the deterministic timeline tie-break: `declared` before `structural`
@@ -334,8 +495,11 @@ function humanTurnUnits(session: NormalizedSession): EvidenceUnit[] {
   return units;
 }
 
-// Declared-intent units: reuse the same declared signals the aggregate collects,
+// Declared units: reuse the same declared signals the aggregate collects,
 // dropping any with no parseable timestamp (it can't be placed on the timeline).
+// Emits each signal's OWN category (`DeclaredPlan` vs `DeclaredIntent`, FEA-4184)
+// so the plan-specific signal reaches the per-window scorer's `plan` gate rather
+// than being flattened into the generic declared bucket.
 function declaredUnits(declared: readonly DeclaredEvidence[]): EvidenceUnit[] {
   const units: EvidenceUnit[] = [];
   for (const signal of declared) {
@@ -343,7 +507,7 @@ function declaredUnits(declared: readonly DeclaredEvidence[]): EvidenceUnit[] {
     if (Number.isFinite(ms)) {
       units.push({
         ms,
-        category: ToolCategory.DeclaredIntent,
+        category: signal.category,
         layer: EvidenceLayer.Declared,
       });
     }

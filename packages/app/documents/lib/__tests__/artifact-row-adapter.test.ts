@@ -1,5 +1,6 @@
 import {
   type Artifact,
+  type ArtifactLinkEndpoint,
   ArtifactSubtype,
   ArtifactType,
   LinkType,
@@ -9,6 +10,8 @@ import {
   DocumentStatus,
   DocumentType,
   type GenerationStatus,
+  IssueStatus,
+  SnapshotSource,
 } from "@repo/api/src/types/document";
 import type {
   DetailedArtifact,
@@ -19,6 +22,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectDocumentRowsFromTree,
   documentRowFromArtifact,
+  endpointToDocument,
   treeHasActiveGeneration,
 } from "../artifact-row-adapter";
 
@@ -179,5 +183,87 @@ describe("treeHasActiveGeneration", () => {
     };
     expect(treeHasActiveGeneration(tree)).toBe(false);
     expect(treeHasActiveGeneration(undefined)).toBe(false);
+  });
+});
+
+function makeEndpoint(
+  overrides: Partial<ArtifactLinkEndpoint>
+): ArtifactLinkEndpoint {
+  const base: ArtifactLinkEndpoint = {
+    id: "doc-1",
+    organizationId: "org-1",
+    projectId: "proj-1",
+    type: ArtifactType.Document,
+    subtype: ArtifactSubtype.Feature,
+    name: "Parent Feature",
+    slug: "FEA-1",
+    status: IssueStatus.InProgress,
+    priority: Priority.High,
+    assigneeId: "user-1",
+    dueDate: null,
+    externalUrl: null,
+    sortOrder: 1000,
+    createdAt: new Date("2026-06-01T00:00:00.000Z"),
+    createdById: "user-2",
+    updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+  };
+  return { ...base, ...overrides };
+}
+
+describe("endpointToDocument", () => {
+  it("maps a resolved-link endpoint onto the Document shape", () => {
+    expect(endpointToDocument(makeEndpoint({}))).toEqual({
+      id: "doc-1",
+      organizationId: "org-1",
+      projectId: "proj-1",
+      type: DocumentType.Feature,
+      title: "Parent Feature",
+      slug: "FEA-1",
+      fileName: null,
+      status: IssueStatus.InProgress,
+      priority: Priority.High,
+      latestVersion: 1,
+      createdById: "user-2",
+      assigneeId: "user-1",
+      assignee: null,
+      approverId: null,
+      approver: null,
+      repositorySnapshot: { repositories: [], source: SnapshotSource.None },
+      templateForType: null,
+      sortOrder: 1000,
+      createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-06-02T00:00:00.000Z"),
+    });
+  });
+
+  it("maps a PRD subtype endpoint to the PRD document type", () => {
+    const doc = endpointToDocument(
+      makeEndpoint({
+        subtype: ArtifactSubtype.Prd,
+        status: DocumentStatus.Approved,
+      })
+    );
+    expect(doc.type).toBe(DocumentType.Prd);
+    expect(doc.status).toBe(DocumentStatus.Approved);
+  });
+
+  it("defaults a null subtype to Feature", () => {
+    expect(endpointToDocument(makeEndpoint({ subtype: null })).type).toBe(
+      DocumentType.Feature
+    );
+  });
+
+  it("falls back to empty defaults for the fields the endpoint omits", () => {
+    const doc = endpointToDocument(
+      makeEndpoint({ slug: null, priority: null, createdById: null })
+    );
+    expect(doc.slug).toBe("");
+    expect(doc.priority).toBe(Priority.Medium);
+    expect(doc.createdById).toBe("");
+  });
+
+  it("falls back to Backlog for an out-of-contract feature status", () => {
+    const doc = endpointToDocument(makeEndpoint({ status: "SOMETHING_NEW" }));
+    expect(doc.status).toBe(IssueStatus.Backlog);
   });
 });

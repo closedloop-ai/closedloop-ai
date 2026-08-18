@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { describe, test } from "node:test";
+import type { GatewaySigningKeyMaterial } from "../src/main/command-signing/gateway-signing-key-store.js";
 import {
   buildBootstrapClaimPayload,
   claimDesktopManagedApiKey,
   isRetryableBootstrapClaimFailure,
-} from "../src/main/bootstrap-claim.js";
-import type { GatewaySigningKeyMaterial } from "../src/main/gateway-signing-key-store.js";
+} from "../src/main/onboarding/bootstrap-claim.js";
 
 function makeKeyMaterial(gatewayId: string): GatewaySigningKeyMaterial {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");

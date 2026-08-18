@@ -1,5 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { LinkType } from "@repo/api/src/types/artifact.js";
+import {
+  LinkDirection,
+  LinkQueryMode,
+  LinkType,
+} from "@repo/api/src/types/artifact.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -39,13 +43,13 @@ export function registerListArtifactLinks(
           .optional()
           .describe(`Filter by link type. ${ARTIFACT_LINK_TYPE_HELP}`),
         direction: z
-          .enum(["source", "target", "both"])
+          .enum(LinkDirection)
           .optional()
           .describe(
             "Which links to return relative to artifactId (the param value names the OTHER endpoint's role). 'target' = outgoing links where artifactId is the source: its downstream/produced children (e.g. the plans a feature produces). 'source' = incoming links where artifactId is the target: its upstream producers (e.g. the feature that produced this plan). 'both' = all (default)."
           ),
         mode: z
-          .enum(["direct", "tree"])
+          .enum(LinkQueryMode)
           .optional()
           .describe(
             "'direct' returns only immediate links; 'tree' traverses the link graph via BFS"

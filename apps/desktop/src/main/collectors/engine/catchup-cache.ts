@@ -212,3 +212,42 @@ export function createCatchupCache(
     persisted: persistPath != null,
   };
 }
+
+/**
+ * How often the catchup cache is flushed to disk DURING a long import pass, so a
+ * kill/restart resumes near where it left off rather than re-processing every
+ * source. The end-of-pass flush still runs; this only bounds the lost progress.
+ */
+export const CACHE_FLUSH_INTERVAL_MS = 10_000;
+
+/**
+ * Mark sources seen during one import pass, flushing to disk on a throttle.
+ *
+ * Extracted from the import loop (which sits at the file-size ceiling) because
+ * the throttle carries STATE — the last flush time — across every source in the
+ * pass, and a bare helper would have made the caller hold and thread it. Built
+ * once per pass, so its clock starts when the pass does.
+ */
+export function createPassSeenWriter(
+  cache: CatchupCache,
+  intervalMs: number = CACHE_FLUSH_INTERVAL_MS,
+  now: () => number = Date.now
+): {
+  markSeen(
+    filePath: string,
+    stat: Stats | null,
+    extraMtimeMs: number | null
+  ): void;
+} {
+  let lastFlushAt = now();
+  return {
+    markSeen(filePath, stat, extraMtimeMs): void {
+      cache.markSeenWith(filePath, stat, extraMtimeMs);
+      const at = now();
+      if (at - lastFlushAt >= intervalMs) {
+        lastFlushAt = at;
+        cache.flush();
+      }
+    },
+  };
+}

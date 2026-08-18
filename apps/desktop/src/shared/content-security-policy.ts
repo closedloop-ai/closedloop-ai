@@ -1,17 +1,19 @@
 // Content-Security-Policy for the packaged `app://` renderer.
 //
 // The renderer talks to the main process exclusively over the contextIsolated
-// IPC bridge (`window.desktopApi`): the REST transport is inert
-// (desktop-app-core-provider.tsx) and telemetry is shipped over IPC, so the
-// renderer makes no outbound network requests and `connect-src` needs no remote
-// origins. Scripts are locked to same-origin bundles — the former inline
-// readiness `<script>` now loads as a module (design-system/index.html →
-// renderer-ready-signal.ts) so no `'unsafe-inline'`/hash is required for
-// `script-src`. `style-src` keeps `'unsafe-inline'` on purpose: the design
-// system and react-grid-layout set element `style` attributes at runtime, which
-// a nonce/hash cannot cover, and this also permits the inline `<style>` shell in
-// index.html. Bundled fonts/logos and Vite-inlined `data:` assets are covered by
-// `'self' app:`/`data:`.
+// IPC bridge (`window.desktopApi`): cloud REST marshals over IPC (PLN-1138 D-G
+// Option B) and telemetry ships over IPC. Even the (multi-MB) session transcript
+// bytes stay same-origin — the main process fetches them from the short-lived
+// signed S3 URL and serves them to the renderer over the `app://` scheme
+// (FEA-3324 Option B2), so the renderer makes no outbound network requests and
+// `connect-src` needs no remote origins. Scripts are locked to same-origin
+// bundles — the former inline readiness `<script>` now loads as a module
+// (design-system/index.html → renderer-ready-signal.ts) so no
+// `'unsafe-inline'`/hash is required for `script-src`. `style-src` keeps
+// `'unsafe-inline'` on purpose: the design system and react-grid-layout set
+// element `style` attributes at runtime, which a nonce/hash cannot cover, and
+// this also permits the inline `<style>` shell in index.html. Bundled
+// fonts/logos and Vite-inlined `data:` assets are covered by `'self' app:`/`data:`.
 const BASE_CSP_DIRECTIVES = [
   "default-src 'self' app:",
   "script-src 'self' app:",

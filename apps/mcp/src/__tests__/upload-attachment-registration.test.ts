@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { registerUploadAttachment } from "../tools/upload-attachment.js";
 
 vi.mock("../api-client.js", () => ({
   verifyApiKey: vi.fn(),
@@ -66,5 +67,45 @@ describe("upload-attachment tool registration gating", () => {
     const readOnly = await registeredToolNames(["read"]);
     expect(readOnly).not.toContain(TOOL_NAME);
     expect(readOnly).toContain("list-attachments");
+  });
+});
+
+describe("upload-attachment handler — purpose field omission", () => {
+  it("omits purpose from the POST body when purpose is not supplied", async () => {
+    // Covers the false arm of ...(purpose ? { purpose } : {}) in the handler.
+    const localRegisterTool = vi.fn();
+    const localApiClient = { post: vi.fn() };
+
+    registerUploadAttachment(
+      { registerTool: localRegisterTool } as never,
+      localApiClient as never
+    );
+
+    const handler = localRegisterTool.mock.calls[0]?.[2] as (
+      input: Record<string, unknown>
+    ) => Promise<unknown>;
+
+    localApiClient.post.mockResolvedValue({
+      attachmentId: "a-1",
+      uploadUrl: "https://s3.example.com/upload",
+    });
+
+    await handler({
+      entityId: "PRD-7",
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4096,
+    });
+
+    const [, body] = localApiClient.post.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(body).not.toHaveProperty("purpose");
+    expect(body).toMatchObject({
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 4096,
+    });
   });
 });

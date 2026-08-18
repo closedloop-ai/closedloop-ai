@@ -63,9 +63,11 @@ const ORG_ONLY_TILE_IDS = new Set<string>([
 /**
  * Resolve per-user Insights availability outside the static tile catalog.
  * GitHub-truth tiles fail closed unless the active data source explicitly
- * proves the current payload can satisfy that tile. Desktop personal/local
- * metrics do not carry cloud payload proof, but still require an active GitHub
- * data connection before GitHub-truth tiles render from local enrichment.
+ * proves the current payload can satisfy that tile. A Cloud-sourced `me`-scope
+ * tile trusts the cloud response's per-tile payload directly (FEA-3721). Desktop
+ * personal/local metrics do not carry cloud payload proof, so they still require
+ * an active GitHub data connection before GitHub-truth tiles render from local
+ * enrichment.
  */
 export function resolveInsightsTileAvailability({
   tileId,
@@ -80,6 +82,21 @@ export function resolveInsightsTileAvailability({
   }
   if (ORG_ONLY_TILE_IDS.has(tileId) && scope !== InsightsScope.Org) {
     return { state: BranchKpiState.Unavailable };
+  }
+  // FEA-3721: a Cloud-sourced `me`-scope GitHub-truth tile reads the cloud
+  // `/insights/*` response, which already carries the per-tile payload proof
+  // (`buildDeliveryTileAvailability` runs scope-independently in the cloud
+  // service). Trust that payload directly — it is the source of truth for the
+  // signed-in user's own delivery data — instead of re-gating on the desktop's
+  // LOCAL GitHub App connection, which had wrongly forced populated cloud KPIs
+  // (merged/merge-rate/ttm) to 0/blank when the local App was not connected.
+  // `org` still requires an active connection/provenance (handled below); Local
+  // sources carry no cloud payload proof and keep their connection gating.
+  if (
+    sourceKind === InsightsTileSourceKind.Cloud &&
+    scope === InsightsScope.Me
+  ) {
+    return { state: toBranchKpiState(payloadAvailability?.[tileId]) };
   }
   if (
     sourceKind === InsightsTileSourceKind.Local &&

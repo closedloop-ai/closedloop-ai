@@ -1,0 +1,68 @@
+/*
+ * Session-trace jump ARRIVAL affordance (ISS-5479).
+ *
+ * Extracted from `styles.css` so that aggregate stays on its shrink-only
+ * grandfather path. These three rules are one unit: they are the entire answer
+ * to "the reader jumped here — show them where they landed". They rhyme on the
+ * primary tint and deliberately DIVERGE on the rail: the 2px inset left rail
+ * belongs to the URL-owned invocation anchor alone, so a transient arrival is
+ * never mistakable for the persistent selection.
+ *
+ * Why the flash earns this much care: the Session Timeline grid is finer than
+ * the transcript's group-keyed anchor space, so several adjacent bars
+ * legitimately resolve to the SAME anchor. When the reader is already parked on
+ * that anchor the scroll delta is ~0 and nothing moves, which makes this flash
+ * the ONLY feedback that the click did anything at all. A tint that began
+ * decaying on frame one read as "nothing happened", so the peak now holds
+ * before it fades.
+ */
+
+.st-flash {
+  animation: stflash 1.1s ease-out;
+}
+
+/*
+ * The flash is the sole "you landed here" signal on a zero-delta jump, so it
+ * cannot simply be switched off for reduced motion — that would hand those
+ * readers back the dead control this ticket exists to fix. Instead the motion
+ * is dropped and the arrival becomes a steady selected state, matching the
+ * invocation-anchor treatment below.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .st-flash {
+    animation: none;
+    background: color-mix(in oklab, var(--primary) 12%, transparent);
+  }
+}
+
+/* The URL-owned invocation target remains quietly selected after the arrival
+   flash ends, so async transcript navigation never loses its landing point. */
+.st [data-invocation-anchor-target="true"] {
+  background: color-mix(in oklab, var(--primary) 6%, transparent);
+  box-shadow: inset 2px 0 0 color-mix(in oklab, var(--primary) 55%, transparent);
+}
+
+/*
+ * Tint only, no rail. The 2px inset left rail is the invocation anchor's OWN
+ * vocabulary on this surface: it means "this is the row the URL selected", and
+ * it is the one thing that distinguishes that persistent state from ordinary
+ * transcript rows. Painting it for 1.1s on every bar click made an arrival
+ * indistinguishable from the selection for that second and cost the rail its
+ * specific meaning. The brightness bump and the 40% hold do the arrival's work
+ * on their own — those are the bug fix (a tint that decayed from frame one read
+ * as "nothing happened"); the rail was added vocabulary the arrival never
+ * needed.
+ */
+@keyframes stflash {
+  0% {
+    background: color-mix(in oklab, var(--primary) 16%, transparent);
+  }
+
+  40% {
+    background: color-mix(in oklab, var(--primary) 16%, transparent);
+  }
+
+  100% {
+    background: transparent;
+  }
+}

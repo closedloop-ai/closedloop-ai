@@ -5,21 +5,19 @@ import {
   type Prisma,
   ThreadSource,
   ThreadStatus,
-  type TransactionClient,
 } from "@repo/database";
+import type {
+  GitHubProjectionDb,
+  SoftDeleteGitHubCommentByRemoteIdInput,
+  SoftDeleteGitHubCommentProjectionInput,
+  SoftDeleteScopedGitHubCommentProjectionInput,
+  UpsertGitHubProjectionResult,
+} from "@/app/comments/github-projection-contract";
 import { getPrismaErrorCode, getPrismaP2002Target } from "@/lib/db-utils";
 import {
   type GitHubFetchProvenance,
   gitHubFetchProvenanceData,
 } from "@/lib/github-fetch-provenance";
-
-type GitHubProjectionDb = Pick<
-  TransactionClient,
-  | "comment"
-  | "commentThread"
-  | "gitHubCommentProjection"
-  | "gitHubCommentThreadProjection"
->;
 
 export type GitHubProjectionAuthorInput = {
   userId: string;
@@ -76,41 +74,6 @@ export type UpsertGitHubReviewCommentThreadInput =
     commitSha?: string | null;
     comments: GitHubProjectionCommentInput[];
   };
-
-type SoftDeleteGitHubCommentProjectionInput = {
-  organizationId: string;
-  branchArtifactId: string;
-  pullRequestDetailId: string;
-  threadKind: GitHubCommentThreadKind;
-  liveGithubCommentIds: ReadonlySet<string | number>;
-  deletedAt: Date;
-  fetchProvenance?: GitHubFetchProvenance;
-};
-
-type SoftDeleteScopedGitHubCommentProjectionInput = {
-  organizationId: string;
-  branchArtifactId: string;
-  pullRequestDetailId: string;
-  githubCommentId: string | number;
-  deletedAt: Date;
-  fetchProvenance?: GitHubFetchProvenance;
-};
-
-type SoftDeleteGitHubCommentByRemoteIdInput =
-  SoftDeleteScopedGitHubCommentProjectionInput & {
-    threadKind: GitHubCommentThreadKind;
-  };
-
-type UpsertGitHubProjectionResult = {
-  threadId: string;
-  commentIds: string[];
-  /**
-   * Remote GitHub ids whose generic Comment row was created by this call.
-   * Webhook callers use this as the atomic first-delivery signal for one-time
-   * side effects; duplicate deliveries that race on `externalId` do not appear.
-   */
-  createdGithubCommentIds: string[];
-};
 
 export type GitHubReviewThreadResolutionProjection =
   | {
@@ -267,10 +230,12 @@ export async function softDeleteGitHubCommentProjection(
         githubDeletedAt: input.deletedAt,
         ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
+      select: { commentId: true },
     });
     await tx.comment.update({
       where: { id: row.commentId },
       data: { deletedAt: input.deletedAt },
+      select: { id: true },
     });
   }
 
@@ -307,6 +272,7 @@ export async function softDeleteGitHubCommentProjection(
         deletedAt: input.deletedAt,
         ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
+      select: { threadId: true },
     });
     threads += 1;
   }
@@ -464,10 +430,12 @@ async function softDeleteGitHubCommentByRemoteIdInScope(
         githubDeletedAt: input.deletedAt,
         ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
+      select: { commentId: true },
     });
     await tx.comment.update({
       where: { id: row.commentId },
       data: { deletedAt: input.deletedAt },
+      select: { id: true },
     });
   }
 
@@ -491,6 +459,7 @@ async function softDeleteGitHubCommentByRemoteIdInScope(
         deletedAt: input.deletedAt,
         ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
+      select: { threadId: true },
     });
     threads += 1;
   }
@@ -692,6 +661,7 @@ async function upsertGitHubThreadProjection(
       ...gitHubThreadProjectionData(input, "create"),
     },
     update: gitHubThreadProjectionData(input, "update"),
+    select: { threadId: true },
   });
 }
 
@@ -819,6 +789,7 @@ async function upsertProjectedGitHubComments(
         githubDeletedAt: null,
         ...gitHubFetchProvenanceData(input.fetchProvenance),
       },
+      select: { commentId: true },
     });
 
     localCommentIdByRemoteId.set(githubCommentId, comment.id);
@@ -1151,6 +1122,7 @@ async function backfillGitHubCommentParentLinks(
     await tx.comment.update({
       where: { id: link.commentId },
       data: { parentCommentId },
+      select: { id: true },
     });
   }
 }

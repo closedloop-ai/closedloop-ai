@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
-import { AgentHookListener } from "../src/main/agent-monitor-listener.js";
+import { AgentHookListener } from "../src/main/agent-monitor/agent-monitor-listener.js";
 import {
   getOtlpRequestType,
   OtlpExportKind,
@@ -9,11 +9,11 @@ import {
 import {
   type NormalizedOtlpExport,
   OtlpHttpReceiver,
-} from "../src/main/otlp-http-receiver.js";
+} from "../src/main/telemetry/otlp-http-receiver.js";
 import {
   DEFAULT_OTLP_RECEIVER_HOST,
   OtlpReceiverUnavailableReason,
-} from "../src/main/otlp-receiver-state.js";
+} from "../src/main/telemetry/otlp-receiver-state.js";
 
 const PROTOBUF_CONTENT_TYPE = "application/x-protobuf";
 const JSON_CONTENT_TYPE = "application/json";
@@ -71,8 +71,12 @@ test("OTLP receiver accepts valid metrics, logs, and traces protobuf exports", a
   const receiver = new OtlpHttpReceiver({
     port: 0,
     log: (message) => logs.push(message),
-    onClaudeExport: (payload) => claudeExports.push(payload),
-    onCodexExport: (payload) => codexExports.push(payload),
+    onClaudeExport: (payload) => {
+      claudeExports.push(payload);
+    },
+    onCodexExport: (payload) => {
+      codexExports.push(payload);
+    },
   });
   const state = await receiver.start();
   assert.equal(state.available, true);
@@ -268,8 +272,12 @@ test("OTLP receiver treats Codex-shaped non-identifying payloads as unknown", as
   const receiver = new OtlpHttpReceiver({
     port: 0,
     log: (message) => logs.push(message),
-    onClaudeExport: (payload) => claudeExports.push(payload),
-    onCodexExport: (payload) => codexExports.push(payload),
+    onClaudeExport: (payload) => {
+      claudeExports.push(payload);
+    },
+    onCodexExport: (payload) => {
+      codexExports.push(payload);
+    },
     onUnknownExport: (payload) => {
       unknownKinds.push(payload.kind);
     },
@@ -306,7 +314,9 @@ test("OTLP receiver classifies codex-app-server logs and traces as Codex", async
   const unknownKinds: OtlpExportKind[] = [];
   const receiver = new OtlpHttpReceiver({
     port: 0,
-    onCodexExport: (payload) => codexExports.push(payload),
+    onCodexExport: (payload) => {
+      codexExports.push(payload);
+    },
     onUnknownExport: (payload) => {
       unknownKinds.push(payload.kind);
     },
@@ -394,8 +404,12 @@ test("OTLP receiver does not classify substring-only harness identifiers", async
   const unknownKinds: OtlpExportKind[] = [];
   const receiver = new OtlpHttpReceiver({
     port: 0,
-    onClaudeExport: (payload) => claudeExports.push(payload),
-    onCodexExport: (payload) => codexExports.push(payload),
+    onClaudeExport: (payload) => {
+      claudeExports.push(payload);
+    },
+    onCodexExport: (payload) => {
+      codexExports.push(payload);
+    },
     onUnknownExport: (payload) => {
       unknownKinds.push(payload.kind);
     },
@@ -525,8 +539,12 @@ test("OTLP receiver does not synthesize rows when no request arrives", async () 
   const codexExports: NormalizedOtlpExport[] = [];
   const receiver = new OtlpHttpReceiver({
     port: 0,
-    onClaudeExport: (payload) => claudeExports.push(payload),
-    onCodexExport: (payload) => codexExports.push(payload),
+    onClaudeExport: (payload) => {
+      claudeExports.push(payload);
+    },
+    onCodexExport: (payload) => {
+      codexExports.push(payload);
+    },
   });
 
   await receiver.start();

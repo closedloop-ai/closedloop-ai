@@ -4,12 +4,15 @@
 # (cross-repo) and regenerate from @closedloop-ai/telemetry-contract on any
 # policy change (FEA-1992):
 #   pnpm --filter @closedloop-ai/telemetry-contract generate:collector-tail-sampling
-# Keeps every error (span status ERROR or HTTP 5xx) and slow/p99-latency
+# Keeps every error (span status ERROR or HTTP 5xx) and slow child operation
 # trace at 100%; samples the rest at the baseline rate (OR semantics).
 tail_sampling:
-  decision_wait: 10s
-  num_traces: 50000
+  decision_wait: 310s
+  num_traces: 62000
   expected_new_traces_per_sec: 200
+  decision_cache:
+    sampled_cache_size: 100000
+    non_sampled_cache_size: 100000
   policies:
     - name: keep-error-status
       type: status_code
@@ -23,9 +26,11 @@ tail_sampling:
         min_value: 500
         max_value: 599
     - name: keep-slow
-      type: latency
-      latency:
-        threshold_ms: 2000
+      type: numeric_attribute
+      numeric_attribute:
+        key: duration_ms
+        min_value: 2000
+        max_value: 86400000
     - name: baseline
       type: probabilistic
       probabilistic:

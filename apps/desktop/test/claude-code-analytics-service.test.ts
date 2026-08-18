@@ -1,6 +1,6 @@
 /**
  * @file claude-code-analytics-service.test.ts
- * @description Unit tests for src/main/claude-code-analytics-service.ts (FEA-1436),
+ * @description Unit tests for src/main/cost/claude-code-analytics-service.ts (FEA-1436),
  * the desktop-main seam that turns the Anthropic Admin key into a per-user Claude
  * Code usage view for the renderer.
  *
@@ -18,15 +18,15 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AdminKeyStatus } from "../src/main/admin-key-store.js";
-import type { ClaudeCodeUsageRecord } from "../src/main/claude-code-analytics-client.js";
+import type { AdminKeyStatus } from "../src/main/cost/admin-key-store.js";
+import type { ClaudeCodeUsageRecord } from "../src/main/cost/claude-code-analytics-client.js";
 import {
   type AnthropicKeyReader,
   type ClaudeCodeAnalyticsClientLike,
   ClaudeCodeAnalyticsService,
   DEFAULT_ANALYTICS_WINDOW_DAYS,
   MAX_ANALYTICS_WINDOW_DAYS,
-} from "../src/main/claude-code-analytics-service.js";
+} from "../src/main/cost/claude-code-analytics-service.js";
 
 /** A key reader fake with a settable key. */
 function keyReader(key: string | null): AnthropicKeyReader {

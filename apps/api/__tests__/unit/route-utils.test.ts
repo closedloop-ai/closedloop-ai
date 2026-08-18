@@ -1,5 +1,8 @@
 import { log } from "@repo/observability/log";
-import { REQUEST_COMPLETED_CONTRACT_EVENT_NAME } from "@repo/observability/telemetry/request-completed";
+import {
+  buildRequestCompletedContractAttributes,
+  REQUEST_COMPLETED_CONTRACT_EVENT_NAME,
+} from "@repo/observability/telemetry/request-completed";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -129,7 +132,11 @@ describe("parseQueryParams", () => {
 });
 
 describe("logRequestCompleted", () => {
-  it("emits the legacy request_completed log and the contract span log", () => {
+  // ISS-5039: exactly ONE log line per request. Every deployed log call is
+  // billed twice in Datadog (Vercel Log Drain + agentless intake), so a second
+  // line here is two more billed events per request. The contract attributes
+  // must ride on the same line, not a `request_completed.contract` sibling.
+  it("emits one log line carrying both the snake_case and contract fields", () => {
     const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
     vi.spyOn(globalThis.performance, "now").mockReturnValue(150);
 
@@ -141,15 +148,22 @@ describe("logRequestCompleted", () => {
       201
     );
 
+    expect(info).toHaveBeenCalledTimes(1);
     expect(info).toHaveBeenCalledWith("request_completed", {
+      ...buildRequestCompletedContractAttributes({
+        requestUrl: "https://api.test/loops?secret=redacted",
+        method: "POST",
+        statusCode: 201,
+        durationMs: 25,
+      }),
       path: "/loops",
       method: "POST",
       status_code: 201,
       duration_ms: 25,
     });
-    expect(info).toHaveBeenCalledWith(
+    expect(info).not.toHaveBeenCalledWith(
       REQUEST_COMPLETED_CONTRACT_EVENT_NAME,
-      expect.any(Object)
+      expect.anything()
     );
   });
 });

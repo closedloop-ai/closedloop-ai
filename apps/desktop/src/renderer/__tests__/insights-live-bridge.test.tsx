@@ -44,6 +44,7 @@ function fakeSource(withSubscribe: boolean): {
     detail: () => Promise.reject(new Error("unused")),
     usage: () => Promise.reject(new Error("unused")),
     analytics: () => Promise.reject(new Error("unused")),
+    pageData: () => Promise.reject(new Error("unused")),
     ...(withSubscribe
       ? {
           subscribe: (onChange: (change: AgentSessionsChange) => void) => {

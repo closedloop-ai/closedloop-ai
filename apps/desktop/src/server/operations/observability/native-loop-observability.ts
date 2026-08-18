@@ -13,11 +13,11 @@ import {
   emitCanonicalPerfEvent,
   LOOP_PERF_RELATIVE_PATH,
   type RunningPhaseState,
-} from "../../../main/loop-perf-telemetry.js";
+} from "../../../main/loop/loop-perf-telemetry.js";
 import type {
   TelemetryEmitter,
   TelemetryTraceContext,
-} from "../../../main/telemetry-protocol.js";
+} from "../../../main/telemetry/telemetry-protocol.js";
 import {
   clearActiveAgents,
   markNativeLoop,

@@ -318,18 +318,14 @@ async function resolveBranchArtifactContext(
   }
 
   const rawCurrentPr = branch.currentPullRequestDetail;
-  const currentPr =
-    rawCurrentPr?.branchArtifactId === branch.artifactId &&
-    rawCurrentPr.repositoryId === branch.repositoryId
-      ? rawCurrentPr
-      : null;
+  const currentPr = isCurrentPullRequestRelationValid(branch, rawCurrentPr)
+    ? rawCurrentPr
+    : null;
   if (rawCurrentPr && !currentPr) {
-    log.warn("[resolve-pr-context] Ignoring invalid current PR relation", {
-      branchArtifactId: branch.artifactId,
-      currentPullRequestDetailId: rawCurrentPr.id,
-      currentPullRequestRepositoryId: rawCurrentPr.repositoryId,
-      currentPullRequestBranchArtifactId: rawCurrentPr.branchArtifactId,
-      repositoryId: branch.repositoryId,
+    logInvalidCurrentPullRequestRelation({
+      lane: InvalidCurrentPullRequestRelationLane.Primary,
+      branch,
+      currentPullRequestDetail: rawCurrentPr,
     });
   }
   const producingDocumentId = await resolveProducingDocumentId(
@@ -546,4 +542,98 @@ async function resolveProducingDocumentId(
     })
   );
   return link?.sourceId ?? null;
+}
+
+/**
+ * Whether a branch's `currentPullRequestDetail` relation actually belongs to that
+ * branch.
+ *
+ * `BranchDetail.currentPullRequestDetailId` is a plain FK on `PullRequestDetail.id`
+ * — the schema does not constrain it to the owning branch or repository — so the
+ * row it resolves to can belong to a different branch entirely, and an unrelated
+ * PR's number, url, and state would then render as if they were this branch's.
+ *
+ * Ownership keys on `branchArtifactId` ALONE. It is non-nullable, and a row that
+ * names this branch IS this branch's PR, so it is what blocks the cross-branch
+ * leak. It is an FK onto the globally-unique `artifacts(id)` PK and every caller
+ * has already org-scoped the branch row it passes (`artifact.findFirst({ where:
+ * { id, organizationId, type: BRANCH } })`), so it cannot be satisfied across
+ * organizations either.
+ *
+ * `repositoryId` is deliberately NOT compared. It is nullable enrichment, not an
+ * identity key (PRD-510 D2: "PR identity keys on repositoryFullName (repo-less)
+ * or repositoryId (App); never on both"), and it is a PER-INSTALLATION surrogate:
+ * `GitHubInstallationRepository` is `@@unique([installationId, githubRepoId])`,
+ * so every App reinstall mints a NEW id for the same GitHub repo — which is why
+ * `resolveBranchRepositoryCredential` above needs active-sibling recovery at all.
+ * The two sides are then re-homed onto that new id by different, independently
+ * gated writers: `branch-service.ts` overwrites `BranchDetail.repositoryId`
+ * ungated, while `upsertCurrentPullRequestDetail` keys the PR on the
+ * reinstall-stable `githubId` and OMITS `repositoryId` from its `update:` block,
+ * and every other PR-side writer only fills it when null. So a branch and its own
+ * current PR legitimately hold different non-null ids, and comparing them marks a
+ * live PR invalid — which 404s the whole Branch View through
+ * `classifyBranchViewUnavailable`, fails comment writes with `StaleHeadSha`, and
+ * cannot self-heal because the sync preflight returns `CurrentPullRequestStale`
+ * before it ever reaches `relinkBranchViewRepositoryCredential`. If a repo
+ * cross-check is ever wanted here, compare the producer-independent
+ * `repositoryFullName` (non-nullable on `BranchDetail`, populated on
+ * `PullRequestDetail` by both producers), never the surrogate.
+ *
+ * Applied today by exactly two readers: the primary resolver above and the
+ * Branch View missing-context fallback in
+ * `app/branch-view/[externalLinkId]/service/fallback-pr-context.ts`. Three other
+ * readers define this same relation rule and now disagree with it —
+ * `getOwnedCurrentPullRequestDetail` (`app/branches/branch-remote-evidence.ts`),
+ * `loadValidCurrentPullRequestDetailId` (`app/integrations/github/service.ts`),
+ * and `findExistingBranchPr`
+ * (`app/webhooks/github/handlers/pull-request-handler.ts`) all still compare
+ * `repositoryId`. Converging them onto this predicate plus a guard is tracked by
+ * ISS-5989.
+ */
+export function isCurrentPullRequestRelationValid(
+  branch: { artifactId: string },
+  currentPullRequestDetail: { branchArtifactId: string } | null | undefined
+): boolean {
+  return currentPullRequestDetail?.branchArtifactId === branch.artifactId;
+}
+
+/**
+ * Which reader dropped the relation. Only the fallback lane implies the branch's
+ * App installation is ALREADY broken, so a monitor that cannot tell the lanes
+ * apart cannot tell a corrupt FK from a corrupt FK on an unreadable install.
+ */
+export const InvalidCurrentPullRequestRelationLane = {
+  /** `resolvePrContext` — the primary, App-readable path. */
+  Primary: "primary",
+  /** The Branch View degraded projection in `fallback-pr-context.ts`. */
+  MissingContextFallback: "missing-context-fallback",
+} as const;
+export type InvalidCurrentPullRequestRelationLane =
+  (typeof InvalidCurrentPullRequestRelationLane)[keyof typeof InvalidCurrentPullRequestRelationLane];
+
+/**
+ * The single warn for a dropped current-PR relation, shared by both readers of
+ * `isCurrentPullRequestRelationValid`. Silently dropping it would leave a corrupt
+ * FK with no signal anywhere (root AGENTS.md, "Handling Bad or Nonsensical
+ * Data"); this is server-side, so a structured log is the right sink.
+ */
+export function logInvalidCurrentPullRequestRelation(input: {
+  lane: InvalidCurrentPullRequestRelationLane;
+  branch: { artifactId: string; repositoryId: string | null };
+  currentPullRequestDetail: {
+    id: string;
+    branchArtifactId: string;
+    repositoryId: string | null;
+  };
+}): void {
+  log.warn("[resolve-pr-context] Ignoring invalid current PR relation", {
+    lane: input.lane,
+    branchArtifactId: input.branch.artifactId,
+    currentPullRequestDetailId: input.currentPullRequestDetail.id,
+    currentPullRequestRepositoryId: input.currentPullRequestDetail.repositoryId,
+    currentPullRequestBranchArtifactId:
+      input.currentPullRequestDetail.branchArtifactId,
+    repositoryId: input.branch.repositoryId,
+  });
 }

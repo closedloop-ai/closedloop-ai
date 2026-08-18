@@ -1,3 +1,4 @@
+import { normalizeArtifactSubtype } from "@repo/api/src/types/artifact";
 import { ProjectStatus } from "@repo/api/src/types/project";
 import type {
   DocumentSearchResult,
@@ -31,11 +32,18 @@ function ilike(query: string) {
 
 // Human-readable labels for artifact subtypes so a free-text query can match by
 // TYPE (e.g. "implementation" or "plan" → IMPLEMENTATION_PLAN), not just title text.
+// FEA-3956: exhaustive over the generated (widened) enum, which now includes the
+// canonical `ISSUE`. `ISSUE` is labeled "issue" (the post-rename display name)
+// so a free-text "issue" query is recognized; it is normalized to the persisted
+// `FEATURE` before the `subtype IN (...)` filter (rows are stored as FEATURE, so
+// searching "issue" must still target FEATURE rows).
 const SUBTYPE_LABELS: Record<ArtifactSubtype, string> = {
   [ArtifactSubtype.PRD]: "prd",
   [ArtifactSubtype.IMPLEMENTATION_PLAN]: "implementation plan",
   [ArtifactSubtype.TEMPLATE]: "template",
   [ArtifactSubtype.FEATURE]: "feature",
+  [ArtifactSubtype.DOC]: "document",
+  [ArtifactSubtype.ISSUE]: "issue",
 };
 
 function matchingSubtypes(query: string): ArtifactSubtype[] {
@@ -43,10 +51,15 @@ function matchingSubtypes(query: string): ArtifactSubtype[] {
   if (!q) {
     return [];
   }
-  return (Object.keys(SUBTYPE_LABELS) as ArtifactSubtype[]).filter(
+  const matched = (Object.keys(SUBTYPE_LABELS) as ArtifactSubtype[]).filter(
     (subtype) =>
       SUBTYPE_LABELS[subtype].includes(q) || subtype.toLowerCase().includes(q)
   );
+  // Map the canonical `ISSUE` label match down to the persisted `FEATURE`
+  // subtype and dedupe, so the `subtype IN (...)` filter targets stored rows.
+  return [
+    ...new Set(matched.map((subtype) => normalizeArtifactSubtype(subtype))),
+  ];
 }
 
 export const searchService = {
@@ -77,29 +90,16 @@ export const searchService = {
       return { query: "", tagId, documents: [], projects: [] };
     }
 
-    const artifactIds = await withDb((db) =>
-      db.tagArtifact.findMany({
-        where: { tagId },
-        select: { artifactId: true },
-      })
-    );
-
-    if (artifactIds.length === 0) {
-      return {
-        query: "",
-        tagId,
-        tagName: tag.name,
-        documents: [],
-        projects: [],
-      };
-    }
-
+    // Let the DB do the tag join, recency ordering, and SEARCH_LIMIT cap in one
+    // query via the same relation filter searchDocuments uses. A popular org-wide
+    // tag can carry thousands of artifacts, so materializing every tagArtifact row
+    // and shipping an unbounded IN clause is wasteful when the result is capped.
     const rows = await withDb((db) =>
       db.artifact.findMany({
         where: {
           organizationId,
           type: ArtifactType.DOCUMENT,
-          id: { in: artifactIds.map((a) => a.artifactId) },
+          tagArtifacts: { some: { tagId } },
         },
         select: artifactSearchSelect,
         ...SEARCH_ORDER,
@@ -115,7 +115,8 @@ export const searchService = {
           id: r.id,
           title: r.name,
           slug: r.slug ?? "",
-          type: r.subtype,
+          // FEA-3956: normalize persisted subtype to canonical DocumentType.
+          type: normalizeArtifactSubtype(r.subtype),
           status: r.status as DocumentSearchResult["status"],
           priority: r.priority,
           projectName: r.project?.name ?? null,
@@ -196,7 +197,8 @@ async function searchDocuments(
         id: r.id,
         title: r.name,
         slug: r.slug ?? "",
-        type: r.subtype,
+        // FEA-3956: normalize persisted subtype to canonical DocumentType.
+        type: normalizeArtifactSubtype(r.subtype),
         status: r.status as DocumentSearchResult["status"],
         priority: r.priority,
         projectName: r.project?.name ?? null,
@@ -217,7 +219,6 @@ async function searchProjects(
     db.project.findMany({
       where: {
         organizationId,
-        isTemplatesSentinel: false,
         status: { not: ProjectStatus.Archived },
         OR: [
           { name: ilike(query) },

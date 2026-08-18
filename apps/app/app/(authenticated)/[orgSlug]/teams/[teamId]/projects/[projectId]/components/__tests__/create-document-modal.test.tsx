@@ -119,10 +119,12 @@ const SAVE_REGEX = /^save$/i;
 const GENERATE_PRD_REGEX = /^generate prd$/i;
 const PASTE_MARKDOWN_CONTENT_REGEX = /paste or upload markdown content/i;
 const CREATING_REGEX = /creating\.\.\./i;
-const NO_PRDS_REGEX = /no prds or features in this project/i;
+const NO_PRDS_REGEX = /no prds or issues in this project/i;
 const LOADING_REGEX = /loading/i;
 const TARGET_SELECTION_PROMPT_REGEX =
   /select a compute target to start generation/i;
+const PROJECT_RETRY_REGEX = /^retry$/i;
+const PROJECT_LABEL_REGEX = /^project/i;
 
 describe("CreateDocumentModal", () => {
   const mockMutate = vi.fn();
@@ -729,6 +731,61 @@ describe("CreateDocumentModal", () => {
           expect.objectContaining({ onSuccess: expect.any(Function) })
         );
       });
+    });
+  });
+
+  describe("Project selector (no projectId prop)", () => {
+    it("surfaces a recoverable retry when the team-projects request fails instead of dead-ending on an empty selector", async () => {
+      const refetch = vi.fn();
+      mockUseProjectsByTeam.mockReturnValue({
+        data: [],
+        isLoading: false,
+        isError: true,
+        refetch,
+      });
+
+      render(
+        <CreateDocumentModal
+          documentType={DocumentType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          teamId="team-1"
+        />
+      );
+
+      const retry = screen.getByRole("button", { name: PROJECT_RETRY_REGEX });
+      expect(retry).toBeInTheDocument();
+      // No silent empty selector combobox in the error state.
+      expect(
+        screen.queryByLabelText(PROJECT_LABEL_REGEX)
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(retry);
+      await waitFor(() => {
+        expect(refetch).toHaveBeenCalledOnce();
+      });
+    });
+
+    it("renders the project selector (not the error state) when the team-projects request succeeds", () => {
+      mockUseProjectsByTeam.mockReturnValue({
+        data: [{ id: "project-1", name: "Project One" }],
+        isLoading: false,
+        isError: false,
+      });
+
+      render(
+        <CreateDocumentModal
+          documentType={DocumentType.Prd}
+          onOpenChange={mockOnOpenChange}
+          open={true}
+          teamId="team-1"
+        />
+      );
+
+      expect(screen.getByLabelText(PROJECT_LABEL_REGEX)).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: PROJECT_RETRY_REGEX })
+      ).not.toBeInTheDocument();
     });
   });
 
