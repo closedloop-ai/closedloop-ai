@@ -28,6 +28,10 @@ export default defineConfig({
         import.meta.dirname,
         "../loops-api/src"
       ),
+      "@closedloop-ai/design-system": path.resolve(
+        import.meta.dirname,
+        "../../packages/design-system"
+      ),
       "@repo/shared-platform": path.resolve(
         import.meta.dirname,
         "../shared-platform/src"

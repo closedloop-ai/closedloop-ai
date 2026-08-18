@@ -59,6 +59,10 @@ export default defineConfig({
         import.meta.dirname,
         "../../packages/loops-api/src"
       ),
+      "@closedloop-ai/design-system": path.resolve(
+        import.meta.dirname,
+        "../../packages/design-system"
+      ),
       "@repo": path.resolve(import.meta.dirname, "../../packages"),
       // Mock heavy/browser-dependent editor dependencies at the bundler level
       // so they never load sandpack/stitches/CSSOM in jsdom

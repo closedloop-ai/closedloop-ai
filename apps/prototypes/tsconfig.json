@@ -10,7 +10,7 @@
       "@closedloop-ai/design-system": ["../../packages/design-system"],
       "@repo/design-system": ["../../packages/design-system"],
       "@closedloop-ai/design-system/*": ["../../packages/design-system/*"],
-      "@repo/design-system/*": ["../../packages/design-system/*"],
+      "@repo/design-system/*": ["../../packages/design-system/*"]
     }
   },
   "include": [
