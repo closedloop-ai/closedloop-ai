@@ -40,8 +40,8 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
         control={control}
         name={"numberFormat" as Path<T>}
         render={({ field }) => (
-          <div className="space-y-2">
-            <Label>Number Format</Label>
+          <fieldset className="space-y-2">
+            <legend className="font-medium text-sm">Number format</legend>
             <RadioGroup
               className="flex flex-col gap-2"
               onValueChange={field.onChange}
@@ -73,7 +73,7 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
                 <Label htmlFor="format-custom">Custom</Label>
               </div>
             </RadioGroup>
-          </div>
+          </fieldset>
         )}
       />
 
@@ -83,7 +83,7 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
           name={"currencyCode" as Path<T>}
           render={({ field }) => (
             <div className="space-y-2">
-              <Label htmlFor="currency-code">Currency Code</Label>
+              <Label htmlFor="currency-code">Currency code</Label>
               <Input
                 id="currency-code"
                 maxLength={3}
@@ -104,7 +104,7 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
             name={"customLabel" as Path<T>}
             render={({ field }) => (
               <div className="space-y-2">
-                <Label htmlFor="custom-label">Custom Label</Label>
+                <Label htmlFor="custom-label">Custom label</Label>
                 <Input
                   id="custom-label"
                   onBlur={field.onBlur}
@@ -120,12 +120,18 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
             name={"customLabelPosition" as Path<T>}
             render={({ field }) => (
               <div className="space-y-2">
-                <Label>Label Position</Label>
+                <Label htmlFor="label-position" id="label-position-label">
+                  Label position
+                </Label>
                 <Select
                   onValueChange={field.onChange}
                   value={(field.value as string) ?? LabelPosition.Prefix}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger
+                    aria-labelledby="label-position-label"
+                    className="w-full"
+                    id="label-position"
+                  >
                     <SelectValue placeholder="Select position" />
                   </SelectTrigger>
                   <SelectContent>
@@ -144,12 +150,18 @@ export function NumberFormatConfig<T extends FieldValues = FieldValues>({
         name={"precision" as Path<T>}
         render={({ field }) => (
           <div className="space-y-2">
-            <Label>Decimal Precision</Label>
+            <Label htmlFor="decimal-precision" id="decimal-precision-label">
+              Decimal precision
+            </Label>
             <Select
               onValueChange={(val) => field.onChange(Number(val))}
               value={String(field.value ?? 0)}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger
+                aria-labelledby="decimal-precision-label"
+                className="w-full"
+                id="decimal-precision"
+              >
                 <SelectValue placeholder="Select precision" />
               </SelectTrigger>
               <SelectContent>

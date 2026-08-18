@@ -1,0 +1,154 @@
+---
+title: Project Management
+description: 'Create, retrieve, update, and reorder projects — the top-level containers for documents'
+---
+
+## Overview
+
+Projects (`PRO-*`) are the top-level containers in Closedloop. Every document — PRD, implementation plan, or feature — belongs to a project. Projects are typically weekly or thematic (e.g. a sprint week or an "Enterprise" theme).
+
+All project tools accept either a UUID or a human-readable slug (e.g. `PRO-7`). Pass the slug verbatim — the API resolves it server-side. Newly created projects return an assigned `PRO-*` slug, which is the preferred handle for follow-up calls.
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `priority` | `LOW`, `MEDIUM`, `HIGH`, `URGENT` | Project priority |
+| `status` | `NOT_STARTED`, `IN_PROGRESS`, `COMPLETED`, `ARCHIVED` | Project lifecycle status |
+
+---
+
+## Listing Projects
+
+Use `list-projects` to retrieve the projects available to the authenticated user. The returned `slug` values (`PRO-*`) are the preferred user-facing handles for follow-up calls.
+
+**Tool**: `list-projects`
+**Underlying API**: `GET /projects`
+
+```
+list-projects(
+  limit?: number,   // 1–100, default 25
+  offset?: number   // Pagination offset, default 0
+)
+```
+
+The response is a paginated envelope. Each item includes `id`, `name`, `slug`, `status`, and `updatedAt`:
+
+```json
+{
+  "total": 12,
+  "offset": 0,
+  "limit": 25,
+  "returned": 12,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    {
+      "id": "...",
+      "name": "5/11–15",
+      "slug": "PRO-25",
+      "status": "IN_PROGRESS",
+      "updatedAt": "2025-01-15T10:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## Fetching a Single Project
+
+Use `get-project` to read one project by UUID or slug. When the user references a project by its slug (e.g. "tell me about PRO-7"), pass that slug as `projectId` directly.
+
+**Tool**: `get-project`
+**Underlying API**: `GET /projects/:projectId`
+
+```
+get-project(
+  projectId: string   // PRO-* slug or UUID
+)
+```
+
+---
+
+## Creating a Project
+
+Use `create-project` to create a new top-level container for documents. The assigned slug (`PRO-*`) is returned in the response and is the preferred handle for future calls.
+
+**Tool**: `create-project`
+**Underlying API**: `POST /projects`
+
+```
+create-project(
+  name: string,
+  description?: string,
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  status?: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED"
+)
+```
+
+**Example workflow**:
+
+```
+1. create-project(
+     name: "Enterprise Onboarding",
+     priority: "HIGH"
+   )
+   → returns { slug: "PRO-26", ... }
+
+2. create-document(
+     title: "Onboarding Revamp",
+     type: "FEATURE",
+     projectId: "PRO-26",
+     content: "..."
+   )
+```
+
+---
+
+## Updating a Project
+
+Use `update-project` to change a project's metadata or status by UUID or slug. Only the fields you pass are modified.
+
+**Tool**: `update-project`
+**Underlying API**: `PUT /projects/:projectId`
+
+```
+update-project(
+  projectId: string,   // PRO-* slug or UUID
+  name?: string,
+  description?: string,
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  status?: "NOT_STARTED" | "IN_PROGRESS" | "COMPLETED" | "ARCHIVED"
+)
+```
+
+---
+
+## Reordering Project Artifacts
+
+Use `move-artifact` to reorder a root artifact within its project's **stack rank** — the human-curated priority order shown on the project page. This is a write-scope operation.
+
+**Tool**: `move-artifact`
+**Underlying API**: `POST /projects/:projectId/artifacts/move`
+
+```
+move-artifact(
+  projectId: string,            // PRO-* slug or UUID
+  artifactId: string,           // Artifact to move (PRD-*, PLN-*, FEA-*, or UUID)
+  position: "top" | "bottom" | "before" | "after",
+  referenceArtifactId?: string  // Required for "before"/"after"; omit for "top"/"bottom"
+)
+```
+
+Stack rank is a project-wide, root-level ordering: only top-level documents and features participate, not nested children. Use `top` / `bottom` to move to the ends, or `before` / `after` with `referenceArtifactId` to position relative to another artifact. Read `sortOrder` from `list-documents` / `get-document` to see the current order (lower sorts first).
+
+The response echoes the move and reports the new sort order:
+
+```json
+{
+  "moved": true,
+  "artifactId": "FEA-42",
+  "position": "before",
+  "referenceArtifactId": "FEA-40",
+  "newSortOrder": 3
+}
+```

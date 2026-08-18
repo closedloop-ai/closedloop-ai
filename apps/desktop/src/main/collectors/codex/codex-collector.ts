@@ -9,6 +9,7 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { yieldToEventLoop } from "../engine/cooperative-yield.js";
+import { mergeTokensByModel } from "../engine/merge-tokens-by-model.js";
 import { findWorkflowJournals } from "../parsing/codex-workflow-scanner.js";
 import { collectArtifacts } from "../parsing/parser-utils.js";
 import type {
@@ -16,7 +17,6 @@ import type {
   NormalizedParseQuality,
   NormalizedSession,
   NormalizedSubagent,
-  NormalizedTokenCounts,
 } from "../types.js";
 import {
   getCodexArchivedDir,
@@ -30,6 +30,8 @@ import {
 } from "./codex-parser.js";
 import {
   buildCodexChildrenById,
+  type CodexRolloutLinkage,
+  effectiveParentId,
   findCodexDescendants,
   findCodexParentSource,
   findCodexRootSource,
@@ -540,6 +542,19 @@ function createRolloutGraphCache(
   };
 }
 
+function buildCodexChildMeta(
+  child: CodexRolloutLinkage
+): Record<string, unknown> {
+  const meta: Record<string, unknown> = {
+    codexDepth: child.depth,
+    codexParentThreadId: child.parentThreadId,
+  };
+  if (child.forkedFromId && !child.parentThreadId) {
+    meta.codexForkedFromId = child.forkedFromId;
+  }
+  return meta;
+}
+
 // Exported for the FEA-2646 Layer 1 golden runner, which must exercise the
 // SAME descendant fold production uses (parse-only replication would let the
 // golden suite pass without testing this path).
@@ -555,6 +570,11 @@ export async function foldCodexDescendants(
   ]);
   const subagents: NormalizedSubagent[] = [...(root.subagents ?? [])];
   const foldedToolUses = [...root.toolUses];
+  const seenCompactionTimestamps = new Set(
+    asCompactions(root)
+      .map((c) => c.timestamp)
+      .filter((t): t is string => t != null)
+  );
   const replayedUsageIdentitiesBySource = new Map<string, Set<string>>();
   for (const child of findCodexDescendants(
     rootPath,
@@ -586,13 +606,26 @@ export async function foldCodexDescendants(
     }
     const subagentId = child.rolloutId;
     normalizedIdByRolloutId.set(child.rolloutId, subagentId);
-    const parentId = child.parentThreadId
-      ? normalizedIdByRolloutId.get(child.parentThreadId)
+    // FEA-3597: stamp round-trip provenance BEFORE this child's series is both
+    // assigned to its subagent row and spread into the root below. Codex
+    // children come from `parseRolloutFile`, which never goes through
+    // `extractDedupedUsage`, so this is the codex lane's single stamp site.
+    // Mutating in place is intentional: the same objects back both views, so a
+    // subagent's own `tokenSeries` stays self-describing and consistent with
+    // the root copy. Nested descendants are enumerated separately and each gets
+    // its OWN rolloutId, so no record is stamped twice.
+    for (const record of parsedChild.tokenSeries) {
+      record.subagentId = subagentId;
+    }
+    const effectiveParent = effectiveParentId(child);
+    const parentId = effectiveParent
+      ? normalizedIdByRolloutId.get(effectiveParent)
       : null;
     const ownedToolUses = parsedChild.toolUses.map((toolUse) => ({
       ...toolUse,
       subagentId: toolUse.subagentId ?? subagentId,
     }));
+    const childMeta = buildCodexChildMeta(child);
     subagents.push({
       id: subagentId,
       parentId: parentId || null,
@@ -610,14 +643,33 @@ export async function foldCodexDescendants(
       toolUses: ownedToolUses,
       tokensByModel: parsedChild.tokensByModel,
       tokenSeries: parsedChild.tokenSeries,
-      metadata: {
-        codexDepth: child.depth,
-        codexParentThreadId: child.parentThreadId,
-      },
+      metadata: childMeta,
     });
     foldedToolUses.push(...ownedToolUses);
     mergeTokensByModel(root.tokensByModel, parsedChild.tokensByModel);
     root.tokenSeries.push(...parsedChild.tokenSeries);
+    // FEA-3526: only the root is imported (child sources return [] from the
+    // collector), so a child rollout's authoritative per-turn `last_token_usage`
+    // snapshots must fold into the root alongside its `tokenSeries` — otherwise
+    // the captured snapshots would cover only root turns while the canonical
+    // token totals already include child turns. Pure metadata (never alters
+    // token math); appended verbatim so each snapshot keeps its own model +
+    // timestamp. Root may not carry the field yet (optional), so seed it.
+    if (parsedChild.codexLastTokenUsage?.length) {
+      root.codexLastTokenUsage = [
+        ...(root.codexLastTokenUsage ?? []),
+        ...parsedChild.codexLastTokenUsage,
+      ];
+    }
+    // FEA-3527: fold the child's reasoning-output subdivision alongside its token
+    // totals so the root's metadata tracks the canonical totals (which now include
+    // child spend). Each child was parsed with `replayedUsageIdentities`, so its
+    // `reasoning_output_tokens` already excludes the replayed parent prefix —
+    // summing root + children therefore does NOT double-count the parent's
+    // portion (mirrors the token-total dedup). A non-additive subset of output,
+    // never added to any token grand total.
+    root.usageExtras.reasoning_output_tokens +=
+      parsedChild.usageExtras.reasoning_output_tokens;
     // FEA-2907: the folded child's transcript lines are part of the parent's
     // derived data, so its parse-quality signal must fold in too. Line counts
     // are additive (total corruption/attempted across parent+children) and
@@ -627,10 +679,47 @@ export async function foldCodexDescendants(
       root.parseQuality,
       parsedChild.parseQuality
     );
+    foldChildCompactions(root, parsedChild, seenCompactionTimestamps);
   }
   root.toolUses = foldedToolUses;
   root.artifacts = collectArtifacts(root.toolUses, root.cwd);
   root.subagents = subagents;
+}
+
+// NormalizedSession types `compactions` as unknown[]; both parsers emit this
+// entry shape (see write-core's Compaction event consumer).
+function asCompactions(
+  session: NormalizedSession
+): Array<{ uuid: string | null; timestamp: string | null }> {
+  return session.compactions as Array<{
+    uuid: string | null;
+    timestamp: string | null;
+  }>;
+}
+
+/**
+ * FEA-3127: only the root is imported (child sources return [] from the
+ * collector), so a compaction recorded in a child rollout must fold into the
+ * root's `compactions` to reach write-core — the Claude parser's
+ * common-metadata pass counts sidechain compact summaries into the root the
+ * same way. Forked rollouts replay the source rollout's history, `compacted`
+ * records included, so a timestamp already in `seenTimestamps` (the root's or
+ * an earlier child's) is a replay, not a second compaction.
+ */
+function foldChildCompactions(
+  root: NormalizedSession,
+  child: NormalizedSession,
+  seenTimestamps: Set<string>
+): void {
+  for (const compaction of asCompactions(child)) {
+    if (compaction.timestamp && seenTimestamps.has(compaction.timestamp)) {
+      continue;
+    }
+    if (compaction.timestamp) {
+      seenTimestamps.add(compaction.timestamp);
+    }
+    root.compactions.push(compaction);
+  }
 }
 
 function mergeParseQuality(
@@ -643,27 +732,36 @@ function mergeParseQuality(
   if (!target) {
     return { ...source };
   }
+  // FEA-3702: sum the Codex `malformedRateLimits` count across the merged
+  // transcripts so a present-but-malformed rate_limits block is not silently
+  // dropped when the main rollout is folded with its workflow-journal companion.
+  // Optional/additive: omitted when neither side saw one (0), so clean sessions
+  // round-trip unchanged.
+  const malformedRateLimits =
+    (target.malformedRateLimits ?? 0) + (source.malformedRateLimits ?? 0);
+  // FEA-3713: aggregate unknown-record counts across the fork family the same
+  // way line counts aggregate; keep the field absent when neither side tracked
+  // it (both are 0) so a clean merge round-trips byte-identically.
+  const unknownRecords =
+    (target.unknownRecords ?? 0) + (source.unknownRecords ?? 0);
+  // FEA-3701: sum the optional MCP/tool-output correlation diagnostics across a
+  // session's descendant rollouts too — a child rollout can carry orphaned or
+  // ambiguous MCP outputs, and folding only the three base counters would drop
+  // that signal on a multi-rollout Codex session. Kept optional/omitted-when-zero
+  // to match the parser's shape (a fully-clean merge round-trips without them).
+  const orphanedToolOutputs =
+    (target.orphanedToolOutputs ?? 0) + (source.orphanedToolOutputs ?? 0);
+  const ambiguousToolOutputs =
+    (target.ambiguousToolOutputs ?? 0) + (source.ambiguousToolOutputs ?? 0);
   return {
     totalLines: target.totalLines + source.totalLines,
     malformedLines: target.malformedLines + source.malformedLines,
     truncatedFinalLine: target.truncatedFinalLine || source.truncatedFinalLine,
+    ...(malformedRateLimits > 0 ? { malformedRateLimits } : {}),
+    ...(unknownRecords > 0 ? { unknownRecords } : {}),
+    ...(orphanedToolOutputs > 0 ? { orphanedToolOutputs } : {}),
+    ...(ambiguousToolOutputs > 0 ? { ambiguousToolOutputs } : {}),
   };
-}
-
-function mergeTokensByModel(
-  target: Record<string, NormalizedTokenCounts>,
-  source: Record<string, NormalizedTokenCounts>
-): void {
-  for (const [model, counts] of Object.entries(source)) {
-    const existing = target[model];
-    target[model] = {
-      input: (existing?.input ?? 0) + counts.input,
-      output: (existing?.output ?? 0) + counts.output,
-      cacheRead: (existing?.cacheRead ?? 0) + counts.cacheRead,
-      cacheWrite: (existing?.cacheWrite ?? 0) + counts.cacheWrite,
-      ...(existing?.inferred || counts.inferred ? { inferred: true } : {}),
-    };
-  }
 }
 
 function maxNullableMtime(

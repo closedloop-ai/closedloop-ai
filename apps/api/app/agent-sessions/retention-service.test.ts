@@ -4,7 +4,10 @@ import {
   expiredSessionWhere,
   FALLBACK_SESSION_RETENTION_DAYS,
   getSessionRetentionDays,
+  INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE,
+  INCOMPLETE_INVOCATION_GENERATION_RETENTION_HOURS,
   purgeExpiredSessionsBatch,
+  purgeIncompleteInvocationGenerationsBatch,
   retentionCutoff,
   sessionRetentionService,
 } from "./retention-service";
@@ -174,6 +177,52 @@ describe("purgeExpiredSessionsBatch", () => {
   });
 });
 
+describe("purgeIncompleteInvocationGenerationsBatch", () => {
+  it("globally deletes only stale incomplete candidates and rechecks their state", async () => {
+    const cutoff = new Date("2026-07-23T12:00:00.000Z");
+    const db = {
+      agentComponentInvocationGeneration: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([
+            { id: "stale-session-a" },
+            { id: "stale-session-b" },
+          ]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 2 }),
+      },
+    };
+
+    const deleted = await purgeIncompleteInvocationGenerationsBatch(
+      db as never,
+      cutoff,
+      10
+    );
+
+    expect(deleted).toEqual({ candidateCount: 2, deleted: 2 });
+    const incompleteWhere = {
+      activeAt: null,
+      completedAt: null,
+      updatedAt: { lt: cutoff },
+    };
+    expect(db.agentComponentInvocationGeneration.findMany).toHaveBeenCalledWith(
+      {
+        where: incompleteWhere,
+        select: { id: true },
+        orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
+        take: 10,
+      }
+    );
+    expect(
+      db.agentComponentInvocationGeneration.deleteMany
+    ).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["stale-session-a", "stale-session-b"] },
+        ...incompleteWhere,
+      },
+    });
+  });
+});
+
 describe("sessionRetentionService", () => {
   afterEach(() => {
     mocks.deleteTranscriptObjects.mockReset();
@@ -182,6 +231,10 @@ describe("sessionRetentionService", () => {
   it("purges reclaimed transcript S3 objects after a batch commits", async () => {
     const now = new Date("2026-06-26T00:00:00.000Z");
     const db = {
+      agentComponentInvocationGeneration: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn(),
+      },
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -222,6 +275,10 @@ describe("sessionRetentionService", () => {
     const now = new Date("2026-06-26T00:00:00.000Z");
     mocks.deleteTranscriptObjects.mockRejectedValue(new Error("s3 down"));
     const db = {
+      agentComponentInvocationGeneration: {
+        findMany: vi.fn().mockResolvedValue([]),
+        deleteMany: vi.fn(),
+      },
       sessionDetail: {
         findMany: vi.fn().mockResolvedValue([
           {
@@ -253,6 +310,96 @@ describe("sessionRetentionService", () => {
       expect(result.exitCode).toBe(0);
       expect(result.deleted).toBe(1);
       expect(mocks.deleteTranscriptObjects).toHaveBeenCalledTimes(1);
+    } finally {
+      txSpy.mockRestore();
+    }
+  });
+
+  it("runs abandoned invocation cleanup even when no sessions expire", async () => {
+    const now = new Date("2026-07-24T12:00:00.000Z");
+    const cutoff = new Date(
+      now.getTime() -
+        INCOMPLETE_INVOCATION_GENERATION_RETENTION_HOURS * 60 * 60 * 1000
+    );
+    const db = {
+      agentComponentInvocationGeneration: {
+        findMany: vi
+          .fn()
+          .mockResolvedValueOnce([{ id: "abandoned-other-session" }]),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      sessionDetail: { findMany: vi.fn().mockResolvedValue([]) },
+      sessionTranscript: { findMany: vi.fn(), deleteMany: vi.fn() },
+      artifact: { deleteMany: vi.fn() },
+    };
+    const txSpy = vi
+      .spyOn(withDb, "tx")
+      .mockImplementation((callback: (tx: never) => unknown) =>
+        Promise.resolve(callback(db as never))
+      );
+
+    try {
+      const result = await sessionRetentionService.runRetentionSweep(now, 365);
+
+      expect(result.exitCode).toBe(0);
+      expect(
+        db.agentComponentInvocationGeneration.findMany
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            activeAt: null,
+            completedAt: null,
+            updatedAt: { lt: cutoff },
+          },
+          take: INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE,
+        })
+      );
+      expect(result.summary).toContain("1 incomplete invocation generation(s)");
+      expect(db.sessionDetail.findMany).toHaveBeenCalledOnce();
+    } finally {
+      txSpy.mockRestore();
+    }
+  });
+
+  it("continues past a full candidate page when a concurrent completion reduces the delete count", async () => {
+    const now = new Date("2026-07-24T12:00:00.000Z");
+    const firstPage = Array.from(
+      { length: INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE },
+      (_, index) => ({ id: `stale-${index}` })
+    );
+    const db = {
+      agentComponentInvocationGeneration: {
+        findMany: vi
+          .fn()
+          .mockResolvedValueOnce(firstPage)
+          .mockResolvedValueOnce([{ id: "stale-tail" }]),
+        deleteMany: vi
+          .fn()
+          .mockResolvedValueOnce({
+            count: INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE - 1,
+          })
+          .mockResolvedValueOnce({ count: 1 }),
+      },
+      sessionDetail: { findMany: vi.fn().mockResolvedValue([]) },
+      sessionTranscript: { findMany: vi.fn(), deleteMany: vi.fn() },
+      artifact: { deleteMany: vi.fn() },
+    };
+    const txSpy = vi
+      .spyOn(withDb, "tx")
+      .mockImplementation((callback: (tx: never) => unknown) =>
+        Promise.resolve(callback(db as never))
+      );
+
+    try {
+      const result = await sessionRetentionService.runRetentionSweep(now, 365);
+
+      expect(result.exitCode).toBe(0);
+      expect(
+        db.agentComponentInvocationGeneration.findMany
+      ).toHaveBeenCalledTimes(2);
+      expect(result.summary).toContain(
+        `${INCOMPLETE_INVOCATION_GENERATION_DELETE_BATCH_SIZE} incomplete invocation generation(s)`
+      );
     } finally {
       txSpy.mockRestore();
     }

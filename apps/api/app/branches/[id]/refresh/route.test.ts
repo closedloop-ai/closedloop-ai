@@ -1,3 +1,4 @@
+import type { ApiKeyScope } from "@repo/api/src/types/api-key";
 import {
   BranchRefreshReason,
   BranchRefreshStatus,
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   auth: {
     user: { id: "user-1", organizationId: "org-1" },
     authMethod: "session",
+    apiKeyScopes: undefined as ApiKeyScope[] | undefined,
   },
   refreshBranch: vi.fn(),
   withAnyAuthOptions: [] as unknown[],
@@ -42,6 +44,7 @@ describe("POST /branches/[id]/refresh", () => {
     mocks.withAnyAuthOptions.length = 0;
     mocks.auth.user = { id: "user-1", organizationId: "org-1" };
     mocks.auth.authMethod = "session";
+    mocks.auth.apiKeyScopes = undefined;
     mocks.refreshBranch.mockResolvedValue({
       branch: null,
       status: BranchRefreshStatus.Refreshed,
@@ -56,6 +59,32 @@ describe("POST /branches/[id]/refresh", () => {
     expect(mocks.refreshBranch).toHaveBeenCalledWith("org-1", branchId, {
       userId: "user-1",
       authMethod: "session",
+      tagPermissions: { canApply: true, canRemove: true },
+    });
+  });
+
+  it("forwards API-key tag permissions into the refresh projection", async () => {
+    mocks.auth.authMethod = "api_key";
+    mocks.auth.apiKeyScopes = ["read", "write"];
+    mocks.refreshBranch.mockResolvedValueOnce({
+      branch: {
+        tagPermissions: { canApply: true, canRemove: false },
+      },
+      status: BranchRefreshStatus.Refreshed,
+    });
+
+    const response = await POST(request(), routeContext(branchId));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(mocks.refreshBranch).toHaveBeenCalledWith("org-1", branchId, {
+      userId: "user-1",
+      authMethod: "api_key",
+      tagPermissions: { canApply: true, canRemove: false },
+    });
+    expect(body.data.branch.tagPermissions).toEqual({
+      canApply: true,
+      canRemove: false,
     });
   });
 

@@ -72,7 +72,30 @@ import {
   updatePullRequestReviewCommentWithUserToken,
 } from "../index";
 
-const USER_ACCESS_TOKEN = "ghu_user_token";
+/**
+ * The caller-resolved client the helpers now receive (PLN-1525). Shaped like
+ * the Octokit surface these helpers touch; the cast is confined to this
+ * fixture rather than every call site.
+ */
+const userOctokit = {
+  rest: {
+    issues: {
+      createComment: mockCreateIssueComment,
+      updateComment: mockUpdateIssueComment,
+      deleteComment: mockDeleteIssueComment,
+    },
+    pulls: {
+      createReviewComment: mockCreateReviewComment,
+      createReplyForReviewComment: mockCreateReplyForReviewComment,
+      updateReviewComment: mockUpdateReviewComment,
+      deleteReviewComment: mockDeleteReviewComment,
+    },
+  },
+  graphql: mockGraphql,
+} as unknown as Parameters<
+  typeof createPullRequestIssueCommentWithUserToken
+>[0];
+
 const OWNER = "acme";
 const REPO = "repo";
 const PULL_NUMBER = 12;
@@ -140,29 +163,29 @@ describe("GitHub comment user-token helpers", () => {
     });
   });
 
-  it("uses raw user-token Octokit instances and never creates installation auth", async () => {
+  it("writes through the caller's client and never builds its own or installation auth", async () => {
     await createPullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
       "issue body"
     );
     await updatePullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID,
       "updated issue"
     );
     await deletePullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID
     );
     await createPullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
@@ -177,7 +200,7 @@ describe("GitHub comment user-token helpers", () => {
       }
     );
     await createReplyForReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
@@ -185,57 +208,53 @@ describe("GitHub comment user-token helpers", () => {
       "reply body"
     );
     await updatePullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID,
       "updated review"
     );
     await deletePullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID
     );
-    await resolvePullRequestReviewThreadWithUserToken(
-      USER_ACCESS_TOKEN,
-      THREAD_ID
-    );
-    await unresolvePullRequestReviewThreadWithUserToken(
-      USER_ACCESS_TOKEN,
-      THREAD_ID
-    );
+    await resolvePullRequestReviewThreadWithUserToken(userOctokit, THREAD_ID);
+    await unresolvePullRequestReviewThreadWithUserToken(userOctokit, THREAD_ID);
 
+    // Never installation auth: these writes must be attributed to the human
+    // who authored the comment, not to the app.
     expect(mockCreateAppAuth).not.toHaveBeenCalled();
-    expect(mockOctokitConstructor).toHaveBeenCalledTimes(9);
-    for (const call of mockOctokitConstructor.mock.calls) {
-      expect(call[0]).toEqual({ auth: USER_ACCESS_TOKEN });
-    }
+    // And never a client of their own. The caller resolves ONE bounded client
+    // per request and threads it in (PLN-1525); a helper minting its own here
+    // would reintroduce a per-call, unbounded Octokit.
+    expect(mockOctokitConstructor).not.toHaveBeenCalled();
   });
 
   it("threads REST and GraphQL payloads through the user-token helpers", async () => {
     await createPullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
       "issue body"
     );
     await updatePullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID,
       "updated issue"
     );
     await deletePullRequestIssueCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID
     );
     await createPullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
@@ -248,7 +267,7 @@ describe("GitHub comment user-token helpers", () => {
       }
     );
     await createReplyForReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       PULL_NUMBER,
@@ -256,26 +275,20 @@ describe("GitHub comment user-token helpers", () => {
       "reply body"
     );
     await updatePullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID,
       "updated review"
     );
     await deletePullRequestReviewCommentWithUserToken(
-      USER_ACCESS_TOKEN,
+      userOctokit,
       OWNER,
       REPO,
       COMMENT_ID
     );
-    await resolvePullRequestReviewThreadWithUserToken(
-      USER_ACCESS_TOKEN,
-      THREAD_ID
-    );
-    await unresolvePullRequestReviewThreadWithUserToken(
-      USER_ACCESS_TOKEN,
-      THREAD_ID
-    );
+    await resolvePullRequestReviewThreadWithUserToken(userOctokit, THREAD_ID);
+    await unresolvePullRequestReviewThreadWithUserToken(userOctokit, THREAD_ID);
 
     expect(mockCreateIssueComment).toHaveBeenCalledWith({
       owner: OWNER,

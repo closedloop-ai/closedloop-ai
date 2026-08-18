@@ -7,6 +7,7 @@
  * (cross-org isolation).
  */
 
+import { COST_KPI_SUB } from "@closedloop-ai/loops-api/insights";
 import { GitHubPRState as ApiGitHubPRState } from "@repo/api/src/types/github";
 import {
   InsightsGitHubProvenanceState,
@@ -18,56 +19,31 @@ import {
 import { median } from "@repo/api/src/utils/math";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@repo/database", async () => {
-  const githubTypes = await import("@repo/api/src/types/github");
-  return {
-    withDb: vi.fn(),
-    ChecksStatus: {
-      UNKNOWN: "UNKNOWN",
-      PENDING: "PENDING",
-      PASSING: "PASSING",
-      FAILING: "FAILING",
-    },
-    GitHubPRState: {
-      CLOSED: githubTypes.GitHubPRState.Closed,
-      MERGED: githubTypes.GitHubPRState.Merged,
-      OPEN: githubTypes.GitHubPRState.Open,
-    },
-    GitHubInstallationStatus: {
-      ACTIVE: "ACTIVE",
-      PENDING_CLAIM: "PENDING_CLAIM",
-      SUSPENDED: "SUSPENDED",
-      UNINSTALLED: "UNINSTALLED",
-    },
-    ReviewDecision: {
-      APPROVED: "APPROVED",
-      CHANGES_REQUESTED: "CHANGES_REQUESTED",
-      COMMENTED: "COMMENTED",
-      DISMISSED: "DISMISSED",
-    },
-    Prisma: {
-      // Minimal tagged-template stand-in for Prisma.sql so the raw
-      // event-volume query builds without a live client.
-      sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
-        strings: Array.from(strings),
-        values,
-      }),
-    },
-  };
-});
+vi.mock("@repo/database", async () =>
+  (await import("@/__tests__/support/insights/service.test-db")).databaseMock()
+);
 
-import { withDb } from "@repo/database";
+import { ChecksStatus, withDb } from "@repo/database";
+import {
+  collectKey,
+  expectAllOrgScoped,
+  findRawSql,
+  flattenRawSql,
+  hasEmptyInPredicate,
+  identityRow,
+  makeFakeDb,
+  makeInsightsUserGrant,
+  ORG,
+} from "@/__tests__/support/insights/service.test-db";
+import { MERGED_PR_SCAN_CAP } from "./merged-pr-queries";
 import {
   bucketCountByDay,
-  buildPrByRepoBuckets,
   insightsService,
-  MERGED_PR_SCAN_CAP,
   minDate,
   reportDeltaFor,
   resolvePeriodRange,
 } from "./service";
 
-const ORG = "org-1";
 const USER = "user-1";
 const TEAM = "team-1";
 const ORG_CTX = { organizationId: ORG, userId: USER, scope: InsightsScope.Org };
@@ -87,384 +63,6 @@ const NOW = new Date("2026-06-09T12:00:00.000Z");
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 
-type WhereRecord = unknown[];
-
-function collectKey(value: unknown, target: string, found: string[]): void {
-  if (!value || typeof value !== "object") {
-    return;
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    if (key === target && typeof nested === "string") {
-      found.push(nested);
-    } else {
-      collectKey(nested, target, found);
-    }
-  }
-}
-
-function findOrgIds(value: unknown, found: string[]): void {
-  collectKey(value, "organizationId", found);
-}
-
-function hasEmptyInPredicate(value: unknown): boolean {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  if (
-    "in" in value &&
-    Array.isArray((value as { in?: unknown }).in) &&
-    (value as { in: unknown[] }).in.length === 0
-  ) {
-    return true;
-  }
-  return Object.values(value).some((nested) => hasEmptyInPredicate(nested));
-}
-
-// FEA-2876: a token-usage fixture row. Its token/cost columns feed the fake DB's
-// aggregate({_sum}) and groupBy({_sum}) so one fixture drives the KPI totals, the
-// token-distribution donut, and the spend-by-model breakdown.
-type TokenUsageFixture = {
-  model: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-  estimatedCost?: number;
-};
-
-function sumBy<T>(rows: T[], pick: (row: T) => number | undefined): number {
-  return rows.reduce((total, row) => total + (pick(row) ?? 0), 0);
-}
-
-/**
- * Build a fake Prisma client that returns fixtures and records every where
- * clause it is handed. Counts/aggregates branch on the where shape so the many
- * call sites resolve deterministically.
- */
-function makeFakeDb(fixtures: {
-  mergedPrs?: unknown[];
-  lineGroups?: unknown[];
-  // FEA-2988: merged branches whose file cache is Fresh (enriched). The PR-size
-  // median is taken over these branches only; a Fresh branch absent from
-  // `lineGroups` (zero changed files) still counts as a known size of 0.
-  enrichedBranches?: { artifactId: string }[];
-  checkStatusGroups?: unknown[];
-  reviewQueueGroups?: unknown[];
-  sessions?: unknown[];
-  eventTypeGroups?: unknown[];
-  toolUsageGroups?: unknown[];
-  eventVolumeRows?: unknown[];
-  // FEA-2877: the utilization path rolls sessions up in the DB. Each raw query
-  // is routed to its own fixture by inspecting the emitted SQL text.
-  sessionRollupRows?: unknown[];
-  userBreakdownRows?: unknown[];
-  sessionActivityRows?: unknown[];
-  // FEA-2955: the agent status/type charts unnest each session's `agents` JSON
-  // array and group by the raw value in the DB. Each raw query is routed to its
-  // fixture by the field it binds ("status" vs "type").
-  agentStatusBuckets?: unknown[];
-  agentTypeBuckets?: unknown[];
-  // FEA-2877: simulate a Postgres tzdata that rejects the requester timezone —
-  // the tz-aware session-activity query (AT TIME ZONE) throws so the service
-  // must retry in UTC rather than 500 the endpoint.
-  failTimeZoneActivity?: boolean;
-  // FEA-2956: same tzdata-skew simulation for the daily tool-run series — the
-  // tz-aware SUM(tool_use_count) query throws so the service must retry in UTC.
-  failTimeZoneToolRuns?: boolean;
-  // FEA-2956: pre-bucketed (day, n) tool-run totals the daily tool-run series
-  // reads from $queryRaw, standing in for the DB SUM(tool_use_count) aggregation.
-  toolRunsByDayRows?: unknown[];
-  reviews?: unknown[];
-  tokenUsage?: unknown[];
-  // FEA-2876: pre-bucketed (day, model, cost) rows the token model-usage series
-  // reads from $queryRaw, standing in for the DB date_trunc aggregation.
-  modelUsageRows?: unknown[];
-  counts?: (where: Record<string, unknown>) => number;
-  costSum?: number;
-  toolUseSum?: number;
-  activeInstallation?: unknown | null;
-  userGrant?: unknown | null;
-  // FEA-2233: earliest relevant record returned by the `_min` aggregates that
-  // power the "full prior period" rule. Defaults to the epoch so existing
-  // delta-bearing tests assume a full prior period; pass a recent Date to
-  // exercise the partial-prior case, or `null` for a no-history org.
-  earliest?: Date | null;
-}) {
-  const earliest =
-    fixtures.earliest === undefined ? new Date(0) : fixtures.earliest;
-  const wheres: WhereRecord = [];
-  // Every Prisma.sql fragment handed to $queryRaw, captured so tests can assert
-  // the raw event-volume aggregation carries the org/team scope predicate. Each
-  // entry is the tagged-template stand-in shape `{ strings, values }` produced
-  // by the mocked Prisma.sql (nested fragments appear inside `values`).
-  const rawQueries: unknown[] = [];
-  // FEA-2878: every pullRequestDetail.findMany call (the merged-PR scan) so tests
-  // can assert the scan is capped/ordered independently of the `where` records.
-  const mergedFindArgs: Record<string, unknown>[] = [];
-  const record = <T>(args: { where?: unknown } | undefined, value: T): T => {
-    if (args?.where) {
-      wheres.push(args.where);
-    }
-    return value;
-  };
-  const count = (args: { where: Record<string, unknown> }) => {
-    wheres.push(args.where);
-    return Promise.resolve(fixtures.counts?.(args.where) ?? 0);
-  };
-  const db = {
-    pullRequestDetail: {
-      findMany: (a: { where?: unknown }) => {
-        mergedFindArgs.push(a as Record<string, unknown>);
-        return Promise.resolve(record(a, fixtures.mergedPrs ?? []));
-      },
-      count,
-      groupBy: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.reviewQueueGroups ?? [])),
-      // FEA-2233: earliest merged PR for the full-prior-period rule.
-      aggregate: (a: { where?: unknown }) => {
-        wheres.push(a.where);
-        return Promise.resolve({ _min: { mergedAt: earliest } });
-      },
-    },
-    sessionDetail: {
-      findMany: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.sessions ?? [])),
-      count,
-      aggregate: (a: {
-        where?: unknown;
-        _sum?: Record<string, boolean>;
-        _min?: Record<string, boolean>;
-      }) => {
-        wheres.push(a.where);
-        // FEA-2233: earliest session start for the full-prior-period rule.
-        if (a._min) {
-          return Promise.resolve({ _min: { sessionStartedAt: earliest } });
-        }
-        if (a._sum?.estimatedCost) {
-          return Promise.resolve({
-            _sum: { estimatedCost: fixtures.costSum ?? 0 },
-          });
-        }
-        return Promise.resolve({
-          _sum: { toolUseCount: fixtures.toolUseSum ?? 0 },
-        });
-      },
-    },
-    branchFileChange: {
-      groupBy: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.lineGroups ?? [])),
-    },
-    branchDetail: {
-      groupBy: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.checkStatusGroups ?? [])),
-      findMany: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.enrichedBranches ?? [])),
-      count,
-    },
-    gitHubPRReview: {
-      findMany: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, fixtures.reviews ?? [])),
-    },
-    agentSessionTokenUsage: {
-      // Token analytics are DB-aggregated (FEA-2876): the KPI/token-distribution
-      // totals come from aggregate({_sum}), the spend-by-model breakdown from
-      // groupBy(['model'], {_sum}), and the per-day series from a $queryRaw. The
-      // fake derives all three from the same `tokenUsage` fixture rows so a single
-      // fixture drives the whole surface, mirroring the prior findMany reduction.
-      aggregate: (a: { where?: unknown }) => {
-        wheres.push(a.where);
-        const rows = (fixtures.tokenUsage ?? []) as TokenUsageFixture[];
-        return Promise.resolve({
-          _sum: {
-            inputTokens: sumBy(rows, (r) => r.inputTokens),
-            outputTokens: sumBy(rows, (r) => r.outputTokens),
-            cacheReadTokens: sumBy(rows, (r) => r.cacheReadTokens),
-            cacheWriteTokens: sumBy(rows, (r) => r.cacheWriteTokens),
-          },
-        });
-      },
-      groupBy: (a: { where?: unknown }) => {
-        wheres.push(a.where);
-        const rows = (fixtures.tokenUsage ?? []) as TokenUsageFixture[];
-        const spend = new Map<string, number>();
-        for (const row of rows) {
-          spend.set(
-            row.model,
-            (spend.get(row.model) ?? 0) + (row.estimatedCost ?? 0)
-          );
-        }
-        return Promise.resolve(
-          [...spend.entries()].map(([model, cost]) => ({
-            model,
-            _sum: { estimatedCost: cost },
-          }))
-        );
-      },
-    },
-    agentSessionEvent: {
-      count,
-      groupBy: (a: { by?: string[]; where?: unknown }) =>
-        Promise.resolve(
-          record(
-            a,
-            a.by?.includes("toolName")
-              ? (fixtures.toolUsageGroups ?? [])
-              : (fixtures.eventTypeGroups ?? [])
-          )
-        ),
-    },
-    $queryRaw: (sql: unknown) => {
-      rawQueries.push(sql);
-      // Route each raw aggregation to its fixture by the SQL it emits:
-      // - the session rollup (count + runtime + status) carries EXTRACT(EPOCH,
-      // - the user breakdown joins users (u.email),
-      // - the token model-usage series (FEA-2876) reads
-      //   agent_session_token_usage,
-      // - the event-volume query reads agent_session_events,
-      // - the daily tool-run series (FEA-2956) SUMs tool_use_count per day,
-      // - the remaining date_trunc query is the daily session-activity series.
-      const { text, values } = flattenRawSql(sql);
-      // FEA-2955: the two agent-bucket queries share SQL text and differ only in
-      // the bound field, so route by which of "status"/"type" they bind.
-      if (text.includes("jsonb_array_elements")) {
-        return Promise.resolve(
-          values.includes("type")
-            ? (fixtures.agentTypeBuckets ?? [])
-            : (fixtures.agentStatusBuckets ?? [])
-        );
-      }
-      if (text.includes("EXTRACT(EPOCH")) {
-        return Promise.resolve(fixtures.sessionRollupRows ?? []);
-      }
-      if (text.includes("u.email")) {
-        return Promise.resolve(fixtures.userBreakdownRows ?? []);
-      }
-      if (text.includes("agent_session_token_usage")) {
-        return Promise.resolve(fixtures.modelUsageRows ?? []);
-      }
-      if (text.includes("agent_session_events")) {
-        return Promise.resolve(fixtures.eventVolumeRows ?? []);
-      }
-      if (text.includes("tool_use_count")) {
-        if (fixtures.failTimeZoneToolRuns && text.includes("AT TIME ZONE")) {
-          return Promise.reject(
-            new Error('time zone "Mars/Olympus" not recognized')
-          );
-        }
-        return Promise.resolve(fixtures.toolRunsByDayRows ?? []);
-      }
-      // Daily session-activity series. When the requester zone is unknown to
-      // Postgres, the tz-aware variant (AT TIME ZONE) rejects and the service
-      // retries the UTC variant.
-      if (fixtures.failTimeZoneActivity && text.includes("AT TIME ZONE")) {
-        return Promise.reject(
-          new Error('time zone "Mars/Olympus" not recognized')
-        );
-      }
-      return Promise.resolve(fixtures.sessionActivityRows ?? []);
-    },
-    gitHubInstallation: {
-      findFirst: (a: { where?: unknown }) =>
-        Promise.resolve(record(a, activeInstallationFixture(fixtures))),
-    },
-    gitHubUserConnection: {
-      findUnique: vi.fn().mockResolvedValue(fixtures.userGrant ?? null),
-    },
-  };
-  return { db, wheres, rawQueries, mergedFindArgs };
-}
-
-/**
- * Flatten a mocked Prisma.sql fragment (`{ strings, values }`, possibly nested
- * via interpolated fragments) into its concatenated SQL text and the flat list
- * of bound scalar values, so tests can assert the raw event-volume query both
- * emits the org/team scope predicate SQL and binds the expected ids.
- */
-function flattenRawSql(sql: unknown): { text: string; values: unknown[] } {
-  if (!sql || typeof sql !== "object") {
-    return { text: typeof sql === "string" ? sql : "", values: [] };
-  }
-  const fragment = sql as { strings?: unknown; values?: unknown };
-  if (!(Array.isArray(fragment.strings) && Array.isArray(fragment.values))) {
-    return { text: "", values: [] };
-  }
-  let text = "";
-  const values: unknown[] = [];
-  fragment.strings.forEach((chunk, index) => {
-    text += String(chunk);
-    if (index < (fragment.values as unknown[]).length) {
-      const interpolated = (fragment.values as unknown[])[index];
-      // A nested Prisma.sql fragment (e.g. the scope predicate) is spliced into
-      // the SQL text; a plain scalar (org/user/team id) is a bound value.
-      if (
-        interpolated &&
-        typeof interpolated === "object" &&
-        "strings" in interpolated
-      ) {
-        const nested = flattenRawSql(interpolated);
-        text += nested.text;
-        values.push(...nested.values);
-      } else {
-        values.push(interpolated);
-      }
-    }
-  });
-  return { text, values };
-}
-
-/**
- * Pick the one captured raw query whose emitted SQL contains `needle`, flattened.
- * The utilization path now fires several sibling `$queryRaw` aggregations in a
- * single `Promise.all` (session rollup, user breakdown, event volume, session
- * activity — FEA-2877), so their order in `rawQueries` is not stable. Tests that
- * assert against a specific aggregation select it by an identifying SQL token
- * (e.g. the event-volume query's `agent_session_events`) rather than by index.
- */
-function findRawSql(
-  rawQueries: unknown[],
-  needle: string
-): { text: string; values: unknown[] } {
-  const match = rawQueries
-    .map((sql) => flattenRawSql(sql))
-    .find((raw) => raw.text.includes(needle));
-  if (!match) {
-    throw new Error(`no raw query matched ${JSON.stringify(needle)}`);
-  }
-  return match;
-}
-
-function activeInstallationFixture(fixtures: {
-  activeInstallation?: unknown | null;
-}) {
-  if (fixtures.activeInstallation !== undefined) {
-    return fixtures.activeInstallation;
-  }
-  return { id: "gh-install-1" };
-}
-
-function makeInsightsUserGrant(
-  overrides: Partial<{
-    revokedAt: Date | null;
-    tokenExpiresAt: Date | null;
-  }> = {}
-) {
-  return {
-    revokedAt: overrides.revokedAt ?? null,
-    tokenExpiresAt: overrides.tokenExpiresAt ?? null,
-  };
-}
-
-// biome-ignore-start lint/suspicious/noMisplacedAssertion: shared org-scoping assertion helper invoked from each section test
-function expectAllOrgScoped(wheres: WhereRecord): void {
-  expect(wheres.length).toBeGreaterThan(0);
-  for (const where of wheres) {
-    const found: string[] = [];
-    findOrgIds(where, found);
-    expect(found).toContain(ORG);
-  }
-}
-// biome-ignore-end lint/suspicious/noMisplacedAssertion: shared org-scoping assertion helper invoked from each section test
-
 beforeEach(() => {
   vi.mocked(withDb).mockReset();
 });
@@ -482,7 +80,15 @@ describe("insightsService.getDelivery", () => {
         {
           mergedAt,
           prState: ApiGitHubPRState.Merged,
+          // PLN-1535 M4: each PR carries its OWN projected diff size; the KLOC
+          // and median KPIs no longer read a branch-keyed file-cache rollup.
+          id: "pr-1",
+          number: 1,
+          githubId: "gh-1",
+          additions: 100,
+          deletions: 50,
           repositoryId: "r1",
+          repositoryFullName: "acme/symphony-alpha",
           branchArtifactId: "b1",
           repository: { name: "symphony-alpha" },
           branchArtifact: { createdAt: openedAt },
@@ -490,32 +96,32 @@ describe("insightsService.getDelivery", () => {
         {
           mergedAt,
           prState: ApiGitHubPRState.Merged,
+          id: "pr-2",
+          number: 2,
+          githubId: "gh-2",
+          additions: 200,
+          deletions: 50,
           repositoryId: "r2",
+          repositoryFullName: "acme/web",
           branchArtifactId: "b2",
           repository: { name: "web" },
           branchArtifact: { createdAt: new Date(mergedAt.getTime() - 5 * DAY) },
         },
-      ],
-      lineGroups: [
-        { branchArtifactId: "b1", _sum: { additions: 100, deletions: 50 } },
-        { branchArtifactId: "b2", _sum: { additions: 200, deletions: 50 } },
       ],
       checkStatusGroups: [
         { checksStatus: "PASSING", _count: { _all: 9 } },
         { checksStatus: "FAILING", _count: { _all: 1 } },
       ],
       costSum: 412.5,
+      // ISS-5624: the closed-without-merge denominator and the prior merged
+      // window are distinct-identity aggregates, so each is one pull request
+      // here rather than a routed `count()`.
+      closedPrs: [identityRow("closed-1", 11)],
+      priorMergedPrs: [identityRow("prior-1", 12)],
       counts: (where) => {
         const branchArtifact = where.branchArtifact as
           | Record<string, unknown>
           | undefined;
-        // FEA-3208: countClosedPrs windows the closed-without-merge count on the
-        // branch artifact's createdAt (null-safe, NOT closedAt). Route it FIRST —
-        // its `where` also carries a `branchArtifact.createdAt`, so it must be
-        // matched before the generic branchArtifact.createdAt cohort branch below.
-        if (where.prState === ApiGitHubPRState.Closed) {
-          return 1; // closed-without-merge count
-        }
         if (branchArtifact && "createdAt" in branchArtifact) {
           // The merge-rate numerator further scopes the opened cohort to MERGED
           // PRs, so both surfaces divide over ONE set (2 merged of 4 opened).
@@ -557,6 +163,27 @@ describe("insightsService.getDelivery", () => {
 
     expectAllOrgScoped(wheres);
 
+    // FEA-3638 Slice 0 — DB round-trip baseline. Each `withDb(...)` call is one
+    // DB round-trip; the fake harness routes every call through the mocked
+    // `withDb`, so `mock.calls.length` is the exact per-endpoint round-trip count
+    // for this org-scope fan-out. This PINS today's baseline so later perf slices
+    // (Tier-2 round-trip collapses) prove a measured delta and no change silently
+    // RE-ADDS a query. getDelivery fires Wave 1 (8 helpers, of which
+    // `earliestRecord` fans out to 2 aggregates → 9 calls) then Wave 2
+    // (`fetchBranchesWithoutPrBuckets` = 1 call — 2 counts via Promise.all
+    // inside one withDb, `fetchCheckStatusBuckets` under Org scope = 1) —
+    // 9 + 1 + 1 = 11 round-trips total. `mock.calls.length` counts withDb
+    // invocations (round-trips), not the queries Promise.all'd inside one.
+    // Index-only Slice 1 does NOT change this count (indexes alter plan choice,
+    // not query count).
+    //
+    // PLN-1535 M4 dropped this from 12 to 11: LOC now comes off the merged-PR
+    // rows Wave 1 already fetched, so the `fetchMergedLineTotals` round-trip
+    // (a branch-file-cache group-by plus a fileCacheStatus lookup) is gone —
+    // one fewer concurrent connection against the max:20 pool, and Wave 2 no
+    // longer has to be gated on Wave 1's merged set at all.
+    expect(vi.mocked(withDb).mock.calls.length).toBe(11);
+
     const merged = result.kpis.find((k) => k.key === "merged");
     expect(merged?.value).toBe(2);
     expect(merged?.deltaPct).toBe(100); // 2 vs prior 1
@@ -574,6 +201,13 @@ describe("insightsService.getDelivery", () => {
 
     const kloc = result.kpis.find((k) => k.key === "kloc");
     expect(kloc?.value).toBe(0.4); // (150 + 250) / 1000
+
+    // FEA-2947: the dedicated "mergedKloc" KPI (AI-Impact card's tokens-per-KLOC
+    // denominator) carries the same merged-lines KLOC as the visible "kloc" tile
+    // here. The card reads THIS key so the desktop surface — whose "kloc" KPI is
+    // captured-lines KLOC — divides by the same merged-lines population.
+    const mergedKloc = result.kpis.find((k) => k.key === "mergedKloc");
+    expect(mergedKloc?.value).toBe(0.4);
 
     const ttm = result.kpis.find((k) => k.key === "ttm");
     expect(ttm?.format).toBe(KpiFormat.Duration);
@@ -616,45 +250,18 @@ describe("insightsService.getDelivery", () => {
     ).toBe(0.4);
   });
 
-  it("medians PR size over enriched PRs only while KLOC still sums un-enriched as 0 (FEA-2988)", async () => {
-    const mergedAt = new Date("2026-06-08T00:00:00.000Z");
-    const openedAt = new Date(mergedAt.getTime() - 2 * HOUR);
-    const { db } = makeFakeDb({
-      mergedPrs: [
-        {
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r1",
-          branchArtifactId: "b1",
-          repository: { name: "symphony-alpha" },
-          branchArtifact: { createdAt: openedAt },
-        },
-        {
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r2",
-          branchArtifactId: "b2",
-          repository: { name: "web" },
-          branchArtifact: { createdAt: openedAt },
-        },
-        {
-          // Un-enriched: file cache not Fresh → absent from enrichedBranches.
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r3",
-          branchArtifactId: "b3",
-          repository: { name: "docs" },
-          branchArtifact: { createdAt: openedAt },
-        },
-      ],
-      lineGroups: [
-        { branchArtifactId: "b1", _sum: { additions: 100, deletions: 0 } },
-        { branchArtifactId: "b2", _sum: { additions: 300, deletions: 0 } },
-      ],
-      // b1/b2 enriched (Fresh); b3 not enriched.
-      enrichedBranches: [{ artifactId: "b1" }, { artifactId: "b2" }],
-      counts: () => 0,
-    });
+  it("sends the raw cost aggregate, so a sub-cent total is not rounded to zero (ISS-4919)", async () => {
+    // wongk review. The producer used to `round(cost, 2)` before emitting the
+    // KPI, which destroyed the very band ISS-4919 fixes one layer down: a real
+    // $0.004 org total arrived at the client as numeric 0, so the shared
+    // sub-floor bound could never fire and the tile rendered "$0" — a measured
+    // zero for money that was actually spent. Desktop sends `totalCost` raw, so
+    // the same org read "$0" on web and a real figure on desktop.
+    //
+    // Asserted on the WIRE value, not the rendered string: display precision is
+    // the formatter's job (`formatCurrencyTileValue`), and the defect was that
+    // the producer pre-empted it.
+    const { db } = makeFakeDb({ costSum: 0.004, counts: () => 0 });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
     );
@@ -665,60 +272,17 @@ describe("insightsService.getDelivery", () => {
       NOW
     );
 
-    // Median over enriched PRs only: [100, 300] → 200. The old code folded the
-    // un-enriched PR in as 0, medianing [0, 100, 300] → 100.
-    const prSize = result.kpis.find((k) => k.key === "pr-size");
-    expect(prSize?.value).toBe(200);
-
-    // KLOC still sums over ALL merged PRs (un-enriched contributes 0): 400 / 1000.
-    const kloc = result.kpis.find((k) => k.key === "kloc");
-    expect(kloc?.value).toBe(0.4);
+    const cost = result.kpis.find((k) => k.key === "cost");
+    expect(cost?.value).toBe(0.004);
+    expect(cost?.value).not.toBe(0);
+    expect(cost?.format).toBe(KpiFormat.Currency);
   });
 
-  it("counts a Fresh zero-file PR as a known 0 in the PR-size median (FEA-2988)", async () => {
-    const mergedAt = new Date("2026-06-08T00:00:00.000Z");
-    const openedAt = new Date(mergedAt.getTime() - 2 * HOUR);
-    const { db } = makeFakeDb({
-      mergedPrs: [
-        {
-          // Fresh but zero changed files → absent from lineGroups, present in
-          // enrichedBranches. Its known size is 0 and must count toward median.
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r0",
-          branchArtifactId: "b0",
-          repository: { name: "docs" },
-          branchArtifact: { createdAt: openedAt },
-        },
-        {
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r1",
-          branchArtifactId: "b1",
-          repository: { name: "symphony-alpha" },
-          branchArtifact: { createdAt: openedAt },
-        },
-        {
-          mergedAt,
-          prState: ApiGitHubPRState.Merged,
-          repositoryId: "r2",
-          branchArtifactId: "b2",
-          repository: { name: "web" },
-          branchArtifact: { createdAt: openedAt },
-        },
-      ],
-      lineGroups: [
-        { branchArtifactId: "b1", _sum: { additions: 100, deletions: 0 } },
-        { branchArtifactId: "b2", _sum: { additions: 300, deletions: 0 } },
-      ],
-      // All three are Fresh (enriched), including the zero-file b0.
-      enrichedBranches: [
-        { artifactId: "b0" },
-        { artifactId: "b1" },
-        { artifactId: "b2" },
-      ],
-      counts: () => 0,
-    });
+  it("keeps sub-cent cost detail all the way below the 4dp render floor (ISS-4919)", async () => {
+    // The band under `formatCostPrecise`'s floor is exactly where rounding at the
+    // producer is unrecoverable: once it is 0 on the wire, no formatter can tell
+    // "too small to show" from "free", and the tile asserts the wrong one.
+    const { db } = makeFakeDb({ costSum: 0.000_01, counts: () => 0 });
     vi.mocked(withDb).mockImplementation((cb) =>
       Promise.resolve(cb(db as never))
     );
@@ -729,10 +293,28 @@ describe("insightsService.getDelivery", () => {
       NOW
     );
 
-    // Median over enriched PRs [0, 100, 300] → 100. Dropping the Fresh zero-file
-    // PR (the pre-fix behavior) would median [100, 300] → 200.
-    const prSize = result.kpis.find((k) => k.key === "pr-size");
-    expect(prSize?.value).toBe(100);
+    const cost = result.kpis.find((k) => k.key === "cost");
+    expect(cost?.value).toBe(0.000_01);
+  });
+
+  it("captions the cost KPI with the shared basis constant, never a billed-money claim", async () => {
+    // ISS-4994. The caption is the SHARED `COST_KPI_SUB` (now in
+    // `@closedloop-ai/loops-api/insights`), which is what makes desktop's producer render
+    // the identical sentence over the identical subscription-inclusive aggregate.
+    const { db } = makeFakeDb({ costSum: 412.5, counts: () => 0 });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getDelivery(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    const cost = result.kpis.find((k) => k.key === "cost");
+    expect(cost?.sub).toBe(COST_KPI_SUB);
+    expect(cost?.sub.toLowerCase()).not.toContain("spend");
   });
 
   it("marks org delivery provenance disconnected without an active GitHub installation", async () => {
@@ -929,11 +511,15 @@ describe("insightsService.getDelivery", () => {
       { key: ApiGitHubPRState.Merged, label: "Merged", value: 5000 },
     ]);
 
-    // The one merged-PR scan is bounded and ordered newest-first so the "all"
-    // period cannot materialize every merged PR org-wide.
+    // Every PR scan is bounded and ordered so the "all" period cannot
+    // materialize the org-wide population. Exactly one under "all" since
+    // ISS-5624 moved the closed-side dedupe into a DB aggregate: the merged row
+    // scan. Pinned as an exact count so a future second lands loudly.
     expect(mergedFindArgs).toHaveLength(1);
-    expect(mergedFindArgs[0].take).toBe(MERGED_PR_SCAN_CAP);
     expect(mergedFindArgs[0].orderBy).toEqual({ mergedAt: "desc" });
+    for (const args of mergedFindArgs) {
+      expect(args.take).toBe(MERGED_PR_SCAN_CAP);
+    }
   });
 
   // FEA-3208: the closed-without-merge denominator must count CLOSED PRs on the
@@ -990,47 +576,35 @@ describe("insightsService.getDelivery", () => {
     // excludes the out-of-window one, regardless of closedAt.
     const DESKTOP_CLOSED_COUNT = 3;
 
-    // Evaluate the service-produced closed-count `where` against a corpus row
-    // exactly as the fixed query does: match on prState AND the branchArtifact
-    // createdAt window, with NO closedAt gate (so a null closedAt cannot drop a
-    // genuinely-CLOSED in-window PR, and an out-of-window PR is excluded).
-    const matchesClosedWhere = (
-      where: Record<string, unknown>,
-      row: { prState: unknown; createdAt: Date; closedAt: Date | null }
-    ): boolean => {
-      if (where.prState !== row.prState) {
-        return false;
-      }
-      const branchArtifact = where.branchArtifact as
-        | { createdAt?: { gte?: Date; lte?: Date } }
-        | undefined;
-      const window = branchArtifact?.createdAt;
-      if (!(window?.gte && window?.lte)) {
-        return false; // no window → the fixed query MUST provide one
-      }
-      return row.createdAt >= window.gte && row.createdAt <= window.lte;
-    };
+    // Evaluate the window the service EMITTED against a corpus row exactly as
+    // the fixed query does: the branch artifact's createdAt window with NO
+    // closedAt gate, so a null closedAt cannot drop a genuinely-CLOSED in-window
+    // PR and an out-of-window PR is excluded. An absent window fails closed.
+    const inClosedWindow = (
+      window: { gte?: Date; lte?: Date },
+      row: { createdAt: Date }
+    ): boolean =>
+      window.gte !== undefined &&
+      window.lte !== undefined &&
+      row.createdAt >= window.gte &&
+      row.createdAt <= window.lte;
 
-    let closedWhereSeen: Record<string, unknown> | undefined;
-    const { db, wheres } = makeFakeDb({
+    const { db, wheres, rawQueries } = makeFakeDb({
       mergedPrs: [],
+      // ISS-5624: the closed side is a distinct-identity aggregate, so the
+      // corpus's three in-window pull requests arrive as three identity rows.
+      closedPrs: [
+        identityRow("closed-1", 11),
+        identityRow("closed-2", 12),
+        identityRow("closed-3", 13),
+      ],
+      // In-range merged count (headline "Merged PRs" + numerator).
       counts: (where) => {
         const mergedRange = where.mergedAt as { lte?: unknown } | undefined;
-        // In-range merged count (headline "Merged PRs" + numerator).
-        if (
-          where.prState === ApiGitHubPRState.Merged &&
+        return where.prState === ApiGitHubPRState.Merged &&
           mergedRange?.lte !== undefined
-        ) {
-          return 8; // 8 merged
-        }
-        // The closed-without-merge count (countClosedPrs). Evaluate the real
-        // `where` against the corpus — this is the assertion's subject.
-        if (where.prState === ApiGitHubPRState.Closed) {
-          closedWhereSeen = where;
-          return closedCorpus.filter((row) => matchesClosedWhere(where, row))
-            .length;
-        }
-        return 0;
+          ? 8 // 8 merged
+          : 0;
       },
     });
     vi.mocked(withDb).mockImplementation((cb) =>
@@ -1045,25 +619,21 @@ describe("insightsService.getDelivery", () => {
 
     expectAllOrgScoped(wheres);
 
-    // The closed-count query is pr_state-based, windowed on the branch artifact's
-    // createdAt, and crucially does NOT gate on closedAt — so a null closedAt can
-    // never drop a CLOSED PR, while the period window is preserved.
-    expect(closedWhereSeen).toBeDefined();
-    const seen = closedWhereSeen as Record<string, unknown>;
-    expect(seen.prState).toBe(ApiGitHubPRState.Closed);
-    expect(seen).not.toHaveProperty("closedAt");
-    expect(seen).not.toHaveProperty("OR");
-    const seenBranch = seen.branchArtifact as
-      | { createdAt?: { gte?: Date; lte?: Date } }
-      | undefined;
-    expect(seenBranch?.createdAt?.gte).toEqual(range.start);
-    expect(seenBranch?.createdAt?.lte).toEqual(range.end);
+    // The closed-count statement is pr_state-based, windowed on the branch
+    // artifact's created_at, and crucially does NOT gate on closedAt — so a null
+    // closedAt can never drop a CLOSED PR, while the period window is preserved.
+    const closedSql = findRawSql(rawQueries, "a.created_at >=");
+    expect(closedSql.values).toContain(ApiGitHubPRState.Closed);
+    expect(closedSql.text).not.toContain("closed_at");
+    const [gte, lte] = closedSql.values.filter((v) => v instanceof Date);
+    expect(gte).toEqual(range.start);
+    expect(lte).toEqual(range.end);
 
     // The cloud closed count equals the desktop windowed pr_state count: the two
     // in-window null-closedAt CLOSED PRs are retained (not dropped), the populated
     // in-window one is counted, and the out-of-window CLOSED PR is excluded.
     const cloudClosedCount = closedCorpus.filter((row) =>
-      matchesClosedWhere(seen, row)
+      inClosedWindow({ gte, lte }, row)
     ).length;
     expect(cloudClosedCount).toBe(DESKTOP_CLOSED_COUNT);
     expect(cloudClosedCount).toBe(3);
@@ -1082,7 +652,6 @@ describe("insightsService.getDelivery", () => {
 
 describe("insightsService.getUtilization", () => {
   it("computes sessions, runtime and reviewer load", async () => {
-    const start = new Date("2026-06-08T09:00:00.000Z");
     const { db, wheres } = makeFakeDb({
       // FEA-2877: sessions are rolled up in the DB — the count, summed runtime
       // (seconds) and per-status breakdown arrive pre-aggregated. The open
@@ -1100,12 +669,22 @@ describe("insightsService.getUtilization", () => {
           n: 2,
         },
       ],
-      reviews: [
+      // Two reviewers in the DB's GROUP BY author_login / ORDER BY reviewed DESC
+      // order: a populated median and — crucially — a null median (percentile_cont
+      // is NULL when a reviewer has no non-negative wait), which must map through as
+      // `null`, not `0` or `NaN`.
+      reviewerLoadRows: [
         {
-          authorLogin: "claude",
-          state: "APPROVED",
-          submittedAt: new Date(start.getTime() + HOUR),
-          pullRequestDetail: { branchArtifact: { createdAt: start } },
+          reviewer: "claude",
+          reviewed: 3,
+          approved: 2,
+          median_wait_ms: HOUR,
+        },
+        {
+          reviewer: "codex",
+          reviewed: 1,
+          approved: 0,
+          median_wait_ms: null,
         },
       ],
       counts: () => 5,
@@ -1121,6 +700,16 @@ describe("insightsService.getUtilization", () => {
     );
 
     expectAllOrgScoped(wheres);
+    // FEA-3638 Slice 0 — DB round-trip baseline (see getDelivery note). The
+    // utilization endpoint fires a single `Promise.all` fan-out; under Org scope
+    // it reaches 13 helpers/round-trips (including the Org-only reviewer-load and
+    // user-breakdown queries, the FEA-3684 activity-heatmap unnest, and
+    // `earliestRecord`'s 2 aggregates). There is no check-status query in this
+    // endpoint — that helper is delivery-only. ISS-4629 folded the review-queue
+    // chart and the review-backlog KPI into ONE `groupBy` snapshot (14→13), so
+    // they can't skew across reads. Pins the baseline so the Tier-2 collapses
+    // (e.g. `earliestRecord` 2→1) prove a delta.
+    expect(vi.mocked(withDb).mock.calls.length).toBe(13);
     expect(result.kpis.find((k) => k.key === "sessions")?.value).toBe(2);
     expect(result.kpis.find((k) => k.key === "runtime")?.value).toBe(2 * HOUR);
     expect(result.charts.sessionsByStatus).toEqual([
@@ -1131,7 +720,8 @@ describe("insightsService.getUtilization", () => {
       { key: "u1", label: "Ada Lovelace", value: 2 },
     ]);
     expect(result.charts.reviewerLoad).toEqual([
-      { reviewer: "claude", reviewed: 1, approved: 1, medianWaitMs: HOUR },
+      { reviewer: "claude", reviewed: 3, approved: 2, medianWaitMs: HOUR },
+      { reviewer: "codex", reviewed: 1, approved: 0, medianWaitMs: null },
     ]);
     expect(result.tileAvailability).toMatchObject({
       "kpi:backlog": InsightsTileAvailabilityState.Available,
@@ -1225,6 +815,97 @@ describe("insightsService.getUtilization", () => {
       result.charts.eventActivity?.points.find((p) => p.date === "2026-06-08")
         ?.values.sessions
     ).toBe(9);
+  });
+
+  it("falls back to UTC event-volume bucketing when Postgres rejects the requester timezone (FEA-3465)", async () => {
+    const { db } = makeFakeDb({
+      counts: () => 0,
+      failTimeZoneEvents: true,
+      // The UTC retry returns already-bucketed day rows.
+      eventVolumeRows: [{ day: "2026-06-08", n: 7 }],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    // A zone ICU accepts but the DB's tzdata may not know must not 500 the whole
+    // utilization dashboard — the Events chart still renders off the UTC retry.
+    const result = await insightsService.getUtilization(
+      { ...ORG_CTX, timeZone: "America/Ciudad_Juarez" },
+      InsightsPeriod.Month,
+      NOW
+    );
+
+    expect(
+      result.charts.eventVolume?.points.find((p) => p.date === "2026-06-08")
+        ?.values.events
+    ).toBe(7);
+  });
+
+  it("computes the Event Activity heatmap (day×hour Human/Agent split) in the DB (FEA-3684)", async () => {
+    const { db, rawQueries } = makeFakeDb({
+      counts: () => 0,
+      // Pre-bucketed (day, hour, human, agent) rows in arbitrary order; the
+      // service sorts cells by (day, hour) before returning them.
+      activityHeatmapRows: [
+        { day: "2026-06-09", hour: 14, human: 1, agent: 8 },
+        { day: "2026-06-08", hour: 9, human: 3, agent: 5 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getUtilization(
+      ORG_CTX,
+      InsightsPeriod.Month,
+      NOW
+    );
+
+    const heatmap = result.charts.activityHeatmap;
+    // Cells come back sorted by (day, hour) regardless of DB row order.
+    expect(heatmap?.cells).toEqual([
+      { day: "2026-06-08", hour: 9, human: 3, agent: 5 },
+      { day: "2026-06-09", hour: 14, human: 1, agent: 8 },
+    ]);
+    // The day axis spans the capped trend window as contiguous columns covering
+    // both populated days (mirrors the eventActivity series window).
+    expect(heatmap?.days).toContain("2026-06-08");
+    expect(heatmap?.days).toContain("2026-06-09");
+
+    // Org-scoped, headless-suppressing, and (ISS-5408) joined to the billable
+    // round-trip source, so a revert to row-counting cannot pass on the fixture.
+    const raw = findRawSql(rawQueries, "metadata -> 'messages'");
+    expect(raw.text).toContain("a.organization_id");
+    expect(raw.values).toContain(ORG);
+    expect(raw.text).toContain("entrypoint");
+    expect(raw.text).toContain("permissionMode");
+    expect(raw.text).toContain("agent_session_token_events");
+  });
+
+  it("falls back to UTC heatmap bucketing when Postgres rejects the requester timezone (FEA-3684)", async () => {
+    const { db } = makeFakeDb({
+      counts: () => 0,
+      failTimeZoneHeatmap: true,
+      // The UTC retry returns already-bucketed (day, hour) rows.
+      activityHeatmapRows: [{ day: "2026-06-08", hour: 9, human: 2, agent: 4 }],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    // A zone ICU accepts but the DB's tzdata may not know must not 500 the whole
+    // utilization dashboard — the Event Activity heatmap still renders off the
+    // UTC-bucketed retry.
+    const result = await insightsService.getUtilization(
+      { ...ORG_CTX, timeZone: "America/Ciudad_Juarez" },
+      InsightsPeriod.Month,
+      NOW
+    );
+
+    expect(result.charts.activityHeatmap?.cells).toEqual([
+      { day: "2026-06-08", hour: 9, human: 2, agent: 4 },
+    ]);
   });
 
   it("buckets the raw event-volume query in the viewer's timezone (FEA-2881)", async () => {
@@ -1462,6 +1143,14 @@ describe("insightsService.getAgents", () => {
     );
 
     expectAllOrgScoped(wheres);
+    // FEA-3638 — DB round-trip count for the agents endpoint's single `Promise.all`
+    // fan-out. Slice 0 pinned this at 13; the Tier-2 collapse of `fetchAgentBuckets`
+    // (its status + type unnests rolled up in ONE query via GROUPING SETS instead of
+    // two separate `withDb` calls) dropped it to 12. FEA-4022 adds one more — the
+    // `frustrationSettingService.isFrustrationEnabled` gate read in the same
+    // Promise.all — for 13. The frustration trend query itself only fires when the
+    // org opted in (this org has not), so it adds no round-trip here.
+    expect(vi.mocked(withDb).mock.calls.length).toBe(13);
     // KPI totals + token-distribution donut come from a single aggregate({_sum})
     // (FEA-2876), no longer a JS reduction over the full token table.
     expect(result.kpis.find((k) => k.key === "tokens")?.value).toBe(200);
@@ -1528,12 +1217,19 @@ describe("insightsService.getAgents", () => {
       { key: "Root", label: "Root", value: 1 },
     ]);
 
-    // The unnest query carries the org scope predicate and binds the org id.
-    const agentRaw = rawQueries
+    // FEA-3638 (Tier-2 collapse): status + type now roll up in a SINGLE unnest
+    // round-trip (GROUPING SETS), not two. Assert exactly one such query fired,
+    // and that it still carries the org scope predicate and binds the org id.
+    const agentRaws = rawQueries
       .map((sql) => flattenRawSql(sql))
-      .find((raw) => raw.text.includes("jsonb_array_elements"));
-    expect(agentRaw?.text).toContain("a.organization_id");
-    expect(agentRaw?.values).toContain(ORG);
+      .filter(
+        (raw) =>
+          raw.text.includes("jsonb_array_elements") &&
+          raw.text.includes("GROUPING SETS")
+      );
+    expect(agentRaws).toHaveLength(1);
+    expect(agentRaws[0]?.text).toContain("a.organization_id");
+    expect(agentRaws[0]?.values).toContain(ORG);
   });
 
   it("builds the model-usage series from the DB-bucketed spend rows and scopes the raw query to the org", async () => {
@@ -1543,10 +1239,11 @@ describe("insightsService.getAgents", () => {
         { model: "opus", estimatedCost: 1.5 },
         { model: "sonnet", estimatedCost: 0.5 },
       ],
-      // Pre-bucketed (day, model, cost) rows straight from the DB date_trunc.
+      // Pre-bucketed (day, model, cost, tokens) rows straight from the DB
+      // date_trunc + SUMs. `tokens` = input+output+cache read/write (FEA-3497).
       modelUsageRows: [
-        { day: "2026-06-08", model: "opus", cost: 1.5 },
-        { day: "2026-06-08", model: "sonnet", cost: 0.5 },
+        { day: "2026-06-08", model: "opus", cost: 1.5, tokens: 165 },
+        { day: "2026-06-08", model: "sonnet", cost: 0.5, tokens: 55 },
       ],
     });
     vi.mocked(withDb).mockImplementation((cb) =>
@@ -1565,14 +1262,24 @@ describe("insightsService.getAgents", () => {
     expect(day?.values.opus).toBe(1.5);
     expect(day?.values.sonnet).toBe(0.5);
 
-    // The token spend surfaces (aggregate + groupBy) stay org-scoped, and the raw
-    // per-day query carries the org predicate + binds the org id (FEA-2876).
+    // FEA-3497: the token series shares the SAME top-N model keys as spend, so
+    // the $/# toggle only swaps y-values. Values are the summed token volume.
+    const tokens = result.charts.modelTokensOverTime;
+    expect(tokens?.series.map((s) => s.key)).toEqual(["opus", "sonnet"]);
+    const tokenDay = tokens?.points.find((p) => p.date === "2026-06-08");
+    expect(tokenDay?.values.opus).toBe(165);
+    expect(tokenDay?.values.sonnet).toBe(55);
+
+    // The token spend surfaces stay org-scoped; the raw per-day query carries the
+    // org predicate, binds the org id (FEA-2876), and sums the token columns
+    // (FEA-3497). Pinned by `AS tokens`: ISS-4463 fused a second read of this
+    // table, and only this query emits that alias.
     expectAllOrgScoped(wheres);
-    const tokenRaw = rawQueries
-      .map((sql) => flattenRawSql(sql))
-      .find((raw) => raw.text.includes("agent_session_token_usage"));
+    const tokenRaw = findRawSql(rawQueries, "AS tokens");
     expect(tokenRaw?.text).toContain("a.organization_id");
     expect(tokenRaw?.values).toContain(ORG);
+    expect(tokenRaw?.text).toContain("input_tokens");
+    expect(tokenRaw?.text).toContain("cache_write_tokens");
   });
 
   it("builds the tool-run series from the DB-bucketed sums and scopes the raw query to the org", async () => {
@@ -1605,6 +1312,78 @@ describe("insightsService.getAgents", () => {
     expect(toolRunRaw?.values).toContain(ORG);
   });
 
+  it("rolls up the agent-pipeline graph (nodes + edges) and scopes the raw queries to the org (FEA-3537)", async () => {
+    const { db, rawQueries } = makeFakeDb({
+      agentPipelineNodes: [
+        {
+          subagent_type: "reviewer",
+          total: 10,
+          completed: 8,
+          errors: 2,
+          sessions: 6,
+          avg_duration: 120,
+        },
+        {
+          subagent_type: "planner",
+          total: 4,
+          completed: 4,
+          errors: 0,
+          sessions: 4,
+          avg_duration: null,
+        },
+      ],
+      agentPipelineEdges: [
+        { source: "planner", target: "reviewer", weight: 5 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    const pipeline = result.charts.agentPipeline;
+    expect(pipeline?.nodes).toHaveLength(2);
+    // successRate = completed / (completed + errors) * 100.
+    expect(
+      pipeline?.nodes.find((node) => node.subagentType === "reviewer")
+    ).toMatchObject({
+      total: 10,
+      completed: 8,
+      errors: 2,
+      sessions: 6,
+      successRate: 80,
+      avgDuration: 120,
+    });
+    expect(
+      pipeline?.nodes.find((node) => node.subagentType === "planner")
+        ?.successRate
+    ).toBe(100);
+    expect(pipeline?.edges).toEqual([
+      { source: "planner", target: "reviewer", weight: 5 },
+    ]);
+
+    // Both raw pipeline queries carry the org predicate + bind the org id.
+    const nodeRaw = rawQueries
+      .map((sql) => flattenRawSql(sql))
+      .find(
+        (raw) =>
+          raw.text.includes("subagent_type") &&
+          !raw.text.includes("parentExternalAgentId")
+      );
+    expect(nodeRaw?.text).toContain("a.organization_id");
+    expect(nodeRaw?.values).toContain(ORG);
+    const edgeRaw = rawQueries
+      .map((sql) => flattenRawSql(sql))
+      .find((raw) => raw.text.includes("parentExternalAgentId"));
+    expect(edgeRaw?.text).toContain("a.organization_id");
+    expect(edgeRaw?.values).toContain(ORG);
+  });
+
   it("falls back to UTC tool-run bucketing when Postgres rejects the requester timezone (FEA-2956)", async () => {
     const { db } = makeFakeDb({
       failTimeZoneToolRuns: true,
@@ -1628,6 +1407,185 @@ describe("insightsService.getAgents", () => {
         (point) => point.date === "2026-06-08"
       )?.values["tool-runs"]
     ).toBe(7);
+  });
+
+  // FEA-4022: the frustration trend is org opt-in and normalized 0–100 against
+  // the org population's observed max over the window.
+  it("omits the frustration trend when the org has not opted in", async () => {
+    const { db } = makeFakeDb({
+      // Even with raw rows available, the gate is off → no trend query, no chart.
+      frustrationEnabled: false,
+      frustrationTrendRows: [
+        { day: "2026-06-08", total: 40, sessions: 2, orgDayMax: 20 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    expect(result.charts.frustrationTrend).toBeUndefined();
+  });
+
+  it("normalizes the daily frustration mean to 0–100 against the population max when opted in", async () => {
+    const { db, wheres } = makeFakeDb({
+      frustrationEnabled: true,
+      // Population max = MAX(orgDayMax) = 20. Day A mean = 40/2 = 20 → normalized
+      // 100; Day B mean = 5/1 = 5 → normalized 25. NULL-raw sessions never reach
+      // these rows (the query excludes them), so they neither dilute the mean
+      // nor the max.
+      frustrationTrendRows: [
+        { day: "2026-06-08", total: 40, sessions: 2, orgDayMax: 20 },
+        { day: "2026-06-09", total: 5, sessions: 1, orgDayMax: 5 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    const trend = result.charts.frustrationTrend;
+    expect(trend).toBeDefined();
+    expect(trend?.series[0]?.key).toBe("frustration");
+    expect(
+      trend?.points.find((point) => point.date === "2026-06-08")?.values
+        .frustration
+    ).toBe(100);
+    expect(
+      trend?.points.find((point) => point.date === "2026-06-09")?.values
+        .frustration
+    ).toBe(25);
+    // Every SCORED value stays within the normalized band; gap days are null.
+    for (const point of trend?.points ?? []) {
+      const value = point.values.frustration;
+      if (value === null) {
+        continue;
+      }
+      expect(value).toBeGreaterThanOrEqual(0);
+      expect(value).toBeLessThanOrEqual(100);
+    }
+    // Cross-org isolation: every read (including the trend + gate) is org-scoped.
+    expectAllOrgScoped(wheres);
+  });
+
+  it("normalizes against the population MAX single-session raw, not the peak day mean", async () => {
+    const { db } = makeFakeDb({
+      frustrationEnabled: true,
+      // Day A: two sessions raw 100 + 0 → mean 50, orgDayMax 100. Day B: one raw
+      // 20 → mean 20, orgDayMax 20. Population max = MAX(orgDayMax) = 100, so Day
+      // A normalizes to 50 (50/100) — NOT 100 (which is what normalizing against
+      // the peak day-mean of 50 would wrongly produce).
+      frustrationTrendRows: [
+        { day: "2026-06-08", total: 100, sessions: 2, orgDayMax: 100 },
+        { day: "2026-06-09", total: 20, sessions: 1, orgDayMax: 20 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    const trend = result.charts.frustrationTrend;
+    expect(
+      trend?.points.find((point) => point.date === "2026-06-08")?.values
+        .frustration
+    ).toBe(50);
+    expect(
+      trend?.points.find((point) => point.date === "2026-06-09")?.values
+        .frustration
+    ).toBe(20);
+  });
+
+  it("omits the frustration trend when opted in but no windowed session carries a raw signal", async () => {
+    const { db } = makeFakeDb({
+      frustrationEnabled: true,
+      // No rows (all sessions NULL-raw / outside window) → population max is 0.
+      frustrationTrendRows: [],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    expect(result.charts.frustrationTrend).toBeUndefined();
+  });
+
+  it("fails open — omits the frustration chart (not a page-wide error) when its query throws", async () => {
+    const { db } = makeFakeDb({
+      frustrationEnabled: true,
+      failFrustrationTrend: true,
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    // The whole Agents response still resolves; only the frustration widget is
+    // omitted, so a slow/failing frustration aggregate cannot take down the
+    // other Agents widgets.
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    expect(result.charts.frustrationTrend).toBeUndefined();
+    // Other widgets still render.
+    expect(result.kpis.length).toBeGreaterThan(0);
+  });
+
+  it("emits null (a gap) for a day with no scored sessions, not a false calm zero", async () => {
+    const { db } = makeFakeDb({
+      frustrationEnabled: true,
+      // Day A scored (mean 20, orgDayMax 20 → normalized 100). Day B has NO row
+      // (no scored session in the window), so the interpolated point must be a
+      // null GAP — not a measured calm 0 that would draw a flat floor.
+      frustrationTrendRows: [
+        { day: "2026-06-08", total: 40, sessions: 2, orgDayMax: 20 },
+      ],
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const result = await insightsService.getAgents(
+      ORG_CTX,
+      InsightsPeriod.Quarter,
+      NOW
+    );
+
+    const trend = result.charts.frustrationTrend;
+    expect(trend).toBeDefined();
+    const scored = trend?.points.find((point) => point.date === "2026-06-08");
+    expect(scored?.values.frustration).toBe(100);
+    // At least one interpolated gap day exists across the quarter window, and
+    // every non-scored day is null (a gap), never 0.
+    const gapPoints = (trend?.points ?? []).filter(
+      (point) => point.date !== "2026-06-08"
+    );
+    expect(gapPoints.length).toBeGreaterThan(0);
+    for (const point of gapPoints) {
+      expect(point.values.frustration).toBeNull();
+    }
   });
 });
 
@@ -1818,52 +1776,6 @@ describe("reportDeltaFor — full prior period rule (FEA-2233)", () => {
     expect(reportDeltaFor(quarter, new Date(0))(12, 0)).toBeNull();
   });
 
-  it("buildPrByRepoBuckets merges App + desktop lanes for one repo across casing", () => {
-    const row = (
-      overrides: Partial<{
-        repositoryFullName: string | null;
-        repository: { name: string } | null;
-      }>
-    ) =>
-      ({
-        mergedAt: new Date("2026-06-08T00:00:00.000Z"),
-        repositoryId: null,
-        repositoryFullName: null,
-        branchArtifactId: "b",
-        repository: null,
-        branchArtifact: { createdAt: new Date("2026-06-01T00:00:00.000Z") },
-        ...overrides,
-      }) as Parameters<typeof buildPrByRepoBuckets>[0][number];
-
-    const buckets = buildPrByRepoBuckets([
-      // App lane: canonical-case short name.
-      row({ repository: { name: "Foo-Bar" } }),
-      // Desktop repo-less lane: lowercased owner/name for the SAME repo.
-      row({ repositoryFullName: "acme/foo-bar" }),
-      // A different repo.
-      row({ repository: { name: "Widgets" } }),
-    ]);
-
-    // One bucket for the shared repo (count 2), canonical casing preserved.
-    expect(buckets).toContainEqual({ label: "Foo-Bar", value: 2 });
-    expect(buckets).toContainEqual({ label: "Widgets", value: 1 });
-    expect(buckets).toHaveLength(2);
-  });
-
-  it("buildPrByRepoBuckets drops rows with neither repo identity", () => {
-    const buckets = buildPrByRepoBuckets([
-      {
-        mergedAt: new Date("2026-06-08T00:00:00.000Z"),
-        repositoryId: null,
-        repositoryFullName: null,
-        branchArtifactId: "b",
-        repository: null,
-        branchArtifact: { createdAt: new Date("2026-06-01T00:00:00.000Z") },
-      } as Parameters<typeof buildPrByRepoBuckets>[0][number],
-    ]);
-    expect(buckets).toEqual([]);
-  });
-
   it("bucketCountByDay fills gaps and counts in-window dates", () => {
     const start = new Date("2026-06-07T00:00:00.000Z");
     const end = new Date("2026-06-09T00:00:00.000Z");
@@ -1911,5 +1823,333 @@ describe("reportDeltaFor — full prior period rule (FEA-2233)", () => {
       { date: "2026-06-08", values: { sessions: 1 } },
       { date: "2026-06-09", values: { sessions: 0 } },
     ]);
+  });
+});
+
+/**
+ * One simulated `branch_detail` row for the two branch-population charts
+ * (ISS-4634). The fake DB has no query engine, so the fixture models the
+ * population and the helpers below apply the SAME window semantics production
+ * emits — otherwise a static fixture would pass against the unwindowed (buggy)
+ * query too.
+ */
+type BranchPopulationRow = {
+  // Nullable exactly as the column is: pre-backfill and session-only branches
+  // carry no genuine-activity timestamp.
+  lastActivityAt: Date | null;
+  artifactCreatedAt: Date;
+  hasPr: boolean;
+  checksStatus: string;
+  // ISS-4634 (review): soft-delete tombstone. A non-null value means the branch
+  // was deleted and must be excluded from the donut, matching the Branches list.
+  deletedAt?: Date | null;
+};
+
+// Both OR arms of the emitted window. `fallback` is null when production emits
+// NO artifact-createdAt arm (OR[1]) — null-activity branches then match nothing
+// (see branchesInWindow), the regression wongk flagged: dropping OR[1] must move
+// the count. `activity` (OR[0]) null means no window at all (whole population).
+type BranchWindow = {
+  activity: { start: Date; end: Date } | null;
+  fallback: { start: Date; end: Date } | null;
+};
+
+const asBounds = (b: { gte?: Date; lte?: Date } | undefined) =>
+  b?.gte instanceof Date && b.lte instanceof Date
+    ? { start: b.gte, end: b.lte }
+    : null;
+
+/**
+ * Model BOTH OR arms so the fake fails loudly if either is dropped. OR[1] counts
+ * only when it filters `lastActivityAt: null` AND carries `artifact.createdAt`
+ * bounds matching OR[0]; a mismatch/absence is treated as a missing fallback.
+ */
+function readBranchWindow(where: Record<string, unknown>): BranchWindow {
+  const or = where.OR;
+  if (!Array.isArray(or)) {
+    return { activity: null, fallback: null };
+  }
+  const activity = asBounds(
+    (or[0] as { lastActivityAt?: { gte?: Date; lte?: Date } })?.lastActivityAt
+  );
+  const arm = or[1] as {
+    lastActivityAt?: unknown;
+    artifact?: { is?: { createdAt?: { gte?: Date; lte?: Date } } };
+  };
+  const fallback =
+    arm?.lastActivityAt === null ? asBounds(arm.artifact?.is?.createdAt) : null;
+  // OR[1] must align to OR[0]; drop it otherwise.
+  const aligned =
+    activity &&
+    fallback &&
+    fallback.start.getTime() === activity.start.getTime() &&
+    fallback.end.getTime() === activity.end.getTime();
+  return { activity, fallback: aligned ? fallback : null };
+}
+
+const inRange = (at: Date, b: { start: Date; end: Date }) =>
+  at >= b.start && at <= b.end;
+
+function branchesInWindow(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): BranchPopulationRow[] {
+  // ISS-4634 (review): honor the `deletedAt: null` predicate the production
+  // window carries, so a soft-deleted branch never enters the donut. Modeling it
+  // here (not just in the fixture) makes the assertion fail loudly if the
+  // service ever drops the exclusion.
+  const excludesDeleted = where.deletedAt === null;
+  const live = excludesDeleted
+    ? rows.filter((row) => (row.deletedAt ?? null) === null)
+    : rows;
+  const { activity, fallback } = readBranchWindow(where);
+  // No window at all → whole population (byte-identical across ranges, the
+  // original ISS-4634 symptom).
+  if (!activity) {
+    return live;
+  }
+  return live.filter((row) => {
+    // Activity branch → OR[0] bounds. Null-activity branch → OR[1]'s createdAt
+    // fallback, but ONLY when the service emitted that arm; a dropped/malformed
+    // OR[1] means null-activity branches match nothing (wongk's regression).
+    if (row.lastActivityAt !== null) {
+      return inRange(row.lastActivityAt, activity);
+    }
+    return fallback ? inRange(row.artifactCreatedAt, fallback) : false;
+  });
+}
+
+function checkStatusGroupsFrom(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): { checksStatus: string; _count: { _all: number } }[] {
+  const tally = new Map<string, number>();
+  for (const row of branchesInWindow(rows, where)) {
+    tally.set(row.checksStatus, (tally.get(row.checksStatus) ?? 0) + 1);
+  }
+  return [...tally].map(([checksStatus, n]) => ({
+    checksStatus,
+    _count: { _all: n },
+  }));
+}
+
+/** The branch-coverage counts, or null when `where` is some other count call. */
+function branchPrCountFrom(
+  rows: BranchPopulationRow[],
+  where: Record<string, unknown>
+): number | null {
+  const prLink = where.currentPullRequestDetailId;
+  const wantsPr = (prLink as { not?: unknown })?.not === null;
+  const wantsNoPr = prLink === null;
+  if (!(wantsPr || wantsNoPr)) {
+    return null;
+  }
+  return branchesInWindow(rows, where).filter((row) => row.hasPr === wantsPr)
+    .length;
+}
+
+describe("ISS-4634 branch-population charts", () => {
+  // Four branches straddling the 7-day boundary, two of them with a NULL
+  // `lastActivityAt` so the artifact-createdAt fallback is exercised on BOTH
+  // sides of the window — a raw nullable-column comparison would drop them.
+  const POPULATION: BranchPopulationRow[] = [
+    {
+      lastActivityAt: new Date(NOW.getTime() - 2 * DAY),
+      artifactCreatedAt: new Date(NOW.getTime() - 200 * DAY),
+      hasPr: true,
+      checksStatus: ChecksStatus.PASSING,
+    },
+    {
+      lastActivityAt: new Date(NOW.getTime() - 40 * DAY),
+      artifactCreatedAt: new Date(NOW.getTime() - 40 * DAY),
+      hasPr: false,
+      checksStatus: ChecksStatus.FAILING,
+    },
+    // Null activity, created INSIDE the 7-day window → retained via fallback.
+    {
+      lastActivityAt: null,
+      artifactCreatedAt: new Date(NOW.getTime() - 1 * DAY),
+      hasPr: false,
+      checksStatus: ChecksStatus.PASSING,
+    },
+    // Null activity, created OUTSIDE the 7-day window → excluded via fallback.
+    {
+      lastActivityAt: null,
+      artifactCreatedAt: new Date(NOW.getTime() - 100 * DAY),
+      hasPr: true,
+      checksStatus: ChecksStatus.UNKNOWN,
+    },
+  ];
+
+  function deliveryFor(period: InsightsPeriod) {
+    const { db } = makeFakeDb({
+      counts: (where) => branchPrCountFrom(POPULATION, where) ?? 0,
+      checkStatusGroupsFor: (where) => checkStatusGroupsFrom(POPULATION, where),
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+    return insightsService.getDelivery(ORG_CTX, period, NOW);
+  }
+
+  it("re-scopes checkStatus and branchesWithoutPr when the range changes", async () => {
+    const week = await deliveryFor(InsightsPeriod.Week);
+    const all = await deliveryFor(InsightsPeriod.All);
+
+    // 7 days: only the two branches whose activity instant falls in the window —
+    // one with real activity 2d ago, one whose NULL activity falls back to an
+    // artifact created 1d ago. Both are PASSING.
+    expect(week.charts.checkStatus).toEqual([
+      { key: ChecksStatus.PASSING, label: "Passing", value: 2 },
+    ]);
+    expect(week.charts.branchesWithoutPr).toEqual([
+      { key: "has-pr", label: "Has a pull request", value: 1 },
+      { key: "no-pr", label: "No pull request", value: 1 },
+    ]);
+
+    // All time: the whole population, including the 40d-old branch and the
+    // NULL-activity branch whose artifact was created 100d ago.
+    expect(all.charts.checkStatus).toEqual([
+      { key: ChecksStatus.PASSING, label: "Passing", value: 2 },
+      { key: ChecksStatus.FAILING, label: "Failing", value: 1 },
+      { key: ChecksStatus.UNKNOWN, label: "Unknown", value: 1 },
+    ]);
+    expect(all.charts.branchesWithoutPr).toEqual([
+      { key: "has-pr", label: "Has a pull request", value: 2 },
+      { key: "no-pr", label: "No pull request", value: 2 },
+    ]);
+
+    // The regression this pins: the two charts must NOT be byte-identical across
+    // ranges while their sibling KPIs move.
+    expect(week.charts.checkStatus).not.toEqual(all.charts.checkStatus);
+    expect(week.charts.branchesWithoutPr).not.toEqual(
+      all.charts.branchesWithoutPr
+    );
+  });
+
+  it("keeps NULL-lastActivityAt branches windowed on the artifact createdAt fallback", async () => {
+    // A population of ONLY null-activity branches: one created inside the 7-day
+    // window, one well outside it. Excluding nulls outright (a raw gte/lte on the
+    // nullable column) would return an empty chart instead.
+    const nullOnly: BranchPopulationRow[] = [
+      {
+        lastActivityAt: null,
+        artifactCreatedAt: new Date(NOW.getTime() - 3 * DAY),
+        hasPr: false,
+        checksStatus: ChecksStatus.PENDING,
+      },
+      {
+        lastActivityAt: null,
+        artifactCreatedAt: new Date(NOW.getTime() - 60 * DAY),
+        hasPr: true,
+        checksStatus: ChecksStatus.PENDING,
+      },
+    ];
+    const { db } = makeFakeDb({
+      counts: (where) => branchPrCountFrom(nullOnly, where) ?? 0,
+      checkStatusGroupsFor: (where) => checkStatusGroupsFrom(nullOnly, where),
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const week = await insightsService.getDelivery(
+      ORG_CTX,
+      InsightsPeriod.Week,
+      NOW
+    );
+
+    expect(week.charts.checkStatus).toEqual([
+      { key: ChecksStatus.PENDING, label: "Running", value: 1 },
+    ]);
+    expect(week.charts.branchesWithoutPr).toEqual([
+      { key: "has-pr", label: "Has a pull request", value: 0 },
+      { key: "no-pr", label: "No pull request", value: 1 },
+    ]);
+  });
+
+  it("excludes soft-deleted branches from both donuts (ISS-4634 review)", async () => {
+    // Two branches active INSIDE the 7-day window; one is soft-deleted. The
+    // Branches list applies `deleted_at IS NULL`, so the donut must too — a
+    // tombstoned branch must not inflate a health chart the list would never
+    // show. Without the `deletedAt: null` predicate both counts would be off by
+    // one.
+    const withDeleted: BranchPopulationRow[] = [
+      {
+        lastActivityAt: new Date(NOW.getTime() - 1 * DAY),
+        artifactCreatedAt: new Date(NOW.getTime() - 1 * DAY),
+        hasPr: true,
+        checksStatus: ChecksStatus.PASSING,
+        deletedAt: null,
+      },
+      {
+        lastActivityAt: new Date(NOW.getTime() - 1 * DAY),
+        artifactCreatedAt: new Date(NOW.getTime() - 1 * DAY),
+        hasPr: false,
+        checksStatus: ChecksStatus.FAILING,
+        deletedAt: new Date(NOW.getTime() - 1 * DAY),
+      },
+    ];
+    const { db } = makeFakeDb({
+      counts: (where) => branchPrCountFrom(withDeleted, where) ?? 0,
+      checkStatusGroupsFor: (where) =>
+        checkStatusGroupsFrom(withDeleted, where),
+    });
+    vi.mocked(withDb).mockImplementation((cb) =>
+      Promise.resolve(cb(db as never))
+    );
+
+    const week = await insightsService.getDelivery(
+      ORG_CTX,
+      InsightsPeriod.Week,
+      NOW
+    );
+
+    // Only the live PASSING branch survives; the deleted FAILING one is dropped.
+    expect(week.charts.checkStatus).toEqual([
+      { key: ChecksStatus.PASSING, label: "Passing", value: 1 },
+    ]);
+    expect(week.charts.branchesWithoutPr).toEqual([
+      { key: "has-pr", label: "Has a pull request", value: 1 },
+      { key: "no-pr", label: "No pull request", value: 0 },
+    ]);
+  });
+
+  // wongk (review): the fake models BOTH OR arms, so dropping the artifact-
+  // createdAt fallback (OR[1]) MUST change the count — otherwise a production
+  // regression that windows only on `lastActivityAt` (and silently drops every
+  // null-activity branch) would still pass. This pins that the fallback arm is
+  // load-bearing in the fake, not just present in the emitted `where`.
+  it("stops windowing null-activity branches when OR[1] is dropped (fallback guard)", () => {
+    const nullBranch: BranchPopulationRow = {
+      lastActivityAt: null,
+      artifactCreatedAt: new Date(NOW.getTime() - 2 * DAY),
+      hasPr: false,
+      checksStatus: ChecksStatus.PASSING,
+    };
+    const bounds = {
+      gte: new Date(NOW.getTime() - 7 * DAY),
+      lte: NOW,
+    };
+    // Full window (both arms): the null-activity branch is retained via OR[1].
+    const withFallback = {
+      deletedAt: null,
+      OR: [
+        { lastActivityAt: bounds },
+        {
+          lastActivityAt: null,
+          artifact: { is: { createdAt: bounds } },
+        },
+      ],
+    };
+    expect(branchesInWindow([nullBranch], withFallback)).toHaveLength(1);
+
+    // OR[1] dropped: production windows only on `lastActivityAt`, so a null-
+    // activity branch matches nothing and the count moves to 0.
+    const activityOnly = {
+      deletedAt: null,
+      OR: [{ lastActivityAt: bounds }],
+    };
+    expect(branchesInWindow([nullBranch], activityOnly)).toHaveLength(0);
   });
 });

@@ -185,6 +185,17 @@ export function FeedFilterProvider({
     setPerSourceState({ ...defaultPerSourceState });
   }, [defaultPerSourceState]);
 
+  useEffect(() => {
+    if (activeKind === ACTIVE_KIND_ALL) {
+      return;
+    }
+    if (sources.some((source) => source.kind === activeKind)) {
+      return;
+    }
+    setActiveKindState(ACTIVE_KIND_ALL);
+    setPerSourceState(seedState);
+  }, [activeKind, sources, seedState]);
+
   // Permalink auto-clear: fire exactly once per permalink target so the
   // user can re-apply a filter after the permalink resolved without
   // having the effect immediately undo it.

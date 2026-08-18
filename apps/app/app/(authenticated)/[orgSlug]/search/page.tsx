@@ -41,7 +41,7 @@ export default async function SearchPage({
 
   return (
     <>
-      <Header breadcrumbs={[{ label: "Search" }]} />
+      <Header breadcrumbs={[{ label: "Search" }]} suppressPageHeading />
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-4 pt-0">
         <SearchResults />
       </div>

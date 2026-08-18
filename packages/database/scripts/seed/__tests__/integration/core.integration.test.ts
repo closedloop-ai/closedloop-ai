@@ -321,13 +321,18 @@ describe.skipIf(!DATABASE_URL_SET)(
 
         const uniqueTemplateForTypes = new Set(templateForTypes);
 
-        // All concrete ArtifactSubtype values should appear exactly once as
-        // templateForType. ArtifactSubtype.TEMPLATE is intentionally excluded
-        // by core.ts — a "template-for-templates" is semantically nonsensical
-        // (templates document the shape of concrete subtypes, not of TEMPLATE
-        // itself), so this assertion mirrors that exclusion.
+        // All concrete PERSISTED ArtifactSubtype values should appear exactly
+        // once as templateForType. This mirrors core.ts's exclusions:
+        // - ArtifactSubtype.TEMPLATE — a "template-for-templates" is
+        //   semantically nonsensical (templates document the shape of concrete
+        //   subtypes, not of TEMPLATE itself).
+        // - ArtifactSubtype.ISSUE — the FEA-3956 canonical input alias for the
+        //   persisted `FEATURE` subtype. It never persists
+        //   (normalizeArtifactSubtype maps it back to FEATURE), so core.ts does
+        //   not seed a separate ISSUE template; templating it would duplicate
+        //   the Feature template.
         const concreteSubtypes = Object.values(ArtifactSubtype).filter(
-          (s) => s !== ArtifactSubtype.TEMPLATE
+          (s) => s !== ArtifactSubtype.TEMPLATE && s !== ArtifactSubtype.ISSUE
         );
         for (const subtype of concreteSubtypes) {
           expect(

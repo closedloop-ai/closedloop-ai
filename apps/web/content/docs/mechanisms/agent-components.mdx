@@ -1,0 +1,85 @@
+---
+title: Agent components
+description: The full catalog of agentic building blocks Closedloop.ai observes and inventories — sub-agents, commands, skills, tools, and more.
+---
+
+An **agent component** is any reusable building block that shapes how an AI coding agent behaves: a sub-agent, a slash command, a skill, a workflow, an MCP server, a hook, a config file, an installed plugin, or a built-in tool. The desktop client observes which components each session used and rolls them up into an org-level **inventory** — the data behind the Agents workspace and the Agents section of [Insights](./aggregated-data). This page is the catalog of component kinds; the [agents API](./agents-api) covers the separate, editable store of expert agent prompts that drive loops.
+
+## The ten component kinds
+
+The inventory classifies every component into one of ten kinds. Each is the exact value persisted to the component-kind column on both the cloud and desktop stores.
+
+| Kind | What it is | Distributable? |
+|---|---|---|
+| `subagent` | A specialized agent a session pulls in for a scoped task. | Yes |
+| `command` | A slash command that expands into a prompt. | Yes |
+| `skill` | A packaged capability loaded on demand. | Yes |
+| `workflow` | An orchestration that coordinates sub-agents. | Yes |
+| `hook` | A lifecycle handler that runs on harness events. | Yes |
+| `mcp` | An MCP server exposing tools to the agent. | Yes |
+| `plugin` | An installed marketplace plugin (the current vocabulary for what was once called a "pack"). | Yes |
+| `config` | A memory or config file (for example an instructions file). | Observable only |
+| `tool` | A built-in CLI tool (Read, Grep, Glob, Edit, Bash, …). | Observable only |
+| `orchestration` | An agent-runtime / harness tool (ToolSearch, Monitor, and similar). | Observable only |
+
+**Distributable** kinds can be promoted and shared through the catalog. **Observable-only** kinds — built-in tools, config/memory files, and orchestration tools — are recorded because a session invoked them, but they are not something an admin distributes; they describe usage, not a shareable artifact. The authoritative guard is server-side: the promote route rejects the `tool`, `config`, and `orchestration` kinds and allows everything else (including `mcp`).
+
+Each component also carries a **harness** axis (`claude`, `codex`, `opencode`, or `both`) and a **source type** (installed from a plugin, checked into a repo, builder-local, an MCP server, or a config scope) so the inventory can tell you not just what was used but where it came from.
+
+`opencode` is a real individual harness here, not a Claude alias — OpenCode agents and commands are discovered in OpenCode's own config home and attributed to it. See [OpenCode](./opencode). `both` is the synthetic "used across more than one harness" collapse, not a per-harness value you would filter on.
+
+## Discovery
+
+Components are **discovered**, not registered — you never hand-declare one — and discovery has two independent legs. **Configured discovery** reads each harness's config home (Claude, Codex, and OpenCode all keep their agents, commands, and skills in their own locations): the scan reads each definition file and upserts a component row before any session invokes it, and post-scan steps add installed marketplace plugins and configured MCP servers the same way, independent of usage. **Invocation discovery** reads each session's transcript, so a skill used under Codex and a sub-agent spawned under Claude land in the same org-level inventory. Both legs feed one inventory: a component can appear because it is installed/configured (even if never run) or because a session invoked it, and when it *is* invoked its **last-invoked** time (the real usage-recency signal, distinct from the inventory-refreshed **last-seen** time discussed below) advances on every subsequent use.
+
+### Sub-agent attribution
+
+A **sub-agent** — an agent a session pulls in for a scoped task — is discovered from the parent session's transcript, including sub-agents nested under a workflow. Its invocations are attributed to the parent run, and any code it landed (a `gh pr create`, `git commit`, or `git push` it ran) is folded into the parent session's landed work, deduplicated by tool-use id so nothing is double-counted. This is why an orchestrator run's inventory and delivery credit reflect the sub-agents it actually spawned. The [Sessions trace](./sessions) renders each such sub-agent as a nested sub-trace with its own identity. There is no truthful per-sub-agent token source today — the projection sets a sub-agent's tokens to null and the trace omits a per-sub-agent token figure — so token usage is reported at the parent-run level, not attributed per sub-agent.
+
+## Org-level identity
+
+A component's identity is org-level, not per-device. The same skill file run on three machines is one inventory row, keyed by a stable identity slug of the form `kind::normalized-key`. The inventory records which compute targets (devices) have observed each component, who is attributed as its owner, and which collaborators have used it — deduplicated across the whole org.
+
+Two timestamps matter and are easy to confuse:
+
+- **Last seen** is an inventory-observation time; for a still-installed component the scanner refreshes it on every sync, so it is not a usage signal.
+- **Last invoked** is the real usage-recency signal — the most recent actual invocation across the org. Anything that needs "recently active" keys off last-invoked, never last-seen.
+
+The org inventory is bounded and deduped; a single list read is capped so a pathological org with tens of thousands of raw rows cannot time out or exhaust memory, while comfortably exceeding any realistic distinct-component count.
+
+## Versions and provenance
+
+Distributable components are content-addressed (FEA-4335), but "identity" here is really **three layered keys**, and they answer different questions:
+
+- **Catalog / list row** — the row a component occupies in the list is keyed by its name-derived slug, `kind::normalized-key`. This is a normalized-*name* key, not a content key, so two byte-identical definitions filed under **different names** can still occupy **separate catalog rows** even though they resolve to the same detail.
+- **Exact version** — within a row, each distinct revision is one version, identified by a **provenance-free normalized definition fingerprint** (the `definitionHash`, falling back to the coarse `contentHash`) — the source it was seen under is *not* part of this version-identity hash. The same definition bytes are one version no matter who ran it, and a renamed-but-unchanged component's version is unchanged.
+- **Routable content-hash key** — only the **detail / token-drilldown route** keys off the content hash, as `kind::versionFingerprint`. This is the layer that makes two materially-different definitions that normalize to the same name resolve to **distinct** detail pages while byte-identical installs (any name or path) share one.
+
+So content-addressing governs the version identity and the detail route; the list still groups by normalized name, which is why a renamed-but-identical definition stays a separate catalog row. Family collapse combines only the *version* buckets that already share one normalized-name slug — it does not merge byte-identical definitions filed under different names, because those carry different slugs. The detail view pages through the newest-first version history in a read-only prompt panel, flagging the revision matching the component's current content; a detail route that resolves to a raw content hash (no resolved name yet) is labeled neutrally rather than showing the bare hash.
+
+Each version can also carry **provenance** — the proven locations it was observed at (a repository path and commit, a device path, or a plugin membership). Provenance never carries the definition body across an org boundary; a private body a viewer cannot read is honestly reported as inaccessible, kept distinct from a body that is actually missing, so the surface never claims a permission-denied component is gone.
+
+## Usage metrics
+
+Where a component has reliable usage logs, the inventory reports invocations and the count of distinct sessions that used it, and — for cost-bearing kinds — an efficiency metric. Configured-only kinds whose usage is derived on-read rather than materialized — `hook` and `config` — currently report zero invocations and zero sessions on the list paths (the wire contract leaves room for an explicit null, but the list read materializes them as `0`). On the desktop client, a local-only optimization view can additionally break a component's token, cost, and latency down per model and per day, and report how often a sub-agent gets pulled in over time — computed from local SQLite and never round-tripped to the cloud.
+
+## Both surfaces
+
+The agent-component inventory is shared across the desktop client and the web app through the same wire contract, so both surfaces render the same component-row and version-history shape. The contract is common, but the mappers are not one function: the list and detail reads have separate mappers, and the cloud service (reading the cloud database) and the desktop local source (reading the same table shape from SQLite) derive some fields — such as the `source` label and owner — independently, so they can drift if only one side is changed. Keep the two derivations in sync when you touch either.
+
+## Related reading
+
+<Cards>
+  <Card title="Agents API" href="./agents-api">
+    The separate, editable store of expert agent prompts that drive loops.
+  </Card>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    How component usage is observed from each harness transcript.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    The Agents section of Insights, built on this inventory.
+  </Card>
+  <Card title="Sessions" href="./sessions">
+    The runs each component was observed in, with the sub-agent trace.
+  </Card>
+</Cards>

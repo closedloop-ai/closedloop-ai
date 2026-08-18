@@ -12,7 +12,7 @@ import {
   DESKTOP_POP_TIMESTAMP_HEADER,
   normalizeDesktopPopPathname,
   signDesktopPopHeaders,
-} from "../src/main/desktop-pop.js";
+} from "../src/main/auth/desktop-pop.js";
 
 describe("desktop PoP signing utilities", () => {
   test("builds exact canonical string with uppercased method and pathname only", () => {

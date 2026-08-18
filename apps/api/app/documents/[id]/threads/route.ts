@@ -1,9 +1,11 @@
 import {
   type CommentThreadWithComments,
   DOCUMENT_THREAD_REQUEST_MAX_BYTES,
+  ThreadSource,
   ThreadStatus,
 } from "@repo/api/src/types/comment";
 import { success } from "@repo/api/src/types/common";
+import { isAnchorValidationError } from "@repo/collaboration/server/yjs-anchor";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { documentService } from "@/app/documents/document-service";
@@ -13,11 +15,12 @@ import { errorResponse, notFoundResponse, parseBody } from "@/lib/route-utils";
 import { commentsService } from "../../../comments/service";
 
 const getThreadsValidator = z.object({
+  source: z.enum(ThreadSource).optional(),
   status: z.enum(ThreadStatus).optional(),
 });
 
-// anchorText present → Liveblocks-anchored thread; absent → unanchored
-// native artifact-level note. An explicit empty string is still rejected.
+// anchorText present -> Liveblocks-anchored thread; absent -> Liveblocks
+// artifact-level thread. An explicit empty string is still rejected.
 const createThreadValidator = z.object({
   body: z.string().min(1),
   anchorText: z.string().min(1).optional(),
@@ -27,6 +30,8 @@ export const POST = withAnyAuth<
   { commentId: string; threadId: string },
   "/documents/[id]/threads"
 >(async ({ user }, request, params) => {
+  let requestHadAnchorText = false;
+
   try {
     const { id } = await params;
 
@@ -51,12 +56,13 @@ export const POST = withAnyAuth<
     if (parseError) {
       return parseError;
     }
+    requestHadAnchorText = body.anchorText !== undefined;
 
     const result =
       body.anchorText === undefined
-        ? await commentsService.createUnanchoredDocumentThread(
+        ? await commentsService.createArtifactLevelDocumentThread(
             user.organizationId,
-            resolvedId,
+            artifact.slug,
             user.id,
             body.body
           )
@@ -78,9 +84,10 @@ export const POST = withAnyAuth<
     // ONLY for the known anchor-validation 400s, so callers can diagnose them.
     // Everything else — 403/404/5xx provider failures (Liveblocks outages, auth) —
     // stays on the generic contract so upstream messages don't leak.
-    const isAnchorValidationError = status === 400;
+    const isKnownAnchorValidationError =
+      requestHadAnchorText && isAnchorValidationError(error);
     const message =
-      isAnchorValidationError &&
+      isKnownAnchorValidationError &&
       isStructured &&
       "message" in error &&
       typeof error.message === "string" &&
@@ -121,7 +128,7 @@ export const GET = withAnyAuth<
   const threads = await commentsService.findThreadsByDocument(
     user.organizationId,
     resolvedId,
-    { status: result.data.status }
+    { source: result.data.source, status: result.data.status }
   );
 
   return NextResponse.json(success(threads));

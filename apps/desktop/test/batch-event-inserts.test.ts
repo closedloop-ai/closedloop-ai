@@ -11,7 +11,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import type { NormalizedSession } from "../src/main/collectors/types.js";
+import {
+  emptyUsageExtras,
+  type NormalizedSession,
+} from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 const ISO_BASE = Date.parse("2026-06-07T10:00:00.000Z");
@@ -99,12 +102,18 @@ function makeLargeSession(perCategory: number): NormalizedSession {
     permissionMode: null,
     thinkingBlockCount: 0,
     toolResultErrors: toolResultErrors as NormalizedSession["toolResultErrors"],
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
+    // The canonical empty literal, not a hand-rolled one: FEA-3527 dropped
+    // `cache_creation` from `usageExtras` and added two required counters, and a
+    // re-spelled fixture silently describes a shape no parser emits.
+    usageExtras: emptyUsageExtras(),
     messages: [],
+    skills: [],
+    hooks: [],
     tokenSeries,
     diffStats: null,
     slashCommands: [],
     artifacts: { prs: [], issues: [], repo: null },
+    prLinks: [],
   };
 }
 

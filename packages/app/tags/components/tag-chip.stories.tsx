@@ -1,7 +1,6 @@
 import type { TagSummary } from "@repo/api/src/types/tag";
 import { TagColor } from "@repo/api/src/types/tag";
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../shared/storybook/decorators";
 import { TagChip, TagChips } from "./tag-chip";
 
 /**
@@ -11,13 +10,6 @@ import { TagChip, TagChips } from "./tag-chip";
 const meta: Meta<typeof TagChip> = {
   title: "App Core/Tags/Tag Chip",
   component: TagChip,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders>
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
 };
 
 export default meta;

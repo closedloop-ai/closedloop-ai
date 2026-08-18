@@ -1,8 +1,32 @@
 # Product App Guidelines
 
+Authenticated Next.js app (App Router). Port 3000. For Server Component vs Client Component vs Server Action mental model, see `SERVER_CLIENT.md`.
+
+End-user-perceivable UI changes must ship behind a flag, default off — see root AGENTS.md + the `ui-feature-flag-attestation` gate.
+
+## File Organization
+
+```
+hooks/
+├── queries/
+│   ├── use-loops.ts        # loopKeys + useRunLoop, etc.
+│   └── use-*.ts            # remaining query hooks not yet migrated
+├── use-api-client.ts       # deprecated re-export of the @repo/app transport port
+└── use-*.ts                # Other non-query hooks
+```
+
+**Query hooks (PLN-810 Phase 3).** Surface-agnostic query hooks go in `@repo/app/<feature>/hooks/` (e.g. `@repo/app/projects/hooks/use-projects`); only hooks importing `@repo/auth`, crypto, or the engineer/run-loop-launcher seam stay in `apps/app/hooks/queries/`.
+
+**Storybook does not scan `apps/app/**`** (four globs, see root `AGENTS.md`). A component earning an isolated story belongs in `packages/app/<feature>/components/` (domain-shared) or `packages/design-system/components/` (generic); only the story file goes under `apps/storybook/stories/`, never the production component.
+
+Route-level rules for the authenticated product surface (widget loading/unavailable/
+zero semantics, derived-arithmetic reconciliation, sort coverage) live in
+[`app/(authenticated)/AGENTS.md`](<app/(authenticated)/AGENTS.md>).
+
 ## Data Access
 
 - Do not import `@repo/database` in `apps/app`; frontend code must go through `apps/api` routes and shared API types.
+- Server-side `apps/app` API calls must resolve the BFF origin through `resolveApiOrigin` instead of reading `NEXT_PUBLIC_API_URL` directly. Browser code uses the public localhost/preview origin, but app-server code inside Docker must honor `SERVER_API_URL` (for example `http://api:3002`) so containerized E2E and SSR routes do not call the app container's own localhost.
 
 ## TanStack Query Conventions
 
@@ -27,7 +51,7 @@ All data fetching in `hooks/queries/use-*.ts`:
 - When polling a route that performs nontrivial API or database work, choose a conservative seconds-scale interval or documented backoff based on expected completion time and backend cost. Do not default to one-second polling for heavyweight reads unless the UX need is explicit and the server load is acceptable.
 - Fetch helpers that read structured error bodies must tolerate non-JSON responses with `response.json().catch(() => null)` before branching on `response.ok`. Optional malformed metadata fields must not collapse the whole parsed body or discard valid `error`, `code`, or timestamp fields, and response bodies should be parsed once and reused for both message selection and metadata.
 - Fetch helpers that return typed success data from unknown response bodies must validate the success body with a shared or colocated schema before returning it. Do not bridge an untrusted JSON boundary with `as SomeResponseType` casts.
-- Do not add local `.catch()` error toasts around `mutateAsync`; the global `QueryClient` mutation error handler owns default error toasts. Catch only to suppress unhandled rejections or update local state.
+- Do not add local `.catch()` error toasts around `mutateAsync`; the global `QueryClient` in `lib/query-client.tsx` has a default `mutations.onError` handler that owns default error toasts. Catch only to suppress unhandled rejections or reset local state.
 - When setting `suppressDefaultErrorToast` on a mutation, cover every reachable non-recoverable error path with explicit user feedback, a recoverable return state for the caller, or a documented requirement that all callers provide `onError`. Add focused coverage for specialized preflight, conflict-replay, or retry errors.
 - Do not narrow existing TanStack mutation meta flags such as `suppressDefaultErrorToast` for a specialized error family. Add a separate, named meta flag for the specialized local handler and cover both generic callers and non-target errors in tests.
 - Do not await a secondary `mutateAsync` call inside another mutation's `onSuccess` when the primary mutation's cache cleanup must still finish if the secondary mutation fails. Use `mutate` with explicit callbacks or rely on the secondary hook's own `onSuccess` invalidation.
@@ -36,18 +60,9 @@ All data fetching in `hooks/queries/use-*.ts`:
 
 ## When NOT to use useEffect
 
-Most `useEffect` calls in this codebase are bugs in disguise. Before adding one, rule out:
+Most `useEffect` here is a bug. Derive values during render (`useMemo` only if measurably expensive); reset state with `<Component key={propValue} />`, not an Effect that calls `setState`; fire side effects (POST, navigation, notifications, parent callbacks) in the event handler, never via a state trigger flag; compute chained `setState` cascades together in the originating handler; run one-time init at module scope guarded by `typeof window !== "undefined"`, not a root-component Effect with `[]` deps; invert child→parent data flow; fetch via a TanStack Query hook under `hooks/queries/`, never raw `useEffect` + `fetch`.
 
-- **Deriving values from props/state** → calculate during render. Reach for `useMemo` only if measurably expensive.
-- **Resetting state when a prop changes** → use `<Component key={propValue} />`, not an Effect that calls `setState`.
-- **Side effects triggered by user actions** (POST, navigation, notifications, parent callbacks) → call them in the event handler. Never use state as a trigger flag for an Effect.
-- **Chained `setState` cascades** → compute every state update in the originating handler and call all setters together.
-- **One-time app initialization** → run at module scope guarded by `typeof window !== "undefined"`, not in a root-component Effect with `[]` deps.
-- **Child passing data up to parent** → invert the data flow; parent fetches and passes down.
-
-Legitimate Effect uses in this codebase: subscriptions (prefer `useSyncExternalStore` — see below), post-render DOM measurements, and integrating with non-React libraries. Data fetching belongs in a TanStack Query hook under `hooks/queries/`, never raw `useEffect` + `fetch`.
-
-Reference: https://react.dev/learn/you-might-not-need-an-effect
+Legitimate: subscriptions (prefer `useSyncExternalStore`), post-render DOM measurement, non-React libs. https://react.dev/learn/you-might-not-need-an-effect
 
 ## Client State and Workflow Controls
 
@@ -70,8 +85,17 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 - When grouping Branch View comments or replies in UI code, prefer stable unified `threadId`/`commentId` values or thread-local provider identity. Do not require optional provider `source` to match between parent and reply comments; older or partial contracts may omit it.
 - Use `globalThis` instead of `window` when reading browser globals in shared/client code, and keep SSR guards explicit.
 - Do not initialize render-affecting React state from browser-only globals such as `navigator`, `location`, `localStorage`, or `matchMedia` during server-rendered component render. Use an SSR-stable default and apply client-derived values after mount, or gate the surface until mounted.
-- Use `next/link` `<Link href="...">` for in-app navigation instead of button `onClick` handlers that call `router.push`, so browser navigation affordances keep working.
+- Use `Link` from `@repo/navigation/link` for in-app navigation — never a raw internal `<a href="/…">` or a navigation-only `onClick` (`next/link` is banned here by `biome.jsonc`). Enforced by `pnpm check:source-gates`.
 - Do not remove the `/api/gateway/*` proxy guard or reimplement gateway operations in `apps/app`; gateway operations require local filesystem/process access and belong in `apps/desktop`.
+
+## E2E Coverage for UI Surfaces (MANDATORY)
+
+E2E coverage for user-facing surfaces is part of "done" here, the same way the Parker Protocol design pass is — not a soft suggestion. This extends the repo-wide Test Practices in the root `AGENTS.md`; it does not replace the unit/render coverage those rules already require.
+
+- **New UI surface ⇒ new e2e spec.** Any NEW user-facing surface you add to `apps/app` — a screen, route, drawer, dialog, panel, tab, or otherwise significant component — ships in the same change with a Playwright web-e2e spec that exercises its primary flow (navigate to it, drive its main interaction, assert the observable result), not just a mounted-in-isolation render test.
+- **UI bug fix ⇒ regression e2e.** Any UI BUG FIX adds an e2e test that reproduces the bug through the real surface and would fail without your fix, guarding the regression. Cover the aesthetic/visual dimension too when the bug was visual — assert the corrected rendered state (visible text, layout, empty/error/loading state), and add or update a visual-regression assertion where the surface already has one (see `e2e/VISUAL-REGRESSION.md`).
+- **Where the tests live and how to run them.** Playwright, `testDir: "e2e"` (`playwright.config.ts`); specs are `e2e/<surface>.spec.ts`, fixtures in `e2e/test.ts` and `e2e/helpers/`. Run `pnpm test:e2e`; the containerized stack runs via `e2e/run-containerized.sh` (see `e2e/CONTAINERIZED.md`) or `dagger call e-2-e`. This `e2e` suite is a required PR check that gates merge.
+- **Cross-surface work covers both adapters.** When the surface, workflow, hook, or component is shared through `packages/app` and reused across web and desktop, add coverage on BOTH adapters — the web `e2e/` Playwright spec here AND the desktop Electron-e2e spec described in `apps/desktop/AGENTS.md` — because behavior can diverge by adapter (routing, feature flags, API origin, Electron runtime). This is the same both-surfaces expectation stated in the root `AGENTS.md` cross-surface guidance.
 
 ## Learned Patterns
 
@@ -79,21 +103,16 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 
 - **[pattern]**: `queryClient.clear()` for org switching is correct when: (1) routes use withAnyAuth() with orgId from JWT/API key, (2) services filter by organizationId, (3) frontend uses authenticated API client.
 - **[pattern]**: `AuthGate` in `layout.tsx` gates all authenticated content on Clerk `isLoaded`. If `useApiClient` is ever used above the gate boundary, add `enabled: isLoaded` in query options to prevent 401 race on first render.
-- **[mistake]**: Do not use `mutateAsync`. This requires wrapping the call in try/catch, and is a code smell. There is generally no reason to do this. Instead, prefer `mutate` with an `onSuccess` handler.
 
-### Feature Flags & Org Scope
+### Org Scope
 
-- **[pattern]**: Feature flags must gate every reachable entry point: visible controls, direct URL/tab states, mutations, and analytics. When adding a new flag-gated feature, ensure the flag is exposed in the Settings/Labs UI if user-togglable, or document why it's admin-only. (context: feature-flags|routing|analytics|labs)
+- **[pattern]**: When you gate a feature, keep every reachable entry point gated consistently — nav destination `featureFlag`, direct URL/route via `<FeatureFlagRouteGate>`, controls, tab states, mutations, analytics. (context: feature-flags|org-scope)
 - **[pattern]**: Persisted client state, refs, storage keys, and recovery guards that depend on the active org must include the org key and reset when it changes; `queryClient.clear()` does not remount components. (context: org-scope|localStorage|refs)
 
 ### Tables & Sorting
 
 - **[pattern]**: Sort nested object fields via SortConfig accessor function. `sortItems()` handles nulls-last.
 - **[pattern]**: Multiple sortable tables on same page: each `useSortParams` needs unique `paramPrefix`.
-
-### Observability
-
-- **[mistake]**: Do not add debug logging (`log.info`/`log.warn`/`log.error` from `@repo/observability/log`, or `console.*`) in client-side code — anything under `apps/app/`, any `"use client"` file, hook, or React component, including in `packages/*` modules that bundle to the browser. Those logs only reach the user's devtools, not our log aggregator, so they add noise without observability value. Use `@repo/analytics` for client behavior tracking. Logging belongs in server code (`apps/api`, route handlers, services, webhooks). The only acceptable client `log.warn`/`log.error` is in an error boundary or an irrecoverable-failure path where the message will only fire when something is already broken. (context: observability|client|logging)
 
 ### React & Components
 
@@ -102,8 +121,7 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 - **[pattern]**: Radix Dialog `modal={false}` still fires `onInteractOutside` and `onPointerDownOutside`. Non-modal panels: `e.preventDefault()` on both.
 - **[pattern]**: Multi-provider AI context injection must be provider-aware. Skip client-side formatting for non-target providers — use server-side.
 - **[convention]**: Async cancellation in useEffect: `let cancelled = false` + cleanup return, NOT AbortController/useRef.
-- **[pattern]**: Shared client-only UI state that must survive component remounts, route transitions, or browser back/forward should live in a small `useSyncExternalStore` store module, following `lib/engineer/routing-store.ts` and `lib/engineer/electron-detection.ts`. Keep reset semantics explicit: module memory for current-tab only, `localStorage` only when refresh/new-tab persistence is intended.
-- **[mistake]**: Do not put navigation-sensitive shared state in component module-local `Set`/`Map`/`let` values or ad hoc `window` globals. This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
+- **[mistake]**: This repo does not currently use Zustand in `apps/app`; do not add it just to store small client-only state unless a human explicitly asks for a state-library migration.
 - **[mistake]**: Avoid querying all entities (documents, trees, projects) and filtering client-side for unbounded or large datasets — use backend-scoped queries, server-side filtering, or pagination. Client-side filtering is acceptable for small, bounded datasets or when the data is already fetched for another purpose. When filtering client-side, ensure the dataset has a known upper bound and won't grow unbounded as the project scales. (context: performance|overfetch|client-filter)
 - **[mistake]**: When a query errors, render a degraded/error state — never leave the UI stuck on a loading skeleton. Catch query errors and show an inline error or fallback, not an infinite spinner. (context: error-state|loading|skeleton)
 
@@ -118,15 +136,6 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 - **[pattern]**: After adding required props, run typecheck to find test files with outdated mock/defaultProps.
 - **[mistake]**: Mocking `next/navigation` in Vitest: must provide useRouter, usePathname, AND useSearchParams.
 - **[mistake]**: Test mocks must expose the same mutation method the production code calls — if the hook uses `mutateAsync`, the mock must provide `mutateAsync` (not just `mutate`), and vice versa. Grep the source for `.mutate(` vs `.mutateAsync(` before writing mock factories. (context: testing|mock|tanstack-query|mutation)
-- **[convention]**: New features, components, hooks, and API routes in `apps/app` must ship with tests. Features without tests are the ones that break in production and require follow-up fix PRs. (context: testing|coverage|new-feature|app)
-
-### Review Quality (from 48-hour audit, July 2026)
-- **[mistake]**: Exported types/interfaces must match the actual runtime shape. If the type says `string` but the code can return `undefined`, downstream consumers silently mishandle data. Verify the code path that produces the value, not just the type annotation. (context: type-safety|interface|runtime-shape)
-- **[mistake]**: Transform/filter functions must actually transform in every code path. Silent passthrough means callers think they got processed data when they got raw input. (context: passthrough|no-op|transform)
-- **[mistake]**: When adding a new variant to a union, enum, or status, check every switch/if-else/Record map that handles that type. Add exhaustive checks so missing cases fail at compile time. (context: exhaustiveness|switch|enum|record)
-- **[mistake]**: When aggregating data across multiple sources (sessions, events, PRs), check whether the same entity can appear in multiple input streams. Deduplication that relies on nullable fields will fail silently and double-count. (context: aggregation|double-count|dedup|join)
-- **[pattern]**: When code is shared between `apps/app` and `apps/desktop` (via `packages/app` or direct imports), verify both surfaces after changes. A hook or utility that works in web may break in Electron due to different runtime environments, API routing, or feature flags. (context: cross-surface|app|desktop|electron)
-- **[pattern]**: File-level churn is a signal. If a file has had 10+ commits in the last week, it's unstable or under-tested. Before modifying such a file, check its recent history and consider whether the fix addresses root cause or just symptoms. (context: churn|hot-file|review|stability)
 
 ### CSS & Animations
 
@@ -134,7 +143,7 @@ Reference: https://react.dev/learn/you-might-not-need-an-effect
 
 ### Liveblocks
 
-- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `documentType` in room-utils.ts. Legacy rooms may still have `artifactType`/`artifactSubtype` — the resolver reads both.
+- **[mistake]**: Room metadata: read keys must match write keys. Creation stores `documentType` via `packages/collaboration/server/room-management.ts`; the resolver in `room-metadata.ts` reads it and falls back to legacy `artifactType`/`artifactSubtype` for old rooms.
 
 ### OAuth Integrations
 

@@ -1,7 +1,7 @@
 import { BranchKpiState } from "@repo/api/src/types/branch";
 import { InsightsSection, KpiFormat } from "@repo/api/src/types/insights";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import type { ComponentType, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { DashboardPins } from "../../hooks/use-dashboard-pins";
 import { DashboardGrid } from "../dashboard-grid";
@@ -16,8 +16,7 @@ const klocMergedValuePattern = /^4.2\s*KLOC$/;
 type MockGridProps = {
   children?: ReactNode;
   className?: string;
-  draggableCancel?: string;
-  draggableHandle?: string;
+  dragConfig?: { handle?: string; cancel?: string; bounded?: boolean };
   onLayoutChange?: (
     current: GridItemLayout[],
     allLayouts: Record<string, GridItemLayout[]>
@@ -34,8 +33,8 @@ vi.mock("react-grid-layout", () => {
     return (
       <div
         className={props.className}
-        data-draggable-cancel={props.draggableCancel}
-        data-draggable-handle={props.draggableHandle}
+        data-draggable-cancel={props.dragConfig?.cancel}
+        data-draggable-handle={props.dragConfig?.handle}
         data-testid="responsive-grid"
       >
         {props.children}
@@ -45,7 +44,17 @@ vi.mock("react-grid-layout", () => {
 
   return {
     Responsive,
-    WidthProvider: (Component: ComponentType<MockGridProps>) => Component,
+    // v2 replaces WidthProvider with a hook; return a measured, mounted state
+    // so the grid renders synchronously in tests.
+    useContainerWidth: () => ({
+      width: 1200,
+      mounted: true,
+      containerRef: { current: null },
+      measureWidth: () => {
+        // no-op in tests
+      },
+    }),
+    verticalCompactor: () => [],
   };
 });
 
@@ -317,6 +326,82 @@ describe("DashboardGrid", () => {
 
     expect(setLayout).toHaveBeenCalledWith({
       "kpi:sessions": { x: 0, y: 0, w: 6, h: 2 },
+    });
+  });
+
+  it("keeps the saved position of a still-pinned tile the grid did not render", () => {
+    // wongk (#4282): the grid lays out only VISIBLE tiles, so a tile that is
+    // still pinned but hidden this pass — behind a feature flag, or belonging to
+    // a section this shell cannot populate — contributes nothing to the layout
+    // react-grid-layout hands back. Persisting that layout wholesale deleted the
+    // hidden tile's saved position, silently moving it when it came back.
+    const setLayout = vi.fn();
+    const pins = makePins({
+      tiles: ["kpi:sessions", "chart:prTrend"],
+      layout: {
+        "kpi:sessions": { x: 0, y: 0, w: 6, h: 2 },
+        "chart:prTrend": { x: 6, y: 0, w: 6, h: 4 },
+      },
+      setLayout,
+    });
+
+    render(
+      // Delivery is NOT available here, so "chart:prTrend" stays pinned but is
+      // never rendered.
+      <DashboardGrid
+        availableSections={[InsightsSection.Utilization]}
+        onAddTiles={vi.fn()}
+        onEditTile={vi.fn()}
+        pins={pins}
+        sections={utilizationSections}
+      />
+    );
+
+    act(() =>
+      captured.props?.onLayoutChange?.(
+        [{ i: "kpi:sessions", x: 3, y: 1, w: 6, h: 2 }],
+        { lg: [{ i: "kpi:sessions", x: 3, y: 1, w: 6, h: 2 }] }
+      )
+    );
+
+    expect(setLayout).toHaveBeenCalledWith({
+      "kpi:sessions": { x: 3, y: 1, w: 6, h: 2 },
+      "chart:prTrend": { x: 6, y: 0, w: 6, h: 4 },
+    });
+  });
+
+  it("drops the saved position of a tile that is no longer pinned", () => {
+    // The other half of the merge: unpinning IS when a saved position should be
+    // forgotten, so the map cannot grow without bound as tiles come and go.
+    const setLayout = vi.fn();
+    const pins = makePins({
+      tiles: ["kpi:sessions"],
+      layout: {
+        "kpi:sessions": { x: 0, y: 0, w: 6, h: 2 },
+        "chart:prTrend": { x: 6, y: 0, w: 6, h: 4 },
+      },
+      setLayout,
+    });
+
+    render(
+      <DashboardGrid
+        availableSections={[InsightsSection.Utilization]}
+        onAddTiles={vi.fn()}
+        onEditTile={vi.fn()}
+        pins={pins}
+        sections={utilizationSections}
+      />
+    );
+
+    act(() =>
+      captured.props?.onLayoutChange?.(
+        [{ i: "kpi:sessions", x: 3, y: 1, w: 6, h: 2 }],
+        { lg: [{ i: "kpi:sessions", x: 3, y: 1, w: 6, h: 2 }] }
+      )
+    );
+
+    expect(setLayout).toHaveBeenCalledWith({
+      "kpi:sessions": { x: 3, y: 1, w: 6, h: 2 },
     });
   });
 

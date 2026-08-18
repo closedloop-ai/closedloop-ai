@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
-import type { HookData } from "../src/main/agent-dashboard-db-types.js";
 import {
   type AgentHookLifecycle,
   AgentHookListener,
-} from "../src/main/agent-monitor-listener.js";
+} from "../src/main/agent-monitor/agent-monitor-listener.js";
+import type { HookData } from "../src/main/dashboard/agent-dashboard-db-types.js";
 
 type PostResult = {
   status: number;

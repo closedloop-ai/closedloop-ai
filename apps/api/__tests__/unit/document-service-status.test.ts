@@ -33,7 +33,7 @@ vi.mock("@repo/observability/log", () => ({
 import {
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { documentService } from "@/app/documents/document-service";
 
@@ -95,7 +95,7 @@ describe("documentService.update — status validation", () => {
 
       await expect(
         documentService.update(ARTIFACT_ID, ORG_ID, {
-          status: FeatureStatus.Triage,
+          status: IssueStatus.Triage,
         })
       ).rejects.toThrow('Status "TRIAGE" is not valid for this PRD');
     });
@@ -112,7 +112,7 @@ describe("documentService.update — status validation", () => {
 
       await expect(
         documentService.update(ARTIFACT_ID, ORG_ID, {
-          status: FeatureStatus.InProgress,
+          status: IssueStatus.InProgress,
         })
       ).rejects.toThrow(
         'Status "IN_PROGRESS" is not valid for this IMPLEMENTATION_PLAN'
@@ -130,16 +130,16 @@ describe("documentService.update — status validation", () => {
           update: vi
             .fn()
             .mockResolvedValue(
-              makeMockArtifact(DocumentType.Feature, FeatureStatus.InProgress)
+              makeMockArtifact(DocumentType.Feature, IssueStatus.InProgress)
             ),
         },
       });
 
       const result = await documentService.update(ARTIFACT_ID, ORG_ID, {
-        status: FeatureStatus.InProgress,
+        status: IssueStatus.InProgress,
       });
 
-      expect(result.status).toBe(FeatureStatus.InProgress);
+      expect(result.status).toBe(IssueStatus.InProgress);
     });
 
     it("accepts APPROVED for a PRD artifact", async () => {

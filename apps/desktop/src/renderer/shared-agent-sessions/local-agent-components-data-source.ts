@@ -4,6 +4,7 @@ import type {
 } from "@repo/api/src/types/agent-component";
 import type { AgentComponentsDataSource } from "@repo/app/agents/data-source/agent-components-data-source";
 import { ApiError } from "@repo/app/shared/api/api-error";
+import { SHARED_AGENT_COMPONENTS_TRANSIENT_ERROR_CODE } from "../../shared/shared-agent-components-contract";
 import { runSource } from "../shared/run-source";
 import type { DesktopApi } from "../types/desktop-api";
 
@@ -69,7 +70,8 @@ export function createLocalAgentComponentsDataSource(
     runSource(
       run,
       "Agent components source failed.",
-      LOCAL_AGENT_COMPONENTS_SOURCE_ERROR_CODE
+      LOCAL_AGENT_COMPONENTS_SOURCE_ERROR_CODE,
+      SHARED_AGENT_COMPONENTS_TRANSIENT_ERROR_CODE
     );
 
   // The agent-components IPC methods are exposed by the desktop preload only

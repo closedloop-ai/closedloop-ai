@@ -20,7 +20,7 @@ export function useGroupExpansion(
   const defaultExpanded = options?.defaultExpanded ?? false;
   const [toggledKeys, setToggledKeys] = useLocalStorageState<string[]>(
     storageKey,
-    []
+    NO_TOGGLED_KEYS
   );
 
   const toggledSet = useMemo(() => new Set(toggledKeys), [toggledKeys]);
@@ -48,3 +48,5 @@ export function useGroupExpansion(
 
   return { isExpanded, toggleGroup };
 }
+
+const NO_TOGGLED_KEYS: string[] = [];

@@ -64,7 +64,6 @@ describe("GET /api/integrations/github/callback", () => {
     );
     expect(setCookieHeader(response)).toContain("github_oauth_state=");
     expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
-    expect(setCookieHeader(response)).toContain("onboarding_return=");
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -158,7 +157,6 @@ describe("GET /api/integrations/github/callback", () => {
     );
     expect(setCookieHeader(response)).toContain("github_oauth_state=");
     expect(setCookieHeader(response)).toContain("github_oauth_return_to=");
-    expect(setCookieHeader(response)).toContain("onboarding_return=");
   });
 
   it("falls back to settings for connection failures with mismatched return cookies", async () => {

@@ -69,6 +69,8 @@ const BASE_ORGANIZATION = {
   createdAt: new Date("2026-01-01T00:00:00Z"),
   id: ORG_ID,
   name: "Acme",
+  searchIncludeTranscripts: false,
+  sessionSyncPolicyEnabled: false,
   settings: {},
   slug: "acme",
   updatedAt: new Date("2026-01-01T00:00:00Z"),
@@ -409,6 +411,89 @@ describe("PUT /organizations/[id]", () => {
 
     expect(response.status).toBe(500);
     expect(body.error).toBe("Failed to update organization");
+  });
+
+  it("lets an admin toggle the transcript search gate", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.organizationsService.update.mockResolvedValue({
+      ...BASE_ORGANIZATION,
+      searchIncludeTranscripts: true,
+    });
+
+    const response = await putOrganization({ searchIncludeTranscripts: true });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
+      "clerk-org-1",
+      "clerk-user-1"
+    );
+    expect(mocks.organizationsService.update).toHaveBeenCalledWith(ORG_ID, {
+      searchIncludeTranscripts: true,
+    });
+  });
+
+  it("returns 403 when a non-admin tries to toggle the transcript gate", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(false);
+
+    const response = await putOrganization({ searchIncludeTranscripts: true });
+
+    expect(response.status).toBe(403);
+    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when toggling the transcript gate on an unknown org", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.organizationsService.findById.mockResolvedValue(null);
+
+    const response = await putOrganization({ searchIncludeTranscripts: false });
+
+    expect(response.status).toBe(404);
+    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
+    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
+  });
+
+  it("lets an admin toggle the session-sync policy and persists it", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.organizationsService.update.mockResolvedValue({
+      ...BASE_ORGANIZATION,
+      sessionSyncPolicyEnabled: true,
+    });
+
+    const response = await putOrganization({ sessionSyncPolicyEnabled: true });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data.sessionSyncPolicyEnabled).toBe(true);
+    expect(mocks.isOrgAdmin).toHaveBeenCalledWith(
+      "clerk-org-1",
+      "clerk-user-1"
+    );
+    expect(mocks.organizationsService.update).toHaveBeenCalledWith(ORG_ID, {
+      sessionSyncPolicyEnabled: true,
+    });
+  });
+
+  it("returns 403 when a non-admin tries to toggle the session-sync policy", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(false);
+
+    const response = await putOrganization({ sessionSyncPolicyEnabled: true });
+
+    expect(response.status).toBe(403);
+    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when toggling the session-sync policy on an unknown org", async () => {
+    mocks.isOrgAdmin.mockResolvedValue(true);
+    mocks.organizationsService.findById.mockResolvedValue(null);
+
+    const response = await putOrganization({ sessionSyncPolicyEnabled: false });
+
+    expect(response.status).toBe(404);
+    expect(mocks.isOrgAdmin).not.toHaveBeenCalled();
+    expect(mocks.organizationsService.update).not.toHaveBeenCalled();
   });
 });
 

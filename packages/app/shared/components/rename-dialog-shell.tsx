@@ -1,14 +1,7 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
+import { useResponsiveModal } from "@repo/design-system/hooks/use-responsive-modal";
 import type { FormEvent, ReactNode } from "react";
 
 type RenameDialogShellProps = {
@@ -32,6 +25,11 @@ export function RenameDialogShell({
   isPending = false,
   canSave = true,
 }: Readonly<RenameDialogShellProps>) {
+  // Dialog on desktop, bottom Sheet below `sm` — one markup tree, the hook
+  // swaps the catalog primitive family and keeps focus trap / Escape / a11y.
+  const { Root, Content, Header, Footer, Title, Description } =
+    useResponsiveModal();
+
   const submitDisabled = isPending || !canSave;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -49,15 +47,15 @@ export function RenameDialogShell({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
+    <Root onOpenChange={onOpenChange} open={open}>
+      <Content>
+        <Header>
+          <Title>{title}</Title>
+          <Description>{description}</Description>
+        </Header>
         <form onSubmit={handleSubmit}>
           <div className="space-y-4 py-4">{children}</div>
-          <DialogFooter>
+          <Footer>
             <Button
               onClick={() => onOpenChange(false)}
               type="button"
@@ -68,9 +66,9 @@ export function RenameDialogShell({
             <Button disabled={submitDisabled} type="submit">
               {isPending ? "Saving..." : "Save"}
             </Button>
-          </DialogFooter>
+          </Footer>
         </form>
-      </DialogContent>
-    </Dialog>
+      </Content>
+    </Root>
   );
 }

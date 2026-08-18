@@ -3,12 +3,18 @@
 import { ArtifactFlag } from "@repo/app/shared/lib/feature-flags";
 import { SquareCheckIcon } from "lucide-react";
 import { ComingSoonPage } from "@/components/coming-soon-page";
-import { FeatureFlagGate } from "@/components/feature-flag-gate";
+import { FeatureFlagRouteGate } from "@/components/feature-flag-route-gate";
+import { RouteChromeFallback } from "@/components/route-chrome-fallback";
+
+const ISSUES_LABEL = "Issues";
 
 export default function IssuesPage() {
   return (
-    <FeatureFlagGate flag={ArtifactFlag.Issues}>
-      <ComingSoonPage icon={SquareCheckIcon} label="Issues" />
-    </FeatureFlagGate>
+    <FeatureFlagRouteGate
+      flag={ArtifactFlag.Issues}
+      pending={<RouteChromeFallback breadcrumbs={[{ label: ISSUES_LABEL }]} />}
+    >
+      <ComingSoonPage icon={SquareCheckIcon} label={ISSUES_LABEL} />
+    </FeatureFlagRouteGate>
   );
 }

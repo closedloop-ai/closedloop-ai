@@ -3,9 +3,10 @@ import type {
   CustomFieldEnumOption,
   UpdateEnumOptionInput,
 } from "@repo/api/src/types/custom-field";
-import { Prisma, withDb } from "@repo/database";
+import { CustomFieldType } from "@repo/api/src/types/custom-field";
+import { Prisma, type TransactionClient, withDb } from "@repo/database";
 
-import { checkOptionLimit, computeDisplayValue } from "./utils";
+import { checkOptionLimit, MULTI_ENUM_DISPLAY_SEPARATOR } from "./utils";
 
 /**
  * Verifies that a custom field belongs to the given organization.
@@ -93,8 +94,9 @@ export const enumOptionsService = {
    * Updates an enum option's name, color, or enabled state.
    *
    * Verifies field ownership before updating. If the name changed, recalculates
-   * the displayValue for all CustomFieldValue rows that reference this option
-   * (via enumValueId for ENUM fields, or multiEnumValueIds for MULTI_ENUM fields).
+   * the cached displayValue for all CustomFieldValue rows that reference this
+   * option — via enumValueId for ENUM fields, or multiEnumValueIds for
+   * MULTI_ENUM fields — in one set-based statement per field type.
    */
   async updateEnumOption(
     optionId: string,
@@ -103,6 +105,7 @@ export const enumOptionsService = {
     input: UpdateEnumOptionInput
   ): Promise<CustomFieldEnumOption> {
     const field = await verifyFieldOwnership(customFieldId, organizationId);
+    const isRename = input.name !== undefined;
 
     const updated = await withDb.tx(async (tx) => {
       const option = await tx.customFieldEnumOption.update({
@@ -114,47 +117,26 @@ export const enumOptionsService = {
         },
       });
 
-      if (input.name !== undefined) {
-        // Build updated options list (replace stale option with updated name)
-        const updatedOptions = field.enumOptions.map((opt) =>
-          opt.id === optionId ? { ...opt, name: input.name as string } : opt
-        );
-
-        const fieldWithUpdatedOptions = {
-          ...field,
-          enumOptions: updatedOptions,
-        };
-
-        // Find all CustomFieldValue rows referencing this option
-        const affectedValues = await tx.customFieldValue.findMany({
-          where: {
-            customFieldId,
-            OR: [
-              { enumValueId: optionId },
-              { multiEnumValueIds: { hasSome: [optionId] } },
-            ],
-          },
+      // `CustomFieldValue.organizationId` is its own column, not derived from
+      // the field's, so a mismatched row is schema-valid and only the explicit
+      // org predicate keeps these rewrites inside the tenant.
+      if (isRename && field.fieldType === CustomFieldType.Enum) {
+        // An ENUM row's displayValue is the option name verbatim, so every
+        // affected row takes the same string.
+        await tx.customFieldValue.updateMany({
+          where: { customFieldId, organizationId, enumValueId: optionId },
+          data: { displayValue: option.name },
         });
+      }
 
-        // Recalculate displayValue for each affected row
-        await Promise.all(
-          affectedValues.map(async (cfv) => {
-            const rawValue =
-              cfv.enumValueId === null
-                ? cfv.multiEnumValueIds
-                : cfv.enumValueId;
-
-            const displayValue = await computeDisplayValue(
-              fieldWithUpdatedOptions,
-              rawValue,
-              updatedOptions
-            );
-
-            return tx.customFieldValue.update({
-              where: { id: cfv.id },
-              data: { displayValue },
-            });
-          })
+      // A MULTI_ENUM row joins the names of every option it selected, so the
+      // string differs per row — but Postgres can re-derive them all at once.
+      if (isRename && field.fieldType === CustomFieldType.MultiEnum) {
+        await updateMultiEnumDisplayValues(
+          tx,
+          customFieldId,
+          organizationId,
+          optionId
         );
       }
 
@@ -210,3 +192,53 @@ export const enumOptionsService = {
     });
   },
 };
+
+/**
+ * Re-derives `display_value` for every MULTI_ENUM value row that selected the
+ * given option, in one statement.
+ *
+ * Mirrors `computeDisplayValue`'s MULTI_ENUM arm: the selected options' names in
+ * `multi_enum_value_ids` order, ids with no surviving option on the field
+ * dropped, joined by MULTI_ENUM_DISPLAY_SEPARATOR. It reads `name` from the
+ * table, so it must run after the rename write in the same transaction.
+ *
+ * `multi_enum_value_ids` is `text[]` while option ids are `uuid`, hence the
+ * `::text` on the join — casting the other direction would error on a stored id
+ * that is not a well-formed uuid.
+ */
+function updateMultiEnumDisplayValues(
+  tx: TransactionClient,
+  customFieldId: string,
+  organizationId: string,
+  optionId: string
+): Promise<number> {
+  // `now()` is the transaction's start time, so it can land *behind* a row
+  // written later in that same transaction. Prisma stamps `@updatedAt` from the
+  // client clock, so taking the value from the same clock here keeps this write
+  // monotonic against the ENUM arm and against any Prisma write that preceded
+  // it in this transaction.
+  const updatedAt = new Date();
+  return tx.$executeRaw(Prisma.sql`
+    UPDATE "custom_field_values" AS cfv
+    SET "display_value" = COALESCE(
+          (
+            SELECT string_agg(
+                     opt."name",
+                     ${MULTI_ENUM_DISPLAY_SEPARATOR}::text
+                     ORDER BY selected.ordinality
+                   )
+            FROM unnest(cfv."multi_enum_value_ids")
+                 WITH ORDINALITY AS selected(option_id, ordinality)
+            JOIN "custom_field_enum_options" AS opt
+              ON opt."id"::text = selected.option_id
+             AND opt."custom_field_id" = cfv."custom_field_id"
+          ),
+          ''
+        ),
+        -- timestamp WITHOUT time zone holding UTC, matching what Prisma writes.
+        "updated_at" = ${updatedAt}::timestamp
+    WHERE cfv."custom_field_id" = ${customFieldId}::uuid
+      AND cfv."organization_id" = ${organizationId}::uuid
+      AND cfv."multi_enum_value_ids" && ARRAY[${optionId}]::text[]
+  `);
+}

@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, test } from "node:test";
 import {
+  _setKnownBinaryLocationsForResolverTest,
   type BinaryName,
   type BinaryResolveResult,
   resetShellPathCache,
@@ -24,6 +25,7 @@ const originalEnv = saveEnvVars(["PATH", "SHELL", "CL_TEST_SHELL_PATH_OUTPUT"]);
 afterEach(() => {
   restoreEnvVars(originalEnv);
   resetShellPathCache();
+  _setKnownBinaryLocationsForResolverTest(null);
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -156,6 +158,10 @@ describe("resolveBinaryFromLoginShell: no override, binary on PATH", () => {
 describe("resolveBinaryFromLoginShell: no override, binary not on PATH", () => {
   for (const name of ALL_BINARY_NAMES) {
     test(`${name}: returns source "fallback" with bare binary name`, async () => {
+      // Disable the known-location tier so a host that happens to have the
+      // binary installed at a known path does not turn this into a
+      // "known_location" hit.
+      _setKnownBinaryLocationsForResolverTest({ [name]: [] });
       process.env.PATH = makeTempDir("resolve-binary-empty-");
       setShellPathForTest();
 
@@ -227,6 +233,7 @@ describe("resolveBinaryFromLoginShellSync: no override, binary on PATH", () => {
 describe("resolveBinaryFromLoginShellSync: no override, binary not on PATH", () => {
   for (const name of ALL_BINARY_NAMES) {
     test(`${name}: returns source "fallback" with bare binary name`, () => {
+      _setKnownBinaryLocationsForResolverTest({ [name]: [] });
       process.env.PATH = makeTempDir("resolve-binary-sync-empty-");
       setShellPathForTest();
 
@@ -272,6 +279,7 @@ describe("resolveBinaryFromLoginShell sync/async parity", () => {
     });
 
     test(`${name}: missing binary fallback`, async () => {
+      _setKnownBinaryLocationsForResolverTest({ [name]: [] });
       process.env.PATH = makeTempDir("resolve-binary-parity-empty-");
       setShellPathForTest();
 
@@ -323,12 +331,85 @@ describe("resolveBinaryFromLoginShell: getShellPath drives discovery, not proces
   });
 
   test("returns 'fallback' only when binary is absent from getShellPath", async () => {
+    _setKnownBinaryLocationsForResolverTest({ claude: [] });
     process.env.PATH = makeTempDir("fea935-truly-empty-");
     setShellPathForTest();
 
     const result = await resolveBinaryFromLoginShell("claude");
     assert.equal(result.source, "fallback");
     assert.equal(result.path, "claude");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3742: known-location tier — installed-but-not-on-PATH detection
+// ---------------------------------------------------------------------------
+
+describe("resolveBinaryFromLoginShell: known-location tier (FEA-3742)", () => {
+  test("finds claude at a known location (e.g. ~/.claude/local/claude) when not on PATH", async () => {
+    // Simulate the native installer: claude exists at a known absolute path
+    // that the login-shell PATH does not export.
+    const { binPath } = makeTempBin("claude");
+    _setKnownBinaryLocationsForResolverTest({ claude: [binPath] });
+
+    process.env.PATH = makeTempDir("fea3742-empty-path-");
+    setShellPathForTest();
+
+    const result = await resolveBinaryFromLoginShell("claude");
+    assert.equal(result.source, "known_location");
+    assert.equal(result.path, binPath);
+  });
+
+  test("sync resolver also finds claude at a known location when not on PATH", () => {
+    const { binPath } = makeTempBin("claude");
+    _setKnownBinaryLocationsForResolverTest({ claude: [binPath] });
+
+    process.env.PATH = makeTempDir("fea3742-sync-empty-path-");
+    setShellPathForTest();
+
+    const result = resolveBinaryFromLoginShellSync("claude");
+    assert.equal(result.source, "known_location");
+    assert.equal(result.path, binPath);
+  });
+
+  test("PATH hit still wins over the known-location tier", async () => {
+    const { dir, binPath: onPathBin } = makeTempBin("claude");
+    const { binPath: knownBin } = makeTempBin("claude");
+    _setKnownBinaryLocationsForResolverTest({ claude: [knownBin] });
+
+    process.env.PATH = dir;
+    setShellPathForTest();
+
+    const result = await resolveBinaryFromLoginShell("claude");
+    assert.equal(result.source, "path");
+    assert.equal(result.path, onPathBin);
+  });
+
+  test("rejects a non-executable known-location candidate and falls back", async () => {
+    // A file exists at the known path but is not executable (no X_OK): the
+    // known-location tier must skip it rather than return a broken path.
+    const { binPath: nonExecBin } = makeTempNonExecutableBin("claude");
+    _setKnownBinaryLocationsForResolverTest({ claude: [nonExecBin] });
+
+    process.env.PATH = makeTempDir("fea3742-nonexec-path-");
+    setShellPathForTest();
+
+    const result = await resolveBinaryFromLoginShell("claude");
+    assert.equal(result.source, "fallback");
+    assert.equal(result.path, "claude");
+  });
+
+  test("uses the first executable known location in preference order", async () => {
+    const missing = path.join(makeTempDir("fea3742-missing-known-"), "claude");
+    const { binPath: secondBin } = makeTempBin("claude");
+    _setKnownBinaryLocationsForResolverTest({ claude: [missing, secondBin] });
+
+    process.env.PATH = makeTempDir("fea3742-order-path-");
+    setShellPathForTest();
+
+    const result = await resolveBinaryFromLoginShell("claude");
+    assert.equal(result.source, "known_location");
+    assert.equal(result.path, secondBin);
   });
 });
 

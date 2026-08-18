@@ -3,7 +3,15 @@
  *
  * Covers fixed TTL persistence, lookups, and single-use consumption semantics.
  */
-import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  type Mock,
+  vi,
+} from "vitest";
 
 const mocks = vi.hoisted(() => {
   const withDb = Object.assign(vi.fn(), {
@@ -29,15 +37,23 @@ import {
 } from "./service";
 
 const mockWithDb = withDb as unknown as Mock & { tx: Mock };
+const PINNED_NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
 
 describe("desktopOnboardingAttemptsService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("persists a new onboarding attempt with a 60 minute TTL", async () => {
     let createData: Record<string, unknown> | undefined;
-    const before = Date.now();
+    // Pin the clock instead of bracketing the call with real reads: the TTL is
+    // exact, so it can be asserted exactly rather than inside a ±1s window.
+    vi.useFakeTimers();
+    vi.setSystemTime(PINNED_NOW_MS);
 
     mockWithDb.mockImplementation((callback: (db: unknown) => unknown) => {
       const mockDb = {
@@ -62,11 +78,9 @@ describe("desktopOnboardingAttemptsService", () => {
     expect(createData?.consumedAt).toBeNull();
     expect(createData?.attemptId).toBe(result.onboardingAttemptId);
 
-    const ttlMs = result.expiresAt.getTime() - before;
-    expect(ttlMs).toBeGreaterThanOrEqual(
-      DESKTOP_ONBOARDING_ATTEMPT_TTL_MS - 1000
+    expect(result.expiresAt.getTime()).toBe(
+      PINNED_NOW_MS + DESKTOP_ONBOARDING_ATTEMPT_TTL_MS
     );
-    expect(ttlMs).toBeLessThanOrEqual(DESKTOP_ONBOARDING_ATTEMPT_TTL_MS + 1000);
   });
 
   it("loads a persisted onboarding attempt by attempt id", async () => {

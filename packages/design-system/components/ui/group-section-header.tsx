@@ -7,7 +7,12 @@ import type { ReactNode } from "react";
 type GroupSectionHeaderProps = Readonly<{
   icon: ReactNode;
   label: string;
-  count: number;
+  /**
+   * Rows in this group. Omit when the caller only holds a PAGE of a larger set:
+   * a bare number beside the label reads as the population, so no number is
+   * more honest than one that silently means "on this page".
+   */
+  count?: number;
   isOpen: boolean;
   onToggle: () => void;
   className?: string;
@@ -23,6 +28,7 @@ export function GroupSectionHeader({
 }: GroupSectionHeaderProps) {
   return (
     <button
+      aria-expanded={isOpen}
       className={cn(
         "flex w-full items-center gap-2.5 border-b bg-muted/50 py-2.5 pr-4 pl-3.5 font-medium text-sm hover:bg-accent/50",
         className
@@ -37,7 +43,9 @@ export function GroupSectionHeader({
       )}
       {icon}
       <span>{label}</span>
-      <span className="text-muted-foreground text-xs">{count}</span>
+      {count === undefined ? null : (
+        <span className="text-muted-foreground text-xs">{count}</span>
+      )}
     </button>
   );
 }

@@ -1,0 +1,245 @@
+{
+  "meta": {
+    "reportSchemaVersion": 1,
+    "activityClassifierVersion": 6,
+    "evidenceModelVersion": 1,
+    "attributionMetricVersion": 1,
+    "taxonomyVersion": 1,
+    "ruleIds": [
+      "review.cue",
+      "validate.cue",
+      "rework.cue",
+      "plan.cue",
+      "explore.cue",
+      "implement.cue"
+    ],
+    "ruleSetHash": "af8cda9fa2e322b5"
+  },
+  "sessionCount": 24,
+  "segmentCount": 378,
+  "residualSegmentCount": 28,
+  "totalSpendUsd": 382.23259,
+  "residualSpendUsd": 9.3428,
+  "matchedResidualSpendUsd": 3.013556,
+  "before": {
+    "overall": {
+      "coveredSpendUsd": 372.88979,
+      "totalSpendUsd": 382.23259,
+      "coverage": 0.9755572909154606,
+      "sessionCount": 24,
+      "lowSample": false
+    },
+    "byCohort": {
+      "harness": {
+        "claude": {
+          "coveredSpendUsd": 335.502976,
+          "totalSpendUsd": 343.218246,
+          "coverage": 0.9775208046485967,
+          "sessionCount": 15,
+          "lowSample": false
+        },
+        "codex": {
+          "coveredSpendUsd": 37.386814,
+          "totalSpendUsd": 39.014344,
+          "coverage": 0.9582838045412221,
+          "sessionCount": 9,
+          "lowSample": false
+        }
+      },
+      "autonomy_band": {
+        "agentic": {
+          "coveredSpendUsd": 372.88979,
+          "totalSpendUsd": 381.085977,
+          "coverage": 0.9784925515640267,
+          "sessionCount": 15,
+          "lowSample": false
+        },
+        "human_steered": {
+          "coveredSpendUsd": 0,
+          "totalSpendUsd": 0,
+          "coverage": 0,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "mixed": {
+          "coveredSpendUsd": 0,
+          "totalSpendUsd": 1.146613,
+          "coverage": 0,
+          "sessionCount": 5,
+          "lowSample": false
+        }
+      },
+      "closedloop_user": {
+        "closedloop": {
+          "coveredSpendUsd": 136.121034,
+          "totalSpendUsd": 139.248401,
+          "coverage": 0.9775410921953782,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "external": {
+          "coveredSpendUsd": 236.768756,
+          "totalSpendUsd": 242.984189,
+          "coverage": 0.9744204220629351,
+          "sessionCount": 20,
+          "lowSample": false
+        }
+      },
+      "length_band": {
+        "long": {
+          "coveredSpendUsd": 301.316307,
+          "totalSpendUsd": 309.828006,
+          "coverage": 0.9725276642680262,
+          "sessionCount": 13,
+          "lowSample": false
+        },
+        "medium": {
+          "coveredSpendUsd": 71.526983,
+          "totalSpendUsd": 71.618242,
+          "coverage": 0.9987257576079569,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "short": {
+          "coveredSpendUsd": 0.0465,
+          "totalSpendUsd": 0.786342,
+          "coverage": 0.05913457503223788,
+          "sessionCount": 7,
+          "lowSample": false
+        }
+      }
+    }
+  },
+  "after": {
+    "overall": {
+      "coveredSpendUsd": 375.903346,
+      "totalSpendUsd": 382.23259,
+      "coverage": 0.9834413805479014,
+      "sessionCount": 24,
+      "lowSample": false
+    },
+    "byCohort": {
+      "harness": {
+        "claude": {
+          "coveredSpendUsd": 337.143702,
+          "totalSpendUsd": 343.218246,
+          "coverage": 0.9823012206641252,
+          "sessionCount": 15,
+          "lowSample": false
+        },
+        "codex": {
+          "coveredSpendUsd": 38.759644,
+          "totalSpendUsd": 39.014344,
+          "coverage": 0.9934716318695503,
+          "sessionCount": 9,
+          "lowSample": false
+        }
+      },
+      "autonomy_band": {
+        "agentic": {
+          "coveredSpendUsd": 375.671798,
+          "totalSpendUsd": 381.085977,
+          "coverage": 0.9857927624558066,
+          "sessionCount": 15,
+          "lowSample": false
+        },
+        "human_steered": {
+          "coveredSpendUsd": 0,
+          "totalSpendUsd": 0,
+          "coverage": 0,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "mixed": {
+          "coveredSpendUsd": 0.231548,
+          "totalSpendUsd": 1.146613,
+          "coverage": 0.20194084665009032,
+          "sessionCount": 5,
+          "lowSample": false
+        }
+      },
+      "closedloop_user": {
+        "closedloop": {
+          "coveredSpendUsd": 137.618075,
+          "totalSpendUsd": 139.248401,
+          "coverage": 0.988291958914487,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "external": {
+          "coveredSpendUsd": 238.285271,
+          "totalSpendUsd": 242.984189,
+          "coverage": 0.980661630621571,
+          "sessionCount": 20,
+          "lowSample": false
+        }
+      },
+      "length_band": {
+        "long": {
+          "coveredSpendUsd": 303.590021,
+          "totalSpendUsd": 309.828006,
+          "coverage": 0.979866297173923,
+          "sessionCount": 13,
+          "lowSample": false
+        },
+        "medium": {
+          "coveredSpendUsd": 71.526983,
+          "totalSpendUsd": 71.618242,
+          "coverage": 0.9987257576079569,
+          "sessionCount": 4,
+          "lowSample": false
+        },
+        "short": {
+          "coveredSpendUsd": 0.786342,
+          "totalSpendUsd": 0.786342,
+          "coverage": 1,
+          "sessionCount": 7,
+          "lowSample": false
+        }
+      }
+    }
+  },
+  "overallCoverageUplift": 0.007884089632440805,
+  "proposedRules": [
+    {
+      "ruleId": "explore.cue",
+      "phase": "explore",
+      "cue": "exploration language (understand how, investigate, how does, trace)",
+      "sessions": 2,
+      "segments": 2,
+      "residualSpendUsd": 1.414773
+    },
+    {
+      "ruleId": "rework.cue",
+      "phase": "rework",
+      "cue": "defect-fixing language (fix the bug, still failing, revert)",
+      "sessions": 2,
+      "segments": 2,
+      "residualSpendUsd": 0.956867
+    },
+    {
+      "ruleId": "implement.cue",
+      "phase": "implement",
+      "cue": "implementation language (implement, add, build, refactor, wire up)",
+      "sessions": 3,
+      "segments": 3,
+      "residualSpendUsd": 0.410368
+    },
+    {
+      "ruleId": "review.cue",
+      "phase": "review",
+      "cue": "review language (lgtm, code review, address comments)",
+      "sessions": 1,
+      "segments": 1,
+      "residualSpendUsd": 0.143685
+    },
+    {
+      "ruleId": "plan.cue",
+      "phase": "plan",
+      "cue": "planning language (let's plan, approach, design the, outline)",
+      "sessions": 1,
+      "segments": 1,
+      "residualSpendUsd": 0.087863
+    }
+  ]
+}

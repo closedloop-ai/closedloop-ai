@@ -68,6 +68,10 @@ vi.mock("@/lib/loops/loop-commands", () => ({
   getCommandHandler: vi.fn(() => ({ requiresParent: false })),
 }));
 
+vi.mock("@/lib/loops/cloud-anthropic-key-preflight", () => ({
+  buildMissingAnthropicApiKeyResponse: vi.fn(() => Promise.resolve(null)),
+}));
+
 vi.mock("@/app/documents/[id]/run-loop/run-loop-helpers", () => ({
   COMMAND_MAP: {
     plan: "PLAN",

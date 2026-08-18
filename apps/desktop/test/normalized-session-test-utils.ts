@@ -125,7 +125,8 @@ export function codexLinkage(
   rolloutId: string,
   parentThreadId: string | null,
   depth: number | null = parentThreadId ? 1 : 0,
-  sourcePath = `/codex/${rolloutId}.jsonl`
+  sourcePath = `/codex/${rolloutId}.jsonl`,
+  forkedFromId: string | null = null
 ): CodexRolloutLinkage {
   return {
     rolloutId,
@@ -133,7 +134,7 @@ export function codexLinkage(
     depth,
     agentNickname: null,
     agentRole: null,
-    forkedFromId: null,
+    forkedFromId,
     sourcePath,
   };
 }
@@ -157,20 +158,44 @@ export function cleanupTempDirs(): Promise<void> {
 }
 
 /**
+ * Options for {@link fakeCollector}. Named (rather than inlined) because the
+ * overload signatures below and the implementation must all restate it.
+ */
+type FakeCollectorOptions = {
+  sources?: string[];
+  sessions?: NormalizedSession[];
+  parse?: (source: string) => Promise<NormalizedSession[]>;
+  sessionIdForSource?: (source: string) => string | null;
+  listSourcesForRebuild?: () => string[];
+  batch?: boolean;
+  /** Non-empty to make the manager attach a live watcher for this collector. */
+  watchRoots?: string[];
+};
+
+/**
  * Build a minimal in-memory `HarnessCollector` for CollectorManager / ingest
  * tests. Pass `sessions` for the common "parse returns these" case, or a custom
  * `parse`; the remaining optional members map straight through.
+ *
+ * A literal `batch: true` returns the NARROWED `BatchHarnessCollector`. The body
+ * already builds each arm (`satisfies` below), but a single declared return of
+ * the `HarnessCollector` union threw that away at the call site: spreading the
+ * result and adding a batch-only member (`markSourceImported`) tripped the
+ * union's excess-property check against the `FileHarnessCollector` arm, because
+ * the compiler could not tell which arm it had. Narrowing here rather than
+ * casting at each call site keeps the discriminated union doing its job.
  */
 export function fakeCollector(
   key: Harness,
-  opts: {
-    sources?: string[];
-    sessions?: NormalizedSession[];
-    parse?: (source: string) => Promise<NormalizedSession[]>;
-    sessionIdForSource?: (source: string) => string | null;
-    listSourcesForRebuild?: () => string[];
-    batch?: boolean;
-  } = {}
+  opts: FakeCollectorOptions & { batch: true }
+): BatchHarnessCollector;
+export function fakeCollector(
+  key: Harness,
+  opts?: FakeCollectorOptions
+): HarnessCollector;
+export function fakeCollector(
+  key: Harness,
+  opts: FakeCollectorOptions = {}
 ): HarnessCollector {
   // Shared base; the kind-specific members are layered on per the `batch`
   // discriminant so the result is a valid FileHarnessCollector | BatchHarnessCollector
@@ -179,7 +204,7 @@ export function fakeCollector(
     key,
     cacheName: key,
     allowUnscopedSourceAdmission: true,
-    watchRoots: () => [],
+    watchRoots: () => opts.watchRoots ?? [],
     watchMatch: () => true,
     listSources: () => opts.sources ?? [],
     parse: opts.parse ?? (() => Promise.resolve(opts.sessions ?? [])),

@@ -1,3 +1,4 @@
+import { LANDING_PAGE_TITLE } from "@repo/lib/landing-hero-copy";
 import { createPageMetadata, siteDescription } from "@/lib/site";
 import { ArtifactsSection } from "./components/home/artifacts-section";
 import { ControlVisibilitySection } from "./components/home/control-visibility-section";
@@ -15,10 +16,7 @@ type HomePageProps = {
 };
 
 export const generateMetadata = async () =>
-  createPageMetadata(
-    "The workspace for team-based agentic software development",
-    siteDescription
-  );
+  createPageMetadata(LANDING_PAGE_TITLE, siteDescription);
 
 const HomePage = async ({ params }: HomePageProps) => {
   const { locale } = await params;

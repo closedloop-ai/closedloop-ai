@@ -75,8 +75,8 @@ describe("Branch View local command event authorization", () => {
     vi.useFakeTimers();
     vi.clearAllMocks();
     vi.mocked(resolveAnyAuthContext).mockResolvedValue({
-      userId: "user-1",
-      organizationId: "org-1",
+      ok: true,
+      context: { userId: "user-1", organizationId: "org-1" },
     });
     vi.mocked(computeTargetsService.findAccessibleById).mockResolvedValue({
       id: "target-1",

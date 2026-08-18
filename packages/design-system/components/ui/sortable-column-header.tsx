@@ -79,3 +79,31 @@ export function SortableColumnHeader<TColumn extends string>({
     </TableHead>
   );
 }
+
+/**
+ * The `aria-sort` values a `role="columnheader"` cell may carry. Kept as the
+ * canonical const object rather than inline strings: these are contract values
+ * assistive technology reads, not free text.
+ */
+export const AriaSort = {
+  Ascending: "ascending",
+  Descending: "descending",
+  None: "none",
+} as const;
+export type AriaSort = (typeof AriaSort)[keyof typeof AriaSort];
+
+/**
+ * `aria-sort` for a sortable column header (ISS-4672). `SortIndicator` conveys
+ * the same state visually; this is its screen-reader half, so a non-sighted user
+ * hears "sorted descending" instead of nothing at all. Only the ACTIVE sort
+ * column may announce a direction — every other sortable header is `none`.
+ */
+export function getAriaSort(
+  isActive: boolean,
+  direction: SortDirection
+): AriaSort {
+  if (!isActive) {
+    return AriaSort.None;
+  }
+  return direction === "asc" ? AriaSort.Ascending : AriaSort.Descending;
+}

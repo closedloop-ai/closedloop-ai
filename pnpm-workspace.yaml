@@ -28,7 +28,7 @@ supportedArchitectures:
 # dedupe override below all pin one version — replacing the `next: "$next"`
 # override, whose `$<name>` syntax pnpm 11.7 deprecated in favour of catalogs.
 catalog:
-  # Pinned to 16.2.6 (not upstream's 16.2.10): 16.2.7+ changed RSC static-export
+  # Pinned to 16.2.6 (not upstream's 16.3.0): 16.2.7+ changed RSC static-export
   # behavior such that fumadocs-ui@16.8 calls next-themes' useTheme() during
   # prerender of the docs/blog pages ("useTheme() from the server"). The
   # community edition serves those docs from web (upstream uses a separate docs
@@ -43,11 +43,27 @@ minimumReleaseAge: 10080
 # blockExoticSubdeps: refuse non-registry specifiers (git:, github:, http(s):,
 # file:, link:) introduced via transitive deps — closes the github-ref bypass.
 blockExoticSubdeps: true
+# dd-trace's four optional native addons are excluded outright rather than
+# listed in allowBuilds as `false`. They back capabilities we deliberately leave
+# off — the continuous profiler (@datadog/pprof), runtime metrics, AppSec and
+# IAST — while Test Optimization, the only reason dd-trace is installed, is pure
+# JS. Excluding them keeps the install smaller (they ship prebuilt binaries for
+# every entry in supportedArchitectures above) and, critically, means pnpm needs
+# no build decision for them at all: adding them to allowBuilds changed the
+# recorded build-approval state, which made the bind-mounted node_modules look
+# stale to the e2e-runner container and triggered a full in-container reinstall
+# that the egress-restricted network cannot serve.
+ignoredOptionalDependencies:
+  - '@datadog/native-appsec'
+  - '@datadog/native-iast-taint-tracking'
+  - '@datadog/native-metrics'
+  - '@datadog/pprof'
 allowBuilds:
   '@scarf/scarf': false
   '@clerk/shared': true
   '@prisma/engines': true
   better-sqlite3: false
+  browser-tabs-lock: false
   bufferutil: true
   core-js: true
   core-js-pure: true
@@ -119,8 +135,8 @@ overrides:
   # The provider then populates one context while useTheme() reads another,
   # silently breaking the theme toggle. Keep these aligned with the apps'
   # pinned react/react-dom version.
-  react: "19.2.5"
-  react-dom: "19.2.5"
+  react: "19.2.8"
+  react-dom: "19.2.8"
   # Pin one react-hook-form across the workspace (FEA-1510). Caret ranges
   # (apps/app ^7.71.1, apps/desktop ^7.76.1) otherwise resolve to two copies,
   # which splits design-system's FormField Control<> from its consumers
@@ -197,13 +213,56 @@ overrides:
   # 0.25.x copy that vite/vitest pin is left untouched (forcing it to 0.28.x
   # would break vite's pinned esbuild integration).
   "esbuild@>=0.27.0 <0.28.1": "0.28.1"
-  # OpenTelemetry: 0.219.0 (experimental line) pins stable @opentelemetry/core,
-  # resources, sdk-trace-base, sdk-metrics @2.8.0 and exporter-prometheus
-  # @0.219.0, resolving GHSA-q7rr-3cgh-j5r3 (sdk-node/exporter-prometheus
-  # <0.217.0) and GHSA-8988-4f7v-96qf (core <2.8.0) together.
-  "@opentelemetry/core": ">=2.8.0 <3.0.0"
-  "@opentelemetry/sdk-node": ">=0.219.0"
-  "@opentelemetry/exporter-prometheus": ">=0.219.0"
+  # OpenTelemetry: the experimental line (sdk-node, exporter-prometheus) pins
+  # stable @opentelemetry/core, resources, sdk-trace-base and sdk-metrics,
+  # resolving GHSA-q7rr-3cgh-j5r3 (sdk-node/exporter-prometheus <0.217.0) and
+  # GHSA-8988-4f7v-96qf (core <2.8.0) together.
+  #
+  # ISS-4659 raised the core floor from 2.8.0 to 2.10.0. The cl-api tracer pulls
+  # @opentelemetry/instrumentation-pg, which declares `@opentelemetry/core:
+  # ^2.9.0`; against the old floor pnpm resolved core to 2.8.0 and produced an
+  # unsatisfiable peer graph that installed without complaint. Both CVE floors
+  # above are still cleared — this only moves the floor up.
+  "@opentelemetry/core": ">=2.10.0 <3.0.0"
+  #
+  # ISS-4859 raised the experimental floor from 0.219.0 to 0.221.0. These two
+  # overrides REPLACE the manifest specifier outright, so bumping
+  # apps/desktop/package.json alone could not move sdk-node — the override kept
+  # re-pinning it to the already-resolved 0.219.0 while its lockstep siblings
+  # (api-logs, otlp-transformer, sdk-logs) sat on 0.221.0. The experimental 0.x
+  # line is released in lockstep and caret ranges cannot unify it (`^0.219.0`
+  # resolves `>=0.219.0 <0.220.0`), so the floor here is what actually holds the
+  # family on one version. Bump these together with the apps/desktop specifiers.
+  # Both CVE floors above are still cleared — this only moves the floor up.
+  #
+  # CEILING (wongk review): the range is CLOSED at <0.222.0, not left open at
+  # `>=0.221.0`. The apps/desktop siblings (api-logs, otlp-transformer, sdk-logs)
+  # are `^0.221.0`, which on a 0.x line stops below 0.222.0 — an open-ended
+  # override here would let the next lockfile regeneration float sdk-node /
+  # exporter-prometheus onto 0.222.0 while the carets held their siblings at
+  # 0.221.0, recreating the exact split ISS-4859 closed. The whole experimental
+  # family moves as ONE deliberate bump: raise the carets in
+  # apps/desktop/package.json and both bounds here in the same change.
+  "@opentelemetry/sdk-node": ">=0.221.0 <0.222.0"
+  "@opentelemetry/exporter-prometheus": ">=0.221.0 <0.222.0"
+  # Pin ONE @opentelemetry/api across the workspace. It is an *optional peer* of
+  # `next`, so it lands in next's peer-resolution key. With two versions in the
+  # tree (1.9.0 and 1.9.1) pnpm therefore emits two peer-keyed copies of next,
+  # and which copy each workspace package gets is resolution-order dependent —
+  # it silently reshuffles on any lockfile regen. When apps/app and
+  # packages/analytics land on different copies, their NextRequest/NextResponse
+  # become nominally distinct types (`Property '[INTERNALS]' is missing`) and
+  # apps/app#typecheck fails at proxy.ts on
+  # `analyticsMiddleware(response)(request)` — which is exactly how the
+  # next 16.2.10 -> 16.2.11 Dependabot bump (#4206) went red in both `typecheck`
+  # and `e2e` (the e2e app:build runs the same TS pass). Nothing in Next changed;
+  # the regen just split the two packages onto different copies.
+  #
+  # Same class of fix, and same rationale, as the react/react-dom and
+  # react-hook-form pins above. Collapsing to a single version also drops the
+  # workspace from two next copies to one, so this whole failure mode can no
+  # longer recur on a future regen.
+  "@opentelemetry/api": "1.9.1"
   # >=11.1.1 closes GHSA-w5hq-g745-h8pq (fixed 11.1.1, published 2026-06-20).
   # Cleared the minimumReleaseAge: 10080 supply-chain window above. Reaches 28
   # production paths via @solana/web3.js and googleapis.
@@ -246,5 +305,38 @@ overrides:
   # Scoped to 8.x so the ajv@6 used by schema-utils@3 / @develar/schema-utils
   # (paired with ajv-keywords@3, which requires ajv 6) is left untouched.
   "ajv@8": ">=8.18.0"
+  # 2026-08-04 keyv/cacheable npm supply-chain attack (Shai-Hulud wave): a
+  # compromised maintainer account published trojanized releases with
+  # credential-stealing preinstall hooks — keyv@6.0.0, cacheable-request@13.0.20,
+  # flat-cache@6.1.24, file-entry-cache@11.1.7, cache-manager@7.2.10, plus 400+
+  # downstream packages the worm reached. These three are our ONLY transitive
+  # deps in the affected namespaces (no @keyv/*, @cacheable/*, cacheable,
+  # file-entry-cache, or cache-manager anywhere in the lockfile); pin them to
+  # the exact pre-attack versions already resolved so no lockfile regen can
+  # float onto a poisoned release — minimumReleaseAge: 10080 above only delays
+  # exposure by 7 days, it does not prevent it. Lift these pins only after
+  # upstream publishes verified-clean releases and they clear that window.
+  # Consumer paths that own revisiting these pins: cacheable-request reaches us
+  # only via got@11.8.6; flat-cache only via the storybook app's
+  # @storybook/nextjs -> @storybook/preset-react-webpack (react-docgen loader);
+  # keyv is pulled by both cacheable-request and flat-cache.
+  # A got or Storybook upgrade that needs a newer version of these families
+  # must re-audit and move the pin in the same change.
+  keyv: "4.5.4"
+  cacheable-request: "7.0.4"
+  flat-cache: "3.2.0"
+packageExtensions:
+  # Stryker's TSConfigPreprocessor does a bare `await import("typescript")` and
+  # declares no dependency on it, so it inherits the workspace's typescript@7 --
+  # whose JS API is a stub until 7.1, making every `ts.*` member undefined. Every
+  # `pnpm mutation` run therefore died with
+  # `TypeError: ts.parseConfigFileTextToJson is not a function` before selecting a
+  # single mutant. Same failure the repo's `no-bare-typescript-import` gate exists
+  # to prevent in our own source; that gate cannot reach a node_module, so declare
+  # the edge here instead. Drop this once Stryker supports typescript@7.1+.
+  "@stryker-mutator/core":
+    dependencies:
+      typescript: "npm:@typescript/typescript6@6.0.2"
 patchedDependencies:
   '@libsql/client@0.17.3': patches/@libsql__client@0.17.3.patch
+  '@stryker-mutator/vitest-runner@9.6.1': patches/@stryker-mutator__vitest-runner@9.6.1.patch

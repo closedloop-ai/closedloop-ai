@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { BranchKpiState, encodeBranchId } from "@repo/api/src/types/branch.js";
-import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { BranchMetricAvailability } from "@repo/api/src/types/branch-metrics.js";
+import { getSharedBranchAnalytics } from "../src/main/branch/branch-analytics-read.js";
 import {
   type BranchSyncSource,
-  getSharedBranchAnalytics,
   getSharedBranchDetail,
-} from "../src/main/shared-branches-api.js";
+} from "../src/main/branch/shared-branches-api.js";
+import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 
 /**
  * Real-boundary coverage for FEA-2181: persisted SQLite rows flow through the
@@ -23,23 +24,28 @@ test("FEA-2181: analytics uses merged PR artifact LOC when branch artifact LOC i
 
     assert.equal(analytics.medianPrSize.state, BranchKpiState.Available);
     assert.equal(analytics.medianPrSize.value, 622);
+    assert.equal(analytics.canonicalMetrics?.cohortSize, 1);
+    assert.equal(analytics.canonicalMetrics?.medianPrSize.current.value, 622);
   } finally {
     await close();
   }
 });
 
-test("FEA-2159: analytics folds missing branch+PR LOC in as 0 (dashboard parity)", async () => {
+test("FEA-2949: analytics EXCLUDES a fully un-enriched merged branch (dashboard parity)", async () => {
   const { close, source } = await openSeededBranchesSource({
     seedPrArtifactLoc: false,
   });
   try {
     const analytics = await getSharedBranchAnalytics(source);
 
-    // Neither the branch nor its PR artifact carries LOC, but the merged
-    // single-PR branch still contributes 0 to the median (matching the delivery
-    // dashboard's `getDelivery`), so the card is available at 0 rather than "—".
-    assert.equal(analytics.medianPrSize.state, BranchKpiState.Available);
-    assert.equal(analytics.medianPrSize.value, 0);
+    // Neither the branch nor its PR artifact carries LOC, so its size is unknown.
+    // FEA-2949: the median EXCLUDES un-enriched PRs (matching the Delivery
+    // dashboard and the shared `medianPrSize` helper) instead of folding them in
+    // as 0 (the old FEA-2159 behavior, which dragged the median toward 0 and
+    // disagreed with the dashboard). With no enriched merged single-PR branch,
+    // the card is unavailable ("—"), not 0.
+    assert.equal(analytics.medianPrSize.state, BranchKpiState.Unavailable);
+    assert.equal(analytics.medianPrSize.value, null);
   } finally {
     await close();
   }
@@ -62,6 +68,10 @@ test("FEA-2181: detail projects PR artifact LOC and branch artifact LOC still wi
     assert.equal(detail.additions, 50);
     assert.equal(detail.deletions, 5);
     assert.equal(detail.filesChanged, 2);
+    assert.equal(
+      detail.canonicalMetrics?.leadTimeMs.state,
+      BranchMetricAvailability.Unavailable
+    );
   } finally {
     await close();
   }
@@ -116,7 +126,7 @@ test("FEA-2181: partial branch artifact LOC falls back to complete PR artifact L
   }
 });
 
-test("FEA-2159: partial PR artifact LOC folds the merged branch in as 0 in the median while detail stays null", async () => {
+test("FEA-2949: partial PR artifact LOC EXCLUDES the merged branch from the median while detail stays null", async () => {
   const { close, source } = await openSeededBranchesSource({
     prArtifactLoc: {
       linesAdded: 600,
@@ -135,10 +145,12 @@ test("FEA-2159: partial PR artifact LOC folds the merged branch in as 0 in the m
     );
 
     // Partial PR LOC leaves the row's additions/deletions null (the detail
-    // projection refuses a partial size), so the merged single-PR branch folds
-    // in as 0 in the median (dashboard parity) — available at 0, not "—".
-    assert.equal(analytics.medianPrSize.state, BranchKpiState.Available);
-    assert.equal(analytics.medianPrSize.value, 0);
+    // projection refuses a partial size), so the merged single-PR branch is
+    // un-enriched. FEA-2949: the median EXCLUDES un-enriched rows (dashboard
+    // parity), so with no enriched merged branch the card is unavailable ("—"),
+    // not 0.
+    assert.equal(analytics.medianPrSize.state, BranchKpiState.Unavailable);
+    assert.equal(analytics.medianPrSize.value, null);
     assert.ok(detail, "expected real SQLite branch detail");
     assert.equal(detail.additions, null);
     assert.equal(detail.deletions, null);
@@ -213,7 +225,7 @@ async function openSeededBranchesSource(options: SeedOptions = {}): Promise<{
       await rm(dir, { recursive: true, force: true });
     },
     db,
-    source: { prisma: db.prisma },
+    source: db,
   };
 }
 

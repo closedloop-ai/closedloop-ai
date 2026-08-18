@@ -17,288 +17,175 @@
  *
  * P0001 user-defined migration invariant failures fail fast before either
  * recovery path because the invariant must be fixed before retrying deploy.
- */
-
-import { spawnSync } from "node:child_process";
-import { Signer } from "@aws-sdk/rds-signer";
-import { awsCredentialsProvider } from "@vercel/functions/oidc";
-import { addSchemaToUrl, resolveSchemaName } from "../schema-utils";
-import { cloneDataFromPublic } from "./clone-schema";
-import { recoverMigrateDeployFailure } from "./migrate-deploy-recovery";
-import {
-  isTransientConnectionError,
-  isTransientMigrateDeployError,
-  MIGRATE_DEPLOY_RETRY,
-  withRetry,
-} from "./migrate-retry";
-import { withMigrationSerializeLock } from "./migration-lock";
-import {
-  ensureSchemaExists,
-  resetSchema,
-  upsertSchemaRegistry,
-} from "./preview-schema";
-import { runPreviewSeed } from "./preview-seed";
-
-function runMigrateDeploy(databaseUrl: string): Promise<void> {
-  const result = spawnSync("prisma", ["migrate", "deploy"], {
-    stdio: "pipe",
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      DATABASE_URL: databaseUrl,
-    },
-  });
-
-  if (result.stdout) {
-    process.stdout.write(result.stdout);
-  }
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
-
-  if (result.error || result.status !== 0) {
-    const error =
-      result.error ??
-      new Error(
-        `prisma migrate deploy failed with exit code ${result.status ?? "unknown"}`
-      );
-    (error as Error & { stdout?: string; stderr?: string }).stdout =
-      result.stdout ?? "";
-    (error as Error & { stdout?: string; stderr?: string }).stderr =
-      result.stderr ?? "";
-    throw error;
-  }
-
-  return Promise.resolve();
-}
-
-/**
- * Marks a failed migration as rolled-back using `prisma migrate resolve`.
- * This is the normal Prisma recovery path for failed migrations. A later
- * deploy retry may still surface committed DDL artifacts, which recovery
- * classifies separately before stopping automation.
- */
-function resolveFailedMigration(
-  databaseUrl: string,
-  migrationName: string
-): Promise<void> {
-  console.log(`↪ Marking migration ${migrationName} as rolled-back...`);
-  const result = spawnSync(
-    "prisma",
-    ["migrate", "resolve", "--rolled-back", migrationName],
-    {
-      stdio: "pipe",
-      encoding: "utf8",
-      env: { ...process.env, DATABASE_URL: databaseUrl },
-    }
-  );
-
-  if (result.stdout) {
-    process.stdout.write(result.stdout);
-  }
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
-
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `prisma migrate resolve --rolled-back ${migrationName} failed: ${result.stderr || result.error?.message}`
-    );
-  }
-
-  return Promise.resolve();
-}
-
-/**
- * Attempts to run prisma migrate deploy with automatic recovery:
  *
- * - Preview schemas: P3005/P3009/P3018 → drop and recreate schema, then retry.
- *   Reset is always safe for ephemeral preview schemas, and covers cases like a
- *   migration directory being renamed/regenerated after it was already applied,
- *   which leaves the schema state mismatched with `_prisma_migrations`.
- * - Non-preview schemas: P3009/P3018 (failed migration) → mark as rolled-back
- *   so the next deploy can re-apply. If that retry reports committed DDL
- *   artifacts, emit a bounded diagnostic and leave the next action to an
- *   operator.
+ * ISS-4601: after the pipeline, the target schema is swept for INVALID indexes
+ * (see `invalid-index-sweep.ts`) and the completion line below is qualified
+ * accordingly — a cancelled `CREATE INDEX CONCURRENTLY` otherwise leaves an
+ * unusable index behind that the P3018 retry no-ops over, so the deploy would
+ * report plain success. The sweep warns, it never fails the deploy.
  */
-async function runMigrateWithRetry(
-  databaseUrl: string,
-  schema: string | null,
-  branch: string | undefined
-): Promise<boolean> {
-  try {
-    // Retry a transient connectivity blip (Prisma P1001 "can't reach database
-    // server", or a dropped pg connection) OR migration advisory-lock contention
-    // (P1002 "Timed out trying to acquire a postgres advisory lock" when a peer
-    // migrate deploy on the same physical database holds the lock — FEA-3062)
-    // before the build fails. Migration-state failures (P3005/P3009/P3018/P0001)
-    // are not transient: withRetry rethrows them on the first attempt, so they
-    // fall through to recoverMigrateDeployFailure below exactly as before.
-    // MIGRATE_DEPLOY_RETRY's wider, jittered budget stays well under the 15-min
-    // RDS IAM token validity window (retries reuse the same IAM-signed URL).
-    await withRetry(
-      () => runMigrateDeploy(databaseUrl),
-      isTransientMigrateDeployError,
-      MIGRATE_DEPLOY_RETRY
-    );
-    return false;
-  } catch (error) {
-    return await recoverMigrateDeployFailure(
-      {
-        databaseUrl,
-        schema,
-        branch,
-        error,
-      },
-      {
-        runMigrateDeploy,
-        resolveFailedMigration,
-        resetSchema,
-        upsertSchemaRegistry,
-      }
-    );
-  }
-}
 
-/**
- * Shared migration pipeline: ensure schema → register → migrate → clone.
- * Used by both DATABASE_URL (password) and IAM auth paths.
- */
-async function runMigrationPipeline(
-  databaseUrl: string,
-  schema: string | null,
-  branch: string | undefined
-) {
-  console.log("↪ Ensuring schema exists...");
-  const isNew = await ensureSchemaExists(databaseUrl, schema);
-  /**
-   * Ordering invariant: ensureSchemaExists → upsertSchemaRegistry → runMigrateWithRetry → cloneDataFromPublic.
-   * ensureSchemaExists must run first so the schema row exists before we write the registry entry.
-   * upsertSchemaRegistry must complete before runMigrateWithRetry so that any mid-migration failure
-   * leaves a registered (reapable) orphan rather than a silent unregistered one.
-   * If all retries are exhausted, runMigrationPipeline throws, the deploy fails loudly, and the
-   * schema created by ensureSchemaExists is left unregistered — the FEA-1082 orphan reaper will
-   * clean it up on its next run.
-   * IAM token note: retries reuse the original IAM-signed databaseUrl; the 15-minute RDS token
-   * validity is the implicit upper bound on total retry time (irrelevant at zero-delay/3 attempts,
-   * but relevant if delay or attempt count is increased in future).
-   */
-  await withRetry(
-    () => upsertSchemaRegistry(databaseUrl, schema, branch),
-    isTransientConnectionError,
-    { attempts: 3 }
-  );
-
-  // FEA-3065: serialize the migrate against concurrent api deploys on the same
-  // database through our own advisory lock, so Prisma's per-DB migration lock
-  // (72707369) is uncontended. Wraps ONLY the lock-taking migrate step (schema
-  // ensure/registry ran above; clone/seed run below, all outside the gate).
-  // Fails open to runMigrateWithRetry (FEA-3062 retry) on any gate error.
-  const didReset = await withMigrationSerializeLock({ databaseUrl }, () =>
-    runMigrateWithRetry(databaseUrl, schema, branch)
-  );
-
-  if ((isNew || didReset) && schema) {
-    await cloneDataFromPublic(databaseUrl, schema);
-  }
-
-  // Seed preview schemas with synthetic data (FEA-1715). Intentionally OUTSIDE
-  // the (isNew || didReset) gate above: the seed is idempotent and non-blocking,
-  // so running it after every successful migration makes a prior non-blocking
-  // seed failure recoverable on the next deploy (review: shafty023). No-op for
-  // non-preview schemas.
-  runPreviewSeed(databaseUrl, schema);
-}
+import { addSchemaToUrl, resolveSchemaName } from "../schema-utils";
+import {
+  formatBuildMigrateSkipLine,
+  isBuildMigrateEnabled,
+} from "./build-migrate-flag";
+import { createSchemaUrlMinter, readIamAuthConfig } from "./iam-database-url";
+import { formatMigrateCompletionLine } from "./invalid-index-sweep";
+import {
+  buildPreviewMigratorDeps,
+  isPreviewMigratorEnabled,
+  migrateAllPreviewSchemas,
+} from "./migrate-all-previews";
+import { flushMigrateTelemetry } from "./migrate-telemetry";
+import { runMigrationPipeline } from "./migration-pipeline";
+import { isPreviewSchema } from "./preview-schema";
 
 async function main() {
-  const {
-    AWS_ROLE_ARN,
-    AWS_REGION,
-    PGHOST,
-    PGUSER,
-    PGDATABASE,
-    PGPORT = "5432",
-    DATABASE_URL,
-    PGSCHEMA,
-    VERCEL_ENV,
-    VERCEL_GIT_COMMIT_REF,
-  } = process.env;
+  // ISS-4392: telemetry buffered during the pipeline/walk is flushed in the
+  // `finally` below, so it lands on BOTH the success and the failure path. The
+  // migrate outcome is carried on `process.exitCode` (NOT an inline
+  // `process.exit`, which would skip the flush); the runner at the bottom forces
+  // the process to exit AFTER the flush completes.
+  try {
+    const { DATABASE_URL, PGSCHEMA, VERCEL_ENV, VERCEL_GIT_COMMIT_REF } =
+      process.env;
 
-  const resolvedSchema = resolveSchemaName({
-    pgSchema: PGSCHEMA,
-    vercelEnv: VERCEL_ENV,
-    vercelGitCommitRef: VERCEL_GIT_COMMIT_REF,
-  });
+    const resolvedSchema = resolveSchemaName({
+      pgSchema: PGSCHEMA,
+      vercelEnv: VERCEL_ENV,
+      vercelGitCommitRef: VERCEL_GIT_COMMIT_REF,
+    });
 
-  // If DATABASE_URL is set (e.g., local dev with password), use it directly
-  if (DATABASE_URL) {
-    console.log(
-      "✓ DATABASE_URL found, running migrations with password auth..."
-    );
-    const databaseUrl = addSchemaToUrl(DATABASE_URL, resolvedSchema);
+    // ISS-4489: the kill-switch is checked HERE — after the (pure, env-only)
+    // schema resolution so the skip line can name the schema, but before either
+    // auth path, so a disabled build opens no connection and mints no IAM token.
+    // That "no `:5432` traffic from the build" property is the whole point: it is
+    // what lets api-stage detach its builds from Secure Compute.
+    if (!isBuildMigrateEnabled()) {
+      console.log(formatBuildMigrateSkipLine({ schema: resolvedSchema }));
+      return;
+    }
+
+    // If DATABASE_URL is set (e.g., local dev with password), use it directly
+    if (DATABASE_URL) {
+      console.log(
+        "✓ DATABASE_URL found, running migrations with password auth..."
+      );
+      const databaseUrl = addSchemaToUrl(DATABASE_URL, resolvedSchema);
+      try {
+        const { invalidIndexes } = await runMigrationPipeline(
+          databaseUrl,
+          resolvedSchema,
+          VERCEL_GIT_COMMIT_REF
+        );
+        console.log(formatMigrateCompletionLine(invalidIndexes));
+        return;
+      } catch (error) {
+        console.error(
+          "❌ Migration failed:",
+          error instanceof Error ? error.message : String(error)
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    // Otherwise, use IAM authentication
+    const iamAuthConfig = readIamAuthConfig(process.env);
+    if (!iamAuthConfig) {
+      console.log(
+        "⚠️  Database credentials not configured - skipping migrations"
+      );
+      console.log("   Required: DATABASE_URL (with password) OR");
+      console.log(
+        "   AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER, PGDATABASE (for IAM auth)"
+      );
+      return;
+    }
+
+    console.log("🔐 Generating IAM authentication token...");
+
     try {
-      await runMigrationPipeline(
+      // Mints a connection URL for `schema` with a FRESHLY-signed IAM token.
+      // One helper for three consumers: the ISS-5285 post-clone re-mint just
+      // below, the FEA-3071 preview-migrator walk further down, and (ISS-5983)
+      // the `apps/api` runtime ensure route, which is why it lives in its own
+      // module rather than as a closure here.
+      const mintSchemaUrl = createSchemaUrlMinter(iamAuthConfig);
+
+      const databaseUrl = await mintSchemaUrl(resolvedSchema);
+
+      console.log("✓ Token generated, running migrations...");
+
+      // ISS-5285: `refreshDatabaseUrl` re-mints the 15-minute IAM token for the
+      // steps that run AFTER the data clone — the one unbounded step, and so the
+      // one that can outlive the token. Optional by design: the DATABASE_URL
+      // password path above passes nothing and is unchanged.
+      const { invalidIndexes } = await runMigrationPipeline(
         databaseUrl,
         resolvedSchema,
-        VERCEL_GIT_COMMIT_REF
+        VERCEL_GIT_COMMIT_REF,
+        { refreshDatabaseUrl: () => mintSchemaUrl(resolvedSchema) }
       );
-      console.log("✓ Migrations completed successfully");
-      return;
+
+      console.log(formatMigrateCompletionLine(invalidIndexes));
+
+      // FEA-3071 Slice 2: after the single stage `public` deploy has migrated
+      // `public`, bring every preview schema to head serially (the merge-triggered
+      // migrator) so the post-migration preview redeploy wave hits the Slice-1
+      // at-head probe and takes 0 acquisitions of Prisma's lock (72707369). Gated
+      // to the stage api env (`PREVIEW_MIGRATOR_ENABLED`, the explicit stage guard)
+      // and the non-preview deploy only (`!isPreviewSchema`) — it never runs on a
+      // preview deploy or (kill-switch off) on prod. Own inner try/catch: the walk
+      // is best-effort and must NEVER fail the `public` deploy (`databaseUrl` here
+      // is the public base URL; `mintSchemaUrl` re-signs a fresh IAM token per
+      // schema, reusing this one Signer, staying under the 15-min token window).
+      if (isPreviewMigratorEnabled() && !isPreviewSchema(resolvedSchema)) {
+        try {
+          await migrateAllPreviewSchemas(
+            databaseUrl,
+            mintSchemaUrl,
+            buildPreviewMigratorDeps()
+          );
+        } catch (walkError) {
+          // Defensive: migrateAllPreviewSchemas is best-effort and does not throw,
+          // but a walk failure must never fail the public deploy that hosts it.
+          console.warn(
+            `⚠️ Preview migrator crashed (non-blocking): ${
+              walkError instanceof Error ? walkError.message : String(walkError)
+            }`
+          );
+        }
+      }
     } catch (error) {
       console.error(
         "❌ Migration failed:",
         error instanceof Error ? error.message : String(error)
       );
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
-  }
-
-  // Otherwise, use IAM authentication
-  if (!(AWS_ROLE_ARN && AWS_REGION && PGHOST && PGUSER && PGDATABASE)) {
-    console.log("⚠️  Database credentials not configured - skipping migrations");
-    console.log("   Required: DATABASE_URL (with password) OR");
-    console.log(
-      "   AWS_ROLE_ARN, AWS_REGION, PGHOST, PGUSER, PGDATABASE (for IAM auth)"
-    );
-    process.exit(0);
-  }
-
-  console.log("🔐 Generating IAM authentication token...");
-
-  try {
-    const signer = new Signer({
-      hostname: PGHOST,
-      port: Number(PGPORT),
-      username: PGUSER,
-      region: AWS_REGION,
-      credentials: awsCredentialsProvider({
-        roleArn: AWS_ROLE_ARN,
-        clientConfig: { region: AWS_REGION },
-      }),
-    });
-
-    const token = await signer.getAuthToken();
-
-    // Construct DATABASE_URL with IAM token
-    const rawUrl = `postgresql://${PGUSER}:${encodeURIComponent(token)}@${PGHOST}:${PGPORT}/${PGDATABASE}?sslmode=require`;
-    const databaseUrl = addSchemaToUrl(rawUrl, resolvedSchema);
-
-    console.log("✓ Token generated, running migrations...");
-
-    await runMigrationPipeline(
-      databaseUrl,
-      resolvedSchema,
-      VERCEL_GIT_COMMIT_REF
-    );
-
-    console.log("✓ Migrations completed successfully");
-  } catch (error) {
-    console.error(
-      "❌ Migration failed:",
-      error instanceof Error ? error.message : String(error)
-    );
-    process.exit(1);
+  } finally {
+    // Flush buffered migrate telemetry before the short build process exits (no
+    // beforeExit/waitUntil guarantee in a standalone script). Best-effort +
+    // deadline-bounded; never throws, never hangs the deploy.
+    await flushMigrateTelemetry();
   }
 }
 
-main();
+// Force the process to exit AFTER `main` (and its telemetry flush) settle. The
+// AWS SDK / OIDC provider can leave open handles that would otherwise keep the
+// build hanging, so a natural exit is not safe — but the exit must not preempt
+// the flush, hence it runs off `main`'s resolution, carrying its `exitCode`.
+// `flushMigrateTelemetry` drains buffered stdout before returning, so this forced
+// exit cannot truncate the last structured line on Vercel's async stdout pipe.
+main()
+  .then(() => process.exit(process.exitCode ?? 0))
+  .catch((error) => {
+    console.error(
+      "❌ Migration failed (unexpected):",
+      error instanceof Error ? error.message : String(error)
+    );
+    process.exit(1);
+  });

@@ -27,6 +27,13 @@ export const claudeApiKeys = {
 };
 
 /**
+ * Masked org/user Claude API key presence. Exported because surfaces outside
+ * this hook (the pre-loop Cloud gate) read the same endpoint through their own
+ * API client, and must not re-declare the path.
+ */
+export const CLAUDE_API_KEY_INFO_PATH = "/settings/api-keys";
+
+/**
  * Fetch org and user Claude API key info (masked).
  */
 export function useClaudeApiKeyInfo(
@@ -36,7 +43,7 @@ export function useClaudeApiKeyInfo(
 
   return useQuery({
     queryKey: claudeApiKeys.info(),
-    queryFn: () => apiClient.get<ClaudeApiKeyInfo>("/settings/api-keys"),
+    queryFn: () => apiClient.get<ClaudeApiKeyInfo>(CLAUDE_API_KEY_INFO_PATH),
     ...options,
   });
 }
@@ -50,7 +57,7 @@ export function useSetOrgClaudeApiKey() {
 
   return useMutation({
     mutationFn: (key: string) =>
-      apiClient.put<SetKeyResponse>("/settings/api-keys/org", { key }),
+      apiClient.put<SetKeyResponse>(`${CLAUDE_API_KEY_INFO_PATH}/org`, { key }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
@@ -66,7 +73,7 @@ export function useRemoveOrgClaudeApiKey() {
 
   return useMutation({
     mutationFn: () =>
-      apiClient.delete<{ deleted: true }>("/settings/api-keys/org"),
+      apiClient.delete<{ deleted: true }>(`${CLAUDE_API_KEY_INFO_PATH}/org`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
@@ -82,7 +89,9 @@ export function useSetUserClaudeApiKey() {
 
   return useMutation({
     mutationFn: (key: string) =>
-      apiClient.put<SetKeyResponse>("/settings/api-keys/user", { key }),
+      apiClient.put<SetKeyResponse>(`${CLAUDE_API_KEY_INFO_PATH}/user`, {
+        key,
+      }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },
@@ -98,7 +107,7 @@ export function useRemoveUserClaudeApiKey() {
 
   return useMutation({
     mutationFn: () =>
-      apiClient.delete<{ deleted: true }>("/settings/api-keys/user"),
+      apiClient.delete<{ deleted: true }>(`${CLAUDE_API_KEY_INFO_PATH}/user`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: claudeApiKeys.all });
     },

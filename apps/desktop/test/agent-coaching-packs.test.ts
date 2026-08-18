@@ -38,7 +38,7 @@ import {
   readCoachingPackManifest,
   setActiveCoachingPack,
   shouldHonorDistributionDefault,
-} from "../src/main/agent-coaching-packs.js";
+} from "../src/main/agent-monitor/agent-coaching-packs.js";
 import { getAssignedDistributions } from "../src/main/packs/distributions-client.js";
 
 let root: string;

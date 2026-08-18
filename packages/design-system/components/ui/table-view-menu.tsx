@@ -43,8 +43,16 @@ export type TableViewMenuProps = Readonly<{
   view?: TableViewMode;
   onChangeView?: (view: TableViewMode) => void;
   onResetView?: () => void;
+  /** Label for the generic reset action. Defaults to "Reset view". */
+  resetLabel?: string;
   onResetToStackRank?: () => void;
   columnsHeading?: string;
+  /**
+   * Trigger button label. Defaults to "View"; pass a clearer word (e.g.
+   * "Columns") when a sibling control already owns the "view" concept, so two
+   * adjacent buttons don't both read as "the table's view".
+   */
+  label?: string;
   /** Popover edge to align to the trigger. Defaults to "end" (right-aligned). */
   align?: "start" | "end";
 }>;
@@ -136,8 +144,10 @@ export function TableViewMenu({
   view,
   onChangeView,
   onResetView,
+  resetLabel = "Reset view",
   onResetToStackRank,
   columnsHeading = "Show / Hide Columns",
+  label = "View",
   align = "end",
 }: TableViewMenuProps) {
   const showViewToggle = view != null && onChangeView != null;
@@ -155,7 +165,7 @@ export function TableViewMenu({
       <PopoverTrigger asChild>
         <Button className="h-8 shadow-none" size="sm" variant="outline">
           <Settings2Icon />
-          View
+          {label}
         </Button>
       </PopoverTrigger>
       <PopoverContent align={align} className="w-[324px] p-1 pt-2">
@@ -214,7 +224,7 @@ export function TableViewMenu({
                   type="button"
                 >
                   <RotateCcwIcon />
-                  Reset view
+                  {resetLabel}
                 </button>
               ) : null}
             </div>

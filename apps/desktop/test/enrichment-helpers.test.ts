@@ -1,20 +1,20 @@
 /**
  * @file enrichment-helpers.test.ts
  * @description FEA-1899 Desktop KLOC Attribution Engine — pure enrichment
- * helpers: commit-stat summing (git-enrichment), shortstat parsing / repo-name
- * normalization / sha validation (git-exec), and LOC rollup. No I/O; exact-value
- * assertions.
+ * helpers: shortstat parsing / repo-name normalization / sha validation
+ * (git-exec). No I/O; exact-value assertions.
+ *
+ * PLN-1535 M5 removed the commit-stat-summing and LOC-rollup cases along with
+ * `git-enrichment.ts` / `rollup.ts`; the git-exec helpers below stay because
+ * repo-identity capture and the git-only historical backfill still use them.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sumCommitStats } from "../src/main/enrichment/git-enrichment.js";
 import {
   normalizeRepoFullName,
   parseShortstat,
   validateSha,
 } from "../src/main/enrichment/git-exec.js";
-import { pickBestLoc } from "../src/main/enrichment/rollup.js";
-import type { LocStats } from "../src/main/enrichment/types.js";
 
 // ---------------------------------------------------------------------------
 // validateSha
@@ -180,82 +180,4 @@ test("normalizeRepoFullName: returns null for GitHub Enterprise host", () => {
     normalizeRepoFullName("https://github.example.com/org/repo.git"),
     null
   );
-});
-
-// ---------------------------------------------------------------------------
-// pickBestLoc
-// ---------------------------------------------------------------------------
-
-const GIT_LOC: LocStats = { linesAdded: 10, linesRemoved: 5, filesChanged: 3 };
-const AGENT_LOC: LocStats = {
-  linesAdded: 20,
-  linesRemoved: 8,
-  filesChanged: 4,
-};
-
-test("pickBestLoc: prefers git over agent when both present", () => {
-  assert.deepEqual(pickBestLoc(GIT_LOC, AGENT_LOC), {
-    loc: GIT_LOC,
-    source: "git",
-  });
-});
-
-test("pickBestLoc: falls back to agent when git is null", () => {
-  assert.deepEqual(pickBestLoc(null, AGENT_LOC), {
-    loc: AGENT_LOC,
-    source: "agent",
-  });
-});
-
-test("pickBestLoc: returns null source when both are null", () => {
-  assert.deepEqual(pickBestLoc(null, null), { loc: null, source: null });
-});
-
-test("pickBestLoc: uses git when agent is null", () => {
-  assert.deepEqual(pickBestLoc(GIT_LOC, null), {
-    loc: GIT_LOC,
-    source: "git",
-  });
-});
-
-// ---------------------------------------------------------------------------
-// sumCommitStats
-// ---------------------------------------------------------------------------
-
-test("sumCommitStats: aggregates multiple stats", () => {
-  const result = sumCommitStats([
-    { linesAdded: 10, linesRemoved: 5, filesChanged: 2 },
-    { linesAdded: 20, linesRemoved: 3, filesChanged: 1 },
-  ]);
-  assert.deepEqual(result, {
-    linesAdded: 30,
-    linesRemoved: 8,
-    filesChanged: 3,
-  });
-});
-
-test("sumCommitStats: ignores null entries", () => {
-  const result = sumCommitStats([
-    { linesAdded: 10, linesRemoved: 5, filesChanged: 2 },
-    null,
-    { linesAdded: 5, linesRemoved: 0, filesChanged: 1 },
-  ]);
-  assert.deepEqual(result, {
-    linesAdded: 15,
-    linesRemoved: 5,
-    filesChanged: 3,
-  });
-});
-
-test("sumCommitStats: returns null for empty array", () => {
-  assert.equal(sumCommitStats([]), null);
-});
-
-test("sumCommitStats: returns null when all entries are null", () => {
-  assert.equal(sumCommitStats([null, null, null]), null);
-});
-
-test("sumCommitStats: single non-null entry", () => {
-  const stat: LocStats = { linesAdded: 7, linesRemoved: 2, filesChanged: 1 };
-  assert.deepEqual(sumCommitStats([stat]), stat);
 });

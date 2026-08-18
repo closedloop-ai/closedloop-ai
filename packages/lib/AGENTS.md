@@ -23,26 +23,14 @@ Organized by domain/feature, mirroring `packages/app` (e.g. `branches/`,
   built-in belongs in the desktop main process, not here.
 - **Depend only on other surface-agnostic packages** — `@repo/api` (types +
   projectors), `@closedloop-ai/loops-api` (pricing), and the like. Never depend
-  on `@repo/app`, `@closedloop-ai/design-system`, `@repo/database`, or any app.
+  on `@repo/app`, `@repo/design-system`, `@repo/database`, or any app.
 - **Consumed as source** (no build/`dist`). `apps/api` resolves it via the
   `@repo/* → packages/*` tsconfig path; the desktop main process needs it listed
   in `electron.vite.config.ts`'s `WORKSPACE_INLINE` + `workspaceAlias` so it is
   bundled from source rather than externalized (it has no `dist`/`exports`).
-
-## Current contents
-
-- `branches/merged-trace.ts` — cross-session branch merged-trace assembly
-  (`buildMergedTrace`, `mapTurnItemToTrace`, idle synthesis). SSOT for the
-  desktop single-player trace and the cloud org-aggregated branch trace.
-- `harness/` — the harness transcript parser cores (FEA-2717). One parser per
-  harness that the desktop DB importer and the cloud session-detail renderer
-  both run, so there is zero interpretation divergence by construction. Pure
-  over a JSONL **line iterable** (`AsyncIterable<string> | Iterable<string>`):
-  `claude/parse-claude.ts` (`parseClaudeTranscript`), `codex/parse-codex.ts`
-  (`parseCodexRollout`), plus the shared `types.ts` (`NormalizedSession`
-  contract), `token-counts.ts`, `type-guards.ts`, `usage-dedup.ts`, and
-  `parser-utils.ts`. All browser-safe — `truncateText` uses
-  `TextEncoder`/`TextDecoder` (not `Buffer`), and no module imports a Node
-  built-in. The desktop file-I/O shells (readline streaming, sibling
-  subagent-file / workflow-journal merges, mtime, env thresholds) stay in
-  `apps/desktop/src/main/collectors/**`, composing these cores.
+- **A module here is the SSOT for every surface that consumes it** — the harness
+  transcript parser cores in `harness/` are run by both the desktop DB importer and
+  the cloud session-detail renderer, so there is zero interpretation divergence by
+  construction. Keep surface-specific shells out: desktop file I/O (readline
+  streaming, sibling subagent-file / workflow-journal merges, mtime, env thresholds)
+  stays in `apps/desktop/src/main/collectors/**` and composes these cores.

@@ -45,11 +45,26 @@ const isoDateQuerySchema = z
   .string()
   .refine((value) => Number.isFinite(Date.parse(value)), "Invalid date");
 
-export const agentComponentListQuerySchema = z.object({
+const agentComponentListQueryFields = z.object({
   kinds: queryArray(
     z.enum(Object.values(AgentComponentKind) as [string, ...string[]])
   ),
-  owner: z.string().trim().min(1).optional(),
+  // FEA-4098 (Slice 3): filter by a collaborator (author) display name, matched
+  // against the component's `DefinitionVersionEditor` authors set. Replaces the
+  // old single-`owner` filter.
+  collaborator: z.string().trim().min(1).optional(),
+  // ISS-4942 (wongk): the compatibility alias for the pre-FEA-4098 `?owner=`
+  // filter. This object is not `.strict()`, so before this an unknown `owner`
+  // was stripped and the filter silently returned the UNFILTERED inventory —
+  // and a version-skewed deploy makes that reachable in both directions (the
+  // API can advance ahead of the MCP image, or Vercel can stay advanced after
+  // an ECS failure), so a still-deployed old MCP keeps sending `owner`.
+  // Normalized onto `collaborator` in the transform below; `collaborator` wins
+  // when both are supplied. Deliberately NOT `.min(1)`: an old client is
+  // already able to send a blank `?owner=`, which used to be ignored, so
+  // rejecting it now would turn a stale-client no-op into a 400. Blank is
+  // treated as unset instead.
+  owner: z.string().optional(),
   source: z.string().trim().min(1).optional(),
   harness: z.string().trim().min(1).optional(),
   search: z.string().trim().min(1).optional(),
@@ -79,6 +94,54 @@ export const agentComponentListQuerySchema = z.object({
     .optional(),
 });
 
+/**
+ * ISS-4942: resolve the deprecated `owner` alias onto `collaborator` at the
+ * validator boundary so the service only ever sees the canonical filter name,
+ * and drop `owner` from the parsed params so no downstream predicate can read a
+ * second, stale spelling of the same filter.
+ */
+export const agentComponentListQuerySchema =
+  agentComponentListQueryFields.transform(({ owner, ...query }) => {
+    const collaborator = query.collaborator ?? owner?.trim();
+    // Spread conditionally so `collaborator` stays an OPTIONAL key: emitting it
+    // unconditionally as `string | undefined` would make every caller
+    // constructing an `AgentComponentListQuery` literal have to pass it.
+    return { ...query, ...(collaborator ? { collaborator } : {}) };
+  });
+
 export type AgentComponentListQuery = z.infer<
   typeof agentComponentListQuerySchema
 >;
+
+// ---------------------------------------------------------------------------
+// FEA-3704: source-occurrences read (GET /agent-components/source-occurrences)
+// ---------------------------------------------------------------------------
+
+/** Default page size for the org-scoped source-occurrence read. */
+export const SOURCE_OCCURRENCE_DEFAULT_LIMIT = 50;
+/**
+ * Hard upper bound on one occurrence page. A single exact `DefinitionVersion`
+ * has a bounded provenance set (one row per proven location); 200 comfortably
+ * exceeds any realistic version's occurrence count while keeping the payload
+ * bounded — the same cap the pre-route service read used (`take = 200`).
+ */
+export const SOURCE_OCCURRENCE_MAX_LIMIT = 200;
+
+/**
+ * Query schema for the org-scoped source-occurrence read. `definitionVersionId`
+ * is required (the exact `DefinitionVersion` whose provenance is requested);
+ * `limit`/`offset` paginate. Org-scoping is enforced from the auth context in
+ * the route/service, NOT from any client-supplied value.
+ */
+export const sourceOccurrenceQuerySchema = z.object({
+  definitionVersionId: z.string().trim().uuid(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(SOURCE_OCCURRENCE_MAX_LIMIT)
+    .default(SOURCE_OCCURRENCE_DEFAULT_LIMIT),
+  offset: z.coerce.number().int().nonnegative().default(0),
+});
+
+export type SourceOccurrenceQuery = z.infer<typeof sourceOccurrenceQuerySchema>;

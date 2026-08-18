@@ -13,6 +13,7 @@ import {
   FloatingThreads,
   FloatingToolbar,
 } from "@liveblocks/react-tiptap";
+import { DocumentThreadAnchorStatus } from "@repo/api/src/types/comment";
 import { useEffect, useState } from "react";
 import { useConstrainFloatingWithinEditor } from "./use-constrain-floating-within-editor";
 
@@ -83,10 +84,10 @@ function CommentsWithHooks({
   const anchorPreview = useSelectionAnchorPreview(editor);
   const metadata =
     currentVersion === undefined
-      ? { anchorPreview, anchorStatus: "anchored" as const }
+      ? { anchorPreview, anchorStatus: DocumentThreadAnchorStatus.Anchored }
       : {
           anchorPreview,
-          anchorStatus: "anchored" as const,
+          anchorStatus: DocumentThreadAnchorStatus.Anchored,
           version: currentVersion,
         };
 

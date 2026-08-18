@@ -2,7 +2,7 @@ import {
   type LoopTokenMeta,
   LoopTokenStore,
   type SafeStorageLike,
-} from "../src/main/loop-token-store.js";
+} from "../src/main/loop/loop-token-store.js";
 
 export function createTestLoopTokenSafeStorage(): SafeStorageLike {
   return {

@@ -1,6 +1,12 @@
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { DATA_REVISION } from "../collectors/engine/data-revision.js";
+import { toCanonicalIso } from "../database/db-helpers.js";
 import type { Prisma, PrismaClient } from "../database/generated/client.js";
 import type { DesktopPrisma } from "../database/prisma-client.js";
+import {
+  buildSessionIdentityInsert,
+  type SessionIdentityProvider,
+} from "../database/session-owner-identity.js";
 import {
   CODEX_OTEL_MAX_ATTRIBUTE_COUNT,
   CODEX_OTEL_MAX_ATTRIBUTE_KEY_LENGTH,
@@ -19,6 +25,15 @@ export type PersistCodexOtelBatchOptions = {
   prisma: DesktopPrisma;
   batch: CodexOtelBatch;
   now: string;
+  /**
+   * ISS-6168: the signed-in owner stamped on any `sessions` row this batch
+   * CREATES. A live Codex run usually lands its OTel batch before the transcript
+   * import, so this upsert — not the importer — is what brings the row into
+   * existence; leaving it unbound persisted a NULL owner that the importer's
+   * later `if (existing)` merge arm never repairs. Omitted ⇒ NULL owner, which
+   * the boot claim repairs on the next sign-in.
+   */
+  getUserIdentity?: SessionIdentityProvider;
 };
 
 export async function persistCodexOtelBatch(
@@ -40,7 +55,13 @@ export async function persistCodexOtelBatch(
     const operations: Prisma.PrismaPromise<unknown>[] = [];
     for (const [sessionId, startedAt] of getSessionStartTimes(batch)) {
       operations.push(
-        minimalCodexSessionUpsert(client, sessionId, startedAt, now)
+        minimalCodexSessionUpsert(
+          client,
+          sessionId,
+          startedAt,
+          now,
+          options.getUserIdentity
+        )
       );
     }
     for (const span of batch.spans) {
@@ -93,7 +114,10 @@ function tokenUsageUpsert(
     usage.cacheWriteTokens,
     CodexOtelTokenUsageSource.OtelLogPayload,
     DATA_REVISION,
-    usage.observedAt,
+    // FEA-3743: canonicalize observedAt before it becomes token_usage.created_at
+    // — the MIN(existing, excluded) merge above compares these values as text,
+    // so a mixed-format created_at column could keep the wrong "earliest" value.
+    toCanonicalIso(usage.observedAt),
     now
   );
 }
@@ -147,7 +171,6 @@ export const ALLOWED_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
 ] as const);
 
 const CODEX_HARNESS = "codex";
-const ACTIVE_SESSION_STATUS = "active";
 const UNKNOWN_BILLING_MODE = "unknown";
 const SENSITIVE_ATTRIBUTE_RE =
   /(^|[._-])(prompt|completion|body|env|environment|header|token|key|secret|password|authorization|input|output)([._-]|$)/i;
@@ -170,9 +193,15 @@ function setEarliest(
   sessionId: string,
   timestamp: string
 ): void {
+  // FEA-3743: the instant comparison is form-agnostic (Date.parse), but the
+  // value that lands in sessions.started_at/last_activity_at must be canonical
+  // UTC 'Z' form — those columns are compared lexically by the sync cursor and
+  // sort/floor SQL, and an offset-form winner would sort by its wall-clock
+  // digits rather than its real instant.
+  const canonical = toCanonicalIso(timestamp);
   const existing = starts.get(sessionId);
-  if (!(existing && Date.parse(existing) <= Date.parse(timestamp))) {
-    starts.set(sessionId, timestamp);
+  if (!(existing && Date.parse(existing) <= Date.parse(canonical))) {
+    starts.set(sessionId, canonical);
   }
 }
 
@@ -180,20 +209,34 @@ function minimalCodexSessionUpsert(
   client: PrismaClient,
   sessionId: string,
   startedAt: string,
-  now: string
+  now: string,
+  getUserIdentity?: SessionIdentityProvider
 ): Prisma.PrismaPromise<number> {
   // RAW (named blocker: conditional ON CONFLICT). The DO UPDATE merges each
   // column via CASE/COALESCE expressions that read the EXISTING row — keep the
   // first non-empty harness, heal billing_mode away from 'unknown', keep the
   // earliest started_at, and advance updated_at monotonically — none of which a
   // Prisma `upsert` update can express. Runs on the one client inside `write`.
+  //
+  // FEA-3591: `last_activity_at` is seeded to the same `started_at` value so a
+  // minimal OTel-only row satisfies the `last_activity_at >= started_at`
+  // invariant from birth (an events-less session's recomputed value IS its
+  // started_at, and equality holds for any timestamp form). The ON CONFLICT arm
+  // deliberately never touches the column: existing rows are owned by
+  // `recomputeSessionLastActivityAt`, and a string MAX here could regress
+  // mixed-form timestamps.
+  // ISS-6168: same shared binding the importer and live-hook INSERTs use, so the
+  // three session-creating writers cannot drift on the identity columns. The
+  // ON CONFLICT arm deliberately does NOT touch them: an existing row's owner is
+  // whoever created it, and a later OTel batch must never rewrite that.
+  const identity = buildSessionIdentityInsert(getUserIdentity, 8);
   return client.$executeRawUnsafe(
     `
       INSERT INTO sessions (
-        id, name, status, cwd, model, started_at, updated_at, ended_at,
-        harness, billing_mode, metadata, data_revision
+        id, name, status, cwd, model, started_at, last_activity_at, updated_at,
+        ended_at, harness, billing_mode, metadata, data_revision, ${identity.columns}
       )
-      VALUES ($1, NULL, $2, NULL, NULL, $3, $4, NULL, $5, $6, $7, $8)
+      VALUES ($1, NULL, $2, NULL, NULL, $3, $3, $4, NULL, $5, $6, $7, $8, ${identity.placeholders})
       ON CONFLICT (id) DO UPDATE SET
         harness = CASE
           WHEN COALESCE(sessions.harness, '') = '' THEN EXCLUDED.harness
@@ -211,13 +254,14 @@ function minimalCodexSessionUpsert(
         END
     `,
     sessionId,
-    ACTIVE_SESSION_STATUS,
+    SESSION_STATUS.ACTIVE,
     startedAt,
     now,
     CODEX_HARNESS,
     UNKNOWN_BILLING_MODE,
     JSON.stringify({ source: "codex_otel" }),
-    DATA_REVISION
+    DATA_REVISION,
+    ...identity.values
   );
 }
 
@@ -237,8 +281,12 @@ function codexTraceSpanUpsert(
       CODEX_OTEL_MAX_SPAN_NAME_LENGTH,
       REDACTED_SPAN_NAME
     ),
-    startTime: span.startTime,
-    endTime: span.endTime,
+    // FEA-3743: canonicalize span start/end before storing —
+    // codex_trace_span.start_time is a lexically-sorted, indexed column
+    // (idx_codex_trace_span_start_time) that downstream range/window SQL
+    // compares as text.
+    startTime: toCanonicalIso(span.startTime),
+    endTime: toCanonicalIso(span.endTime),
     durationMs: span.durationMs,
     status: span.status,
     statusMessage: sanitizeOptionalCodexOtelText(

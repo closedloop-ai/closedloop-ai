@@ -1,0 +1,160 @@
+-- ISS-6452: index the three `LOWER(<repo full name>) IN (…)` predicates that
+-- desktop session ingest runs on every slice.
+--
+-- WHAT THESE INDEXES ARE FOR. `readLockedAuthorityRows`
+-- (apps/api/app/agent-sessions/service/artifact-links/shared.ts) resolves each
+-- session slice's repository default-branch authority from three sources, in
+-- parallel, INSIDE the ingest write transaction — the `FOR SHARE` row locks it
+-- takes are load-bearing, so the work cannot be hoisted off the hot path
+-- (documented at service/upsert-sessions-batch.ts:55). Its three predicates are:
+--
+--   pull_request_detail            organization_id = $1
+--                                    AND LOWER(head_repository_full_name) IN (…)
+--   public_repositories            organization_id = $1
+--                                    AND LOWER(full_name) IN (…)
+--   github_installation_repositories
+--                                  LOWER(full_name) IN (…) AND removed_at IS NULL
+--                                    (org reached through the joined installation)
+--
+-- The names are already lowercased by `collectNormalizedRepositoryNames`
+-- (normalizeRepoFullName), but the STORED columns keep provider casing, so the
+-- comparison has to stay function-wrapped. No plain btree can serve
+-- `LOWER(col)`, and none of the three tables carried any index on its name
+-- column at all — `head_repository_full_name` arrived with ISS-5826
+-- (migration 20260810200000) and got none. So each arm fell back to the widest
+-- index that did match (the org index, the installation prefix of the
+-- `(installation_id, github_repo_id)` unique) and discarded the rest of the
+-- partition with a post-scan Filter. `pull_request_detail` is the arm that
+-- scales with tenant activity rather than repository count, and it is also the
+-- one that then runs a `PARTITION BY LOWER(head_repository_full_name)` window
+-- over whatever that scan returned.
+--
+-- MEASURED (EXPLAIN ANALYZE against this schema on a throwaway database with
+-- every migration applied; 12 organizations so the org under test is a
+-- production-like slice of each table rather than half of a toy one; 48,000
+-- pull_request_detail rows, 10,800 installation repositories, 7,200 public
+-- repositories; the production SQL from shared.ts, `FOR SHARE` included):
+--
+--   pull_request_detail (the CTE + window arm)
+--     before  Index Scan using pull_request_detail_organization_id_idx
+--               Filter: (… lower(head_repository_full_name) = ANY …)
+--               Rows Removed by Filter: 3975      <- the org's whole PR partition
+--     after   Index Cond: ((organization_id = …)
+--                          AND (lower(head_repository_full_name) = ANY …))
+--               Rows Removed by Filter: 2         <- only the name-matched rows
+--                                                    that carry no authority
+--
+--   public_repositories
+--     before  Bitmap Index Scan on public_repositories_organization_id_github_repo_id_key
+--               Rows Removed by Filter: 597       <- the org's whole repo list
+--     after   Index Cond: ((organization_id = …) AND (lower(full_name) = ANY …))
+--               no post-scan filter at all
+--
+--   github_installation_repositories
+--     before  Bitmap Index Scan on …_installation_id_github_repo_id
+--               Rows Removed by Filter: 897, Heap Blocks: exact=10
+--     after   Index Cond: ((installation_id = i.id)
+--                          AND (lower(full_name) = ANY …))
+--               8 buffers for the whole nested-loop inner side
+--
+-- The `after` rows deliberately quote the Index Cond rather than the scan node
+-- kind: the planner picks Index Scan or Bitmap Heap Scan here depending on how
+-- selective it estimates the authority OR-chain to be, and both push the same
+-- predicate into the same index. What matters — and what is asserted — is that
+-- BOTH columns reach the Index Cond instead of a post-scan Filter.
+--
+-- The work becomes O(names requested) instead of O(the org's rows), so the cost
+-- stops scaling with tenant size — worst, today, on the largest tenants.
+--
+-- These plans are not just recorded here, they are GUARDED:
+-- `__tests__/integration/repository-authority-lower-name-indexes.integration.test.ts`
+-- re-runs each of the three predicates under EXPLAIN against a migrated database
+-- in CI and fails if the Index Cond stops carrying the name predicate, if a
+-- scan starts discarding the partition again, or if any index's result set
+-- differs with it dropped. A comment cannot catch a planner regression; that
+-- suite can.
+--
+-- SHAPE. Two of the three are partial, and both predicates are proven by the
+-- query's own clauses (verified in the EXPLAIN output above — the planner really
+-- did choose the partial indexes):
+--   • `pull_request_detail … WHERE head_repository_full_name IS NOT NULL`.
+--     `lower(col) = ANY(…)` is a strict function under a strict operator, so it
+--     implies `col IS NOT NULL` and the partial index still applies. The column
+--     landed five days ago, so nearly every row is still NULL and the partial
+--     index stays small: at 5% populated it measured 104 kB against 432 kB for
+--     the non-partial equivalent on identical data (4x less to build and 4x less
+--     write amplification on the PR upsert path), converging as producers fill
+--     the column in — 528 kB against 576 kB at 86% populated.
+--   • `github_installation_repositories … WHERE removed_at IS NULL` mirrors the
+--     query's own `removed_at IS NULL`, and matches how every active-pool read
+--     of this table filters (PLN-634 tombstones).
+--   • `public_repositories.full_name` is NOT NULL, so that index is total.
+--   • The installation-repository index leads with `installation_id`, NOT with
+--     `lower(full_name)`, even though the query never filters `installation_id`
+--     directly — it arrives from the joined installation row, and
+--     `github_installations.organization_id` is UNIQUE, so an org resolves to
+--     exactly one installation and the planner nested-loops into this index with
+--     both columns bound. Measured both shapes on the real schema (12 orgs ×
+--     900 repositories, the same repository names installed by every org):
+--       (lower(full_name))               BitmapAnd of the name index (36 rows,
+--                                        spanning OTHER tenants' installations)
+--                                        with the installation prefix — 19 buffers
+--       (installation_id, lower(full_name))
+--                                        plain Index Scan, Index Cond carries both
+--                                        columns, no cross-tenant rows touched — 8
+--                                        buffers
+--     The composite costs 528 kB against 136 kB for the name-only index on
+--     identical data. That is the right trade here: this table holds repositories,
+--     not per-activity rows, so it is small in absolute terms, and the name-only
+--     shape is the one whose selectivity decays as more tenants install the same
+--     popular repository name.
+--
+-- UNMANAGED BY PRISMA. Prisma's DSL can declare neither an expression index nor
+-- a partial one, so all three exist only in this migration and are documented on
+-- their models in schema.prisma so their absence from the schema reads as
+-- intentional rather than drift. Same treatment as `search_document_org_lower_slug_idx`
+-- (migration 20260724010000), whose `(organization_id, lower(slug)) WHERE slug IS
+-- NOT NULL` shape the pull_request_detail index mirrors, and
+-- `agent_components_org_pack_id_idx` (migration 20260812120000).
+--
+-- CONCURRENTLY, AND THEREFORE BARE IN THIS FILE. All three tables are written
+-- continuously — pull_request_detail by desktop sync, the GitHub webhook and the
+-- PR reconciler; github_installation_repositories by installation-repository
+-- webhooks — so a plain `CREATE INDEX` would hold ACCESS EXCLUSIVE for the whole
+-- build and stall those writers at production size. `CREATE INDEX CONCURRENTLY`
+-- takes only SHARE UPDATE EXCLUSIVE. It cannot run inside a transaction block
+-- (SQLSTATE 25001), and `prisma migrate deploy` falls back to wrapping a whole
+-- file in one transaction whenever it cannot split it confidently — a
+-- `DO $$ … $$` block, embedded semicolons or a `DROP INDEX CONCURRENTLY` all
+-- trigger that fallback and every CONCURRENTLY statement then fails 25001. So
+-- this file is bare top-level statements only: do not add BEGIN/COMMIT, a DO
+-- block, or any other DDL here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a
+-- cancelled or crashed build fails closed on SQLSTATE 42P07 against the
+-- same-named INVALID remnant instead of recording the migration APPLIED over a
+-- permanently-unusable index. Recovery is operator-driven: `DROP INDEX
+-- CONCURRENTLY` the remnant in psql autocommit, then re-run migrate deploy.
+-- Because this file holds THREE statements, a mid-file failure can also leave an
+-- earlier index committed and VALID, so the retry reports 42P07 against a healthy
+-- index rather than an INVALID remnant. Check `indisvalid` before dropping
+-- anything: a VALID same-named index is the `partial_committed_ddl_artifact` case
+-- in docs/runbooks/prisma-deploy-migration-recovery.md, not this one.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — purely
+-- non-unique perf-only indexes, and CONCURRENTLY's instance-wide transaction
+-- wait is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*`
+-- schemas. CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: non-unique indexes change plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "pull_request_detail_org_lower_head_repo_full_name_idx" ON "pull_request_detail"("organization_id", lower("head_repository_full_name")) WHERE "head_repository_full_name" IS NOT NULL;
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "public_repositories_org_lower_full_name_idx" ON "public_repositories"("organization_id", lower("full_name"));
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "github_installation_repositories_inst_lower_full_name_idx" ON "github_installation_repositories"("installation_id", lower("full_name")) WHERE "removed_at" IS NULL;

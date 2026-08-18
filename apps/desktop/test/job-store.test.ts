@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import type { LocalJob, LocalJobStatus } from "../src/main/job-store.js";
-import { isTerminalJobStatus, JobStore } from "../src/main/job-store.js";
+import type { LocalJob, LocalJobStatus } from "../src/main/jobs/job-store.js";
+import { isTerminalJobStatus, JobStore } from "../src/main/jobs/job-store.js";
 
 let tmpDir: string;
 let store: JobStore;

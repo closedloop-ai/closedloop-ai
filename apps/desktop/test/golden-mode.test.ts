@@ -10,7 +10,7 @@ import {
   GoldenModeConfigError,
   pathsOverlap,
   resolveGoldenModeConfig,
-} from "../src/main/golden-mode.js";
+} from "../src/main/settings/golden-mode.js";
 
 // --- Helpers ---
 

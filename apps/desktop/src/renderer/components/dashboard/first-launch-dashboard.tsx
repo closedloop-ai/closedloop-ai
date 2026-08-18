@@ -1,31 +1,31 @@
 import { Button } from "@closedloop-ai/design-system/components/ui/button";
 import { EmptyState } from "@closedloop-ai/design-system/components/ui/empty-state";
-import type { AgentsInsightsResponse } from "@closedloop-ai/loops-api/insights";
-import {
-  InsightsScope,
-  InsightsSection,
-} from "@closedloop-ai/loops-api/insights";
+import { InsightsSection } from "@closedloop-ai/loops-api/insights";
+import type { InsightsGitHubProvenance } from "@repo/api/src/types/insights";
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { useAgentSessions } from "@repo/app/agents/hooks/use-agent-sessions";
-import {
-  AI_IMPACT_FEATURE_FLAG_KEY,
-  AiImpactCard,
-} from "@repo/app/insights/components/overview/ai-impact-card";
+import { AiImpactCard } from "@repo/app/insights/components/overview/ai-impact-card";
+import { useDashboardRefreshing } from "@repo/app/insights/components/overview/dashboard-refreshing";
+import { hasAgentPipelineNodes } from "@repo/app/insights/components/overview/dashboard-row-sections";
 import { DashboardRowContent } from "@repo/app/insights/components/overview/dashboard-rows";
-import { DASHBOARD_ROWS } from "@repo/app/insights/components/overview/dashboard-tiles";
+import { dashboardRowsFor } from "@repo/app/insights/components/overview/dashboard-tiles";
+import { useDashboardRowGates } from "@repo/app/insights/components/overview/use-dashboard-row-gates";
 import type { InsightsSectionData } from "@repo/app/insights/components/tile-content";
 import { useInsightsDataSource } from "@repo/app/insights/data/insights-data-source";
 import { useDashboardRange } from "@repo/app/insights/hooks/use-dashboard-range";
 import {
+  insightsKeys,
   useAgentsInsights,
   useDeliveryInsights,
   useUtilizationInsights,
 } from "@repo/app/insights/hooks/use-insights";
-import { resolveMissingSourceTileAvailability } from "@repo/app/insights/lib/tile-availability";
+import {
+  type InsightsTileAvailability,
+  resolveMissingSourceTileAvailability,
+} from "@repo/app/insights/lib/tile-availability";
 import type { TileDescriptor } from "@repo/app/insights/lib/tile-catalog";
-import { DateRangeFilter } from "@repo/app/shared/components/date-range-filter";
-import { FeatureFlagged } from "@repo/app/shared/feature-flags/feature-flagged";
-import { CompassIcon, CpuIcon, LayersIcon } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { LayersIcon, RefreshCwIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -34,18 +34,41 @@ import {
   useRef,
   useState,
 } from "react";
-import { desktopSessionDetailHashHref } from "../../shared-agent-sessions/session-hrefs";
+import { desktopSessionDetailHref } from "../../shared-agent-sessions/session-hrefs";
 import { DashboardCard, PageShell } from "../layout/page-shell";
+import {
+  GuestSignupIntent,
+  useGuestSignup,
+} from "../onboarding/guest-signup-provider";
+import {
+  canOfferAccount,
+  tourCompleteLabel,
+  useGuestOnboarding,
+} from "../onboarding/use-guest-onboarding";
 import { DASHBOARD_PAGE_TITLE } from "./dashboard-constants";
+import { DashboardHeaderActions } from "./dashboard-header-actions";
 import { DashboardLoading } from "./dashboard-loading";
+import {
+  resolveDashboardState,
+  useBackfillSettleDetection,
+  useDashboardSessionSource,
+  useSessionsCountFresh,
+} from "./dashboard-state";
 import {
   dashboardOnboardedStorageKey,
   dashboardTourSeenStorageKey,
+  readFlag,
+  writeFlag,
 } from "./dashboard-storage-keys";
-import { Tour, type TourStep, type TourSummaryChip } from "./tour/tour";
+import { OrgGatedRegion } from "./org-scope-gate";
+import { buildTourSteps } from "./tour/build-tour-steps";
+import { Tour } from "./tour/tour";
 import { TourHint } from "./tour/tour-hint";
+import { useTourArming } from "./tour/use-tour-arming";
+import { useTourHarnesses } from "./tour/use-tour-harnesses";
+import { useDashboardScope } from "./use-dashboard-scope";
+import { useOrgScopeGate } from "./use-org-scope-gate";
 
-const SCOPE = InsightsScope.Me;
 const RECENT_SESSIONS_LIMIT = 8;
 // FEA-2232: the dashboard window is user-driven via the shared, surface-keyed
 // `useDashboardRange` hook (the maps + persistence formerly inlined here for
@@ -65,18 +88,11 @@ const REVEAL_AT: Record<string, number> = {
   activity: 24,
   sessions: 42,
   models: 58,
+  "agent-pipeline": 64,
   autonomy: 70,
   prs: 82,
   distribution: 92,
 };
-
-function readFlag(key: string): boolean {
-  return getLocalStorage()?.getItem(key) === "1";
-}
-
-function writeFlag(key: string): void {
-  getLocalStorage()?.setItem(key, "1");
-}
 
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(false);
@@ -102,13 +118,30 @@ function usePrefersReducedMotion(): boolean {
  */
 export function FirstLaunchDashboard() {
   const source = useInsightsDataSource();
+  // PLN-1138: authenticated + online exposes `org` (DesktopInsightsProvider);
+  // signed out / offline is personal-scope only. See useDashboardScope for the
+  // clamp that keeps a stale `org` read off the local own-data store.
+  const { scope, orgScopeAvailable, setScope } = useDashboardScope(
+    source.availableScopes
+  );
   const prefersReduced = usePrefersReducedMotion();
   const [firstLaunch] = useState(() => !readFlag(dashboardOnboardedStorageKey));
   const motion = firstLaunch && !prefersReduced;
 
+  // ISS-5112: guest-mode first run (the `guest-onboarding` Labs flag) plus
+  // whether this device is already signed in.
+  const guest = useGuestOnboarding();
+  const guestCanConvert = canOfferAccount(guest);
+  const { requestSignup } = useGuestSignup();
+  // ISS-5112: selecting Organization as a guest dims the dashboard behind a
+  // Create-account card rather than switching to a scope the app cannot serve.
+  const { orgGated, handleScopeChange, dismissOrgGate, requestOrgAccount } =
+    useOrgScopeGate(guestCanConvert, setScope);
+
   const [tick, setTick] = useState(motion ? 0 : 100);
   const [tourActive, setTourActive] = useState(false);
   const [tourHint, setTourHint] = useState(false);
+
   const completedRef = useRef(false);
 
   // FEA-2210/FEA-2232: user-driven window (desktop-local persisted selection),
@@ -128,36 +161,26 @@ export function FirstLaunchDashboard() {
     { refetchInterval: settled ? false : BACKFILL_POLL_MS }
   );
   const sessionsTotal = sessionsQuery.data?.total ?? 0;
+  // ISS-6002: whether the local store has proven it can serve rows. `?? 0` above
+  // means a pending read, a failed read and a read taken before the store opened
+  // are all indistinguishable from a real zero, so nothing may treat this total
+  // as authoritative until a SUCCESSFUL read has landed on a proven-up source.
+  const sessionSource = useDashboardSessionSource();
+  const sessionsCountFresh = useSessionsCountFresh({
+    sessionSourceReady: sessionSource.ready,
+    sessionsDataLoaded: sessionsQuery.data !== undefined,
+    dataUpdatedAt: sessionsQuery.dataUpdatedAt,
+  });
 
-  const initialTotalRef = useRef<number | null>(null);
-  const lastTotalRef = useRef<number | null>(null);
-  const stableHitsRef = useRef(0);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: dataUpdatedAt is the intended trigger — it advances on every poll even when the total is unchanged, which is how we count consecutive no-growth polls.
-  useEffect(() => {
-    if (sessionsQuery.isLoading || settled) {
-      return;
-    }
-    if (initialTotalRef.current === null) {
-      initialTotalRef.current = sessionsTotal;
-    } else if (sessionsTotal > initialTotalRef.current) {
-      setGrew(true);
-    }
-    if (lastTotalRef.current === sessionsTotal) {
-      stableHitsRef.current += 1;
-    } else {
-      stableHitsRef.current = 0;
-      lastTotalRef.current = sessionsTotal;
-    }
-    // Two consecutive equal polls (~5s of no growth) = settled.
-    if (stableHitsRef.current >= 2) {
-      setSettled(true);
-    }
-  }, [
+  useBackfillSettleDetection({
     sessionsTotal,
-    sessionsQuery.isLoading,
-    sessionsQuery.dataUpdatedAt,
+    isLoading: sessionsQuery.isLoading,
+    dataUpdatedAt: sessionsQuery.dataUpdatedAt,
+    sessionSourceReady: sessionSource.ready,
     settled,
-  ]);
+    setGrew,
+    setSettled,
+  });
 
   // With the SQLite/WAL reader pool, the insights aggregations run on reader
   // connections concurrently with the backfill writer (and off the main thread),
@@ -168,23 +191,31 @@ export function FirstLaunchDashboard() {
   const insightsEnabled = true;
   const delivery = useDeliveryInsights(
     period,
-    SCOPE,
+    scope,
     undefined,
     insightsEnabled
   );
   const utilization = useUtilizationInsights(
     period,
-    SCOPE,
+    scope,
     undefined,
     insightsEnabled
   );
-  const agents = useAgentsInsights(period, SCOPE, undefined, insightsEnabled);
+  const agents = useAgentsInsights(period, scope, undefined, insightsEnabled);
 
   // All three insights sections resolved — the data behind every tile and the
   // tour summary (KPIs, model breakdown) is ready. The first-launch tour waits
   // on this so it never opens over blank cards (e.g. a missing "Models in use").
   const analyticsLoaded =
     delivery.isSuccess && utilization.isSuccess && agents.isSuccess;
+
+  // FEA-3240: surface a degraded/error state when any insights query reaches
+  // terminal error instead of holding the loading skeleton indefinitely.
+  const { analyticsError, retrying, handleRetry } = useInsightsErrorRecovery(
+    delivery,
+    utilization,
+    agents
+  );
 
   const sections = useMemo<InsightsSectionData>(
     () => ({
@@ -193,6 +224,15 @@ export function FirstLaunchDashboard() {
       [InsightsSection.Agents]: agents.data,
     }),
     [agents.data, delivery.data, utilization.data]
+  );
+  // FEA-4020: a single dashboard-wide "Refreshing" indicator (shown in the
+  // header next to the range/scope controls), mirroring the web
+  // `InsightsOverviewDashboard`. See `useSectionRefreshing` below.
+  const refreshing = useSectionRefreshing(
+    `${period}:${scope}`,
+    delivery,
+    utilization,
+    agents
   );
   const sourceGetTileAvailability = source.getTileAvailability;
   const getTileAvailability = useCallback(
@@ -203,13 +243,19 @@ export function FirstLaunchDashboard() {
           section: tile.section,
         });
       }
+      // `org` tiles gate on the cloud response's availability/provenance
+      // (sourceKind Cloud), so pass them through like the web dashboard; `me`
+      // tiles gate on the desktop GitHub connection and ignore these.
+      const sectionData = sections[tile.section];
       return sourceGetTileAvailability({
         tileId: tile.id,
         section: tile.section,
-        scope: SCOPE,
+        scope,
+        payloadAvailability: sectionData?.tileAvailability,
+        payloadGitHubProvenance: getSectionGitHubProvenance(sectionData),
       });
     },
-    [sourceGetTileAvailability]
+    [sourceGetTileAvailability, scope, sections]
   );
 
   const recentItems = sessionsQuery.data?.items ?? [];
@@ -233,92 +279,23 @@ export function FirstLaunchDashboard() {
     return () => window.clearInterval(interval);
   }, [motion]);
 
-  // On reveal completion: persist the onboarded flag and arm the tour once —
-  // but only after the import has settled AND the dashboard is actually on
-  // screen (not hidden behind the keep-alive map or a backgrounded window), so
-  // the tour never pops over another view or an empty/loading dashboard.
-  useEffect(() => {
-    // Wait for the reveal, a settled import, AND loaded analytics — the tour
-    // summary reads the KPIs/model breakdown, so arming it before the agents
-    // insights resolve would show blank cards ("Models in use" with no value).
-    if (tick < 100 || !settled || !analyticsLoaded || completedRef.current) {
-      return;
-    }
-    if (!firstLaunch) {
-      // Nothing to arm on a returning launch; latch so this never re-runs.
-      completedRef.current = true;
-      return;
-    }
+  // ISS-5112: the insights payload has no harness dimension, so the guest tour's
+  // "Harnesses found" row reads the local SQLite usage aggregate directly. Gated
+  // on the flag so a flag-off launch issues no extra read at all. Declared above
+  // `useTourArming` because arming waits on it — this row must be settled before
+  // the callout opens, or the intro summary grows underneath the reader.
+  const { harnesses, ready: harnessesReady } = useTourHarnesses(guest.enabled);
 
-    // FEA-2737: commit the one-time latch / persist ONBOARDED only once the
-    // tour is actually armed — the window is foregrounded (visible) AND the
-    // tour button is laid out. If the dashboard is off screen when the reveal
-    // settles, defer instead of suppressing the tour permanently:
-    //   - a backgrounded/minimized window flips `visibilityState`, so re-arm on
-    //     `visibilitychange` when it returns to the foreground;
-    //   - a same-session in-app view swap (behind the keep-alive map) keeps
-    //     `visibilityState` "visible" and only drops the button's layout, which
-    //     fires no event here. But because ONBOARDED is NOT persisted until
-    //     arming succeeds, `firstLaunch` stays true and the next launch replays
-    //     the reveal and re-attempts arming — the tour is only ever deferred,
-    //     never lost (and the manual Tour button remains available meanwhile).
-    let timer: number | undefined;
-    const arm = () => {
-      if (completedRef.current) {
-        return;
-      }
-      const button = document.querySelector<HTMLElement>("[data-tour-btn]");
-      const onScreen =
-        document.visibilityState === "visible" && button?.offsetParent != null;
-      if (!onScreen) {
-        return;
-      }
-      completedRef.current = true;
-      document.removeEventListener("visibilitychange", arm);
-      if (readFlag(dashboardTourSeenStorageKey)) {
-        // Tour already seen this session — no reveal to show; commit the latch
-        // now (there is no deferred work that a later unmount could cancel).
-        writeFlag(dashboardOnboardedStorageKey);
-        return;
-      }
-      // Persist ONBOARDED only when the tour actually fires, not at arm time.
-      // If the dashboard unmounts during the 650 ms delay the cleanup clears
-      // this timer, so persisting here (rather than above) means the latch is
-      // never committed for a tour that never showed — the next launch replays
-      // the reveal and re-arms instead of silently swallowing the tour.
-      timer = window.setTimeout(() => {
-        // Fired: clear the handle so a later cleanup treats this as committed
-        // (does not clear/re-arm) — the latch below is now permanent.
-        timer = undefined;
-        writeFlag(dashboardOnboardedStorageKey);
-        setTourActive(true);
-      }, 650);
-    };
+  useTourArming({
+    tick,
+    settled,
+    analyticsLoaded,
+    harnessesReady,
+    firstLaunch,
+    completedRef,
+    setTourActive,
+  });
 
-    arm();
-    if (!completedRef.current) {
-      document.addEventListener("visibilitychange", arm);
-    }
-    return () => {
-      document.removeEventListener("visibilitychange", arm);
-      if (timer !== undefined) {
-        // Cancel the pending reveal timer on teardown so it can't call
-        // setTourActive after unmount. Because ONBOARDED is not persisted until
-        // the timer fires, a real unmount here leaves firstLaunch true and the
-        // next launch re-arms the tour. Reset the latch so React Strict Mode's
-        // synchronous unmount→remount re-runs arm() and re-schedules the timer
-        // (the original bug: leaving it latched permanently suppressed the tour).
-        window.clearTimeout(timer);
-        completedRef.current = false;
-      }
-    };
-  }, [tick, settled, analyticsLoaded, firstLaunch]);
-
-  // "Analyzing" treatment: initial load, the first-launch reveal, or an
-  // in-progress import (grew but not yet settled). A steady, already-complete
-  // DB settles within a poll or two and shows no lingering indicator.
-  const analyzing =
-    sessionsQuery.isLoading || (grew && !settled) || (motion && tick < 100);
   const isShown = (tour: string) => !motion || tick >= (REVEAL_AT[tour] ?? 0);
 
   // Loading vs empty vs ready. The first-launch / loading treatment persists
@@ -334,21 +311,44 @@ export function FirstLaunchDashboard() {
       dataQueries.length) *
       100
   );
-  const hasData = sessionsTotal > 0;
-  // FEA-2038: the dashboard is "ready" only once the analytics have loaded AND the
-  // local import has SETTLED. Rendering the tiles/heatmap mid-backfill shows wrong,
-  // partial data (an empty/garbled heatmap, half-counted KPIs) because the
-  // per-session analytics rollups are still being filled in. So hold the loading
-  // treatment until the import stops growing — `(grew && !settled)`. An already-
-  // complete store (`!grew`) settles within a poll or two and reveals immediately.
-  const loading = !analyticsLoaded || (grew && !settled);
-  const empty = !(loading || hasData);
+  // FEA-2038 + FEA-3240 + ISS-6002: the dashboard state machine, in
+  // `dashboard-state.ts` so it can be tested without mounting the page.
+  const {
+    loading,
+    showError,
+    empty,
+    sessionsFailed,
+    sessionsCountKnown,
+    analyzing: resolving,
+  } = resolveDashboardState({
+    analyticsLoaded,
+    analyticsError,
+    sessionsError: sessionsQuery.isError,
+    sessionSourceUnavailable: sessionSource.unavailable,
+    retrying,
+    grew,
+    settled,
+    sessionsCountFresh,
+    sessionsTotal,
+  });
+  // "Analyzing" treatment: the state machine's own unresolved-count /
+  // running-import verdict, plus the first-launch reveal. Deliberately the SAME
+  // evidence `loading` is built from (ISS-6002 review) — deriving it from raw
+  // readiness left the header, the progress bar and the Recent Sessions caption
+  // stuck on "analyzing" over rendered rows whenever the probe latched.
+  const analyzing = resolving || (motion && tick < 100);
   const progressPct =
     motion && tick < 100 ? Math.max(tick, loadProgress) : loadProgress;
 
   const tourSteps = useMemo(
-    () => buildTourSteps(sessionsTotal, agents.data),
-    [sessionsTotal, agents.data]
+    () =>
+      buildTourSteps({
+        sessionsTotal,
+        agents: agents.data,
+        guestOnboardingEnabled: guest.enabled,
+        harnesses,
+      }),
+    [sessionsTotal, agents.data, guest.enabled, harnesses]
   );
 
   const closeTour = (reason: "done" | "skip") => {
@@ -356,6 +356,14 @@ export function FirstLaunchDashboard() {
     writeFlag(dashboardTourSeenStorageKey);
     if (reason === "skip") {
       window.setTimeout(() => setTourHint(true), 80);
+      return;
+    }
+    // Finishing as a guest is the moment an account buys something (team
+    // insights, collaborators), so it is the moment to ask. `guestCanConvert`
+    // is the SAME predicate `tourCompleteLabel` reads for the button's text, so
+    // what the last press says and what it does cannot disagree.
+    if (guestCanConvert) {
+      requestSignup(GuestSignupIntent.Tour);
     }
   };
 
@@ -368,127 +376,75 @@ export function FirstLaunchDashboard() {
   return (
     <PageShell
       actions={
-        <>
-          <DateRangeFilter onChange={setDateRange} value={dateRange} />
-          <ScanStatus analyzing={analyzing} sessionsTotal={sessionsTotal} />
-          <span data-tour-btn>
-            <Button
-              onClick={replayTour}
-              size="sm"
-              type="button"
-              variant="ghost"
-            >
-              <CompassIcon className="size-4" />
-              Tour
-            </Button>
-          </span>
-        </>
+        <DashboardHeaderActions
+          analyzing={analyzing && !showError}
+          dateRange={dateRange}
+          gated={orgGated}
+          onDateRangeChange={setDateRange}
+          onReplayTour={replayTour}
+          onScopeChange={handleScopeChange}
+          refreshing={refreshing}
+          scope={scope}
+          // `orgGated` is part of the test, not redundant with
+          // `guestCanConvert`: selecting a sign-in method inside the ask puts
+          // auth into `opening_browser`/`exchanging`, which is no longer
+          // signed-out, so `guestCanConvert` goes false for the whole browser
+          // round-trip while the gate card is still on screen. Without this
+          // term the toggle unmounts out from under its own gate.
+          scopeAvailable={orgScopeAvailable || guestCanConvert || orgGated}
+          // ISS-6002: `null` until the count is actually known, so the header
+          // cannot announce "· 0 sessions" for a store that has not opened, a
+          // read still in flight, or a read that failed. The resolver's own
+          // verdict, so the header and the body cannot disagree about whether
+          // there is a number to show.
+          sessionsTotal={sessionsCountKnown ? sessionsTotal : null}
+        />
       }
       fullWidth
       title={DASHBOARD_PAGE_TITLE}
     >
-      {analyzing ? (
-        <div
-          aria-label="Analysis progress"
-          aria-valuemax={100}
-          aria-valuemin={0}
-          aria-valuenow={Math.round(progressPct)}
-          className="h-0.5 w-full overflow-hidden rounded-full bg-[var(--accent)]"
-          role="progressbar"
-        >
-          {/* Determinate: how many data reads have resolved (and, on first
-              launch, the reveal tick) — so the bar tracks real load progress. */}
-          <div
-            className="h-full bg-[var(--primary)] transition-[width] duration-300 ease-out"
-            style={{
-              width: `${progressPct}%`,
-            }}
-          />
-        </div>
-      ) : null}
+      <AnalyzingBar
+        analyzing={analyzing && !showError}
+        progressPct={progressPct}
+      />
 
-      {loading && <DashboardLoading analyticsPct={loadProgress} />}
-      {!loading && empty && <DashboardEmpty />}
-      {!(loading || empty) && (
-        <div className="flex flex-col gap-5">
-          {DASHBOARD_ROWS.map((row) => (
-            <Reveal
-              delay={0}
-              key={row.tour}
-              motion={motion}
-              show={isShown(row.tour)}
-            >
-              <div data-tour={row.tour}>
-                <DashboardRowContent
-                  autonomySeries={agents.data?.charts.autonomyTrend}
-                  deltaLabel={deltaLabel}
-                  getTileAvailability={getTileAvailability}
-                  githubConnectHref={source.githubConnectHref}
-                  heatmap={utilization.data?.charts.activityHeatmap}
-                  modelSeries={agents.data?.charts.modelUsageOverTime}
-                  onConnectGitHub={source.onConnectGitHub}
-                  periodLabel={periodLabel}
-                  row={row}
-                  sections={sections}
-                />
-              </div>
-              {row.tour === "stats" ? (
-                <FeatureFlagged flag={AI_IMPACT_FEATURE_FLAG_KEY}>
-                  <div className="mt-5">
-                    <AiImpactCard sections={sections} />
-                  </div>
-                </FeatureFlagged>
-              ) : null}
-              {row.tour === "activity" && isShown("sessions") ? (
-                <div className="mt-5">
-                  <RecentSessions
-                    isError={sessionsQuery.isError}
-                    isLoading={sessionsQuery.isLoading}
-                    items={recentItems}
-                    parsing={analyzing}
-                  />
-                </div>
-              ) : null}
-            </Reveal>
-          ))}
-        </div>
-      )}
+      <OrgGatedRegion
+        gated={orgGated}
+        onCreateAccount={requestOrgAccount}
+        onDismiss={dismissOrgGate}
+      >
+        <DashboardBody
+          agents={agents}
+          analyzing={analyzing}
+          deltaLabel={deltaLabel}
+          empty={empty}
+          getTileAvailability={getTileAvailability}
+          handleRetry={handleRetry}
+          importActive={grew && !settled}
+          isShown={isShown}
+          loading={loading}
+          loadProgress={loadProgress}
+          motion={motion}
+          periodLabel={periodLabel}
+          recentItems={recentItems}
+          sections={sections}
+          sessionsFailed={sessionsFailed}
+          sessionsLoading={sessionsQuery.isLoading}
+          showError={showError}
+          source={source}
+          utilization={utilization}
+        />
+      </OrgGatedRegion>
 
-      <Tour active={tourActive} onClose={closeTour} steps={tourSteps} />
+      <Tour
+        active={tourActive}
+        completeLabel={tourCompleteLabel(guest)}
+        onClose={closeTour}
+        steps={tourSteps}
+      />
       <TourHint onClose={() => setTourHint(false)} show={tourHint} />
     </PageShell>
   );
-}
-
-function ScanStatus({
-  analyzing,
-  sessionsTotal,
-}: {
-  analyzing: boolean;
-  sessionsTotal: number;
-}) {
-  if (analyzing) {
-    return (
-      <span
-        aria-live="polite"
-        className="inline-flex items-center gap-2 font-mono text-[var(--muted-foreground)] text-xs"
-        role="status"
-      >
-        <span
-          className="size-1.5 rounded-full bg-[var(--ai,var(--primary))]"
-          style={{ animation: "ob-pulse 1.1s ease-in-out infinite" }}
-        />
-        Analyzing locally
-        {/* Session count refetches (~2.5s) while analyzing; keep it out of the
-            live region so only the static "Analyzing locally" is announced. */}
-        <span aria-hidden="true">
-          {" "}
-          · {sessionsTotal.toLocaleString()} sessions
-        </span>
-      </span>
-    );
-  }
-  return null;
 }
 
 // Settled with genuinely no local sessions.
@@ -500,6 +456,185 @@ function DashboardEmpty() {
       icon={LayersIcon}
       title="No agent sessions yet"
     />
+  );
+}
+
+// FEA-3240: terminal error — all retries exhausted, surface a clear degraded
+// state with a manual retry button instead of showing the skeleton forever.
+function DashboardError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex min-h-[360px] flex-col items-center justify-center gap-4 rounded-xl border border-border/70 border-dashed bg-card p-8">
+      <p className="text-center text-[var(--muted-foreground)] text-sm">
+        Dashboard metrics are temporarily unavailable.
+      </p>
+      <Button onClick={onRetry} size="sm" type="button" variant="outline">
+        <RefreshCwIcon className="size-3.5" />
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function AnalyzingBar({
+  analyzing,
+  progressPct,
+}: {
+  analyzing: boolean;
+  progressPct: number;
+}) {
+  if (!analyzing) {
+    return null;
+  }
+  return (
+    <div
+      aria-label="Analysis progress"
+      aria-valuemax={100}
+      aria-valuemin={0}
+      aria-valuenow={Math.round(progressPct)}
+      className="h-0.5 w-full overflow-hidden rounded-full bg-[var(--accent)]"
+      role="progressbar"
+    >
+      <div
+        className="h-full bg-[var(--primary)] transition-[width] duration-300 ease-out"
+        style={{ width: `${progressPct}%` }}
+      />
+    </div>
+  );
+}
+
+function DashboardBody({
+  loading,
+  importActive,
+  showError,
+  empty,
+  handleRetry,
+  loadProgress,
+  motion,
+  isShown,
+  agents,
+  deltaLabel,
+  periodLabel,
+  getTileAvailability,
+  source,
+  utilization,
+  sections,
+  sessionsFailed,
+  sessionsLoading,
+  recentItems,
+  analyzing,
+}: {
+  loading: boolean;
+  importActive: boolean;
+  showError: boolean;
+  empty: boolean;
+  handleRetry: () => void;
+  loadProgress: number;
+  motion: boolean;
+  isShown: (tour: string) => boolean;
+  agents: ReturnType<typeof useAgentsInsights>;
+  deltaLabel: string;
+  periodLabel: string;
+  getTileAvailability: (tile: TileDescriptor) => InsightsTileAvailability;
+  source: ReturnType<typeof useInsightsDataSource>;
+  utilization: ReturnType<typeof useUtilizationInsights>;
+  sections: InsightsSectionData;
+  /** The read errored, or its source is unavailable — the localized failure. */
+  sessionsFailed: boolean;
+  sessionsLoading: boolean;
+  recentItems: Parameters<typeof SyncedSessionsTable>[0]["items"];
+  analyzing: boolean;
+}) {
+  // ISS-5061 (ISS-4779 closed-by-default): resolved before the early returns
+  // (rules-of-hooks) and threaded into BOTH the row order and the row renderer,
+  // so the desktop shell gates the Agent Collaboration Network row from exactly
+  // the same value the web shell does — no surface can draw it while the other
+  // hides it.
+  const rowGates = useDashboardRowGates();
+  if (loading) {
+    return (
+      <DashboardLoading
+        analyticsPct={loadProgress}
+        importActive={importActive}
+      />
+    );
+  }
+  if (showError) {
+    return <DashboardError onRetry={handleRetry} />;
+  }
+  if (empty) {
+    return <DashboardEmpty />;
+  }
+  // FEA-4022 (T5/T20): the frustration row is org opt-in and has no Local-mode
+  // producer, so its series is often absent. Unlike the web shell (which filters
+  // it), the desktop first-launch dashboard mapped every DASHBOARD_ROW and never
+  // passed frustrationSeries, so the row rendered a 300px card shimmering a
+  // skeleton forever. Drop the frustration row once the Agents section resolves
+  // WITHOUT the series (Local mode, or an opted-out org in Cloud mode); keep it
+  // as a skeleton only while the section is still loading so the layout doesn't
+  // reflow when it arrives — mirroring InsightsOverviewDashboard's visibleRows.
+  const hasFrustration = Boolean(agents.data?.charts.frustrationTrend);
+  // The agent-pipeline row carries a data-driven filter on top of its Labs gate:
+  // an install whose sessions spawn no subagents would otherwise carry a
+  // permanent 340px empty card. Same shape of absent data, same treatment as
+  // frustration above. Gate AND data — the gate decides whether the row exists
+  // at all, this decides whether an existing row has anything to show.
+  const hasAgentPipeline = hasAgentPipelineNodes(
+    agents.data?.charts.agentPipeline
+  );
+  const visibleRows = dashboardRowsFor(rowGates).filter((row) => {
+    if (row.tour === "frustration") {
+      return hasFrustration || agents.isLoading;
+    }
+    if (row.tour === "agent-pipeline") {
+      return hasAgentPipeline || agents.isLoading;
+    }
+    return true;
+  });
+  return (
+    <div className="flex flex-col gap-5">
+      {visibleRows.map((row) => (
+        <Reveal
+          delay={0}
+          key={row.tour}
+          motion={motion}
+          show={isShown(row.tour)}
+        >
+          <div data-tour={row.tour}>
+            <DashboardRowContent
+              agentPipeline={agents.data?.charts.agentPipeline}
+              autonomySeries={agents.data?.charts.autonomyTrend}
+              deltaLabel={deltaLabel}
+              frustrationSeries={agents.data?.charts.frustrationTrend}
+              gates={rowGates}
+              getTileAvailability={getTileAvailability}
+              githubConnectHref={source.githubConnectHref}
+              heatmap={utilization.data?.charts.activityHeatmap}
+              modelSeries={agents.data?.charts.modelUsageOverTime}
+              modelTokenSeries={agents.data?.charts.modelTokensOverTime}
+              onConnectGitHub={source.onConnectGitHub}
+              periodLabel={periodLabel}
+              row={row}
+              sections={sections}
+            />
+          </div>
+          {row.tour === "stats" ? (
+            <div className="mt-5">
+              <AiImpactCard sections={sections} />
+            </div>
+          ) : null}
+          {row.tour === "activity" && isShown("sessions") ? (
+            <div className="mt-5">
+              <RecentSessions
+                isError={sessionsFailed}
+                isLoading={sessionsLoading}
+                items={recentItems}
+                parsing={analyzing}
+              />
+            </div>
+          ) : null}
+        </Reveal>
+      ))}
+    </div>
   );
 }
 
@@ -584,99 +719,98 @@ function renderSessions(
           No synced sessions found yet.
         </div>
       }
-      getSessionHref={desktopSessionDetailHashHref}
+      getSessionHref={desktopSessionDetailHref}
       items={items}
     />
   );
 }
 
-export function buildTourSteps(
-  sessionsTotal: number,
-  agents: AgentsInsightsResponse | undefined
-): TourStep[] {
-  const modelsKpi = agents?.kpis.find((kpi) => kpi.key === "models");
-  const modelChips: TourSummaryChip[] = (agents?.charts.modelBreakdown ?? [])
-    .slice(0, 4)
-    .map((bucket) => ({ label: bucket.label, mono: true }));
-  const extraModels = Math.max(
-    0,
-    (agents?.charts.modelBreakdown.length ?? 0) - modelChips.length
-  );
-  if (extraModels > 0) {
-    modelChips.push({
-      label: `+${extraModels} more`,
-      mono: false,
-      muted: true,
-    });
-  }
+type InsightsQueryResult = { isError: boolean; isFetching: boolean };
 
-  return [
-    {
-      intro: true,
-      eyebrow: "Ready",
-      title: "Build and see how your agents perform",
-      body: "Your local agent session logs have been parsed and analyzed. Keep using AI the way you already do — Closedloop runs quietly in the background and shows you how your agents are performing.",
-      summary: [
-        {
-          icon: <LayersIcon size={15} />,
-          label: "Sessions parsed",
-          value: sessionsTotal.toLocaleString(),
-          sub: "found on this device",
-        },
-        {
-          icon: <CpuIcon size={15} />,
-          label: "Models in use",
-          value: modelsKpi ? String(modelsKpi.value) : undefined,
-          chips: modelChips.length > 0 ? modelChips : undefined,
-          sub: "across Claude, OpenAI, and more.",
-        },
-      ],
-    },
-    {
-      sel: "stats",
-      eyebrow: "Your numbers",
-      title: "The headline metrics",
-      body: "Sessions, token spend, PRs shipped, and value per dollar — every figure computed right here on this Mac.",
-    },
-    {
-      sel: "activity",
-      eyebrow: "Activity",
-      title: "When the work happens",
-      body: "Each agent run on this machine, plotted across the selected window.",
-    },
-    {
-      sel: "sessions",
-      eyebrow: "Detail",
-      title: "Every session, drillable",
-      body: "A live log of each run — status, repo, model, and cost. Any row opens the full session replay.",
-    },
-    {
-      sel: "models",
-      eyebrow: "Models",
-      title: "Which models did the work",
-      body: "Spend over time by model, with the spend share by provider beside it — so you can see where the money goes.",
-    },
-    {
-      sel: "prs",
-      eyebrow: "Throughput",
-      title: "Shipping velocity",
-      body: "Pull requests merged over time, followed by repository-level shipping patterns in the breakdown row.",
-    },
-  ];
+// The subset of a section query's status the FEA-4020 refreshing derivation
+// reads: whether it has settled (success or error) and whether it is fetching.
+type SettleableQuery = {
+  isSuccess: boolean;
+  isError: boolean;
+  isFetching: boolean;
+};
+
+function useInsightsErrorRecovery(
+  delivery: InsightsQueryResult,
+  utilization: InsightsQueryResult,
+  agents: InsightsQueryResult
+) {
+  const queryClient = useQueryClient();
+  const analyticsError =
+    delivery.isError || utilization.isError || agents.isError;
+  const [retrying, setRetrying] = useState(false);
+  const sawFetchingRef = useRef(false);
+
+  const handleRetry = useCallback(() => {
+    sawFetchingRef.current = false;
+    setRetrying(true);
+    queryClient.invalidateQueries({ queryKey: insightsKeys.all });
+  }, [queryClient]);
+
+  // Clear retrying only after we've observed at least one isFetching=true
+  // render — invalidateQueries is async and isFetching may not flip on the
+  // immediate next render after setRetrying(true).
+  useEffect(() => {
+    if (!retrying) {
+      return;
+    }
+    const anyFetching =
+      delivery.isFetching || utilization.isFetching || agents.isFetching;
+    if (anyFetching) {
+      sawFetchingRef.current = true;
+    }
+    if (sawFetchingRef.current && !anyFetching) {
+      setRetrying(false);
+    }
+  }, [
+    retrying,
+    delivery.isFetching,
+    utilization.isFetching,
+    agents.isFetching,
+  ]);
+
+  return { analyticsError, retrying, handleRetry };
 }
 
-function getLocalStorage(): Storage | null {
-  try {
-    const storage = globalThis.localStorage;
-    if (
-      !storage ||
-      typeof storage.getItem !== "function" ||
-      typeof storage.setItem !== "function"
-    ) {
-      return null;
-    }
-    return storage;
-  } catch {
-    return null;
+// FEA-4020: derive the single header "Refreshing" flag from the three insights
+// section queries. All three are keyed on the same range (period) + scope, so a
+// change to either refetches every widget at once — one change is one refresh,
+// and it reads as one indicator rather than a spinner dimmed over every row.
+// `useDashboardRefreshing` gates on the user-driven request key changing (not
+// raw `isFetching`), so a db-change invalidation that refetches the SAME range —
+// or the ~2s Recent-Sessions poll — never flashes it, and it never shows before
+// the first settle (so it can't compete with the first-launch loading
+// treatment).
+function useSectionRefreshing(
+  requestKey: string,
+  delivery: SettleableQuery,
+  utilization: SettleableQuery,
+  agents: SettleableQuery
+): boolean {
+  const settled =
+    (delivery.isSuccess || delivery.isError) &&
+    (utilization.isSuccess || utilization.isError) &&
+    (agents.isSuccess || agents.isError);
+  return useDashboardRefreshing({
+    requestKey,
+    anyFetching:
+      delivery.isFetching || utilization.isFetching || agents.isFetching,
+    settled,
+  });
+}
+
+// Only Delivery/Utilization responses carry GitHub provenance; Agents does not.
+// Mirrors the web overview so `org` tile availability resolves identically.
+function getSectionGitHubProvenance(
+  section: InsightsSectionData[InsightsSection] | undefined
+): InsightsGitHubProvenance | undefined {
+  if (!(section && "githubProvenance" in section)) {
+    return undefined;
   }
+  return section.githubProvenance;
 }

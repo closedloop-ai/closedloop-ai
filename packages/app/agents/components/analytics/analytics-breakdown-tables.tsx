@@ -5,7 +5,7 @@ import type {
   AgentSessionProjectBreakdown,
   AgentSessionRepositoryBreakdown,
   AgentSessionToolBreakdown,
-} from "@repo/api/src/types/agent-session";
+} from "@repo/api/src/types/agent-session-usage-breakdown";
 import { formatDurationMs } from "../../../shared/lib/format-duration-ms";
 import {
   formatCost,

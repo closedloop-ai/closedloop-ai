@@ -45,6 +45,13 @@ export function StatusMetadataSection({
 }: Readonly<StatusMetadataSectionProps>) {
   const statusId = useId();
 
+  // Field-labeled accessible name for the compact (metadata-bar) trigger, whose
+  // only visible text is the current value. Announces "Status: Approved" so a
+  // screen reader knows the control sets status, not just the current value.
+  const currentStatusLabel =
+    options.find((option) => option.value === status)?.label ?? status;
+  const statusAriaLabel = `Status: ${currentStatusLabel}`;
+
   const statusOptions = options.map((statusOption) => (
     <SelectItem key={statusOption.value} value={statusOption.value}>
       <span className="inline-flex items-center gap-1.5">
@@ -59,6 +66,7 @@ export function StatusMetadataSection({
       <>
         <Select onValueChange={onStatusChange} value={status}>
           <SelectTrigger
+            aria-label={statusAriaLabel}
             className="min-w-0 justify-start gap-1 [&>:last-child]:hidden"
             size="sm"
           >
@@ -67,6 +75,7 @@ export function StatusMetadataSection({
           <SelectContent>{statusOptions}</SelectContent>
         </Select>
         <UserSelectPopover
+          ariaLabel="Assignee"
           className="h-8 w-auto min-w-[7rem] px-3"
           disabled={teamMembers.length === 0}
           onSelect={onAssigneeChange}
@@ -92,6 +101,7 @@ export function StatusMetadataSection({
         <div className="space-y-2">
           <Label>Assignee</Label>
           <UserSelectPopover
+            ariaLabel="Assignee"
             className="bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent"
             disabled={teamMembers.length === 0}
             onSelect={onAssigneeChange}

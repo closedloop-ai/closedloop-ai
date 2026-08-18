@@ -36,9 +36,17 @@ import {
   TableHeader,
   TableRow,
 } from "@repo/design-system/components/ui/table";
-import { Loader2Icon, PlusIcon } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@repo/design-system/components/ui/tooltip";
+import { InfoIcon, Loader2Icon, PlusIcon } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { env } from "@/env";
+import type { ApiKeyScopeDisplay } from "./api-key-scope-display";
+import { getApiKeyScopeDisplay } from "./api-key-scope-display";
 import { CreateApiKeySuccessDialog } from "./create-api-key-success-dialog";
 
 function getKeyStatus(key: ApiKey): {
@@ -192,8 +200,7 @@ function ApiKeysCardContent({
         {apiKeys.map((key) => {
           const status = getKeyStatus(key);
           const active = isKeyActive(key);
-          const hasWrite =
-            key.scopes.includes("write") || key.scopes.includes("delete");
+          const scope = getApiKeyScopeDisplay(key.scopes);
           return (
             <TableRow key={key.id}>
               <TableCell className="font-medium">{key.name}</TableCell>
@@ -201,9 +208,7 @@ function ApiKeysCardContent({
                 {key.keyPrefix}...
               </TableCell>
               <TableCell>
-                <Badge variant={hasWrite ? "default" : "secondary"}>
-                  {hasWrite ? "Read & Write" : "Read only"}
-                </Badge>
+                <ApiKeyScopeCell scope={scope} />
               </TableCell>
               <TableCell className="text-muted-foreground text-sm">
                 {formatApiKeyDate(key.createdAt)}
@@ -279,8 +284,7 @@ function QuickStartGuide() {
         <CardTitle className="text-base">Quick Start</CardTitle>
         <CardDescription>
           Use your API key to connect Closedloop to Claude Code, Claude Desktop,
-          or your own scripts. Newly created API keys have full read, write, and
-          delete access.
+          or your own scripts.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -410,5 +414,40 @@ export function ApiKeysSettingsPanel() {
         variant="destructive"
       />
     </>
+  );
+}
+
+/**
+ * The Scope cell. Routine scope sets read as plain text alongside the Created
+ * and Last Used cells; the pill is spent on the states a reader should stop on,
+ * so the pill itself is the signal rather than the tone. A state whose meaning
+ * needs an explanation gets the design-system Tooltip on a focusable trigger,
+ * with a visible info affordance so a reader can tell there is more to read —
+ * a native `title` needs a mouse, waits about a second, and never appears for
+ * keyboard or touch.
+ */
+function ApiKeyScopeCell({ scope }: { scope: ApiKeyScopeDisplay }) {
+  if (scope.variant === null) {
+    return <span className="text-muted-foreground text-sm">{scope.label}</span>;
+  }
+  if (scope.tooltip === undefined) {
+    return <Badge variant={scope.variant}>{scope.label}</Badge>;
+  }
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger
+          aria-label={`${scope.label} scope — what this means`}
+          className="cursor-help rounded-full focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          type="button"
+        >
+          <Badge variant={scope.variant}>
+            {scope.label}
+            <InfoIcon aria-hidden="true" />
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent>{scope.tooltip}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }

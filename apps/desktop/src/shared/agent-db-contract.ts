@@ -268,6 +268,19 @@ export type DashboardPlanSummary = {
   cwd: string | null;
 };
 
+/**
+ * ISS-5631 / ISS-6451: the window a paged dashboard row read is clamped to —
+ * `getPlans` and `getPullRequests` both take it. Same `limit`/`offset` shape as
+ * the `desktop:db:get-plans-list` sibling (`listPlans`), declared ONCE here
+ * because the IPC handler, the preload bridge, the store contract, and the
+ * renderer's `desktopApi` typing all have to agree on it. Each read carries its
+ * own ceiling constant (`db-constants.ts`); this type only names the shape.
+ */
+export type DashboardListWindow = {
+  limit?: number;
+  offset?: number;
+};
+
 export type DashboardPullRequestSummary = {
   id: string;
   sessionId: string | null;
@@ -337,6 +350,7 @@ export type CatalogContentItem = {
   name: string;
   type: string;
   description?: string;
+  content?: string;
   path?: string;
 };
 

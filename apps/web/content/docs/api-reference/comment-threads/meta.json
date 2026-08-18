@@ -1,0 +1,10 @@
+{
+  "title": "Comment Threads",
+  "pages": [
+    "listDocumentThreads",
+    "createDocumentThread",
+    "replyToDocumentThread",
+    "resolveDocumentThread",
+    "unresolveDocumentThread"
+  ]
+}

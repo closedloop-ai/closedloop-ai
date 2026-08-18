@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 // Mock modules before importing
 vi.mock("@repo/observability/log", () => ({
   log: {
+    debug: vi.fn(),
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
@@ -222,13 +223,6 @@ describe("handleInstallationRepositoriesAdded", () => {
 
     await handleInstallationRepositoriesAdded(event);
 
-    expect(log.info).toHaveBeenCalledWith(
-      "[handleInstallationRepositoriesAdded] Processing repositories added",
-      {
-        installationId: 123_456,
-        repositoryCount: 0,
-      }
-    );
     expect(mockFindInstallationByInstallationId).not.toHaveBeenCalled();
     expect(mockAddRepositories).not.toHaveBeenCalled();
   });
@@ -289,13 +283,6 @@ describe("handleInstallationRepositoriesAdded", () => {
         private: true,
       },
     ]);
-    expect(log.info).toHaveBeenCalledWith(
-      "[handleInstallationRepositoriesAdded] Processing repositories added",
-      {
-        installationId: 123_456,
-        repositoryCount: 2,
-      }
-    );
   });
 
   it("handles repositories with owner extracted from full_name", async () => {
@@ -442,13 +429,6 @@ describe("handleInstallationRepositoriesRemoved", () => {
 
     await handleInstallationRepositoriesRemoved(event);
 
-    expect(log.info).toHaveBeenCalledWith(
-      "[handleInstallationRepositoriesRemoved] Processing repositories removed",
-      {
-        installationId: 123_456,
-        repositoryCount: 0,
-      }
-    );
     expect(mockFindInstallationByInstallationId).not.toHaveBeenCalled();
     expect(mockRemoveRepositories).not.toHaveBeenCalled();
   });
@@ -497,13 +477,6 @@ describe("handleInstallationRepositoriesRemoved", () => {
       "101",
       "102",
     ]);
-    expect(log.info).toHaveBeenCalledWith(
-      "[handleInstallationRepositoriesRemoved] Processing repositories removed",
-      {
-        installationId: 123_456,
-        repositoryCount: 2,
-      }
-    );
   });
 
   it("extracts only githubRepoId for removal", async () => {
@@ -577,13 +550,6 @@ describe("handleInstallationRepositoriesRemoved", () => {
     expect(mockRemoveRepositories).toHaveBeenCalledWith("inst-uuid-789", [
       "999",
     ]);
-    expect(log.info).toHaveBeenCalledWith(
-      "[handleInstallationRepositoriesRemoved] Processing repositories removed",
-      {
-        installationId: 555_555,
-        repositoryCount: 1,
-      }
-    );
   });
 });
 

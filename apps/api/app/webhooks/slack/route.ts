@@ -12,8 +12,6 @@ import {
 import { slackVerifyWebhookSignature, WHITESPACE_REGEX } from "./webhook-utils";
 
 export async function POST(request: Request): Promise<Response> {
-  log.info("[webhook/slack] Received webhook request");
-
   const signingSecret = env.SLACK_SIGNING_SECRET;
 
   if (!signingSecret) {
@@ -56,7 +54,7 @@ export async function POST(request: Request): Promise<Response> {
         challenge?: string;
       };
       if (jsonBody.type === "url_verification") {
-        log.info("[webhook/slack] Responding to URL verification challenge");
+        logSlackTerminalEvent({ outcome: "url_verification" });
         scheduleLogFlush();
         return NextResponse.json({ challenge: jsonBody.challenge });
       }
@@ -71,8 +69,6 @@ export async function POST(request: Request): Promise<Response> {
     const teamId = params.get("team_id") ?? "";
     const userId = params.get("user_id") ?? "";
     const channelId = params.get("channel_id") ?? "";
-
-    log.info("[webhook/slack] Processing slash command", { command, teamId });
 
     const payload: SlackSlashCommandPayload = {
       team_id: teamId,
@@ -92,6 +88,13 @@ export async function POST(request: Request): Promise<Response> {
           text: text.trim().slice(subcommand.length).trim(),
         };
         const response = await handleCreateIdea(slashPayload);
+        logSlackTerminalEvent({
+          channelId,
+          command,
+          outcome: "processed",
+          subcommand,
+          teamId,
+        });
         scheduleLogFlush();
         return NextResponse.json(response);
       }
@@ -102,10 +105,26 @@ export async function POST(request: Request): Promise<Response> {
           text: text.trim().slice(subcommand.length).trim(),
         };
         const response = await handleGetStatus(slashPayload);
+        logSlackTerminalEvent({
+          channelId,
+          command,
+          outcome: "processed",
+          subcommand,
+          teamId,
+        });
         scheduleLogFlush();
         return NextResponse.json(response);
       }
 
+      logSlackTerminalEvent({
+        channelId,
+        command,
+        hasText: text.trim().length > 0,
+        outcome: "unknown_subcommand",
+        subcommandCategory: "unknown",
+        subcommandKnown: false,
+        teamId,
+      });
       scheduleLogFlush();
       return NextResponse.json({
         response_type: "ephemeral",
@@ -113,7 +132,7 @@ export async function POST(request: Request): Promise<Response> {
       });
     }
 
-    log.info("[webhook/slack] Ignoring unsupported command", { command });
+    logSlackTerminalEvent({ command, outcome: "unsupported_command", teamId });
     scheduleLogFlush();
     return NextResponse.json({ message: "Command not handled", ok: true });
   } catch (error) {
@@ -127,4 +146,11 @@ export async function POST(request: Request): Promise<Response> {
       { status: 500 }
     );
   }
+}
+
+function logSlackTerminalEvent(metadata: Record<string, unknown>): void {
+  log.info("[webhook/slack] Event handled", {
+    provider: "slack",
+    ...metadata,
+  });
 }

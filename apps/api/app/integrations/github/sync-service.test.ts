@@ -20,9 +20,13 @@ vi.mock("@repo/github", async () => {
     await vi.importActual<typeof import("@repo/github")>("@repo/github");
   return {
     ...actual,
-    getSinglePullRequestWithUserTokenProviderResult: vi.fn(),
+    getSinglePullRequestWithProviderResult: vi.fn(),
   };
 });
+
+vi.mock("@repo/github/user-token-auth", () => ({
+  getUserTokenOctokit: vi.fn(),
+}));
 
 vi.mock("@repo/observability/log", () => ({
   log: {
@@ -40,13 +44,20 @@ import {
   GitHubFetchTrigger,
   GitHubSyncResultReason,
 } from "@repo/api/src/types/github-read-model";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultReason,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity";
 import { SessionArtifactLinkKind } from "@repo/api/src/types/session-artifact-link";
 import {
   GitHubProviderResultStatus,
   type GitHubSinglePullRequestResult,
   GitHubUserTokenProviderResultStatus,
-  getSinglePullRequestWithUserTokenProviderResult,
+  getSinglePullRequestWithProviderResult,
 } from "@repo/github";
+import { getUserTokenOctokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
 import { decryptIntegrationToken } from "@/lib/integration-encryption";
 import { mockWithDbCall } from "../../../__tests__/utils/db-helpers";
@@ -58,8 +69,12 @@ import {
 
 const organizationId = "org-1";
 const branchArtifactId = "branch-1";
-const actorUserId = "user-1";
+const actorUserId = "019fed13-b752-77c3-bf22-0a6c655d4a38";
 const now = new Date("2026-07-06T09:00:00.000Z");
+// Marker object the mocked user-token factory returns; the unified single-PR
+// read must receive it as its first argument (PLN-1525 step 4).
+const userTokenOctokit = { kind: "user-token-octokit" };
+const mockGetUserTokenOctokit = getUserTokenOctokit as ReturnType<typeof vi.fn>;
 
 describe("githubServerSyncService", () => {
   let mockDb: ReturnType<typeof createMockDb>;
@@ -79,9 +94,8 @@ describe("githubServerSyncService", () => {
       .mockResolvedValueOnce({ count: 1 });
     mockDb.branchDetail.updateMany.mockResolvedValue({ count: 1 });
     vi.mocked(decryptIntegrationToken).mockResolvedValue("decrypted-token");
-    vi.mocked(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).mockResolvedValue({
+    mockGetUserTokenOctokit.mockReturnValue(userTokenOctokit);
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValue({
       status: GitHubProviderResultStatus.Success,
       value: makeProviderPullRequest(),
     });
@@ -106,9 +120,7 @@ describe("githubServerSyncService", () => {
     });
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
     expect(decryptIntegrationToken).not.toHaveBeenCalled();
-    expect(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).not.toHaveBeenCalled();
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
   });
 
   it("does not use user OAuth for inactive repositories that are not tombstoned", async () => {
@@ -133,9 +145,7 @@ describe("githubServerSyncService", () => {
     });
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
     expect(decryptIntegrationToken).not.toHaveBeenCalled();
-    expect(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).not.toHaveBeenCalled();
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
   });
 
   it("denies cross-user user-token sync without an owned session PR reference", async () => {
@@ -184,9 +194,7 @@ describe("githubServerSyncService", () => {
     );
     expect(mockDb.gitHubUserConnection.findUnique).not.toHaveBeenCalled();
     expect(decryptIntegrationToken).not.toHaveBeenCalled();
-    expect(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).not.toHaveBeenCalled();
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
     expect(mockDb.branchDetail.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -242,9 +250,7 @@ describe("githubServerSyncService", () => {
       reason,
     });
     expect(decryptIntegrationToken).not.toHaveBeenCalled();
-    expect(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).not.toHaveBeenCalled();
+    expect(getSinglePullRequestWithProviderResult).not.toHaveBeenCalled();
     expect(mockDb.pullRequestDetail.updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.not.objectContaining({
@@ -274,9 +280,9 @@ describe("githubServerSyncService", () => {
     providerStatus,
     reason,
   }) => {
-    vi.mocked(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).mockResolvedValueOnce({ status: providerStatus });
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
+      status: providerStatus,
+    });
 
     const result =
       await githubServerSyncService.refreshTombstonedBranchPullRequest({
@@ -318,13 +324,19 @@ describe("githubServerSyncService", () => {
       status: GitHubServerSyncStatus.Refreshed,
       reason: GitHubSyncResultReason.Success,
     });
-    expect(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).toHaveBeenCalledWith(
-      "decrypted-token",
+    expect(mockGetUserTokenOctokit).toHaveBeenCalledWith("decrypted-token");
+    expect(getSinglePullRequestWithProviderResult).toHaveBeenCalledWith(
+      userTokenOctokit,
       "closedloop-ai",
       "symphony-alpha",
-      2294
+      2294,
+      {
+        credentialType: GitHubFetchCredentialType.UserOAuth,
+        credentialOwnerId: actorUserId,
+        observationKey: expect.any(String),
+        observedAt: now.toISOString(),
+        trigger: GitHubFetchTrigger.UserAction,
+      }
     );
     expect(mockDb.gitHubUserConnection.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -367,22 +379,18 @@ describe("githubServerSyncService", () => {
         }),
       })
     );
-    expect(mockDb.branchDetail.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          fetchCredentialOwnerId: actorUserId,
-          fetchResultReason: GitHubSyncResultReason.Success,
-          headSha: "head-sha",
-          lastActivityAt: new Date("2026-07-06T10:00:00.000Z"),
-        }),
-      })
-    );
+    const branchUpdate = mockDb.branchDetail.updateMany.mock.calls.at(-1)?.[0];
+    expect(branchUpdate?.data).toMatchObject({
+      fetchCredentialOwnerId: actorUserId,
+      fetchResultReason: GitHubSyncResultReason.Success,
+      headSha: "head-sha",
+      headShaObservedAt: now,
+    });
+    expect(branchUpdate?.data).not.toHaveProperty("lastActivityAt");
   });
 
   it("rejects a refreshed PR when the stable GitHub id changed", async () => {
-    vi.mocked(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).mockResolvedValueOnce({
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
       status: GitHubProviderResultStatus.Success,
       value: makeProviderPullRequest({ githubId: "different-pr-id" }),
     });
@@ -416,9 +424,7 @@ describe("githubServerSyncService", () => {
   });
 
   it("does not bump branch activity for unchanged open PR refreshes", async () => {
-    vi.mocked(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).mockResolvedValueOnce({
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
       status: GitHubProviderResultStatus.Success,
       value: makeProviderPullRequest({
         closedAt: null,
@@ -450,9 +456,10 @@ describe("githubServerSyncService", () => {
   });
 
   it("warns and returns retryable when GitHub is unavailable during refresh", async () => {
-    vi.mocked(
-      getSinglePullRequestWithUserTokenProviderResult
-    ).mockResolvedValueOnce({
+    mockDb.pullRequestDetail.findFirst.mockResolvedValue(
+      storedPullRequestAuthority()
+    );
+    vi.mocked(getSinglePullRequestWithProviderResult).mockResolvedValueOnce({
       status: GitHubProviderResultStatus.ProviderUnavailable,
     });
 
@@ -475,6 +482,19 @@ describe("githubServerSyncService", () => {
         providerStatus: GitHubProviderResultStatus.ProviderUnavailable,
         branchArtifactId,
         organizationId,
+      })
+    );
+    expect(mockDb.pullRequestDetail.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          headRepositoryDefaultBranchAvailability:
+            RepositoryDefaultAvailability.Stale,
+          headRepositoryDefaultBranchName: "trunk",
+          headRepositoryDefaultBranchReason:
+            RepositoryDefaultReason.ProviderError,
+          headRepositoryDefaultBranchSource:
+            RepositoryDefaultSource.PullRequestRest,
+        }),
       })
     );
   });
@@ -528,7 +548,11 @@ function createMockDb() {
       updateMany: vi.fn(),
     },
     pullRequestDetail: {
+      findFirst: vi.fn().mockResolvedValue(null),
       updateMany: vi.fn(),
+    },
+    repositoryDefaultObservationReceipt: {
+      createMany: vi.fn(),
     },
   };
 }
@@ -608,6 +632,7 @@ function makeProviderPullRequest(
     headBranch: "feat/fea-2605-github-provenance",
     baseBranch: "main",
     state: "MERGED",
+    createdAt: "2026-07-06T09:00:00.000Z",
     mergedAt: "2026-07-06T10:00:00.000Z",
     closedAt: "2026-07-06T10:00:00.000Z",
     authorLogin: "shafty023",
@@ -627,4 +652,26 @@ function resolveRemovedAt(value: Date | null | undefined): Date | null {
     return new Date("2026-07-06T08:30:00.000Z");
   }
   return value;
+}
+
+function storedPullRequestAuthority() {
+  return {
+    headRepositoryGithubId: "5826",
+    headRepositoryFullName: "fork-owner/repo",
+    headRepositoryDefaultBranchName: "trunk",
+    headRepositoryDefaultBranchAvailability:
+      RepositoryDefaultAvailability.Available,
+    headRepositoryDefaultBranchCompleteness:
+      RepositoryDefaultCompleteness.Complete,
+    headRepositoryDefaultBranchReason: null,
+    headRepositoryDefaultBranchSource: RepositoryDefaultSource.PullRequestRest,
+    headRepositoryDefaultBranchMechanism: GitHubFetchMechanism.Rest,
+    headRepositoryDefaultBranchTrigger: GitHubFetchTrigger.UserAction,
+    headRepositoryDefaultBranchCredentialType:
+      GitHubFetchCredentialType.UserOAuth,
+    headRepositoryDefaultBranchCredentialOwnerId: actorUserId,
+    headRepositoryDefaultBranchObservationKey: "previous-attempt",
+    headRepositoryDefaultBranchObservedAt: new Date("2026-07-06T08:00:00.000Z"),
+    headRepositoryDefaultBranchEventAt: null,
+  };
 }

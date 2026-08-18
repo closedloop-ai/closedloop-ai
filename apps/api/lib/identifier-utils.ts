@@ -1,6 +1,7 @@
 import "server-only";
 
 import { TYPED_SLUG_PATTERN } from "@repo/api/src/types/slug";
+import { expandSlugAliases } from "@repo/api/src/types/slug-prefix";
 import { ArtifactType, withDb } from "@repo/database";
 import { z } from "zod";
 
@@ -24,7 +25,7 @@ export function isUuid(value: string): boolean {
  *
  * Accepted formats:
  * - UUID: `550e8400-e29b-41d4-a716-446655440000`
- * - Typed slug: `PRD-42`, `FEAT-1`, `PROJ-123`, `WORK-5`, `PLAN-7`
+ * - Typed slug: `PRD-42`, `ISS-1`, `FEA-1`, `PRO-123`, `PLN-7`
  * - Legacy nanoid slug: 14-character alphanumeric string
  */
 export function uuidOrSlug() {
@@ -54,10 +55,15 @@ export async function resolveDocumentId(
   if (isUuid(id)) {
     return id;
   }
+  // FEA-4137: an incoming `ISS-###` may address an existing row stored as
+  // `FEA-###` (and vice-versa), so resolve against every alias slug for the same
+  // numeric identity. Only one row can exist per numeric identity, so findFirst
+  // over the alias set is unambiguous. Non-Issue/legacy slugs expand to `[id]`.
   const row = await withDb((db) =>
-    db.artifact.findUnique({
+    db.artifact.findFirst({
       where: {
-        organizationId_slug: { organizationId, slug: id },
+        organizationId,
+        slug: { in: expandSlugAliases(id) },
         type: ArtifactType.DOCUMENT,
       },
       select: { id: true },

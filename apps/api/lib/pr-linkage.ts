@@ -1,199 +1,158 @@
 import {
   BranchBaseBranchSource,
   BranchHeadShaSource,
-  LinkType,
 } from "@repo/api/src/types/artifact";
 import { normalizeRepoFullName } from "@repo/api/src/types/branch";
 import {
-  ArtifactType,
-  GitHubInstallationStatus,
-  GitHubPRState,
-  type TransactionClient,
-} from "@repo/database";
+  GitHubFetchCredentialType,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model";
+import {
+  GitHubProviderResultStatus,
+  type GitHubSinglePullRequestResult,
+  getSinglePullRequestWithProviderResult,
+} from "@repo/github";
 import { log } from "@repo/observability/log";
+import { branchService } from "@/app/branches/branch-service";
+import {
+  createPullRequestRestAuthorityProvenance,
+  toPullRequestRestAuthorityObservation,
+} from "@/app/branches/pull-request-authority-producer";
+import { pullRequestHeadRepositoryObservation } from "@/app/branches/pull-request-head-authority";
+import { readWithInstallationClient } from "@/lib/github/installation-client";
 
-/**
- * Input for creating or deduplicating branch linkage records from PR data.
- * Used by both the workflow-completion handler and the loop execute handler
- * to ensure idempotent branch artifact + ArtifactLink creation.
- */
-type PrLinkageInput = {
+/** Input for provider-verified loop PR materialization. */
+export type PrLinkageInput = {
   organizationId: string;
   projectId: string | null;
   documentId: string;
-  prUrl: string;
-  prTitle: string;
   prNumber: number;
-  githubId: string;
-  headBranch: string;
-  baseBranch: string;
-  commitSha: string | null;
+  baseRepository: {
+    id: string;
+    fullName: string;
+    installationId: string;
+  };
 };
 
-const PR_URL_REGEX = /github\.com\/([^/]+)\/([^/]+)\/pull\/\d+/;
+/** Explicit fail-closed outcome for loop PR evidence that cannot form a Branch. */
+export type PrLinkageResult =
+  | { status: "linked"; branchArtifactId: string }
+  | {
+      status: "not_materialized";
+      reason:
+        | "provider_unavailable"
+        | "head_authority_unavailable"
+        | "branch_rejected";
+    };
 
 /**
- * Resolve the `github_installation_repositories.id` for the repo encoded in
- * `prUrl`, scoped to `organizationId`. Returns null when no active
- * installation covers that repo.
- */
-async function resolveRepositoryId(
-  tx: TransactionClient,
-  prUrl: string,
-  organizationId: string
-): Promise<{ id: string; fullName: string } | null> {
-  const match = PR_URL_REGEX.exec(prUrl);
-  if (!match) {
-    return null;
-  }
-  const [, owner, repo] = match;
-  const fullName = `${owner}/${repo}`;
-  const row = await tx.gitHubInstallationRepository.findFirst({
-    where: {
-      fullName,
-      removedAt: null,
-      installation: {
-        organizationId,
-        status: GitHubInstallationStatus.ACTIVE,
-      },
-    },
-    select: { id: true, fullName: true },
-  });
-  return row ?? null;
-}
-
-/**
- * Create branch artifact (+ current PullRequestDetail) and ArtifactLink records
- * for PR output, deduplicating against records that may already exist from a racing
- * handler.
- *
- * Two code paths can create these records for the same PR:
- * - loop execute handler (ingestExecutionArtifacts)
- * - pull-request webhook handler (createLinkageRecords)
- *
- * This function checks for existing records before creating.
+ * Re-reads the PR from GitHub, then routes branch and PR persistence through the
+ * canonical Branch service. The execution artifact remains the historical PR
+ * evidence when GitHub cannot establish an eligible head repository.
  */
 export async function ensurePrLinkageRecords(
-  tx: TransactionClient,
   input: PrLinkageInput
-): Promise<void> {
-  // Dedup by githubId (unique on PullRequestDetail).
-  const existingDetail = await tx.pullRequestDetail.findUnique({
-    where: { githubId: input.githubId },
-    select: { artifactId: true, branchArtifactId: true },
-  });
-
-  let branchArtifactId: string;
-
-  if (existingDetail) {
-    const existingArtifactId =
-      existingDetail.branchArtifactId ?? existingDetail.artifactId;
-    if (!existingArtifactId) {
-      log.warn("[pr-linkage] Existing PR detail has no linkable artifact", {
-        githubId: input.githubId,
-        prNumber: input.prNumber,
-      });
-      return;
-    }
-    branchArtifactId = existingArtifactId;
-  } else {
-    // Resolve repositoryId from PR URL + org. PullRequestDetail.repositoryId
-    // is required, so if we can't resolve it we skip artifact creation and
-    // rely on the pr-read-repair / webhook paths to backfill later.
-    const repository = await resolveRepositoryId(
-      tx,
-      input.prUrl,
-      input.organizationId
-    );
-    if (!repository) {
-      log.warn(
-        "[pr-linkage] Skipping branch artifact creation — no active installation for repo",
-        {
-          organizationId: input.organizationId,
-          prUrl: input.prUrl,
-          prNumber: input.prNumber,
-          githubId: input.githubId,
-        }
-      );
-      return;
-    }
-
-    const created = await tx.artifact.create({
-      data: {
-        type: ArtifactType.BRANCH,
-        organizationId: input.organizationId,
-        projectId: input.projectId,
-        name: input.headBranch,
-        status: GitHubPRState.OPEN,
-        externalUrl: `https://github.com/${repository.fullName}/tree/${encodeURIComponent(input.headBranch)}`,
-        branch: {
-          create: {
-            // FR13: write-once org copy from the parent Artifact; D2 identity
-            // via the normalized full name of the resolved installation repo.
-            organizationId: input.organizationId,
-            repositoryId: repository.id,
-            repositoryFullName: normalizeRepoFullName(repository.fullName),
-            branchName: input.headBranch,
-            baseBranch: input.baseBranch,
-            baseBranchSource: BranchBaseBranchSource.PullRequestBase,
-            headSha: input.commitSha,
-            headShaSource: input.commitSha
-              ? BranchHeadShaSource.PullRequestWebhook
-              : null,
-          },
-        },
-        pullRequestDetails: {
-          create: {
-            // FEA-2732: write-once org SSOT copy from the parent Artifact.
-            organizationId: input.organizationId,
-            repositoryId: repository.id,
-            githubId: input.githubId,
-            number: input.prNumber,
-            title: input.prTitle,
-            htmlUrl: input.prUrl,
-            prState: GitHubPRState.OPEN,
-            isCurrent: true,
-          },
-        },
-      },
-      select: { id: true, pullRequestDetails: { select: { id: true } } },
-    });
-    branchArtifactId = created.id;
-    const currentDetailId = created.pullRequestDetails[0]?.id ?? null;
-    if (currentDetailId) {
-      await tx.branchDetail.update({
-        where: { artifactId: branchArtifactId },
-        data: { currentPullRequestDetailId: currentDetailId },
-      });
-    }
+): Promise<PrLinkageResult> {
+  const [owner, repo] = input.baseRepository.fullName.split("/");
+  if (!(owner && repo)) {
+    return notMaterialized(input, "head_authority_unavailable");
   }
 
-  // Dedup ArtifactLink: source artifact → PRODUCES → branch artifact.
-  const existingLink = await tx.artifactLink.findFirst({
-    where: {
-      organizationId: input.organizationId,
-      sourceId: input.documentId,
-      targetId: branchArtifactId,
-      linkType: LinkType.Produces,
+  const provenance = createPullRequestRestAuthorityProvenance({
+    trigger: GitHubFetchTrigger.UserAction,
+    credentialType: GitHubFetchCredentialType.GitHubApp,
+    observedAt: new Date(),
+  });
+  const providerResult = await readWithInstallationClient(
+    input.baseRepository.installationId,
+    (octokit) =>
+      getSinglePullRequestWithProviderResult(
+        octokit,
+        owner,
+        repo,
+        input.prNumber,
+        toPullRequestRestAuthorityObservation(provenance)
+      )
+  );
+  if (providerResult.status !== GitHubProviderResultStatus.Success) {
+    return notMaterialized(input, "provider_unavailable");
+  }
+
+  return materializeProviderPullRequest(input, providerResult.value);
+}
+
+async function materializeProviderPullRequest(
+  input: PrLinkageInput,
+  pullRequest: GitHubSinglePullRequestResult
+): Promise<PrLinkageResult> {
+  const headObservation = pullRequestHeadRepositoryObservation(pullRequest);
+  const headAuthority = headObservation?.authority;
+  if (!headAuthority) {
+    return notMaterialized(input, "head_authority_unavailable");
+  }
+
+  const result = await branchService.upsertBranchArtifact({
+    organizationId: input.organizationId,
+    repositoryId:
+      normalizeRepoFullName(headAuthority.repository.fullName) ===
+      normalizeRepoFullName(input.baseRepository.fullName)
+        ? input.baseRepository.id
+        : null,
+    repositoryFullName: headAuthority.repository.fullName,
+    repositoryDefaultObservation: headObservation,
+    branchName: pullRequest.headBranch,
+    pullRequestRepositoryId: input.baseRepository.id,
+    pullRequestBaseRepositoryFullName: input.baseRepository.fullName,
+    projectId: input.projectId,
+    baseBranch: pullRequest.baseBranch,
+    baseBranchSource: BranchBaseBranchSource.PullRequestBase,
+    headSha: pullRequest.headSha,
+    headShaSource: BranchHeadShaSource.PullRequestWebhook,
+    sourceArtifactId: input.documentId,
+    pullRequest: {
+      githubId: pullRequest.githubId,
+      number: pullRequest.number,
+      title: pullRequest.title,
+      htmlUrl: pullRequest.htmlUrl,
+      state: pullRequest.state,
+      isDraft: pullRequest.isDraft,
+      additions: pullRequest.additions,
+      deletions: pullRequest.deletions,
+      changedFiles: pullRequest.changedFiles,
+      githubCreatedAt: pullRequest.createdAt
+        ? new Date(pullRequest.createdAt)
+        : null,
+      closedAt: pullRequest.closedAt ? new Date(pullRequest.closedAt) : null,
+      mergedAt: pullRequest.mergedAt ? new Date(pullRequest.mergedAt) : null,
+      mergeCommitSha: pullRequest.mergeCommitSha,
+      headRepositoryObservation: headObservation,
     },
-    select: { id: true },
   });
-
-  if (!existingLink) {
-    await tx.artifactLink.create({
-      data: {
-        organizationId: input.organizationId,
-        sourceId: input.documentId,
-        targetId: branchArtifactId,
-        linkType: LinkType.Produces,
-      },
-    });
+  if (!result.ok) {
+    return notMaterialized(input, "branch_rejected");
   }
 
-  log.info("[pr-linkage] Ensured PR linkage records", {
+  log.info("[pr-linkage] Ensured provider-verified PR linkage records", {
     documentId: input.documentId,
-    prUrl: input.prUrl,
     prNumber: input.prNumber,
-    branchArtifactId,
+    branchArtifactId: result.value.id,
   });
+  return { status: "linked", branchArtifactId: result.value.id };
+}
+
+function notMaterialized(
+  input: PrLinkageInput,
+  reason: Extract<PrLinkageResult, { status: "not_materialized" }>["reason"]
+): PrLinkageResult {
+  log.warn(
+    "[pr-linkage] Preserved PR evidence without Branch materialization",
+    {
+      organizationId: input.organizationId,
+      documentId: input.documentId,
+      prNumber: input.prNumber,
+      baseRepositoryFullName: input.baseRepository.fullName,
+      reason,
+    }
+  );
+  return { status: "not_materialized", reason };
 }

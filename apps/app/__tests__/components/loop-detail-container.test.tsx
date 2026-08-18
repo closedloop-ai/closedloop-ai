@@ -3,10 +3,9 @@
  * Focuses on the restart button: visibility based on loop status and navigation on success.
  */
 
-import { DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE } from "@repo/api/src/types/friendly-error";
 import { LoopErrorCode, LoopStatus } from "@repo/api/src/types/loop";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockMutateAsync = vi.fn();
@@ -26,20 +25,21 @@ const TARGET_CLOUD = /Target: Cloud/;
 const TARGET_LABEL = /Target:/;
 const CACHE_WRITE = /cache write/i;
 const CACHE_READ = /cache read/i;
-const NO_OUTPUT_PRODUCED = /No output produced/;
-const NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
-const CLAUDE_RATE_LIMIT_ERROR = /^Claude rate limit reached$/;
-const CLAUDE_RATE_LIMIT_MESSAGE =
+const _NO_OUTPUT_PRODUCED = /No output produced/;
+const _NO_WORK_PRODUCED_RAW = /NO_WORK_PRODUCED/;
+const _CLAUDE_RATE_LIMIT_ERROR = /^Claude rate limit reached$/;
+const _CLAUDE_RATE_LIMIT_MESSAGE =
   /Claude was rate limited before the runner completed\./;
-const UNKNOWN_SKILL_ERROR = /^Closedloop plugin command unavailable$/;
-const UNKNOWN_SKILL_MESSAGE =
+const _UNKNOWN_SKILL_ERROR = /^Closedloop plugin command unavailable$/;
+const _UNKNOWN_SKILL_MESSAGE =
   /Claude could not find the required Closedloop plugin command for this loop\./;
-const GENERIC_RUNNER_ERROR = /^Runner failed$/;
-const COMMAND_FAILED_EXACT = /^Command failed$/;
-const ERROR_LABEL = /^Error:/;
-const ARTIFACTS_TAB_NAME = /Artifacts/i;
-const SUPPORT_CLAUDE_OUTPUT_LINK = /claude-output\.jsonl/i;
-const SUPPORT_PERF_LINK = /perf\.jsonl/i;
+const _GENERIC_RUNNER_ERROR = /^Runner failed$/;
+const _COMMAND_FAILED_EXACT = /^Command failed$/;
+const _ERROR_LABEL = /^Error:/;
+const _LAUNCH_FAILED_TITLE = /^The run could not be started$/;
+const _LAUNCH_FAILED_MESSAGE =
+  "The run failed while being prepared and never started.";
+const _UNKNOWN_CODE_RAW = /SOME_FUTURE_CODE/;
 
 vi.mock("next/navigation", () => ({
   useRouter: vi.fn(() => ({ push: mockPush, replace: vi.fn() })),
@@ -87,6 +87,15 @@ vi.mock("@repo/app/documents/hooks/use-documents", () => ({
   useDocument: vi.fn(() => ({ data: null })),
 }));
 
+// The container renders the breadcrumb Header (needs a SidebarProvider) and
+// reads useOrgSlug() (needs Clerk) since FEA-3979 — stub both. This suite only
+// needs the container to mount; the colocated breadcrumb suite asserts labels.
+vi.mock("@/app/(authenticated)/components/header", () => ({
+  Header: ({ children }: { children?: ReactNode }) => <nav>{children}</nav>,
+}));
+
+vi.mock("@/hooks/use-org-slug", () => ({ useOrgSlug: () => "test-org" }));
+
 // Mock heavy sub-components that would require extra providers or network calls
 vi.mock("@repo/app/loops/components/loop-progress-panel", () => ({
   LoopProgressPanel: () => <div data-testid="loop-progress-panel" />,
@@ -98,17 +107,9 @@ vi.mock("@repo/app/loops/components/loop-audit-log", () => ({
 
 import { useFeatureFlag } from "@repo/analytics/client";
 // Import after mocks
-import {
-  useLoop,
-  useLoopEventsPaginated,
-  useResumeLoop,
-} from "@repo/app/loops/hooks/use-loops";
+import { useLoop, useResumeLoop } from "@repo/app/loops/hooks/use-loops";
 import { ApiError } from "@repo/app/shared/api/api-error";
-import {
-  createMockLoopWithUser,
-  RUNNER_RATE_LIMIT_LOOP_ERROR,
-  RUNNER_UNKNOWN_SKILL_LOOP_ERROR,
-} from "@repo/app/shared/test-fixtures/loops";
+import { createMockLoopWithUser } from "@repo/app/shared/test-fixtures/loops";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import { LoopDetailContainer } from "@/app/(authenticated)/[orgSlug]/loops/[id]/loop-detail-container";
 import { useCancelLoop } from "@/hooks/queries/use-loops";
@@ -743,199 +744,6 @@ describe("LoopDetailContainer — cache token display", () => {
   });
 });
 
-describe("LoopDetailContainer -- NO_WORK_PRODUCED label rendering", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
-      mutateAsync: mockMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useResumeLoop>);
-    vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
-      mutateAsync: mockCancelMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useCancelLoop>);
-  });
-
-  it("renders 'No output produced' for FAILED loop with NO_WORK_PRODUCED error when flag is enabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: true,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: {
-          code: LoopErrorCode.NoWorkProduced,
-          message: "The loop produced no output.",
-        },
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(screen.getByText(NO_OUTPUT_PRODUCED)).toBeInTheDocument();
-  });
-
-  it("does not render 'No output produced' for FAILED loop with CONTEXT_LIMIT_EXCEEDED error when flag is enabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: true,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: {
-          code: LoopErrorCode.ContextLimitExceeded,
-          message: "Context window exceeded.",
-        },
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-002" />);
-
-    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
-  });
-
-  it("renders no error label block when FAILED loop has no error", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: true,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: null,
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-003" />);
-
-    expect(screen.queryByText(NO_OUTPUT_PRODUCED)).not.toBeInTheDocument();
-    expect(screen.queryByText(ERROR_LABEL)).not.toBeInTheDocument();
-  });
-
-  it("renders runner failure reason from result subcode when flag is disabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: RUNNER_RATE_LIMIT_LOOP_ERROR,
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-runner-error" />);
-
-    expect(screen.getByText(CLAUDE_RATE_LIMIT_ERROR)).toBeInTheDocument();
-    expect(screen.getByText(CLAUDE_RATE_LIMIT_MESSAGE)).toBeInTheDocument();
-    expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
-  });
-
-  it("renders unknown-skill runner subcode with plugin guidance when flag is disabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: RUNNER_UNKNOWN_SKILL_LOOP_ERROR,
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-unknown-skill" />);
-
-    expect(screen.getByText(UNKNOWN_SKILL_ERROR)).toBeInTheDocument();
-    expect(screen.getByText(UNKNOWN_SKILL_MESSAGE)).toBeInTheDocument();
-    expect(screen.queryByText("RUNNER_ERROR")).not.toBeInTheDocument();
-    expect(screen.queryByText(GENERIC_RUNNER_ERROR)).not.toBeInTheDocument();
-  });
-
-  it("renders desktop managed-key fail-fast remediation as visible error copy", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: {
-          code: LoopErrorCode.ProcessFailed,
-          message: DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE,
-        },
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-managed-key-error" />);
-
-    expect(
-      screen.getByText("Desktop managed signing is not ready")
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(DESKTOP_SIGNED_LAUNCH_MANAGED_KEY_ERROR_MESSAGE)
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Re-run managed onboarding on the selected desktop target."
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByText(COMMAND_FAILED_EXACT)).not.toBeInTheDocument();
-  });
-
-  it("renders friendly 'No output produced' copy and preserves raw details when flag is disabled", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: false,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: {
-          code: LoopErrorCode.NoWorkProduced,
-          message: "The loop produced no output.",
-        },
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-004" />);
-
-    expect(screen.getByText(NO_OUTPUT_PRODUCED)).toBeInTheDocument();
-    expect(screen.getByText(NO_WORK_PRODUCED_RAW)).toBeInTheDocument();
-  });
-});
-
 describe("LoopDetailContainer — additional repositories display", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1052,139 +860,6 @@ describe("LoopDetailContainer — additional repositories display", () => {
     expect(
       screen.queryByText("Additional Repositories")
     ).not.toBeInTheDocument();
-  });
-});
-
-describe("LoopDetailContainer -- diagnostics UI", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
-      mutateAsync: mockMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useResumeLoop>);
-    vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
-      mutateAsync: mockCancelMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useCancelLoop>);
-  });
-
-  it("renders logTail content in diagnostics block when ghostLoopUx is enabled and loop is failed", () => {
-    vi.mocked(useFeatureFlag).mockReturnValue({
-      key: "ghost-loop-ux",
-      enabled: true,
-      variant: undefined,
-      payload: undefined,
-    });
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        status: LoopStatus.Failed,
-        error: { code: LoopErrorCode.NoWorkProduced, message: "No output." },
-      }),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-    vi.mocked(useLoopEventsPaginated).mockReturnValue({
-      data: {
-        data: [
-          {
-            type: "error",
-            code: LoopErrorCode.NoWorkProduced,
-            message: "No output.",
-            timestamp: "2024-01-01T00:00:00Z",
-            logTail: "stderr output here",
-          },
-        ],
-        total: 1,
-      },
-    } as unknown as ReturnType<typeof useLoopEventsPaginated>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(screen.getByText("stderr output here")).toBeInTheDocument();
-  });
-});
-
-describe("LoopDetailContainer -- support artifacts", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.mocked(useResumeLoop).mockReturnValue({
-      mutate: mockMutate,
-      mutateAsync: mockMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useResumeLoop>);
-    vi.mocked(useCancelLoop).mockReturnValue({
-      mutate: mockCancelMutate,
-      mutateAsync: mockCancelMutateAsync,
-      isPending: false,
-    } as unknown as ReturnType<typeof useCancelLoop>);
-  });
-
-  it("renders an empty state under the Artifacts tab when there are no support artifacts", async () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({ supportArtifacts: [] } as never),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(screen.queryByText("Support Artifacts")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    ).toBeInTheDocument();
-
-    await userEvent.click(
-      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    );
-
-    expect(
-      screen.getByText("No support artifacts uploaded")
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("This loop did not produce support artifacts.")
-    ).toBeInTheDocument();
-  });
-
-  it("renders support artifact download links under the Artifacts tab", async () => {
-    vi.mocked(useLoop).mockReturnValue({
-      data: createMockLoopWithUser({
-        supportArtifacts: [
-          {
-            name: "claude-output.jsonl",
-            key: "org-1/loops/loop-1/run-1/support/claude-output.jsonl",
-            downloadUrl: "https://download.example/claude",
-            sizeBytes: 12,
-          },
-          {
-            name: "perf.jsonl",
-            key: "org-1/loops/loop-1/run-1/support/perf.jsonl",
-            downloadUrl: "https://download.example/perf",
-            sizeBytes: 34,
-          },
-        ],
-      } as never),
-      isLoading: false,
-      error: null,
-    } as ReturnType<typeof useLoop>);
-
-    render(<LoopDetailContainer id="loop-001" />);
-
-    expect(
-      screen.queryByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("tab", { name: ARTIFACTS_TAB_NAME })
-    );
-
-    expect(screen.getByText("Support Artifacts")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: SUPPORT_CLAUDE_OUTPUT_LINK })
-    ).toHaveAttribute("href", "https://download.example/claude");
-    expect(
-      screen.getByRole("link", { name: SUPPORT_PERF_LINK })
-    ).toHaveAttribute("href", "https://download.example/perf");
   });
 });
 

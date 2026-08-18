@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { safeStorageTokenCountSchema } from "../token-counts.js";
+import { safeStorageTokenCountSchema } from "../cost/token-counts.js";
 
 export const CodexOtelTokenUsageSource = {
   JsonlParser: "jsonl_parser",

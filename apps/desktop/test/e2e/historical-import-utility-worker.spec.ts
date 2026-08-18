@@ -18,11 +18,13 @@ const SEEDED_SESSION_ID = "utility-worker-e2e-session";
 const SEEDED_SLUG = "utility-worker-e2e";
 
 test.describe("Historical import utility worker", () => {
-  // QUARANTINED (FEA-2187): flaky since the FEA-1791 store rewrite (PR #2016,
-  // reader pool). Freshly-imported rows intermittently don't appear in the
-  // Sessions list — a read-your-writes WAL visibility race against the pooled
-  // reader connections. Un-fixme once the store fix lands.
-  // biome-ignore lint/suspicious/noSkippedTests: quarantined flake tracked by FEA-2187
+  // QUARANTINED (ISS-5717, expires 2026-11-27): flaky since the FEA-1791 store
+  // rewrite (PR #2016, reader pool). Freshly-imported rows intermittently
+  // don't appear in the Sessions list — a read-your-writes WAL visibility
+  // race against the pooled reader connections. FEA-2187 shipped that fix and
+  // is DONE, but nothing un-fixme'd this case, so ISS-5717 owns verifying it
+  // (>= 20 consecutive passes) before the modifier comes off.
+  // biome-ignore lint/suspicious/noSkippedTests: quarantined flake tracked by ISS-5717
   test.fixme("imports a seeded Claude transcript through the built app", async () => {
     const claudeHome = fs.mkdtempSync(
       path.join(os.tmpdir(), "desktop-history-worker-claude-")

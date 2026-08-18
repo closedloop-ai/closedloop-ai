@@ -44,6 +44,10 @@ export class EcsComputeProvider implements ComputeProvider {
   ): Promise<LaunchResult> {
     const taskArn = await runEcsTask({
       loopId: ctx.loopId,
+      // Runner-token JTI: reissued per launch, so it discriminates this launch
+      // attempt from a later relaunch of the same loop in the RunTask
+      // idempotency token.
+      launchAttemptId: ctx.tokenId,
       organizationId: ctx.organizationId,
       command: ctx.command,
       s3StateKey: prepared.s3StateKey!,

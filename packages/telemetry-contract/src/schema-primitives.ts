@@ -5,6 +5,7 @@ export const TelemetryTextMaxLength = {
   ServiceName: 128,
   ServiceVersion: 128,
   AppInstallationId: 128,
+  DeviceId: 128,
   AppOrganizationId: 64,
   DeploymentEnvironmentName: 128,
   ExceptionType: 128,
@@ -17,6 +18,8 @@ export const TelemetryTextMaxLength = {
   GenAiRequestModel: 256,
   GenAiResponseId: 256,
 } as const;
+
+export const TelemetryDurationMsMax = 86_400_000;
 
 /** Returns true when a string contains no ASCII control characters. */
 export const hasNoControlCharacters = (value: string) =>

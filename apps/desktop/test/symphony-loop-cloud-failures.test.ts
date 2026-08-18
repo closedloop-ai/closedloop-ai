@@ -20,8 +20,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
-import { JobStore } from "../src/main/job-store.js";
-import { LoopTokenStore } from "../src/main/loop-token-store.js";
+import { JobStore } from "../src/main/jobs/job-store.js";
+import { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
 import type { WorktreeProvider } from "../src/server/operations/symphony-loop.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
@@ -29,6 +29,7 @@ import {
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import { writeFakeClaudeScript } from "./helpers/fake-harness-artifacts.js";
 import { createTestLoopTokenSafeStorage } from "./loop-token-test-utils.js";
 import {
   createFakeRunLoopScript,
@@ -90,7 +91,7 @@ async function waitForJobTerminal(
   jobStore: JobStore,
   loopId: string,
   timeoutMs = 20_000
-): Promise<import("../src/main/job-store.js").LocalJob> {
+): Promise<import("../src/main/jobs/job-store.js").LocalJob> {
   const deadline = Date.now() + timeoutMs;
   const terminalStatuses = new Set([
     "COMPLETED",
@@ -157,10 +158,9 @@ test("EXECUTE: artifact upload failure sets ARTIFACT_UPLOAD_FAILED in completed 
   // still emitting token usage so EXECUTE can complete through git fallback.
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    FAKE_CLAUDE_SUCCESS_WITH_TOKENS_NO_RESULT,
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    FAKE_CLAUDE_SUCCESS_WITH_TOKENS_NO_RESULT
   );
 
   process.env.CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE = "1";
@@ -390,10 +390,9 @@ test("EXECUTE relay: event post failure logged as warning in job store", async (
   // still emitting token usage so EXECUTE can complete through git fallback.
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    FAKE_CLAUDE_SUCCESS_WITH_TOKENS_NO_RESULT,
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    FAKE_CLAUDE_SUCCESS_WITH_TOKENS_NO_RESULT
   );
 
   process.env.CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE = "1";
@@ -714,10 +713,9 @@ test("PLAN: bootstrap plugin registry does not block native prompt launch", asyn
   // so the claude stub is the sole main-harness mock and touches the marker.
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    ["#!/bin/sh", `touch "${spawnMarker}"`, "exit 0"].join("\n"),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    ["#!/bin/sh", `touch "${spawnMarker}"`, "exit 0"].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -813,10 +811,9 @@ test("PLAN: bootstrap output post failure injection does not block native prompt
   // so the claude stub is the sole main-harness mock and touches the marker.
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
-  await fs.writeFile(
-    path.join(fakeBin, "claude"),
-    ["#!/bin/sh", `touch "${spawnMarker}"`, "exit 0"].join("\n"),
-    { mode: 0o755 }
+  await writeFakeClaudeScript(
+    fakeBin,
+    ["#!/bin/sh", `touch "${spawnMarker}"`, "exit 0"].join("\n")
   );
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();

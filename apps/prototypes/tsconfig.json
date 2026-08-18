@@ -1,0 +1,23 @@
+{
+  "extends": ["@repo/typescript-config/nextjs.json"],
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["./*"],
+      // Deliberately narrower than the base config's "@repo/*" mapping: only
+      // the design system resolves. @repo/database, @repo/api, @repo/auth etc.
+      // stay unresolvable here — the sandbox isolation boundary
+      // (docs/design/prototype-sandbox.md) is structural, not a convention.
+      "@closedloop-ai/design-system": ["../../packages/design-system"],
+      "@repo/design-system": ["../../packages/design-system"],
+      "@closedloop-ai/design-system/*": ["../../packages/design-system/*"],
+      "@repo/design-system/*": ["../../packages/design-system/*"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "next.config.ts",
+    "**/*.ts",
+    "**/*.tsx",
+    ".next/types/**/*.ts"
+  ]
+}

@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
-import { seedReposConfig } from "../src/main/seed-repos-config.js";
+import { seedReposConfig } from "../src/main/settings/seed-repos-config.js";
 import {
   loadReposConfig,
   saveReposConfig,

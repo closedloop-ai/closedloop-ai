@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
-import { afterEach, describe, mock, test } from "node:test";
+import { afterEach, describe, test } from "node:test";
 import type { Worker } from "node:worker_threads";
-import type { PreparedAgentSessionPayload } from "../src/main/agent-session-sync-payload.js";
-import { createAgentSessionPayloadWorkerPreparer } from "../src/main/agent-session-sync-payload-worker-runner.js";
+import { vi } from "vitest";
+import {
+  createAgentSessionPayloadWorkerPreparer,
+  PAYLOAD_WORKER_REQUEST_TIMEOUT_MS,
+} from "../src/main/agent-session-sync-payload-worker-runner.js";
+import type { PreparedAgentSessionPayload } from "../src/main/agent-sync/agent-session-sync-payload.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
 const WORKER_FAILURE_RE = /boom/;
 const WORKER_ERROR_RE = /worker exploded/;
 const WORKER_EXIT_RE = /agent-session payload worker exited 3/;
 const WORKER_DISPOSED_RE = /agent-session payload worker disposed/;
+const WORKER_TIMEOUT_RE = /agent-session payload worker timed out/;
+const WORKER_TERMINATED_RE = /terminated after a 30000ms request timeout/;
+const WORKER_DISPATCH_RE = /postMessage exploded/;
+const WORKER_CIRCULAR_RE = /circular structure/;
 
 type WorkerListener = (arg: never) => void;
 
@@ -15,11 +24,11 @@ type WorkerListener = (arg: never) => void;
 // postMessage/terminate/unref and lets a test drive the message/error/exit
 // events the runner subscribes to via `on`.
 class FakePayloadWorker {
-  readonly postMessage = mock.fn((_message: unknown) => {
+  readonly postMessage = vi.fn((_message: unknown) => {
     // no-op: the runner only fires messages at us; it never reads a return.
   });
-  readonly unref = mock.fn(() => this);
-  readonly terminate = mock.fn(() => Promise.resolve(0));
+  readonly unref = vi.fn(() => this);
+  readonly terminate = vi.fn(() => Promise.resolve(0));
   private readonly listeners = new Map<string, WorkerListener[]>();
 
   on(event: string, listener: WorkerListener): this {
@@ -40,18 +49,21 @@ class FakePayloadWorker {
     if (!call) {
       throw new Error("expected a postMessage call before reading requestId");
     }
-    return (call.arguments[0] as { requestId: string }).requestId;
+    return (call[0] as { requestId: string }).requestId;
   }
 }
 
-function createPreparerWithFakeWorkers() {
+function createPreparerWithFakeWorkers(requestTimeoutMs?: number) {
   const workers: FakePayloadWorker[] = [];
-  const createWorker = mock.fn((): Worker => {
+  const createWorker = vi.fn((): Worker => {
     const fake = new FakePayloadWorker();
     workers.push(fake);
     return fake as unknown as Worker;
   });
-  const preparer = createAgentSessionPayloadWorkerPreparer(createWorker);
+  const preparer = createAgentSessionPayloadWorkerPreparer(
+    createWorker,
+    requestTimeoutMs
+  );
   return { preparer, createWorker, workers };
 }
 
@@ -64,7 +76,7 @@ function ignorePending(promise: Promise<unknown>): void {
 }
 
 afterEach(() => {
-  mock.restoreAll();
+  vi.restoreAllMocks();
 });
 
 describe("createAgentSessionPayloadWorkerPreparer", () => {
@@ -92,7 +104,7 @@ describe("createAgentSessionPayloadWorkerPreparer", () => {
 
     const pending = preparer([], 2048);
     const worker = workers[0];
-    const message = worker.postMessage.mock.calls[0]?.arguments[0] as {
+    const message = worker.postMessage.mock.calls[0]?.[0] as {
       requestId: string;
       maxBytes: number;
     };
@@ -127,6 +139,62 @@ describe("createAgentSessionPayloadWorkerPreparer", () => {
     });
 
     await assert.rejects(pending, WORKER_FAILURE_RE);
+  });
+
+  test("FEA-4014: reconstructs a worker TypeError so serialization failures classify as local", async () => {
+    // The worker relays only error text + name across the boundary. A worker-side
+    // serialization failure (circular/bigint from JSON.stringify in prep) is a
+    // TypeError; the service's `isLocalSerializationError` classifies on
+    // `instanceof TypeError` to dead-letter it immediately. If the runner rebuilt
+    // every worker error as a plain Error, that deterministic bug would be
+    // misclassified as a transient socket fault and earn the retry budget instead.
+    const { preparer, workers } = createPreparerWithFakeWorkers();
+    const pending = preparer([], 1000);
+    const worker = workers[0];
+
+    worker.emit("message", {
+      requestId: worker.lastRequestId(),
+      ok: false,
+      error: "Converting circular structure to JSON",
+      errorName: "TypeError",
+    });
+
+    const rejection = await pending.then(
+      () => {
+        throw new Error("expected the request to reject");
+      },
+      (error: unknown) => error
+    );
+    assert.ok(
+      rejection instanceof TypeError,
+      "a worker-reported TypeError is reconstructed as a TypeError, not a plain Error"
+    );
+    assert.match((rejection as Error).message, WORKER_CIRCULAR_RE);
+  });
+
+  test("FEA-4014: a worker error without a relayed name falls back to a plain Error", async () => {
+    // Version-skew / non-Error throw: an omitted errorName must degrade to Error,
+    // never crash the reconstruction.
+    const { preparer, workers } = createPreparerWithFakeWorkers();
+    const pending = preparer([], 1000);
+    const worker = workers[0];
+
+    worker.emit("message", {
+      requestId: worker.lastRequestId(),
+      ok: false,
+      error: "socket hang up",
+    });
+
+    const rejection = await pending.then(
+      () => {
+        throw new Error("expected the request to reject");
+      },
+      (error: unknown) => error
+    );
+    assert.ok(
+      rejection instanceof Error && !(rejection instanceof TypeError),
+      "an unnamed worker error rehydrates as a plain Error"
+    );
   });
 
   test("ignores messages for an unknown requestId, leaving pending requests intact", async () => {
@@ -192,6 +260,191 @@ describe("createAgentSessionPayloadWorkerPreparer", () => {
       2,
       "a clean exit still nulls the worker so the next call recreates it"
     );
+  });
+
+  test("FEA-4014: a worker that never answers rejects with a timeout instead of hanging forever", async () => {
+    // Regression for the "hangs at 5/13, never completes" startup-sync stall: a
+    // wedged worker used to leave the prepare promise pending forever, which
+    // pinned the sync service's single-flight `syncing` guard and froze the
+    // whole queue. The bounded per-request timeout must now settle it.
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      const { preparer, workers } = createPreparerWithFakeWorkers();
+      const pending = preparer([], 1000);
+      const worker = workers[0];
+      // The request was dispatched but the fake worker deliberately emits no
+      // reply — the classic hang.
+      assert.strictEqual(worker.postMessage.mock.calls.length, 1);
+
+      nodeTestTimers.tick(PAYLOAD_WORKER_REQUEST_TIMEOUT_MS);
+
+      await assert.rejects(pending, WORKER_TIMEOUT_RE);
+    } finally {
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("FEA-4014: a request timeout terminates the wedged worker so the next call spins up a fresh one", async () => {
+    // Regression: the timeout used to leave the (wedged) worker installed, so
+    // getWorker() handed the SAME unresponsive instance to every retry and later
+    // batch — turning a stall into queue-wide dead-lettering. The timeout must
+    // now terminate + null the worker so the next prepare recreates it.
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      const { preparer, createWorker, workers } =
+        createPreparerWithFakeWorkers();
+      const pending = preparer([], 1000);
+      const wedged = workers[0];
+      assert.strictEqual(wedged.postMessage.mock.calls.length, 1);
+
+      nodeTestTimers.tick(PAYLOAD_WORKER_REQUEST_TIMEOUT_MS);
+      await assert.rejects(pending, WORKER_TIMEOUT_RE);
+      assert.strictEqual(
+        wedged.terminate.mock.calls.length,
+        1,
+        "the timed-out worker is terminated, not left installed"
+      );
+
+      // The next prepare must NOT reuse the wedged worker — it creates a fresh one.
+      ignorePending(preparer([], 1000));
+      assert.strictEqual(
+        createWorker.mock.calls.length,
+        2,
+        "a fresh worker is created after a timeout invalidation"
+      );
+      assert.strictEqual(
+        workers[1]?.postMessage.mock.calls.length,
+        1,
+        "the next request is dispatched to the fresh worker"
+      );
+    } finally {
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("FEA-4014: a request timeout also rejects siblings still stuck on the wedged worker", async () => {
+    // Two requests share the wedged worker; the first request's timeout fires and
+    // invalidates the worker. The sibling can never be answered by a wedged loop,
+    // so it is rejected now (with the terminate reason) instead of dangling until
+    // its own timeout.
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      const { preparer, workers } = createPreparerWithFakeWorkers();
+      const first = preparer([], 1000);
+      const second = preparer([], 1000);
+      assert.strictEqual(workers.length, 1, "both requests share one worker");
+
+      nodeTestTimers.tick(PAYLOAD_WORKER_REQUEST_TIMEOUT_MS);
+
+      await assert.rejects(first, WORKER_TIMEOUT_RE);
+      await assert.rejects(second, WORKER_TERMINATED_RE);
+    } finally {
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("FEA-4014: cancels the request timer once the worker replies", async () => {
+    // Observably prove the timer is cleared (not merely that a stale timer is a
+    // harmless no-op): the reply resolves the request, and clearTimeout must be
+    // called for the resolved request's timer. If the clearTimeout on the reply
+    // path were removed this assertion fails.
+    nodeTestTimers.enable(["setTimeout"]);
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const { preparer, workers } = createPreparerWithFakeWorkers(50);
+      const pending = preparer([], 1000);
+      const worker = workers[0];
+      const payloads: PreparedAgentSessionPayload[] = [];
+
+      assert.strictEqual(
+        clearSpy.mock.calls.length,
+        0,
+        "no timer is cleared before the reply arrives"
+      );
+      worker.emit("message", {
+        requestId: worker.lastRequestId(),
+        ok: true,
+        payloads,
+      });
+      assert.strictEqual(await pending, payloads);
+      assert.strictEqual(
+        clearSpy.mock.calls.length,
+        1,
+        "the resolved request's timeout timer is cleared on reply"
+      );
+
+      // And a subsequent tick past the (now-cleared) deadline is inert.
+      assert.doesNotThrow(() => nodeTestTimers.tick(1000));
+    } finally {
+      clearSpy.mockRestore();
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("FEA-4014: the injected timeout fires at exactly the injected deadline, not before", async () => {
+    // Pin the deadline to the injected value: ticking one ms short must NOT
+    // reject, and ticking the final ms MUST. This fails if the injected
+    // requestTimeoutMs is ignored (e.g. the timer is hardcoded or removed).
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      const { preparer, workers } = createPreparerWithFakeWorkers(50);
+      const pending = preparer([], 1000);
+      assert.strictEqual(workers[0]?.postMessage.mock.calls.length, 1);
+
+      // 49ms: still inside the window — the request is not yet rejected.
+      nodeTestTimers.tick(49);
+      let settledEarly = false;
+      pending.then(
+        () => {
+          settledEarly = true;
+        },
+        () => {
+          settledEarly = true;
+        }
+      );
+      await Promise.resolve();
+      assert.strictEqual(
+        settledEarly,
+        false,
+        "the request is still pending one ms before the injected deadline"
+      );
+
+      // The final ms crosses the injected 50ms deadline — now it rejects.
+      nodeTestTimers.tick(1);
+      await assert.rejects(pending, WORKER_TIMEOUT_RE);
+    } finally {
+      nodeTestTimers.reset();
+    }
+  });
+
+  test("FEA-4014: a synchronous dispatch failure rejects immediately and leaves no lingering pending entry", async () => {
+    // If spinning up or messaging the worker throws synchronously, the request
+    // must settle now (not hang until the timeout) AND its pending/timer state
+    // must be cleaned up so a later timeout callback cannot fire on it.
+    nodeTestTimers.enable(["setTimeout"]);
+    try {
+      const workers: FakePayloadWorker[] = [];
+      const createWorker = vi.fn((): Worker => {
+        const fake = new FakePayloadWorker();
+        fake.postMessage.mockImplementation(() => {
+          throw new Error("postMessage exploded");
+        });
+        workers.push(fake);
+        return fake as unknown as Worker;
+      });
+      const preparer = createAgentSessionPayloadWorkerPreparer(createWorker);
+
+      const pending = preparer([], 1000);
+      await assert.rejects(pending, WORKER_DISPATCH_RE);
+
+      // The pending entry was removed, so advancing past any deadline is a no-op
+      // (an un-cleaned entry would throw an unhandled rejection here).
+      assert.doesNotThrow(() =>
+        nodeTestTimers.tick(PAYLOAD_WORKER_REQUEST_TIMEOUT_MS)
+      );
+    } finally {
+      nodeTestTimers.reset();
+    }
   });
 
   test("dispose rejects pending requests and terminates the worker", async () => {

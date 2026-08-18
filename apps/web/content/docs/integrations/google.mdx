@@ -1,0 +1,40 @@
+---
+title: Google
+description: 'Connect Google to import documents from Google Drive'
+---
+
+The Google integration lets you import content from Google Drive into Closedloop
+artifacts.
+
+## Connect
+
+1. In the web app, open **Settings → Integrations → Google** and start the
+   connect flow.
+2. Authorize Closedloop with your Google account through Google's OAuth consent
+   screen.
+3. Closedloop completes the connection and can then browse and import your Drive
+   files.
+
+## Import from Drive
+
+Once connected, browse your Drive folders and import a file's contents into a
+Closedloop document. The integration exposes file-listing and import endpoints
+under `/integrations/google`.
+
+## Status
+
+```bash
+curl https://api.closedloop.ai/integrations/google \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```
+
+The MCP server exposes `get-google-status`.
+
+## Disconnect
+
+Disconnect from **Settings → Integrations → Google**, or over the API:
+
+```bash
+curl -X DELETE https://api.closedloop.ai/integrations/google \
+  -H "Authorization: Bearer sk_live_YOUR_KEY"
+```

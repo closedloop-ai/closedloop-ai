@@ -5,6 +5,16 @@ import { googleService } from "../service";
 import { importGoogleDocsValidator } from "../validators";
 
 /**
+ * This route fetches and creates an artifact for every doc in the selected
+ * Drive folder before it responds, so it runs well past the platform default.
+ * The client pairs it with `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes); declaring
+ * the same ceiling here is what makes that deadline meaningful — without it the
+ * platform terminates the function first and the client surfaces a 504 long
+ * before its own deadline fires (PR #4321 review).
+ */
+export const maxDuration = 300;
+
+/**
  * POST /integrations/google/import
  *
  * Import all Google Docs from a folder as PRD artifacts.

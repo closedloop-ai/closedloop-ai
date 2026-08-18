@@ -2,26 +2,8 @@ import type { JsonObject } from "@repo/api/src/types/common";
 import type { Prisma } from "@repo/database";
 import { z } from "zod";
 import { parseJsonObject } from "@/lib/json-schema";
-import { toNumber } from "@/lib/prisma-number";
 
 const uuidSchema = z.uuid();
-
-export function decimalToNumber(
-  value: Prisma.Decimal | number | null | undefined
-): number {
-  return toNumber(value);
-}
-
-// Token-usage columns are BigInt in Postgres (int8) so a single huge synced
-// session can't overflow int4 and fail the upsert. The cloud surfaces expose
-// them as JS numbers, which is exact up to Number.MAX_SAFE_INTEGER — the same
-// ceiling the desktop side preserves — so narrowing here is lossless in practice
-// and keeps these counts JSON-serializable.
-export function tokenCountToNumber(
-  value: bigint | number | null | undefined
-): number {
-  return toNumber(value);
-}
 
 export function parseJsonArray<T>(value: unknown, schema: z.ZodType<T>): T[] {
   const parsed = z.array(schema).safeParse(value);
@@ -35,15 +17,6 @@ export function parseJsonValue<T>(
 ): T {
   const parsed = schema.safeParse(value);
   return parsed.success ? parsed.data : fallback;
-}
-
-export function formatCurrency(value: number): string | null {
-  return value > 0
-    ? new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-      }).format(value)
-    : null;
 }
 
 export function toMetadata(value: unknown): JsonObject | null {

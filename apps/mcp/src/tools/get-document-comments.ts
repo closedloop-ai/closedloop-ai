@@ -1,6 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CommentThreadWithComments } from "@repo/api/src/types/comment.js";
-import { ThreadStatus } from "@repo/api/src/types/comment.js";
+import type {
+  CommentThreadWithComments,
+  DocumentThreadAnchorStatus as DocumentThreadAnchorStatusType,
+} from "@repo/api/src/types/comment.js";
+import {
+  resolveAnchorStatusKernel,
+  ThreadSource,
+  ThreadStatus,
+} from "@repo/api/src/types/comment.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
@@ -44,21 +51,24 @@ export function registerGetDocumentComments(
           query
         );
 
-        const mappedThreads = threads.map((thread) => ({
-          id: thread.id,
-          status: thread.status,
-          // NATIVE = unanchored artifact-level note; LIVEBLOCKS = anchored to
-          // document text; GITHUB = projected PR review thread.
-          source: thread.source,
-          artifactId: thread.artifactId,
-          createdAt: thread.createdAt,
-          comments: thread.comments.map((c) => ({
-            id: c.id,
-            plainText: c.plainText,
-            createdAt: c.createdAt,
-            author: c.authorId,
-          })),
-        }));
+        const mappedThreads = threads
+          .filter((thread) => thread.source !== ThreadSource.Native)
+          .map((thread) => ({
+            id: thread.id,
+            status: thread.status,
+            // `source` identifies the backing system. `anchorStatus` identifies
+            // whether a document comment is anchored to text or artifact-level.
+            source: thread.source,
+            anchorStatus: deriveDocumentCommentAnchorStatus(thread),
+            artifactId: thread.artifactId,
+            createdAt: thread.createdAt,
+            comments: thread.comments.map((c) => ({
+              id: c.id,
+              plainText: c.plainText,
+              createdAt: c.createdAt,
+              author: c.authorId,
+            })),
+          }));
 
         return {
           content: [
@@ -70,4 +80,22 @@ export function registerGetDocumentComments(
         };
       })
   );
+}
+
+function deriveDocumentCommentAnchorStatus(
+  thread: CommentThreadWithComments
+): DocumentThreadAnchorStatusType | null {
+  // Non-Liveblocks threads carry no legacy `anchorPreview` signal, so restrict
+  // the `anchorPreview`-based inference to Liveblocks sources by withholding
+  // `anchorPreview` from the shared kernel. An explicit, validated
+  // `metadata.anchorStatus` still wins for any source. The MCP surface keeps
+  // the kernel's neutral (`null`) result as-is (unlike the web feed, which
+  // maps neutral to `artifact-level`).
+  return resolveAnchorStatusKernel({
+    anchorStatus: thread.metadata?.anchorStatus,
+    anchorPreview:
+      thread.source === ThreadSource.Liveblocks
+        ? thread.metadata?.anchorPreview
+        : undefined,
+  });
 }

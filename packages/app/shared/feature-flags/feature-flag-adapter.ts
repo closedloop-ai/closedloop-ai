@@ -14,4 +14,20 @@ export type FeatureFlagAdapter = {
    * follow the rules of hooks. An unknown flag resolves to `false`.
    */
   useFeatureFlagEnabled: (key: string) => boolean;
+  /**
+   * Hook returning whether the named flag has actually been RESOLVED yet, as
+   * distinct from resolving to `false`.
+   *
+   * {@link FeatureFlagAdapter.useFeatureFlagEnabled} collapses "not loaded" into
+   * `false`, which is the right default for rendering but wrong for a data read:
+   * a surface that keys its request off a flag would issue the flag-off request
+   * first and refetch once the flag lands, so an enabled user still pays the
+   * cost the flag exists to avoid (wongk, FEA-1626).
+   *
+   * OPTIONAL. An adapter whose flags resolve synchronously — the desktop shell's
+   * Labs config, the static test adapter — has no unresolved state, so omitting
+   * it correctly reads as "always resolved". Only an asynchronous provider
+   * (PostHog on web) needs to implement it.
+   */
+  useFeatureFlagResolved?: (key: string) => boolean;
 };

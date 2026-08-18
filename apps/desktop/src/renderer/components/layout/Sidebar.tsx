@@ -1,6 +1,12 @@
 import {
+  Avatar,
+  AvatarFallback,
+} from "@closedloop-ai/design-system/components/ui/avatar";
+import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@closedloop-ai/design-system/components/ui/dropdown-menu";
 import {
@@ -15,20 +21,51 @@ import {
 } from "@closedloop-ai/design-system/components/ui/sidebar";
 import { SidebarCollapsibleSection } from "@closedloop-ai/design-system/components/ui/sidebar-collapsible-section";
 import { ThemeSubmenu } from "@closedloop-ai/design-system/components/ui/theme-submenu";
+import { AgentsNavBadge } from "@repo/app/agents/components/agents-nav-badge";
+import { InviteTeamDialog } from "@repo/app/organizations/components/invite-team-dialog";
+import { SessionLimitsNav } from "@repo/app/session-limits/components/session-limits-nav";
+import { SessionLimitsStatus } from "@repo/app/session-limits/types";
 import { SidebarSearchForm } from "@repo/app/shared/components/sidebar-search-form";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { getUserNamePart } from "@repo/app/shared/lib/user-utils";
+import { Link } from "@repo/navigation/link";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import { useSearchParamsValue } from "@repo/navigation/use-search-params-value";
-import { ChevronsUpDownIcon, Loader2Icon, SunMoonIcon } from "lucide-react";
-import { useEffect, useState } from "react";
 import {
-  FOCUS_MODE,
+  CheckIcon,
+  ChevronsUpDownIcon,
+  LogInIcon,
+  SunMoonIcon,
+  UserPlusIcon,
+  UserRoundIcon,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import { DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
+import { useSessionLimits } from "../../hooks/use-session-limits";
+import {
   type NavEntry,
+  NavSection,
   navItemsForSection,
 } from "../../navigation/nav-config";
 import { hrefForNavId, NavId } from "../../navigation/route-table";
 import { isMacOS } from "../../platform";
+import { useDesktopAuth } from "../../shared-agent-sessions/desktop-auth-provider";
+import { useDesktopIdentity } from "../../shared-agent-sessions/use-desktop-identity";
+import {
+  GuestSignupIntent,
+  useGuestSignup,
+} from "../onboarding/guest-signup-provider";
+import {
+  InviteSpotlightAnchor,
+  InviteSpotlightPopover,
+  useInviteSpotlightHighlight,
+} from "../onboarding/invite-spotlight";
+import {
+  canOfferAccount,
+  useGuestOnboarding,
+} from "../onboarding/use-guest-onboarding";
+import { ClosedloopMark } from "./closedloop-mark";
 import { DESKTOP_LABS_NAV_SECTION_STORAGE_KEY } from "./sidebar-persistence";
-import { useDashboardReady } from "./use-dashboard-ready";
 
 type SidebarProps = {
   activeNav: NavId;
@@ -39,8 +76,9 @@ type SidebarProps = {
 /**
  * Desktop sidebar mirroring the finalized web GlobalSidebar: search on top, the
  * shared top-level / Artifacts / Gateway / Labs nav structure from nav-config,
- * and a footer with product branding. Items render port links (hrefForNavId),
- * so navigation flows through the desktop navigation adapter exactly like shared
+ * and a footer account menu (identity trigger + Settings/Diagnostics + theme),
+ * mirroring web's AccountMenu. Items render port links (hrefForNavId), so
+ * navigation flows through the desktop navigation adapter exactly like shared
  * component links do.
  */
 export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
@@ -52,16 +90,13 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
   const visible = (section: Parameters<typeof navItemsForSection>[0]) =>
     navItemsForSection(section).filter((entry) => !isHidden(entry));
 
-  const mainItems = visible("main");
-  const artifactItems = visible("artifacts");
-  const gatewayItems = visible("gateway");
-  const labsItems = visible("labs");
-
-  // Sessions is the landing page; the local-first Dashboard ingests in the
-  // background. The Dashboard remains reachable while preparing because its
-  // first live DB read releases the main-process startup path that starts
-  // collectors. The throbber is status-only.
-  const dashboardReady = useDashboardReady();
+  const mainItems = visible(NavSection.Main);
+  const artifactItems = visible(NavSection.Artifacts);
+  const gatewayItems = visible(NavSection.Gateway);
+  const labsItems = visible(NavSection.Labs);
+  // ISS-4478: Settings + Diagnostics render inside the footer account menu
+  // (mirroring web's AccountMenu), not as a top-level sidebar section.
+  const accountItems = visible(NavSection.Account);
 
   useEffect(() => {
     setSearch(searchParams.get("search") ?? "");
@@ -95,11 +130,7 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
       <SidebarContent className="gap-1 pt-2">
         {mainItems.length > 0 && (
           <SidebarGroup className="px-0 py-1">
-            <NavSectionMenu
-              activeNav={activeNav}
-              dashboardReady={dashboardReady}
-              items={mainItems}
-            />
+            <NavSectionMenu activeNav={activeNav} items={mainItems} />
           </SidebarGroup>
         )}
 
@@ -118,7 +149,11 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
         {labsItems.length > 0 && (
           <SidebarCollapsibleSection
             className="px-0 py-1"
-            defaultOpen={!FOCUS_MODE}
+            // ISS-4478: Labs starts collapsed by default (expands on click, its
+            // open state then persists). Explicitly `false` rather than derived
+            // from FOCUS_MODE so it stays collapsed even if FOCUS_MODE is later
+            // turned off.
+            defaultOpen={false}
             persistenceKey={DESKTOP_LABS_NAV_SECTION_STORAGE_KEY}
             title="Labs"
           >
@@ -127,8 +162,10 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
         )}
       </SidebarContent>
       <SidebarFooter className="px-0 pt-1 pb-0">
+        <SessionLimitsFooter />
         <SidebarMenu>
-          <GatewayMenu />
+          <InviteTeamMenuItem />
+          <AccountMenu accountItems={accountItems} activeNav={activeNav} />
         </SidebarMenu>
       </SidebarFooter>
     </SidebarRoot>
@@ -136,23 +173,166 @@ export function Sidebar({ activeNav, hiddenNavIds }: SidebarProps) {
 }
 
 /**
- * Footer gateway menu mirroring the web AccountMenu: the branded "Closedloop
- * Gateway" button opens a dropdown with theme controls.
+ * Subscription session-limit summary (PRD-538) above the gateway menu, behind
+ * the `subscriptionSessionLimits` Labs toggle (ISS-4779 closed-by-default;
+ * default off — the feature is not product-approved yet, Mike 2026-08-07).
+ *
+ * The gate is checked HERE rather than inside the nav so that with the toggle
+ * off the reading component never mounts at all: no snapshot IPC, no interval,
+ * nothing. One key covers the whole feature — the same flag suppresses the
+ * credential read and the `/usage` request in the main process (PRD-538 R5) —
+ * so capture can never run while the bars stay hidden. Desktop-only, so there is
+ * no PostHog twin to keep in lockstep.
  */
-function GatewayMenu() {
+function SessionLimitsFooter() {
+  const enabled = useFeatureFlagEnabled(
+    DESKTOP_SUBSCRIPTION_SESSION_LIMITS_FEATURE_FLAG_KEY
+  );
+  if (!enabled) {
+    return null;
+  }
+  return <SessionLimitsFooterContent />;
+}
+
+/**
+ * The gated half, split out so the snapshot hook is not called at all while the
+ * flag is off (hooks cannot live behind a conditional in one component).
+ */
+function SessionLimitsFooterContent() {
+  const state = useSessionLimits();
+  if (state.status === SessionLimitsStatus.Unavailable) {
+    return null;
+  }
+  return <SessionLimitsNav state={state} />;
+}
+
+/**
+ * "Invite your team" affordance (PRD-532 §5.4 / M9). Opens the shared
+ * {@link InviteTeamDialog}, which mints real Clerk org invitations through the
+ * BFF route; on accept the Clerk membership webhook syncs a durable MEMBER into
+ * the existing org.
+ */
+function InviteTeamMenuItem() {
+  const guest = useGuestOnboarding();
+  const { requestSignup, resuming, clearResume } = useGuestSignup();
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const spotlightHighlight = useInviteSpotlightHighlight(
+    InviteSpotlightAnchor.Sidebar
+  );
+
+  // Resume the interrupted job: someone who signed up FROM here wanted to
+  // invite a teammate, so give them the dialog they were reaching for.
+  useEffect(() => {
+    if (resuming !== GuestSignupIntent.Invite) {
+      return;
+    }
+    setInviteOpen(true);
+    clearResume();
+  }, [resuming, clearResume]);
+
+  // ISS-5112: a guest has no organization to invite anyone INTO. The dialog
+  // mints real Clerk invitations against an org id, so opening it signed out is
+  // a control that cannot do its job — ask for the account first.
+  if (canOfferAccount(guest)) {
+    return (
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          onClick={() => requestSignup(GuestSignupIntent.Invite)}
+          tooltip="Invite your team"
+        >
+          <UserPlusIcon className="size-4" />
+          <span className="truncate">Invite your team</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    );
+  }
+
+  return (
+    <SidebarMenuItem>
+      {/* ISS-5489 (PLN-1694 M2): the arrival nudge points HERE — at where invite
+          actually lives — whenever this item is on screen. Renders the plain
+          dialog trigger otherwise. */}
+      <InviteSpotlightPopover anchor={InviteSpotlightAnchor.Sidebar}>
+        <InviteTeamDialog
+          onOpenChange={setInviteOpen}
+          open={inviteOpen}
+          trigger={
+            <SidebarMenuButton
+              className={spotlightHighlight}
+              tooltip="Invite your team"
+            >
+              <UserPlusIcon className="size-4" />
+              <span className="truncate">Invite your team</span>
+            </SidebarMenuButton>
+          }
+        />
+      </InviteSpotlightPopover>
+    </SidebarMenuItem>
+  );
+}
+
+/**
+ * Footer account menu mirroring the web AccountMenu shape: the trigger shows the
+ * signed-in organization (or account) name with the Closedloop mark as the
+ * avatar, so it reads as "me and my stuff" — a target someone hunting for
+ * Settings can aim at — rather than product branding (ISS-4478 review). The
+ * account destinations (Settings, Diagnostics) live here as `<Link>` menu items,
+ * the same pattern web's AccountMenu uses for its Settings link, above the theme
+ * controls. The active destination carries a trailing check, matching web's
+ * active-org row, so opening the menu while on Settings shows you are there.
+ */
+function AccountMenu({
+  accountItems,
+  activeNav,
+}: {
+  accountItems: NavEntry[];
+  activeNav: NavId;
+}) {
+  const accountLabel = useAccountLabel();
+  const guest = useGuestOnboarding();
+  const { requestSignup } = useGuestSignup();
+
+  // ISS-5112: the signed-in trigger reads an organization name, and the fallback
+  // reads "Account" — both claim a thing a guest does not have. An empty-state
+  // avatar and the literal word "Guest" say what is actually true.
+  //
+  // The MENU itself stays, and that is the whole point: Settings and Diagnostics
+  // have no other link site in the renderer and no Electron app-menu entry, and
+  // Settings is where the Labs tab lives — including the `guest-onboarding`
+  // toggle. A guest-only branch that dropped the dropdown would strip a
+  // signed-out user of Settings, Diagnostics and the theme controls, and trap
+  // them with no way to switch this very flag back off.
+  const isGuest = canOfferAccount(guest);
+
   return (
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <SidebarMenuButton
+            aria-label="Open account menu"
             className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
             size="lg"
-            tooltip="Closedloop Gateway"
+            tooltip={isGuest ? "Guest" : accountLabel}
           >
-            <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--foreground)] text-[var(--background)]">
-              <ClosedloopMark />
-            </div>
-            <span className="truncate font-medium">Closedloop Gateway</span>
+            {isGuest ? (
+              // An Avatar with only its fallback — a person with no picture yet,
+              // which is what a guest is. An earlier revision used a dashed
+              // border, but a dashed outline means "nothing here yet" in this
+              // product (the dashboard's own empty card is the other one), and a
+              // guest is a person, not a missing thing.
+              <Avatar className="size-8 shrink-0 rounded-lg">
+                <AvatarFallback className="rounded-lg bg-muted text-muted-foreground">
+                  <UserRoundIcon aria-hidden="true" className="size-4" />
+                </AvatarFallback>
+              </Avatar>
+            ) : (
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--foreground)] text-[var(--background)]">
+                <ClosedloopMark />
+              </div>
+            )}
+            <span className="truncate font-medium">
+              {isGuest ? "Guest" : accountLabel}
+            </span>
             <ChevronsUpDownIcon className="ml-auto size-4 opacity-60" />
           </SidebarMenuButton>
         </DropdownMenuTrigger>
@@ -162,6 +342,41 @@ function GatewayMenu() {
           side="top"
           sideOffset={4}
         >
+          {isGuest && (
+            <>
+              <DropdownMenuItem
+                onSelect={() => requestSignup(GuestSignupIntent.Header)}
+              >
+                <LogInIcon className="size-4" />
+                {/* "Create account", not "Sign In". Desktop auth is a single
+                    loopback OAuth door, so a differently-named control here
+                    promises a second path that does not exist — the same reason
+                    `account-dialog` dropped its "Already have an account?"
+                    footer — and this one opened a dialog headed "Create your
+                    account". It was also the only Title Case sign-in string in
+                    the renderer. */}
+                Create account
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+            </>
+          )}
+          {accountItems.map((item) => {
+            const isActive = activeNav === item.id;
+            return (
+              <DropdownMenuItem asChild key={item.id}>
+                <Link
+                  aria-current={isActive ? "page" : undefined}
+                  href={hrefForNavId(item.id)}
+                >
+                  <item.icon className="size-4" />
+                  {item.label}
+                  {isActive && (
+                    <CheckIcon className="ml-auto size-4 text-muted-foreground" />
+                  )}
+                </Link>
+              </DropdownMenuItem>
+            );
+          })}
           <ThemeSubmenu icon={<SunMoonIcon className="size-4" />} />
         </DropdownMenuContent>
       </DropdownMenu>
@@ -169,68 +384,52 @@ function GatewayMenu() {
   );
 }
 
+/**
+ * The signed-in display name for the footer account trigger: organization name,
+ * then the user's name, then email, falling back to a generic "Account" label so
+ * the trigger always reads as an account slot even before the identity fetch
+ * settles, when signed out, or when the identity bridge is absent (test stubs).
+ */
+function useAccountLabel(): string {
+  const { state } = useDesktopAuth();
+  const { identity } = useDesktopIdentity(state.status, state.userId);
+  const userName = identity ? getUserNamePart(identity) : "";
+  return identity?.organizationName || userName || identity?.email || "Account";
+}
+
 function NavSectionMenu({
   items,
   activeNav,
-  dashboardReady = true,
 }: {
   items: NavEntry[];
   activeNav: NavId;
-  /**
-   * Whether the local-first Dashboard analytics are ready. While false, the
-   * Dashboard nav item remains reachable and shows a throbber while its page
-   * handles the loading/progress state.
-   */
-  dashboardReady?: boolean;
 }) {
   return (
     <SidebarMenu className="gap-0">
       {items.map((item) => {
-        const preparing = item.id === NavId.Dashboard && !dashboardReady;
+        const isActive = activeNav === item.id;
         return (
           <SidebarNavLinkItem
             className="text-sm"
             href={hrefForNavId(item.id)}
             icon={<item.icon />}
-            isActive={activeNav === item.id}
+            isActive={isActive}
             key={item.id}
             title={item.label}
-            tooltip={preparing ? "Dashboard · preparing…" : item.label}
-            trailing={preparing ? <DashboardThrobber /> : undefined}
+            tooltip={item.label}
+            trailing={
+              item.id === NavId.Agents ? (
+                // The badge reads its org scope from the injected auth port, so
+                // the per-org last-visited marker is scoped automatically — a
+                // shared machine with more than one desktop login no longer
+                // drains one org's badge with another's visit.
+                <AgentsNavBadge isActive={isActive} />
+              ) : undefined
+            }
           />
         );
       })}
     </SidebarMenu>
-  );
-}
-
-/** Spinner shown on the Dashboard nav item while local analytics ingest. */
-function DashboardThrobber() {
-  return (
-    <Loader2Icon
-      aria-label="Preparing dashboard"
-      className="ml-auto size-3 shrink-0 animate-spin text-muted-foreground"
-    />
-  );
-}
-
-function ClosedloopMark() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="size-4"
-      fill="none"
-      viewBox="0 0 100 100"
-    >
-      <path
-        d="M0.424623 49.6765C0.339767 56.2176 1.55939 62.7103 4.01272 68.7779C6.46604 74.8455 10.1042 80.3673 14.7161 85.0227C19.3281 89.6781 24.8219 93.3744 30.8788 95.8973C36.9358 98.4202 43.4352 99.7193 50 99.7193C56.5648 99.7193 63.0643 98.4202 69.1212 95.8973C75.1782 93.3744 80.672 89.6781 85.2839 85.0227C89.8958 80.3673 93.534 74.8455 95.9873 68.7779C98.4406 62.7103 99.6603 56.2176 99.5754 49.6765C99.5754 49.5115 99.5754 49.3546 99.5754 49.1895H71.7496C71.7496 49.3546 71.7496 49.5115 71.7496 49.6765C71.7496 53.9658 70.473 58.1587 68.0814 61.7249C65.6898 65.2912 62.2906 68.0706 58.3136 69.7117C54.3367 71.3527 49.9606 71.7817 45.739 70.9443C41.5174 70.1069 37.6398 68.0408 34.5966 65.0072C31.5535 61.9737 29.4815 58.109 28.6428 53.902C27.804 49.695 28.2361 45.3346 29.8845 41.3723C31.5329 37.4101 34.3235 34.0239 37.9033 31.6421C41.4831 29.2603 45.6914 27.9899 49.9959 27.9915H50.0704L50.0373 0.280626C43.524 0.275203 37.0735 1.54886 31.0545 4.02881C25.0354 6.50876 19.5659 10.1464 14.9583 14.7338C10.3508 19.3211 6.69575 24.7683 4.20197 30.764C1.70819 36.7597 0.424621 43.1863 0.424623 49.6765Z"
-        fill="currentColor"
-      />
-      <path
-        d="M57.1534 0.801147V29.2137C60.1811 30.2616 62.939 31.9629 65.2303 34.1961C67.5215 36.4293 69.2895 39.1392 70.4077 42.1323H99.004C97.3792 31.6897 92.4381 22.0411 84.906 14.6024C77.3738 7.16375 67.6471 2.32669 57.1534 0.801147Z"
-        fill="#41A3FF"
-      />
-    </svg>
   );
 }
 

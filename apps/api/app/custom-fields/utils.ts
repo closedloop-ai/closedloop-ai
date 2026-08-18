@@ -20,6 +20,14 @@ export const MAX_ENUM_OPTIONS_PER_FIELD = 100;
 export const MAX_TEXT_VALUE_LENGTH = 10_000;
 
 /**
+ * Separator between option names in a MULTI_ENUM field's display value.
+ *
+ * `enumOptionsService` re-derives the same string in SQL on rename, so this is
+ * the one place the separator is declared.
+ */
+export const MULTI_ENUM_DISPLAY_SEPARATOR = ", ";
+
+/**
  * Computes the human-readable display string for a custom field value.
  *
  * - TEXT: returns rawValue as-is
@@ -71,7 +79,7 @@ export async function computeDisplayValue(
       const names = ids
         .map((id) => enumOptions.find((opt) => opt.id === id)?.name)
         .filter((name): name is string => name !== undefined);
-      return names.join(", ");
+      return names.join(MULTI_ENUM_DISPLAY_SEPARATOR);
     }
 
     case CustomFieldType.Date: {

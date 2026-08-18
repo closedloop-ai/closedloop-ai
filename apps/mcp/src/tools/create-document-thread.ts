@@ -15,7 +15,7 @@ export function registerCreateDocumentThread(
     "create-document-thread",
     {
       description:
-        "Create a comment thread on a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.\n\nWith anchorText, the thread is anchored to that exact text in the document. Without anchorText, an unanchored artifact-level note is created — use this for triage notes or comments that don't reference specific document text.",
+        "Create a Liveblocks-backed comment thread on a document by UUID or slug (PRD-*, PLN-*, FEA-*). Pass the user's slug verbatim.\n\nWith anchorText, the thread is anchored to that exact text in the document. Without anchorText, an unanchored Liveblocks artifact-level document comment is created for comments that don't reference specific document text.",
       inputSchema: {
         documentId: z
           .string()
@@ -28,7 +28,7 @@ export function registerCreateDocumentThread(
           .min(1)
           .optional()
           .describe(
-            "Exact text in the document to anchor this comment to. Case-sensitive. Must be unique within the document. May span inline formatting (bold/italic) within a single textblock (paragraph, heading, list item, etc.), but cannot cross textblock boundaries. Omit to create an unanchored artifact-level note."
+            "Exact text in the document to anchor this comment to. Case-sensitive. Must be unique within the document. May span inline formatting (bold/italic) within a single textblock (paragraph, heading, list item, etc.), but cannot cross textblock boundaries. Omit to create an unanchored Liveblocks artifact-level document comment."
           ),
       },
     },

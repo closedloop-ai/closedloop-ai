@@ -17,6 +17,7 @@ import {
   TabsTrigger,
 } from "@repo/design-system/components/ui/tabs";
 import { Activity } from "lucide-react";
+import { useTabParam } from "../../../shared/hooks/use-tab-param";
 import { AgentOrchestrationGraph } from "./agent-orchestration-graph";
 import { ErrorPropagationMap } from "./error-propagation-map";
 import { SubagentEffectivenessPanel } from "./subagent-effectiveness-panel";
@@ -33,6 +34,18 @@ export function AgentSessionDetailAnalyticsTabs({
   defaultTab,
   events,
 }: AgentSessionDetailAnalyticsTabsProps) {
+  // FEA-3557: durable permalink for the analytics sub-tab. A dedicated `?view=`
+  // param (NOT `tab`) is used so this sub-view never collides with any
+  // top-level tab param on the enclosing session-detail page. Refresh /
+  // back-forward / copy-link all preserve the sub-tab; the default is omitted
+  // from the URL and an invalid `?view=` falls back to the default. Keeps the
+  // caller-supplied `defaultTab` as the fallback default.
+  const { activeTab, setActiveTab } = useTabParam<AgentSessionAnalyticsTab>({
+    defaultTab: defaultTab ?? AgentSessionAnalyticsTab.Orchestration,
+    paramName: "view",
+    validTabs: ANALYTICS_TABS,
+  });
+
   if (agents.length === 0 && !hasVisibleTelemetry(events)) {
     return null;
   }
@@ -46,9 +59,7 @@ export function AgentSessionDetailAnalyticsTabs({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <Tabs
-          defaultValue={defaultTab ?? AgentSessionAnalyticsTab.Orchestration}
-        >
+        <Tabs onValueChange={setActiveTab} value={activeTab}>
           <div className="overflow-x-auto pb-1">
             <TabsList className="w-max">
               <TabsTrigger value={AgentSessionAnalyticsTab.Effectiveness}>
@@ -100,3 +111,11 @@ export const AgentSessionAnalyticsTab = {
 
 export type AgentSessionAnalyticsTab =
   (typeof AgentSessionAnalyticsTab)[keyof typeof AgentSessionAnalyticsTab];
+
+/** Valid `?view=` values for the analytics sub-tab permalink (FEA-3557). */
+const ANALYTICS_TABS: readonly AgentSessionAnalyticsTab[] = [
+  AgentSessionAnalyticsTab.Effectiveness,
+  AgentSessionAnalyticsTab.Orchestration,
+  AgentSessionAnalyticsTab.ToolFlow,
+  AgentSessionAnalyticsTab.Errors,
+];

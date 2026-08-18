@@ -382,6 +382,102 @@ describe("local-gateway-session", () => {
     expect(getLastExchangeError()).toBeNull();
   });
 
+  it("invalidates a cached session for a different port before fetching a new one", async () => {
+    const otherPort = PORT + 5;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(mockChallengeOk("challenge-a"))
+      .mockResolvedValueOnce(mockExchangeOk("tok-a"))
+      .mockResolvedValueOnce(mockChallengeOk("challenge-b"))
+      .mockResolvedValueOnce(mockExchangeOk("tok-b"))
+      .mockResolvedValueOnce(mockChallengeOk("challenge-c"))
+      .mockResolvedValueOnce(mockExchangeOk("tok-c"));
+
+    const first = await ensureLocalGatewaySession(PORT);
+    expect(first).toBe("tok-a");
+
+    const second = await ensureLocalGatewaySession(otherPort);
+    expect(second).toBe("tok-b");
+
+    // Proves the stale port-A session was actually invalidated (not merely
+    // shadowed) — a call back to the original port must re-fetch, not reuse
+    // whatever the module-level cache happens to hold.
+    const third = await ensureLocalGatewaySession(PORT);
+    expect(third).toBe("tok-c");
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("returns null with 401 when no auth token provider has been configured", async () => {
+    setLocalGatewayAuthTokenProvider(null);
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    const token = await ensureLocalGatewaySession(PORT);
+
+    expect(token).toBeNull();
+    expect(getLastExchangeError()).toEqual({
+      message: "Unauthorized",
+      statusCode: 401,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the fallback challenge-failure message when the error body has no error field", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ reason: "not helpful" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const token = await ensureLocalGatewaySession(PORT);
+
+    expect(token).toBeNull();
+    expect(getLastExchangeError()).toEqual({
+      message: "challenge failed (503)",
+      statusCode: 503,
+    });
+  });
+
+  it("captures the challenge error when the challenge endpoint returns success:false with a 200 status", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: false,
+          error: "Challenge issuance disabled",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const token = await ensureLocalGatewaySession(PORT);
+
+    expect(token).toBeNull();
+    expect(getLastExchangeError()).toEqual({
+      message: "Challenge issuance disabled",
+      statusCode: 200,
+    });
+  });
+
+  it("treats a challenge response missing the challenge token as a failure", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          success: true,
+          data: { expiresAt: futureExpiry() },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    const token = await ensureLocalGatewaySession(PORT);
+
+    expect(token).toBeNull();
+    expect(getLastExchangeError()).toEqual({
+      message: "Failed to obtain challenge token",
+      statusCode: 502,
+    });
+  });
+
   it("clears stale exchange error when challenge fails on next attempt", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(mockChallengeOk())

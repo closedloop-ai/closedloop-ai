@@ -1,15 +1,17 @@
 import {
   FilledStatusCircle,
+  StatusDash,
   StatusRing,
 } from "@repo/design-system/components/ui/status-icon-primitives";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 
 /**
- * Generic, domain-agnostic building blocks for circular status icons.
- * `StatusRing` renders a percentage-complete arc + inner pie; `FilledStatusCircle`
- * renders a solid circle with a centered white glyph. Domain status-icon
- * components compose these to render their own status vocabularies.
+ * Generic, domain-agnostic building blocks for status icons. `StatusRing`
+ * renders a percentage-complete arc + inner pie; `FilledStatusCircle` renders a
+ * solid circle with a centered white glyph; `StatusDash` renders the muted dash
+ * for a population with nothing to measure. Domain status-icon components
+ * compose these to render their own status vocabularies.
  */
 const meta = {
   title: "Design System/Primitives/Status Icon Primitives",
@@ -120,6 +122,43 @@ export const Filled: Story = {
           fill="var(--warning)"
           glyph="exclamation"
           label="Exclamation"
+        />
+      </Swatch>
+    </div>
+  ),
+};
+
+/**
+ * `StatusDash` - the mark for a population with nothing to measure (a zero
+ * denominator), which is not the same as a real zero. It sits in a ring's slot
+ * at the same box size, so a row keeps its geometry, and it separates from
+ * every ring by silhouette rather than by fill, which is what survives 16px.
+ */
+export const Dash: Story = {
+  args: { percentage: 0, color: "var(--progress-foreground)", label: "Dash" },
+  render: () => (
+    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+      <Swatch label="16px">
+        <StatusDash label="Nothing to measure" size={16} />
+      </Swatch>
+      <Swatch label="20px">
+        <StatusDash label="Nothing to measure" size={20} />
+      </Swatch>
+      <Swatch label="vs empty ring">
+        <StatusRing
+          color="var(--progress-foreground)"
+          label="Empty ring"
+          percentage={0}
+          size={16}
+        />
+      </Swatch>
+      <Swatch label="vs dashed ring">
+        <StatusRing
+          color="var(--progress-foreground)"
+          dashed
+          label="Dashed ring"
+          percentage={0}
+          size={16}
         />
       </Swatch>
     </div>

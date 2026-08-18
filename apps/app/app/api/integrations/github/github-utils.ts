@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { GitHubConnectReturnStatus } from "@repo/api/src/types/github-status";
 import { z } from "zod";
 import { env } from "@/env";
 
@@ -185,7 +186,7 @@ export function getErrorRedirectUrl(
 ): string {
   const base = returnTo ?? "/settings";
   const url = new URL(base, env.NEXT_PUBLIC_APP_URL);
-  url.searchParams.set("github", "error");
+  url.searchParams.set("github", GitHubConnectReturnStatus.Error);
   url.searchParams.set("code", errorCode);
   return url.toString();
 }
@@ -196,7 +197,7 @@ export function getErrorRedirectUrl(
 export function getSuccessRedirectUrl(returnTo?: string): string {
   const base = returnTo ?? "/settings";
   const url = new URL(base, env.NEXT_PUBLIC_APP_URL);
-  url.searchParams.set("github", "connected");
+  url.searchParams.set("github", GitHubConnectReturnStatus.Connected);
   return url.toString();
 }
 

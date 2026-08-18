@@ -1,7 +1,7 @@
 /**
  * @file write-core-component-usage.test.ts
- * @description FEA-2923 (T-10.8) — desktop write-core component-usage
- * materialization tests.
+ * @description FEA-2923 (T-10.8) — desktop session-analytics-rollup
+ * component-usage materialization tests.
  *
  * Asserts the two independent write paths triggered by a session import:
  *   1. `agent_component_session_usage` — USAGE rows per (session, kind, key).
@@ -25,6 +25,7 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
 import { makeSession } from "./normalized-session-test-utils.js";
+import { ROLLUP_OPTS } from "./rollup-options-test-utils.js";
 
 const NOW = "2026-06-20T12:00:00.000Z";
 
@@ -175,7 +176,7 @@ async function insertSessionWithEvents(
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("write-core component usage materialization (T-10.8)", () => {
+describe("session-analytics-rollup component usage materialization (T-10.8)", () => {
   test("built-in tool (Read) produces a tool usage row and a component existence row", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "wc-tool-"));
     const db = await openDb(dir);
@@ -203,11 +204,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
 
       // Trigger the analytics rollup (which materializes component usage).
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -246,11 +247,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -266,6 +267,168 @@ describe("write-core component usage materialization (T-10.8)", () => {
 
       const comp = await queryComponent(db, "mcp", "myserver");
       assert.equal(comp.length, 1, "existence row for mcp/myserver");
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /* FEA-2642: agent-runtime / harness tools (ToolSearch, Monitor, Workflow, …)
+     carry data.kind='harness' from the parser (persisted by importToolEventData);
+     the rollup buckets them as component_kind='orchestration', NOT the generic
+     'tool' bucket. A built-in IO tool (data.kind='builtin') stays 'tool'. */
+  test("harness tool (data.kind='harness') buckets as orchestration, not tool (FEA-2642)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "wc-orch-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "sess-orchestration";
+      const mainAgentId = `${sessionId}:main`;
+      await insertSessionWithEvents(db, sessionId, "claude", [
+        {
+          id: `${sessionId}-evt-1`,
+          agentId: mainAgentId,
+          eventType: "PostToolUse",
+          toolName: "ToolSearch",
+          data: { tool_name: "ToolSearch", kind: "harness" },
+          createdAt: NOW,
+        },
+        {
+          id: `${sessionId}-evt-2`,
+          agentId: mainAgentId,
+          eventType: "PostToolUse",
+          toolName: "ToolSearch",
+          data: { tool_name: "ToolSearch", kind: "harness" },
+          createdAt: NOW,
+        },
+        // A built-in IO tool in the same session must still bucket as 'tool'.
+        {
+          id: `${sessionId}-evt-3`,
+          agentId: mainAgentId,
+          eventType: "PostToolUse",
+          toolName: "Read",
+          data: { tool_name: "Read", kind: "builtin" },
+          createdAt: NOW,
+        },
+      ]);
+
+      const { upsertSessionAnalyticsRollup } = await import(
+        "../src/main/database/session-analytics-rollup.js"
+      );
+      await db.prisma.write((client) =>
+        client.$transaction((tx) =>
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
+        )
+      );
+
+      // Harness tool → orchestration bucket, keyed by tool_name.
+      const orch = await queryUsage(db, sessionId, "orchestration");
+      assert.equal(orch.length, 1, "one orchestration usage row");
+      assert.equal(orch[0]?.component_kind, "orchestration");
+      assert.equal(orch[0]?.component_key, "ToolSearch");
+      assert.equal(orch[0]?.invocations, 2, "both harness calls counted");
+
+      // Built-in IO tool stays in the tool bucket — harness is NOT lumped in.
+      const tool = await queryUsage(db, sessionId, "tool");
+      assert.equal(tool.length, 1, "one tool usage row (Read only)");
+      assert.equal(tool[0]?.component_key, "Read");
+
+      const comp = await queryComponent(db, "orchestration", "ToolSearch");
+      assert.equal(
+        comp.length,
+        1,
+        "existence row for orchestration/ToolSearch"
+      );
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // FEA-2642: the orchestration split is forward-only. A tool event predating
+  // the data.kind signal (no kind field) must keep bucketing as 'tool' — never
+  // retroactively reclassified — so historical usage stays stable.
+  test("legacy tool event without data.kind stays in the tool bucket (FEA-2642 back-compat)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "wc-orch-legacy-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "sess-orch-legacy";
+      const mainAgentId = `${sessionId}:main`;
+      await insertSessionWithEvents(db, sessionId, "claude", [
+        {
+          id: `${sessionId}-evt-1`,
+          agentId: mainAgentId,
+          eventType: "PostToolUse",
+          toolName: "ToolSearch",
+          // No `kind` field — a row written before FEA-2642.
+          data: { tool_name: "ToolSearch" },
+          createdAt: NOW,
+        },
+      ]);
+
+      const { upsertSessionAnalyticsRollup } = await import(
+        "../src/main/database/session-analytics-rollup.js"
+      );
+      await db.prisma.write((client) =>
+        client.$transaction((tx) =>
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
+        )
+      );
+
+      const orch = await queryUsage(db, sessionId, "orchestration");
+      assert.equal(orch.length, 0, "no orchestration row without data.kind");
+      const tool = await queryUsage(db, sessionId, "tool");
+      assert.equal(
+        tool.length,
+        1,
+        "legacy row falls through to the tool bucket"
+      );
+      assert.equal(tool[0]?.component_key, "ToolSearch");
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // FEA-2642 end-to-end: a NormalizedSession whose parser classified a tool as
+  // kind='harness' must flow through importToolEventData (which now persists
+  // data.kind) into an 'orchestration' usage row — proving the kind is no
+  // longer dropped at import. A kind='builtin' tool stays in the tool bucket.
+  test("import path persists tool kind so harness tools roll up as orchestration (FEA-2642)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "wc-orch-e2e-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "sess-orch-e2e";
+      await db.importer.importSession(
+        makeSession({
+          sessionId,
+          startedAt: NOW,
+          endedAt: "2026-06-20T12:05:00.000Z",
+          toolUses: [
+            { name: "Workflow", kind: "harness", timestamp: NOW },
+            { name: "Read", kind: "builtin", timestamp: NOW },
+          ],
+        }),
+        "claude"
+      );
+
+      // Run the analytics rollup explicitly so the assertion targets the
+      // materialized usage rows deterministically.
+      const { upsertSessionAnalyticsRollup } = await import(
+        "../src/main/database/session-analytics-rollup.js"
+      );
+      await db.prisma.write((client) =>
+        client.$transaction((tx) =>
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
+        )
+      );
+
+      const orch = await queryUsage(db, sessionId, "orchestration");
+      assert.equal(orch.length, 1, "Workflow rolled up as orchestration");
+      assert.equal(orch[0]?.component_key, "Workflow");
+
+      const tool = await queryUsage(db, sessionId, "tool");
+      assert.equal(tool.length, 1, "Read stayed in the tool bucket");
+      assert.equal(tool[0]?.component_key, "Read");
     } finally {
       await db.close();
       await rm(dir, { recursive: true, force: true });
@@ -305,11 +468,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -359,11 +522,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -423,11 +586,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       );
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -475,11 +638,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       );
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -539,12 +702,12 @@ describe("write-core component usage materialization (T-10.8)", () => {
       );
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       // FIRST import only — this is where the pre-fix double-count occurred.
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -563,7 +726,7 @@ describe("write-core component usage materialization (T-10.8)", () => {
     }
   });
 
-  test("subagent spawn produces a subagent usage row", async () => {
+  test("definitionless subagent spawn produces invocation-backed usage without configured inventory", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "wc-sub-"));
     const db = await openDb(dir);
     try {
@@ -593,11 +756,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       );
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -606,12 +769,17 @@ describe("write-core component usage materialization (T-10.8)", () => {
       assert.equal(usage[0]?.component_kind, "subagent");
       assert.equal(usage[0]?.component_key, "code-review-agent");
       assert.equal(usage[0]?.invocations, 1);
+      assert.equal(
+        usage[0]?.agent_component_id,
+        null,
+        "runtime-only subagent usage stays unlinked until genuine inventory arrives"
+      );
 
       const comp = await queryComponent(db, "subagent", "code-review-agent");
       assert.equal(
         comp.length,
-        1,
-        "existence row for subagent/code-review-agent"
+        0,
+        "definitionless runtime subagents must not mint configured inventory"
       );
     } finally {
       await db.close();
@@ -666,12 +834,12 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       const rollup = () =>
         db.prisma.write((client) =>
           client.$transaction((tx) =>
-            upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+            upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
           )
         );
 
@@ -727,12 +895,12 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       // Run once to create both the usage and the existence row.
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -751,7 +919,7 @@ describe("write-core component usage materialization (T-10.8)", () => {
       // This assertion verifies the FK resolves on a second rollup pass.
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
       const usageAfterSecond = await queryUsage(db, sessionId, "tool");
@@ -842,11 +1010,11 @@ describe("write-core component usage materialization (T-10.8)", () => {
       ]);
 
       const { upsertSessionAnalyticsRollup } = await import(
-        "../src/main/database/write-core.js"
+        "../src/main/database/session-analytics-rollup.js"
       );
       await db.prisma.write((client) =>
         client.$transaction((tx) =>
-          upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+          upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
         )
       );
 
@@ -859,13 +1027,12 @@ describe("write-core component usage materialization (T-10.8)", () => {
       );
       assert.equal(usage[0]?.component_key, "unresolved_server");
       assert.equal(usage[0]?.invocations, 2, "both invocations are counted");
-      // (2) Recording is NOT gated on source resolution: on this first pass the
-      // FK is null (the inventory row is materialized after the usage insert),
-      // yet the invocation is fully recorded above.
-      assert.equal(
+      // (2) Recording is NOT gated on source resolution, but the first import
+      // now creates the unresolved inventory identity before the set-based
+      // relink, so the compatibility row is linked immediately.
+      assert.ok(
         usage[0]?.agent_component_id,
-        null,
-        "invocation recorded even though it resolved to no component on this pass"
+        "unresolved invocation links to its discovered component on first import"
       );
 
       // (3) The discovered component is SURFACED via an auto-materialized
@@ -923,11 +1090,11 @@ describe("FEA-2718: component usage vs omitEventData decoupling", () => {
       },
     ]);
     const { upsertSessionAnalyticsRollup } = await import(
-      "../src/main/database/write-core.js"
+      "../src/main/database/session-analytics-rollup.js"
     );
     await db.prisma.write((client) =>
       client.$transaction((tx) =>
-        upsertSessionAnalyticsRollup(tx, sessionId, NOW)
+        upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
       )
     );
   }
@@ -983,6 +1150,79 @@ describe("FEA-2718: component usage vs omitEventData decoupling", () => {
       assert.ok(
         !synced?.components || synced.components.length === 0,
         "component usage omitted when includeComponentUsage is not requested"
+      );
+    } finally {
+      await db.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+/**
+ * FEA-3294 — aggregate version attribution comes only from exact per-invocation
+ * evidence. A later filesystem/inventory hash must never rewrite an unresolved
+ * historical occurrence.
+ */
+describe("FEA-3294: invocation-backed aggregate version attribution", () => {
+  test("an unresolved historical invocation stays unversioned when the current component changes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "wc-vhash-no-guess-"));
+    const db = await openDb(dir);
+    try {
+      const sessionId = "sess-vhash-no-guess";
+      await insertSessionWithEvents(db, sessionId, "claude", [
+        {
+          id: `${sessionId}-evt-1`,
+          agentId: `${sessionId}:main`,
+          eventType: "PostToolUse",
+          toolName: "Read",
+          data: { tool_name: "Read" },
+          createdAt: NOW,
+        },
+      ]);
+      const { upsertSessionAnalyticsRollup } = await import(
+        "../src/main/database/session-analytics-rollup.js"
+      );
+      const rollup = () =>
+        db.prisma.write((client) =>
+          client.$transaction((tx) =>
+            upsertSessionAnalyticsRollup(tx, sessionId, NOW, ROLLUP_OPTS)
+          )
+        );
+      const versionHash = async (): Promise<string | null> => {
+        const rows = await db.prisma.client.$queryRawUnsafe<
+          { component_version_hash: string | null }[]
+        >(
+          `SELECT component_version_hash
+             FROM agent_component_session_usage
+            WHERE session_id = $1 AND component_kind = 'tool'
+              AND component_key = 'Read'`,
+          sessionId
+        );
+        return rows[0]?.component_version_hash ?? null;
+      };
+
+      await rollup();
+      assert.equal(await versionHash(), null);
+      await db.run(
+        `UPDATE agent_components SET content_hash = 'current-hash-v1'
+          WHERE component_kind = 'tool' AND component_key = 'Read'`
+      );
+      await rollup();
+      assert.equal(
+        await versionHash(),
+        null,
+        "current inventory content is not historical invocation evidence"
+      );
+      await db.run(
+        `UPDATE agent_components SET content_hash = 'current-hash-v2'
+          WHERE component_kind = 'tool' AND component_key = 'Read'`
+      );
+      await rollup();
+      assert.equal(
+        await versionHash(),
+        null,
+        "later current-file changes cannot reattribute history"
       );
     } finally {
       await db.close();

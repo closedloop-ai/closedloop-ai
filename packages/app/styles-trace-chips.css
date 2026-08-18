@@ -1,0 +1,93 @@
+/*
+ * Session-trace harness chips (ISS-4767).
+ *
+ * Feature-owned stylesheet, imported by `styles.css` alongside the other
+ * trace/branch panels. Extracted so every rule that positions a trace chip
+ * lives in one file next to the component that renders it
+ * (`agents/components/detail/trace-harness-tags.tsx`) instead of being spread
+ * between the shared aggregate and Tailwind utilities on the JSX.
+ */
+
+/* Collapsible chip for Claude Code harness wrapper tags (command-name,
+   local-command-caveat, system-reminder, …) so harness noise stays folded. */
+.st-tag {
+  margin: 2px 0;
+}
+
+.st-tag-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: color-mix(in oklab, var(--muted) 45%, transparent);
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* Scoped to the interactive head: an ISS-4767 command chip with nothing to
+   expand into renders a static <span> head, which must not offer a hover lift
+   for an interaction it does not have. */
+button.st-tag-head:hover {
+  color: var(--foreground);
+  background: color-mix(in oklab, var(--muted) 70%, transparent);
+}
+
+/* Static (non-disclosure) chip head: no pointer cursor, and symmetric padding
+   because there is no chevron occupying the tighter left inset. */
+.st-tag-head-static {
+  cursor: default;
+  padding-left: 8px;
+}
+
+.st-tag-chev {
+  flex: 0 0 auto;
+}
+
+.st-tag-name {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+/* ISS-4767: a command literal reads as code, so the chip label composes the
+   shared `.mono` face rather than redeclaring it. The 0.02em tracking above was
+   tuned for the proportional label and reads loose on a monospace face here. */
+.st-tag-name-cmd {
+  letter-spacing: normal;
+}
+
+/* ISS-4767: the invocation's arguments sit in the head beside the command, so
+   the row reads like the command line the user actually typed. Truncated rather
+   than wrapped — the chip is a one-line summary, and the full value stays
+   available in the expanded body. */
+.st-tag-args {
+  overflow: hidden;
+  max-width: 32ch;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  letter-spacing: normal;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.st-tag-body {
+  margin: 4px 0 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  background: color-mix(in oklab, var(--card) 75%, transparent);
+  border-radius: var(--radius-sm);
+  /* Preserve newlines from a folded multi-line blob (e.g. local-command-stdout);
+     the event path renders plain text, so without this it would collapse to one
+     run-on paragraph. */
+  white-space: pre-wrap;
+}
+
+/* ISS-4767: the chip's detail rows reuse the trace's own label-over-value pair
+   (`st-toolrow-field` / `st-toolrow-field-label`); this only supplies the
+   rhythm between consecutive rows inside a chip body. */
+.st-tag-detail + .st-tag-detail {
+  margin-top: 8px;
+}

@@ -121,6 +121,32 @@ describe("resolveInsightsTileAvailability", () => {
     ).toEqual({ state: BranchKpiState.Available });
   });
 
+  it("trusts the cloud payload for me-scope GitHub-truth tiles regardless of the local connection (FEA-3721)", () => {
+    // In Cloud mode the desktop reads `me` from the cloud /insights/* routes,
+    // whose response carries per-tile availability. With the Cloud sourceKind
+    // the tile must render from that payload proof and NOT be re-gated on the
+    // desktop's local GitHub App connection — even when that connection is
+    // Disconnected or Unknown, the populated cloud KPI wins.
+    for (const connectionState of [
+      InsightsGitHubConnectionState.Connected,
+      InsightsGitHubConnectionState.Disconnected,
+      InsightsGitHubConnectionState.Unknown,
+    ]) {
+      expect(
+        resolveInsightsTileAvailability({
+          tileId: "kpi:merged",
+          section: InsightsSection.Delivery,
+          scope: InsightsScope.Me,
+          connectionState,
+          sourceKind: InsightsTileSourceKind.Cloud,
+          payloadAvailability: {
+            "kpi:merged": InsightsTileAvailabilityState.Available,
+          },
+        })
+      ).toEqual({ state: BranchKpiState.Available });
+    }
+  });
+
   it("keeps org-only metrics unavailable outside org scope", () => {
     expect(
       resolveInsightsTileAvailability({

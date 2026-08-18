@@ -65,6 +65,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
+import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   Tooltip,
   TooltipContent,
@@ -384,10 +385,11 @@ function ViewerCore({
         svgDimensions.height,
         "mermaid-diagram.png"
       );
-    } catch (err) {
+    } catch {
       // exportPng can reject (foreignObject taint, canvas 2D context missing,
-      // etc.). Log so failures don't disappear silently.
-      console.error("Failed to export mermaid diagram as PNG:", err);
+      // etc.). Tell the user rather than leaving the export silently doing
+      // nothing — a console line only ever reached their devtools.
+      toast.error("Couldn't export the diagram as a PNG.");
     }
   }, [processedSvg, svgDimensions]);
 

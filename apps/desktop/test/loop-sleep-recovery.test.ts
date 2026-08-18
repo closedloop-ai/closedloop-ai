@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-sleep-recovery.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-sleep-recovery.ts
  *
  * Covers:
  *   - resume triggers refresh and heartbeat for all active loops
@@ -23,8 +23,8 @@ import {
   registerLoop,
   resetForTesting,
   unregisterLoop,
-} from "../src/main/loop-sleep-recovery.js";
-import type { LoopTokenStore } from "../src/main/loop-token-store.js";
+} from "../src/main/loop/loop-sleep-recovery.js";
+import type { LoopTokenStore } from "../src/main/loop/loop-token-store.js";
 import {
   createTestLoopTokenStore,
   flushAsync as flushOnce,

@@ -69,11 +69,38 @@ export type FeedSource<TItem extends FeedItem = FeedItem, TFilter = unknown> = {
   StatusBanner?: ComponentType;
 
   /**
+   * Optional slot rendered *below* the merged stream by `feed-stream.tsx`
+   * whenever this source is in the active source list. Used for
+   * pagination affordances ("load earlier") whose newly-fetched rows sort
+   * in below the existing ones under the default newest-first sort — the
+   * control and its result then sit at the same end of the stream. Renders
+   * nothing when the source has no footer state to surface; the source
+   * owns the conditional internally so the stream stays source-agnostic.
+   */
+  Footer?: ComponentType;
+
+  /**
    * Renders one thread-root item. The source denormalizes replies into
    * the item shape, so this renderer is responsible for the entire card
    * including any reply UI.
    */
   renderItem: (item: TItem) => ReactNode;
+
+  /**
+   * Optional per-source overrides for the feed-stream's loading, error,
+   * and empty state copy. `feed-stream.tsx` renders these strings when
+   * this source is the one driving the active loading/error/empty state.
+   * Omit any field (or the whole object) to keep the framework's default
+   * source-neutral wording ("Loading feed...", "Unable to load this feed").
+   *
+   * FEA-3875: a source can supply stateCopy to show its own wording (e.g.
+   * "Loading activity…") in place of the neutral default.
+   */
+  stateCopy?: {
+    loading?: string;
+    error?: string;
+    empty?: string;
+  };
 };
 
 /**

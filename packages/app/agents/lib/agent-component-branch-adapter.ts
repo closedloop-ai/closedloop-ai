@@ -14,8 +14,6 @@ import type { BranchRow as WireBranchRow } from "@repo/api/src/types/branch";
 import type { BranchRow as RenderBranchRow } from "@repo/app/branches/lib/branch-row";
 import { adaptBranchRows } from "@repo/app/branches/lib/branch-row-adapter";
 
-export type { BranchRow as RenderBranchRow } from "@repo/app/branches/lib/branch-row";
-
 /**
  * Map `AgentComponentDetail.branchesTab` items (wire `BranchRow`) to the
  * render `BranchRow` shape accepted by `BranchesTable`.

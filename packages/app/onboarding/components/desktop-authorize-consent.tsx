@@ -4,14 +4,13 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { Loader2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ApiError } from "../../shared/api/api-error";
-import { useFeatureFlagEnabled } from "../../shared/feature-flags/use-feature-flag-enabled";
-import { DESKTOP_LOOPBACK_AUTH_FEATURE_FLAG_KEY } from "../../shared/lib/feature-flags";
 import { useDesktopAuthorizeMint } from "../hooks/use-desktop-authorize";
 import {
   type DesktopAuthorizeParams,
   parseDesktopAuthorizeParams,
 } from "../lib/desktop-authorize-params";
 import {
+  buildLoopbackCancelUrl,
   buildLoopbackRedirectUrl,
   redirectToDesktopLoopback,
 } from "../lib/desktop-authorize-redirect";
@@ -43,27 +42,9 @@ export function DesktopAuthorizeConsent({
   searchParams: DesktopAuthorizeSearchParams;
   requestedOrgSlug?: string;
 }): ReactNode {
-  const flagEnabled = useFeatureFlagEnabled(
-    DESKTOP_LOOPBACK_AUTH_FEATURE_FLAG_KEY
-  );
   const mint = useDesktopAuthorizeMint();
   const [cancelled, setCancelled] = useState(false);
   const parsed = parseDesktopAuthorizeParams(searchParams);
-
-  if (!flagEnabled) {
-    // The desktop opened this page but the web half of the flow isn't enabled
-    // for this user yet (FEA-2686). Don't leave a dead end: tell the user to
-    // return to (and, if needed, cancel from) the desktop app rather than
-    // waiting here.
-    return (
-      <DesktopConnectPageShell title="Not available">
-        <p className="text-muted-foreground text-sm">
-          Desktop sign-in isn't available for your account yet. You can close
-          this tab and return to the desktop app.
-        </p>
-      </DesktopConnectPageShell>
-    );
-  }
 
   if (!parsed.ok) {
     return (
@@ -81,6 +62,21 @@ export function DesktopAuthorizeConsent({
       </DesktopConnectPageShell>
     );
   }
+
+  /**
+   * Tell the desktop before showing the cancelled card.
+   *
+   * This used to only set local state, so the desktop never heard anything and
+   * sat in its awaiting-redirect state until the sign-in timeout fired — the
+   * page said "return to the desktop app" while the desktop was still waiting
+   * for a browser that was never coming back.
+   */
+  const onCancel = () => {
+    setCancelled(true);
+    redirectToDesktopLoopback(
+      buildLoopbackCancelUrl(params.redirectUri, params.state)
+    );
+  };
 
   // On a successful mint the browser is navigated to the loopback listener at
   // once; this terminal state shows only briefly before the page unloads (and
@@ -139,11 +135,7 @@ export function DesktopAuthorizeConsent({
       </p>
       <DeviceDetails params={params} requestedOrgSlug={requestedOrgSlug} />
       <div className="flex justify-end gap-2">
-        <Button
-          disabled={mint.isPending}
-          onClick={() => setCancelled(true)}
-          variant="outline"
-        >
+        <Button disabled={mint.isPending} onClick={onCancel} variant="outline">
           Cancel
         </Button>
         <Button disabled={mint.isPending} onClick={onConnect}>

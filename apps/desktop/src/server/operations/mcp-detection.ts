@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import {
   getShellPath,
   resolveExecutablesOnPath,
@@ -401,6 +401,82 @@ export function parseCodexMcpList(
 
   return null;
 }
+
+/**
+ * Registers a streamable-HTTP MCP server with `provider`, at user/global scope
+ * (ISS-5435). Both CLIs support this non-interactively, which is what makes the
+ * MCP rows repairable at all:
+ *
+ *   claude mcp add --transport http --scope user <name> <url>
+ *   codex  mcp add <name> --url <url>
+ *
+ * The binary is resolved exactly as detection resolves it, so the add lands
+ * where the probe will look for it.
+ */
+export async function runMcpAddCommand(
+  provider: McpProvider,
+  serverName: string,
+  url: string,
+  timeoutMs: number
+): Promise<{ ok: boolean; detail?: string }> {
+  const args =
+    provider === "claude"
+      ? [
+          "mcp",
+          "add",
+          "--transport",
+          "http",
+          "--scope",
+          "user",
+          serverName,
+          url,
+        ]
+      : ["mcp", "add", serverName, "--url", url];
+
+  try {
+    const shellPath = await getShellPath();
+    const providerBinary = await resolveProviderBinary(provider);
+    await execFileAsync(providerBinary, args, {
+      cwd: getNeutralMcpCwd(),
+      timeout: timeoutMs,
+      env: { ...sanitizeSpawnEnv(process.env), PATH: shellPath },
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, detail: describeMcpAddFailure(provider, error) };
+  }
+}
+
+/**
+ * Re-probes `provider` ignoring the detection cache. A repair that read its own
+ * verdict out of the 60s result cache would report the pre-add state and make
+ * every successful repair look like it did nothing.
+ */
+export function redetectMcpAvailability(
+  provider: McpProvider,
+  expectedMcpUrl: string
+): Promise<McpDetectionResult> {
+  const normalized = normalizeMcpServerUrl(expectedMcpUrl);
+  if (normalized) {
+    cache.delete(cacheKey(provider, normalized));
+    clearResolvedName(provider, normalized);
+  }
+  latestByProvider.delete(provider);
+  return detectMcpAvailability(provider, expectedMcpUrl);
+}
+
+function describeMcpAddFailure(provider: McpProvider, error: unknown): string {
+  if (isTimeoutError(error)) {
+    return `\`${provider} mcp add\` timed out on that machine.`;
+  }
+  const output = getCommandOutput(error).slice(-MCP_ADD_OUTPUT_TAIL_CHARS);
+  const message = error instanceof Error ? error.message : String(error);
+  return output
+    ? `\`${provider} mcp add\` failed: ${output}`
+    : `\`${provider} mcp add\` failed: ${message}`;
+}
+
+const MCP_ADD_OUTPUT_TAIL_CHARS = 512;
 
 export async function detectMcpAvailability(
   provider: McpProvider,

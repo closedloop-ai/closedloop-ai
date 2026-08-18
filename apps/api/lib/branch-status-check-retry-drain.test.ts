@@ -11,6 +11,8 @@ const {
   mockClaimDueCheckRunRetries,
   mockClearCheckRunRetry,
   mockDiscardCheckRunRetry,
+  mockGetInstallationOctokit,
+  mockOctokit,
   mockPersistBranchStatusChecksFromRollup,
   mockQueryStatusCheckRollupWithProviderResult,
   mockSettleRetryableCheckRunFailure,
@@ -19,6 +21,8 @@ const {
   mockClaimDueCheckRunRetries: vi.fn(),
   mockClearCheckRunRetry: vi.fn(),
   mockDiscardCheckRunRetry: vi.fn(),
+  mockGetInstallationOctokit: vi.fn(),
+  mockOctokit: { marker: "installation-octokit" },
   mockPersistBranchStatusChecksFromRollup: vi.fn(),
   mockQueryStatusCheckRollupWithProviderResult: vi.fn(),
   mockSettleRetryableCheckRunFailure: vi.fn(),
@@ -29,14 +33,27 @@ vi.mock("@repo/database", () => ({
   withDb: { tx: mockWithDbTx },
 }));
 
-vi.mock("@repo/github", () => ({
-  GitHubProviderResultStatus: {
-    Success: "success",
-    ProviderRateLimit: "provider_rate_limit",
-    ProviderUnavailable: "provider_unavailable",
-  },
-  queryStatusCheckRollupWithProviderResult:
-    mockQueryStatusCheckRollupWithProviderResult,
+vi.mock("@repo/github", () => {
+  return {
+    GitHubProviderResultStatus: {
+      Success: "success",
+      ProviderRateLimit: "provider_rate_limit",
+      ProviderUnavailable: "provider_unavailable",
+    },
+    queryStatusCheckRollupWithProviderResult:
+      mockQueryStatusCheckRollupWithProviderResult,
+    // Real classifier so the mint-failure test pins the production
+    // rate-limit-vs-unavailable classification.
+  };
+});
+
+vi.mock("@repo/github/installation-auth", () => ({
+  // Spy wrapper (not a bare vi.fn implementation) so restore/reset passes can
+  // never strip the marker client the drain threads into the rollup query.
+  // Mint-failure tests inject a one-shot rejection through the spy; any
+  // non-undefined spy result wins over the resolved marker client fallback.
+  getInstallationOctokit: (installationId: string) =>
+    mockGetInstallationOctokit(installationId) ?? Promise.resolve(mockOctokit),
 }));
 
 vi.mock("@/lib/branch-status-check-retry", () => ({
@@ -116,8 +133,9 @@ describe("drainDueCheckRunRetries", () => {
       new Date("2026-07-03T01:00:00Z"),
       10
     );
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("installation-1");
     expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
-      "installation-1",
+      mockOctokit,
       "acme",
       "repo",
       "head-1"
@@ -169,6 +187,62 @@ describe("drainDueCheckRunRetries", () => {
       45
     );
     expect(summary.rescheduled).toBe(1);
+  });
+
+  it("settles a claim whose installation client mint fails and keeps draining the batch", async () => {
+    const now = new Date("2026-07-03T01:00:00Z");
+    const secondClaim = {
+      ...retryClaim,
+      branchArtifactId: "branch-2",
+      headSha: "head-2",
+      installationId: "installation-2",
+      resourceId: "check-run-2",
+    };
+    mockClaimDueCheckRunRetries.mockResolvedValue([retryClaim, secondClaim]);
+    mockGetInstallationOctokit.mockImplementationOnce(() =>
+      Promise.reject(new Error("token exchange failed"))
+    );
+    mockQueryStatusCheckRollupWithProviderResult.mockResolvedValue({
+      status: GitHubProviderResultStatus.Success,
+      value: {
+        checks: [],
+        ok: true,
+        state: "SUCCESS",
+        totalCount: 0,
+        truncated: false,
+      },
+    });
+
+    const summary = await drainDueCheckRunRetries(now, 10);
+
+    // The failed mint settles its own claim as a provider failure...
+    expect(mockSettleRetryableCheckRunFailure).toHaveBeenCalledWith(
+      { tx: true },
+      retryClaim,
+      StatusCheckRollupFailureReason.GraphqlError,
+      1,
+      now,
+      null
+    );
+    // ...and the batch continues: the second claim still reads and clears.
+    expect(mockQueryStatusCheckRollupWithProviderResult).toHaveBeenCalledWith(
+      mockOctokit,
+      "acme",
+      "repo",
+      "head-2"
+    );
+    expect(mockClearCheckRunRetry).toHaveBeenCalledWith(
+      { tx: true },
+      secondClaim
+    );
+    expect(summary).toEqual({
+      claimed: 2,
+      deadLettered: 0,
+      discarded: 0,
+      missing: 0,
+      rescheduled: 1,
+      succeeded: 1,
+    });
   });
 
   it("discards exact retry metadata when the branch becomes stale before persistence", async () => {

@@ -46,7 +46,7 @@ const schemas = [
   },
   {
     path: `${SCHEMA_DIRECTORY}/sync.schema.json`,
-    id: "https://closedloop.ai/schemas/telemetry-contract/sync/v0.3.schema.json",
+    id: "https://closedloop.ai/schemas/telemetry-contract/sync/v0.6.schema.json",
     schema: SyncTelemetrySchema,
   },
   {
@@ -93,6 +93,11 @@ function addContractPatterns(path: string, schema: JsonSchema): JsonSchema {
       schema,
       TelemetryAttribute.ServiceVersion,
       TelemetryTextMaxLength.ServiceVersion
+    );
+    setBoundedTextProperty(
+      schema,
+      TelemetryAttribute.DeviceId,
+      TelemetryTextMaxLength.DeviceId
     );
   }
   if (path.endsWith("app.schema.json")) {

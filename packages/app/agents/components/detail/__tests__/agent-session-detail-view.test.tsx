@@ -1,16 +1,10 @@
 import {
+  type ActivityBucket,
   type AgentSessionDetail,
+  AgentSessionState,
   SessionTraceThrottleSourceType,
 } from "@repo/api/src/types/agent-session";
-import type {
-  TraceComment,
-  TraceCommentDraft,
-  TraceCommentTarget,
-} from "@repo/api/src/types/comment";
-import { createFakeTraceCommentsSource } from "@repo/app/agents/data-source/__tests__/fake-trace-comments-source";
-import type { TraceCommentsDataSource } from "@repo/app/agents/data-source/trace-comments-data-source";
-import { TraceCommentsDataSourceProvider } from "@repo/app/agents/data-source/trace-comments-provider";
-import { SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
 import { restoreTimeZone } from "@repo/app/shared/test-fixtures/tz-utils";
 import { toast } from "@repo/design-system/components/ui/sonner";
 import {
@@ -21,23 +15,31 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppCoreStoryProviders } from "../../../../shared/storybook/decorators";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { getBucketKey } from "../activity-bucket-rendering";
 import {
   createAgentSessionDetailFixture,
+  createTurnItemsSpanning,
   emptyAgentsAgentSessionDetailFixture,
   longContentAgentSessionDetailFixture,
   nullDateAgentSessionDetailFixture,
   populatedAgentSessionDetailFixture,
+  withProducerBinBounds,
 } from "../agent-session-detail-fixtures";
-import {
-  AgentSessionDetailView,
-  buildActivityMarkers,
-} from "../agent-session-detail-view";
+import { AgentSessionDetailView } from "../agent-session-detail-view";
 import {
   type AgentSessionDetailContent,
   buildSessionDetailContent,
 } from "../detail-content";
+import {
+  COMMENT_BUTTON_NAME_RE,
+  INLINE_TRACE_COMMENT_PLACEHOLDER,
+  resetTraceComments,
+  SHOW_COMMENTS_BUTTON_NAME,
+  seedSessionTraceComment,
+  selectRenderedText,
+  withProviders,
+} from "./agent-session-detail-view.test-helpers";
 import {
   EXPECTED_CLAUDE_CODE_PROPERTY_LABELS,
   expectExactClaudeCodePropertyLabels,
@@ -45,18 +47,34 @@ import {
 
 const BACK_TO_SESSIONS_LINK_NAME = /back to sessions/i;
 const LONG_SESSION_TITLE = /A very long shared agent session detail title/;
-const SUBAGENT_REVIEW_LANE_BUTTON_NAME = /subagent.*review lane/i;
-const INLINE_TRACE_COMMENT_PLACEHOLDER = /comment on this passage/i;
-// Matches the inline trace affordance exactly so it never collides with the
-// rail's "Collapse comments panel" / "Show comments panel" controls (FEA-2479).
-const COMMENT_BUTTON_NAME_RE = /^comment$/i;
+// FEA-4172 dropped the "Subagent | …" text prefix in favor of a leading icon,
+// so the collapsed box's accessible name is now just the invocation label
+// ("Review lane (review)"), not "Subagent … Review lane".
+const SUBAGENT_REVIEW_LANE_BUTTON_NAME = /review lane/i;
 const DUPLICATE_TOOLS_BUTTON_NAME = /Ran 2 tools/i;
+/**
+ * The fixture transcript's real activity extent — the span the desktop producer
+ * bins over, which is deliberately NOT the overshooting `endedAt` the FEA-3586
+ * cases below set.
+ */
+const ACTIVITY_SPAN = {
+  endMs: Date.parse("2026-06-10T12:04:00.000Z"),
+  startMs: Date.parse("2026-06-10T12:01:00.000Z"),
+};
+
 const JUMP_TO_ACTIVITY_BUCKET_NAME = /jump to activity bucket/i;
 const JUMP_TO_FAILURES_NAME = /jump to failures & limits/i;
 const PR_1634_OPEN_LINK_NAME = /1634\s*open/i;
+// FEA-3635: matches the linked-FEAT pill's slug label.
+const FEA_3628_LINK_NAME = /FEA-3628/;
+const PRD_538_LINK_NAME = /PRD-538/;
 const COPY_SESSION_ID_BUTTON_NAME = /copy session id/i;
 const THROTTLED_FOR_FIVE_MINUTES_TEXT = /Throttled for 5m/;
 const PERCENT_STYLE_VALUE_REGEX = /%$/;
+// Pins the freshness clock 11 minutes after the fixture's `lastSyncedAt`
+// (2026-06-10T12:19:00Z) so the rendered relative label is deterministic.
+const SYNC_STATUS_NOW = new Date("2026-06-10T12:30:00.000Z");
+const SYNC_STATUS_VALUE_TEXT = "Synced · Last synced 11 min ago";
 const LONG_MODEL_NAME =
   "anthropic/claude-opus-4-1-with-extra-long-provider-and-routing-label";
 const LONG_REPOSITORY_NAME =
@@ -67,18 +85,16 @@ const ORIGINAL_CLIPBOARD_DESCRIPTOR = Object.getOwnPropertyDescriptor(
   globalThis.navigator,
   "clipboard"
 );
-const traceCommentsByTarget = new Map<string, TraceComment[]>();
-const fakeTraceCommentsSource = createFakeTraceCommentsSource({
-  commentsByTarget: traceCommentsByTarget,
-  makeTraceComment,
-});
-
+// `info` alongside `success`/`error`: ISS-6006 made the Session Timeline's jump
+// reporting unconditional, so a click on a bar or dot that cannot land now calls
+// `toast.info` in every harness that mounts this view — an incomplete mock
+// crashes the click handler instead of exercising it.
 vi.mock("@repo/design-system/components/ui/sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
 afterEach(() => {
-  traceCommentsByTarget.clear();
+  resetTraceComments();
   vi.restoreAllMocks();
   if (ORIGINAL_CLIPBOARD_DESCRIPTOR) {
     Object.defineProperty(
@@ -89,71 +105,6 @@ afterEach(() => {
     return;
   }
   Reflect.deleteProperty(globalThis.navigator, "clipboard");
-});
-
-describe("buildActivityMarkers timeline dot kinds (FEA-2192)", () => {
-  it("does not tag successful tool or subagent turns as human steering", () => {
-    const base = createAgentSessionDetailFixture();
-    // Force the turnItems fallback (server markers absent) and flip the failing
-    // tool/subagent turns to successful completions.
-    const session = {
-      ...base,
-      markers: [],
-      turnItems: (base.turnItems ?? []).map((item) => {
-        if (item.type === "tools") {
-          return {
-            ...item,
-            hasFail: false,
-            failN: 0,
-            items: item.items.map((tool) => ({ ...tool, err: false })),
-          };
-        }
-        if (item.type === "subagent") {
-          return { ...item, status: "completed" };
-        }
-        return item;
-      }),
-    };
-
-    const markers = buildActivityMarkers(session);
-
-    // The genuine human prompt (row 0) is the only "Human steering" marker.
-    expect(markers.filter((m) => m.kind === "prompt").map((m) => m.tl)).toEqual(
-      [0]
-    );
-    // Successful tool (row 3) and subagent (row 5) turns produce no marker — same
-    // as the server-side buildTraceMarkers path.
-    expect(markers.some((m) => m.tl === 3)).toBe(false);
-    expect(markers.some((m) => m.tl === 5)).toBe(false);
-  });
-
-  it("still surfaces failed tool and subagent turns as failures", () => {
-    const markers = buildActivityMarkers(createAgentSessionDetailFixture());
-
-    expect(markers.find((m) => m.tl === 3)?.kind).toBe("fail");
-    expect(markers.find((m) => m.tl === 5)?.kind).toBe("fail");
-    // Failures are never mislabeled as human steering.
-    expect(markers.filter((m) => m.kind === "prompt").map((m) => m.tl)).toEqual(
-      [0]
-    );
-  });
-
-  it('marks a subagent turn with cloud status "error" as a failure', () => {
-    const base = createAgentSessionDetailFixture();
-    const session = {
-      ...base,
-      markers: [],
-      turnItems: (base.turnItems ?? []).map((item) =>
-        item.type === "subagent" ? { ...item, status: "error" } : item
-      ),
-    };
-
-    const markers = buildActivityMarkers(session);
-
-    // "error" is the canonical cloud-source failure status; the subagent (row 5)
-    // must still surface a failure marker, not be silently dropped.
-    expect(markers.find((m) => m.tl === 5)?.kind).toBe("fail");
-  });
 });
 
 describe("AgentSessionDetailView", () => {
@@ -194,13 +145,28 @@ describe("AgentSessionDetailView", () => {
     ).toHaveAttribute("href", "/sessions");
   });
 
-  it("renders populated detail without invalid placeholder leaks", () => {
+  // FEA-3984 state-machine coverage (settled-empty → not-found, first-load
+  // skeleton, background-refetch keeps content, and the 404-vs-provider-error
+  // split) lives in the focused colocated
+  // `__tests__/agent-session-detail-states.test.tsx`, driving the extracted
+  // presentational states directly rather than growing this oversized file.
+
+  it("renders populated detail without invalid placeholder leaks", async () => {
+    // FEA-4233: seed a comment so the rail opens once its discovery read settles
+    // (the .fp-title "Comments" header) — an empty session now defaults to the
+    // collapsed handle, and a comments-present session widens the rail into view
+    // only after the count is confirmed, so the panel assertion awaits it.
+    seedSessionTraceComment(populatedAgentSessionDetailFixture.id);
     renderDetail(
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
         session={populatedAgentSessionDetailFixture}
       />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector(".fp-title")).toHaveTextContent("Comments")
     );
 
     expect(
@@ -219,9 +185,10 @@ describe("AgentSessionDetailView", () => {
     expect(
       document.querySelectorAll(".sd3-bar2.stacked").length
     ).toBeGreaterThan(0);
-    expect(document.querySelectorAll(".sd3-bar2.idle").length).toBeGreaterThan(
-      0
-    );
+    const idleOrGapCount =
+      document.querySelectorAll(".sd3-bar2.idle").length +
+      document.querySelectorAll(".sd3-bar2.cb-gap").length;
+    expect(idleOrGapCount).toBeGreaterThan(0);
     expect(document.querySelector(".fp-title")).toHaveTextContent("Comments");
     expect(screen.getByText("Properties")).toBeInTheDocument();
     expect(document.querySelectorAll(".sd3-props-preview")).toHaveLength(1);
@@ -233,6 +200,49 @@ describe("AgentSessionDetailView", () => {
     expect(bodyText()).not.toContain("undefined");
     expect(bodyText()).not.toContain("NaN");
   });
+
+  /*
+   * FEA-3428 / FEA-4287, retargeted by ISS-5999 from the collapsed Properties
+   * preview to the EXPANDED `Status` row.
+   *
+   * ISS-5818 removed status from the collapsed strip — the title already carries
+   * a chip off the SESSION_STATUS lifecycle axis, and restating
+   * `AgentSessionState` 24px below it could put two legitimately-different words
+   * in one viewport — and ISS-5999 retired the gate that made the removal
+   * conditional. So the coloured dot and its hover title have no surviving
+   * placement on this page; what survives, and is the part FEA-4287 was actually
+   * about, is the LABEL each state maps to. `Error` must read "Failed" (the word
+   * the Sessions LIST badge uses for the `error` status), never "Blocked".
+   */
+  it("FEA-4287: names each session state on the expanded Status row", () => {
+    for (const [state, label] of [
+      [AgentSessionState.Completed, "Completed"],
+      [AgentSessionState.Blocked, "Blocked"],
+      [AgentSessionState.Error, "Failed"],
+    ] as const) {
+      const { unmount } = renderDetail(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={createAgentSessionDetailFixture({ state })}
+        />
+      );
+
+      fireEvent.click(screen.getByText("Properties"));
+      const row = screen
+        .getByText("Status")
+        .closest(".prd-prop") as HTMLElement | null;
+      expect(row, `${state} must render a Status row`).not.toBeNull();
+      expect(row).toHaveTextContent(label);
+      unmount();
+    }
+  });
+
+  // ISS-4654: the FEA-4287 abandoned-dot test stood here. `AgentSessionState
+  // .Abandoned` is retired — ISS-4586 supersedes FEA-4287's abandonment half —
+  // so there is no longer a distinct Abandoned rendering to assert. The Error
+  // case above still pins the other half of FEA-4287 (a terminal failure does
+  // not collapse to Blocked), which is the part that survives.
 
   it("renders the FEA-1928 source-backed field inventory from the shared detail contract", async () => {
     const user = userEvent.setup();
@@ -261,8 +271,11 @@ describe("AgentSessionDetailView", () => {
       "closedloop-ai/symphony-alpha",
       "fea-1707",
       "$4.82",
+      // ISS-5131 retired the Duration decomposition, so the row prints the ONE
+      // wall measure ("20m 0s"). The fixture's `activeAgent: "18m"` sub-fact is
+      // no longer rendered anywhere; its absence is pinned by
+      // `session-duration-property.test.tsx`'s `RETIRED_SUB_FACT_LABELS`.
       "20m",
-      "18m",
       "120",
       "12",
       "4",
@@ -308,6 +321,85 @@ describe("AgentSessionDetailView", () => {
     expect(bodyText()).not.toContain("Unknown");
   });
 
+  it("FEA-3529: renders the transcript sync-state row when the flag is enabled", async () => {
+    // Pin the clock (shouldAdvanceTime keeps userEvent's internal timers moving)
+    // so the derived relative freshness is deterministic and can be asserted
+    // exactly, per AGENTS.md Test Practices.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(SYNC_STATUS_NOW);
+    try {
+      const user = userEvent.setup();
+      render(
+        withProviders(
+          <AgentSessionDetailView
+            backHref="/sessions"
+            isLoading={false}
+            session={createAgentSessionDetailFixture({
+              transcriptDisposition: TranscriptDisposition.Synced,
+            })}
+          />
+        )
+      );
+
+      await user.click(screen.getByRole("button", { name: "Properties" }));
+
+      const propertyLabels = Array.from(
+        document.querySelectorAll(".prd-prop-label"),
+        (label) => label.textContent ?? ""
+      );
+      expect(propertyLabels).toContain("Sync");
+      // Disposition verdict + freshness fold into one lag-aware value; assert the
+      // exact rendered text, not just a "Last synced" prefix.
+      expect(screen.getByText(SYNC_STATUS_VALUE_TEXT)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // FEA-3725: the Owner row is unconditional now (no `sessions-owner-attribution`
+  // flag). These pin the previously flag-bypassed detail path — the row renders
+  // with no flags enabled, showing the owner's display name or the null-owner
+  // em-dash.
+  it("FEA-3725: renders the Owner row with the display name and no flags enabled", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          user: {
+            id: "user-owner",
+            firstName: "Grace",
+            lastName: "Hopper",
+            email: "grace@example.com",
+            avatarUrl: null,
+          },
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    const ownerRow = screen.getByText("Owner").closest(".prd-prop");
+    expect(ownerRow).toHaveTextContent("OwnerGrace Hopper");
+  });
+
+  it("FEA-3725: renders the Owner row with an em-dash when the session has no owner", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({ user: null })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    const ownerRow = screen.getByText("Owner").closest(".prd-prop");
+    expect(ownerRow).toHaveTextContent("Owner—");
+  });
+
   it("copies the external session id from the Properties panel", async () => {
     const user = userEvent.setup();
     const writeText = vi.fn().mockResolvedValue(undefined);
@@ -335,26 +427,54 @@ describe("AgentSessionDetailView", () => {
     });
   });
 
-  it("scales the timeline axis to the session duration, rounded up per FEA-2029", () => {
-    renderDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        isLoading={false}
-        session={createAgentSessionDetailFixture({
-          startedAt: new Date("2026-06-10T12:00:00.000Z"),
-          endedAt: new Date("2026-06-10T12:05:05.000Z"),
-        })}
-      />
-    );
+  it("FEA-4186: scales an active session's timeline axis to last activity, not now or updatedAt", () => {
+    /*
+     * Active session (no endedAt): startedAt 12:00, lastActivity 13:00 (+1h),
+     * a later sync-bumped updatedAt 21:00 (+9h), rendered at now = 22:00 (+10h).
+     * The axis must scale to the observed active span (1h 0m), NOT to now
+     * (10h 0m) and NOT to the fresher updatedAt (9h 0m).
+     *
+     * ISS-4684 changed only the LABEL's unit system here ("60m" -> "1h 0m");
+     * the last-activity ANCHOR this test pins is unchanged, so the negative
+     * now/updatedAt guards below are what carry the FEA-4186 contract.
+     *
+     * The transcript is re-timed onto that same 12:00->13:00 hour, because the
+     * axis measures the rows it plots: leaving the fixture's default
+     * 12:01-12:04 rows in place would make the session claim an hour of work its
+     * own transcript says lasted three minutes, and the axis would report the
+     * three.
+     */
+    const startedAt = "2026-06-10T12:00:00.000Z";
+    const lastActivityAt = "2026-06-10T13:00:00.000Z";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T22:00:00.000Z"));
+    try {
+      renderDetail(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={createAgentSessionDetailFixture({
+            startedAt: new Date(startedAt),
+            lastActivityAt: new Date(lastActivityAt),
+            updatedAt: new Date("2026-06-10T21:00:00.000Z"),
+            endedAt: null,
+            state: AgentSessionState.Running,
+            status: "running",
+            turnItems: createTurnItemsSpanning(startedAt, lastActivityAt),
+          })}
+        />
+      );
 
-    const axisScale = document.querySelector<HTMLElement>(
-      ".sd3-act-axis span[title]"
-    );
-    expect(axisScale).toHaveTextContent("6m");
-    expect(axisScale).toHaveAttribute(
-      "title",
-      "Total session duration, rounded up to the nearest minute"
-    );
+      const axisScale = document.querySelector<HTMLElement>(
+        ".sd3-act-axis span[title]"
+      );
+      expect(axisScale).toHaveTextContent("1h 0m");
+      // now-anchored would render "10h 0m"; updatedAt-anchored "9h 0m".
+      expect(axisScale).not.toHaveTextContent("10h");
+      expect(axisScale).not.toHaveTextContent("9h");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the session timeline tracker on the first clicked bucket when a stale scroll frame is pending", async () => {
@@ -401,11 +521,14 @@ describe("AgentSessionDetailView", () => {
     fireEvent.scroll(scroller);
     expect(requestFrame).toHaveBeenCalled();
 
-    await user.click(
-      screen.getAllByRole("button", {
-        name: JUMP_TO_ACTIVITY_BUCKET_NAME,
-      })[2]
-    );
+    // The LAST jumpable column, not a fixed index: ISS-5819's clock window
+    // decides how many of the 24 columns carry a jump target at all, and this
+    // test is about the stale frame being cancelled — not about which column was
+    // hit.
+    const jumpableBars = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    await user.click(jumpableBars.at(-1) as HTMLElement);
 
     const clickedLeft = getSessionTimelineTrackerLeft();
     expect(clickedLeft).toMatch(PERCENT_STYLE_VALUE_REGEX);
@@ -473,6 +596,175 @@ describe("AgentSessionDetailView", () => {
     expect(requestFrame).toHaveBeenCalledTimes(1);
   });
 
+  it("re-keys persisted activity buckets so a bar click jumps to the transcript row in its time slice (FEA-3412)", async () => {
+    const user = userEvent.setup();
+    // Persisted buckets arrive from desktop sync with `tl0` in timeline-event
+    // index space, not transcript `_row` space (see `alignBucketRowsToTranscript`).
+    // Seed pointers that overshoot every rendered row so, unrepaired, each bar
+    // would flash the last row (greatest `data-row` ≤ tl0) rather than its slice.
+    // `endedAt` (12:06) sits just past the last real transcript row (12:04), so
+    // the repair buckets over the REAL activity span [12:01, 12:04] — matching
+    // the desktop producer (FEA-3586) — giving three 1-minute slices.
+    const session = createAgentSessionDetailFixture({
+      endedAt: new Date("2026-06-10T12:06:00.000Z"),
+      // ISS-5819 review (wongk): binned over the REAL activity span, as the
+      // desktop producer bins them — the overshooting `endedAt` above is exactly
+      // the window the producer does NOT use, and the projection now takes the
+      // bins' own bounds rather than borrowing this page's axis window.
+      activityBuckets: withProducerBinBounds(
+        [
+          makeActivityBucket({ label: "0m", tl0: 40 }),
+          makeActivityBucket({ label: "1m", tl0: 41 }),
+          makeActivityBucket({ label: "2m", tl0: 42 }),
+        ],
+        ACTIVITY_SPAN
+      ),
+    });
+
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={session}
+      />
+    );
+
+    /*
+     * ISS-5999: the strip now always projects onto the ISS-5819 clock window,
+     * whose finest scale is 5 MINUTES — so this 3-minute run's three 1-minute
+     * source bins share one rendered column, and the per-slice arithmetic is no
+     * longer observable here. It did not stop being covered: the slice mapping
+     * moved to `alignBucketRowsToTranscript`'s own suite
+     * (`agents/lib/__tests__/session-timeline-geometry.test.ts`), which is where
+     * the repair lives. What this test still owns is the WIRING — that the view
+     * feeds the repaired rows to the bar's `onJump` at all.
+     */
+    const bars = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    expect(bars).toHaveLength(1);
+
+    // A real, in-range transcript row — never the last-row flash the stale
+    // sync-time `tl0` (40/41/42) would produce unrepaired.
+    await user.click(bars[0]);
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      "0"
+    );
+  });
+
+  it("still re-keys persisted buckets for a zero-duration session so bar clicks work (FEA-3412)", async () => {
+    const user = userEvent.setup();
+    /*
+     * A persisted desktop session that begins and ends on one instant — every
+     * transcript row included, since the timeline is bucketed over the rows it
+     * plots — is a valid, clickable session on the producer side:
+     * `buildTraceActivityFields` rejects only `endMs < startMs` and floors the
+     * span at 1ms via `Math.max(1, endMs - startMs)`. The client repair must
+     * mirror that instead of bailing on equality — otherwise these buckets keep
+     * their raw timeline-index `tl0` (40/41/42, which overshoot every rendered
+     * row) and, unrepaired, each bar would flash the LAST transcript row
+     * (greatest `data-row` ≤ tl0). Seed the same overshooting pointers and
+     * assert each bar now lands on a real, in-range transcript row instead.
+     */
+    const instantIso = "2026-06-10T12:01:00.000Z";
+    const instant = new Date(instantIso);
+    const session = createAgentSessionDetailFixture({
+      startedAt: instant,
+      updatedAt: instant,
+      lastActivityAt: instant,
+      endedAt: instant,
+      turnItems: createTurnItemsSpanning(instantIso, instantIso),
+      activityBuckets: withProducerBinBounds(
+        [
+          makeActivityBucket({ label: "0m", tl0: 40 }),
+          makeActivityBucket({ label: "2m", tl0: 41 }),
+          makeActivityBucket({ label: "4m", tl0: 42 }),
+        ],
+        // The producer floors a zero-length run's span at 1ms rather than
+        // rejecting it; so does this stamp.
+        { endMs: instant.getTime(), startMs: instant.getTime() }
+      ),
+    });
+
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={session}
+      />
+    );
+
+    // ISS-5999: one rendered column at the window's 5-minute floor (see the
+    // note on the test above). Over the floored 1ms span every timed row falls
+    // in the opening slice, so the bar jumps to the earliest transcript row
+    // (_row 0) — a real rendered row, never the last-row flash the stale tl0
+    // (40/41/42) would cause.
+    const bars = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    expect(bars).toHaveLength(1);
+
+    await user.click(bars[0]);
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      "0"
+    );
+  });
+
+  it("buckets transcript rows over the real activity window when ended_at overshoots, so bars past the first slice anchor correctly (FEA-3586)", async () => {
+    const user = userEvent.setup();
+    // The reporter saw "no bars past the first hour" and a green dot that did
+    // not anchor to its time block. Root cause: a stale/overshooting end anchor
+    // (here `endedAt` set 40m past the last real transcript row at 12:04)
+    // stretched the bucket window so every timed row collapsed into the opening
+    // slice — so bars past the first all forward-filled to the top-of-transcript
+    // row. The repair must bucket rows over the REAL activity span
+    // [12:01, 12:04], matching the desktop producer, so later bars anchor to
+    // their own slice.
+    const session = createAgentSessionDetailFixture({
+      endedAt: new Date("2026-06-10T12:44:00.000Z"),
+      // ISS-5819 review (wongk): binned over the REAL activity span, as the
+      // desktop producer bins them — the overshooting `endedAt` above is exactly
+      // the window the producer does NOT use, and the projection now takes the
+      // bins' own bounds rather than borrowing this page's axis window.
+      activityBuckets: withProducerBinBounds(
+        [
+          makeActivityBucket({ label: "0m", tl0: 40 }),
+          makeActivityBucket({ label: "1m", tl0: 41 }),
+          makeActivityBucket({ label: "2m", tl0: 42 }),
+        ],
+        ACTIVITY_SPAN
+      ),
+    });
+
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={session}
+      />
+    );
+
+    /*
+     * ISS-5999: the overshooting-window arithmetic — that the middle and
+     * trailing slices anchor to _row 3 and _row 4 rather than collapsing to the
+     * top of the transcript — moved to `alignBucketRowsToTranscript`'s own suite
+     * when the 5-minute window floor merged these three bins into one column.
+     * The wiring assertion stays here.
+     */
+    const bars = screen.getAllByRole("button", {
+      name: JUMP_TO_ACTIVITY_BUCKET_NAME,
+    });
+    expect(bars).toHaveLength(1);
+
+    await user.click(bars[0]);
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      "0"
+    );
+  });
+
   it("renders fallback limit evidence as one red timeline dot when persisted markers exist", async () => {
     const user = userEvent.setup();
     renderDetail(
@@ -489,15 +781,82 @@ describe("AgentSessionDetailView", () => {
 
     await user.hover(redDot);
     expect(await screen.findByText("Failures & limits")).toBeInTheDocument();
-    expect(
-      screen.getByText(SessionTraceThrottleSourceType.UsageLimit)
-    ).toBeInTheDocument();
+    // FEA-3642: the surviving dot is derived from the structured `usage_limit`
+    // event type (formatted "Usage Limit"), not the removed free-text timeline
+    // title scan. The indicator still appears at the recorded position.
+    expect(screen.getByText("Usage Limit")).toBeInTheDocument();
 
     await user.click(redDot);
     expect(document.querySelector(".st-flash")).toHaveAttribute(
       "data-row",
       String(LIMIT_EVENT_ROW)
     );
+  });
+
+  // FEA-3413: clicking any activity-timeline dot must scroll the transcript to
+  // that dot's first event and flash it — not silently jump to the top.
+  it("scrolls the transcript to a commit/PR dot's first event and flashes it", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession()}
+      />
+    );
+
+    // The sole green marker in createLimitDotSession() is the checkpoint commit
+    // at trace row 8 (see its `markers`).
+    await user.click(getOnlyTimelineDot("g"));
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      "8"
+    );
+  });
+
+  it("flashes a human-steering dot's first event on click", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession()}
+      />
+    );
+
+    // The sole blue marker is the initial prompt at trace row 0.
+    await user.click(getOnlyTimelineDot("b"));
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      "0"
+    );
+  });
+
+  it("does not jump to the top when a dot's first event has no trace row", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession({
+          // A synced/deserialized marker can arrive without `tl` despite the
+          // `number` type; the dot must be an inert no-op, never a silent `?? 0`
+          // jump to the top of the transcript.
+          markers: [
+            {
+              kind: "commit",
+              label: "Checkpoint commit",
+              t: "12:16:00",
+              tl: undefined as unknown as number,
+              x: 80,
+            },
+          ],
+        })}
+      />
+    );
+
+    await user.click(getOnlyTimelineDot("g"));
+    expect(document.querySelector(".st-flash")).toBeNull();
   });
 
   it("does not crash when limit evidence exists without activity buckets", () => {
@@ -524,7 +883,7 @@ describe("AgentSessionDetailView", () => {
     );
 
     expect(
-      screen.getByText("No activity buckets were captured for this session.")
+      screen.getByText("No activity recorded for this session.")
     ).toBeInTheDocument();
   });
 
@@ -668,8 +1027,61 @@ describe("AgentSessionDetailView", () => {
     );
   });
 
-  it("prefers explicit timeline rows when timestamped trace rows collide", async () => {
-    const user = userEvent.setup();
+  // FEA-3642: a non-limit event whose free-text `summary` merely mentions a rate
+  // limit (e.g. GitHub's "secondary rate limit" message, or the agent discussing
+  // 429s) must NOT be misclassified as a real limit. The event type is structured
+  // ("tool_result"), and only structured signals drive the indicator.
+  it("does not render a limit dot when only an event summary mentions a rate limit", () => {
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession({
+          events: [
+            {
+              agentExternalId: "agent-main",
+              createdAt: LIMIT_EVENT_TIME,
+              eventType: "tool_result",
+              externalEventId: "github-secondary-rate-limit-event",
+              summary:
+                "GitHub API returned a secondary rate limit; retried the call.",
+            },
+          ],
+          timeline: [],
+          turnItems: createNeutralLimitTargetTurnItems(),
+        })}
+      />
+    );
+
+    expect(document.querySelectorAll(".sd3-drail .sd3-dot.d-r")).toHaveLength(
+      0
+    );
+  });
+
+  // FEA-3642: a red-dot turn item is not inherently a limit — `dot: "r"` also
+  // marks failures. A failed tool turn whose text discusses throttling/429 must
+  // not surface a limit indicator when its structured `tag` is not a limit type.
+  it("does not render a limit dot for a failure turn item that discusses throttling", () => {
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession({
+          events: [],
+          timeline: [],
+          turnItems: createThrottleMentionFailureTurnItems(),
+        })}
+      />
+    );
+
+    expect(document.querySelectorAll(".sd3-drail .sd3-dot.d-r")).toHaveLength(
+      0
+    );
+  });
+
+  // FEA-3642: a free-text timeline title/detail that mentions rate limiting is no
+  // longer scanned at all — the timeline carries no structured limit signal.
+  it("does not render a limit dot for a timeline event whose title mentions rate limits", () => {
     renderDetail(
       <AgentSessionDetailView
         backHref="/sessions"
@@ -678,14 +1090,77 @@ describe("AgentSessionDetailView", () => {
           events: [],
           timeline: [
             {
-              kind: "event",
+              detail: "Provider responded 429; will slow down.",
+              kind: "result",
               t: LIMIT_EVENT_TIME,
               tMs: Date.parse(LIMIT_EVENT_TIME),
-              title: SessionTraceThrottleSourceType.UsageLimit,
+              title: "Discussed the rate limit in the tool output",
               tl: LIMIT_EVENT_ROW,
             },
           ],
-          turnItems: createSameTimestampNeutralTurnItems(),
+          turnItems: createNeutralLimitTargetTurnItems(),
+        })}
+      />
+    );
+
+    expect(document.querySelectorAll(".sd3-drail .sd3-dot.d-r")).toHaveLength(
+      0
+    );
+  });
+
+  // FEA-3642: the authoritative structured signal still fires. A recorded
+  // `session.throttles` entry shows the indicator at the right position even when
+  // no free-text mention exists anywhere in the transcript.
+  it("renders a limit dot from a recorded throttle even when the transcript never mentions limits", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession({
+          events: [],
+          throttles: [
+            {
+              durMin: 5,
+              t0: LIMIT_EVENT_TIME,
+              t1: "2026-06-10T12:15:00.000Z",
+              tl: 0,
+              x0: 50,
+            },
+          ],
+          timeline: [],
+          turnItems: createNeutralLimitTargetTurnItems(),
+        })}
+      />
+    );
+
+    const redDot = getOnlyRedTimelineDot();
+    await user.hover(redDot);
+    expect(
+      await screen.findByText(THROTTLED_FOR_FIVE_MINUTES_TEXT)
+    ).toBeInTheDocument();
+
+    await user.click(redDot);
+    expect(document.querySelector(".st-flash")).toHaveAttribute(
+      "data-row",
+      String(LIMIT_EVENT_ROW)
+    );
+  });
+
+  // FEA-3642: the limit dot is now anchored on the structured turn-item `tag`
+  // (`usage_limit`) rather than a free-text timeline title. With two trace rows
+  // sharing the same timestamp, the dot still resolves to the limit row's own
+  // explicit `_row`, not the neutral adjacent row.
+  it("resolves a structured limit turn item to its own row when timestamps collide", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createLimitDotSession({
+          events: [],
+          timeline: [],
+          turnItems: createSameTimestampLimitTurnItems(),
         })}
       />
     );
@@ -865,13 +1340,22 @@ describe("AgentSessionDetailView", () => {
     }
   });
 
-  it("keeps the FEA-1770 comments resize handle non-focusable and source-shaped", () => {
+  it("keeps the FEA-1770 comments resize handle non-focusable and source-shaped", async () => {
+    // FEA-4233: seed a comment so the open rail (and its resize handle) renders
+    // once the discovery read settles; an empty session now defaults to the
+    // collapsed handle, and a comments-present rail widens into view only after
+    // the count is confirmed.
+    seedSessionTraceComment(populatedAgentSessionDetailFixture.id);
     renderDetail(
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
         session={populatedAgentSessionDetailFixture}
       />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector(".fp-resize")).toBeInTheDocument()
     );
 
     // The draggable timeline scrubber was removed (clicking the graph jumps the
@@ -1008,10 +1492,56 @@ describe("AgentSessionDetailView", () => {
     );
 
     expect(screen.getByText("Second session trace row.")).toBeInTheDocument();
+    // FEA-4233: the second session has zero trace comments, so once its comments
+    // read settles empty the rail collapses to the slim handle rather than an
+    // open panel reading "No trace comments yet". The first session's note is
+    // gone regardless of collapse.
     await waitFor(() => {
       expect(screen.queryByText("First session note")).not.toBeInTheDocument();
-      expect(screen.getByText("No trace comments yet")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
+      ).toBeInTheDocument();
     });
+    expect(screen.queryByText("No trace comments yet")).not.toBeInTheDocument();
+  });
+
+  // FEA-3929: the web session-detail surface must wire `onReply`
+  // (`replyToTraceComment`) through to the rail so the Reply affordance renders
+  // and opens the inline composer. (jsdom does not apply styles.css, so the
+  // hover-reveal CSS fix is verified in a real browser by
+  // e2e/session-detail.spec.ts; this test guards the onReply wiring only.)
+  it("exposes an operable reply affordance on a persisted trace comment", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        commentsRailOpen
+        isLoading={false}
+        session={populatedAgentSessionDetailFixture}
+      />
+    );
+
+    selectRenderedText(document.body, "shared session detail screen");
+    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
+    await user.click(
+      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
+    );
+    await user.type(
+      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
+      "A note to reply to"
+    );
+    await user.click(screen.getByRole("button", { name: "Comment" }));
+    expect(screen.getByText("A note to reply to")).toBeInTheDocument();
+
+    // The Reply control is present and opens the inline reply composer,
+    // proving the web adapter did not drop `onReply`.
+    const replyButton = screen.getByRole("button", {
+      name: "Reply to trace note",
+    });
+    await user.click(replyButton);
+    expect(
+      screen.getByRole("textbox", { name: "Reply..." })
+    ).toBeInTheDocument();
   });
 
   it("links pull request pills to GitHub instead of a missing app route", async () => {
@@ -1049,13 +1579,203 @@ describe("AgentSessionDetailView", () => {
     expect(diff?.querySelector(".del")).toBeInTheDocument();
   });
 
+  // FEA-3635: a session whose transcript referenced/created a FEAT surfaces a
+  // clickable "Linked features" pill on the detail Properties panel, pointing at
+  // the FEAT via the shell-supplied href — parallel to the PR pills.
+  it("surfaces a clickable linked-FEAT pill from linkedArtifacts", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        buildArtifactHref={(artifact) =>
+          artifact.slug ? `/acme/features/${artifact.slug}` : null
+        }
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          linkedArtifacts: [
+            {
+              id: "feat-1",
+              slug: "FEA-3628",
+              name: "Pack-scanner worker",
+              documentType: "FEATURE",
+              role: "input",
+            },
+          ],
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    expect(screen.getByText("Linked artifacts")).toBeInTheDocument();
+    const featLink = screen.getByRole("link", { name: FEA_3628_LINK_NAME });
+    expect(featLink).toHaveAttribute("href", "/acme/features/FEA-3628");
+    // ISS-4793: the pill names its own kind through the DS Tooltip, not a native
+    // `title` (content asserted in session-linked-artifacts-row.test.tsx).
+    expect(featLink).not.toHaveAttribute("title");
+    // Shares the PR-pill styling hook so the row lays out consistently.
+    expect(featLink).toHaveClass("sd3-result-pr");
+    expect(featLink.closest(".prd-prop-value")).toHaveClass("sd3-prs-value");
+  });
+
+  // FEA-3635: the "Linked artifacts" row is type-agnostic — a linked PRD routes
+  // to /prds/<slug> and its pill title names it a "PRD" (not a "feature"), so a
+  // non-FEATURE link is never mislabeled by the shared row.
+  it("labels a linked PRD by its own type and routes it to /prds", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        buildArtifactHref={(artifact) =>
+          artifact.slug && artifact.documentType === "PRD"
+            ? `/acme/prds/${artifact.slug}`
+            : null
+        }
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          linkedArtifacts: [
+            {
+              id: "prd-1",
+              slug: "PRD-538",
+              name: "Usage insights",
+              documentType: "PRD",
+              role: "referenced",
+            },
+          ],
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    expect(screen.getByText("Linked artifacts")).toBeInTheDocument();
+    const prdLink = screen.getByRole("link", { name: PRD_538_LINK_NAME });
+    expect(prdLink).toHaveAttribute("href", "/acme/prds/PRD-538");
+    expect(prdLink).not.toHaveAttribute("title");
+  });
+
+  // FEA-3635: without a shell-supplied href (e.g. desktop), the FEAT still
+  // surfaces as a non-clickable label rather than a broken link.
+  it("renders the linked-FEAT pill as a non-link label when no href builder is supplied", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          linkedArtifacts: [
+            {
+              id: "feat-1",
+              slug: "FEA-3628",
+              name: "Pack-scanner worker",
+              documentType: "FEATURE",
+              role: "referenced",
+            },
+          ],
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    expect(screen.getByText("Linked artifacts")).toBeInTheDocument();
+    expect(screen.getByText("FEA-3628")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: FEA_3628_LINK_NAME })
+    ).not.toBeInTheDocument();
+  });
+
+  // FEA-3635: a session that referenced no artifact shows no "Linked artifacts"
+  // row (nothing extra on the panel).
+  // ISS-4449: integration smoke — the extracted SessionLinkedArtifactsRow wires
+  // into the Properties pane and applies its client-side cap + "+N" overflow.
+  // Exhaustive cap/overflow/tooltip/empty coverage lives in the component's own
+  // sibling suite (session-linked-artifacts-row.test.tsx).
+  it("renders the Linked artifacts row with a capped +N overflow in the Properties pane", async () => {
+    const user = userEvent.setup();
+    const served = Array.from({ length: 9 }, (_unused, index) => ({
+      id: `doc-${index}`,
+      slug: `DOC-${index}`,
+      name: `Doc ${index}`,
+      documentType: "DOC" as const,
+      role: "referenced",
+    }));
+    const { container } = renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          linkedArtifacts: served,
+          linkedArtifactsTotal: served.length,
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+
+    expect(screen.getByText("Linked artifacts")).toBeInTheDocument();
+    // 9 links, visible cap 6 -> 6 pills + a "+3" overflow chip.
+    expect(container.querySelector(".sd3-linked-overflow")?.textContent).toBe(
+      "+3"
+    );
+  });
+
+  it("counts opened-but-unmerged PRs in the Properties header (FEA-3329)", () => {
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          // 7 PRs opened, none merged: `prsMerged` is a legitimate 0, so the old
+          // `prsMerged ?? prs.length` chain never fell through and the header
+          // collapsed to "0 PRs merged".
+          prs: Array.from({ length: 7 }, (_unused, index) => ({
+            num: 1600 + index,
+            status: "open",
+            title: `Opened PR ${index}`,
+          })),
+          prsMerged: 0,
+        })}
+      />
+    );
+
+    const preview = document.querySelector(".sd3-props-preview");
+    expect(preview).toHaveTextContent("7 PRs");
+    expect(preview).not.toHaveTextContent("0 PRs merged");
+  });
+
+  it("singularizes the Properties header PR count (FEA-3329)", () => {
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createAgentSessionDetailFixture({
+          prs: [{ num: 1634, status: "merged", title: "Only PR" }],
+          prsMerged: 1,
+        })}
+      />
+    );
+
+    const preview = document.querySelector(".sd3-props-preview");
+    expect(preview).toHaveTextContent("1 PR");
+    expect(preview).not.toHaveTextContent("1 PRs");
+  });
+
   it("resizes the comments rail per FEA-1770", async () => {
+    // FEA-4233: the resize handle only exists on the open rail; seed a comment so
+    // the rail opens once its discovery read settles (the empty-session default
+    // is the collapsed handle, which has no resize handle).
+    seedSessionTraceComment(populatedAgentSessionDetailFixture.id);
     renderDetail(
       <AgentSessionDetailView
         backHref="/sessions"
         isLoading={false}
         session={populatedAgentSessionDetailFixture}
       />
+    );
+
+    await waitFor(() =>
+      expect(document.querySelector(".fp-resize")).toBeInTheDocument()
     );
 
     const shell = document.querySelector<HTMLElement>(".sd3");
@@ -1109,14 +1829,20 @@ describe("AgentSessionDetailView", () => {
 
     await user.click(screen.getByRole("button", { name: "Properties" }));
 
-    expect(screen.getByText(LONG_MODEL_NAME)).toHaveAttribute(
-      "title",
-      LONG_MODEL_NAME
-    );
-    expect(screen.getByText(LONG_REPOSITORY_NAME)).toHaveAttribute(
-      "title",
-      LONG_REPOSITORY_NAME
-    );
+    // FEA-4026: the expanded non-copyable values live inside the ellipsised
+    // `.prd-prop-value-text` span (which inherits the truncate rule) rather than
+    // carrying the old hover-only native `title`. Full-value exposure via the
+    // shared DS tooltip when clipped is covered by the dedicated suite below.
+    const expandedModel = screen
+      .getAllByText(LONG_MODEL_NAME)
+      .find((el) => el.closest(".prd-prop-value-text"));
+    expect(expandedModel?.closest(".prd-prop-value-text")).toBeInTheDocument();
+    const expandedRepository = screen
+      .getAllByText(LONG_REPOSITORY_NAME)
+      .find((el) => el.closest(".prd-prop-value-text"));
+    expect(
+      expandedRepository?.closest(".prd-prop-value-text")
+    ).toBeInTheDocument();
   });
 
   it("keeps Properties accordion click-only per FEA-1769", async () => {
@@ -1223,14 +1949,224 @@ describe("AgentSessionDetailView", () => {
   });
 });
 
-function getOnlyRedTimelineDot(): HTMLElement {
-  const redDots = document.querySelectorAll<HTMLElement>(
-    ".sd3-drail .sd3-dot.d-r"
+function makeActivityBucket(
+  overrides: Partial<ActivityBucket> & Pick<ActivityBucket, "label" | "tl0">
+): ActivityBucket {
+  return {
+    cIn: 0.5,
+    cOut: 0.3,
+    cCache: 0.1,
+    total: 1,
+    toolStart: 0,
+    byModel: { "gpt-5.5": { cIn: 0.5, cOut: 0.3, cCache: 0.1 } },
+    ...overrides,
+  };
+}
+
+/*
+ * FEA-3414 / FEA-3428: the green (commit/PR) timeline dots showed an
+ * inconsistent/missing tooltip and repainted the whole timeline on hover.
+ * Root cause: server-persisted `activityBuckets` arrive WITHOUT a `key`
+ * (`activityBucketSchema` strips it on ingest), so the value-based key fallback
+ * ran — and adjacent idle buckets share identical `label`/`tl0`/counts,
+ * collapsing multiple sibling `sd3-dcell` cells onto ONE React key. The
+ * duplicate keys made React remount the colliding cells on every hover-driven
+ * re-render, flashing the dot rail and resetting the green tooltip's two-phase
+ * layout measurement. The fix anchors the key on the bucket's positional index.
+ */
+describe("green timeline dot tooltip stability (FEA-3414 / FEA-3428)", () => {
+  it("shows the same tooltip on a green commit dot that the other dot colors show", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createKeylessBucketGreenDotSession()}
+      />
+    );
+
+    const greenDot = getOnlyGreenTimelineDot();
+    // Same interaction the red-dot suites use — the green dot must resolve its
+    // label ("Commits & PRs") and event detail identically.
+    await user.hover(greenDot);
+    expect(await screen.findByText("Commits & PRs")).toBeInTheDocument();
+    expect(screen.getByText("Checkpoint commit")).toBeInTheDocument();
+  });
+
+  it("groups the marker swatch and label in the tooltip header", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createKeylessBucketGreenDotSession()}
+      />
+    );
+
+    await user.hover(getOnlyGreenTimelineDot());
+    const label = await screen.findByText("Commits & PRs");
+    const labelGroup = label.closest(".sd3-tip-mklabel");
+
+    expect(labelGroup).toBeInTheDocument();
+    expect(labelGroup).toHaveTextContent("Commits & PRs");
+    expect(labelGroup?.parentElement).toHaveClass("sd3-tip-mkhead");
+    expect(labelGroup?.querySelector(".sd3-tip-swatch")).toBeInTheDocument();
+  });
+
+  it("derives a unique, stable dot-cell key for keyless server buckets so hover cannot remount the rail", () => {
+    // Exactly the payload shape `createKeylessBucketGreenDotSession` renders:
+    // keyless server buckets with two identical idle buckets. Before the fix
+    // the two idle buckets produced the SAME value-based key (all-zero counts +
+    // empty label), collapsing sibling `sd3-dcell` cells onto one React key and
+    // remounting them on every hover-driven re-render (the flicker).
+    const buckets: (ActivityBucket | undefined)[] = [
+      {
+        label: "12:00:00",
+        cIn: 0.4,
+        cOut: 0.3,
+        cCache: 0.1,
+        total: 3,
+        toolStart: 1,
+        tl0: 0,
+        byModel: {},
+      },
+      {
+        label: "",
+        cIn: 0,
+        cOut: 0,
+        cCache: 0,
+        total: 0,
+        toolStart: 0,
+        tl0: null,
+        byModel: {},
+      },
+      {
+        label: "",
+        cIn: 0,
+        cOut: 0,
+        cCache: 0,
+        total: 0,
+        toolStart: 0,
+        tl0: null,
+        byModel: {},
+      },
+    ];
+
+    const keys = buckets.map((bucket, index) => getBucketKey(bucket, index));
+    // Unique per cell — the two idle buckets no longer collide.
+    expect(new Set(keys).size).toBe(keys.length);
+    // Stable across re-renders: same inputs → identical keys, so React never
+    // re-keys/remounts the cells on hover.
+    const keysAgain = buckets.map((bucket, index) =>
+      getBucketKey(bucket, index)
+    );
+    expect(keysAgain).toEqual(keys);
+    // A missing bucket still yields a distinct, positional key (never a shared
+    // "missing-bucket" constant that would collide with a sibling).
+    expect(getBucketKey(undefined, 4)).toBe("missing-bucket-4");
+    expect(getBucketKey(undefined, 4)).not.toBe(getBucketKey(undefined, 5));
+  });
+
+  it("does not repaint the dot rail on hover — the same green dot node survives the tooltip re-render", async () => {
+    const user = userEvent.setup();
+    renderDetail(
+      <AgentSessionDetailView
+        backHref="/sessions"
+        isLoading={false}
+        session={createKeylessBucketGreenDotSession()}
+      />
+    );
+
+    const greenDotBefore = getOnlyGreenTimelineDot();
+    // Hovering mounts the tooltip and forces the re-render that used to remount
+    // the colliding cells. With stable keys the exact same node survives.
+    await user.hover(greenDotBefore);
+    await screen.findByText("Commits & PRs");
+    expect(getOnlyGreenTimelineDot()).toBe(greenDotBefore);
+  });
+});
+
+// Server-persisted `activityBuckets` carry NO `key` (stripped on ingest), and
+// the two middle buckets here are idle with an identical empty label — exactly
+// the shape that collided into one React key before FEA-3414. The commit marker
+// at x:90 lands in the final bucket, producing a single green timeline dot.
+function createKeylessBucketGreenDotSession(): AgentSessionDetail {
+  const idleBucket = (label: string): ActivityBucket => ({
+    label,
+    cIn: 0,
+    cOut: 0,
+    cCache: 0,
+    total: 0,
+    toolStart: 0,
+    tl0: null,
+    byModel: {},
+  });
+  const activeBucket = (label: string, tl0: number): ActivityBucket => ({
+    label,
+    cIn: 0.4,
+    cOut: 0.3,
+    cCache: 0.1,
+    total: 3,
+    toolStart: 1,
+    tl0,
+    byModel: { "gpt-5.5": { cIn: 0.4, cOut: 0.3, cCache: 0.1 } },
+  });
+  return createAgentSessionDetailFixture({
+    // No `key` on any bucket — reproduces the server ingest shape. The two idle
+    // buckets share an empty label so their value-based keys would collide.
+    activityBuckets: [
+      activeBucket("12:00:00", 0),
+      idleBucket(""),
+      idleBucket(""),
+      activeBucket("12:16:00", 8),
+    ],
+    endedAt: new Date("2026-06-10T12:20:00.000Z"),
+    events: [],
+    markers: [
+      {
+        kind: "commit",
+        label: "Checkpoint commit",
+        t: "12:16:00",
+        tl: 8,
+        x: 90,
+      },
+    ],
+    name: "Green dot key-stability session",
+    startedAt: new Date("2026-06-10T12:00:00.000Z"),
+    throttles: [],
+    throttleSources: [],
+    timeline: [],
+    turnItems: createLimitTurnItems(),
+    updatedAt: new Date("2026-06-10T12:20:00.000Z"),
+  });
+}
+
+function getOnlyGreenTimelineDot(): HTMLElement {
+  const greenDots = document.querySelectorAll<HTMLElement>(
+    ".sd3-drail .sd3-dot.d-g"
   );
-  if (redDots.length !== 1) {
-    throw new Error(`Expected one red timeline dot, found ${redDots.length}`);
+  if (greenDots.length !== 1) {
+    throw new Error(
+      `Expected one green timeline dot, found ${greenDots.length}`
+    );
   }
-  return redDots[0]!;
+  return greenDots[0]!;
+}
+
+function getOnlyTimelineDot(color: "b" | "g" | "r"): HTMLElement {
+  const dots = document.querySelectorAll<HTMLElement>(
+    `.sd3-drail .sd3-dot.d-${color}`
+  );
+  if (dots.length !== 1) {
+    throw new Error(
+      `Expected one "${color}" timeline dot, found ${dots.length}`
+    );
+  }
+  return dots[0]!;
+}
+
+function getOnlyRedTimelineDot(): HTMLElement {
+  return getOnlyTimelineDot("r");
 }
 
 function createLimitDotSession(
@@ -1363,7 +2299,7 @@ function createRateLimitProseTurnItems(): NonNullable<
   ];
 }
 
-function createSameTimestampNeutralTurnItems(): NonNullable<
+function createSameTimestampLimitTurnItems(): NonNullable<
   AgentSessionDetail["turnItems"]
 > {
   const { agentActor, humanActor } = createLimitActors();
@@ -1389,12 +2325,48 @@ function createSameTimestampNeutralTurnItems(): NonNullable<
       type: "say",
     },
     {
+      // FEA-3642: a structured harness limit event — its `tag` (`usage_limit`),
+      // not free-text prose, is what classifies it as a limit.
       _row: LIMIT_EVENT_ROW,
       dot: "r",
       t: LIMIT_EVENT_TIME,
       tMs: Date.parse(LIMIT_EVENT_TIME),
-      tag: "status",
+      tag: SessionTraceThrottleSourceType.UsageLimit,
       text: "Provider paused.",
+      type: "event",
+    },
+    {
+      text: "Session completed.",
+      type: "end",
+    },
+  ];
+}
+
+function createThrottleMentionFailureTurnItems(): NonNullable<
+  AgentSessionDetail["turnItems"]
+> {
+  const { humanActor } = createLimitActors();
+
+  return [
+    {
+      _row: 0,
+      actor: humanActor,
+      cum: 0,
+      t: "2026-06-10T12:01:00.000Z",
+      tMs: Date.parse("2026-06-10T12:01:00.000Z"),
+      text: "Start the throttle-mention failure regression.",
+      type: "prompt",
+    },
+    {
+      // A genuine failure (`dot: "r"`) whose free-text prose merely discusses
+      // throttling/429 — its structured `tag` is not a limit type, so it must
+      // stay a plain failure, never a limit indicator.
+      _row: LIMIT_EVENT_ROW,
+      dot: "r",
+      t: LIMIT_EVENT_TIME,
+      tMs: Date.parse(LIMIT_EVENT_TIME),
+      tag: "tool_error",
+      text: "The tool failed; the agent noted it might be throttled with a 429.",
       type: "event",
     },
     {
@@ -1454,338 +2426,143 @@ function createLimitActors() {
   };
 }
 
-const COLLAPSE_COMMENTS_BUTTON_NAME = /collapse comments panel/i;
-const SHOW_COMMENTS_BUTTON_NAME = /show comments panel/i;
-
-describe("collapsible comments rail (FEA-2479)", () => {
-  beforeEach(() => {
-    localStorage.clear();
-  });
-
-  afterEach(() => {
-    localStorage.clear();
-  });
-
-  it("collapses the rail into a re-open handle and widens the main content", async () => {
-    const user = userEvent.setup();
-    renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-    ).toBeInTheDocument();
-    // The main trace content survives the collapse and stays readable.
-    expect(screen.getByText("Session Trace")).toBeInTheDocument();
-  });
-
-  it("re-opens the rail from the collapsed handle", async () => {
-    const user = userEvent.setup();
-    renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    await user.click(
-      screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-    );
-
-    expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-  });
-
-  it("remembers the collapsed preference across remounts", async () => {
-    const user = userEvent.setup();
-    const { unmount } = renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    unmount();
-
-    renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-    ).toBeInTheDocument();
-  });
-
-  it("keeps the rail permanently open with no collapse control when the flag is off", () => {
-    renderDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    ).not.toBeInTheDocument();
-  });
-
-  it("re-opens a collapsed rail when a trace comment is anchored (FEA-2480)", async () => {
-    const user = userEvent.setup();
-    renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-
-    selectRenderedText(document.body, "shared session detail screen");
-    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
-    await user.click(
-      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
-    );
-    await user.type(
-      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
-      "Anchored while collapsed"
-    );
-    await user.click(screen.getByRole("button", { name: "Comment" }));
-
-    expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-    expect(screen.getByText("Anchored while collapsed")).toBeInTheDocument();
-    // The reveal is transient: the reader's saved collapse preference survives.
-    expect(localStorage.getItem("sessions:comments-rail:collapsed")).toBe(
-      "true"
-    );
-  });
-
-  it("restores the saved collapsed preference on remount after a transient reveal", async () => {
-    const user = userEvent.setup();
-    const { unmount } = renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    selectRenderedText(document.body, "shared session detail screen");
-    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
-    await user.click(
-      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
-    );
-    await user.type(
-      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
-      "Anchored while collapsed"
-    );
-    await user.click(screen.getByRole("button", { name: "Comment" }));
-    expect(document.querySelector(".sd3-cmts")).toBeInTheDocument();
-    unmount();
-
-    renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    // Reload respects the durable preference, not the transient reveal.
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-    ).toBeInTheDocument();
-  });
-
-  it("keeps a collapsed rail collapsed when the trace comment submission fails", async () => {
-    const user = userEvent.setup();
-    render(
-      withProviders(
-        <AgentSessionDetailView
-          backHref="/sessions"
-          commentsRailOpen
-          isLoading={false}
-          session={populatedAgentSessionDetailFixture}
-        />,
-        [SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY],
-        failingTraceCommentsSource
-      )
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-
-    selectRenderedText(document.body, "shared session detail screen");
-    fireEvent.mouseUp(document.querySelector(".st") as HTMLElement);
-    await user.click(
-      screen.getByRole("button", { name: COMMENT_BUTTON_NAME_RE })
-    );
-    await user.type(
-      screen.getByPlaceholderText(INLINE_TRACE_COMMENT_PLACEHOLDER),
-      "Submission that fails"
-    );
-    await user.click(screen.getByRole("button", { name: "Comment" }));
-
-    // The create mutation rejected, so the reveal must not fire: the rail the
-    // reader collapsed stays collapsed rather than popping open optimistically.
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: SHOW_COMMENTS_BUTTON_NAME })
-    ).toBeInTheDocument();
-  });
-
-  it("re-opens a collapsed rail when the header 'Show comments rail' toggle turns on", async () => {
-    const user = userEvent.setup();
-    const { rerender } = renderCollapsibleDetail(
-      <AgentSessionDetailView
-        backHref="/sessions"
-        commentsRailOpen
-        isLoading={false}
-        session={populatedAgentSessionDetailFixture}
-      />
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: COLLAPSE_COMMENTS_BUTTON_NAME })
-    );
-    expect(document.querySelector(".sd3-cmts")).not.toBeInTheDocument();
-
-    // Header toggle closes the rail entirely, then re-opens it. The persisted
-    // collapse=true must not silently override the header's authoritative open.
-    rerender(
-      withProviders(
-        <AgentSessionDetailView
-          backHref="/sessions"
-          commentsRailOpen={false}
-          isLoading={false}
-          session={populatedAgentSessionDetailFixture}
-        />,
-        [SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY]
-      )
-    );
-    rerender(
-      withProviders(
-        <AgentSessionDetailView
-          backHref="/sessions"
-          commentsRailOpen
-          isLoading={false}
-          session={populatedAgentSessionDetailFixture}
-        />,
-        [SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY]
-      )
-    );
-
-    await waitFor(() =>
-      expect(document.querySelector(".sd3-cmts")).toBeInTheDocument()
-    );
-    // The header toggle also clears the durable preference so the full panel is
-    // authoritative, not just transiently revealed.
-    expect(localStorage.getItem("sessions:comments-rail:collapsed")).toBe(
-      "false"
-    );
-  });
-});
-
 function renderDetail(ui: React.ReactElement) {
   return render(withProviders(ui));
 }
 
-// Renders with the FEA-2479 collapse flag enabled so the collapse control is present.
-function renderCollapsibleDetail(ui: React.ReactElement) {
-  return render(
-    withProviders(ui, [SESSION_COMMENTS_RAIL_COLLAPSE_FEATURE_FLAG_KEY])
-  );
-}
+describe("FEA-3419 cache-write TTL breakdown row", () => {
+  // FEA-3419: the row derives from the TYPED per-model token usage (the
+  // metadata blob reader is gone) — same shape on web (cloud columns) and
+  // desktop (local columns).
+  const cacheSplitFixture = createAgentSessionDetailFixture({
+    tokenUsageByModel: [
+      {
+        model: "claude-opus-4-5",
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 4608,
+        cacheWrite5mTokens: 4096,
+        cacheWrite1hTokens: 512,
+      },
+    ],
+  });
 
-function withProviders(
-  ui: React.ReactElement,
-  enabledFlags?: readonly string[],
-  dataSource: TraceCommentsDataSource = fakeTraceCommentsSource
-) {
-  return (
-    <AppCoreStoryProviders enabledFlags={enabledFlags}>
-      <TraceCommentsDataSourceProvider dataSource={dataSource}>
-        {ui}
-      </TraceCommentsDataSourceProvider>
-    </AppCoreStoryProviders>
-  );
-}
+  async function openProperties() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+  }
 
-// A data source whose create() always rejects, to assert that a failed trace
-// comment submission never reveals a collapsed rail (FEA-2479).
-const failingTraceCommentsSource: TraceCommentsDataSource = {
-  ...fakeTraceCommentsSource,
-  create: () => Promise.reject(new Error("create failed")),
-};
+  it("renders the 5m vs 1h split when the typed usage carries it", async () => {
+    render(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={cacheSplitFixture}
+        />
+      )
+    );
 
-function makeTraceComment(
-  target: TraceCommentTarget,
-  draft: TraceCommentDraft,
-  index: number
-): TraceComment {
-  const createdAt = new Date(Date.UTC(2026, 5, 17, 10, index)).toISOString();
-  return {
-    id: `${target.type}-trace-comment-${index}`,
-    threadId: `${target.type}-trace-thread-${index}`,
-    target,
-    artifactId: target.id,
-    surface: target.type === "session" ? "session_detail" : "branch_detail",
-    ...draft,
-    status: "OPEN",
-    createdAt,
-    updatedAt: createdAt,
-    editedAt: null,
-    authorId: "user-test",
-    authorName: "Test User",
-    authorAvatarUrl: null,
-    canEdit: true,
-    canDelete: true,
-    replies: [],
-  };
-}
+    await openProperties();
+
+    const label = screen.getByText("Cache Write");
+    expect(label.closest(".prd-prop")).toHaveTextContent(
+      "Cache Write4,096 (5m TTL) | 512 (1h TTL)"
+    );
+  });
+
+  it("hides the row when the session reports no split", async () => {
+    render(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={populatedAgentSessionDetailFixture}
+        />
+      )
+    );
+
+    await openProperties();
+
+    expect(screen.queryByText("Cache Write")).not.toBeInTheDocument();
+  });
+});
+
+describe("ISS-4418 session detail Cost property honesty", () => {
+  async function openProperties() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Properties" }));
+  }
+
+  // A genuinely zero-usage session: no cost, no turns, no tokens, no tool uses,
+  // and a subscription billing mode. The fixture default carries a real
+  // `cost: "$4.82"` display string, so this proves the Properties Cost row is
+  // routed through the derived label (`deriveSessionCostLabel`) and reads the
+  // honest `—`, not the raw `session.cost` dollar value that would contradict
+  // the Cost metric card above it.
+  const zeroUsageSubscriptionFixture = createAgentSessionDetailFixture({
+    billingMode: "pro",
+    cost: "$4.82",
+    estimatedCost: 0,
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    toolUseCount: 0,
+    tokenUsageByModel: [],
+  });
+
+  /*
+   * ISS-5072: the COLLAPSED preview's Cost chip used to read the detail-content
+   * builder's Cost metric (`content.metrics[2]`) — the one field the shipped
+   * view consumed out of a view-model built over every session event. It now
+   * calls `deriveSessionCostLabel` directly; this pins that the rendered string
+   * is the same honest derived label, so the swap cannot regress into the raw
+   * `session.cost` the fixture carries.
+   */
+  it("renders the derived Cost label in the collapsed Properties preview", () => {
+    render(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={zeroUsageSubscriptionFixture}
+        />
+      )
+    );
+
+    const preview = document.querySelector(".sd3-props-preview");
+    expect(preview).toHaveTextContent("—");
+    expect(preview).not.toHaveTextContent("$4.82");
+    expect(preview).not.toHaveTextContent("$0.00");
+  });
+
+  it("renders — for a zero-usage subscription session, not the raw session.cost", async () => {
+    render(
+      withProviders(
+        <AgentSessionDetailView
+          backHref="/sessions"
+          isLoading={false}
+          session={zeroUsageSubscriptionFixture}
+        />
+      )
+    );
+
+    await openProperties();
+
+    // "Cost" appears in both the metric card and the Properties list, so scope
+    // to the Properties row whose label is exactly "Cost".
+    const costLabel = Array.from(
+      document.querySelectorAll(".prd-prop-label")
+    ).find((label) => label.textContent === "Cost");
+    const costRow = costLabel?.closest(".prd-prop");
+    expect(costRow).toHaveTextContent("Cost—");
+    expect(costRow).not.toHaveTextContent("$4.82");
+    expect(costRow).not.toHaveTextContent("$0.00");
+  });
+});
 
 function bodyText() {
   return document.body.textContent ?? "";
@@ -1793,34 +2570,6 @@ function bodyText() {
 
 function flattenContentText(content: AgentSessionDetailContent): string {
   return JSON.stringify(content);
-}
-
-function selectRenderedText(container: HTMLElement, text: string): void {
-  const node = findTextNode(container, text);
-  if (!node) {
-    throw new Error(`Unable to find text node: ${text}`);
-  }
-  const value = node.textContent ?? "";
-  const start = value.indexOf(text);
-  const range = document.createRange();
-  range.setStart(node, start);
-  range.setEnd(node, start + text.length);
-  const selection = globalThis.getSelection();
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
-
-function findTextNode(node: Node, text: string): Text | null {
-  if (node.nodeType === Node.TEXT_NODE && node.textContent?.includes(text)) {
-    return node as Text;
-  }
-  for (const child of Array.from(node.childNodes)) {
-    const found = findTextNode(child, text);
-    if (found) {
-      return found;
-    }
-  }
-  return null;
 }
 
 function setElementRect(

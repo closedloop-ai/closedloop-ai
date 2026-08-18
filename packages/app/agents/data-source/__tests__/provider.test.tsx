@@ -20,6 +20,7 @@ function fakeSource(scope: string, total: number): AgentSessionsDataSource {
     detail: () => Promise.reject(new Error("detail unused")),
     usage: () => Promise.reject(new Error("usage unused")),
     analytics: () => Promise.reject(new Error("analytics unused")),
+    pageData: () => Promise.reject(new Error("pageData unused")),
   };
 }
 

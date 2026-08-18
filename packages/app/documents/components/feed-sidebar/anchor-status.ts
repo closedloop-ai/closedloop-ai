@@ -1,6 +1,11 @@
 import type { ThreadData } from "@liveblocks/client";
+import {
+  DocumentThreadAnchorStatus,
+  type DocumentThreadAnchorStatus as DocumentThreadAnchorStatusType,
+  resolveAnchorStatusKernel,
+} from "@repo/api/src/types/comment";
 
-export type EffectiveAnchorStatus = "anchored" | "floating" | "artifact-level";
+export type EffectiveAnchorStatus = DocumentThreadAnchorStatusType;
 
 /**
  * Computes the effective anchor status for a thread, preferring the
@@ -12,16 +17,19 @@ export type EffectiveAnchorStatus = "anchored" | "floating" | "artifact-level";
  * - `anchorPreview` set → treat as `"anchored"`
  * - `anchorPreview` unset → treat as `"artifact-level"`
  *
+ * The core explicit-status / `anchorPreview` inference is the shared
+ * {@link resolveAnchorStatusKernel}; the web feed layers its own
+ * `artifact-level` fallback on the kernel's neutral (`null`) result.
+ *
  * The `"floating"` state is only ever set explicitly — there is no legacy
  * data with a floating concept until the Cross-Version Comment Persistence
  * feature ships its conversion pass.
  */
 export function deriveAnchorStatus(thread: ThreadData): EffectiveAnchorStatus {
-  const explicit = thread.metadata.anchorStatus;
-  if (explicit !== undefined) {
-    return explicit;
-  }
-  return thread.metadata.anchorPreview === undefined
-    ? "artifact-level"
-    : "anchored";
+  return (
+    resolveAnchorStatusKernel({
+      anchorStatus: thread.metadata.anchorStatus,
+      anchorPreview: thread.metadata.anchorPreview,
+    }) ?? DocumentThreadAnchorStatus.ArtifactLevel
+  );
 }

@@ -12,10 +12,8 @@ import { Status } from "@repo/api/src/types/result";
 import { ArtifactSubtype, ArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
 import { describe, expect, it } from "vitest";
-import {
-  documentService,
-  STACK_RANK_GAP,
-} from "@/app/documents/document-service";
+import { documentService } from "@/app/documents/document-service";
+import { STACK_RANK_GAP } from "@/app/documents/document-sort-order";
 import { generateSlug } from "@/app/documents/document-utils";
 import {
   autoRollbackTransaction,

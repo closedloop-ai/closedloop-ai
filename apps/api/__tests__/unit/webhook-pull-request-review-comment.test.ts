@@ -67,8 +67,22 @@ vi.mock("@/app/comments/github-projection", () => ({
   upsertGitHubReviewCommentThread: mockUpsertGitHubReviewCommentThread,
 }));
 
+vi.mock("@/app/webhooks/github/handlers/branch-activity-producer", () => ({
+  GitHubBranchActivityEventName: {
+    PullRequestReviewComment: "pull_request_review_comment",
+  },
+  persistGitHubBranchActivity: vi.fn().mockResolvedValue({
+    status: "persisted",
+    persistenceStatus: "inserted",
+  }),
+}));
+
 // Import after mocking
 import { GitHubProjectionNoWriteError } from "@/app/comments/github-projection";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "@/app/webhooks/github/handlers/branch-activity-producer";
 import { handlePullRequestReviewComment } from "@/app/webhooks/github/handlers/pull-request-review-comment-handler";
 import {
   createPullRequest,
@@ -80,6 +94,8 @@ import { makePrDetailRow } from "../utils/pr-detail-helpers";
 
 // Mock database transaction client
 let mockTx: any;
+const mockPersistGitHubBranchActivity =
+  persistGitHubBranchActivity as ReturnType<typeof vi.fn>;
 
 const REVIEWER_USER = {
   login: "reviewer",
@@ -190,7 +206,10 @@ describe("handlePullRequestReviewComment", () => {
       // Mock event creation
       mockTx.workstreamEvent.create.mockResolvedValue({});
 
-      await handlePullRequestReviewComment(event);
+      await handlePullRequestReviewComment(event, {
+        deliveryId: "review-comment-delivery-1",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
 
       expect(mockTx.gitHubInstallation.findMany).toHaveBeenCalledWith({
         where: { installationId: "99" },
@@ -244,7 +263,61 @@ describe("handlePullRequestReviewComment", () => {
         })
       );
 
+      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+        eventName: GitHubBranchActivityEventName.PullRequestReviewComment,
+        deliveryId: "review-comment-delivery-1",
+        payload: event,
+        attribution: {
+          organizationId: "org-uuid-123",
+          branchArtifactId: "artifact-pr-456",
+          pullRequestDetailId: "artifact-pr-456",
+        },
+      });
+
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
+    });
+
+    it("records activity but skips projection for a non-current associated PR", async () => {
+      const event: PullRequestReviewCommentCreatedEvent = {
+        action: "created",
+        comment: createComment({
+          id: 123_456_790,
+          body: "Older PR comment",
+          path: "src/feature.ts",
+          line: 16,
+          pull_request_review_id: 556,
+        }),
+        pull_request: createPullRequest({ number: 42 }),
+        repository: createRepository(789),
+        sender: createSender(),
+        installation: { id: 99 },
+      } as any;
+      const prDetail = makePrDetailRow({
+        artifactId: "artifact-pr-older",
+        branchArtifactId: "branch-artifact-1",
+        currentPullRequestDetailId: "artifact-pr-current",
+      });
+      mockOwnerResolutionSuccess({
+        repositoryRecordId: "repo-uuid-123",
+        prDetail,
+      });
+
+      await handlePullRequestReviewComment(event, {
+        deliveryId: "review-comment-older-associated-pr",
+        observedAt: new Date("2026-08-12T14:00:00.000Z"),
+      });
+
+      expect(mockUpsertGitHubReviewCommentThread).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).toHaveBeenCalledWith({
+        eventName: GitHubBranchActivityEventName.PullRequestReviewComment,
+        deliveryId: "review-comment-older-associated-pr",
+        payload: event,
+        attribution: {
+          organizationId: "org-uuid-123",
+          branchArtifactId: "branch-artifact-1",
+          pullRequestDetailId: "artifact-pr-older",
+        },
+      });
     });
 
     it("dedupes duplicate created review comment deliveries via the upsert helper", async () => {
@@ -678,6 +751,8 @@ describe("handlePullRequestReviewComment", () => {
       // Should not attempt to find PR or create comment
       expect(mockTx.pullRequestDetail.findMany).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      expect(mockUpsertGitHubReviewCommentThread).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -709,6 +784,8 @@ describe("handlePullRequestReviewComment", () => {
       ).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findMany).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      expect(mockUpsertGitHubReviewCommentThread).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });
@@ -785,6 +862,8 @@ describe("handlePullRequestReviewComment", () => {
       ).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findMany).not.toHaveBeenCalled();
       expect(mockTx.pullRequestDetail.findUnique).not.toHaveBeenCalled();
+      expect(mockUpsertGitHubReviewCommentThread).not.toHaveBeenCalled();
+      expect(mockPersistGitHubBranchActivity).not.toHaveBeenCalled();
       expect(mockTx.workstreamEvent.create).not.toHaveBeenCalled();
     });
   });

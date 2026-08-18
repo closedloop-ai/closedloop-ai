@@ -6,10 +6,12 @@
  * Renders one tab per AgentComponentKind in KIND_ORDER. Each tab shows an
  * AgentsTable filtered to that kind only.
  *
- * For configured-only kinds (Hook, Config) where klocPerDollar is always null,
- * the default sort falls back to AgentComponentSortKey.Name (ascending).
- * Per-kind columns: metric and invocations are omitted for Hook/Config kinds
- * since those values are always null for configured-only kinds.
+ * Per-kind columns (FEA-4052): the metric and invocations columns are omitted
+ * for configured-only kinds (Hook, Config) whose values are always null, and the
+ * LOC/$ metric column alone is omitted for an observed-but-non-verifiable kind
+ * (plugin/mcp) whose per-component LOC/$ can't be reliably attributed. Any tab
+ * whose metric column is hidden defaults to name sort ascending rather than to a
+ * hidden metric column.
  *
  * This component is selectable as a view-option from AgentsViewMenu (a layout
  * toggle, not a group-by dimension).
@@ -23,6 +25,7 @@ import {
   AgentComponentSortDir,
   AgentComponentSortKey,
   type AgentMetricMode,
+  isLocPerDollarVerifiableKind,
 } from "@repo/api/src/types/agent-component";
 import {
   Tabs,
@@ -41,13 +44,23 @@ import { AgentsTable } from "./agents-table";
 
 /**
  * Column ids to omit for configured-only kinds (Hook, Config).
- * These kinds have null klocPerDollar and null invocations so those columns
+ * These kinds have null locPerDollar and null invocations so those columns
  * carry no information and are removed from the per-kind view.
  */
 const CONFIGURED_ONLY_HIDDEN_COLUMNS = new Set<string>([
   "metric",
   "invocations",
 ]);
+
+/**
+ * FEA-4052: the LOC/$ (efficiency) metric column, hidden on a tab whose kind
+ * has no reliable per-component attribution ({@link isLocPerDollarVerifiableKind}). The
+ * service already returns `locPerDollar: null` for those kinds, so the column
+ * would render an all-"—" strip; hiding it (in lockstep with the summary card,
+ * see `AgentsSummaryCards`) means the tab never shows a LOC/$ number it can't
+ * back — no zeros, no misleading placeholders.
+ */
+const METRIC_COLUMN_ID = "metric";
 
 // ---------------------------------------------------------------------------
 // Per-kind state
@@ -58,15 +71,18 @@ type KindViewState = {
   sortDir: AgentComponentSortDir;
 };
 
-function defaultKindState(kind: AgentComponentKind): KindViewState {
-  // Configured-only kinds have no metric — fall back to name sort ascending.
-  if (!isObservedKind(kind)) {
+export function defaultKindState(kind: AgentComponentKind): KindViewState {
+  // FEA-4052: only kinds with a reliable, VISIBLE LOC/$ column default to
+  // metric-descending (highest efficiency first). A kind whose metric column is
+  // hidden (configured-only OR a non-verifiable observed kind like plugin/mcp)
+  // would otherwise default-sort by a column the user can't see, so it falls
+  // back to name sort ascending.
+  if (isLocPerDollarVerifiableKind(kind)) {
     return {
-      sortKey: AgentComponentSortKey.Name,
-      sortDir: AgentComponentSortDir.Asc,
+      sortKey: AgentComponentSortKey.Metric,
+      sortDir: AgentComponentSortDir.Desc,
     };
   }
-  // Observed kinds default to metric descending (highest efficiency first).
   return {
     sortKey: AgentComponentSortKey.Name,
     sortDir: AgentComponentSortDir.Asc,
@@ -178,6 +194,13 @@ export function AgentsTabbedList({
 
         // For configured-only kinds, omit metric and invocations columns.
         const configuredOnly = !isObservedKind(kind);
+        // FEA-4052: an observed kind whose LOC/$ is NOT reliably attributable
+        // (plugin/mcp) still hides the metric column — it renders all "—"
+        // otherwise (the service nulls it), and the summary card is hidden in
+        // lockstep so a tab never shows a card while hiding the column.
+        const hideMetricOnly = !(
+          configuredOnly || isLocPerDollarVerifiableKind(kind)
+        );
         let effectiveVisible: Set<string> | undefined;
         if (configuredOnly) {
           // Start from the caller-supplied visible set (or all columns) and
@@ -194,6 +217,8 @@ export function AgentsTabbedList({
             }
             effectiveVisible = base;
           }
+        } else if (hideMetricOnly) {
+          effectiveVisible = buildLocPerDollarHiddenColumns(visibleColumns);
         } else {
           effectiveVisible = visibleColumns;
         }
@@ -248,4 +273,31 @@ function buildConfiguredOnlyColumns(): Set<string> {
     "sessions",
     "actions",
   ]);
+}
+
+/**
+ * FEA-4052: the visible column set for an observed kind whose LOC/$ is not
+ * reliably attributable (plugin/mcp) — every column the caller allowed EXCEPT
+ * the metric column. Unlike configured-only kinds this keeps `invocations`
+ * (those kinds do carry real invocation data); only the unbacked LOC/$ column
+ * is dropped. When the caller supplies no set, all columns except the metric are
+ * shown; otherwise the metric is removed from the caller's set.
+ */
+function buildLocPerDollarHiddenColumns(
+  visibleColumns: Set<string> | undefined
+): Set<string> {
+  const base = visibleColumns
+    ? new Set(visibleColumns)
+    : new Set([
+        "type",
+        "owner",
+        "collaborators",
+        "source",
+        "harness",
+        "invocations",
+        "sessions",
+        "actions",
+      ]);
+  base.delete(METRIC_COLUMN_ID);
+  return base;
 }

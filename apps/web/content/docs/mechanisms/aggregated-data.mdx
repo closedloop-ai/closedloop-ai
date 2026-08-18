@@ -1,0 +1,57 @@
+---
+title: Aggregated data
+description: How normalized sessions roll up into the Insights dashboards on both desktop and web.
+---
+
+Every session the [parsers and collectors](./parsers-collectors) ingest carries tokens, cost, timing, tool use, and artifact links. The aggregated-data layer turns that per-session detail into the summary metrics you see on the Insights dashboards — delivery throughput, utilization, and agent-efficiency views — on both the desktop client and the web app.
+
+## Two backends, one contract
+
+Insights renders from a single shared data port. The dashboard components, tiles, and hooks live in a shared package consumed by both surfaces, so the two never draw different charts. Behind that port there are two backends:
+
+| Surface | Backend | Data source |
+|---|---|---|
+| Web app | The authenticated `/insights/*` routes on the API server | The cloud database (synced session metadata across the whole org). |
+| Desktop client | Cloud `/insights/*` when authenticated and online; local SQLite over IPC when signed out or offline | The cloud database (both personal and org scope) as the primary source; the device's own session store as the signed-out / offline fallback (personal scope only). |
+
+Desktop source selection is **auth-driven**, not tied to GitHub: when authenticated and online, both personal and org reads go to the cloud `/insights/*` routes (byte-identical to web); only when signed out or offline does it fall back to the in-process SQLite database, personal scope only. GitHub connection gates *tile availability* (which KPIs can be shown), not which backend the read comes from. Both backends answer the same three section reads — **delivery**, **utilization**, and **agents** — so the same dashboard grid renders against either one, composed through one shared data port.
+
+## Aggregate in SQL, bound what you hydrate
+
+The load-bearing rule for this layer is that metrics prefer **SQL aggregates** — `COUNT`, `SUM`, `GROUP BY` over the metadata and token tables — over hydrating the full session and event corpus into application memory.
+
+On desktop this is a hard invariant: the SQLite store runs in a dedicated database-host process, and loading a large local history into JavaScript to reduce it there would exhaust that process's heap. Row-loading list reads default to a rolling 90-day window (all-time is an explicit toggle), while the aggregates stay all-time because they are cheap to compute in SQL.
+
+On the cloud side the same discipline applies with a different failure mode — an unbounded fetch across an entire org would starve the connection pool — but it is not absolute. The headline counts (for example, merged pull requests in a period) come from exact database `COUNT`s. The **Delivery** view, however, deliberately hydrates a *bounded* window of merged-PR rows (currently capped at 25,000, newest-first) and computes the heavier distribution work — median time-to-merge, median PR size, and the repo / TTM / lifespan histograms — in JavaScript over that window. The cap is the safety valve: the headline count stays an exact `COUNT` regardless, and the JS-computed distributions degrade gracefully for very large orgs (they reflect the retained window) rather than timing out on an unbounded scan.
+
+## What the dashboards show
+
+The Insights dashboards are organized into three sections:
+
+- **Delivery** — merged-PR throughput, time-to-merge, PR size, and lifespan histograms, plus reviewer activity. These read from materialized pull-request and branch rows produced by the artifact-reference extractor and enrichment sweep.
+- **Utilization** — how AI coding capacity is being used over time: active sessions, token spend, and an activity heatmap.
+- **Agents** — the agent pipeline graph and per-component efficiency, drawing on the [agent-component](./agent-components) inventory and its usage rows.
+
+Each tile reports its own availability, so a metric that needs GitHub connected (for example, merge outcomes) is shown as unavailable rather than rendered as a misleading zero when the data isn't there.
+
+## Write-only rollup tables are not read live
+
+The desktop store keeps some pre-computed rollup tables, but the dashboards do **not** trust them as the source of truth. Only a handful of rollup fields are ever read back; the dashboards recompute live from the underlying `events` and token tables on each read. This keeps a stale or partially-written rollup from ever showing a wrong number on the dashboard.
+
+## Overview metrics must be aggregate-backed
+
+Any global total shown on an overview or dashboard is backed by an aggregate query or a known-complete collection — never by summing a page of a paginated list. A page-scoped number is labeled as such; a headline total is always a true aggregate. This is why the counts on the dashboard and the counts you get by paging through a list can be computed differently: the dashboard is aggregate-first by design.
+
+## Related reading
+
+<Cards>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    The pipeline that produces the normalized sessions these metrics roll up.
+  </Card>
+  <Card title="Agent components" href="./agent-components">
+    The component inventory behind the Agents section of Insights.
+  </Card>
+  <Card title="Synchronization" href="./synchronization">
+    How local session metadata reaches the cloud so the web dashboards can aggregate it.
+  </Card>
+</Cards>

@@ -5,7 +5,8 @@ import {
   type DragEndEvent,
   DragOverlay,
   type DragStartEvent,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -14,14 +15,15 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   type ArtifactStatus,
+  type DocumentListPage,
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { isDisplayableSlug } from "@repo/api/src/types/slug";
 import { ArtifactStatusIcon } from "@repo/app/documents/components/artifact-status-icon";
 import { DocumentStatusIcon } from "@repo/app/documents/components/document-status-icon";
-import { FeatureStatusIcon } from "@repo/app/documents/components/feature-status-icon";
+import { IssueStatusIcon } from "@repo/app/documents/components/issue-status-icon";
 import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { useUpdateDocument } from "@repo/app/documents/hooks/use-documents";
 import type { DocumentRowData } from "@repo/app/documents/lib/artifact-row-adapter";
@@ -31,18 +33,17 @@ import {
 } from "@repo/app/documents/lib/document-navigation";
 import { DOCUMENT_TYPE_ICONS } from "@repo/app/projects/lib/project-constants";
 import { AssigneeAvatar } from "@repo/app/shared/components/assignee-avatar";
-import { useElementViewportHeight } from "@repo/app/shared/hooks/use-element-viewport-height";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import {
   KanbanBoardLayout,
   KanbanColumn,
 } from "@repo/design-system/components/ui/layout/kanban-board";
 import { Link } from "@repo/navigation/link";
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { CheckSquareIcon, TerminalIcon } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useOrgSlug } from "@/hooks/use-org-slug";
-import { buildArtifactListParams, DISPLAY_GROUPS } from "../utils";
+import { DISPLAY_GROUPS } from "../utils";
 import { KanbanArtifactCard } from "./kanban-artifact-card";
 
 /**
@@ -59,17 +60,15 @@ function columnTargetStatus(
   const isFeature = artifactType === DocumentType.Feature;
   switch (columnKey) {
     case "backlog":
-      return isFeature ? FeatureStatus.Backlog : DocumentStatus.Draft;
+      return isFeature ? IssueStatus.Backlog : DocumentStatus.Draft;
     case "todo":
-      return isFeature ? FeatureStatus.Todo : null;
+      return isFeature ? IssueStatus.Todo : null;
     case "in_progress":
-      return isFeature ? FeatureStatus.InProgress : null;
+      return isFeature ? IssueStatus.InProgress : null;
     case "in_review":
-      return isFeature ? FeatureStatus.InReview : DocumentStatus.InReview;
+      return isFeature ? IssueStatus.InReview : DocumentStatus.InReview;
     case "blocked":
-      return isFeature
-        ? FeatureStatus.Blocked
-        : DocumentStatus.ChangesRequested;
+      return isFeature ? IssueStatus.Blocked : DocumentStatus.ChangesRequested;
     case "approved":
       return isFeature ? null : DocumentStatus.Approved;
     case "executed":
@@ -79,9 +78,9 @@ function columnTargetStatus(
       // "approved" column. Returning Approved here would set the status then
       // re-render the card into the approved column (a visual teleport), so a
       // Document dropped on "done" is a no-op (PRD-495).
-      return isFeature ? FeatureStatus.Done : null;
+      return isFeature ? IssueStatus.Done : null;
     case "closed":
-      return isFeature ? FeatureStatus.Canceled : DocumentStatus.Obsolete;
+      return isFeature ? IssueStatus.Canceled : DocumentStatus.Obsolete;
     default:
       return null;
   }
@@ -92,6 +91,19 @@ type MyTasksKanbanProps = {
   assigneeId: string | null;
   isLoading: boolean;
   isUserLoading: boolean;
+  /**
+   * The RESOLVED cache key of the page read (ISS-4576) — produced by
+   * `documentsPageQueryKey`, the same helper `useDocumentsPage` keys its query
+   * with.
+   *
+   * The key is threaded in rather than rebuilt from params here because
+   * `documentKeys.list` hashes its filters object verbatim: a key rebuilt from
+   * the page's own params would omit the `includeTotal` flag the hook adds,
+   * hash to a DIFFERENT entry, and make the optimistic write land somewhere
+   * nothing is subscribed to — the drag would appear to do nothing until the
+   * mutation's invalidation refetched.
+   */
+  pageQueryKey: QueryKey;
 };
 
 export function MyTasksKanban({
@@ -99,16 +111,9 @@ export function MyTasksKanban({
   assigneeId,
   isLoading,
   isUserLoading,
+  pageQueryKey,
 }: Readonly<MyTasksKanbanProps>) {
   const queryClient = useQueryClient();
-  const [viewportHeight, setContainerRef] = useElementViewportHeight({
-    bottomGap: 12,
-    minHeight: 240,
-  });
-  const listFilters = useMemo(
-    () => buildArtifactListParams(assigneeId),
-    [assigneeId]
-  );
   const updateArtifactMutation = useUpdateDocument();
   const lastDraggedArtifactIdRef = useRef<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -172,15 +177,21 @@ export function MyTasksKanban({
         setActiveId(null);
         return;
       }
+      // The board reads the paged envelope, so the optimistic write patches
+      // `items` in place and leaves `total`/`hasMore` alone — a status change
+      // moves a card between columns, it does not change how many tasks exist.
       queryClient.setQueryData(
-        documentKeys.list(listFilters),
-        (old: DocumentRowData[] | undefined) => {
+        pageQueryKey,
+        (old: DocumentListPage | undefined) => {
           if (!old) {
             return old;
           }
-          return old.map((i: DocumentRowData) =>
-            i.id === artifactId ? { ...i, status: newStatus } : i
-          );
+          return {
+            ...old,
+            items: old.items.map((i) =>
+              i.id === artifactId ? { ...i, status: newStatus } : i
+            ),
+          };
         }
       );
       setActiveId(null);
@@ -193,11 +204,20 @@ export function MyTasksKanban({
         }
       );
     },
-    [artifacts, listFilters, queryClient, updateArtifactMutation]
+    [artifacts, pageQueryKey, queryClient, updateArtifactMutation]
   );
 
+  // Split the pointer sensor by input type so touch and mouse each get the
+  // right activation. Mouse keeps its 8px drag threshold (desktop behavior
+  // unchanged). Touch uses a 250ms press-and-hold with a 5px tolerance: a plain
+  // vertical swipe scrolls the column, and only a deliberate hold starts a drag,
+  // so touch-drag no longer hijacks scroll. A single PointerSensor with a delay
+  // would also delay mouse drags, so the sensors are kept separate.
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 5 },
+    })
   );
 
   if (isUserLoading || (assigneeId && isLoading)) {
@@ -218,30 +238,38 @@ export function MyTasksKanban({
     );
   }
 
-  if (artifacts.length === 0) {
-    return (
-      <EmptyState
-        description="Tasks assigned to you will appear here."
-        icon={CheckSquareIcon}
-        title="No assigned tasks"
-      />
-    );
-  }
+  // No local empty branch: the read is server-paged now, so "zero cards" can
+  // mean an empty queue, a filter that excluded this page, or a page past the
+  // end — three different facts one "No assigned tasks" state would flatten.
+  // `MyTasksCardView` owns that decision because it holds the server total
+  // (ISS-4576).
 
   const activeArtifact = activeId
     ? artifacts.find((i: DocumentRowData) => i.id === activeId)
     : null;
 
+  // The board is sized by the flex column it lives in, NOT by a measured
+  // viewport-bottom height. `MyTasksCardView` renders it above the pagination
+  // footer, so a board pinned to the viewport bottom overflows its own sibling
+  // and swallows the pager's clicks (ISS-4576). Growing into the space the
+  // footer leaves is also what the list view already does.
   return (
-    <div className="flex h-full min-h-0 flex-col" ref={setContainerRef}>
+    <div className="flex min-h-0 flex-1 flex-col">
       <DndContext
         onDragEnd={handleDragEnd}
         onDragStart={handleDragStart}
         sensors={sensors}
       >
-        <KanbanBoardLayout
-          style={viewportHeight ? { height: viewportHeight } : undefined}
-        >
+        {/* No min-height floor here, deliberately. A floor on this element is
+            what the deleted hook's `minHeight: 240` was, and it is causally
+            part of ISS-4576: the board cannot shrink past it, so once the
+            column is tight it overflows this flex parent (which has no
+            `overflow-hidden`) and repaints over the footer, intercepting the
+            pager exactly as before. Verified by CI, not theory -- re-adding
+            `min-h-60` reproduced the interception on run 30780191886. A floor
+            belongs on a scroll container that owns the body AND the footer,
+            never on a board that shares a column with one. */}
+        <KanbanBoardLayout className="flex-1" stackBelow>
           {DISPLAY_GROUPS.map((group) => {
             const items = grouped.get(group.key) ?? [];
             return (
@@ -284,9 +312,11 @@ function MyTasksKanbanColumn({
   const { isOver, setNodeRef } = useDroppable({ id: groupKey });
 
   return (
-    <div ref={setNodeRef}>
+    // Full-width when the board stacks below `sm` so a 360px screen shows one
+    // readable column; the fixed 270px width returns side-by-side at `sm+`.
+    <div className="w-full sm:w-auto" ref={setNodeRef}>
       <KanbanColumn
-        className="w-[270px] rounded-md bg-muted/30 shadow-none"
+        className="w-full rounded-md bg-muted/30 shadow-none sm:w-[270px]"
         count={items.length}
         highlighted={isOver}
         icon={<ArtifactStatusIcon size={16} status={status} />}
@@ -336,10 +366,7 @@ function getKanbanArtifactCardProps(
         {/* The card knows its artifact type, so render the exact vocabulary's
             icon (Documents and Features diverge on IN_REVIEW — PRD-495). */}
         {artifact.type === DocumentType.Feature ? (
-          <FeatureStatusIcon
-            size={16}
-            status={artifact.status as FeatureStatus}
-          />
+          <IssueStatusIcon size={16} status={artifact.status as IssueStatus} />
         ) : (
           <DocumentStatusIcon
             size={16}

@@ -6,11 +6,21 @@
     "moduleResolution": "Bundler",
     "outDir": "dist",
     "noEmit": false,
+    // mcp consumes @repo/api source directly (deep `@repo/api/src/...` imports),
+    // and that package uses explicit `.ts` sibling imports so it also emits valid
+    // Node ESM for desktop (see packages/api). Accept those `.ts` specifiers here
+    // and rewrite them to `.js` on emit, mirroring packages/api's tsconfig, so
+    // mcp's typecheck/build agree with the source convention instead of failing
+    // TS5097 (FEA-4293/4294, wongk).
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "paths": {
-      "@/*": ["./apps/app/*", "./apps/web/*", "./apps/api/*"],
-      "@closedloop-ai/loops-api/*": ["./packages/loops-api/src/*"],
-      "@repo/*": ["./packages/*"]
-    }
+      "@/*": ["../../apps/app/*", "../../apps/web/*", "../../apps/api/*"],
+      "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/*": ["../../packages/*"]
+    },
+    "rootDir": "../.."
   },
   "include": ["src"],
   "exclude": ["src/__tests__"]

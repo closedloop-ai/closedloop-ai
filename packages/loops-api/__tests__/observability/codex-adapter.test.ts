@@ -56,11 +56,12 @@ describe("CodexObservabilityAdapter (AC-002, AC-009, AC-011)", () => {
       expect(fileChangeTool.started_at).toBe(fileChangeTool.ended_at);
     }
 
-    // turn.completed.usage → ModelTokenUsage (cached→cacheRead, reasoning folded
-    // into output, no cacheCreation).
+    // turn.completed.usage → ModelTokenUsage (cached→cacheRead, output_tokens
+    // already includes reasoning so reasoning_output_tokens is not re-added, no
+    // cacheCreation).
     expect(tokenUsage).toEqual({
       input: 1000,
-      output: 250,
+      output: 200,
       cacheRead: 400,
     });
   });

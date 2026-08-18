@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "pnpm",
+  "testRunner": "vitest",
+  "plugins": ["@stryker-mutator/vitest-runner"],
+  "mutate": ["src/**/*.ts", "!src/**/*.test.ts"],
+  "reporters": ["html", "clear-text", "progress"],
+  "concurrency": 4,
+  "coverageAnalysis": "perTest",
+  "timeoutMS": 30000
+}

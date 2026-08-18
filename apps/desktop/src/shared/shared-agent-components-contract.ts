@@ -43,3 +43,15 @@ export function emptyAgentComponentsListResponse(): AgentComponentListResponse {
     hasMore: false,
   };
 }
+
+/**
+ * ISS-4483 (review cid 3679616172, wongk): the transient counterpart of the local
+ * agent-components source error — a db-host restart/crash-loop mid-read that the
+ * renderer should route to the quiet reconnecting surface with a bounded retry
+ * rather than the hard error card. Lives in this leaf contract (not the data-source
+ * module) so the renderer's `transient-source-error` classifier can import it
+ * without an import cycle. Source-specific so a settled transient error names the
+ * Agent Components source it came from.
+ */
+export const SHARED_AGENT_COMPONENTS_TRANSIENT_ERROR_CODE =
+  "LOCAL_AGENT_COMPONENTS_SOURCE_TRANSIENT" as const;

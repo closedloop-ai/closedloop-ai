@@ -23,11 +23,15 @@
 //   1. Key-based — fields whose NAME signals a secret/PII (apiKey, accessToken,
 //      password, authorization, cookie, email, …) have their value replaced
 //      wholesale. This is the reliable control for structured meta.
-//   2. Value-based — secret-shaped tokens (bearer, gh*_, sk_live/test, glpat-,
-//      xox*, github_pat_) and email addresses are scrubbed out of any string
-//      value, catching secrets embedded in messages, stacks, or file paths
-//      even under an innocent-looking key.
+//   2. Value-based — secret-shaped tokens and email addresses are scrubbed out
+//      of any string value, catching secrets embedded in messages, stacks, or
+//      file paths even under an innocent-looking key. WHICH token shapes count
+//      is not decided here: it is `SECRET_VALUE_REPLACE_PATTERN`, the SSOT this
+//      path shares with the desktop exception-sanitizer (ISS-6233). Add a
+//      credential family there, not here.
 // ---------------------------------------------------------------------------
+
+import { SECRET_VALUE_REPLACE_PATTERN } from "@closedloop-ai/loops-api/secret-value-pattern";
 
 const REDACTED = "[redacted]";
 
@@ -64,12 +68,6 @@ const SENSITIVE_KEY_FRAGMENTS = [
   "email",
 ] as const;
 
-// Secret-shaped token values — mirrors the desktop exception-sanitizer's
-// SECRET_VALUE_PATTERN so the two redaction paths agree on what a secret looks
-// like. Global + case-insensitive so every occurrence in a string is scrubbed.
-const SECRET_VALUE_RE =
-  /\b(?:bearer\s+[A-Za-z0-9._~+/-]{12,}=*|github_pat_[A-Za-z0-9_]{20,}|gh[opsu]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|re_[A-Za-z0-9]{10,}|sk-(?:proj-)?[A-Za-z0-9_-]{6,}|sk_(?:live|test)_[A-Za-z0-9]{6,}|xox[baprs]-[A-Za-z0-9-]{10,})\b/gi;
-
 const EMAIL_VALUE_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
 
 function normalizeKey(key: string): string {
@@ -102,7 +100,7 @@ export function isSensitiveKey(key: string): boolean {
  */
 export function redactSensitiveText(value: string): string {
   return value
-    .replace(SECRET_VALUE_RE, REDACTED)
+    .replace(SECRET_VALUE_REPLACE_PATTERN, REDACTED)
     .replace(EMAIL_VALUE_RE, REDACTED);
 }
 

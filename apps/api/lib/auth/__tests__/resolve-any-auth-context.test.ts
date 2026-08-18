@@ -65,6 +65,10 @@ import { auth, getAuth, verifyToken } from "@repo/auth/server";
 import { apiKeysService } from "@/app/api-keys/service";
 import { organizationsService } from "@/app/organizations/service";
 import { usersService } from "@/app/users/service";
+import {
+  ORG_UNVERIFIABLE,
+  UNAUTHENTICATED,
+} from "@/lib/auth/auth-context-failure";
 import { clerkService } from "@/lib/auth/clerk-service";
 import { resolveDesktopSessionContext } from "@/lib/auth/desktop-session-auth";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
@@ -102,8 +106,8 @@ describe("resolveAnyAuthContext", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_1",
-      userId: "user_db_1",
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
     });
     expect(getAuth).toHaveBeenCalledWith(request, {
       acceptsToken: "any",
@@ -132,8 +136,8 @@ describe("resolveAnyAuthContext", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_1",
-      userId: "user_db_1",
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
     });
     expect(verifyToken).toHaveBeenCalledWith("clerk-session-token", {
       secretKey: "sk_test_123",
@@ -166,8 +170,8 @@ describe("resolveAnyAuthContext", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_2",
-      userId: "user_db_2",
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
     });
     expect(getAuth).not.toHaveBeenCalled();
     expect(verifyToken).not.toHaveBeenCalled();
@@ -198,7 +202,9 @@ describe("resolveAnyAuthContext", () => {
       },
     });
 
-    await expect(resolveAnyAuthContext(request)).resolves.toBeNull();
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+      UNAUTHENTICATED
+    );
     expect(usersService.findById).toHaveBeenCalledWith("user_db_2", "org_db_2");
     expect(mockWaitUntil).not.toHaveBeenCalled();
     expect(mockIsFeatureEnabled).toHaveBeenCalledWith(
@@ -237,8 +243,8 @@ describe("resolveAnyAuthContext", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_2",
-      userId: "user_db_2",
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
     });
     expect(mockWaitUntil).toHaveBeenCalledOnce();
   });
@@ -283,8 +289,8 @@ describe("resolveAnyAuthContext — org header behavior", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_2",
-      userId: "user_db_2",
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
     });
     expect(clerkService.getOrganizationMembershipRole).not.toHaveBeenCalled();
   });
@@ -311,8 +317,8 @@ describe("resolveAnyAuthContext — org header behavior", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_1",
-      userId: "user_db_1",
+      ok: true,
+      context: { organizationId: "org_db_1", userId: "user_db_1" },
     });
     expect(clerkService.getOrganizationMembershipRole).not.toHaveBeenCalled();
     expect(organizationsService.findByClerkId).toHaveBeenCalledWith(clerkOrgId);
@@ -344,8 +350,8 @@ describe("resolveAnyAuthContext — org header behavior", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_header",
-      userId: "user_db_1",
+      ok: true,
+      context: { organizationId: "org_db_header", userId: "user_db_1" },
     });
     expect(clerkService.getOrganizationMembershipRole).toHaveBeenCalledWith(
       headerOrgId,
@@ -355,6 +361,58 @@ describe("resolveAnyAuthContext — org header behavior", () => {
       headerOrgId
     );
   });
+
+  for (const orgLookup of [
+    {
+      label: "denies membership",
+      expected: UNAUTHENTICATED,
+      arrange: () =>
+        vi
+          .mocked(clerkService.getOrganizationMembershipRole)
+          .mockResolvedValue(null),
+    },
+    {
+      label: "throws (provider outage)",
+      expected: ORG_UNVERIFIABLE,
+      arrange: () =>
+        vi
+          .mocked(clerkService.getOrganizationMembershipRole)
+          .mockRejectedValue(new Error("Clerk API unavailable")),
+    },
+  ]) {
+    it(`resolves to no context when the org lookup ${orgLookup.label}`, async () => {
+      // Both degrade to "no context" rather than falling through to the session
+      // org — that degradation is the safety property, and a regression here
+      // would silently serve the SESSION org for a request that named another
+      // one. But they REPORT differently since ISS-5118: a denial is a decision
+      // about this caller (401), an outage is not a decision at all (503). The
+      // per-case `expected` is what stops the two collapsing back together.
+      vi.mocked(getAuth).mockReturnValue({
+        userId: "user_clerk_123",
+        orgId: "org_clerk_456",
+      } as ReturnType<typeof getAuth>);
+      // The later `auth()` fallback sees the same live session, so this asserts
+      // the rejection holds all the way down the strategy chain rather than
+      // because a subsequent strategy had nothing to work with.
+      vi.mocked(auth).mockResolvedValue({
+        userId: "user_clerk_123",
+        orgId: "org_clerk_456",
+      } as Awaited<ReturnType<typeof auth>>);
+      orgLookup.arrange();
+
+      const request = new Request("http://localhost/test", {
+        headers: {
+          authorization: "Bearer clerk-session-token",
+          [ORG_IDENTITY_HEADER]: "org_clerk_789",
+        },
+      });
+
+      await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+        orgLookup.expected
+      );
+      expect(organizationsService.findByClerkId).not.toHaveBeenCalled();
+    });
+  }
 });
 
 describe("resolveAnyAuthContext — desktop session", () => {
@@ -381,8 +439,8 @@ describe("resolveAnyAuthContext — desktop session", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_3",
-      userId: "user_db_3",
+      ok: true,
+      context: { organizationId: "org_db_3", userId: "user_db_3" },
     });
     expect(isDesktopSessionToken).toHaveBeenCalledWith("desktop-access-token");
     expect(resolveDesktopSessionContext).toHaveBeenCalledWith(
@@ -401,7 +459,9 @@ describe("resolveAnyAuthContext — desktop session", () => {
       headers: { authorization: "Bearer desktop-access-token" },
     });
 
-    await expect(resolveAnyAuthContext(request)).resolves.toBeNull();
+    await expect(resolveAnyAuthContext(request)).resolves.toEqual(
+      UNAUTHENTICATED
+    );
     expect(getAuth).not.toHaveBeenCalled();
     expect(verifyToken).not.toHaveBeenCalled();
     expect(auth).not.toHaveBeenCalled();
@@ -430,8 +490,8 @@ describe("resolveAnyAuthContext — desktop session", () => {
     });
 
     await expect(resolveAnyAuthContext(request)).resolves.toEqual({
-      organizationId: "org_db_2",
-      userId: "user_db_2",
+      ok: true,
+      context: { organizationId: "org_db_2", userId: "user_db_2" },
     });
     expect(isDesktopSessionToken).not.toHaveBeenCalled();
     expect(resolveDesktopSessionContext).not.toHaveBeenCalled();

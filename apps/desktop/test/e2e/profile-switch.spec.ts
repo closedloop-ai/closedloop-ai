@@ -19,6 +19,125 @@ import { launchDesktopApp } from "./helpers/desktop-app";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+type Rgb = { r: number; g: number; b: number };
+
+/** Parse a resolved `rgb(r, g, b)` / `rgb(r g b)` / `rgba(...)` string. */
+function parseRgb(value: string): Rgb {
+  const match = value.match(/(\d+(?:\.\d+)?)/g);
+  if (!match || match.length < 3) {
+    throw new Error(`Unparseable resolved color: "${value}"`);
+  }
+  const [r, g, b] = match.map(Number);
+  return { r, g, b };
+}
+
+/**
+ * Whether two sRGB colors are the same to the nearest 8-bit channel. Computed
+ * values reach us as sRGB bytes (canvas-resolved), so exact-string equality is
+ * unreliable across color-space spellings — compare channels instead.
+ */
+function rgbEquals(a: Rgb, b: Rgb): boolean {
+  return (
+    Math.round(a.r) === Math.round(b.r) &&
+    Math.round(a.g) === Math.round(b.g) &&
+    Math.round(a.b) === Math.round(b.b)
+  );
+}
+
+/** Relative luminance (WCAG 2.x) of an sRGB color. */
+function relativeLuminance({ r, g, b }: Rgb): number {
+  const channel = (raw: number): number => {
+    const c = raw / 255;
+    return c <= 0.039_28 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+}
+
+/** WCAG contrast ratio between two sRGB colors. */
+function contrastRatio(foreground: Rgb, background: Rgb): number {
+  const lFg = relativeLuminance(foreground);
+  const lBg = relativeLuminance(background);
+  const lighter = Math.max(lFg, lBg);
+  const darker = Math.min(lFg, lBg);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+/**
+ * Pin the FEA-4047 fix: with the light-mode dialog open, `<body>` must resolve
+ * to the design-system `--foreground` token, and the dialog title must read with
+ * real contrast — never an unlayered override from the splash `<style>` block in
+ * `renderer/design-system/index.html`.
+ *
+ * Asserted against the LIVE token rather than a pinned splash color. It used to
+ * compare against the splash's literal `#e5e7eb`, which only worked while the
+ * splash carried a distinctive dark palette; ISS-5346 moved the splash onto the
+ * design-system light token VALUES (so the splash stops flashing dark in front
+ * of a light-default app), which would have made a pinned-color check either
+ * vacuous or self-contradictory. Reading `--foreground` off the document element
+ * is the palette-independent form of the same invariant, and it stays true
+ * whatever the splash is painted in.
+ */
+async function assertSplashPaletteDoesNotLeak(page: Page): Promise<void> {
+  // Resolve the dialog title's color, the nearest opaque surface behind it,
+  // <body>'s color, and the live `--foreground` token — all normalized to sRGB
+  // `rgb(r, g, b)` strings. The
+  // design-system tokens are authored in oklch, so getComputedStyle() returns
+  // `oklch(...)` strings on modern Chromium/Electron; painting each color to a
+  // canvas and reading the pixel back is the reliable way to normalize any color
+  // space (oklch/hex/named/rgb) to sRGB bytes for WCAG luminance math.
+  const { bodyColor, textColor, surfaceColor, foregroundToken } = await page
+    .getByRole("heading", {
+      name: "Save Current Configuration as Profile",
+    })
+    .evaluate((el) => {
+      const toRgb = (color: string): string => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 1;
+        canvas.height = 1;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return color;
+        }
+        ctx.fillStyle = "#000";
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, 1, 1);
+        const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+        return `rgb(${r}, ${g}, ${b})`;
+      };
+      const resolveSurface = (node: Element): string => {
+        let current: Element | null = node;
+        while (current) {
+          const bg = getComputedStyle(current).backgroundColor;
+          if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
+            return toRgb(bg);
+          }
+          current = current.parentElement;
+        }
+        return toRgb(getComputedStyle(document.body).backgroundColor);
+      };
+      return {
+        bodyColor: toRgb(getComputedStyle(document.body).color),
+        textColor: toRgb(getComputedStyle(el).color),
+        surfaceColor: resolveSurface(el),
+        foregroundToken: toRgb(
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--foreground")
+            .trim()
+        ),
+      };
+    });
+
+  // The body must render the theme foreground token itself. An unlayered
+  // `body { color }` from the splash <style> beats the design-system's layered
+  // `@layer base` rule, so any value other than the token means the leak is back.
+  expect(rgbEquals(parseRgb(bodyColor), parseRgb(foregroundToken))).toBe(true);
+  // 4.5:1 is the WCAG AA floor for normal-weight text. A leaked near-white
+  // dialog title against the light dialog surface falls well under this.
+  expect(
+    contrastRatio(parseRgb(textColor), parseRgb(surfaceColor))
+  ).toBeGreaterThanOrEqual(4.5);
+}
+
 /**
  * Navigate the renderer to the Settings panel via hash routing and wait for
  * the "Relay / Gateway" tab to be visible.
@@ -65,6 +184,10 @@ test.describe("Gateway profile lifecycle", () => {
           name: "Save Current Configuration as Profile",
         })
       ).toBeVisible();
+
+      // Regression pin (FEA-4047): the splash palette must not leak onto <body>
+      // and wash out this light-mode dialog's title.
+      await assertSplashPaletteDoesNotLeak(page);
 
       // Type a profile name into the input.
       const profileName = "E2E Test Profile";

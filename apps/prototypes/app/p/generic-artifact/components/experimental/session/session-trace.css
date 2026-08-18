@@ -1,0 +1,18 @@
+.artifact-selected-text-anchor {
+  border-radius: 2px;
+  background: var(--highlight);
+  color: inherit;
+  text-decoration: none;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ring) 45%, transparent);
+}
+
+.artifact-selected-text-anchor[data-scroll-highlight="true"] {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .artifact-selected-text-anchor[data-scroll-highlight="true"] {
+    animation: comment-scroll-highlight 1.6s ease-out 1;
+  }
+}

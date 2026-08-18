@@ -133,6 +133,14 @@ emit(TelemetrySchemaName.Sync, {
   },
 });
 
+emit(TelemetrySchemaName.Sync, {
+  name: "wrong-sync-reason",
+  attributes: {
+    // @ts-expect-error Sync reason must be one of the published FEA-3426 values.
+    [TelemetryAttribute.SyncReason]: "definitely-not-a-reason",
+  },
+});
+
 emit(TelemetrySchemaName.Permission, {
   name: "wrong-permission-decision",
   attributes: {

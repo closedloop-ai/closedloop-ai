@@ -1,20 +1,28 @@
 "use client";
 
-import type { TurnActor, TurnItem } from "@repo/api/src/types/agent-session";
+import type { AgentComponentInvocationAnchor } from "@repo/api/src/types/agent-component-invocation";
+import type {
+  TranscriptTurnIdentity,
+  TurnActor,
+  TurnItem,
+} from "@repo/api/src/types/agent-session";
+import { TraceCommentKind } from "@repo/api/src/types/comment";
+import { MentionComposer } from "@repo/app/shared/components/mention-composer";
 import { formatDurationMs } from "@repo/app/shared/lib/format-duration-ms";
-import { Button } from "@repo/design-system/components/ui/button";
-import { CommentComposer } from "@repo/design-system/components/ui/comment-composer";
+import { Checkbox } from "@repo/design-system/components/ui/checkbox";
+import { Label } from "@repo/design-system/components/ui/label";
 import { cn } from "@repo/design-system/lib/utils";
+import {
+  formatTraceCostPrecise,
+  formatTraceCostUsd,
+} from "@repo/lib/sessions/trace-cost-format";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  AtSignIcon,
   BrainIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CircleCheckIcon,
   MessageCircleIcon,
-  PaperclipIcon,
-  SmileIcon,
   TriangleAlertIcon,
 } from "lucide-react";
 import type { ReactNode, RefObject } from "react";
@@ -30,26 +38,51 @@ import {
   useRef,
   useState,
 } from "react";
+import { useCanFlagParsingBug } from "../../data-source/parsing-bug-flag-provider";
+import { transcriptIdentityMatchesInvocationAnchor } from "../../lib/transcript-turn-items";
+import type {
+  SessionTraceHandle,
+  TraceSelectionDraft,
+  TraceTextHighlight,
+} from "./session-trace-contract";
+import type {
+  GutterActorRenderer,
+  SessionTraceRowRendererProps,
+} from "./session-trace-row-contract";
+import { SessionTraceSubagent } from "./session-trace-subagent";
+import { SessionTraceToolRowDetail } from "./session-trace-tool-row-detail";
 import type { TraceCommentDraft, TraceTextAnchor } from "./trace-comments";
+import { type TraceEventGroup, TraceEventRow } from "./trace-event-row";
 import { TraceMessageBody } from "./trace-message-body";
+import { getTraceOccurrenceKey } from "./trace-occurrence-key";
+import {
+  formatTraceClock,
+  formatTraceTimestamp,
+  invocationAnchorTarget,
+} from "./trace-row-utils";
 
 export type SessionTraceProps = {
   items: readonly SessionTraceItem[];
   activeRow?: number | null;
   onJump?: (row: number) => void;
   className?: string;
+  /** Optional actor identity rendered above timing metadata in each turn gutter. */
+  renderGutterActor?: GutterActorRenderer;
   /** Optional selected-passage highlight shared with local trace comments. */
   highlightAnchor?: TraceTextAnchor | null;
   /** Optional local trace comment callback; omitted consumers stay read-only. */
   onSubmitTraceComment?: (draft: TraceCommentDraft) => void;
+  /** Reports a resolved native selection without owning its composer UI. */
+  onTraceSelectionChange?: (anchor: TraceTextAnchor | null) => void;
+  /** Optional invocation deep-link target to reveal and mark exactly once loaded. */
+  invocationAnchor?: AgentComponentInvocationAnchor | null;
   /**
    * Opt into windowed (virtualized) rendering — PLN-1148 Phase 4. When true, only
    * the rows near the viewport are mounted, measured against `scrollElementRef`
    * (the bounded scroll viewport the parent owns). Defaults false: the agents
    * Session detail page, whose whole document scrolls together, renders every row
    * exactly as before. Until the viewport is measured (SSR / jsdom / first paint)
-   * this degrades to rendering all rows, so server output and unit tests that
-   * assert on off-screen rows are unaffected.
+   * this degrades to rendering all rows, so tests remain deterministic.
    */
   virtualize?: boolean;
   /**
@@ -62,19 +95,8 @@ export type SessionTraceProps = {
   scrollElementRef?: RefObject<HTMLDivElement | null>;
 };
 
-/**
- * Imperative handle so a parent (the branch merged trace) can scroll the trace to
- * a source row in response to a timeline/playhead scrub — `scrollToIndex` when
- * windowed, the bounded-viewport `[data-row]` scroll when every row is mounted.
- */
-export type SessionTraceHandle = {
-  scrollToRow(row: number): void;
-};
-
 const ESTIMATED_TRACE_ROW_PX = 72;
-// Assumed bounded-viewport height for the first render's window, before the real
-// `.bq-trace-scroll` height (max 70vh) is measured. Slightly generous so the
-// initial paint fills a typical viewport; the virtualizer corrects it on mount.
+// Generous first-render estimate until the bounded viewport is measured.
 const ASSUMED_TRACE_VIEWPORT_PX = 800;
 
 export type SessionTraceItem = TurnItem & {
@@ -97,6 +119,7 @@ type TraceMessageSegment =
       row: number;
       traceId: string;
       turnId: string;
+      transcriptIdentity?: TranscriptTurnIdentity;
     }
   | { type: "tools"; item: Extract<TurnItem, { type: "tools" }> }
   | { type: "subagent"; item: Extract<TurnItem, { type: "subagent" }> };
@@ -128,12 +151,9 @@ type TraceGroup =
       traceId: string;
       turnId: string;
       text: string;
+      transcriptIdentity?: TranscriptTurnIdentity;
     }
-  | {
-      kind: "event";
-      item: Extract<TurnItem, { type: "event" }>;
-      row: number;
-    }
+  | TraceEventGroup
   | {
       kind: "end";
       item: Extract<TurnItem, { type: "end" }>;
@@ -141,17 +161,6 @@ type TraceGroup =
 
 type TraceSayItem = Extract<SessionTraceItem, { type: "say" }>;
 
-type TraceSelectionDraft = {
-  anchor: TraceTextAnchor;
-  position: { x: number; y: number };
-  mode: "affordance" | "composer";
-};
-
-type TraceTextHighlight =
-  | { kind: "exact"; startOffset: number; endOffset: number }
-  | { kind: "row" };
-
-const TRACE_LINK_PATTERN = /(#\d+)/g;
 const MARKDOWN_IMAGE_PATTERN = /^!\[([^\]]*)\]\([^)]+\)/;
 const MARKDOWN_LINK_PATTERN = /^\[([^\]]+)\]\([^)]+\)/;
 const MARKDOWN_EMPHASIS_PATTERN = /^(\*\*|__|\*|_|~~|`)(.*?)\1/;
@@ -161,8 +170,8 @@ const MARKDOWN_EMPHASIS_PATTERN = /^(\*\*|__|\*|_|~~|`)(.*?)\1/;
  * system event rows, and terminal rows. Tool and subagent blocks are native
  * buttons so browser keyboard activation works without custom handlers.
  */
-export const SessionTrace = memo(
-  forwardRef<SessionTraceHandle, SessionTraceProps>(function SessionTrace(
+const SessionTraceBody = memo(
+  forwardRef<SessionTraceHandle, SessionTraceProps>(function SessionTraceBody(
     {
       items,
       activeRow,
@@ -170,6 +179,9 @@ export const SessionTrace = memo(
       className,
       highlightAnchor,
       onSubmitTraceComment,
+      onTraceSelectionChange,
+      invocationAnchor,
+      renderGutterActor,
       virtualize = false,
       scrollElementRef,
     }: Readonly<SessionTraceProps>,
@@ -178,7 +190,9 @@ export const SessionTrace = memo(
     const groups = useMemo(() => buildTraceGroups(items), [items]);
     const rootRef = useRef<HTMLDivElement | null>(null);
     const [draft, setDraft] = useState<TraceSelectionDraft | null>(null);
-    const selectionEnabled = Boolean(onSubmitTraceComment);
+    const selectionEnabled = Boolean(
+      onSubmitTraceComment || onTraceSelectionChange
+    );
     const activeHighlight = draft?.anchor ?? highlightAnchor ?? null;
     const traceVersion = useMemo(() => getTraceVersion(items), [items]);
 
@@ -192,15 +206,29 @@ export const SessionTrace = memo(
       if (!resolved) {
         return;
       }
-      setDraft(resolved);
-    }, [selectionEnabled]);
+      onTraceSelectionChange?.(resolved.anchor);
+      if (onSubmitTraceComment) {
+        setDraft(resolved);
+      }
+    }, [onSubmitTraceComment, onTraceSelectionChange, selectionEnabled]);
 
     const submitDraft = useCallback(
-      (body: string) => {
+      (payload: {
+        body: string;
+        mentions?: string[];
+        kind?: TraceCommentKind;
+      }) => {
         if (!draft) {
           return;
         }
-        onSubmitTraceComment?.({ anchor: draft.anchor, body });
+        onSubmitTraceComment?.({
+          anchor: draft.anchor,
+          body: payload.body,
+          ...(payload.mentions && payload.mentions.length > 0
+            ? { mentions: payload.mentions }
+            : {}),
+          ...(payload.kind ? { kind: payload.kind } : {}),
+        });
         setDraft(null);
         globalThis.getSelection?.()?.removeAllRanges();
       },
@@ -362,7 +390,9 @@ export const SessionTrace = memo(
                   activeRow,
                   onJump,
                   activeHighlight,
-                  selectionEnabled
+                  selectionEnabled,
+                  invocationAnchor,
+                  renderGutterActor
                 )}
               </div>
             );
@@ -396,7 +426,9 @@ export const SessionTrace = memo(
               activeRow,
               onJump,
               activeHighlight,
-              selectionEnabled
+              selectionEnabled,
+              invocationAnchor,
+              renderGutterActor
             )}
           </Fragment>
         ))}
@@ -412,19 +444,45 @@ export const SessionTrace = memo(
   })
 );
 
-/** One coalesced trace group → its row element (key supplied by the caller). */
+/**
+ * The session trace. A thin forwarding wrapper around {@link SessionTraceBody}:
+ * it used to also mount the ISS-4767 slash-command fold provider, which ISS-5366
+ * retired when the fold graduated to always-on and the per-trace flag read went
+ * away with it.
+ */
+export const SessionTrace = forwardRef<SessionTraceHandle, SessionTraceProps>(
+  function SessionTrace(props, ref) {
+    return <SessionTraceBody {...props} ref={ref} />;
+  }
+);
+
+/**
+ * One coalesced trace group → its row element (key supplied by the caller).
+ *
+ * `activeRow` changes on every scroll frame (it drives the read-only "you are
+ * here" highlight), so this resolves each group's active-ness to a plain
+ * boolean HERE and hands the memoized row that boolean rather than the raw
+ * `activeRow`. Only the ≤2 rows whose `active` actually flips get a changed
+ * prop; the other N-1 rows bail out of re-render via `memo`. Passing the raw
+ * `activeRow` down instead re-rendered (and re-rendered the markdown body of)
+ * every row on every scroll tick — an O(N) main-thread pass per frame that hung
+ * the non-virtualized Session detail page on large sessions.
+ */
 function renderTraceGroup(
   group: TraceGroup,
   activeRow: number | null | undefined,
   onJump: ((row: number) => void) | undefined,
   highlightAnchor: TraceTextAnchor | null | undefined,
-  selectionEnabled: boolean
+  selectionEnabled: boolean,
+  invocationAnchor: AgentComponentInvocationAnchor | null | undefined,
+  renderGutterActor: GutterActorRenderer | undefined
 ): ReactNode {
   if (group.kind === "event") {
     return (
       <TraceEventRow
         active={group.row === activeRow}
         group={group}
+        invocationAnchor={invocationAnchor}
         onJump={onJump}
       />
     );
@@ -446,17 +504,21 @@ function renderTraceGroup(
         active={group.row === activeRow}
         group={group}
         highlightAnchor={highlightAnchor}
+        invocationAnchor={invocationAnchor}
         onJump={onJump}
+        renderGutterActor={renderGutterActor}
         selectionEnabled={selectionEnabled}
       />
     );
   }
   return (
     <TraceMessageRow
-      activeRow={activeRow}
+      active={traceGroupContainsRow(group, activeRow)}
       group={group}
       highlightAnchor={highlightAnchor}
+      invocationAnchor={invocationAnchor}
       onJump={onJump}
+      renderGutterActor={renderGutterActor}
       selectionEnabled={selectionEnabled}
     />
   );
@@ -553,7 +615,12 @@ function computeGroupCostLabel(
   group: Extract<TraceGroup, { kind: "msg" }>
 ): { cost: string | null; cumulativeTitle: string | undefined } {
   const delta = group.costDelta ?? 0;
-  const hasDelta = !human && delta >= 0.005;
+  // Any nonzero delta renders — the shared precise formatter (mirroring the
+  // collapsed sub-agent box and the branch merged trace) owns the sub-cent
+  // display so a real $0.003 turn shows a nonzero figure instead of a floored
+  // "$0.00". No local half-cent threshold: the formatter is the single source of
+  // truth for how a fine-grained trace cost reads.
+  const hasDelta = !human && delta > 0;
   const hasCumFallback =
     !(human || hasDelta) &&
     group.costDelta === undefined &&
@@ -561,32 +628,34 @@ function computeGroupCostLabel(
     group.cumulativeCost > 0;
   let cost: string | null = null;
   if (hasDelta) {
-    cost = formatTraceCost(delta);
+    cost = formatTraceCostPrecise(delta);
   } else if (hasCumFallback) {
-    cost = formatTraceCost(group.cumulativeCost!);
+    cost = formatTraceCostPrecise(group.cumulativeCost!);
   }
   const cumulativeTitle =
     hasDelta && group.cumulativeCost != null && group.cumulativeCost > 0
-      ? `Cumulative: ${formatTraceCost(group.cumulativeCost)}`
+      ? `Cumulative: ${formatTraceCostUsd(group.cumulativeCost)}`
       : undefined;
   return { cost, cumulativeTitle };
 }
 
-function TraceMessageRow({
-  activeRow,
+// Memoized so a scroll-driven `activeRow` change (which flips only the ≤2 rows
+// entering/leaving the fold) doesn't re-render — and re-render the markdown body
+// of — every mounted row. `active` is a plain boolean resolved by the caller
+// (`renderTraceGroup`), and every other prop is referentially stable across a
+// scroll, so unaffected rows bail out. See `renderTraceGroup`'s note.
+const TraceMessageRow = memo(function TraceMessageRow({
+  active,
   group,
   highlightAnchor,
+  invocationAnchor,
   onJump,
+  renderGutterActor,
   selectionEnabled,
-}: Readonly<{
-  activeRow?: number | null;
-  group: Extract<TraceGroup, { kind: "msg" }>;
-  highlightAnchor?: TraceTextAnchor | null;
-  onJump?: (row: number) => void;
-  selectionEnabled: boolean;
-}>) {
+}: Readonly<
+  SessionTraceRowRendererProps<Extract<TraceGroup, { kind: "msg" }>>
+>) {
   const human = group.side === "human";
-  const active = traceGroupContainsRow(group, activeRow);
   const tone = getBubbleTone(human);
   // Show how long the coalesced AGENT turn took (last item − first item) under
   // the start time, rather than a second wall-clock stamp. Human groups have no
@@ -624,6 +693,7 @@ function TraceMessageRow({
           if (segment.type === "tools") {
             return (
               <SessionTraceTools
+                invocationAnchor={invocationAnchor}
                 item={segment.item}
                 key={`tools-${segment.item._row}`}
               />
@@ -632,31 +702,39 @@ function TraceMessageRow({
           if (segment.type === "subagent") {
             return (
               <SessionTraceSubagent
+                invocationAnchor={invocationAnchor}
                 item={segment.item}
                 key={`subagent-${segment.item._row}`}
               />
             );
           }
           return (
-            <TraceMessageBody
-              key={`text-${segment.row}`}
-              onJump={onJump}
-              text={segment.text}
-              traceActor={group.actor}
-              traceHighlight={getTraceTextHighlight(
-                highlightAnchor,
-                segment.row,
-                segment.text,
-                segment.traceId,
-                segment.turnId
+            <div
+              data-invocation-anchor-target={invocationAnchorTarget(
+                segment.transcriptIdentity,
+                invocationAnchor
               )}
-              traceId={segment.traceId}
-              traceRow={segment.row}
-              traceSelectionEnabled={selectionEnabled}
-              traceSessionId={group.sessionId}
-              traceText={segment.text}
-              traceTurnId={segment.turnId}
-            />
+              key={`text-${segment.row}`}
+            >
+              <TraceMessageBody
+                onJump={onJump}
+                text={segment.text}
+                traceActor={group.actor}
+                traceHighlight={getTraceTextHighlight(
+                  highlightAnchor,
+                  segment.row,
+                  segment.text,
+                  segment.traceId,
+                  segment.turnId
+                )}
+                traceId={segment.traceId}
+                traceRow={segment.row}
+                traceSelectionEnabled={selectionEnabled}
+                traceSessionId={group.sessionId}
+                traceText={segment.text}
+                traceTurnId={segment.turnId}
+              />
+            </div>
           );
         })}
         {!human && group.model ? (
@@ -664,6 +742,7 @@ function TraceMessageRow({
         ) : null}
       </div>
       <div className="st-gut">
+        {renderGutterActor?.(group.actor)}
         <span className="st-gut-line">{startLabel ?? ""}</span>
         <span className="st-gut-bot">
           {durationLabel ? (
@@ -678,21 +757,19 @@ function TraceMessageRow({
       </div>
     </div>
   );
-}
+});
 
-function TraceReasonRow({
+const TraceReasonRow = memo(function TraceReasonRow({
   active,
   group,
   highlightAnchor,
+  invocationAnchor,
   onJump,
+  renderGutterActor,
   selectionEnabled,
-}: Readonly<{
-  active?: boolean;
-  group: Extract<TraceGroup, { kind: "reason" }>;
-  highlightAnchor?: TraceTextAnchor | null;
-  onJump?: (row: number) => void;
-  selectionEnabled: boolean;
-}>) {
+}: Readonly<
+  SessionTraceRowRendererProps<Extract<TraceGroup, { kind: "reason" }>>
+>) {
   const [open, setOpen] = useState(true);
   const startLabel =
     group.startMs == null ? group.startLabel : formatTraceClock(group.startMs);
@@ -701,6 +778,10 @@ function TraceReasonRow({
     <div
       className="st-msg left"
       data-active={active ? "true" : undefined}
+      data-invocation-anchor-target={invocationAnchorTarget(
+        group.transcriptIdentity,
+        invocationAnchor
+      )}
       data-row={group.row}
     >
       <div className="st-bubble st-reason p-agent">
@@ -743,20 +824,34 @@ function TraceReasonRow({
         ) : null}
       </div>
       <div className="st-gut">
+        {renderGutterActor?.(group.actor)}
         <span className="st-gut-line">{startLabel ?? ""}</span>
       </div>
     </div>
   );
-}
+});
 
 function SessionTraceTools({
   item,
-}: Readonly<{ item: Extract<TurnItem, { type: "tools" }> }>) {
+  invocationAnchor,
+}: Readonly<{
+  item: Extract<TurnItem, { type: "tools" }>;
+  invocationAnchor?: AgentComponentInvocationAnchor | null;
+}>) {
   // A card with no per-tool rows (degraded trace) renders as a static summary,
   // never a dropdown that opens to nothing. Derive expandability from the raw
   // item so the per-row keys are built only when the body is actually shown.
   const expandable = item.items.length > 0;
-  const [open, setOpen] = useState(Boolean(item.defaultOpen || item.hasFail));
+  const anchored = item.items.some((tool) =>
+    transcriptIdentityMatchesInvocationAnchor(
+      tool.transcriptIdentity,
+      invocationAnchor
+    )
+  );
+  const [userOpen, setUserOpen] = useState(
+    Boolean(item.defaultOpen || item.hasFail)
+  );
+  const open = anchored || userOpen;
   const ToolsChevron = open ? ChevronDownIcon : ChevronRightIcon;
 
   const summary = (
@@ -791,7 +886,7 @@ function SessionTraceTools({
         <button
           aria-expanded={open}
           className="st-tools-head"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => setUserOpen((value) => !value)}
           type="button"
         >
           {summary}
@@ -802,16 +897,11 @@ function SessionTraceTools({
       {expandable && open ? (
         <div className="st-tools-body">
           {buildTraceToolRows(item.items).map(({ key, tool }) => (
-            <div className={cn("st-toolrow", tool.err && "err")} key={key}>
-              <span className={cn("st-tool-label mono")}>{tool.label}</span>
-              {tool.detail ? (
-                <span className="st-tool-detail">{tool.detail}</span>
-              ) : null}
-              <ChevronRightIcon
-                aria-hidden
-                className="st-toolrow-chev size-3"
-              />
-            </div>
+            <SessionTraceToolRow
+              invocationAnchor={invocationAnchor}
+              key={key}
+              tool={tool}
+            />
           ))}
         </div>
       ) : null}
@@ -819,121 +909,48 @@ function SessionTraceTools({
   );
 }
 
-function SessionTraceSubagent({
-  item,
-}: Readonly<{ item: Extract<TurnItem, { type: "subagent" }> }>) {
+type TraceToolItem = Extract<TurnItem, { type: "tools" }>["items"][number];
+
+/**
+ * FEA-3547: one per-call row inside an expanded `Ran N tools` card. The row is a
+ * button that toggles a detail panel revealing that call's command/input,
+ * output, duration, and status — matching the group-expand pattern above. When
+ * the producer captured no detail (transcript missing — cloud DB events strip
+ * `data`), the row still expands and shows an explicit empty state instead of a
+ * dead chevron.
+ */
+function SessionTraceToolRow({
+  tool,
+  invocationAnchor,
+}: Readonly<{
+  tool: TraceToolItem;
+  invocationAnchor?: AgentComponentInvocationAnchor | null;
+}>) {
   const [open, setOpen] = useState(false);
-  const meta = [item.model, item.duration, item.tokens, item.cost].filter(
-    Boolean
-  );
-  const bodyLines = buildSubagentBodyLines(item.body);
+  const RowChevron = open ? ChevronDownIcon : ChevronRightIcon;
 
   return (
-    <div className="st-sub">
+    <div
+      className={cn("st-toolrow-wrap", open && "open")}
+      data-invocation-anchor-target={invocationAnchorTarget(
+        tool.transcriptIdentity,
+        invocationAnchor
+      )}
+    >
       <button
         aria-expanded={open}
-        className="st-sub-head"
+        className={cn("st-toolrow", tool.err && "err")}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
-        <span className="st-sub-sum">Subagent | {item.sub}</span>
-        {meta.length > 0 ? (
-          <span className="st-sub-meta mono">{meta.join(" | ")}</span>
+        <span className={cn("st-tool-label mono")}>{tool.label}</span>
+        {tool.detail ? (
+          <span className="st-tool-detail">{tool.detail}</span>
         ) : null}
-        {open ? (
-          <ChevronDownIcon aria-hidden className="st-sub-chev size-3.5" />
-        ) : (
-          <ChevronRightIcon aria-hidden className="st-sub-chev size-3.5" />
-        )}
+        <RowChevron aria-hidden className="st-toolrow-chev size-3" />
       </button>
-      {open ? (
-        <div className="st-sub-body">
-          <div className="st-sub-info mono">
-            {[
-              item.sub,
-              item.model,
-              item.duration ? `ran ${item.duration}` : null,
-              item.tokens,
-              item.cost,
-            ]
-              .filter(Boolean)
-              .join(" | ")}
-          </div>
-          {item.body.length === 0 ? (
-            <div className="st-sub-empty">No transcript captured.</div>
-          ) : (
-            bodyLines.map(({ key, line }) => (
-              <SubagentBodyLine key={key} line={line} />
-            ))
-          )}
-        </div>
-      ) : null}
+      {open ? <SessionTraceToolRowDetail tool={tool} /> : null}
     </div>
-  );
-}
-
-function SubagentBodyLine({
-  line,
-}: Readonly<{
-  line: Extract<TurnItem, { type: "subagent" }>["body"][number];
-}>) {
-  const className = `st-sub-ln k-${getSubagentLineKindClassName(line.kind)}`;
-  return (
-    <div className={cn(className, line.err && "text-destructive")}>
-      {line.kind === "tool" ? (
-        <span className="st-sub-ln-t mono">{line.text}</span>
-      ) : (
-        <span className="st-sub-ln-x">{line.text}</span>
-      )}
-    </div>
-  );
-}
-
-function TraceEventRow({
-  active,
-  group,
-  onJump,
-}: Readonly<{
-  active?: boolean;
-  group: Extract<TraceGroup, { kind: "event" }>;
-  onJump?: (row: number) => void;
-}>) {
-  const dotClassName = getEventDotClassName(group.item.dot);
-  const clickable = Boolean(onJump);
-  const content = (
-    <>
-      {dotClassName ? (
-        <span aria-hidden className={cn("st-sys-dot", dotClassName)} />
-      ) : null}
-      <span className="st-sysline-text">
-        {renderTraceLinks(group.item.text)}
-      </span>
-      <span className="st-time">{formatTraceTimestamp(group.item.t)}</span>
-    </>
-  );
-
-  if (!clickable) {
-    return (
-      <div
-        className="st-sysline"
-        data-active={active ? "true" : undefined}
-        data-row={group.row}
-      >
-        {content}
-      </div>
-    );
-  }
-
-  return (
-    <button
-      className="st-sysline w-full border-0 bg-transparent"
-      data-active={active ? "true" : undefined}
-      data-row={group.row}
-      onClick={() => onJump?.(group.row)}
-      type="button"
-    >
-      {content}
-    </button>
   );
 }
 
@@ -1063,6 +1080,7 @@ function createTraceReasonGroup(
     traceId: identity.traceId,
     turnId: identity.turnId,
     text: item.text,
+    transcriptIdentity: item.transcriptIdentity,
   };
 }
 
@@ -1096,6 +1114,7 @@ function toMessageSegment(item: TraceMessageItem): TraceMessageSegment {
     text: item.text,
     row: item._row,
     ...getTraceItemIdentity(item, item.text),
+    transcriptIdentity: item.transcriptIdentity,
   };
 }
 
@@ -1154,29 +1173,6 @@ function getBubbleTone(human: boolean): { className: string } {
   };
 }
 
-function getEventDotClassName(dot: "b" | "g" | "r"): string | null {
-  if (dot === "g") {
-    return "d-g";
-  }
-  if (dot === "r") {
-    return "d-r";
-  }
-  return null;
-}
-
-function getSubagentLineKindClassName(kind: string): string {
-  if (kind === "task") {
-    return "task";
-  }
-  if (kind === "tool") {
-    return "tool";
-  }
-  if (kind === "status") {
-    return "status";
-  }
-  return "say";
-}
-
 function traceGroupContainsRow(
   group: Extract<TraceGroup, { kind: "msg" }>,
   row: number | null | undefined
@@ -1197,46 +1193,6 @@ function getSegmentRow(segment: TraceMessageSegment): number | null {
   return segment.item._row;
 }
 
-function renderTraceLinks(
-  text: string,
-  onJump?: (row: number) => void
-): ReactNode {
-  if (!onJump) {
-    return text;
-  }
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  for (const match of text.matchAll(TRACE_LINK_PATTERN)) {
-    const part = match[0];
-    const matchIndex = match.index;
-    if (matchIndex > cursor) {
-      parts.push(text.slice(cursor, matchIndex));
-    }
-    const row = Number(part.slice(1));
-    parts.push(
-      <button
-        className="st-link inline border-0 bg-transparent p-0 font-[inherit]"
-        key={`${part}-${matchIndex}`}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          if (Number.isFinite(row)) {
-            onJump?.(row);
-          }
-        }}
-        type="button"
-      >
-        {part}
-      </button>
-    );
-    cursor = matchIndex + part.length;
-  }
-  if (cursor < text.length) {
-    parts.push(text.slice(cursor));
-  }
-  return parts.length > 0 ? parts : text;
-}
-
 function buildTraceToolRows(
   tools: Extract<TurnItem, { type: "tools" }>["items"]
 ): TraceToolRow[] {
@@ -1250,36 +1206,9 @@ function buildTraceToolRows(
   });
 }
 
-function buildSubagentBodyLines(
-  body: Extract<TurnItem, { type: "subagent" }>["body"]
-): SubagentBodyLineRow[] {
-  const keyCounts = new Map<string, number>();
-  return body.map((line) => {
-    const baseKey = `${line.kind}-${line.t ?? "no-time"}-${line.text}`;
-    return {
-      key: getTraceOccurrenceKey(baseKey, keyCounts),
-      line,
-    };
-  });
-}
-
-function getTraceOccurrenceKey(
-  baseKey: string,
-  keyCounts: Map<string, number>
-): string {
-  const occurrence = keyCounts.get(baseKey) ?? 0;
-  keyCounts.set(baseKey, occurrence + 1);
-  return `${baseKey}-${occurrence}`;
-}
-
 type TraceToolRow = {
   key: string;
   tool: Extract<TurnItem, { type: "tools" }>["items"][number];
-};
-
-type SubagentBodyLineRow = {
-  key: string;
-  line: Extract<TurnItem, { type: "subagent" }>["body"][number];
 };
 
 const TRACE_COMMENT_POPOVER_GUTTER = 8;
@@ -1305,9 +1234,21 @@ function TraceDraftComposer({
 }: Readonly<{
   draft: TraceSelectionDraft;
   onCancel: () => void;
-  onSubmit: (body: string) => void;
+  onSubmit: (payload: {
+    body: string;
+    mentions?: string[];
+    kind?: TraceCommentKind;
+  }) => void;
 }>) {
   const [mode, setMode] = useState(draft.mode);
+  // FEA-4171: when checked, the comment is classified as a parsing/data bug and
+  // feeds the golden-dataset CANDIDATE pipeline (it is never auto-promoted).
+  // FEA-4347: the flag is an internal data-quality affordance, so it is shown
+  // only to Closedloop staff; customers get a plain comment composer. The staff
+  // signal is injected per surface (web / desktop) and defaults to hidden.
+  const canFlagParsingBug = useCanFlagParsingBug();
+  const [isParsingBug, setIsParsingBug] = useState(false);
+  const parsingBugId = `st-parsing-bug-${draft.anchor.turnId}-${draft.anchor.row}`;
   const style = {
     left: `${draft.position.x}px`,
     top: `${draft.position.y}px`,
@@ -1335,15 +1276,32 @@ function TraceDraftComposer({
       style={style}
     >
       <div className="st-comment-quote">{draft.anchor.selectedText}</div>
-      <CommentComposer
-        containerClassName="flex flex-col gap-2"
-        leadingActions={<TraceComposerLeadingActions />}
-        minHeightClassName="min-h-[72px]"
+      <MentionComposer
         onCancel={onCancel}
-        onSubmit={onSubmit}
+        onSubmit={(payload) =>
+          onSubmit({
+            ...payload,
+            ...(canFlagParsingBug && isParsingBug
+              ? { kind: TraceCommentKind.ParsingBug }
+              : {}),
+          })
+        }
         placeholder="Comment on this passage..."
         submitLabel="Comment"
       />
+      {canFlagParsingBug ? (
+        <div className="flex items-center gap-2" data-comment-control="true">
+          <Checkbox
+            checked={isParsingBug}
+            data-comment-control="true"
+            id={parsingBugId}
+            onCheckedChange={(checked) => setIsParsingBug(checked === true)}
+          />
+          <Label className="cursor-pointer text-sm" htmlFor={parsingBugId}>
+            Flag as parsing/data bug
+          </Label>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1568,49 +1526,6 @@ function getMarkdownRenderedText(sourceText: string): string {
   return out;
 }
 
-function TraceComposerLeadingActions() {
-  return (
-    <>
-      <Button
-        aria-disabled
-        aria-label="Attach file"
-        className="h-7 w-7"
-        data-comment-control="true"
-        size="icon"
-        tabIndex={-1}
-        type="button"
-        variant="ghost"
-      >
-        <PaperclipIcon aria-hidden className="h-3.5 w-3.5" />
-      </Button>
-      <Button
-        aria-disabled
-        aria-label="Mention"
-        className="h-7 w-7"
-        data-comment-control="true"
-        size="icon"
-        tabIndex={-1}
-        type="button"
-        variant="ghost"
-      >
-        <AtSignIcon aria-hidden className="h-3.5 w-3.5" />
-      </Button>
-      <Button
-        aria-disabled
-        aria-label="Add emoji"
-        className="h-7 w-7"
-        data-comment-control="true"
-        size="icon"
-        tabIndex={-1}
-        type="button"
-        variant="ghost"
-      >
-        <SmileIcon aria-hidden className="h-3.5 w-3.5" />
-      </Button>
-    </>
-  );
-}
-
 function getTraceVersion(items: readonly SessionTraceItem[]): string {
   return items
     .map((item) => {
@@ -1621,31 +1536,4 @@ function getTraceVersion(items: readonly SessionTraceItem[]): string {
       return "_row" in item ? `${item._row}:${item.type}` : item.type;
     })
     .join("|");
-}
-
-function formatTraceClock(ms: number): string | null {
-  const date = new Date(ms);
-  if (!Number.isFinite(date.getTime())) {
-    return null;
-  }
-  let hours = date.getHours();
-  const suffix = hours < 12 ? "am" : "pm";
-  hours = hours % 12 || 12;
-  const minutes = date.getMinutes();
-  return `${hours}${minutes ? `:${String(minutes).padStart(2, "0")}` : ""}${suffix}`;
-}
-
-function formatTraceTimestamp(value: string | Date): string {
-  if (value instanceof Date) {
-    return formatTraceClock(value.getTime()) ?? "";
-  }
-  const ms = Date.parse(value);
-  if (Number.isFinite(ms)) {
-    return formatTraceClock(ms) ?? value;
-  }
-  return value;
-}
-
-function formatTraceCost(value: number): string {
-  return `$${value.toFixed(2)}`;
 }

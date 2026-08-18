@@ -27,7 +27,7 @@ import {
   legacyMigrationSortKeys,
   migrationSortKey,
 } from "../scripts/migration-order.mjs";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import { ModelPricingSource } from "../src/main/model-pricing/model-pricing-fixture.js";
 import {
   snapshotSchema,
@@ -197,6 +197,12 @@ const ARTIFACTS_BRANCH_TABLE_RE = /"artifacts"/;
 const BRANCH_INDEX_COLUMNS_RE = /"repo_full_name", "branch_name"/;
 const ARTIFACTS_BRANCH_WHERE_RE = /WHERE kind = 'branch'/;
 const PULL_REQUESTS_BRANCH_TABLE_RE = /"pull_requests"/;
+const SESSIONS_UPDATED_AT_INDEX_TABLE_RE = /"sessions"/;
+const SESSIONS_UPDATED_AT_INDEX_COLUMNS_RE = /"updated_at" DESC, "id" DESC/;
+// `indexdef` is the raw sqlite_master SQL, so a partial index shows its own
+// `WHERE` clause here. The two regexes above both still match one, which is why
+// the "gained an unintended partial WHERE" claim below needs its own assertion.
+const SESSIONS_UPDATED_AT_INDEX_PARTIAL_RE = /\bWHERE\b/i;
 
 test("committed migration directories use canonical names with only known legacy exceptions", () => {
   const dirNames = readMigrationDirNames();
@@ -400,3 +406,46 @@ async function readTokenMetricCacheReadValues(
     claudeCodeApiRequest: Number(claudeCodeApiRequest.rows[0]?.value ?? 0),
   };
 }
+
+test("committed migration history indexes the sync cursor's updated_at sort key", async () => {
+  // ISS-6105 / migration 0056: the two sync-cursor reads in sync-source.ts
+  // (`listTopSessionCursorRows`, `listUpdatedSessionCursorRows`) both order by
+  // `updated_at DESC, id DESC`, and `sessions` carried no index on that column —
+  // so every sync tick full-scanned the table and sorted it in a temp B-tree.
+  //
+  // Pinned in BOTH directions on purpose. The column ORDER and the DESC sorts
+  // are what make the index cover the predicate, the tie-break and the selected
+  // columns; an index that silently lost its `id DESC` tail, or gained an
+  // unintended partial `WHERE`, would still exist under this name while the
+  // reads quietly went back to scanning. That regression is invisible to every
+  // other test in this repo — nothing else asserts a query plan — which is why
+  // the shape is asserted here rather than left to the migration's prose.
+  const db = await openShadowDb();
+  try {
+    await db.exec(readMigrationChainSql());
+    const snapshot = await snapshotSchema(db);
+    const indexDefinitionsByName = new Map(
+      snapshot.indexes.map((row) => [
+        String(row.indexname),
+        String(row.indexdef),
+      ])
+    );
+    const updatedAtIndexDef = indexDefinitionsByName.get(
+      "idx_sessions_updated_at"
+    );
+
+    assert.ok(
+      updatedAtIndexDef,
+      "idx_sessions_updated_at must exist in the applied schema"
+    );
+    assert.match(updatedAtIndexDef, SESSIONS_UPDATED_AT_INDEX_TABLE_RE);
+    assert.match(updatedAtIndexDef, SESSIONS_UPDATED_AT_INDEX_COLUMNS_RE);
+    assert.doesNotMatch(
+      updatedAtIndexDef,
+      SESSIONS_UPDATED_AT_INDEX_PARTIAL_RE,
+      "a partial index would still exist under this name while covering only some rows, so the cursor reads would quietly go back to scanning"
+    );
+  } finally {
+    await db.close();
+  }
+});

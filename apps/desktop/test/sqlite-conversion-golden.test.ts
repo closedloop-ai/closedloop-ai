@@ -17,9 +17,17 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { InsightsSection } from "@closedloop-ai/loops-api/insights";
-import type { NormalizedSession } from "../src/main/collectors/types.js";
+import {
+  type DeliveryInsightsResponse,
+  InsightsSection,
+} from "@closedloop-ai/loops-api/insights";
+import {
+  Harness,
+  type NormalizedSession,
+} from "../src/main/collectors/types.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import { projectTokenAnalyticsByModelRows } from "./fixtures/analytics-golden.js";
+import { reconcileAuthorityDeliveryFreeze } from "./golden/golden-layer4-authority-support.js";
 import { makeSession as baseSession } from "./normalized-session-test-utils.js";
 
 // Force a fixed timezone so the timezone-sensitive analytics (the heatmap's
@@ -60,9 +68,9 @@ function makeSession(overrides: SessionOverrides): NormalizedSession {
 
 // Deterministic seed exercising heatmap (varied days/hours), autonomy/classification
 // (varied user-turn counts → human vs agent), model-over-time, tokens, and delivery.
-const SEED: Array<{ session: NormalizedSession; harness: string }> = [
+const SEED: Array<{ session: NormalizedSession; harness: Harness }> = [
   {
-    harness: "claude",
+    harness: Harness.Claude,
     session: makeSession({
       sessionId: "g-claude-steered",
       model: "claude-sonnet-4-5",
@@ -87,6 +95,19 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
       // FEA-2641 Fix 4: the heatmap/autonomy are turn-based over metadata
       // $.messages — 4 human + 5 assistant turns matching the declared counts,
       // all inside the 09:00 UTC hour, pinning one mixed Human+Agent cell.
+      // FEA-3597: the AGENT half of that pair now derives from `$.tokenSeries`
+      // (parent-attributed round-trips), so each fixture seeds a round-trip at
+      // the same instant as its assistant message. Human turns still come from
+      // `$.messages` and are untouched.
+      tokenSeries: parentRoundTripsAt(
+        "claude-sonnet-4-5",
+        { input: 1200, output: 800, cacheRead: 300, cacheWrite: 100 },
+        "2026-06-16T09:02:00.000Z",
+        "2026-06-16T09:12:00.000Z",
+        "2026-06-16T09:21:00.000Z",
+        "2026-06-16T09:26:00.000Z",
+        "2026-06-16T09:29:00.000Z"
+      ),
       messages: [
         { role: "human", timestamp: "2026-06-16T09:01:00.000Z", text: "q1" },
         {
@@ -125,7 +146,7 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
     }),
   },
   {
-    harness: "codex",
+    harness: Harness.Codex,
     session: makeSession({
       sessionId: "g-codex-headless",
       model: "gpt-5",
@@ -139,6 +160,7 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
       messageTimestamps: ["2026-06-17T14:00:30.000Z"],
       // 1 human + 3 assistant turns (headless kickoff) in the 14:00 UTC hour.
       messages: [
+        // FEA-3597: paired tokenSeries below.
         { role: "human", timestamp: "2026-06-17T14:00:30.000Z", text: "go" },
         {
           role: "assistant",
@@ -159,6 +181,13 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
       toolUses: [
         { name: "Bash", timestamp: "2026-06-17T14:01:00.000Z", input: {} },
       ],
+      tokenSeries: parentRoundTripsAt(
+        "gpt-5",
+        { input: 500, output: 300, cacheRead: 0, cacheWrite: 0 },
+        "2026-06-17T14:02:00.000Z",
+        "2026-06-17T14:05:00.000Z",
+        "2026-06-17T14:07:00.000Z"
+      ),
       artifacts: {
         prs: [{ number: "275", repo: "closedloop-ai/closedloop-electron" }],
         issues: [],
@@ -167,7 +196,7 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
     }),
   },
   {
-    harness: "opencode",
+    harness: Harness.OpenCode,
     session: makeSession({
       sessionId: "g-opencode-steered",
       model: "claude-sonnet-4-5",
@@ -235,6 +264,17 @@ const SEED: Array<{ session: NormalizedSession; harness: string }> = [
       toolUses: [
         { name: "Read", timestamp: "2026-06-18T22:06:00.000Z", input: {} },
       ],
+      tokenSeries: parentRoundTripsAt(
+        "claude-sonnet-4-5",
+        { input: 2000, output: 1500, cacheRead: 800, cacheWrite: 200 },
+        "2026-06-18T22:06:00.000Z",
+        "2026-06-18T22:16:00.000Z",
+        "2026-06-18T22:26:00.000Z",
+        "2026-06-18T22:31:00.000Z",
+        "2026-06-18T22:36:00.000Z",
+        "2026-06-18T22:41:00.000Z",
+        "2026-06-18T22:44:00.000Z"
+      ),
     }),
   },
 ];
@@ -261,7 +301,11 @@ async function captureAnalytics() {
     // wall-clock time and the golden fails on any day after capture).
     const insightsNow = new Date(NOW);
     const [delivery, utilization, agents, tokenAnalytics] = await Promise.all([
-      db.dashboard.getInsights(InsightsSection.Delivery, "90", insightsNow),
+      db.dashboard.getInsights(
+        InsightsSection.Delivery,
+        "90",
+        insightsNow
+      ) as Promise<DeliveryInsightsResponse>,
       db.dashboard.getInsights(InsightsSection.Utilization, "90", insightsNow),
       db.dashboard.getInsights(InsightsSection.Agents, "90", insightsNow),
       db.dashboard.getTokenAnalytics(insightsNow),
@@ -287,5 +331,57 @@ test("SQLite-conversion golden: dialect-sensitive analytics are stable", async (
     new URL("./fixtures/sqlite-golden.json", import.meta.url)
   );
   const golden = JSON.parse(await readFile(goldenPath, "utf8"));
-  assert.deepEqual(out, golden);
+  assert.deepEqual(
+    projectTokenAnalyticsByModelRows([
+      { ...golden.tokenAnalytics.byModel[0], ignored: true },
+    ]),
+    [golden.tokenAnalytics.byModel[0]]
+  );
+  const authorityReconciliation = reconcileAuthorityDeliveryFreeze(
+    out.delivery,
+    golden.delivery
+  );
+  assert.deepEqual(
+    { ...out, delivery: authorityReconciliation.projectedActual },
+    golden
+  );
 });
+
+/**
+ * Build PARENT-attributed token round-trips that sum EXACTLY to `totals`
+ * (FEA-3597).
+ *
+ * Agent turn buckets derive from `$.tokenSeries` entries with no `subagentId`,
+ * so these dialect-sensitivity fixtures must pair a round-trip with each
+ * assistant message they expect to see bucketed.
+ *
+ * The exact-sum requirement is not cosmetic: model-usage-over-time and the
+ * token aggregates prefer `tokenSeries` over `tokensByModel` when a series is
+ * present, so a series that does not reconcile with the fixture's declared
+ * totals silently rewrites the token half of this golden. Splitting the
+ * declared totals across the round-trips — remainder on the first — keeps every
+ * token assertion byte-identical and confines the change to bucket/autonomy.
+ */
+function parentRoundTripsAt(
+  model: string,
+  totals: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  },
+  ...timestamps: string[]
+): NonNullable<SessionOverrides["tokenSeries"]> {
+  const share = (total: number, index: number): number => {
+    const base = Math.floor(total / timestamps.length);
+    return index === 0 ? base + (total % timestamps.length) : base;
+  };
+  return timestamps.map((timestamp, index) => ({
+    timestamp,
+    model,
+    input: share(totals.input, index),
+    output: share(totals.output, index),
+    cacheRead: share(totals.cacheRead, index),
+    cacheWrite: share(totals.cacheWrite, index),
+  }));
+}

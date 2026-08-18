@@ -1,0 +1,140 @@
+---
+title: Comment Threads
+description: 'Post and read document comments, anchored or artifact-level'
+---
+
+## Overview
+
+Comment threads let agents and humans discuss a Closedloop document. Threads can be anchored to an exact span of text in the document body or created as artifact-level notes when the feedback does not point at a specific passage.
+
+Two tools cover comment thread workflows:
+
+| Tool | Description |
+|------|-------------|
+| `create-document-thread` | Post a new document comment thread, anchored when `anchorText` is provided or artifact-level when omitted |
+| `get-document-comments` | Retrieve comment threads and their replies for a document |
+
+---
+
+## Creating a Comment Thread
+
+**Tool**: `create-document-thread`
+**Underlying API**: `POST /documents/:documentId/threads`
+
+```
+create-document-thread(
+  documentId: string,    // PRD-*, PLN-*, FEA-*, or UUID
+  body: string,          // Comment body text (minimum 1 character)
+  anchorText?: string    // Optional. Exact text passage to anchor the comment to
+)
+```
+
+When `anchorText` is provided, the thread is anchored to that exact passage in the document body. When `anchorText` is omitted, an unanchored artifact-level note is created instead — useful for triage notes and general comments that do not reference a specific passage.
+
+### Anchor Text Rules
+
+The optional `anchorText` field specifies the exact passage in the document that the comment is attached to. When provided, the following rules apply:
+
+- **Case-sensitive**: the text must match exactly as it appears in the document.
+- **Must be unique within the document**: if the same phrase appears multiple times, the anchor is ambiguous and the call will fail.
+- **Single textblock only**: the span can include inline formatting (bold, italic) within one paragraph, heading, or list item, but it cannot cross textblock boundaries.
+
+**Example**:
+
+```
+create-document-thread(
+  documentId: "PLN-17",
+  body: "This section should clarify the retry behavior for 429 responses.",
+  anchorText: "The API client retries transient errors up to three times."
+)
+```
+
+Omit `anchorText` to create an unanchored artifact-level document comment:
+
+```
+create-document-thread(
+  documentId: "FEA-1035",
+  body: "This needs a product decision before implementation."
+)
+```
+
+---
+
+## Retrieving Comment Threads
+
+**Tool**: `get-document-comments`
+**Underlying API**: `GET /documents/:documentId/threads`
+
+```
+get-document-comments(
+  documentId: string,   // PRD-*, PLN-*, FEA-*, or UUID
+  status?: "OPEN" | "RESOLVED"  // Filter threads by status. Omit for all.
+)
+```
+
+The response is a list of thread objects, each with its replies:
+
+```json
+[
+  {
+    "id": "...",
+    "status": "OPEN",
+    "source": "LIVEBLOCKS",
+    "anchorStatus": "artifact-level",
+    "artifactId": "...",
+    "createdAt": "2025-01-15T14:30:00Z",
+    "comments": [
+      {
+        "id": "...",
+        "plainText": "This section should clarify the retry behavior for 429 responses.",
+        "createdAt": "2025-01-15T14:30:00Z",
+        "author": "user-uuid-..."
+      }
+    ]
+  }
+]
+```
+
+The `source` field indicates how the thread was created: `LIVEBLOCKS` for document comments and `GITHUB` for a projected pull-request review thread. The `anchorStatus` field identifies whether a Liveblocks document comment is anchored to text or artifact-level.
+
+### Filtering by Status
+
+Use the `status` filter to retrieve only open feedback or only resolved threads:
+
+```
+# Get only unresolved feedback on a PRD
+get-document-comments(documentId: "PRD-42", status: "OPEN")
+
+# Get resolved threads to see what was addressed
+get-document-comments(documentId: "PRD-42", status: "RESOLVED")
+```
+
+---
+
+## Common Workflows
+
+### Review a document and post feedback
+
+```
+1. get-document(documentId: "PLN-17", includeContent: true)
+   → read the document body
+
+2. create-document-thread(
+     documentId: "PLN-17",
+     anchorText: "Database migrations run synchronously on startup",
+     body: "This will cause timeout issues on large tables. Consider a lazy migration approach."
+   )
+```
+
+### Check for open feedback before starting implementation
+
+```
+get-document-comments(documentId: "FEA-1035", status: "OPEN")
+→ review any unresolved threads before beginning work
+```
+
+### List all threads on a document (open and resolved)
+
+```
+get-document-comments(documentId: "PRD-42")
+```

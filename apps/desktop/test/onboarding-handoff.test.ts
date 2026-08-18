@@ -9,7 +9,7 @@ import {
   OnboardingHandoffQueue,
   parsePendingOnboardingHandoff,
   readPendingOnboardingHandoff,
-} from "../src/main/onboarding-handoff.js";
+} from "../src/main/onboarding/onboarding-handoff.js";
 
 test("parsePendingOnboardingHandoff accepts the exact fresh payload shape", () => {
   const now = new Date("2026-04-27T12:00:00.000Z");

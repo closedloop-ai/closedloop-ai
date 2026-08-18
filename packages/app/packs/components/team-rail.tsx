@@ -55,11 +55,15 @@ const RecommendedList = ({
   context,
   onSelect,
   onInstall,
+  disambiguators,
 }: {
   packs: readonly PackView[];
   context: PacksContext;
   onSelect: (packId: string) => void;
   onInstall?: (packId: string) => void;
+  /** Same-name qualifiers keyed by pack id, so a recommended row for a colliding
+   *  name reads the same qualifier the grid card shows (FEA-3972). */
+  disambiguators?: ReadonlyMap<string, string>;
 }) => (
   <Card>
     <CardHeader>
@@ -69,28 +73,38 @@ const RecommendedList = ({
       </CardDescription>
     </CardHeader>
     <CardContent className="space-y-1">
-      {packs.map((pack) => (
-        <div
-          className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted/40"
-          key={pack.id}
-        >
-          <button
-            className="min-w-0 text-left"
-            onClick={() => onSelect(pack.id)}
-            type="button"
+      {packs.map((pack) => {
+        const disambiguator = disambiguators?.get(pack.id);
+        return (
+          <div
+            className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted/40"
+            key={pack.id}
           >
-            <div className="truncate font-medium text-sm">{pack.name}</div>
-            <div className="text-muted-foreground text-xs">
-              {installCount(pack)} teammates use this
-            </div>
-          </button>
-          <RecommendedAction
-            context={context}
-            onInstall={onInstall}
-            pack={pack}
-          />
-        </div>
-      ))}
+            <button
+              className="min-w-0 text-left"
+              onClick={() => onSelect(pack.id)}
+              type="button"
+            >
+              <div className="flex min-w-0 items-baseline gap-1.5 font-medium text-sm">
+                <span className="truncate">{pack.name}</span>
+                {disambiguator ? (
+                  <span className="shrink-0 font-normal text-muted-foreground text-xs">
+                    {disambiguator}
+                  </span>
+                ) : null}
+              </div>
+              <div className="text-muted-foreground text-xs">
+                {installCount(pack)} teammates use this
+              </div>
+            </button>
+            <RecommendedAction
+              context={context}
+              onInstall={onInstall}
+              pack={pack}
+            />
+          </div>
+        );
+      })}
     </CardContent>
   </Card>
 );
@@ -140,17 +154,20 @@ export const TeamRail = ({
   context,
   onSelect,
   onInstall,
+  disambiguators,
 }: {
   recommended: readonly PackView[];
   activity: readonly PackActivityEvent[];
   context: PacksContext;
   onSelect: (packId: string) => void;
   onInstall?: (packId: string) => void;
+  disambiguators?: ReadonlyMap<string, string>;
 }) => (
   <div className="space-y-4">
     {recommended.length > 0 ? (
       <RecommendedList
         context={context}
+        disambiguators={disambiguators}
         onInstall={onInstall}
         onSelect={onSelect}
         packs={recommended}

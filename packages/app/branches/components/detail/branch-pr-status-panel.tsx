@@ -2,42 +2,30 @@
 
 import type { BranchPageDetail } from "@repo/api/src/types/branch";
 import type { ReviewDecision } from "@repo/api/src/types/branch-checks";
-import { ReviewDecision as ReviewDecisionEnum } from "@repo/api/src/types/branch-checks";
+import { ReviewDecision as ReviewDecisionValue } from "@repo/api/src/types/branch-checks";
+import {
+  BranchSelectedPullRequestChecksAvailability,
+  BranchSelectedPullRequestChecksSummary,
+} from "@repo/api/src/types/branch-selected-pull-request-checks";
+import {
+  type SelectedPullRequestCheck,
+  SelectedPullRequestCheckCategory,
+} from "@repo/api/src/types/selected-pull-request-checks-evidence";
 import { Chip } from "@repo/design-system/components/ui/chip";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
-import { useLivePrStatus } from "../../hooks/use-live-pr-status";
+import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
+import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
+import { useState } from "react";
 import {
   deriveLifecycleBadge,
   type LifecycleBadge,
   LifecycleTone,
-} from "../../lib/live-overlays/merge-status-derivation";
-import { applyStatusOverlay } from "../../lib/live-overlays/status-overlay-adapter";
-import { ConnectGitHubIndicator } from "../connect-github-indicator";
-
-/**
- * F2 — live merge + check status panel (Epic F / FEA-1952).
- *
- * Only rendered when a PR is linked. Reads live `reviewDecision` + approval/
- * changes-requested counts from the GitHub gateway (`/pr/reviews`) and patches
- * them over the persisted shape: the lifecycle badge refines to Approved /
- * Changes requested, and the approvals line lights up. Check status
- * (`statusCheckRollup`/`mergeStateStatus`) has no gateway producer yet, so it
- * reads "not available yet"; Behind/Ahead likewise have no v1 producer.
- *
- * Degrades to a connect-GitHub affordance (with the PERSISTED lifecycle badge
- * still shown) when not connected, when there is no clean owner/name identity,
- * or when multiple PRs are linked (ambiguous attribution) — never a thrown error
- * and never a fabricated review state.
- */
+} from "../../lib/merge-status-derivation";
 
 export type BranchPrStatusPanelProps = {
   detail: BranchPageDetail;
-  allowLive?: boolean;
-  connectHref?: string;
-  onConnect?: () => void;
 };
 
-const TONE_VARIANT: Record<
+const ToneVariant: Record<
   LifecycleTone,
   "info" | "accent" | "success" | "muted" | "destructive"
 > = {
@@ -50,97 +38,25 @@ const TONE_VARIANT: Record<
   [LifecycleTone.Gated]: "muted",
 };
 
-function LifecycleBadgeChip({ badge }: { badge: LifecycleBadge }) {
-  return (
-    <Chip size="sm" variant={TONE_VARIANT[badge.tone]}>
-      {badge.label}
-    </Chip>
-  );
-}
-
-const REVIEW_DECISION_LABEL: Record<ReviewDecision, string> = {
-  [ReviewDecisionEnum.Approved]: "Approved",
-  [ReviewDecisionEnum.ChangesRequested]: "Changes requested",
-  [ReviewDecisionEnum.Commented]: "Commented",
-  [ReviewDecisionEnum.Dismissed]: "Dismissed",
+const ReviewDecisionLabel: Record<ReviewDecision, string> = {
+  [ReviewDecisionValue.Approved]: "Approved",
+  [ReviewDecisionValue.ChangesRequested]: "Changes requested",
+  [ReviewDecisionValue.Commented]: "Commented",
+  [ReviewDecisionValue.Dismissed]: "Dismissed",
 };
 
-function approvalsText(input: {
-  approvalCount: number | null;
-  changesRequestedCount: number | null;
-}): string {
-  const approvals = input.approvalCount ?? 0;
-  const changes = input.changesRequestedCount ?? 0;
-  const parts = [`${approvals} approval${approvals === 1 ? "" : "s"}`];
-  if (changes > 0) {
-    parts.push(`${changes} change request${changes === 1 ? "" : "s"}`);
-  }
-  return parts.join(" · ");
-}
-
-function StatusRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-xs">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right">{value}</span>
-    </div>
-  );
-}
-
-export function BranchPrStatusPanel({
-  detail,
-  allowLive = true,
-  connectHref,
-  onConnect,
-}: BranchPrStatusPanelProps) {
-  const liveStatus = useLivePrStatus(
-    allowLive
-      ? {
-          repoFullName: detail.repoFullName,
-          prUrl: detail.prUrl,
-          prNumber: detail.prNumber,
-          multiPrWarning: detail.multiPrWarning,
-        }
-      : {
-          repoFullName: null,
-          prUrl: null,
-          prNumber: null,
-          multiPrWarning: true,
-        }
-  );
-  const data = allowLive ? liveStatus.data : null;
-  const isLoading = allowLive ? liveStatus.isLoading : false;
-  const reason = allowLive ? liveStatus.reason : null;
-
-  // No PR → no PR status block (the branch status lives in Properties).
-  if (detail.prNumber == null) {
+/** Lifecycle, review decision, and selected-head check evidence. */
+export function BranchPrStatusPanel({ detail }: BranchPrStatusPanelProps) {
+  const selected = detail.selectedPullRequest;
+  if (!selected) {
     return null;
   }
-
-  const overlay = applyStatusOverlay(
-    {
-      checksStatus: detail.checksStatus,
-      checksPassed: detail.checksPassed,
-      checksTotal: detail.checksTotal,
-      reviewDecision: detail.reviewDecision,
-    },
-    data
-  );
   const badge = deriveLifecycleBadge({
-    persisted: { prState: detail.prState, status: detail.status },
-    live: data,
+    persisted: { prState: selected.state, status: detail.status },
   });
-  const checksValue =
-    overlay.checksTotal == null
-      ? "Not available yet"
-      : `${overlay.checksPassed ?? 0}/${overlay.checksTotal} passing`;
-  // Persisted review/check fallback (shown when live is unavailable). Both have
-  // no v1 producer (enrichment-gated null), so this renders nothing today and
-  // lights up when enrichment lands.
-  const persistedReviewLabel =
-    overlay.reviewDecision == null
-      ? null
-      : REVIEW_DECISION_LABEL[overlay.reviewDecision];
+  const reviewLabel = selected.reviewDecision
+    ? ReviewDecisionLabel[selected.reviewDecision]
+    : null;
 
   return (
     <section className="mt-2">
@@ -150,105 +66,222 @@ export function BranchPrStatusPanel({
           <LifecycleBadgeChip badge={badge} />
         </span>
       </div>
-      {renderBody({
-        connected: overlay.connected,
-        isLoading,
-        multiPr: detail.multiPrWarning,
-        reason,
-        approvals: approvalsText(overlay),
-        checksValue,
-        persistedReviewLabel,
-        hasPersistedChecks: overlay.checksTotal != null,
-        liveDisabled: !allowLive,
-        connectHref,
-        onConnect,
-      })}
+      <div className="flex flex-col gap-2 py-1">
+        {reviewLabel ? <StatusRow label="Review" value={reviewLabel} /> : null}
+        <ChecksEvidence detail={detail} />
+      </div>
     </section>
   );
 }
 
-function renderBody({
-  connected,
-  isLoading,
-  multiPr,
-  reason,
-  approvals,
-  checksValue,
-  persistedReviewLabel,
-  hasPersistedChecks,
-  liveDisabled,
-  connectHref,
-  onConnect,
-}: {
-  connected: boolean;
-  isLoading: boolean;
-  multiPr: boolean;
-  reason: unknown;
-  approvals: string;
-  checksValue: string;
-  persistedReviewLabel: string | null;
-  hasPersistedChecks: boolean;
-  liveDisabled: boolean;
-  connectHref?: string;
-  onConnect?: () => void;
-}) {
-  if (connected) {
-    return (
-      <div className="flex flex-col gap-1.5 py-1">
-        <StatusRow label="Review" value={approvals} />
-        <StatusRow label="Checks" value={checksValue} />
-        <StatusRow label="Behind / ahead" value="Not available yet" />
-      </div>
-    );
+function ChecksEvidence({ detail }: { detail: BranchPageDetail }) {
+  const [open, setOpen] = useState(false);
+  const response = detail.selectedPullRequestChecks;
+  if (!response) {
+    return <UnavailableChecks />;
   }
-  if (isLoading && reason === null) {
-    return (
-      <div className="flex flex-col gap-1.5 py-1">
-        <Skeleton className="h-4 w-1/2" />
-        <Skeleton className="h-4 w-1/3" />
-      </div>
-    );
+  if (
+    response.status === BranchSelectedPullRequestChecksAvailability.Unavailable
+  ) {
+    return <UnavailableChecks />;
   }
-  // Live unavailable: still render any PERSISTED review/check values (none in v1,
-  // populated once enrichment lands), then the gating affordance.
-  const persistedRows =
-    persistedReviewLabel || hasPersistedChecks ? (
-      <div className="flex flex-col gap-1.5">
-        {persistedReviewLabel ? (
-          <StatusRow label="Review" value={persistedReviewLabel} />
-        ) : null}
-        {hasPersistedChecks ? (
-          <StatusRow label="Checks" value={checksValue} />
-        ) : null}
-      </div>
-    ) : null;
-  if (liveDisabled) {
-    return (
-      <div className="flex flex-col gap-2 py-1">
-        {persistedRows}
-        {persistedRows ? null : (
-          <p className="text-muted-foreground text-xs">
-            Cloud GitHub data has not synced review or check status yet.
-          </p>
-        )}
-      </div>
-    );
-  }
+  const { value } = response;
+  const incomplete =
+    value.summary === BranchSelectedPullRequestChecksSummary.Partial;
+  const summary = checksSummary(value.summary, value.counts, incomplete);
+  const statusCounts = checkStatusCounts(value.checks);
+
   return (
-    <div className="flex flex-col gap-2 py-1">
-      {persistedRows}
-      <p className="text-muted-foreground text-xs">
-        {multiPr
-          ? "Multiple PRs are linked — live review status is ambiguous and not shown."
-          : "Connect GitHub to see live review and check status."}
-      </p>
-      {multiPr ? null : (
-        <ConnectGitHubIndicator
-          compact
-          connectHref={connectHref}
-          onConnect={onConnect}
+    <div>
+      <button
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left text-sm"
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        <ChevronRightIcon
+          aria-hidden
+          className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`}
         />
-      )}
+        <span className="text-muted-foreground">Checks</span>
+        <ToneLabel className="ml-auto tabular-nums" variant={summary.variant}>
+          {summary.label}
+        </ToneLabel>
+      </button>
+      <p className="mt-1 pl-5 text-muted-foreground text-xs">
+        Passed {statusCounts.successful} · Failed {statusCounts.failing} ·
+        Pending {statusCounts.pending} · Skipped {statusCounts.skipped} ·
+        Canceled {statusCounts.canceled}
+        {statusCounts.neutral > 0 ? ` · Neutral ${statusCounts.neutral}` : ""}
+        {incomplete ? "*" : ""}
+      </p>
+      {open ? (
+        <div className="mt-2 divide-y border-t">
+          {value.checks.map((check) => (
+            <div
+              className="flex items-center gap-3 py-2 text-xs"
+              key={check.sourceIdentity}
+            >
+              <span className="min-w-0 flex-1 truncate">{check.name}</span>
+              <ToneLabel variant={checkTone(check.category)}>
+                {checkLabel(check.category)}
+              </ToneLabel>
+              {check.targetUrl ? (
+                <a
+                  aria-label={`Open ${check.name} check`}
+                  className="text-muted-foreground hover:text-foreground"
+                  href={check.targetUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLinkIcon aria-hidden className="size-3.5" />
+                </a>
+              ) : null}
+            </div>
+          ))}
+          {incomplete ? (
+            <p className="py-2 text-muted-foreground text-xs">
+              * {value.counts.providerReturned} of{" "}
+              {value.counts.providerExpected} provider checks returned. Counts
+              reflect the checks we could verify.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+type CheckStatusCounts = {
+  canceled: number;
+  failing: number;
+  neutral: number;
+  pending: number;
+  skipped: number;
+  successful: number;
+};
+
+function checkStatusCounts(
+  checks: readonly SelectedPullRequestCheck[]
+): CheckStatusCounts {
+  const counts: CheckStatusCounts = {
+    canceled: 0,
+    failing: 0,
+    neutral: 0,
+    pending: 0,
+    skipped: 0,
+    successful: 0,
+  };
+  for (const check of checks) {
+    const conclusion = check.providerConclusion?.toLowerCase();
+    if (conclusion === "skipped") {
+      counts.skipped += 1;
+    } else if (conclusion === "cancelled" || conclusion === "canceled") {
+      counts.canceled += 1;
+    } else {
+      counts[check.category] += 1;
+    }
+  }
+  return counts;
+}
+
+function UnavailableChecks() {
+  return (
+    <StatusRow
+      label="Checks"
+      value={<span className="text-muted-foreground">Unavailable</span>}
+    />
+  );
+}
+
+function LifecycleBadgeChip({ badge }: { badge: LifecycleBadge }) {
+  return (
+    <Chip size="sm" variant={ToneVariant[badge.tone]}>
+      {badge.label}
+    </Chip>
+  );
+}
+
+function StatusRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right">{value}</span>
+    </div>
+  );
+}
+
+function checksSummary(
+  summary: BranchSelectedPullRequestChecksSummary,
+  counts: {
+    failing: number;
+    pending: number;
+    successful: number;
+    total: number;
+  },
+  incomplete: boolean
+): { label: string; variant: "error" | "warning" | "success" | "default" } {
+  const suffix = incomplete ? "*" : "";
+  switch (summary) {
+    case BranchSelectedPullRequestChecksSummary.Failing:
+      return { label: `${counts.failing} failing`, variant: "error" };
+    case BranchSelectedPullRequestChecksSummary.Pending:
+      return { label: `${counts.pending} pending`, variant: "warning" };
+    case BranchSelectedPullRequestChecksSummary.Successful:
+      return {
+        label: `${counts.successful}/${counts.total} passing`,
+        variant: "success",
+      };
+    case BranchSelectedPullRequestChecksSummary.NotApplicable:
+      return { label: "N/A", variant: "default" };
+    case BranchSelectedPullRequestChecksSummary.Partial:
+      return {
+        label: `${counts.successful}/${counts.total} observed${suffix}`,
+        variant: "default",
+      };
+    default:
+      return assertNever(summary);
+  }
+}
+
+function checkTone(
+  category: SelectedPullRequestCheckCategory
+): "error" | "warning" | "success" | "default" {
+  switch (category) {
+    case SelectedPullRequestCheckCategory.Failing:
+      return "error";
+    case SelectedPullRequestCheckCategory.Pending:
+      return "warning";
+    case SelectedPullRequestCheckCategory.Successful:
+      return "success";
+    case SelectedPullRequestCheckCategory.Neutral:
+      return "default";
+    default:
+      return assertNever(category);
+  }
+}
+
+function checkLabel(category: SelectedPullRequestCheckCategory): string {
+  switch (category) {
+    case SelectedPullRequestCheckCategory.Failing:
+      return "Failed";
+    case SelectedPullRequestCheckCategory.Pending:
+      return "Pending";
+    case SelectedPullRequestCheckCategory.Successful:
+      return "Passed";
+    case SelectedPullRequestCheckCategory.Neutral:
+      return "Neutral";
+    default:
+      return assertNever(category);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled selected pull request check state: ${value}`);
 }

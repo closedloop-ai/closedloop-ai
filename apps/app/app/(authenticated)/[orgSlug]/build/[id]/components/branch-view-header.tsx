@@ -52,7 +52,9 @@ export function BranchViewHeader({
       ? [
           {
             label: data.projectName,
-            href: `/${orgSlug}/teams/${data.teamId}/projects/${data.projectId}?tab=features`,
+            // FEA-4137: the project's Issues tab is `?tab=issues` now (legacy
+            // `?tab=features` still resolves via the project page's tab alias).
+            href: `/${orgSlug}/teams/${data.teamId}/projects/${data.projectId}?tab=issues`,
           },
         ]
       : []),
@@ -60,7 +62,7 @@ export function BranchViewHeader({
       ? [
           {
             label: data.featureTitle,
-            href: `/${orgSlug}/features/${data.featureSlug}`,
+            href: `/${orgSlug}/issues/${data.featureSlug}`,
           },
         ]
       : []),
@@ -70,7 +72,7 @@ export function BranchViewHeader({
   const toggleLabel = `Toggle ${panelLabel.toLowerCase()} sidebar`;
 
   return (
-    <Header breadcrumbs={breadcrumbs} className="px-3 py-2">
+    <Header breadcrumbs={breadcrumbs} className="px-3 py-2" suppressPageHeading>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button size="sm">

@@ -82,7 +82,6 @@ const makeDocument = (overrides?: Partial<DocumentDetail>): DocumentDetail =>
     assignee: null,
     approverId: null,
     approver: null,
-    tokenUsage: null,
     targetRepo: null,
     targetBranch: null,
     templateForType: null,

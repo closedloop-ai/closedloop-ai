@@ -5,7 +5,7 @@ import { type Artifact, ArtifactType, withDb } from "@repo/database";
  * Cross-type artifact reads. Owns the general/CRUD surface that does not
  * depend on a particular detail row (PullRequestDetail / DeploymentDetail).
  *
- * Type-specific operations live in sibling services (`pullRequestService`,
+ * Type-specific operations live in sibling services (`branchService`,
  * `deploymentService`); per-type detail joins live in `detail-service.ts`.
  */
 export const artifactService = {

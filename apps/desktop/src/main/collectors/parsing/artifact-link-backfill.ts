@@ -7,13 +7,23 @@
  * extractor version.
  */
 import { statSync } from "node:fs";
-import type { Prisma } from "../../database/generated/client.js";
-import type { DesktopPrisma } from "../../database/prisma-client.js";
+import { parseJsonObjectText } from "../../agent-sync/agent-sync-json-text.js";
 import {
   buildRepoResolver,
   persistArtifactLinks,
   type RepoResolver,
-} from "../../database/write-core.js";
+} from "../../database/artifact-link-persistence.js";
+import type { Prisma } from "../../database/generated/client.js";
+import type { DesktopPrisma } from "../../database/prisma-client.js";
+import { stampSegmentWorkItemRefs } from "../../database/segment-work-item-stamp.js";
+import {
+  bumpSessionsUpdatedAt,
+  chunkWatermark,
+} from "../../database/session-sync-watermark.js";
+import {
+  MONITORED_ACTIVITY_ONLY_METADATA_KEY,
+  monitoredActivityOnlyMetadata,
+} from "../../database/synced-monitored-session-activity.js";
 import {
   sessionIdFromTranscriptPath as claudeSessionId,
   getProjectsDir,
@@ -40,6 +50,7 @@ import {
   extractArtifactRefs,
   LAUNCH_METADATA_REF_METHOD,
 } from "./artifact-ref-extractor.js";
+import { extractWorkItemOccurrences } from "./work-item-occurrences.js";
 
 type TranscriptSource = {
   listFiles: () => string[];
@@ -86,9 +97,22 @@ export type BackfillResult = {
 //   - launch_metadata: extractLaunchMetadataRefs (the live import runs it, the
 //     backfill does not), so deleting it here would lose it permanently.
 //   - normalized_pr: conservative PR fallback added during live SQLite import.
-//   - pull_requests_fold: PR lifecycle rows folded in by the FEA-1899 migration.
-//   - branch_pr_association: branch↔PR workspace links from propagation and
-//     enrichment, not from transcript extraction.
+//   - pull_requests_fold: ISS-4651 — a DEAD method, kept only as a preserve-list
+//     entry. Its sole minter was the FEA-1899 Postgres migration, which the
+//     pglite→SQLite squash to `0001_init` deleted, so no code path can write it
+//     and this entry guards rows nothing can create. Retained rather than
+//     dropped because removing a compatibility entry needs explicit approval.
+//   - branch_pr_association: branch↔PR workspace links minted by propagation
+//     (per-import `propagateBranchPrLinks`, boot `propagateAllBranchPrLinks`),
+//     not by transcript extraction. This backfill DOES reach propagation on the
+//     non-empty ref path — `persistArtifactLinks` runs it as its last step — so
+//     there the exclusion only makes that call a no-op for an association that
+//     already exists. What it actually protects is the `refs.length === 0`
+//     shortcut below, which skips `persistArtifactLinks` entirely: without the
+//     exclusion that pass would delete the association with nothing left to
+//     re-derive it. Contrast the LIVE import, which always reaches propagation
+//     and so deletes and re-derives through the FEA-4377 gate unconditionally
+//     (see `importPhaseArtifactLinks`).
 const NON_REDERIVED_LINK_METHODS = [
   LAUNCH_METADATA_REF_METHOD,
   "normalized_pr",
@@ -337,6 +361,10 @@ export async function backfillArtifactLinksFromTranscripts(
   let repoResolver = await tryBuildRepoResolver(prisma);
 
   let transcriptsSinceYield = 0;
+  // FEA-3568: staggers the per-session updated_at bump when a re-derivation
+  // actually changes a segment's work_item_ref, so a full re-scan can't collapse
+  // the sync cursor's top-group onto one timestamp (mirrors the re-tile backfill).
+  let syncBumpIndex = 0;
   for (const {
     filePath,
     sessionId,
@@ -440,6 +468,7 @@ export async function backfillArtifactLinksFromTranscripts(
 
     // Extract artifact refs from the session
     const refs = extractArtifactRefs(session, now);
+    const regularRefs = refs.filter((ref) => !ref.monitoredActivityOnly);
     if (!shouldContinue()) {
       return result;
     }
@@ -447,6 +476,19 @@ export async function backfillArtifactLinksFromTranscripts(
     try {
       await prisma.write((client) =>
         client.$transaction(async (tx) => {
+          // FEA-3851 / ISS-5236: capture the pre-image of the re-derived links'
+          // synced projection so a correction that moves no work_item_ref can
+          // still re-enqueue the session for cloud sync — a method-ONLY flip
+          // (e.g. a reviewed-PR link going pr_review_feedback_command →
+          // pr_review_command, same target/relation) or an `observed_at`-ONLY
+          // re-stamp off the source instead of the import clock.
+          // `stampSegmentWorkItemRefs` below only detects work_item_ref changes,
+          // so without this neither would bump sessions.updated_at and the stale
+          // cloud row would never be replaced.
+          const projectionsBefore = await readRederivedLinkProjections(
+            tx,
+            sessionId
+          );
           await tx.$executeRawUnsafe(
             `DELETE FROM session_artifact_links
            WHERE session_id = $1
@@ -455,19 +497,21 @@ export async function backfillArtifactLinksFromTranscripts(
             ...NON_REDERIVED_LINK_METHODS
           );
           const { captured, droppedUnresolvedBareRepo } =
-            refs.length === 0
+            regularRefs.length === 0
               ? { captured: 0, droppedUnresolvedBareRepo: false }
               : await persistArtifactLinks(
                   tx,
                   sessionId,
-                  refs,
+                  regularRefs,
                   now,
                   log,
                   repoResolver
                 );
-          if (captured !== refs.length) {
+          if (captured !== regularRefs.length) {
             throw new Error("partial artifact-link persistence");
           }
+          const activityOnlyMetadataChanged =
+            await replaceMonitoredActivityOnlyMetadata(tx, sessionId, refs);
           // FEA-2875: if a ref's non-null BARE repo name was null-dropped
           // (FEA-2866) because it doesn't resolve yet, the artifact still
           // persists (repo_full_name NULL) so `captured === refs.length` holds —
@@ -482,8 +526,51 @@ export async function backfillArtifactLinksFromTranscripts(
           if (!droppedUnresolvedBareRepo) {
             await markBackfillSeen(tx, sessionId, filePath, mtimeMs);
           }
+          // FEA-2272: re-derived links (incl. a slug now gone) must re-stamp this
+          // session's existing segments, clearing a stale work_item_ref back to
+          // NULL. Reads the just-written links; a no-op when the session has no
+          // segments yet (FEA-2269 hasn't tiled it).
+          const changedRefs = await stampSegmentWorkItemRefs(
+            tx,
+            sessionId,
+            extractWorkItemOccurrences(session)
+          );
+          // FEA-3851 / ISS-5236: a link's synced payload can change on
+          // re-derivation without any work_item_ref moving — its METHOD (which
+          // the cloud maps to a branch-lifecycle boundary kind — ReviewFeedback
+          // vs read-only), or its `observed_at` (which positions the timeline
+          // instant itself). `changedRefs` alone misses both. Compare the
+          // re-derived projection against the pre-image; either must re-enqueue.
+          const projectionsAfter = await readRederivedLinkProjections(
+            tx,
+            sessionId
+          );
+          const linkProjectionsChanged = !areLinkProjectionsEqual(
+            projectionsBefore,
+            projectionsAfter
+          );
+          // FEA-3568: work_item_ref rides the cloud sync wire, but this backfill
+          // writes only segment/link rows — it never touches the session row, so
+          // the metadata sync lane (keyed on sessions.updated_at) would never
+          // re-enqueue a ref that changed here (e.g. an extractor-version bump
+          // re-deriving links on an unchanged transcript). Dirty-mark the session
+          // in THIS transaction when a ref actually changed so the new tiling
+          // reaches the cloud; staggered so a full re-scan can't collapse the
+          // cursor's top-group.
+          if (
+            changedRefs > 0 ||
+            linkProjectionsChanged ||
+            activityOnlyMetadataChanged
+          ) {
+            await bumpSessionsUpdatedAt(
+              tx,
+              [sessionId],
+              chunkWatermark(now, syncBumpIndex)
+            );
+            syncBumpIndex += 1;
+          }
           result.captured += captured;
-          result.deduped += refs.length - captured;
+          result.deduped += regularRefs.length - captured;
         })
       );
     } catch {
@@ -680,4 +767,110 @@ async function tryBuildRepoResolver(
   } catch {
     return undefined;
   }
+}
+
+// FEA-3851 / ISS-5236: read the SYNCED PROJECTION of the links this backfill
+// re-derives (everything except the preserved NON_REDERIVED_LINK_METHODS
+// producers), keyed by the link identity `(artifact_id, relation)`. Compared
+// before/after the delete-and-rederive so a correction that moves no
+// `work_item_ref` — which is all `stampSegmentWorkItemRefs` can see — still
+// re-enqueues the session for cloud sync.
+//
+// The projected columns mirror `SYNCED_CHILD_ROW_PROJECTIONS`'s
+// `session_artifact_links` entry (`synced-child-row-fingerprint.ts`) on purpose:
+// that list is the definition of "this link's wire payload changed", and the two
+// gates guard the same corpus from opposite ends — the fingerprint gates the
+// DATA_REVISION rebuild, this gates the EXTRACTOR_VERSION sweep. FEA-3851 needed
+// only `method`; ISS-5236 adds `observed_at`, which rides the wire as
+// `artifactRef.observedAt` and positions the branch-lifecycle instants, so an
+// extractor-version bump that re-stamps it off the source (rather than the
+// import clock) is a real payload change and must advance `updated_at` instead
+// of healing local SQLite only. Encoded with `JSON.stringify` so the join is
+// injective — a bare delimiter join would let a value containing the delimiter
+// collide with a different tuple, the same trap the fingerprint's `json_array()`
+// encoding exists to avoid.
+async function readRederivedLinkProjections(
+  tx: Prisma.TransactionClient,
+  sessionId: string
+): Promise<Map<string, string>> {
+  const rows = await tx.$queryRawUnsafe<
+    {
+      artifact_id: string;
+      relation: string;
+      method: string;
+      is_primary: number | bigint | boolean | null;
+      status: string | null;
+      observed_at: string | null;
+      monitored_activity: string | null;
+    }[]
+  >(
+    `SELECT artifact_id, relation, method, is_primary, status, observed_at,
+            json_extract(evidence, '$.monitoredSessionActivity') AS monitored_activity
+       FROM session_artifact_links
+      WHERE session_id = $1
+        AND method NOT IN (${NON_REDERIVED_LINK_METHODS_PLACEHOLDERS})`,
+    sessionId,
+    ...NON_REDERIVED_LINK_METHODS
+  );
+  const projectionByLink = new Map<string, string>();
+  for (const row of rows) {
+    projectionByLink.set(
+      JSON.stringify([row.artifact_id, row.relation]),
+      JSON.stringify([
+        row.method,
+        // `is_primary` arrives as 0/1, bigint, or boolean depending on the
+        // driver; normalize so a driver difference cannot read as a change.
+        Boolean(row.is_primary),
+        row.status,
+        row.observed_at,
+        row.monitored_activity,
+      ])
+    );
+  }
+  return projectionByLink;
+}
+
+async function replaceMonitoredActivityOnlyMetadata(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  refs: Parameters<typeof monitoredActivityOnlyMetadata>[0]
+): Promise<boolean> {
+  const [row] = await tx.$queryRawUnsafe<{ metadata: string | null }[]>(
+    "SELECT metadata FROM sessions WHERE id = $1",
+    sessionId
+  );
+  const current = parseJsonObjectText(row?.metadata ?? null) ?? {};
+  const next = { ...current };
+  Reflect.deleteProperty(next, MONITORED_ACTIVITY_ONLY_METADATA_KEY);
+  Object.assign(next, monitoredActivityOnlyMetadata(refs));
+  const currentText = JSON.stringify(current);
+  const nextText = JSON.stringify(next);
+  if (currentText === nextText) {
+    return false;
+  }
+  await tx.$executeRawUnsafe(
+    "UPDATE sessions SET metadata = $1 WHERE id = $2",
+    nextText,
+    sessionId
+  );
+  return true;
+}
+
+// True when the two link→projection maps are identical (same links, same synced
+// payload). A difference means the re-derivation added, removed, re-classified,
+// or re-dated a link, so the session must re-sync so the cloud can replace the
+// stale row.
+function areLinkProjectionsEqual(
+  before: Map<string, string>,
+  after: Map<string, string>
+): boolean {
+  if (before.size !== after.size) {
+    return false;
+  }
+  for (const [key, projection] of before) {
+    if (after.get(key) !== projection) {
+      return false;
+    }
+  }
+  return true;
 }

@@ -17,13 +17,13 @@ import {
  * A document's status is derived from its Loop records (`loop` rows).
  * `pickBestStatus` reconciles them with active > terminal > none semantics.
  *
- * Failures the user has explicitly dismissed are suppressed via the
- * `documentGenerationStatusDismissal` table — once dismissed, the same FAILURE
- * state stays hidden until a new run produces a different `runKey`.
+ * Failures dismissed before ISS-5547 removed the dismiss surface are suppressed
+ * via the `documentGenerationStatusDismissal` table — once dismissed, the same
+ * FAILURE state stays hidden until a new run produces a different `runKey`.
+ * Nothing writes that table any more; these reads keep existing rows honored.
  *
  * These helpers are shared by:
- *  - `documentGenerationStatusService` (single-document `getGenerationStatus`,
- *    `dismissGenerationStatus`).
+ *  - `documentGenerationStatusService` (single-document `getGenerationStatus`).
  *  - `documentService.findAll` (batch path: `mergeLoopStatuses` +
  *    `suppressDismissedFailuresForDocumentMap`).
  */
@@ -42,6 +42,7 @@ function toLoopGenerationStatus(
     command: LoopCommand;
     startedAt: Date | null;
     completedAt: Date | null;
+    sessionArtifactId: string | null;
     user: { firstName: string | null; lastName: string | null } | null;
   },
   mappedStatus: GenerationStatus["status"]
@@ -55,6 +56,13 @@ function toLoopGenerationStatus(
     correlationId: null,
     source: "loop",
     loopId: loop.id,
+    // Spread so an unmaterialized Session stays ABSENT rather than serializing
+    // `null`: the field is optional on the wire and a consumer distinguishes
+    // "no session to link yet" from a link it can render. A `null` here would
+    // also reach older clients that never declared the key.
+    ...(loop.sessionArtifactId
+      ? { sessionArtifactId: loop.sessionArtifactId }
+      : {}),
     initiatedBy: loop.user,
   });
 }
@@ -80,6 +88,7 @@ async function fetchLoopStatus(
         command: true,
         startedAt: true,
         completedAt: true,
+        sessionArtifactId: true,
         user: {
           select: { firstName: true, lastName: true },
         },
@@ -212,6 +221,7 @@ export async function mergeLoopStatuses(
         command: true,
         startedAt: true,
         completedAt: true,
+        sessionArtifactId: true,
         user: {
           select: { firstName: true, lastName: true },
         },

@@ -11,8 +11,13 @@
  */
 export {
   ensureGatewayDetection as ensureElectronDetection,
+  getAbsentSweepCount as getElectronAbsentSweepCount,
   getGatewayDetectionSnapshot as getElectronDetectionSnapshot,
+  getNextProbeDelayMs as getElectronNextProbeDelayMs,
   invalidateGatewayDetectionCache as invalidateElectronDetectionCache,
+  isGatewayDetectionExhausted as isElectronDetectionExhausted,
+  isRecoveringGatewayDetection as isRecoveringElectronDetection,
+  rearmGatewayDetection as rearmElectronDetection,
   resetGatewayDetectionForTests as resetElectronDetectionForTests,
   subscribeGatewayDetection as subscribeElectronDetection,
   useGatewayDetection as useElectronDetection,

@@ -1,0 +1,51 @@
+---
+title: Custom Fields
+description: 'Extend projects and documents with your own structured fields'
+---
+
+**Custom fields** let you attach your own structured metadata to Closedloop
+entities — for example a priority tier, a team owner, or a target quarter —
+beyond the built-in fields.
+
+## What you can extend
+
+Custom field definitions attach to specific entity types:
+
+| Entity type | Value |
+|-------------|-------|
+| Project | `PROJECT` |
+| Document | `DOCUMENT` |
+
+A single field definition can apply to one or more entity types.
+
+## Field types
+
+Each custom field has a type that governs how its value is entered and
+displayed:
+
+| Field type | Value | Notes |
+|------------|-------|-------|
+| Text | `TEXT` | Free-form text. |
+| Number | `NUMBER` | Numeric, with configurable display format. |
+| Enum | `ENUM` | Single choice from a defined set of options. |
+| Multi-enum | `MULTI_ENUM` | Multiple choices from a defined set of options. |
+| Date | `DATE` | A calendar date. |
+| People | `PEOPLE` | One or more users. |
+
+`ENUM` and `MULTI_ENUM` fields carry a set of options (each with a label and
+color) that you define when creating the field.
+
+## Managing custom fields
+
+Create and manage field definitions in the web app's custom-field settings.
+Enum and multi-enum fields include an option builder for defining and coloring
+their choices. Once a field is defined, its editor appears on the relevant
+projects or documents, and its values are returned alongside those entities.
+
+## A note on "workflows"
+
+Closedloop distinguishes a **workflow** (a user-defined sequence of steps) from
+a **loop** (an AI-driven run). Custom fields are a common building block for
+organizing work across your process, but they are not a loop — see
+[Loops](../mechanisms/loops) for AI-driven runs and the workflow-vs-loop
+distinction.

@@ -93,5 +93,6 @@ Written to `{WORKDIR}/.closedloop-ai/config.env` by `setup-closedloop.sh`, injec
 
 | Variable | Purpose |
 |---|---|
-| `SLACK_GITHUB_REPO_WEBHOOK_URL` | Release notifications. |
+| `SLACK_BOT_TOKEN` | Release and CI notifications, posted with `chat.postMessage`. The bot must be a member of the target channel. |
+| `SLACK_GITHUB_REPO_CHANNEL_ID` | Destination channel for those notifications. A repository **variable**, not a secret — a channel id is not sensitive. Required alongside the token: the notify action rejects an empty channel. |
 | `GITHUB_TOKEN` | Automatic in CI; needs `contents: write`. |

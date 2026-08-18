@@ -1,7 +1,7 @@
 /**
  * @file content-security-policy.test.ts
  * @description Behavioral tests for the main-process CSP installer
- * (`src/main/content-security-policy.ts`) and the shared policy strings
+ * (`src/main/settings/content-security-policy.ts`) and the shared policy strings
  * (`src/shared/content-security-policy.ts`). The packaged `app://` renderer
  * otherwise loads with no CSP, so we assert the header is attached to `app://`
  * responses, that non-`app://` (e.g. loopback dev) responses pass through
@@ -9,7 +9,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { installAppContentSecurityPolicy } from "../src/main/content-security-policy.js";
+import { installAppContentSecurityPolicy } from "../src/main/settings/content-security-policy.js";
 import {
   CONTENT_SECURITY_POLICY_HEADER,
   CONTENT_SECURITY_POLICY_META,
@@ -99,6 +99,37 @@ test("header policy locks down the dangerous directives", () => {
     !CONTENT_SECURITY_POLICY_HEADER.includes(
       "script-src 'self' app: 'unsafe-inline'"
     )
+  );
+});
+
+/**
+ * Extracts a single directive's full value from a `"; "`-joined CSP string
+ * (e.g. `"connect-src"` → `"connect-src 'self' app:"`); undefined when the
+ * directive is absent. No directive value contains `"; "`, so the split is
+ * unambiguous.
+ */
+function cspDirective(policy: string, name: string): string | undefined {
+  return policy
+    .split("; ")
+    .find((entry) => entry === name || entry.startsWith(`${name} `));
+}
+
+test("connect-src admits no remote origin — renderer stays same-origin (PLN-1138 / FEA-3324 Option B2)", () => {
+  // The renderer makes no outbound network requests: cloud REST marshals over
+  // IPC, and session transcript bytes are served same-origin over `app://` by the
+  // main process (FEA-3324 Option B2). Assert the WHOLE directive (not substring
+  // inclusion) so reintroducing ANY remote origin here — e.g. a transcript S3
+  // host for a renderer-direct read (Option A) — fails CI rather than passing
+  // silently.
+  const expected = "connect-src 'self' app:";
+  assert.equal(
+    cspDirective(CONTENT_SECURITY_POLICY_HEADER, "connect-src"),
+    expected
+  );
+  // Same lockdown rides the <meta> policy (defense-in-depth).
+  assert.equal(
+    cspDirective(CONTENT_SECURITY_POLICY_META, "connect-src"),
+    expected
   );
 });
 

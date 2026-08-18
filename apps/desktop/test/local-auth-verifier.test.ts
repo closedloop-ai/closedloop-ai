@@ -5,8 +5,8 @@ import {
   DESKTOP_POP_SIGNATURE_HEADER,
   DESKTOP_POP_TIMESTAMP_HEADER,
   LOCAL_AUTH_VERIFY_PATH,
-} from "../src/main/desktop-pop.js";
-import { verifyChallenge } from "../src/main/local-auth-verifier.js";
+} from "../src/main/auth/desktop-pop.js";
+import { verifyChallenge } from "../src/main/auth/local-auth-verifier.js";
 
 const VERIFY_URL = "https://api.test.com/compute-targets/local-auth/verify";
 

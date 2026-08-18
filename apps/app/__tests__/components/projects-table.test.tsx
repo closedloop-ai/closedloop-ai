@@ -46,7 +46,32 @@ vi.mock("@repo/design-system/components/ui/tooltip", () => ({
 
 // Import after mocks
 import type { ProjectWithDetails } from "@repo/api/src/types/project";
+import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
+import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
+import { PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import type { ReactNode } from "react";
 import { ProjectsTable } from "@/app/(authenticated)/[orgSlug]/teams/[teamId]/projects/components/projects-table";
+
+// ISS-4792 (ISS-4779 closed-by-default): the completion-ring empty-population
+// state is gated behind `project-completion-empty-state` (default OFF). Mount the
+// table under a flag adapter so tests can drive both branches: ON renders the new
+// dashed empty ring, OFF renders the prior solid 0% ring. `enabledFlags: []`
+// (default) reproduces the shipped default-off behavior.
+function withEmptyStateFlag(
+  ui: ReactNode,
+  { enabled }: { enabled: boolean }
+): ReactNode {
+  const adapter = createStaticFeatureFlagAdapter({
+    enabledFlags: enabled
+      ? [PROJECT_COMPLETION_EMPTY_STATE_FEATURE_FLAG_KEY]
+      : [],
+  });
+  return (
+    <FeatureFlagAdapterProvider adapter={adapter}>
+      {ui}
+    </FeatureFlagAdapterProvider>
+  );
+}
 
 const makeProject = (
   overrides?: Partial<ProjectWithDetails>
@@ -86,7 +111,7 @@ describe("ProjectsTable — status tooltip", () => {
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltip = tooltips.find((el) =>
-      el.textContent?.includes("% of artifacts complete")
+      el.textContent?.includes("% of documents and issues complete")
     );
     expect(statusTooltip).toBeInTheDocument();
   });
@@ -101,7 +126,7 @@ describe("ProjectsTable — status tooltip", () => {
 
     const tooltips = screen.getAllByTestId("tooltip-content");
     const statusTooltips = tooltips.filter((el) =>
-      el.textContent?.includes("% of artifacts complete")
+      el.textContent?.includes("% of documents and issues complete")
     );
     expect(statusTooltips).toHaveLength(2);
   });
@@ -110,5 +135,148 @@ describe("ProjectsTable — status tooltip", () => {
     render(<ProjectsTable projects={[]} teamId="team-1" />);
 
     expect(screen.getByText("No projects yet")).toBeInTheDocument();
+  });
+});
+
+describe("ProjectsTable — empty population vs 0% (ISS-4679, flag ON)", () => {
+  it("an empty population renders a dashed track named 'No documents or issues yet'", () => {
+    render(
+      withEmptyStateFlag(
+        <ProjectsTable
+          projects={[
+            makeProject({
+              completionPercentage: 0,
+              completionPopulationEmpty: true,
+            }),
+          ]}
+          teamId="team-1"
+        />,
+        { enabled: true }
+      )
+    );
+
+    // Accessible name = the empty summary (the ring's aria-label), shared with
+    // the tooltip content.
+    const icon = screen.getByRole("img", {
+      name: "No documents or issues yet",
+    });
+    expect(icon).toBeInTheDocument();
+    // ISS-4835/ISS-4812: the empty population is a DASH, not a ring of any
+    // texture. It used to reuse the shipped dashed backlog track, which put the
+    // exact Backlog-issue glyph on a project row of the same table and, at 16px,
+    // sat one texture step away from a solid 0%. Asserting on the shape (a line,
+    // and no circle at all) is what pins the distinction; a dasharray assertion
+    // would go green again the moment someone swapped the track color back.
+    expect(icon.querySelector("line")).not.toBeNull();
+    expect(icon.querySelector("circle")).toBeNull();
+
+    const tooltip = screen
+      .getAllByTestId("tooltip-content")
+      .find((el) => el.textContent === "No documents or issues yet");
+    expect(tooltip).toBeInTheDocument();
+  });
+
+  it("0% completion renders a solid track named '0% of documents and issues complete'", () => {
+    render(
+      withEmptyStateFlag(
+        <ProjectsTable
+          projects={[makeProject({ completionPercentage: 0 })]}
+          teamId="team-1"
+        />,
+        { enabled: true }
+      )
+    );
+
+    const icon = screen.getByRole("img", {
+      name: "0% of documents and issues complete",
+    });
+    expect(icon).toBeInTheDocument();
+    // A real 0% is still a ring: a solid (non-dashed) track, and no dash.
+    expect(icon.querySelector("circle")).not.toBeNull();
+    expect(icon.querySelector("circle[stroke-dasharray='3 3']")).toBeNull();
+    expect(icon.querySelector("line")).toBeNull();
+  });
+
+  it("the empty and 0% accessible names differ (they are different states)", () => {
+    render(
+      withEmptyStateFlag(
+        <ProjectsTable
+          projects={[
+            makeProject({
+              id: "01PROJECT000000000000001",
+              completionPercentage: 0,
+              completionPopulationEmpty: true,
+            }),
+            makeProject({
+              id: "01PROJECT000000000000002",
+              completionPercentage: 0,
+            }),
+          ]}
+          teamId="team-1"
+        />,
+        { enabled: true }
+      )
+    );
+
+    const emptyName = "No documents or issues yet";
+    const zeroName = "0% of documents and issues complete";
+    expect(emptyName).not.toBe(zeroName);
+    expect(screen.getByRole("img", { name: emptyName })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: zeroName })).toBeInTheDocument();
+  });
+});
+
+describe("ProjectsTable — completion-ring empty state gated OFF (ISS-4792, default)", () => {
+  it("empty population renders the PRIOR solid 0% ring, not the dashed empty state", () => {
+    render(
+      withEmptyStateFlag(
+        <ProjectsTable
+          projects={[
+            makeProject({
+              completionPercentage: 0,
+              completionPopulationEmpty: true,
+            }),
+          ]}
+          teamId="team-1"
+        />,
+        { enabled: false }
+      )
+    );
+
+    // Flag OFF: the empty population falls through to the prior behavior — a
+    // solid 0% ring named "0% of documents and issues complete". The new dashed
+    // "No documents or issues yet" empty state must be absent.
+    expect(
+      screen.queryByRole("img", { name: "No documents or issues yet" })
+    ).toBeNull();
+    const icon = screen.getByRole("img", {
+      name: "0% of documents and issues complete",
+    });
+    expect(icon).toBeInTheDocument();
+    expect(icon.querySelector("circle[stroke-dasharray='3 3']")).toBeNull();
+  });
+
+  it("degrades to the prior behavior with no flag provider mounted (Storybook/mini-table)", () => {
+    // No FeatureFlagAdapterProvider — the ProjectNameCell reads the flag via the
+    // optional hook, so it resolves OFF and renders the prior solid 0% ring
+    // rather than crashing.
+    render(
+      <ProjectsTable
+        projects={[
+          makeProject({
+            completionPercentage: 0,
+            completionPopulationEmpty: true,
+          }),
+        ]}
+        teamId="team-1"
+      />
+    );
+
+    expect(
+      screen.queryByRole("img", { name: "No documents or issues yet" })
+    ).toBeNull();
+    expect(
+      screen.getByRole("img", { name: "0% of documents and issues complete" })
+    ).toBeInTheDocument();
   });
 });

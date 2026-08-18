@@ -1,8 +1,25 @@
+import type { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
+import type { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link";
+import type {
+  TokenCostSummary,
+  TokenSourceIdentity,
+} from "@repo/api/src/types/token-cost-provenance";
 import {
-  defaultBranchSqlList,
-  isDefaultBranchName,
-} from "../enrichment/default-branch-names.js";
-import { readStorageTokenCount } from "../token-counts.js";
+  mapBranchLifecycleEventRows as mapBranchLifecycleEventRowsImpl,
+  readBranchLifecycleEventRowsForBranch as readBranchLifecycleEventRowsForBranchImpl,
+  readBranchSessionTokenRowsForBranch as readBranchSessionTokenRowsForBranchImpl,
+} from "./branch-lifecycle-reads.js";
+import {
+  type BranchTokenAggregateRow,
+  queryBranchTokenAggregateRows,
+  queryBranchTokenAggregateRowsForBranch,
+} from "./branch-token-aggregate-reads.js";
+import type { BranchUsageEventWindowBounds } from "./branch-usage-event-window-sql.js";
+import {
+  readBranchAnalyticsTokenRows as readBranchAnalyticsTokenRowsImpl,
+  readBranchUsageEventRows as readBranchUsageEventRowsImpl,
+  readBranchUsageTokenRows as readBranchUsageTokenRowsImpl,
+} from "./branch-usage-reads.js";
 import {
   BRANCH_PUSH_METHOD_VALUES,
   BRANCH_WRITE_METHOD_VALUES,
@@ -25,35 +42,13 @@ function branchPushEvidenceSql(artifactAlias: string): string {
 }
 
 /**
- * Active-write-link SQL predicate: write-method link AND push-qualified branch.
- * The even-split divisor does NOT apply the default-branch exclusion — that is
- * display-only (a pushed `main` still counts in a session's denominator). AC7.
+ * Active-write-link SQL predicate for the internal Wrote corpus. Publication
+ * evidence is projected separately so Product membership can require both
+ * signals without removing pre-publication branches from metric authority.
+ * Repository-default eligibility is applied by the Branches read coordinator.
  */
-function activeWriteLinkSql(linkAlias: string, artifactAlias: string): string {
-  return `${linkAlias}.method IN (${BRANCH_WRITE_METHOD_SQL})
-        AND ${branchPushEvidenceSql(artifactAlias)}`;
-}
-
-/**
- * Prisma-typed push-evidence filter for branch artifact where clauses. Shared by
- * the three typed reads so the display gate's push half cannot drift between them.
- */
-function branchPushEvidenceFilter(): {
-  OR: {
-    artifactLinks?: { some: { method: { in: string[] } } };
-    firstPushedAt?: { not: null };
-  }[];
-} {
-  return {
-    OR: [
-      {
-        artifactLinks: {
-          some: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
-        },
-      },
-      { firstPushedAt: { not: null } },
-    ],
-  };
+export function activeWriteLinkSql(linkAlias: string, _artifactAlias: string) {
+  return `${linkAlias}.method IN (${BRANCH_WRITE_METHOD_SQL})`;
 }
 
 /**
@@ -94,9 +89,13 @@ function branchPushEvidenceFilter(): {
  *   fan-out join whose group keys come from the joined artifact, which Prisma
  *   `groupBy` cannot express), and `readBranchUsageEventRows` (`token_events` is
  *   `@@ignore`'d — no primary key, so it is excluded from the generated client
- *   and can never be a typed delegate). These run on the one client; integer
- *   columns are `Number()`-coerced at the boundary because the Prisma raw path
- *   can surface them as `bigint`.
+ *   and can never be a typed delegate). These run on the one client; non-token
+ *   integer columns are `Number()`-coerced at the boundary because the Prisma raw
+ *   path can surface them as `bigint`. Token columns/expressions are instead
+ *   `CAST(… AS TEXT)` in the SQL (see `branchTokenColumnTextSql` and siblings) so
+ *   libSQL's `intMode: "number"` decode cannot throw a `RangeError` on a
+ *   version-skewed counter widened past `Number.MAX_SAFE_INTEGER` before the
+ *   lenient `clampStorageTokenCount` boundary can degrade it (FEA-4280).
  *
  * The serving op still issues a small bounded set of grouped reads (no per-branch
  * fan-out), mirroring the O(grouped) discipline of `aggregateSqliteUsage`.
@@ -106,7 +105,10 @@ function branchPushEvidenceFilter(): {
 export type BranchLinkRow = {
   repoFullName: string | null;
   branchName: string;
+  /** Verified local publication retained separately from Product membership. */
+  hasLocalPublication?: boolean;
   sessionId: string;
+  sessionName: string | null;
   isPrimary: boolean;
   /** When the link was *observed/scanned* (wall-clock import time). */
   observedAt: string;
@@ -126,6 +128,12 @@ export type BranchLinkRow = {
   linesAdded: number | null;
   linesRemoved: number | null;
   filesChanged: number | null;
+  /**
+   * The linked session's opaque owner `user_id` (multiplayer owner attribution).
+   * `null` when the session carries no user identity. Resolved to a display name
+   * against the cloud org directory when the branch row is projected.
+   */
+  ownerUserId: string | null;
 };
 
 /** One `pull_requests` row keyed to a branch (branch_name non-null). */
@@ -136,6 +144,8 @@ export type BranchPrRow = {
   prUrl: string | null;
   title: string | null;
   state: string | null;
+  /** Latest persisted GitHub draft observation; null when no observation exists. */
+  isDraft: boolean | null;
   mergedAt: string | null;
   closedAt: string | null;
   /** GitHub PR createdAt (PRD-486) — the PR-opened lifecycle dot; null until enriched. */
@@ -169,42 +179,63 @@ export type BranchCommitRow = {
   message: string | null;
 };
 
-/** Per-`(branch, model)` token totals — the grouped input to `costPerBranch`. */
-export type BranchTokenAggregateRow = {
-  repoFullName: string | null;
-  branchName: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  /**
-   * Captured cost (`SUM(token_usage.cost_usd_estimated)`) for this `(branch,
-   * model)` group — `null` when no row in the group was priced. Drives the
-   * per-branch cost shown on the list, mirroring the dashboard's stored-cost
-   * basis rather than re-deriving list price from the token counts above.
-   */
-  costUsdEstimated: number | null;
-};
-
 /** Per-`(session, model)` token row for branch-linked sessions (usage rollup). */
 export type BranchUsageTokenRow = {
+  /** SQLite row identity, present only for persisted per-event rows. */
+  eventRowId?: string;
+  /** Numeric event identity used to reject rowid reuse across bounded reads. */
+  eventFingerprint?: string;
   sessionId: string;
   model: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  cacheWrite5mTokens: number | null;
+  cacheWrite1hTokens: number | null;
   billingMode: string | null;
   createdAt: string | null;
+  /** Owning session start instant, retained for legacy window consumers. */
+  sessionStartedAt: string | null;
   /**
    * Captured per-row cost (`token_usage.cost_usd_estimated`) — the SAME stored
-   * figure the agent dashboard sums. `null` for rows the pricing pipeline never
-   * costed (subscription / un-priced models); branch spend treats those as $0 so
-   * it reconciles with the dashboard instead of re-deriving list price. Event
-   * rows (`readBranchUsageEventRows`) carry `null` — token_events has no cost.
+   * figure the agent dashboard sums. `null` means no captured cost. Event rows
+   * carry their separately persisted per-event cost when available.
    */
   costUsdEstimated: number | null;
+  /** Positive-priced evidence retained across compact aggregate transport. */
+  positiveCostSignal?: true;
+  /** Provider-neutral evidence carried only by event rows. */
+  sourceIdentity?: TokenSourceIdentity;
+  /** Provider-neutral evidence carried only by event rows. */
+  costSummary?: TokenCostSummary;
+  /** Present only when a persisted core token counter was clamped as invalid. */
+  tokenCountsInvalid?: true;
+};
+
+/** One deterministic lifecycle boundary event for a branch detail session. */
+export type BranchLifecycleEventRow = {
+  repoFullName: string | null;
+  branchName: string;
+  sessionId: string;
+  sessionStartedAt: string | null;
+  sessionEndedAt: string | null;
+  kind: BranchLifecycleBoundaryKind;
+  observedAt: string | null;
+  evidenceId: string | null;
+  method: string | null;
+};
+
+/** Per-session token/cost totals plus the active-write branch denominator. */
+export type BranchSessionTokenRow = {
+  sessionId: string;
+  branchCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsdEstimated: number | null;
+  evenSplitCostUsd: number | null;
 };
 
 /** The selected shape both link reads (global + branch-scoped) project from. */
@@ -215,11 +246,18 @@ type BranchLinkSelectRow = {
   artifact: {
     repoFullName: string | null;
     branchName: string | null;
+    firstPushedAt: string | null;
+    artifactLinks: Array<{ id: string }>;
     linesAdded: number | null;
     linesRemoved: number | null;
     filesChanged: number | null;
   };
-  session: { endedAt: string | null; startedAt: string | null };
+  session: {
+    endedAt: string | null;
+    name: string | null;
+    startedAt: string | null;
+    userId: string | null;
+  };
 };
 
 /**
@@ -231,16 +269,18 @@ type BranchLinkSelectRow = {
 function mapBranchLinkRows(rows: BranchLinkSelectRow[]): BranchLinkRow[] {
   return rows.flatMap((row) => {
     const { branchName } = row.artifact;
-    // Default-branch exclusion is display-only (AC7: a pushed default branch
-    // still counts in the token-split denominator, it just never lists).
-    if (branchName === null || isDefaultBranchName(branchName)) {
+    if (branchName === null) {
       return [];
     }
     return [
       {
         repoFullName: row.artifact.repoFullName,
         branchName,
+        hasLocalPublication:
+          row.artifact.firstPushedAt !== null ||
+          row.artifact.artifactLinks.length > 0,
         sessionId: row.sessionId,
+        sessionName: row.session.name,
         isPrimary: row.isPrimary,
         observedAt: row.observedAt,
         linesAdded: row.artifact.linesAdded,
@@ -255,6 +295,7 @@ function mapBranchLinkRows(rows: BranchLinkSelectRow[]): BranchLinkRow[] {
         // observed_at if a session has neither timestamp.
         activityAt:
           row.session.endedAt ?? row.session.startedAt ?? row.observedAt,
+        ownerUserId: row.session.userId,
       },
     ];
   });
@@ -274,14 +315,14 @@ export function readLocalBranchLinkRows(
   // DB FK with cascade), so the nested select never drops a wanted row.
   return prisma.client.sessionArtifactLink
     .findMany({
-      // Write-method links only; push evidence on the artifact; non-default
-      // half applied in `mapBranchLinkRows`.
+      // Keep every active Wrote link in the internal corpus. Product-facing
+      // readers apply publication eligibility after this projection; metric
+      // denominator authority deliberately retains pre-publication branches.
       where: {
         method: { in: [...BRANCH_WRITE_METHOD_VALUES] },
         artifact: {
           kind: "branch",
           branchName: { not: null },
-          ...branchPushEvidenceFilter(),
         },
       },
       select: {
@@ -292,12 +333,25 @@ export function readLocalBranchLinkRows(
           select: {
             repoFullName: true,
             branchName: true,
+            firstPushedAt: true,
+            artifactLinks: {
+              where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
+              select: { id: true },
+              take: 1,
+            },
             linesAdded: true,
             linesRemoved: true,
             filesChanged: true,
           },
         },
-        session: { select: { endedAt: true, startedAt: true } },
+        session: {
+          select: {
+            endedAt: true,
+            name: true,
+            startedAt: true,
+            userId: true,
+          },
+        },
       },
       orderBy: [{ artifact: { branchName: "asc" } }, { observedAt: "desc" }],
     })
@@ -308,45 +362,47 @@ export function readLocalBranchLinkRows(
 export type BranchKeyRow = {
   repoFullName: string | null;
   branchName: string;
+  /** Omitted by legacy/internal key constructors; Product reads fail closed. */
+  hasLocalPublication?: boolean;
 };
 
 /**
- * The DISTINCT `(repo_full_name, branch_name)` pairs — a leaner read than
+ * The distinct `(repo_full_name, branch_name)` pairs — a leaner read than
  * `readLocalBranchLinkRows` when only the branch COUNT is needed (the usage
- * rollup), so it doesn't materialize every link row. The engine collapses
- * duplicate pairs (NULL repo included); the caller counts via `encodeBranchId`
- * so null-repo collapsing matches the list projection byte-for-byte.
+ * rollup), so it doesn't materialize every Session link row. The mapper
+ * collapses duplicate Branch artifacts (NULL repo included) while OR-ing their
+ * publication evidence; the caller counts via `encodeBranchId` so null-repo
+ * collapsing matches the list projection byte-for-byte.
  *
  * `artifactLinks: { some: {} }` reproduces the inner JOIN against the link
- * table — a branch artifact with no session links never appears — while
- * `distinct` collapses multiple branch artifacts that share a `(repo, branch)`
- * key the same way the SQL `DISTINCT` did.
+ * table — a branch artifact with no Session Wrote links never appears.
  */
 export function readDistinctBranchKeyRows(
   prisma: DbHostPrisma
 ): Promise<BranchKeyRow[]> {
   return prisma.client.artifact
     .findMany({
-      // Same write + push evidence gate as `readLocalBranchLinkRows`;
-      // non-default half applied below.
+      // Same internal Wrote gate as `readLocalBranchLinkRows`; publication and
+      // authority eligibility are resolved later.
       where: {
         kind: "branch",
         branchName: { not: null },
         artifactLinks: {
           some: { method: { in: [...BRANCH_WRITE_METHOD_VALUES] } },
         },
-        ...branchPushEvidenceFilter(),
       },
-      select: { repoFullName: true, branchName: true },
-      distinct: ["repoFullName", "branchName"],
+      select: {
+        repoFullName: true,
+        branchName: true,
+        firstPushedAt: true,
+        artifactLinks: {
+          where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
+          select: { id: true },
+          take: 1,
+        },
+      },
     })
-    .then((rows) =>
-      rows.flatMap((row) =>
-        row.branchName === null || isDefaultBranchName(row.branchName)
-          ? []
-          : [{ repoFullName: row.repoFullName, branchName: row.branchName }]
-      )
-    );
+    .then(mapDistinctBranchKeyRows);
 }
 
 /** The raw PR-row shape both PR reads (global + branch-scoped) map. */
@@ -357,6 +413,7 @@ type BranchPrRawRow = {
   pr_url: string | null;
   title: string | null;
   state: string | null;
+  is_draft: boolean | number | null;
   merged_at: string | null;
   closed_at: string | null;
   opened_at: string | null;
@@ -380,6 +437,8 @@ function mapBranchPrRawRows(rows: BranchPrRawRow[]): BranchPrRow[] {
     prUrl: row.pr_url,
     title: row.title,
     state: row.state,
+    isDraft:
+      row.is_draft == null ? null : row.is_draft === true || row.is_draft === 1,
     mergedAt: row.merged_at,
     closedAt: row.closed_at,
     openedAt: row.opened_at,
@@ -420,8 +479,12 @@ export function readLocalBranchPrRows(
       `SELECT pr.repo_full_name, pr.branch_name, pr.pr_number, pr.pr_url,
               pr.title, pr.state, pr.merged_at, pr.closed_at, pr.opened_at,
               pr.observed_at,
+              pr_status.is_draft,
               pra.lines_added, pra.lines_removed, pra.files_changed
        FROM pull_requests pr
+       LEFT JOIN pull_request_status_observations pr_status
+         ON pr_status.repo_full_name = pr.repo_full_name
+        AND pr_status.pr_number = pr.pr_number
        LEFT JOIN (
          SELECT repo_full_name, pr_number,
                 MAX(lines_added) AS lines_added,
@@ -433,10 +496,6 @@ export function readLocalBranchPrRows(
        ) pra ON pra.pr_number = pr.pr_number
             AND pra.repo_full_name IS NOT DISTINCT FROM pr.repo_full_name
        WHERE pr.branch_name IS NOT NULL
-         -- FEA-2260: intentionally blanket-excludes default-branch PRs (deploy
-         -- PRs like main→production). The migration preserves cross-fork rows
-         -- in the DB for data integrity, but the Branches UI hides them.
-         AND pr.branch_name NOT IN (${defaultBranchSqlList()})
          -- Push-evidence gate: PRs only appear for push-qualified branches.
          AND EXISTS (
            SELECT 1
@@ -478,7 +537,7 @@ export function readLocalBranchCommitRows(
         message: string | null;
       }[]
     >(
-      // Active-write links + non-default gate, matching the list's branch set.
+      // Active-write links preserve the complete raw branch evidence set.
       `SELECT DISTINCT b.repo_full_name, b.branch_name,
               c.sha, c.committed_at, c.title AS message
        FROM session_artifact_links sal_b
@@ -486,7 +545,6 @@ export function readLocalBranchCommitRows(
        JOIN session_artifact_links sal_c ON sal_c.session_id = sal_b.session_id
        JOIN artifacts c ON c.id = sal_c.artifact_id AND c.kind = 'commit'
        WHERE b.branch_name IS NOT NULL
-         AND b.branch_name NOT IN (${defaultBranchSqlList()})
          AND ${activeWriteLinkSql("sal_b", "b")}
          AND c.sha IS NOT NULL
          AND c.committed_at IS NOT NULL
@@ -503,103 +561,33 @@ export function readLocalBranchCommitRows(
     );
 }
 
-/** The raw aggregate-row shape both token reads (global + branch-scoped) map. */
-type BranchTokenAggregateRawRow = {
-  repo_full_name: string | null;
-  branch_name: string;
-  model: string;
-  input_tokens: string | null;
-  output_tokens: string | null;
-  cache_read_tokens: string | null;
-  cache_write_tokens: string | null;
-  cost_usd_estimated: number | null;
-};
-
-/**
- * Shared bigint→number coercion + cost-null mapper for the token aggregate
- * reads, so the global `readBranchTokenAggregateRows` and the branch-scoped
- * `readBranchTokenAggregateRowsForBranch` coerce the SAME way (the raw path can
- * surface SUM()/CAST totals as `bigint`).
- */
-function mapBranchTokenAggregateRows(
-  rows: BranchTokenAggregateRawRow[]
-): BranchTokenAggregateRow[] {
-  return rows.map((row) => ({
-    repoFullName: row.repo_full_name,
-    branchName: row.branch_name,
-    model: row.model,
-    inputTokens: tokenCount(row.input_tokens, "branch.input_tokens"),
-    outputTokens: tokenCount(row.output_tokens, "branch.output_tokens"),
-    cacheReadTokens: tokenCount(
-      row.cache_read_tokens,
-      "branch.cache_read_tokens"
-    ),
-    cacheWriteTokens: tokenCount(
-      row.cache_write_tokens,
-      "branch.cache_write_tokens"
-    ),
-    costUsdEstimated:
-      row.cost_usd_estimated == null ? null : Number(row.cost_usd_estimated),
-  }));
-}
-
 /**
  * Per-`(branch, model)` token totals. A two-stage CTE deduplicates
  * session↔branch pairs first, then counts branches per session over the
  * deduplicated set — a single grouped query, no per-branch fan-out.
  *
  * ATTRIBUTION (fractional, FEA-2032 + FEA-2531): both the deduped `d` set and
- * the `branch_count` divisor keep only a session's ACTIVE WRITE links
- * (write-method link on a push-qualified branch), so a session linked to N
+ * the `branch_count` divisor keep only a session's ACTIVE WRITE links, so a
+ * session linked to N
  * distinct active-write branches contributes `tokenTotal / N` to each
  * (integer-truncated via CAST(... AS INTEGER) to satisfy readStorageTokenCount's
- * integer contract). Read-only links never enter the split, and the divisor does
- * NOT apply the default-branch exclusion — a pushed `main` still counts in N even
- * though it never lists (AC7). Truncation is directionally conservative:
+ * integer contract). Read-only links never enter the split. These raw aggregates
+ * retain every active-write branch; product eligibility is applied before the
+ * aggregate is projected. Truncation is directionally conservative:
  * per-branch totals may sum to slightly less than the session total for odd
  * splits, never more.
  */
 export function readBranchTokenAggregateRows(
-  prisma: DbHostPrisma
+  prisma: DbHostPrisma,
+  visibleKeys?: readonly BranchKeyRow[],
+  denominatorKeys: readonly BranchKeyRow[] | undefined = visibleKeys
 ): Promise<BranchTokenAggregateRow[]> {
-  return prisma.client
-    .$queryRawUnsafe<BranchTokenAggregateRawRow[]>(
-      // Captured cost is split across branches the SAME way the tokens are
-      // (FEA-2032 even-split), so a multi-branch session's stored cost divides by
-      // `branch_count` per branch and the per-branch costs sum back to the
-      // session's once. `SUM(… / …)` over NULL costs yields NULL (group never
-      // priced), surfaced as a null per-branch cost rather than a misleading $0.
-      `SELECT
-         l.repo_full_name AS repo_full_name,
-         l.branch_name AS branch_name,
-         t.model AS model,
-         CAST(SUM(COALESCE(t.input_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS input_tokens,
-         CAST(SUM(COALESCE(t.output_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS output_tokens,
-         CAST(SUM(COALESCE(t.cache_read_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS cache_read_tokens,
-         CAST(SUM(COALESCE(t.cache_write_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS cache_write_tokens,
-         SUM(t.cost_usd_estimated / CAST(l.branch_count AS REAL)) AS cost_usd_estimated
-       FROM token_usage t
-       JOIN (
-         SELECT d.session_id, d.repo_full_name, d.branch_name,
-                (SELECT COUNT(*) FROM (
-                   SELECT DISTINCT sal2.session_id, a2.repo_full_name, a2.branch_name
-                   FROM session_artifact_links sal2
-                   JOIN artifacts a2 ON a2.id = sal2.artifact_id AND a2.kind = 'branch'
-                   WHERE a2.branch_name IS NOT NULL AND sal2.session_id = d.session_id
-                     AND ${activeWriteLinkSql("sal2", "a2")}
-                )) AS branch_count
-         FROM (
-           SELECT DISTINCT sal.session_id, a.repo_full_name, a.branch_name
-           FROM session_artifact_links sal
-           JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
-           WHERE a.branch_name IS NOT NULL
-             AND ${activeWriteLinkSql("sal", "a")}
-         ) d
-       ) l ON l.session_id = t.session_id
-       GROUP BY l.repo_full_name, l.branch_name, t.model
-       ORDER BY l.branch_name ASC, t.model ASC`
-    )
-    .then(mapBranchTokenAggregateRows);
+  return queryBranchTokenAggregateRows(
+    prisma,
+    activeWriteLinkSql,
+    visibleKeys,
+    denominatorKeys
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -627,14 +615,14 @@ export function readLocalBranchLinkRowsForBranch(
 ): Promise<BranchLinkRow[]> {
   return prisma.client.sessionArtifactLink
     .findMany({
-      // Same display gate as `readLocalBranchLinkRows`, scoped to one branch.
+      // Same internal Wrote gate as `readLocalBranchLinkRows`, scoped to one
+      // branch; Product publication eligibility is resolved by the caller.
       where: {
         method: { in: [...BRANCH_WRITE_METHOD_VALUES] },
         artifact: {
           kind: "branch",
           branchName: key.branchName,
           repoFullName: key.repoFullName,
-          ...branchPushEvidenceFilter(),
         },
       },
       select: {
@@ -645,12 +633,25 @@ export function readLocalBranchLinkRowsForBranch(
           select: {
             repoFullName: true,
             branchName: true,
+            firstPushedAt: true,
+            artifactLinks: {
+              where: { method: { in: [...BRANCH_PUSH_METHOD_VALUES] } },
+              select: { id: true },
+              take: 1,
+            },
             linesAdded: true,
             linesRemoved: true,
             filesChanged: true,
           },
         },
-        session: { select: { endedAt: true, startedAt: true } },
+        session: {
+          select: {
+            endedAt: true,
+            name: true,
+            startedAt: true,
+            userId: true,
+          },
+        },
       },
       // One branch → the global read's `branchName ASC` is moot; keep the
       // `observedAt DESC` tiebreak the per-session dedup relies on.
@@ -680,8 +681,12 @@ export function readLocalBranchPrRowsForBranch(
       `SELECT pr.repo_full_name, pr.branch_name, pr.pr_number, pr.pr_url,
               pr.title, pr.state, pr.merged_at, pr.closed_at, pr.opened_at,
               pr.observed_at,
+              pr_status.is_draft,
               pra.lines_added, pra.lines_removed, pra.files_changed
        FROM pull_requests pr
+       LEFT JOIN pull_request_status_observations pr_status
+         ON pr_status.repo_full_name = pr.repo_full_name
+        AND pr_status.pr_number = pr.pr_number
        LEFT JOIN (
          SELECT repo_full_name, pr_number,
                 MAX(lines_added) AS lines_added,
@@ -693,7 +698,6 @@ export function readLocalBranchPrRowsForBranch(
        ) pra ON pra.pr_number = pr.pr_number
             AND pra.repo_full_name IS NOT DISTINCT FROM pr.repo_full_name
        WHERE pr.branch_name = ?
-         AND pr.branch_name NOT IN (${defaultBranchSqlList()})
          AND pr.repo_full_name IS NOT DISTINCT FROM ?
        ORDER BY pr.observed_at DESC NULLS LAST, pr.pr_number DESC NULLS LAST`,
       key.branchName,
@@ -775,216 +779,196 @@ export function readBranchCommitRowsForSessions(
  */
 export function readBranchTokenAggregateRowsForBranch(
   prisma: DbHostPrisma,
-  key: BranchKeyRow
+  key: BranchKeyRow,
+  visibleKeys?: readonly BranchKeyRow[],
+  denominatorKeys: readonly BranchKeyRow[] | undefined = visibleKeys
 ): Promise<BranchTokenAggregateRow[]> {
-  return prisma.client
-    .$queryRawUnsafe<BranchTokenAggregateRawRow[]>(
-      `SELECT
-         l.repo_full_name AS repo_full_name,
-         l.branch_name AS branch_name,
-         t.model AS model,
-         CAST(SUM(COALESCE(t.input_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS input_tokens,
-         CAST(SUM(COALESCE(t.output_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS output_tokens,
-         CAST(SUM(COALESCE(t.cache_read_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS cache_read_tokens,
-         CAST(SUM(COALESCE(t.cache_write_tokens, 0) / CAST(l.branch_count AS REAL)) AS INTEGER) AS cache_write_tokens,
-         SUM(t.cost_usd_estimated / CAST(l.branch_count AS REAL)) AS cost_usd_estimated
-       FROM token_usage t
-       JOIN (
-         SELECT d.session_id, d.repo_full_name, d.branch_name,
-                (SELECT COUNT(*) FROM (
-                   SELECT DISTINCT sal2.session_id, a2.repo_full_name, a2.branch_name
-                   FROM session_artifact_links sal2
-                   JOIN artifacts a2 ON a2.id = sal2.artifact_id AND a2.kind = 'branch'
-                   WHERE a2.branch_name IS NOT NULL AND sal2.session_id = d.session_id
-                     AND ${activeWriteLinkSql("sal2", "a2")}
-                )) AS branch_count
-         FROM (
-           SELECT DISTINCT sal.session_id, a.repo_full_name, a.branch_name
-           FROM session_artifact_links sal
-           JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
-           WHERE a.branch_name = ?
-             AND a.repo_full_name IS NOT DISTINCT FROM ?
-             AND ${activeWriteLinkSql("sal", "a")}
-         ) d
-       ) l ON l.session_id = t.session_id
-       GROUP BY l.repo_full_name, l.branch_name, t.model
-       ORDER BY t.model ASC`,
-      key.branchName,
-      key.repoFullName
-    )
-    .then(mapBranchTokenAggregateRows);
+  return queryBranchTokenAggregateRowsForBranch(
+    prisma,
+    key,
+    activeWriteLinkSql,
+    visibleKeys,
+    denominatorKeys
+  );
 }
 
-// Sessions with an active-write link — shared subquery for usage/analytics/event reads.
-const BRANCH_LINKED_SESSION_SUBQUERY = `
+/**
+ * FEA-2276: each session's GLOBAL active-write branch count — the SAME even-split
+ * divisor `readBranchTokenAggregateRowsForBranch`'s `branch_count` subquery applies
+ * to the branch total. The branch DETAIL reads only this branch's links, so it
+ * cannot see how many OTHER branches a session touches; the activity rollup needs
+ * that count to even-split each session's attributed segment cost consistently with
+ * the total. Counts DISTINCT active-write `(session, repo, branch)` per session
+ * (active Wrote links only, mirroring the aggregate's pre-publication
+ * denominator). Session ids are BOUND parameters; the detail's session set is
+ * small, so the `IN (…)` is well under SQLite's parameter limit.
+ */
+export function readSessionBranchCounts(
+  prisma: DbHostPrisma,
+  sessionIds: readonly string[],
+  denominatorKeys?: readonly BranchKeyRow[]
+): Promise<Map<string, number>> {
+  const ids = [...new Set(sessionIds)];
+  if (ids.length === 0 || denominatorKeys?.length === 0) {
+    return Promise.resolve(new Map());
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  const eligibilityCte = denominatorKeys
+    ? `WITH eligible_branches AS (
+         SELECT json_extract(value, '$.repoFullName') AS repo_full_name,
+                json_extract(value, '$.branchName') AS branch_name
+         FROM json_each(?)
+       )`
+    : "";
+  const eligibilitySql = denominatorKeys
+    ? `AND EXISTS (
+             SELECT 1 FROM eligible_branches eb
+             WHERE eb.branch_name = a.branch_name
+               AND eb.repo_full_name IS a.repo_full_name
+           )`
+    : "";
+  const params = denominatorKeys
+    ? [JSON.stringify(denominatorKeys), ...ids]
+    : ids;
+  return prisma.client
+    .$queryRawUnsafe<{ session_id: string; branch_count: number | bigint }[]>(
+      `${eligibilityCte}
+       SELECT session_id, COUNT(*) AS branch_count FROM (
+         SELECT DISTINCT sal.session_id, a.repo_full_name, a.branch_name
+         FROM session_artifact_links sal
+         JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
+         WHERE a.branch_name IS NOT NULL
+           AND sal.session_id IN (${placeholders})
+           AND ${activeWriteLinkSql("sal", "a")}
+           ${eligibilitySql}
+       )
+       GROUP BY session_id`,
+      ...params
+    )
+    .then((rows) => {
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        counts.set(row.session_id, Number(row.branch_count));
+      }
+      return counts;
+    });
+}
+
+export type BranchLifecycleEventRawRow = {
+  link_id: string | null;
+  session_id: string;
+  relation: string | null;
+  method: string | null;
+  target_kind: BranchLifecycleTargetKind;
+  repo_full_name: string | null;
+  branch_name: string | null;
+  observed_at: string | null;
+  session_started_at: string | null;
+  session_ended_at: string | null;
+};
+
+type BranchLifecycleTargetKind =
+  | typeof ArtifactRefTargetKind.Branch
+  | typeof ArtifactRefTargetKind.Commit
+  | typeof ArtifactRefTargetKind.PullRequest;
+
+/** Lifecycle evidence for one Product Branch detail. */
+export function readBranchLifecycleEventRowsForBranch(
+  prisma: DbHostPrisma,
+  key: BranchKeyRow
+): Promise<BranchLifecycleEventRow[]> {
+  return readBranchLifecycleEventRowsForBranchImpl(
+    prisma,
+    key,
+    activeWriteLinkSql
+  );
+}
+
+/** Per-Session token totals using the pre-publication denominator authority. */
+export function readBranchSessionTokenRowsForBranch(
+  prisma: DbHostPrisma,
+  key: BranchKeyRow,
+  denominatorKeys?: readonly BranchKeyRow[]
+): Promise<BranchSessionTokenRow[]> {
+  return readBranchSessionTokenRowsForBranchImpl(
+    prisma,
+    key,
+    activeWriteLinkSql,
+    denominatorKeys
+  );
+}
+
+// Sessions with an active-write link — shared by usage and analytics reads.
+export const BRANCH_LINKED_SESSION_SUBQUERY = `
   SELECT DISTINCT sal.session_id
   FROM session_artifact_links sal
   JOIN artifacts a ON a.id = sal.artifact_id AND a.kind = 'branch'
   WHERE a.branch_name IS NOT NULL
     AND ${activeWriteLinkSql("sal", "a")}`;
 
-/** Raw token-usage row shape shared by both raw SQL reads below. */
-type TokenUsageRawRow = {
-  session_id: string;
-  model: string;
-  input_tokens: string | null;
-  output_tokens: string | null;
-  cache_read_tokens: string | null;
-  cache_write_tokens: string | null;
-  created_at: string | null;
-  cost_usd_estimated: number | null;
-};
-
-function mapTokenUsageRawRow(
-  row: TokenUsageRawRow,
-  billingMode: string | null
-): BranchUsageTokenRow {
-  return {
-    sessionId: row.session_id,
-    model: row.model,
-    inputTokens: tokenCount(row.input_tokens, "branch_usage.input_tokens"),
-    outputTokens: tokenCount(row.output_tokens, "branch_usage.output_tokens"),
-    cacheReadTokens: tokenCount(
-      row.cache_read_tokens,
-      "branch_usage.cache_read_tokens"
-    ),
-    cacheWriteTokens: tokenCount(
-      row.cache_write_tokens,
-      "branch_usage.cache_write_tokens"
-    ),
-    billingMode,
-    createdAt: row.created_at,
-    costUsdEstimated:
-      row.cost_usd_estimated == null ? null : Number(row.cost_usd_estimated),
-  };
-}
-
-/**
- * One token row per `(session, model)` for every session linked to a branch,
- * counted once. Resolves the branch-linked session set AND billing mode via a
- * single raw SQL JOIN — no `IN (…)` clause, so there is no SQLite parameter
- * limit (FEA-2260). The `sessions` JOIN carries `billing_mode` for the usage
- * summary's subscription/API billing split.
- */
+/** Aggregate usage rows for every active-Wrote Branch-linked Session. */
 export function readBranchUsageTokenRows(
   prisma: DbHostPrisma
 ): Promise<BranchUsageTokenRow[]> {
-  return prisma.client
-    .$queryRawUnsafe<(TokenUsageRawRow & { billing_mode: string | null })[]>(
-      `SELECT
-         tu.session_id,
-         tu.model,
-         tu.input_tokens,
-         tu.output_tokens,
-         tu.cache_read_tokens,
-         tu.cache_write_tokens,
-         s.billing_mode,
-         tu.created_at,
-         tu.cost_usd_estimated
-       FROM token_usage tu
-       JOIN sessions s ON s.id = tu.session_id
-       WHERE tu.session_id IN (${BRANCH_LINKED_SESSION_SUBQUERY})
-       ORDER BY tu.session_id ASC, tu.model ASC`
-    )
-    .then((rows) =>
-      rows.map((row) => mapTokenUsageRawRow(row, row.billing_mode))
-    );
+  return readBranchUsageTokenRowsImpl(prisma, BRANCH_LINKED_SESSION_SUBQUERY);
 }
 
-/**
- * Per-`(session, model)` token rows for branch-linked sessions, without billing
- * mode (analytics path). Resolves the session set via a SQL subquery JOIN —
- * no `IN (…)` clause, so there is no SQLite parameter limit (FEA-2260).
- * Billing mode is NOT resolved — the rows carry `billingMode: null`; callers
- * that need the subscription/API split must use `readBranchUsageTokenRows`.
- */
+/** Analytics token rows for every active-Wrote Branch-linked Session. */
 export function readBranchAnalyticsTokenRows(
   prisma: DbHostPrisma
 ): Promise<BranchUsageTokenRow[]> {
-  return prisma.client
-    .$queryRawUnsafe<TokenUsageRawRow[]>(
-      `SELECT
-         tu.session_id,
-         tu.model,
-         tu.input_tokens,
-         tu.output_tokens,
-         tu.cache_read_tokens,
-         tu.cache_write_tokens,
-         tu.created_at,
-         tu.cost_usd_estimated
-       FROM token_usage tu
-       WHERE tu.session_id IN (${BRANCH_LINKED_SESSION_SUBQUERY})
-       ORDER BY tu.session_id ASC, tu.model ASC`
-    )
-    .then((rows) => rows.map((row) => mapTokenUsageRawRow(row, null)));
+  return readBranchAnalyticsTokenRowsImpl(
+    prisma,
+    BRANCH_LINKED_SESSION_SUBQUERY
+  );
 }
 
-/**
- * Per-EVENT token rows (`token_events`) for branch-linked sessions, carrying the
- * real per-turn `created_at`. Unlike `readBranchUsageTokenRows` — one aggregate
- * row per `(session, model)` whose single `created_at` collapses a multi-hour
- * session into one instant — these feed the usage HOUR BUCKETS so activity lands
- * in the hour it actually happened. Same session-scope guard as the siblings.
- *
- * Totals/cost still come from the aggregate read: a session with `token_usage`
- * totals but no `token_events` (legacy/imported) simply won't appear in the
- * hourly timeline, which is preferable to mis-bucketing its whole span.
- */
+/** Event usage rows for every active-Wrote Branch-linked Session. */
 export function readBranchUsageEventRows(
-  prisma: DbHostPrisma
+  prisma: DbHostPrisma,
+  bounds?: BranchUsageEventWindowBounds
 ): Promise<BranchUsageTokenRow[]> {
-  return prisma.client
-    .$queryRawUnsafe<
-      {
-        session_id: string;
-        model: string;
-        input_tokens: string | null;
-        output_tokens: string | null;
-        cache_read_tokens: string | null;
-        cache_write_tokens: string | null;
-        billing_mode: string | null;
-        created_at: string | null;
-      }[]
-    >(
-      `SELECT
-         te.session_id AS session_id,
-         te.model AS model,
-         COALESCE(te.input_tokens, 0) AS input_tokens,
-         COALESCE(te.output_tokens, 0) AS output_tokens,
-         COALESCE(te.cache_read_tokens, 0) AS cache_read_tokens,
-         COALESCE(te.cache_write_tokens, 0) AS cache_write_tokens,
-         s.billing_mode AS billing_mode,
-         te.created_at AS created_at
-       FROM token_events te
-       JOIN sessions s ON s.id = te.session_id
-       WHERE te.session_id IN (${BRANCH_LINKED_SESSION_SUBQUERY})
-       ORDER BY te.session_id ASC, te.created_at ASC`
-    )
-    .then((rows) =>
-      rows.map((row) => ({
-        sessionId: row.session_id,
-        model: row.model,
-        inputTokens: tokenCount(row.input_tokens, "branch_event.input_tokens"),
-        outputTokens: tokenCount(
-          row.output_tokens,
-          "branch_event.output_tokens"
-        ),
-        cacheReadTokens: tokenCount(
-          row.cache_read_tokens,
-          "branch_event.cache_read_tokens"
-        ),
-        cacheWriteTokens: tokenCount(
-          row.cache_write_tokens,
-          "branch_event.cache_write_tokens"
-        ),
-        billingMode: row.billing_mode,
-        createdAt: row.created_at,
-        // token_events carries no captured cost; hour buckets re-derive instead.
-        costUsdEstimated: null,
-      }))
-    );
+  return readBranchUsageEventRowsImpl(
+    prisma,
+    BRANCH_LINKED_SESSION_SUBQUERY,
+    bounds
+  );
 }
 
-function tokenCount(value: unknown, fieldName: string): number {
-  return readStorageTokenCount(value, fieldName);
+/** Map raw lifecycle evidence through the canonical deterministic fold. */
+export function mapBranchLifecycleEventRows(
+  rows: BranchLifecycleEventRawRow[]
+): BranchLifecycleEventRow[] {
+  return mapBranchLifecycleEventRowsImpl(rows);
+}
+
+function mapDistinctBranchKeyRows(
+  rows: ReadonlyArray<{
+    repoFullName: string | null;
+    branchName: string | null;
+    firstPushedAt: string | null;
+    artifactLinks: Array<{ id: string }>;
+  }>
+): BranchKeyRow[] {
+  const byKey = new Map<string, BranchKeyRow>();
+  for (const row of rows) {
+    if (row.branchName === null) {
+      continue;
+    }
+    const id = `${row.repoFullName ?? ""}\u0000${row.branchName}`;
+    const hasLocalPublication =
+      row.firstPushedAt !== null || row.artifactLinks.length > 0;
+    const current = byKey.get(id);
+    if (
+      !current ||
+      (current.hasLocalPublication !== true && hasLocalPublication)
+    ) {
+      byKey.set(id, {
+        repoFullName: row.repoFullName,
+        branchName: row.branchName,
+        hasLocalPublication,
+      });
+    }
+  }
+  return [...byKey.values()];
 }

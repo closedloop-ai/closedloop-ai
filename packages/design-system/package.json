@@ -35,6 +35,9 @@
     "./styles/globals.css": {
       "default": "./styles/globals.css"
     },
+    "./styles/storybook.css": {
+      "default": "./styles/storybook.css"
+    },
     "./postcss.config.mjs": {
       "default": "./postcss.config.mjs"
     },
@@ -1435,7 +1438,146 @@
         "default": "./dist/lib/keyboard-activation.cjs"
       },
       "default": "./dist/lib/keyboard-activation.js"
-    }
+    },
+    "./components/ui/primitives/info-hint": {
+      "types": "./dist/components/ui/primitives/info-hint.d.ts",
+      "import": "./dist/components/ui/primitives/info-hint.js",
+      "require": "./dist/components/ui/primitives/info-hint.cjs",
+      "default": "./dist/components/ui/primitives/info-hint.js"
+    },
+    "./components/ui/primitives/metric-polarity": {
+      "types": "./dist/components/ui/primitives/metric-polarity.d.ts",
+      "import": "./dist/components/ui/primitives/metric-polarity.js",
+      "require": "./dist/components/ui/primitives/metric-polarity.cjs",
+      "default": "./dist/components/ui/primitives/metric-polarity.js"
+    },
+    "./components/ui/table-page-size-select": {
+      "types": "./dist/components/ui/table-page-size-select.d.ts",
+      "import": "./dist/components/ui/table-page-size-select.js",
+      "require": "./dist/components/ui/table-page-size-select.cjs",
+      "default": "./dist/components/ui/table-page-size-select.js"
+    },
+    "./components/ui/table-pagination-footer": {
+      "types": "./dist/components/ui/table-pagination-footer.d.ts",
+      "import": "./dist/components/ui/table-pagination-footer.js",
+      "require": "./dist/components/ui/table-pagination-footer.cjs",
+      "default": "./dist/components/ui/table-pagination-footer.js"
+    },
+    "./components/ui/tone-label": {
+      "types": "./dist/components/ui/tone-label.d.ts",
+      "import": "./dist/components/ui/tone-label.js",
+      "require": "./dist/components/ui/tone-label.cjs",
+      "default": "./dist/components/ui/tone-label.js"
+    },
+    "./hooks/use-container-width": {
+      "types": "./dist/hooks/use-container-width.d.ts",
+      "import": "./dist/hooks/use-container-width.js",
+      "require": "./dist/hooks/use-container-width.cjs",
+      "default": "./dist/hooks/use-container-width.js"
+    },
+    "./hooks/use-settled-value": {
+      "types": "./dist/hooks/use-settled-value.d.ts",
+      "import": "./dist/hooks/use-settled-value.js",
+      "require": "./dist/hooks/use-settled-value.cjs",
+      "default": "./dist/hooks/use-settled-value.js"
+    },
+    "./lib/collapse-columns": {
+      "types": "./dist/lib/collapse-columns.d.ts",
+      "import": "./dist/lib/collapse-columns.js",
+      "require": "./dist/lib/collapse-columns.cjs",
+      "default": "./dist/lib/collapse-columns.js"
+    },
+    "./lib/column-fold": {
+      "types": "./dist/lib/column-fold.d.ts",
+      "import": "./dist/lib/column-fold.js",
+      "require": "./dist/lib/column-fold.cjs",
+      "default": "./dist/lib/column-fold.js"
+    },
+    "./lib/column-order": {
+      "types": "./dist/lib/column-order.d.ts",
+      "import": "./dist/lib/column-order.js",
+      "require": "./dist/lib/column-order.cjs",
+      "default": "./dist/lib/column-order.js"
+    },
+    "./lib/grid-table-aria": {
+      "types": "./dist/lib/grid-table-aria.d.ts",
+      "import": "./dist/lib/grid-table-aria.js",
+      "require": "./dist/lib/grid-table-aria.cjs",
+      "default": "./dist/lib/grid-table-aria.js"
+    },
+    "./lib/grid-table-navigation": {
+      "types": "./dist/lib/grid-table-navigation.d.ts",
+      "import": "./dist/lib/grid-table-navigation.js",
+      "require": "./dist/lib/grid-table-navigation.cjs",
+      "default": "./dist/lib/grid-table-navigation.js"
+    },
+    "./components/ui/brand-icons": {
+      "types": "./dist/components/ui/brand-icons.d.ts",
+      "import": "./dist/components/ui/brand-icons.js",
+      "require": "./dist/components/ui/brand-icons.cjs",
+      "default": "./dist/components/ui/brand-icons.js"
+    },
+    "./components/ui/card-density": {
+      "types": "./dist/components/ui/card-density.d.ts",
+      "import": "./dist/components/ui/card-density.js",
+      "require": "./dist/components/ui/card-density.cjs",
+      "default": "./dist/components/ui/card-density.js"
+    },
+    "./components/ui/chart-series-fold": {
+      "types": "./dist/components/ui/chart-series-fold.d.ts",
+      "import": "./dist/components/ui/chart-series-fold.js",
+      "require": "./dist/components/ui/chart-series-fold.cjs",
+      "default": "./dist/components/ui/chart-series-fold.js"
+    },
+    "./components/ui/donut-slice-textures": {
+      "types": "./dist/components/ui/donut-slice-textures.d.ts",
+      "import": "./dist/components/ui/donut-slice-textures.js",
+      "require": "./dist/components/ui/donut-slice-textures.cjs",
+      "default": "./dist/components/ui/donut-slice-textures.js"
+    },
+    "./components/ui/internal/status-icon-shared": {
+      "types": "./dist/components/ui/internal/status-icon-shared.d.ts",
+      "import": "./dist/components/ui/internal/status-icon-shared.js",
+      "require": "./dist/components/ui/internal/status-icon-shared.cjs",
+      "default": "./dist/components/ui/internal/status-icon-shared.js"
+    },
+    "./components/ui/primitives/activity-heatmap-colors": {
+      "types": "./dist/components/ui/primitives/activity-heatmap-colors.d.ts",
+      "import": "./dist/components/ui/primitives/activity-heatmap-colors.js",
+      "require": "./dist/components/ui/primitives/activity-heatmap-colors.cjs",
+      "default": "./dist/components/ui/primitives/activity-heatmap-colors.js"
+    },
+    "./components/ui/primitives/graph-events": {
+      "types": "./dist/components/ui/primitives/graph-events.d.ts",
+      "import": "./dist/components/ui/primitives/graph-events.js",
+      "require": "./dist/components/ui/primitives/graph-events.cjs",
+      "default": "./dist/components/ui/primitives/graph-events.js"
+    },
+    "./components/ui/table-grid-column-menu": {
+      "types": "./dist/components/ui/table-grid-column-menu.d.ts",
+      "import": "./dist/components/ui/table-grid-column-menu.js",
+      "require": "./dist/components/ui/table-grid-column-menu.cjs",
+      "default": "./dist/components/ui/table-grid-column-menu.js"
+    },
+    "./components/ui/table-saved-views-switcher": {
+      "types": "./dist/components/ui/table-saved-views-switcher.d.ts",
+      "import": "./dist/components/ui/table-saved-views-switcher.js",
+      "require": "./dist/components/ui/table-saved-views-switcher.cjs",
+      "default": "./dist/components/ui/table-saved-views-switcher.js"
+    },
+    "./hooks/use-responsive-modal": {
+      "types": "./dist/hooks/use-responsive-modal.d.ts",
+      "import": "./dist/hooks/use-responsive-modal.js",
+      "require": "./dist/hooks/use-responsive-modal.cjs",
+      "default": "./dist/hooks/use-responsive-modal.js"
+    },
+    "./lib/table-saved-views": {
+      "types": "./dist/lib/table-saved-views.d.ts",
+      "import": "./dist/lib/table-saved-views.js",
+      "require": "./dist/lib/table-saved-views.cjs",
+      "default": "./dist/lib/table-saved-views.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -1464,18 +1606,18 @@
     "@figma/code-connect": "^1.4.7",
     "@repo/typescript-config": "workspace:*",
     "@tailwindcss/postcss": "^4.1.18",
-    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/typography": "^0.5.20",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "next-themes": "^0.4.6",
     "postcss": "^8.5.10",
-    "react": "19.2.5",
+    "react": "19.2.8",
     "react-day-picker": "^9.13.1",
     "react-hook-form": "^7.71.1",
     "react-resizable-panels": "^3.0.6",
     "tailwindcss": "^4.1.18",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3"
+    "typescript": "npm:@typescript/typescript6@6.0.2"
   },
   "dependencies": {
     "@closedloop-ai/loops-api": "workspace:*",
@@ -1489,7 +1631,7 @@
     "d3-sankey": "^0.12.3",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
-    "geist": "^1.7.0",
+    "geist": "^1.7.2",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.556.0",
     "radix-ui": "^1.4.0",
@@ -1499,7 +1641,7 @@
     "remark-gfm": "^4.0.1",
     "server-only": "^0.0.1",
     "sonner": "^2.0.7",
-    "tailwind-merge": "^3.4.0",
+    "tailwind-merge": "^3.6.0",
     "tw-animate-css": "^1.4.0",
     "vaul": "^1.1.2",
     "zod": "^4.3.6"

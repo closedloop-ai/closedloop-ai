@@ -18,7 +18,13 @@ import {
 } from "@repo/api/src/types/agent-component";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { KIND_META, KindBadge, kindMeta } from "../component-meta";
+import {
+  hasVersionHistoryAffordance,
+  KIND_META,
+  KindBadge,
+  KindLabel,
+  kindMeta,
+} from "../component-meta";
 
 // A value not present in the AgentComponentKind enum / KIND_META, to exercise
 // the labelized fallback path (NOT "tool", which is now a mapped first-class
@@ -71,5 +77,82 @@ describe("KindBadge", () => {
   it("renders (does not crash) for an unmapped kind — the prod Agents-page crash", () => {
     expect(() => render(<KindBadge kind={UNMAPPED_KIND} />)).not.toThrow();
     expect(screen.getByText("Some Future Kind")).toBeInTheDocument();
+  });
+});
+
+describe("KindLabel", () => {
+  it("renders the canonical per-kind icon from KIND_META", () => {
+    for (const kind of Object.values(AgentComponentKind)) {
+      const ExpectedIcon = KIND_META[kind].icon;
+      const rendered = render(<KindLabel kind={kind} />);
+      const expected = render(<ExpectedIcon />);
+
+      expect(rendered.container.querySelector("svg")?.innerHTML).toBe(
+        expected.container.querySelector("svg")?.innerHTML
+      );
+    }
+  });
+
+  it.each([
+    [AgentComponentKind.Skill, "Skill"],
+    [AgentComponentKind.Command, "Command"],
+  ])("renders %s with the uniform icon and muted-label treatment", (kind, label) => {
+    const { container } = render(<KindLabel kind={kind} />);
+    const text = screen.getByText(label);
+    const wrapper = text.parentElement;
+    const icon = wrapper?.querySelector("svg");
+
+    expect(wrapper).toHaveClass(
+      "flex",
+      "min-w-0",
+      "items-center",
+      "gap-1.5",
+      "font-medium",
+      "text-muted-foreground",
+      "text-xs"
+    );
+    expect(text).toHaveClass("truncate");
+    expect(icon).toHaveClass("size-3.5", "shrink-0");
+    expect(icon).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector('[data-slot="badge"]')).toBeNull();
+  });
+
+  it("uses the canonical fallback icon and label for an unmapped kind", () => {
+    const { container } = render(<KindLabel kind={UNMAPPED_KIND} />);
+    const FallbackIcon = kindMeta(UNMAPPED_KIND).icon;
+    const expected = render(<FallbackIcon />);
+
+    expect(screen.getByText("Some Future Kind")).toBeInTheDocument();
+    expect(container.querySelector("svg")).toHaveClass("size-3.5", "shrink-0");
+    expect(container.querySelector("svg")?.innerHTML).toBe(
+      expected.container.querySelector("svg")?.innerHTML
+    );
+  });
+});
+
+describe("hasVersionHistoryAffordance (FEA-4267)", () => {
+  it("is true only for the prompt kinds whose detail page shows a version dropdown", () => {
+    // Subagent/command/skill render the Prompt panel (the only version selector),
+    // so a catalog "N versions" count links to a real destination for them.
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Subagent)).toBe(true);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Command)).toBe(true);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Skill)).toBe(true);
+  });
+
+  it("is false for kinds whose detail page has no version selector", () => {
+    // Mcp/plugin/workflow are observed but render NO Prompt panel; hook/config/
+    // tool/orchestration have no version affordance either. A count for any of
+    // them would send the user hunting for a dropdown that is not there.
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Mcp)).toBe(false);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Plugin)).toBe(false);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Workflow)).toBe(
+      false
+    );
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Hook)).toBe(false);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Config)).toBe(false);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Tool)).toBe(false);
+    expect(hasVersionHistoryAffordance(AgentComponentKind.Orchestration)).toBe(
+      false
+    );
   });
 });

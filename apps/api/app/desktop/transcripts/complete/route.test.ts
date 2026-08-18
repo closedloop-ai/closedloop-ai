@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   user: { id: "user-1", organizationId: "org-1" },
   complete: vi.fn(),
+  indexAfterCommit: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/with-any-auth", () => ({
@@ -22,6 +23,10 @@ vi.mock("../service", () => ({
     StaleUpload: "stale_upload",
     Internal: "internal",
   },
+}));
+
+vi.mock("@/app/search/transcript-search-indexer", () => ({
+  transcriptSearchIndexService: { indexAfterCommit: mocks.indexAfterCommit },
 }));
 
 import { POST } from "./route";
@@ -51,7 +56,7 @@ describe("POST /desktop/transcripts/complete", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the verified state on success", async () => {
+  it("returns the verified state on success and schedules transcript search indexing", async () => {
     const value = {
       status: "uploaded",
       syncedByteOffset: 1000,
@@ -63,6 +68,31 @@ describe("POST /desktop/transcripts/complete", () => {
     const body = await response.json();
     expect(response.status).toBe(200);
     expect(body.data).toEqual(value);
+    // FEA-3930: a verified upload triggers the (org-gated, best-effort) index
+    // with the session identity — the indexer itself decides whether to index.
+    expect(mocks.indexAfterCommit).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      computeTargetId: VALID_BODY.computeTargetId,
+      externalSessionId: VALID_BODY.externalSessionId,
+      fileKey: "main",
+    });
+  });
+
+  it("does NOT schedule transcript search indexing for a non-uploaded result", async () => {
+    // A skipped/idempotent-noop terminal state that is not `uploaded` must not
+    // trigger indexing (nothing new to index).
+    mocks.complete.mockResolvedValue({
+      ok: true,
+      value: {
+        status: "skipped",
+        syncedByteOffset: 0,
+        storedEtag: null,
+        sessionDetailId: "art-1",
+      },
+    });
+    const response = await POST(request(VALID_BODY), ctx);
+    expect(response.status).toBe(200);
+    expect(mocks.indexAfterCommit).not.toHaveBeenCalled();
   });
 
   it("rejects a multipart completion without an uploadId (400)", async () => {

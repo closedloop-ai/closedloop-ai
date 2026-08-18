@@ -3,7 +3,9 @@ import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
 import { json } from "./response-utils.js";
+import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome } from "./symphony-utils.js";
 
 type WorktreeInfo = {
@@ -157,7 +159,10 @@ async function getAllBranches(
     .split("\n")
     .filter((entry) => entry.trim())) {
     const [refname, dateStr] = line.split("|");
-    if (!refname || refname.includes("HEAD")) {
+    // Skip only the symbolic HEAD pointer rows (`HEAD`, `origin/HEAD`, or the
+    // `origin/HEAD -> origin/main` alias line), not every ref whose name merely
+    // contains "HEAD" — a real branch like `feature/HEAD-fix` must survive.
+    if (!refname || isSymbolicHeadRef(refname)) {
       continue;
     }
 
@@ -189,6 +194,20 @@ async function getAllBranches(
   return branches;
 }
 
+/**
+ * Whether a `%(refname:short)` value is a symbolic HEAD pointer that should be
+ * excluded from the branch list, rather than a real branch. Matches the bare
+ * `HEAD` / `origin/HEAD` names and the `origin/HEAD -> origin/main` alias row,
+ * but not branches like `feature/HEAD-fix` whose name merely contains "HEAD".
+ */
+function isSymbolicHeadRef(refname: string): boolean {
+  if (refname.includes(" -> ")) {
+    return true;
+  }
+  const trimmed = refname.trim();
+  return trimmed === "HEAD" || trimmed.endsWith("/HEAD");
+}
+
 function extractTicketId(input: string): string | null {
   const pathMatch = TICKET_PATH_REGEX.exec(input);
   if (pathMatch) {
@@ -206,5 +225,7 @@ async function runGit(
   repoPath: string,
   args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return await processManager.exec("git", args, repoPath);
+  return await processManager.exec(getResolvedGitPath(), args, repoPath, {
+    timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS,
+  });
 }

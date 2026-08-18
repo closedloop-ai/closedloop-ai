@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  decodeComponentHashKey,
   decodeComponentSlug,
   encodeComponentSlug,
   normalizeComponentKey,
+  routableComponentHashKey,
 } from "../agent-component-analytics";
 
 // This codec is a cross-surface CONTRACT: desktop (`apps/desktop`) and cloud
@@ -116,5 +118,104 @@ describe("encodeComponentSlug — consolidated cloud-consumer call shapes", () =
     expect(encodeComponentSlug("command", "Build", null)).toBe(
       "command::build"
     );
+  });
+});
+
+// FEA-4335: a component's IDENTITY is its content byte hash (Mike Angstadt's
+// product decision) — two components are the SAME iff their content hashes are
+// identical and DIFFERENT iff they differ, regardless of name, `kind::slug`, or
+// install path. The routable detail-URI key must therefore key off the content
+// fingerprint, not the name-level slug, so the pre-FEA-4335 `kind::slug`
+// collision (two materially-different components normalizing to one name) is
+// resolved while byte-identical installs (any name/path) share one identity.
+describe("routableComponentHashKey — content-hash identity (FEA-4335)", () => {
+  // sha256-length lowercase-hex content fingerprints for two DISTINCT contents.
+  const hashDeployA = "a".repeat(64);
+  const hashDeployB = "b".repeat(64);
+
+  it("gives two same-named components with DIFFERENT content bytes DISTINCT keys", () => {
+    // Both normalize to `skill::deploy` under the name-level slug — the exact
+    // collision FEA-4335 fixes — but their content fingerprints differ, so the
+    // routable keys must differ.
+    const nameSlug = encodeComponentSlug("skill", "deploy", null);
+    const keyA = routableComponentHashKey("skill", hashDeployA, "deploy", null);
+    const keyB = routableComponentHashKey("skill", hashDeployB, "deploy", null);
+
+    expect(keyA).not.toBe(keyB);
+    // Neither content-hash key equals the colliding name-level slug.
+    expect(keyA).not.toBe(nameSlug);
+    expect(keyB).not.toBe(nameSlug);
+    expect(keyA).toBe(`skill::${hashDeployA}`);
+    expect(keyB).toBe(`skill::${hashDeployB}`);
+  });
+
+  it("gives two byte-identical installs (different name AND path) the SAME key", () => {
+    // The identical `testing_agent.md` installed at two paths under two display
+    // names is ONE tracked component: same bytes → same fingerprint → one key,
+    // regardless of name/path.
+    const atUserDir = routableComponentHashKey(
+      "agent",
+      hashDeployA,
+      "testing_agent",
+      "Testing Agent (user)"
+    );
+    const atPluginDir = routableComponentHashKey(
+      "agent",
+      hashDeployA,
+      "gstack-testing-agent",
+      "GStack Testing Agent (plugin)"
+    );
+
+    expect(atUserDir).toBe(atPluginDir);
+    expect(atUserDir).toBe(`agent::${hashDeployA}`);
+  });
+
+  it("falls back to the name-level slug when the row has no content fingerprint (skew-safe)", () => {
+    // A legacy / event-minted row with no captured definition keeps the
+    // name-level routing so old links still resolve.
+    expect(routableComponentHashKey("skill", null, "Deploy", null)).toBe(
+      encodeComponentSlug("skill", "Deploy", null)
+    );
+    expect(routableComponentHashKey("command", undefined, null, "Build")).toBe(
+      encodeComponentSlug("command", null, "Build")
+    );
+  });
+
+  it("round-trips a content-hash key back to { kind, fingerprint }", () => {
+    const key = routableComponentHashKey("skill", hashDeployA, "deploy", null);
+    expect(decodeComponentHashKey(key)).toEqual({
+      kind: "skill",
+      fingerprint: hashDeployA,
+      key: null,
+    });
+  });
+
+  it("decodes a legacy name-level key back to { kind, key } (no fingerprint)", () => {
+    const nameSlug = encodeComponentSlug("skill", "Deploy", null);
+    expect(decodeComponentHashKey(nameSlug)).toEqual({
+      kind: "skill",
+      fingerprint: null,
+      key: "deploy",
+    });
+  });
+
+  it("returns null for a key with no `::` separator", () => {
+    expect(decodeComponentHashKey("not-a-key")).toBeNull();
+  });
+
+  it("treats a short-hex NAME as a name, not a mis-read fingerprint", () => {
+    // A legacy hash-less component literally named `deadbeef` must decode as a
+    // NAME so its detail still resolves by name — only a full 64-char hex string
+    // is a content fingerprint. Regression for the `{8,64}` over-match.
+    const shortHexSlug = encodeComponentSlug("skill", "deadbeef", null);
+    expect(decodeComponentHashKey(shortHexSlug)).toEqual({
+      kind: "skill",
+      fingerprint: null,
+      key: "deadbeef",
+    });
+    // A 63-hex (one short of a sha256) name is also a name, not a fingerprint.
+    const almost = encodeComponentSlug("skill", "c".repeat(63), null);
+    expect(decodeComponentHashKey(almost)?.fingerprint).toBeNull();
+    expect(decodeComponentHashKey(almost)?.key).toBe("c".repeat(63));
   });
 });

@@ -8,6 +8,7 @@ import {
   PRReviewCommentState,
   PrCommentAuthorKind,
 } from "@repo/api/src/types/branch-view";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubFetchCredentialType,
   GitHubFetchMechanism,
@@ -91,12 +92,15 @@ const ACTIVE_STATUS = {
   value: { githubUserId: "github-user-1", login: "octocat" },
 };
 
+/** The one caller-resolved client the write path threads in (PLN-1525). */
+const WRITE_OCTOKIT = { marker: "write-octokit" };
+
 const ACTIVE_WRITE_IDENTITY = {
   ok: true,
   value: {
     githubUserId: "github-user-1",
     login: "octocat",
-    token: "write-token",
+    octokit: WRITE_OCTOKIT,
   },
 };
 
@@ -179,6 +183,14 @@ describe("branchViewConversationService", () => {
       mocks.createPullRequestIssueCommentWithUserToken
     ).toHaveBeenCalledTimes(1);
     expect(mocks.upsertGitHubIssueCommentThread).toHaveBeenCalledTimes(2);
+    expect(mocks.resolveExternalGitHubAuthorInTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        author: expect.objectContaining({
+          actorType: GitHubActorType.Bot,
+        }),
+      })
+    );
   });
 
   it("deletes caller-authored issue comments through GitHub and soft-deletes the scoped projection", async () => {
@@ -216,7 +228,7 @@ describe("branchViewConversationService", () => {
     expect(
       mocks.deletePullRequestIssueCommentWithUserToken
     ).toHaveBeenCalledWith(
-      "write-token",
+      WRITE_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       123
@@ -508,6 +520,7 @@ function providerComment(input: { id: number }) {
       node_id: `node-${input.id}`,
       login: "octocat",
       avatar_url: "https://avatars.example/octocat.png",
+      actorType: GitHubActorType.Bot,
     },
   };
 }

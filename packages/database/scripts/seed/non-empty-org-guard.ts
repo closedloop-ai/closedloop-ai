@@ -13,8 +13,12 @@ import { deterministicUuid } from "./helpers";
 
 const SCALED_SEED_PROJECT_SLUG_PATTERN = /^scaled-seed-project-(\d+)$/;
 const SEED_OWNED_SAMPLE_LIMIT = 500;
-const SEED_ARTIFACT_SLUG_PATTERN =
-  /^(seed-doc-|seed-feature-|seed-template-|scaled-seed-document-|seed-branch-|seed-deployment-|seed-session-)/;
+const SCALED_SEED_DOCUMENT_SLUG_PATTERN = /^scaled-seed-document-(\d+)$/;
+const SEED_DOCUMENT_SLUG_PATTERN = /^seed-doc-(.+)$/;
+const SEED_FEATURE_SLUG_PATTERN = /^seed-feature-(.+)$/;
+const SEED_TEMPLATE_SLUG_PATTERN = /^seed-template-(.+)$/;
+const SLUG_TOKEN_SEPARATOR_PATTERN = /-/g;
+const ORG_SLUG_PREFIX_LENGTH = 8;
 const SEED_COMMENT_TEXT_PATTERN =
   /^(Seed |Scaled seed comment |Initial feedback on this document\.|Follow-up: looks good after review\.|Liveblocks collaborative comment\.|Resolved the concern mentioned above\.|GitHub PR review comment )/;
 const SEED_CUSTOM_FIELD_NAMES = new Set([
@@ -203,7 +207,11 @@ export async function detectOrgConflicts(
   recordCountedRows({
     label: "Artifact",
     count: artifactCount,
-    isSeedOwned: areSeedOwnedArtifacts(artifacts, artifactCount),
+    isSeedOwned: areSeedOwnedArtifacts(
+      artifacts,
+      artifactCount,
+      organizationId
+    ),
     seedOwnedRows,
     conflicts,
   });
@@ -345,15 +353,92 @@ function expectedProjectId(slug: string, organizationId: string): string {
 
 function areSeedOwnedArtifacts(
   rows: readonly SeedOwnedRow[],
-  count: number
+  count: number,
+  organizationId: string
 ): boolean {
   return (
     rows.length === count &&
-    rows.every(
-      (row) =>
-        Boolean(row.slug) && SEED_ARTIFACT_SLUG_PATTERN.test(row.slug ?? "")
-    )
+    rows.every((row) => {
+      if (!row.slug) {
+        return false;
+      }
+      return row.id === expectedArtifactId(row.slug, organizationId);
+    })
   );
+}
+
+/**
+ * The id the seed would have minted for an artifact carrying `slug`, or `""`
+ * when the slug is not one the seed emits.
+ *
+ * A slug prefix is not proof of ownership: an artifact slug is customer-visible
+ * and customer-settable, so a real row named `seed-doc-anything` would sail
+ * through a prefix-only check. The id is the proof — `core.ts` derives every
+ * seed artifact id from a fixed key via {@link deterministicUuid}, so a row is
+ * seed-owned only when its id reproduces that derivation for its own slug.
+ *
+ * Slug/key formulas mirror the four `artifact.upsert` sites in `core.ts`. The
+ * curated families encode their discriminator in the slug with `_` replaced by
+ * `-`, so the inverse re-substitutes `-` for `_`; `seed-owned-artifact-id`
+ * coverage in the ownership suite drives the real status/subtype enums so a new
+ * member that breaks that inverse fails there rather than in production.
+ */
+function expectedArtifactId(slug: string, organizationId: string): string {
+  const documentMatch = SEED_DOCUMENT_SLUG_PATTERN.exec(slug);
+  if (documentMatch) {
+    return deterministicUuid(
+      `artifact:document:${organizationId}:status-${toKeyToken(documentMatch[1])}`
+    );
+  }
+  const featureMatch = SEED_FEATURE_SLUG_PATTERN.exec(slug);
+  if (featureMatch) {
+    return deterministicUuid(
+      `artifact:feature:${organizationId}:status-${toKeyToken(featureMatch[1])}`
+    );
+  }
+  const templateMatch = SEED_TEMPLATE_SLUG_PATTERN.exec(slug);
+  if (templateMatch) {
+    return deterministicUuid(
+      `artifact:template:${organizationId}:${toKeyToken(templateMatch[1])}`
+    );
+  }
+  const scaledMatch = SCALED_SEED_DOCUMENT_SLUG_PATTERN.exec(slug);
+  if (scaledMatch) {
+    return deterministicUuid(
+      `artifact:document:${organizationId}:scaled-${scaledMatch[1]}`
+    );
+  }
+  return expectedSingletonArtifactId(slug, organizationId);
+}
+
+/**
+ * Ids for the three artifacts the seed mints exactly once per org (branch,
+ * deployment, session). Their slugs embed the org-id prefix, so the slug is
+ * already org-scoped; the id check still has to hold.
+ */
+function expectedSingletonArtifactId(
+  slug: string,
+  organizationId: string
+): string {
+  const orgPrefix = organizationId.slice(0, ORG_SLUG_PREFIX_LENGTH);
+  if (slug === `seed-branch-${orgPrefix}`) {
+    return deterministicUuid(
+      `artifact:branch:${organizationId}:seed-feature-branch`
+    );
+  }
+  if (slug === `seed-deployment-${orgPrefix}`) {
+    return deterministicUuid(
+      `artifact:deployment:${organizationId}:seed-preview`
+    );
+  }
+  if (slug === `seed-session-${orgPrefix}`) {
+    return deterministicUuid(`artifact:session:${organizationId}:seed-session`);
+  }
+  return "";
+}
+
+function toKeyToken(slugToken: string | undefined): string {
+  return (slugToken ?? "").replace(SLUG_TOKEN_SEPARATOR_PATTERN, "_");
 }
 
 function areSeedOwnedLoops(

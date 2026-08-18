@@ -2,16 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DESKTOP_AUTHORIZE_QUERY_PARAMS,
+  DesktopSignInProvider,
   decodeDesktopGatewayPublicKey,
 } from "@repo/api/src/types/desktop-authorize-url";
 import {
   buildDesktopAuthorizeUrl,
   redeemDesktopAuthorizationCode,
-} from "../src/main/desktop-authorize-client.js";
+} from "../src/main/auth/desktop-authorize-client.js";
 import type {
   DesktopPopHeaders,
   DesktopPopSigningRequest,
-} from "../src/main/desktop-pop.js";
+} from "../src/main/auth/desktop-pop.js";
 
 const API_ORIGIN = "https://api.closedloop.test";
 const REDIRECT_URI = "http://127.0.0.1:49152/cb";
@@ -74,20 +75,23 @@ function redeem(
   });
 }
 
+/** The required half of the authorize input; the provider hint is added per test. */
+function authorizeUrlInput() {
+  return {
+    webAppOrigin: "https://app.closedloop.test",
+    codeChallenge: "challenge",
+    codeChallengeMethod: "S256",
+    state: "state-xyz",
+    redirectUri: REDIRECT_URI,
+    gatewayId: "gateway-1",
+    gatewayPublicKeyPem: SAMPLE_PUBLIC_KEY_PEM,
+    deviceName: "Kris's MacBook",
+    platform: "darwin",
+  };
+}
+
 test("buildDesktopAuthorizeUrl targets the authorize path with snake_case params", () => {
-  const url = new URL(
-    buildDesktopAuthorizeUrl({
-      webAppOrigin: "https://app.closedloop.test",
-      codeChallenge: "challenge",
-      codeChallengeMethod: "S256",
-      state: "state-xyz",
-      redirectUri: REDIRECT_URI,
-      gatewayId: "gateway-1",
-      gatewayPublicKeyPem: SAMPLE_PUBLIC_KEY_PEM,
-      deviceName: "Kris's MacBook",
-      platform: "darwin",
-    })
-  );
+  const url = new URL(buildDesktopAuthorizeUrl(authorizeUrlInput()));
 
   const params = url.searchParams;
   const key = DESKTOP_AUTHORIZE_QUERY_PARAMS;
@@ -109,6 +113,32 @@ test("buildDesktopAuthorizeUrl targets the authorize path with snake_case params
   assert.equal(
     decodeDesktopGatewayPublicKey(encodedKey),
     SAMPLE_PUBLIC_KEY_PEM
+  );
+});
+
+// ISS-5112 — omission is the contract for the provider hint: an older desktop
+// build sends none, and the web page's signed-out detour has to keep meaning
+// GitHub for it. A `provider=` present-but-empty param would not.
+test("buildDesktopAuthorizeUrl omits the provider param when none is picked", () => {
+  const url = new URL(buildDesktopAuthorizeUrl(authorizeUrlInput()));
+
+  assert.equal(
+    url.searchParams.has(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider),
+    false
+  );
+});
+
+test("buildDesktopAuthorizeUrl carries the picked provider", () => {
+  const url = new URL(
+    buildDesktopAuthorizeUrl({
+      ...authorizeUrlInput(),
+      provider: DesktopSignInProvider.Google,
+    })
+  );
+
+  assert.equal(
+    url.searchParams.get(DESKTOP_AUTHORIZE_QUERY_PARAMS.provider),
+    DesktopSignInProvider.Google
   );
 });
 

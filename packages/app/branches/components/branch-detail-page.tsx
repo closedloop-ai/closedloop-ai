@@ -4,58 +4,49 @@ import type {
   BranchAnalytics,
   BranchDataState,
   BranchPageDetail,
+  BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
 import { BranchDataState as BranchDataStateValue } from "@repo/api/src/types/branch";
-import { TraceCommentsRail } from "@repo/app/agents/components/detail/trace-comments-rail";
-import { useTraceComments } from "@repo/app/agents/components/detail/use-trace-comments";
+import type { BranchSelectedPullRequestIdentity } from "@repo/api/src/types/branch-associated-pull-request";
+import type { TraceTextAnchor } from "@repo/api/src/types/comment";
+import { BranchDetailTabParam } from "@repo/api/src/types/notification-routes";
 import { ApiError } from "@repo/app/shared/api/api-error";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
-import { Skeleton } from "@repo/design-system/components/ui/skeleton";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@repo/design-system/components/ui/tabs";
-import { Link } from "@repo/navigation/link";
-import { AlertCircleIcon, ArrowLeftIcon, GitBranchIcon } from "lucide-react";
-import type { CSSProperties, ReactNode, RefObject } from "react";
-import { useCallback, useMemo, useRef, useState } from "react";
+  UnderlineTabsList,
+  UnderlineTabsTrigger,
+} from "@repo/design-system/components/ui/primitives/underline-tabs";
+import { Tabs, TabsContent } from "@repo/design-system/components/ui/tabs";
+import { useMediaQuery } from "@repo/design-system/hooks/use-media-query";
+import { AlertCircleIcon, GitBranchIcon } from "lucide-react";
+import type { ReactNode, RefObject } from "react";
+import { useRef, useState } from "react";
+import { PageHeading } from "../../shared/components/page-heading";
 import type { BranchesQueryIdentity } from "../hooks/use-branches";
-import { useBranchComments, useBranchTrace } from "../hooks/use-branches";
 import {
-  type BranchActorColorDomain,
-  buildActorColorDomain,
-  deriveActorsFromSessions,
-} from "../lib/branch-actor-domain";
-import { buildSessionTimeline } from "../lib/branch-session-buckets";
-import { fractionOf, type TimeRange } from "../lib/branch-timeline-range";
+  type BranchBackLabel,
+  BranchBackLabel as BranchBackLabelValue,
+} from "../lib/branch-back-href";
+import { resolvePreferredBranchLoc } from "../lib/preferred-branch-loc";
 import {
-  BranchTracePlayheadProvider,
-  useBranchTracePlayhead,
-} from "../lib/branch-trace-playhead";
-import { BranchesOverlayRefreshProvider } from "../lib/live-overlays/overlay-refresh-provider";
-import {
-  type PreferredBranchLoc,
-  usePreferredBranchLoc,
-} from "../lib/live-overlays/use-preferred-branch-loc";
-import { BranchCostToMerge } from "./branch-cost-to-merge";
-import { BranchEventDotRail } from "./branch-event-dot-rail";
-import { BranchHeadlineCards } from "./branch-headline-cards";
-import { BranchLeadTimeWaterfall } from "./branch-lead-time-waterfall";
-import { BranchMergedTrace } from "./branch-merged-trace";
-import { BranchMultiPrNotice } from "./branch-multi-pr-notice";
-import { BranchPrActivityTimeline } from "./branch-pr-activity-timeline";
-import { BranchPrSessionSwimlane } from "./branch-pr-session-swimlane";
+  BranchDetailLoading,
+  BranchDetailNotFound,
+  BranchDetailProviderError,
+} from "./branch-detail-states";
 import { BranchPropertiesPanel } from "./branch-properties-panel";
-import {
-  BranchRefreshState,
-  BranchRefreshStatus,
-} from "./branch-refresh-status";
-import { BranchDeliveredPanel } from "./detail/branch-delivered-panel";
-import { BranchFilesChangedPanel } from "./detail/branch-files-changed-panel";
-import { BranchPrStatusPanel } from "./detail/branch-pr-status-panel";
-import { PrCommentsPanel } from "./pr-comments-panel";
+import { BranchRefreshState } from "./branch-refresh-status";
+import { BranchCommentsController } from "./comments/branch-comments-controller";
+import type { BranchCommentDraftTarget } from "./comments/branch-comments-model";
+import { BranchCommentsTab } from "./comments/branch-comments-model";
+import { BranchCommentsToggle } from "./comments/branch-comments-toggle";
+import { useBranchCommentsControl } from "./comments/use-branch-comments-control";
+import { BranchSelectedPullRequestWorkspace } from "./detail/branch-selected-pull-request-workspace";
+import { BranchSessionsTimelineTab } from "./detail/branch-sessions-timeline-tab";
 
 /**
  * Surface-shared Branch Detail page body (FEA-1949 / Epic C — C3). Mirrors the
@@ -68,10 +59,12 @@ import { PrCommentsPanel } from "./pr-comments-panel";
  *
  * Epic D (Branch-details panels) and Epic E (Sessions & timeline — the activity
  * timeline, playhead, event-dot rail, actor swimlane, and the merged-trace
- * reader, all bound to one shared playhead controller) are mounted. Epic F
- * (FEA-1952) mounts the live overlays: the "What was delivered" section (linked
- * PR artifacts + read-only PR description), the live files-changed panel, and
- * the app-focus/manual refresh control.
+ * reader, all bound to one shared playhead controller) are mounted. The
+ * "What was delivered" section (linked PR artifacts + read-only PR description),
+ * the PR status panel, and the files-changed panel read the cloud branch
+ * projection; PLN-1535 M5.3 removed the live GitHub-gateway overlay lane that
+ * used to back them, along with its `allowLiveOverlays` plumbing and the
+ * app-focus/manual overlay refresh control.
  *
  * Every branch type is imported path-qualified from `@repo/api/src/types/branch`
  * to avoid the unrelated `BranchDetail` class-table type in `artifact.ts`; the
@@ -88,10 +81,54 @@ export type BranchDetailPageProps = {
   errorKind?: BranchDetailErrorKind;
   refreshState?: BranchDetailRefreshState;
   queryIdentity?: BranchesQueryIdentity;
-  allowLiveOverlays?: boolean;
-  connectHref?: string;
-  onConnectGitHub?: () => void;
   backHref: string;
+  /**
+   * FEA-4262: the "Back" affordance's destination label, paired with `backHref`
+   * by `resolveBranchBackLabel` so the error-state link's text always matches
+   * where it goes. Defaults to "Branches" (the static fallback destination);
+   * a session referrer (`?from=session`) resolves it to "Sessions".
+   */
+  backLabel?: BranchBackLabel;
+  /**
+   * FEA-4257: build the org-relative session-detail href for a session listed
+   * in the "Sessions & timeline" swimlane, so each lane navigates to that
+   * session (the branch→session seam). Receives the session artifact id. The
+   * web and desktop shells inject their own path shape; omitted → the lanes stay
+   * non-links (the burst scrub still works).
+   */
+  getSessionHref?: (sessionId: string) => string;
+  /**
+   * FEA-4292: build the org-relative href for a recognized Closedloop artifact
+   * listed in "What was delivered" (the branch's `linkedArtifacts`, keyed on the
+   * slug embedded in the branch name), so each renders as an in-app link to its
+   * canonical record — consistent with how Session Properties links the same
+   * relationship. Receives the artifact slug; returns null when the slug is not a
+   * navigable typed slug. The web shell injects an org-relative route; Desktop
+   * injects the equivalent absolute web-app route because its native router does
+   * not host document detail pages.
+   */
+  getArtifactHref?: (slug: string) => string | null;
+  /**
+   * Tab to open on first render. Defaults to `branch-details`. A mention-
+   * notification deep-link passes `sessions-timeline` (via `?tab=`) so the
+   * trace-comments rail — mounted only under that tab — is on screen when the
+   * user lands here from the inbox (FEA-3490).
+   */
+  initialTab?: BranchDetailTab;
+  /**
+   * Header-owned comments state for production shells. When omitted (stories
+   * and focused component tests), the page owns the same state and renders the
+   * toggle beside its tab navigation.
+   */
+  commentsControl?: BranchCommentsControl;
+};
+
+const NARROW_COMMENTS_QUERY = "(max-width: 1024px)";
+
+export type BranchCommentsControl = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  toggleRef: RefObject<HTMLButtonElement | null>;
 };
 
 export const BranchDetailErrorKind = {
@@ -104,12 +141,41 @@ export type BranchDetailErrorKind =
 export const BranchDetailRefreshState = BranchRefreshState;
 export type BranchDetailRefreshState = BranchRefreshState;
 
-type BranchDetailTab = "branch-details" | "sessions-timeline";
+// The tab literals are owned by the notification-route SSOT (`BranchDetailTabParam`)
+// so a mention deep-link's `?tab=` value and this page's tab ids can never drift.
+type BranchDetailTab = BranchDetailTabParam;
 
-const TAB_BRANCH_DETAILS: BranchDetailTab = "branch-details";
-const TAB_SESSIONS_TIMELINE: BranchDetailTab = "sessions-timeline";
+const TAB_BRANCH_DETAILS: BranchDetailTab = BranchDetailTabParam.BranchDetails;
+const TAB_SESSIONS_TIMELINE: BranchDetailTab =
+  BranchDetailTabParam.SessionsTimeline;
 
-export function BranchDetailPage({
+/**
+ * Narrow a raw `?tab=` query value to a known `BranchDetailTab`, or `undefined`
+ * when it is absent/unrecognized (so the page falls back to its default tab).
+ * Used by the branch route to honor mention-notification deep-links.
+ */
+export function resolveBranchDetailTab(
+  raw: string | null | undefined
+): BranchDetailTab | undefined {
+  if (
+    raw === BranchDetailTabParam.BranchDetails ||
+    raw === BranchDetailTabParam.SessionsTimeline
+  ) {
+    return raw;
+  }
+  return undefined;
+}
+
+export function BranchDetailPage({ ...props }: BranchDetailPageProps) {
+  return (
+    <BranchDetailPageContent
+      {...props}
+      key={props.detail?.id ?? props.branchId}
+    />
+  );
+}
+
+function BranchDetailPageContent({
   branchId,
   detail,
   analytics,
@@ -118,25 +184,42 @@ export function BranchDetailPage({
   errorKind,
   refreshState = BranchDetailRefreshState.Idle,
   queryIdentity,
-  allowLiveOverlays = true,
-  connectHref,
-  onConnectGitHub,
   backHref,
+  backLabel = BranchBackLabelValue.Branches,
+  getArtifactHref,
+  initialTab = TAB_BRANCH_DETAILS,
+  commentsControl,
 }: BranchDetailPageProps) {
-  const [activeTab, setActiveTab] =
-    useState<BranchDetailTab>(TAB_BRANCH_DETAILS);
+  const [activeTab, setActiveTab] = useState<BranchDetailTab>(initialTab);
+  const [commentsContext, setCommentsContext] = useState<{
+    comments?: BranchPrCommentsResponse;
+    error: boolean;
+    loading: boolean;
+    pullRequestKey: string | null;
+  }>({ error: false, loading: false, pullRequestKey: null });
+  const [commentComposerTarget, setCommentComposerTarget] =
+    useState<BranchCommentDraftTarget | null>(null);
+  const [pendingCommentJump, setPendingCommentJump] =
+    useState<TraceTextAnchor | null>(null);
+  const [selectedPullRequest, setSelectedPullRequest] =
+    useState<BranchSelectedPullRequestIdentity | null>(null);
+  const [renderedCommentsSessions, setRenderedCommentsSessions] = useState<{
+    coverageNote: string | null;
+    sessionIds: readonly string[];
+  }>({ coverageNote: null, sessionIds: [] });
   // The Sessions & timeline tab owns this scroller inside its `.sd3-main`, so
   // the comments rail can sit beside it as a page-level sibling.
   const sessionsScrollRef = useRef<HTMLDivElement>(null);
+  const internalCommentsControl = useBranchCommentsControl(branchId);
+  const resolvedCommentsControl = commentsControl ?? internalCommentsControl;
+  const commentsOpen = resolvedCommentsControl.open;
+  const setCommentsOpen = resolvedCommentsControl.onOpenChange;
+  const commentsToggleRef = resolvedCommentsControl.toggleRef;
+  const commentsUseSheet = useMediaQuery(NARROW_COMMENTS_QUERY);
 
-  // Resolve changed-LOC once, preferring the connected PR's live totals over
-  // enrichment (FEA-1952). Shared with the files panel's overlay query key, so
-  // React Query dedupes to one fetch; passed to every detail-page LOC consumer.
-  // Called before the early returns (Rules of Hooks); tolerates undefined detail.
-  const preferredLoc = usePreferredBranchLoc(detail, {
-    enableLive: allowLiveOverlays,
-  });
-  const commentsQuery = useBranchComments(branchId, undefined, queryIdentity);
+  // Resolve changed-LOC once from the projection and pass it to every
+  // detail-page LOC consumer, so one branch cannot report two sizes.
+  const preferredLoc = resolvePreferredBranchLoc(detail);
 
   // Loading takes priority while the first detail read is still pending, so the
   // two-column layout is stable before the hooks resolve.
@@ -146,14 +229,14 @@ export function BranchDetailPage({
 
   if (isError && !detail) {
     return errorKind === BranchDetailErrorKind.NotPresent ? (
-      <BranchDetailNotFound backHref={backHref} />
+      <BranchDetailNotFound backHref={backHref} backLabel={backLabel} />
     ) : (
-      <BranchDetailProviderError backHref={backHref} />
+      <BranchDetailProviderError backHref={backHref} backLabel={backLabel} />
     );
   }
 
   if (!detail) {
-    return <BranchDetailNotFound backHref={backHref} />;
+    return <BranchDetailNotFound backHref={backHref} backLabel={backLabel} />;
   }
 
   const detailState = resolveBranchDetailState(detail);
@@ -163,8 +246,8 @@ export function BranchDetailPage({
   const content = (
     <div className="flex min-h-0 flex-1">
       <Tabs
-        // No flex gap: the sticky toggle row's own padding is the only
-        // space before the content beneath it.
+        // No flex gap: the underline navigation and active panel own their
+        // spacing independently.
         className="flex min-h-0 w-full flex-1 flex-col gap-0"
         onValueChange={(value) => setActiveTab(value as BranchDetailTab)}
         value={activeTab}
@@ -173,59 +256,58 @@ export function BranchDetailPage({
               name/metadata lives in the Properties panel (no duplicate chrome),
               but the page still owns an in-body <h1> for heading-order/landmark
               navigation per the project's page-title convention. */}
-        <h1 className="sr-only">Branch {detail.branchName}</h1>
+        {/* The crumb and the heading must be the same string: the shell Header
+              is suppressed on this route, and its default carried the crumb
+              text verbatim (ISS-5008 review). */}
+        <PageHeading>{detail.branchName}</PageHeading>
+        {refreshState === BranchDetailRefreshState.Error ? (
+          <Alert className="mx-5 mt-3" variant="error">
+            <AlertTitle>Latest branch details unavailable</AlertTitle>
+            <AlertDescription>
+              Showing the most recent branch details we could load. Newer
+              provider data may not appear yet.
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {hasSessions ? (
           <>
-            <div className="bq-tabs-sticky">
-              <TabsList>
-                <TabsTrigger value={TAB_BRANCH_DETAILS}>
+            <div className="flex shrink-0 items-center border-b">
+              <UnderlineTabsList className="min-w-0 flex-1 border-b-0">
+                <UnderlineTabsTrigger value={TAB_BRANCH_DETAILS}>
                   Branch details
-                </TabsTrigger>
-                <TabsTrigger value={TAB_SESSIONS_TIMELINE}>
+                </UnderlineTabsTrigger>
+                <UnderlineTabsTrigger value={TAB_SESSIONS_TIMELINE}>
                   Sessions &amp; timeline
-                </TabsTrigger>
-              </TabsList>
+                </UnderlineTabsTrigger>
+              </UnderlineTabsList>
+              {commentsControl ? null : (
+                <div className="mr-4 shrink-0">
+                  <BranchCommentsToggle
+                    onOpenChange={setCommentsOpen}
+                    open={commentsOpen}
+                    toggleRef={commentsToggleRef}
+                  />
+                </div>
+              )}
             </div>
             <TabsContent
-              className="bq-page-scroll mx-auto min-h-0 w-full max-w-[1000px] flex-1 overflow-auto px-5 pb-4"
+              className="bq-page-scroll mx-auto min-h-0 w-full max-w-[1000px] flex-1 overflow-auto px-5 pt-4 pb-6"
               value={TAB_BRANCH_DETAILS}
             >
               {/* Properties belong to the Branch details tab only (collapsed
                       by default) — matches the Branches Page design handoff. */}
               <BranchPropertiesPanel detail={detail} loc={preferredLoc} />
-              <BranchDetailRefreshStatus state={refreshState} />
-              {detail.multiPrWarning ? (
-                <BranchMultiPrNotice linkedPrNumbers={detail.linkedPrNumbers} />
-              ) : null}
-              <BranchHeadlineCards
+              <BranchSelectedPullRequestWorkspace
                 analytics={analytics}
+                branchId={branchId}
                 detail={detail}
+                getArtifactHref={getArtifactHref}
+                key={detail.id}
                 loc={preferredLoc}
-              />
-              <BranchCostToMerge
-                detail={detail}
-                suppressSplits={detail.multiPrWarning}
-              />
-              <BranchLeadTimeWaterfall detail={detail} />
-              {/* "What was delivered" — linked PR artifacts + read-only PR
-                      description (F-FEA-1952). Files-changed is LIVE from the
-                      GitHub gateway (never persisted), degrading per state. */}
-              <BranchDeliveredPanel detail={detail} />
-              <BranchPrStatusPanel
-                allowLive={allowLiveOverlays}
-                connectHref={connectHref}
-                detail={detail}
-                onConnect={onConnectGitHub}
-              />
-              {allowLiveOverlays ? (
-                <BranchFilesChangedPanel branchId={branchId} detail={detail} />
-              ) : (
-                <BranchOverlayUnavailableState />
-              )}
-              <PrCommentsPanel
-                comments={commentsQuery.data}
-                isError={commentsQuery.isError}
-                isLoading={commentsQuery.isLoading}
+                onCommentsContextChange={setCommentsContext}
+                onSelectionChange={setSelectedPullRequest}
+                queryIdentity={queryIdentity}
+                selection={selectedPullRequest}
               />
             </TabsContent>
             {/* Radix mounts this panel only while the tab is active, so the
@@ -238,6 +320,14 @@ export function BranchDetailPage({
               <BranchSessionsTimelineTab
                 detail={detail}
                 loc={preferredLoc}
+                onComposerTargetChange={(target) => {
+                  setCommentComposerTarget(target);
+                  if (target) {
+                    setCommentsOpen(true);
+                  }
+                }}
+                onRenderedSessionsChange={setRenderedCommentsSessions}
+                pendingJumpAnchor={pendingCommentJump}
                 queryIdentity={queryIdentity}
                 scrollElementRef={sessionsScrollRef}
               />
@@ -247,16 +337,35 @@ export function BranchDetailPage({
           emptyDetailState
         )}
       </Tabs>
+      <BranchCommentsController
+        activeTab={
+          activeTab === TAB_BRANCH_DETAILS
+            ? BranchCommentsTab.Details
+            : BranchCommentsTab.Sessions
+        }
+        composerTarget={commentComposerTarget}
+        detail={detail}
+        onClose={() => setCommentsOpen(false)}
+        onJump={(anchor) => {
+          setPendingCommentJump(anchor);
+          setActiveTab(TAB_SESSIONS_TIMELINE);
+          if (commentsUseSheet) {
+            setCommentsOpen(false);
+          }
+        }}
+        open={commentsOpen}
+        providerComments={commentsContext.comments}
+        providerError={commentsContext.error}
+        providerLoading={commentsContext.loading}
+        renderedSessionIds={renderedCommentsSessions.sessionIds}
+        returnFocusRef={commentsToggleRef}
+        selectedPullRequestKey={commentsContext.pullRequestKey}
+        sessionsCoverageNote={renderedCommentsSessions.coverageNote}
+      />
     </div>
   );
 
-  if (!allowLiveOverlays) {
-    return content;
-  }
-
-  return (
-    <BranchesOverlayRefreshProvider>{content}</BranchesOverlayRefreshProvider>
-  );
+  return content;
 }
 
 export function classifyBranchDetailError(
@@ -266,84 +375,6 @@ export function classifyBranchDetailError(
     return BranchDetailErrorKind.NotPresent;
   }
   return BranchDetailErrorKind.ProviderError;
-}
-
-function BranchDetailLoading() {
-  return (
-    <div className="flex min-h-0 flex-1">
-      <div className="flex min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-        <Skeleton className="h-[520px] w-full" />
-      </div>
-    </div>
-  );
-}
-
-function BranchDetailNotFound({ backHref }: { backHref: string }) {
-  return (
-    <div className="flex min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-      <div className="w-full">
-        <EmptyState
-          className="py-16"
-          description="The branch may not exist, or it has no captured sessions yet."
-          icon={AlertCircleIcon}
-          title="Branch not found"
-        />
-        <div className="mt-4 flex justify-center">
-          <Link className="sd3-back" href={backHref}>
-            <ArrowLeftIcon aria-hidden className="size-3.5" />
-            Back to Branches
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BranchDetailProviderError({ backHref }: { backHref: string }) {
-  return (
-    <div className="flex min-h-0 flex-1 overflow-auto p-4 sm:p-6">
-      <div className="w-full">
-        <EmptyState
-          className="py-16"
-          description="The branch provider could not be reached. Retry refresh, or check the provider connection."
-          icon={AlertCircleIcon}
-          title="Branch provider unavailable"
-        />
-        <div className="mt-4 flex justify-center">
-          <Link className="sd3-back" href={backHref}>
-            <ArrowLeftIcon aria-hidden className="size-3.5" />
-            Back to Branches
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BranchDetailRefreshStatus({
-  state,
-}: {
-  state: BranchDetailRefreshState;
-}) {
-  return (
-    <BranchRefreshStatus
-      className="mb-3"
-      state={state}
-      subject="branch detail"
-    />
-  );
-}
-
-function BranchOverlayUnavailableState() {
-  return (
-    <div className="mt-4 rounded-md border border-[var(--border)] bg-[var(--muted)]/30 p-4">
-      <p className="font-medium text-sm">Live file overlays unavailable</p>
-      <p className="mt-1 text-[var(--muted-foreground)] text-xs">
-        Cloud-synced branch data remains visible. File diffs are unavailable on
-        this surface.
-      </p>
-    </div>
-  );
 }
 
 function BranchNoSessionsState() {
@@ -397,216 +428,6 @@ function BranchNotPresentState() {
     />
   );
 }
-
-/**
- * Sessions & timeline tab (Epic E). Builds ONE shared actor-color domain (from
- * the sessions — usage owners are null in v1) and ONE shared playhead controller
- * (over the merged trace) that the timeline (E1), playhead (E2), event-dot rail
- * (E3), swimlane (E4), and merged trace (D2) all bind to — none import each
- * other, breaking the timeline↔trace cycle. Order matches the design: timeline →
- * combined session trace → swimlane.
- */
-function BranchSessionsTimelineTab({
-  detail,
-  loc,
-  queryIdentity,
-  scrollElementRef,
-}: {
-  detail: BranchPageDetail;
-  loc?: PreferredBranchLoc;
-  queryIdentity?: BranchesQueryIdentity;
-  scrollElementRef: RefObject<HTMLDivElement | null>;
-}) {
-  // PLN-1148 Phase 2: the events-heavy merged trace is fetched lazily here. This
-  // component mounts only when the Sessions & timeline tab is active (Radix
-  // unmounts inactive TabsContent), so the trace loads on tab open, NOT on page
-  // load. The fetched items are merged back into `detail.mergedTrace` so every
-  // downstream consumer (timeline buckets, playhead, dot rail, merged trace,
-  // swimlane, actor domain) reads it unchanged.
-  const traceQuery = useBranchTrace(detail.id, undefined, queryIdentity);
-  const detailWithTrace = useMemo<BranchPageDetail>(
-    () => ({ ...detail, mergedTrace: [...(traceQuery.data ?? [])] }),
-    [detail, traceQuery.data]
-  );
-  const actorDomain = useMemo(
-    () => buildActorColorDomain(deriveActorsFromSessions(detailWithTrace)),
-    [detailWithTrace]
-  );
-  if (traceQuery.isLoading) {
-    return <BranchTraceLoading />;
-  }
-  return (
-    <BranchTracePlayheadProvider traceItems={detailWithTrace.mergedTrace}>
-      <BranchSessionsTimelineBody
-        actorDomain={actorDomain}
-        detail={detailWithTrace}
-        key={detail.id}
-        loc={loc}
-        scrollElementRef={scrollElementRef}
-      />
-    </BranchTracePlayheadProvider>
-  );
-}
-
-/** Skeleton shown while the lazy merged-trace fetch is in flight (PLN-1148). */
-function BranchTraceLoading() {
-  return <Skeleton className="mt-3 h-[420px] w-full" />;
-}
-
-function BranchSessionsTimelineBody({
-  detail,
-  actorDomain,
-  loc,
-  scrollElementRef,
-}: {
-  detail: BranchPageDetail;
-  actorDomain: BranchActorColorDomain;
-  loc?: PreferredBranchLoc;
-  scrollElementRef: RefObject<HTMLDivElement | null>;
-}) {
-  const controller = useBranchTracePlayhead();
-  const [isTraceEndActive, setIsTraceEndActive] = useState(false);
-  const [commentsWidth, setCommentsWidth] = useState(
-    DEFAULT_COMMENTS_RAIL_WIDTH
-  );
-  const handleScrubToTimestamp = useCallback(
-    (timestamp: string) => {
-      setIsTraceEndActive(false);
-      controller.scrubToTimestamp(timestamp);
-    },
-    [controller]
-  );
-  const handleScrubToRow = useCallback(
-    (row: number, flash?: boolean) => {
-      setIsTraceEndActive(false);
-      controller.scrubToRow(row, flash);
-    },
-    [controller]
-  );
-  const handleScrolledToTraceEnd = useCallback(() => {
-    setIsTraceEndActive(true);
-  }, []);
-  const {
-    activeAnchor: activeTraceCommentAnchor,
-    comments: traceComments,
-    deleteTraceComment,
-    jumpToTraceComment,
-    replyToTraceComment,
-    submitTraceComment,
-    updateTraceComment,
-  } = useTraceComments({
-    target: { type: "branch", id: detail.id },
-    onJumpToRow: handleScrubToRow,
-  });
-
-  // Share ONE time range (the session timeline's span) across the timeline bars,
-  // the playhead handle, and the event-dot rail so they line up.
-  const range = useMemo<TimeRange | null>(() => {
-    const { startMs, endMs } = buildSessionTimeline(detail, actorDomain);
-    return startMs != null && endMs != null
-      ? { startMs, endMs, spanMs: Math.max(1, endMs - startMs) }
-      : null;
-  }, [detail, actorDomain]);
-  const sessionCount = detail.sessions.length;
-  const sessionLabel = `${sessionCount} session${sessionCount === 1 ? "" : "s"}`;
-  // Read-only "you are here" position along the timeline (0–1), derived from the
-  // active timestamp; null until the reader clicks the graph or trace. Updates on
-  // click and on manual scroll (the draggable scrubber was removed).
-  const activeFraction = useMemo(() => {
-    if (isTraceEndActive) {
-      return 1;
-    }
-    if (!(range && controller.activeTimestamp)) {
-      return null;
-    }
-    const ms = Date.parse(controller.activeTimestamp);
-    return Number.isNaN(ms) ? null : fractionOf(range, ms);
-  }, [isTraceEndActive, range, controller.activeTimestamp]);
-
-  return (
-    <div
-      className="bq-sessions-workspace sd3"
-      style={{ "--sd3-cmts-w": `${commentsWidth}px` } as CSSProperties}
-    >
-      <div className="sd3-main">
-        <div className="bq-page-scroll sd3-scroll" ref={scrollElementRef}>
-          <div className="bq-sessions-main">
-            <div className="flex flex-col gap-5">
-              {/* PR timeline section — sticky: it pins to the top of the left
-                  timeline scroller while the combined trace scrolls beneath.
-                  Stacking mirrors the Session timeline: bars → event-dot rail →
-                  time axis. A bottom border closes the section off from the
-                  trace below. */}
-              <div className="bq-timeline-sticky">
-                <BranchPrActivityTimeline
-                  activeFraction={activeFraction}
-                  activeHourStart={controller.activeHourStart}
-                  actorDomain={actorDomain}
-                  detail={detail}
-                  loc={loc}
-                  onScrubHour={handleScrubToTimestamp}
-                >
-                  <BranchEventDotRail
-                    activeRow={controller.activeRow}
-                    commits={detail.commits}
-                    mergedAt={detail.mergedAt}
-                    onScrub={handleScrubToTimestamp}
-                    openedAt={detail.openedAt}
-                    prNumber={detail.prNumber}
-                    range={range}
-                    traceItems={detail.mergedTrace}
-                  />
-                </BranchPrActivityTimeline>
-              </div>
-
-              <div className="bq-act">
-                <div className="bq-act-head">
-                  <span className="bq-act-title">
-                    Combined session trace
-                    <span className="bq-act-sub"> · {sessionLabel}</span>
-                  </span>
-                </div>
-                <BranchMergedTrace
-                  activeRow={controller.activeRow}
-                  actorDomain={actorDomain}
-                  highlightAnchor={activeTraceCommentAnchor}
-                  onJump={handleScrubToRow}
-                  onScrolledToRow={handleScrubToRow}
-                  onScrolledToTraceEnd={handleScrolledToTraceEnd}
-                  onSubmitTraceComment={submitTraceComment}
-                  registerScroll={controller.registerTraceScroll}
-                  scrollElementRef={scrollElementRef}
-                  traceItems={detail.mergedTrace}
-                />
-              </div>
-
-              <BranchPrSessionSwimlane
-                activeTimestamp={controller.activeTimestamp}
-                actorDomain={actorDomain}
-                detail={detail}
-                onScrubTimestamp={handleScrubToTimestamp}
-                range={range}
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <TraceCommentsRail
-        activeRow={controller.activeRow}
-        comments={traceComments}
-        onDelete={deleteTraceComment}
-        onJump={jumpToTraceComment}
-        onReply={replyToTraceComment}
-        onUpdate={updateTraceComment}
-        onWidthChange={setCommentsWidth}
-        width={commentsWidth}
-      />
-    </div>
-  );
-}
-
-const DEFAULT_COMMENTS_RAIL_WIDTH = 360;
 
 const BranchDetailState = {
   Ready: "ready",

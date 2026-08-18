@@ -1,15 +1,31 @@
-import {
-  SESSION_STATUS,
-  type SessionStatus,
-} from "@closedloop-ai/loops-api/session-status";
+import type { AgentPipelineNode } from "@closedloop-ai/loops-api/insights";
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
-// Canonical session-status set lives in @closedloop-ai/loops-api/session-status
-// (FEA-1718) — re-exported here so design-system's public type surface and the
-// status badge keep their existing import path. SSOT: no local mirror.
-export { SESSION_STATUS };
-export type { SessionStatus };
+/**
+ * This package's OWN session-status set, deliberately NOT shared with Symphony.
+ *
+ * ISS-5592 moved Symphony's canonical vocabulary to
+ * `@repo/api/src/types/session-status`, which this package is gated from
+ * importing (FEA-4115 — `@closedloop-ai/design-system` is a generic, project-agnostic
+ * product). Chris decided on 2026-08-14 that the two need not agree: the design
+ * system is a separate product, so this copy is free to diverge and nothing
+ * enforces parity between them. Do NOT "fix" the duplication by importing the
+ * Symphony set — that import is what the boundary exists to stop.
+ *
+ * Consequence worth knowing before you edit: a value added to Symphony's
+ * lifecycle set does NOT appear here, and vice versa. `SessionRow.status` is
+ * typed `SessionStatus | string`, so a consumer passing a Symphony-only value
+ * still type-checks and still renders.
+ */
+export const SESSION_STATUS = {
+  ACTIVE: "active",
+  INACTIVE: "inactive",
+  ERROR: "error",
+} as const;
+
+export type SessionStatus =
+  (typeof SESSION_STATUS)[keyof typeof SESSION_STATUS];
 
 export type Harness =
   | "claude"
@@ -822,16 +838,11 @@ export type WorkflowToolFlowData = {
   toolCounts: Array<{ toolName: string; count: number }>;
 };
 
-export type WorkflowEffectivenessItem = {
-  subagentType: string;
-  total: number;
-  completed: number;
-  errors: number;
-  sessions: number;
-  successRate: number;
-  avgDuration: number | null;
-  trend: number[];
-};
+// SSOT: the agent-effectiveness row shape lives in @closedloop-ai/loops-api as
+// AgentPipelineNode (FEA-3537, the lowest-level package both the pipeline graph
+// and this effectiveness table share). Aliased here so a change to one is
+// guaranteed to update the other — no field-for-field duplicate to drift.
+export type WorkflowEffectivenessItem = AgentPipelineNode;
 
 export type WorkflowPattern = {
   steps: string[];
@@ -967,17 +978,86 @@ export type WorkflowSessionDrillIn = {
 export type SessionOverviewStats = {
   totalEvents: number;
   toolCalls: number;
-  subagents: number;
+  /**
+   * ISS-5366: `null` when the agent rows the count is derived from have not
+   * arrived (or are corrupt), so the Subagents MetricCard renders its own
+   * no-data slot instead of a confident `0`.
+   *
+   * A zero here has to MEAN zero. The producer resolves this and
+   * {@link subagentTypesAvailable} from the same unknown, and while it was
+   * coerced to `0` the two disagreed on screen: one panel rendered "Subagents 0"
+   * beside "Subagent types aren't available for this session." — two claims
+   * about the same missing data, and a reader believes the number over the
+   * sentence. Absence belongs in the type, exactly as it does for
+   * {@link durationLabel}.
+   */
+  subagents: number | null;
   compactions: number;
   errors: number;
-  durationLabel: string;
+  /**
+   * ISS-4675: `null` when the span is genuinely unresolvable, so the Duration
+   * MetricCard renders its own no-data slot rather than a hand-passed em-dash
+   * dressed up as a value.
+   */
+  durationLabel: string | null;
+  /**
+   * FEA-4186 / ISS-5131: the sub-label for the Overview Duration MetricCard,
+   * naming the two bounds the number was measured between — so the two Duration
+   * cards on the detail screen read the same. The producer derives it from the
+   * same window that produced the value, and states the absence instead when
+   * there is no number.
+   */
+  durationDetail?: string;
+  /**
+   * ISS-4675: the Events-per-minute caption, or the explicit "rate unavailable"
+   * copy when the denominator could not be measured. Never absent on the
+   * unavailable path — the Duration card beside it goes quiet at the same time,
+   * and two cards falling silent with no explanation is what the caption exists
+   * to prevent.
+   */
   eventRateHint?: string;
   topTools: Array<{ toolName: string; count: number }>;
+  /**
+   * Subagent types the session ran, EXCLUDING the session's own main agent and
+   * ordered by count desc — so this tally reconciles with the `subagents`
+   * metric above instead of contradicting it (ISS-4677). It is a capped
+   * shortlist, so its counts sum to `subagents` only when
+   * {@link subagentTypesOmitted} is 0; the surface must state the remainder
+   * rather than let the visible chips silently undercount.
+   */
   subagentTypes: Array<{
     label: string;
     count: number;
     isCompaction?: boolean;
   }>;
+  /**
+   * ISS-4677: distinct subagent TYPES the cap dropped from
+   * {@link subagentTypes}. Optional + additive: a producer that does not compute
+   * it omits the key and consumers treat a missing value as 0 (nothing hidden).
+   *
+   * This is a count of types, in a list whose visible entries carry AGENT
+   * counts, so a surface must word it as types — and pair it with
+   * {@link subagentTypesOmittedAgentCount}, which is the number that actually
+   * closes the gap to the `subagents` metric.
+   */
+  subagentTypesOmitted?: number;
+  /**
+   * ISS-4677: the SUBAGENTS behind {@link subagentTypesOmitted} — the summed
+   * counts of the dropped entries. `subagents` minus the visible chips' counts
+   * equals this, which is the reconciliation the cap would otherwise break;
+   * a count of dropped types never reaches it. Optional + additive, absent means
+   * 0.
+   */
+  subagentTypesOmittedAgentCount?: number;
+  /**
+   * ISS-4677: whether the agent rows behind `subagentTypes` actually arrived.
+   * An empty `subagentTypes` is otherwise ambiguous — it reads identically for
+   * "this session ran no subagents" and "the agent rows have not loaded", and
+   * the surface must not render a confident zero for the second. Optional +
+   * additive: a producer that does not compute it omits the key, and consumers
+   * treat a missing value as available (the pre-ISS-4677 assumption).
+   */
+  subagentTypesAvailable?: boolean;
   tokens: {
     cacheReadTokens: number;
     cacheWriteTokens: number;
@@ -996,6 +1076,15 @@ export type SessionAgent = {
   id: string;
   sessionId: string;
   name: string;
+  /**
+   * FEA-4258: the org-level agent-component identity slug for this agent's
+   * subagent component (`subagent::<normalizedKey>`), when one is resolvable.
+   * Lets the session agents section link a card out to the component inventory
+   * detail route (`/{org}/agents/{slug}`). Additive + optional: the main agent
+   * and any subagent with no resolvable component key omit it (`null`), and the
+   * card degrades to a non-link rather than rendering a dead anchor.
+   */
+  componentSlug?: string | null;
   type: "main" | "subagent";
   subagentType?: string | null;
   status: AgentStatus;
@@ -1022,7 +1111,6 @@ export type SessionEvent = {
   title: string;
   summary?: string | null;
   createdAt: string;
-  rawData?: string | null;
   metadata?: Array<{
     label: string;
     value: string;

@@ -83,6 +83,7 @@ async function resolveOrCreatePlanDocument(opts: {
           targetId: selectedDocumentId,
           linkType: LinkType.Produces,
         },
+        select: { id: true },
       });
     });
 

@@ -1,5 +1,4 @@
 import { parseError } from "@repo/observability/error";
-import { getInstallationOctokit } from "./installation-auth";
 
 type GraphqlClient = {
   graphql<T>(query: string, variables: Record<string, unknown>): Promise<T>;
@@ -100,17 +99,22 @@ export type ReviewThreadResolutionResult =
 
 /**
  * Confirms the current GitHub provider state for one PR review thread by node
- * id using installation auth. Installation auth and GraphQL are bounded by the
- * same deadline below the webhook route timeout so transient provider delay
- * becomes a retryable delivery.
+ * id with the caller's client. Client acquisition AND the GraphQL read are
+ * bounded together by a deadline below the webhook route timeout, so transient
+ * provider delay becomes a retryable delivery instead of a blown route budget.
+ *
+ * Callers pass the client itself when they already hold one, or the unawaited
+ * promise from their own credential resolution when they do not — the promise
+ * is awaited inside the raced operation, which is what keeps a slow token
+ * exchange under the same deadline as the read.
  */
 export async function fetchReviewThreadResolutionByNodeId(
-  installationId: string,
+  octokit: GraphqlClient | Promise<GraphqlClient>,
   reviewThreadNodeId: string
 ): Promise<ReviewThreadResolutionResult> {
   const controller = new AbortController();
   const operation = fetchReviewThreadResolutionWithSignal(
-    installationId,
+    octokit,
     reviewThreadNodeId,
     controller.signal
   );
@@ -127,12 +131,12 @@ export async function fetchReviewThreadResolutionByNodeId(
 }
 
 async function fetchReviewThreadResolutionWithSignal(
-  installationId: string,
+  octokit: GraphqlClient | Promise<GraphqlClient>,
   reviewThreadNodeId: string,
   signal: AbortSignal
 ): Promise<ReviewThreadResolutionResult> {
-  const octokit = await getInstallationOctokit(installationId);
-  const response = await octokit.graphql<ReviewThreadResolutionResponse>(
+  const client = await octokit;
+  const response = await client.graphql<ReviewThreadResolutionResponse>(
     `
       query PullRequestReviewThreadResolution($threadId: ID!) {
         node(id: $threadId) {

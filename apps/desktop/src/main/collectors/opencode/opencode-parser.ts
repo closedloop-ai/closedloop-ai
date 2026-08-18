@@ -12,17 +12,18 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
+import { OpencodeDefaultModel } from "@repo/lib/harness/synthetic-model-keys";
 import {
   addStorageTokenCounts,
   readStorageTokenCount,
-  readStorageTokenCountAlias,
-} from "../../token-counts.js";
+} from "../../cost/token-counts.js";
 import {
   collectArtifacts,
   computeUnifiedDiffDelta,
   countDiffFiles,
   extractErrorMessage,
+  isMeaningfulCwd,
   isSyntheticModelKey,
   noteTimestamp,
   pushTurnDuration,
@@ -33,7 +34,6 @@ import {
 import {
   createNormalizedSession,
   type NormalizedApiError,
-  type NormalizedDiffStats,
   type NormalizedMessage,
   type NormalizedSession,
   type NormalizedTokenCounts,
@@ -42,7 +42,17 @@ import {
   type NormalizedToolUse,
   type NormalizedTurnDuration,
 } from "../types.js";
+import { resolveOpencodeDiffStats } from "./opencode-diff-stats.js";
 import { getOpenCodeDbPath } from "./opencode-home.js";
+import {
+  classifyOpencodeParseFailure,
+  describeOpencodeParseFailure,
+  type OpencodeDroppedSession,
+  type OpencodeSessionLoad,
+  opencodeParseFailureAbortsLoad,
+  resolveSummaryColumnProbeFailure,
+} from "./opencode-parse-failure.js";
+import { extractOpenCodeTokenCounts } from "./opencode-token-extract.js";
 
 type Row = Record<string, unknown>;
 
@@ -54,58 +64,14 @@ function parseJsonCell(value: unknown): unknown {
   return typeof value === "string" ? safeJson(value) : value;
 }
 
-// Canonical fresh shape (see NormalizedTokenCounts): OpenCode reports `input`
-// as FRESH/uncached with cache_read/cache_write as separate additive fields, so
-// they are read verbatim — no subtraction.
+// Token-count extraction (including the nested OpenCode `tokens.cache` shape,
+// ISS-4380) lives in `opencode-token-extract.ts` so this grandfathered parser
+// stays smaller.
 function extractTokenCounts(
   raw: Record<string, unknown>,
   context: string
 ): NormalizedTokenCounts | null {
-  const input = readStorageTokenCountAlias(raw, `${context}.input`, [
-    "input",
-    "inputTokens",
-    "input_tokens",
-    "prompt_tokens",
-    "tokens_input",
-  ]);
-  const output = addStorageTokenCounts(
-    readStorageTokenCountAlias(raw, `${context}.output`, [
-      "output",
-      "outputTokens",
-      "output_tokens",
-      "completion_tokens",
-      "tokens_output",
-    ]),
-    readStorageTokenCountAlias(raw, `${context}.reasoning`, [
-      "reasoning",
-      "reasoningTokens",
-      "reasoning_tokens",
-      "reasoning_output_tokens",
-      "tokens_reasoning",
-    ]),
-    `${context}.output_with_reasoning`
-  );
-  const cacheRead = readStorageTokenCountAlias(raw, `${context}.cache_read`, [
-    "cacheRead",
-    "cache_read",
-    "cacheReadTokens",
-    "cache_read_tokens",
-    "cached_input_tokens",
-    "tokens_cache_read",
-  ]);
-  const cacheWrite = readStorageTokenCountAlias(raw, `${context}.cache_write`, [
-    "cacheWrite",
-    "cache_write",
-    "cacheWriteTokens",
-    "cache_write_tokens",
-    "cache_creation_input_tokens",
-    "tokens_cache_creation",
-    "tokens_cache_write",
-  ]);
-  if (input || output || cacheRead || cacheWrite) {
-    return { input, output, cacheRead, cacheWrite };
-  }
-  return null;
+  return extractOpenCodeTokenCounts(raw, context);
 }
 
 function modelIdFromValue(value: unknown): string | null {
@@ -232,8 +198,11 @@ type SessionAccumulator = {
   // entry (pushMessageTokenSeries). OpenCode reports the same usage again on the
   // message's step-finish parts, so those are skipped for these messages to keep
   // token_events — and the Dashboard cost analytics that SUM over it — from
-  // double-counting. Session-level token_usage is unaffected (it derives from the
-  // session-row aggregate, not this series).
+  // double-counting. Session-level token_usage normally derives from the
+  // session-row aggregate; FEA-4183 additionally falls back to summing THIS
+  // (already-deduped) series into `tokensByModel` when that aggregate is empty
+  // (see buildTokensByModel), so keeping the series free of double-counts matters
+  // for the session cost rollup too, not only token_events.
   readonly tokenSeriesMessageIds: Set<string>;
 };
 
@@ -265,10 +234,17 @@ function pushMessageTokenSeries(
   acc: SessionAccumulator,
   ctx: MessageContext
 ): void {
-  if (ctx.msgTokens && ctx.iso && ctx.msgModel) {
+  // FEA-4183: require tokens + timestamp, but NOT a resolved model. A message
+  // can carry real token counts with no model attribution (session model
+  // unresolved and no per-message model); previously that dropped the usage
+  // entirely, so the session showed zero tokens and no derivable cost. Fall
+  // back to the synthetic `opencode-default` key — matching the step-token and
+  // session-rollup paths in this parser — so the tokens are captured and the
+  // cost engine's unknown-model fallback (FEA-3546) can price them.
+  if (ctx.msgTokens && ctx.iso) {
     acc.tokenSeries.push({
       timestamp: ctx.iso,
-      model: ctx.msgModel,
+      model: ctx.msgModel || OpencodeDefaultModel,
       input: ctx.msgTokens.input,
       output: ctx.msgTokens.output,
       cacheRead: ctx.msgTokens.cacheRead,
@@ -454,7 +430,7 @@ function handleStepFinishPart(acc: SessionAccumulator, ctx: PartContext): void {
     const stepModel =
       modelIdFromValue(part.model ?? part.modelID) ||
       acc.sessionModel ||
-      "opencode-default";
+      OpencodeDefaultModel;
     const tokens = extractTokenCounts(stepData, "opencode.step_tokens");
     if (tokens) {
       acc.tokenSeries.push({
@@ -532,7 +508,10 @@ function processMessageRows(acc: SessionAccumulator, messageRows: Row[]): void {
       const dataPath = data.path;
       const pathCwd = typeof dataPath.cwd === "string" ? dataPath.cwd : null;
       const pathRoot = typeof dataPath.root === "string" ? dataPath.root : null;
-      acc.cwd = pathCwd || pathRoot || acc.cwd;
+      const candidate = pathCwd || pathRoot || null;
+      if (isMeaningfulCwd(candidate)) {
+        acc.cwd = candidate;
+      }
     }
 
     // Own-key lookup only: `role` is foreign opencode.db content, so a value
@@ -573,57 +552,54 @@ function processPartRows(acc: SessionAccumulator, partRows: Row[]): void {
   }
 }
 
-/** CR-4/CR-9: Build aggregate diffStats. Prefer summary columns from the
- *  session row when available, fall back to patch-part accumulation. */
-function resolveDiffStats(
-  sessionRow: Row,
-  hasSummaryCols: boolean,
-  patch: { added: number; removed: number; filesChanged: number }
-): NormalizedDiffStats | null {
-  if (hasSummaryCols) {
-    const summaryAdds = Number(sessionRow.summary_additions || 0);
-    const summaryDels = Number(sessionRow.summary_deletions || 0);
-    const summaryFiles = Number(sessionRow.summary_files || 0);
-    // Parse summary_diffs for additional diff context (unified diff text).
-    const summaryDiffsRaw = sessionRow.summary_diffs;
-    if (typeof summaryDiffsRaw === "string" && summaryDiffsRaw.length > 0) {
-      const diffDelta = computeUnifiedDiffDelta(summaryDiffsRaw);
-      const diffFiles = countDiffFiles(summaryDiffsRaw);
-      // Prefer summary_diffs line counts when they provide data and the
-      // explicit summary columns are zeroed out; otherwise the explicit
-      // columns are authoritative.
-      const effectiveAdds = summaryAdds || diffDelta.add;
-      const effectiveDels = summaryDels || diffDelta.del;
-      const effectiveFiles = summaryFiles || diffFiles;
-      if (effectiveAdds || effectiveDels || effectiveFiles) {
-        return {
-          filesChanged: effectiveFiles,
-          linesAdded: effectiveAdds,
-          linesRemoved: effectiveDels,
-        };
-      }
-    } else if (summaryAdds || summaryDels || summaryFiles) {
-      return {
-        filesChanged: summaryFiles,
-        linesAdded: summaryAdds,
-        linesRemoved: summaryDels,
-      };
-    }
+/**
+ * FEA-4183: fall back to the accumulated per-message/step token series when the
+ * session-row aggregate carried no usage. `importPhaseTokenUsage` writes the
+ * `token_usage` rows (and thus the authoritative `sessions.cost_usd_estimated`
+ * rollup, which `updateSessionCostRollup` derives EXCLUSIVELY from
+ * `token_usage`) from `tokensByModel` — NOT from `tokenSeries`. So a session
+ * whose only usage lives in message/step rows (zero session token columns)
+ * would still record a null cost even though the series captured the tokens.
+ * Summing the series under the single synthetic `opencode-default` key (matching
+ * the series' own fallback attribution) gives that session a priceable
+ * `token_usage` row so a non-zero cost derives. Marked `inferred` because the
+ * key is a synthetic fallback, not a model id read from the store.
+ */
+function tokensByModelFromSeries(
+  tokenSeries: readonly NormalizedTokenRecord[]
+): Record<string, NormalizedTokenCounts> {
+  const tokensByModel: Record<string, NormalizedTokenCounts> = {};
+  if (tokenSeries.length === 0) {
+    return tokensByModel;
   }
-  if (patch.added || patch.removed || patch.filesChanged) {
-    return {
-      filesChanged: patch.filesChanged,
-      linesAdded: patch.added,
-      linesRemoved: patch.removed,
-    };
+  const total: NormalizedTokenCounts = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    inferred: true,
+  };
+  for (const record of tokenSeries) {
+    total.input += record.input;
+    total.output += record.output;
+    total.cacheRead += record.cacheRead;
+    total.cacheWrite += record.cacheWrite;
   }
-  return null;
+  if (total.input || total.output || total.cacheRead || total.cacheWrite) {
+    tokensByModel[OpencodeDefaultModel] = total;
+  }
+  return tokensByModel;
 }
 
-/** Build the per-model session-level token totals (5 token-column reads). */
+/**
+ * Build the per-model session-level token totals (5 token-column reads), falling
+ * back to the accumulated token series when the session-row aggregate is empty
+ * (see {@link tokensByModelFromSeries}).
+ */
 function buildTokensByModel(
   sessionRow: Row,
-  sessionModel: string | null
+  sessionModel: string | null,
+  tokenSeries: readonly NormalizedTokenRecord[]
 ): Record<string, NormalizedTokenCounts> {
   const tokensByModel: Record<string, NormalizedTokenCounts> = {};
   const tokenInput = readStorageTokenCount(
@@ -655,7 +631,7 @@ function buildTokensByModel(
   ) {
     const agent =
       typeof sessionRow.agent === "string" ? sessionRow.agent : null;
-    const key = sessionModel || agent || "opencode-default";
+    const key = sessionModel || agent || OpencodeDefaultModel;
     tokensByModel[key] = {
       input: tokenInput,
       output: addStorageTokenCounts(
@@ -666,25 +642,59 @@ function buildTokensByModel(
       cacheRead: tokenCacheRead,
       cacheWrite: tokenCacheWrite,
     };
+    return tokensByModel;
   }
-  return tokensByModel;
+  return tokensByModelFromSeries(tokenSeries);
 }
+
+/**
+ * The two per-session row reads a session parse performs, as plain functions so
+ * the {@link OpencodeSessionLoadOptions.wrapRowReaders} seam can stand between
+ * them and the prepared statements.
+ */
+export type OpencodeSessionRowReaders = {
+  readMessages: (sessionId: SessionRowId) => Row[];
+  readParts: (sessionId: SessionRowId) => Row[];
+};
+
+/** The `session.id` primary key as `node:sqlite` hands it back. */
+type SessionRowId = string | number | bigint | null;
+
+/**
+ * Everything one session row's parse needs beyond the row itself: the two
+ * per-session row reads, whether the optional `summary_*` columns exist, the
+ * monitored diagnostic sink (ISS-5238), and the accumulator for sessions this
+ * batch had to drop.
+ */
+type SessionParseContext = OpencodeSessionRowReaders & {
+  hasSummaryCols: boolean;
+  /** Reports a per-session degradation, already scoped to the source DB. */
+  report: (sessionId: string, message: string) => void;
+  /** Sessions dropped by a malformed row, in load order. */
+  dropped: OpencodeDroppedSession[];
+};
 
 function parseSessionRow(
   sessionRow: Row,
-  getMessages: StatementSync,
-  getParts: StatementSync,
-  hasSummaryCols: boolean
+  ctx: SessionParseContext
 ): NormalizedSession | null {
-  const sessionId = sessionRow.id as string | number | bigint | null;
-  const messageRows = getMessages.all(sessionId) as Row[];
+  const sessionId = sessionRow.id as SessionRowId;
+  const messageRows = ctx.readMessages(sessionId);
   if (!Array.isArray(messageRows) || messageRows.length === 0) {
     return null;
   }
 
   const acc: SessionAccumulator = {
     sessionModel: modelIdFromValue(sessionRow.model),
-    cwd: typeof sessionRow.directory === "string" ? sessionRow.directory : null,
+    // FEA-3668: gate the PRIMARY seed too, not just the message-row override
+    // below — an opencode `directory` of "/" would otherwise stick and never
+    // reach the guarded fallback. (Row values are SQLOutputValue, so keep the
+    // string narrowing before isMeaningfulCwd's string-only check.)
+    cwd:
+      typeof sessionRow.directory === "string" &&
+      isMeaningfulCwd(sessionRow.directory)
+        ? sessionRow.directory
+        : null,
     firstTimestamp: null,
     lastTimestamp: null,
     userMessageCount: 0,
@@ -708,24 +718,33 @@ function parseSessionRow(
   noteTimestamp(acc, sessionRow.time_updated);
 
   processMessageRows(acc, messageRows);
-  processPartRows(acc, getParts.all(sessionId) as Row[]);
+  processPartRows(acc, ctx.readParts(sessionId));
 
   if (!acc.firstTimestamp) {
     return null;
   }
 
-  const tokensByModel = buildTokensByModel(sessionRow, acc.sessionModel);
+  const tokensByModel = buildTokensByModel(
+    sessionRow,
+    acc.sessionModel,
+    acc.tokenSeries
+  );
 
-  const diffStats = resolveDiffStats(sessionRow, hasSummaryCols, {
-    added: acc.totalAdded,
-    removed: acc.totalRemoved,
-    filesChanged: acc.totalFilesChanged,
-  });
+  const sessionIdStr = String(sessionId);
+  const diffStats = resolveOpencodeDiffStats(
+    sessionRow,
+    ctx.hasSummaryCols,
+    {
+      added: acc.totalAdded,
+      removed: acc.totalRemoved,
+      filesChanged: acc.totalFilesChanged,
+    },
+    (message) => ctx.report(sessionIdStr, message)
+  );
 
   // CR-13: Collect artifact references from tool uses.
   const artifacts = collectArtifacts(acc.toolUses, acc.cwd);
 
-  const sessionIdStr = String(sessionId);
   const title = typeof sessionRow.title === "string" ? sessionRow.title : null;
   const projectName = acc.cwd
     ? path.basename(acc.cwd)
@@ -766,6 +785,48 @@ function parseSessionRow(
   });
 }
 
+/**
+ * Parse one session row, isolating a MALFORMED row to that single session while
+ * letting a STORE-level failure abort the batch.
+ *
+ * OpenCode reads the whole `opencode.db` as one batch, so an unhandled throw in
+ * {@link parseSessionRow} — most plausibly an `InvalidTokenCountError` from a
+ * corrupt/version-skewed token count in one message or step — would abort
+ * {@link loadOpencodeSessionsFromDb} and drop EVERY valid session in the store.
+ * Catching at the session boundary drops only the offending session and lets its
+ * healthy siblings through.
+ *
+ * ISS-5238 (F1): but the catch used to be `catch { return null; }` — it swallowed
+ * a transient `SQLITE_BUSY` past the 1s `busy_timeout` exactly as if the row were
+ * bad. The batch then RESOLVED with a short list, so `markSourceImported`
+ * advanced the DB fingerprint and `listSources` skipped the unchanged DB, and the
+ * session that was merely unreadable for a moment stayed missing until the file's
+ * mtime/size moved again. That is the same failed-read-frozen-as-fact defect
+ * class as ISS-4649, and the engine is explicitly built to retry it
+ * (`collector-manager-source-parse.ts:markSeenOnThrow` does not mark a batch
+ * collector seen on a throw). So the two cases are now told apart explicitly by
+ * {@link classifyOpencodeParseFailure}: a store failure RETHROWS (fingerprint
+ * unadvanced, tick retried) and a malformed row is dropped, recorded on
+ * `ctx.dropped`, and reported on the monitored channel by the caller.
+ */
+function parseSessionRowSafely(
+  sessionRow: Row,
+  ctx: SessionParseContext
+): NormalizedSession | null {
+  try {
+    return parseSessionRow(sessionRow, ctx);
+  } catch (error) {
+    if (opencodeParseFailureAbortsLoad(classifyOpencodeParseFailure(error))) {
+      throw error;
+    }
+    ctx.dropped.push({
+      sessionId: String(sessionRow.id),
+      reason: describeOpencodeParseFailure(error),
+    });
+    return null;
+  }
+}
+
 /** Extract text content from a message data object. Handles both string and
  *  array-of-parts content shapes. */
 function extractMessageText(data: Record<string, unknown>): string | null {
@@ -795,27 +856,248 @@ function extractMessageText(data: Record<string, unknown>): string | null {
   return null;
 }
 
-/** CR-9: Detect whether the session table has summary_* columns. */
-function hasSummaryColumns(db: DatabaseSync): boolean {
+/**
+ * CR-9: Detect whether the session table has summary_* columns.
+ *
+ * ISS-5161: a FAILED `PRAGMA` is not a legacy schema — the same conflation
+ * ISS-4649 split apart in {@link readSessionParentLinks}, on the same statement.
+ * Returning `false` on a throw dropped `summary_*` from the SELECT, so
+ * `resolveDiffStats` fell back to patch accumulation for EVERY session, the
+ * parse resolved, and `markSourceImported` froze the understated corpus behind
+ * the unchanged-DB gate. A genuinely legacy DB answers the PRAGMA successfully
+ * and still reads as `false`, unchanged.
+ *
+ * ISS-5238 (wongk review) splits that refusal rather than throwing on every
+ * failure: {@link resolveSummaryColumnProbeFailure} owns the split — a RETRYABLE
+ * failure rethrows so the fingerprint stays put and the tick retries, while a
+ * DURABLE one falls back to the legacy shape but SAYS SO on the monitored
+ * channel, because propagating a failure that reproduces every tick would wedge
+ * the whole corpus forever (a batch collector's throw is never marked seen).
+ */
+function hasSummaryColumns(
+  db: DatabaseSync,
+  report: (message: string) => void
+): boolean {
+  let cols: Row[];
   try {
+    cols = db.prepare("PRAGMA table_info(session)").all() as Row[];
+  } catch (error) {
+    return resolveSummaryColumnProbeFailure(error, report);
+  }
+  const names = new Set(cols.map((c) => c.name));
+  return (
+    names.has("summary_additions") &&
+    names.has("summary_deletions") &&
+    names.has("summary_files") &&
+    names.has("summary_diffs")
+  );
+}
+
+/**
+ * FEA-3932: one session's parent linkage read from the `session` table's
+ * `parent_id` column. OpenCode nests subagent sessions under a parent session
+ * via `parent_id`; the materializer uses this to file a subagent's projection
+ * as `subagent:<childId>.jsonl` under the ROOT session's `externalSessionId`
+ * instead of as its own top-level `main.jsonl`. `sessionId`/`parentId` are the
+ * RAW opencode ids (NOT the `opencode-` prefixed `externalSessionId`).
+ */
+export type OpencodeSessionLink = {
+  sessionId: string;
+  parentId: string | null;
+};
+
+/**
+ * ISS-4649 (finding 6): the three OUTCOMES of reading the parent linkage, which
+ * a bare `[]` conflated.
+ *
+ * `Linked` — the `parent_id` column exists and its rows were read.
+ * `Legacy` — no DB, or a DB predating the `parent_id` column: this install has
+ *   no subagent concept at all, so every session legitimately stays top-level.
+ * `Unreadable` — the read FAILED (a `SQLITE_BUSY` past the 1s busy timeout, a
+ *   corrupt file, an open error). Emphatically NOT the same as `Legacy`: the DB
+ *   may well have parents we simply could not see, so treating it as legacy
+ *   un-nests every subagent for that import tick — and the collector's
+ *   fingerprint gate then skips re-reading the unchanged DB, freezing the
+ *   flattened result in place until the file's mtime/size changes again.
+ */
+export const OpencodeParentLinkReadStatus = {
+  Linked: "linked",
+  Legacy: "legacy",
+  Unreadable: "unreadable",
+} as const;
+export type OpencodeParentLinkReadStatus =
+  (typeof OpencodeParentLinkReadStatus)[keyof typeof OpencodeParentLinkReadStatus];
+
+export type OpencodeParentLinkRead =
+  | {
+      status: typeof OpencodeParentLinkReadStatus.Linked;
+      links: OpencodeSessionLink[];
+    }
+  | { status: typeof OpencodeParentLinkReadStatus.Legacy }
+  | {
+      status: typeof OpencodeParentLinkReadStatus.Unreadable;
+      error: unknown;
+    };
+
+/**
+ * Read the `(id, parent_id)` linkage for every session, reporting WHY it is
+ * empty when it is. THE reader for every in-repo caller: the collector (which
+ * must not import a flattened corpus off a transient lock) and the transcript
+ * materializer (which must not re-root and then prune the correct subagent
+ * projections). The legacy-shaped {@link loadSessionParentLinksFromDb} shim
+ * below is retained only as the pre-ISS-4649 best-effort export.
+ */
+export function readSessionParentLinks(
+  dbPath: string = getOpenCodeDbPath()
+): OpencodeParentLinkRead {
+  if (!(dbPath && fs.existsSync(dbPath))) {
+    return { status: OpencodeParentLinkReadStatus.Legacy };
+  }
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(dbPath);
+  } catch (error) {
+    return { error, status: OpencodeParentLinkReadStatus.Unreadable };
+  }
+  try {
+    db.exec("PRAGMA busy_timeout = 1000");
     const cols = db.prepare("PRAGMA table_info(session)").all() as Row[];
-    const names = new Set(cols.map((c) => c.name));
-    return (
-      names.has("summary_additions") &&
-      names.has("summary_deletions") &&
-      names.has("summary_files") &&
-      names.has("summary_diffs")
-    );
-  } catch {
-    return false;
+    const hasParent = cols.some((c) => c.name === "parent_id");
+    if (!hasParent) {
+      return { status: OpencodeParentLinkReadStatus.Legacy };
+    }
+    const rows = db.prepare("SELECT id, parent_id FROM session").all() as Row[];
+    const links: OpencodeSessionLink[] = [];
+    for (const row of rows) {
+      const id = row.id;
+      if (id == null) {
+        continue;
+      }
+      const parent = row.parent_id;
+      links.push({
+        sessionId: String(id),
+        parentId: parent == null ? null : String(parent),
+      });
+    }
+    return { links, status: OpencodeParentLinkReadStatus.Linked };
+  } catch (error) {
+    return { error, status: OpencodeParentLinkReadStatus.Unreadable };
+  } finally {
+    db.close();
   }
 }
 
+/**
+ * Best-effort linkage read: a DB that predates the `parent_id` column, or that
+ * could not be read at all, yields an empty map. Kept separate from
+ * {@link loadSessionsFromDb} so the parser's `NormalizedSession` contract is
+ * unchanged.
+ *
+ * ISS-4649: DO NOT reach for this in new code. It deliberately cannot tell a
+ * legacy DB from a failed read, and every in-repo caller has moved to
+ * {@link readSessionParentLinks} because that conflation is destructive on both
+ * of them (the collector would import a flattened corpus and freeze it behind
+ * its own fingerprint; the materializer would re-root every subagent, prune the
+ * correct projections, and checkpoint past the damage). Retained as the
+ * pre-ISS-4649 exported contract per the compatibility guardrail; the
+ * `Unreadable`-flattens-to-`[]` behavior is pinned by
+ * `test/opencode-subagent-fold.test.ts`.
+ */
+export function loadSessionParentLinksFromDb(
+  dbPath: string = getOpenCodeDbPath()
+): OpencodeSessionLink[] {
+  const read = readSessionParentLinks(dbPath);
+  return read.status === OpencodeParentLinkReadStatus.Linked ? read.links : [];
+}
+
+/**
+ * ISS-5238: the loader's options. `log` is the MONITORED sink — the same
+ * `collector <key> import failed: …` channel `defaultCollectors` threads into the
+ * collector. The parser previously had no diagnostic sink at all, so every
+ * degradation below it was completely silent, and the engine does not fill that
+ * gap (`collector-manager-source-parse.ts` deliberately does not log a rejected
+ * parse). Omitted = a no-op, as in tests and golden mode.
+ */
+export type OpencodeSessionLoadOptions = {
+  log?: (message: string) => void;
+  /**
+   * The channel prefix every diagnostic from this load carries. Defaults to the
+   * collector's monitored `collector opencode import failed` event; the
+   * materializer passes its own so a transcript-sync degradation is not triaged
+   * as a collector import failure.
+   */
+  logPrefix?: string;
+  /**
+   * Per-session row-reader seam (default: the DB's own prepared statements).
+   *
+   * Exists so the RETRYABLE-failure rethrow in {@link parseSessionRowSafely} is
+   * reachable in a test, in the same spirit as ISS-4649's `readParentLinks`
+   * seam. A real transient `SQLITE_BUSY` at the row boundary needs a write lock
+   * to land BETWEEN the session SELECT and the per-session reads, which a
+   * single-threaded test cannot schedule; a lock held for the whole load fails
+   * the outer SELECT first and never reaches that branch. Wrapping the readers
+   * lets a test raise a REAL captured `node:sqlite` error at exactly the seam
+   * the production code guards.
+   */
+  wrapRowReaders?: (
+    readers: OpencodeSessionRowReaders
+  ) => OpencodeSessionRowReaders;
+};
+
+/** The monitored `CollectorManager` event the collector's own logger emits. */
+const COLLECTOR_IMPORT_FAILED_PREFIX = "collector opencode import failed";
+
+/**
+ * Load every session from `opencode.db`, REPORTING what was dropped.
+ *
+ * Prefer this over {@link loadSessionsFromDb} in any caller that prunes,
+ * deletes, checkpoints, or re-roots off the result: a short list is otherwise
+ * indistinguishable from a store that legitimately holds fewer sessions, which
+ * is what let the materializer delete a still-correct projection (ISS-5238 F3)
+ * and the subagent fold re-flatten a dropped parent's children (F2).
+ *
+ * THROWS when SQLite itself could not serve the read — see
+ * {@link parseSessionRowSafely}. A caller must let that propagate rather than
+ * persist a partial corpus.
+ */
+export function loadOpencodeSessionsFromDb(
+  dbPath: string = getOpenCodeDbPath(),
+  options: OpencodeSessionLoadOptions = {}
+): OpencodeSessionLoad {
+  const log = options.log ?? (() => undefined);
+  const prefix = options.logPrefix ?? COLLECTOR_IMPORT_FAILED_PREFIX;
+  const load = readSessionsFromDb(dbPath, log, prefix, options.wrapRowReaders);
+  for (const drop of load.droppedSessions) {
+    log(
+      `${prefix}: dropped session ${drop.sessionId} from ${dbPath} (${drop.reason}); the row could not be parsed, so it is omitted from this import`
+    );
+  }
+  return load;
+}
+
+/**
+ * Array form, retained as the historical export for the read-only callers
+ * (golden corpus, fixtures, tests) that only want the sessions. It reports
+ * nothing and, like {@link loadOpencodeSessionsFromDb}, THROWS on a retryable
+ * store-level read failure — it is not a best-effort reader. New code that acts
+ * on absence wants {@link loadOpencodeSessionsFromDb}.
+ */
 export function loadSessionsFromDb(
   dbPath: string = getOpenCodeDbPath()
 ): NormalizedSession[] {
+  return loadOpencodeSessionsFromDb(dbPath).sessions;
+}
+
+function readSessionsFromDb(
+  dbPath: string,
+  log: (message: string) => void,
+  prefix: string,
+  wrapRowReaders?: (
+    readers: OpencodeSessionRowReaders
+  ) => OpencodeSessionRowReaders
+): OpencodeSessionLoad {
   if (!(dbPath && fs.existsSync(dbPath))) {
-    return [];
+    return { sessions: [], droppedSessions: [] };
   }
 
   const db = new DatabaseSync(dbPath);
@@ -823,7 +1105,9 @@ export function loadSessionsFromDb(
     db.exec("PRAGMA busy_timeout = 1000");
 
     // CR-9: Detect optional summary columns before building the SELECT.
-    const hasSummaryCols = hasSummaryColumns(db);
+    const hasSummaryCols = hasSummaryColumns(db, (message) =>
+      log(`${prefix}: ${dbPath}: ${message}`)
+    );
 
     const sessionSelect = hasSummaryCols
       ? `
@@ -885,19 +1169,32 @@ export function loadSessionsFromDb(
       ORDER BY time_created ASC, id ASC
     `);
 
+    const readers: OpencodeSessionRowReaders = {
+      readMessages: (sessionId) => getMessages.all(sessionId) as Row[],
+      readParts: (sessionId) => getParts.all(sessionId) as Row[],
+    };
+    const ctx: SessionParseContext = {
+      ...(wrapRowReaders ? wrapRowReaders(readers) : readers),
+      hasSummaryCols,
+      dropped: [],
+      // Surfaced where the context is richest: the session AND the store the
+      // value came from, not an anonymous inner frame.
+      report: (sessionId, message) =>
+        log(`${prefix}: session ${sessionId} in ${dbPath}: ${message}`),
+    };
     const out: NormalizedSession[] = [];
     for (const row of sessionRows) {
-      const session = parseSessionRow(
-        row,
-        getMessages,
-        getParts,
-        hasSummaryCols
-      );
+      // OpenCode is a BATCH harness — the whole `opencode.db` is parsed in one
+      // load. A single malformed row must NOT suppress every valid session, so
+      // isolate each session: a throw (e.g. `InvalidTokenCountError` from a
+      // corrupt token count) drops only that session and the rest survive. A
+      // STORE-level failure still propagates (ISS-5238 F1).
+      const session = parseSessionRowSafely(row, ctx);
       if (session) {
         out.push(session);
       }
     }
-    return out;
+    return { sessions: out, droppedSessions: ctx.dropped };
   } finally {
     db.close();
   }

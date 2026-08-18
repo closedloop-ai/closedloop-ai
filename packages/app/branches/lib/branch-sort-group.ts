@@ -1,21 +1,20 @@
 import {
   BRANCH_STATUS_CONFIG,
   type BranchRow,
+  RENDER_MISSING,
   shortRepoName,
 } from "./branch-row";
 
-/**
- * Client-side sort keys for the Branches table. Values match the table column
- * ids so a column-header click can pass the id straight through as the sort key.
- */
+/** Sortable scalar columns in the approved Branches table. */
 export const BranchSortKey = {
   Name: "name",
-  Repo: "repo",
   Owner: "owner",
-  Status: "status",
-  LastActivity: "lastActivity",
   Sessions: "sessions",
   Changes: "changes",
+  Status: "status",
+  PullRequest: "pr",
+  LastActivity: "lastActivity",
+  Repo: "repo",
 } as const;
 export type BranchSortKey = (typeof BranchSortKey)[keyof typeof BranchSortKey];
 
@@ -25,102 +24,157 @@ export const BranchSortDir = {
 } as const;
 export type BranchSortDir = (typeof BranchSortDir)[keyof typeof BranchSortDir];
 
-function changeTotal(row: BranchRow): number {
-  return (row.additions ?? 0) + (row.deletions ?? 0);
-}
+type SortValue = string | number | { repo: string; number: number } | null;
 
 /**
- * Parse the producer-owned `lastActivityAt` to an epoch ms for ordering. It may
- * be a mixed timestamp format (space- vs `T`-separated), so compare by true
- * instant via `Date.parse` rather than lexically (a space `0x20` sorts before
- * `T` `0x54`, which would misorder same-day rows). Missing or unparseable values
- * sort oldest, landing at the bottom of the default newest-first order.
- */
-function parseActivityMs(value: string | undefined): number {
-  if (!value) {
-    return Number.NEGATIVE_INFINITY;
-  }
-  const ms = Date.parse(value);
-  return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
-}
-
-/**
- * Sort the (already filtered) rows. `desc` is newest-first; "lastActivity"
- * compares by parsed instant (see `parseActivityMs`), the other keys compare
- * their render field. Correct no matter what order the data source returned rows
- * in — the local SQLite source pre-sorts newest-first, but the HTTP source may
- * not.
+ * Sort populated values in the requested direction, always place unavailable
+ * values last, and finish with the canonical Branch identity.
  */
 export function sortBranchRows(
   rows: BranchRow[],
   key: BranchSortKey,
-  dir: BranchSortDir
+  dir: BranchSortDir,
+  approved = true
 ): BranchRow[] {
-  // Decorate-sort-undecorate: derive each row's sort key exactly once (O(N))
-  // instead of recomputing it for both operands on every comparison
-  // (~2·N·log₂N `Date.parse` / `shortRepoName` / status-label lookups for the
-  // default lastActivity sort). String keys compare by `localeCompare`, every
-  // other key by numeric subtraction — the same field, comparison, and
-  // fall-through the per-row comparator used.
-  const stringKey =
-    key === BranchSortKey.Name ||
-    key === BranchSortKey.Repo ||
-    key === BranchSortKey.Owner ||
-    key === BranchSortKey.Status;
-  const sortKeyOf = (row: BranchRow): string | number => {
-    switch (key) {
-      case BranchSortKey.Name:
-        return row.branchName;
-      case BranchSortKey.Repo:
-        return shortRepoName(row.repo);
-      case BranchSortKey.Owner:
-        return row.owner;
-      case BranchSortKey.Status:
-        return BRANCH_STATUS_CONFIG[row.status].label;
-      case BranchSortKey.Changes:
-        return changeTotal(row);
-      case BranchSortKey.LastActivity:
-        return parseActivityMs(row.lastActivityAt);
-      default:
-        return row.sessionCount;
+  if (!approved) {
+    return sortLegacyBranchRows(rows, key, dir);
+  }
+  return [...rows].sort((left, right) => {
+    const compared = compareAvailable(
+      sortValue(left, key),
+      sortValue(right, key)
+    );
+    if (compared !== 0) {
+      if (compared === null) {
+        return compareMissing(sortValue(left, key), sortValue(right, key));
+      }
+      return dir === BranchSortDir.Asc ? compared : -compared;
     }
-  };
-  const decorated = rows.map((row) => ({ row, sortKey: sortKeyOf(row) }));
-  decorated.sort((a, b) => {
-    const compared = stringKey
-      ? (a.sortKey as string).localeCompare(b.sortKey as string)
-      : (a.sortKey as number) - (b.sortKey as number);
-    return dir === BranchSortDir.Asc ? compared : -compared;
+    return (left.canonicalIdentity ?? left.id).localeCompare(
+      right.canonicalIdentity ?? right.id
+    );
   });
-  return decorated.map((entry) => entry.row);
 }
 
-/**
- * Filter rows to those active on/after `startDate` (an ISO instant from
- * `getStartDateForRange`). Compares by true instant via `Date.parse` rather than
- * a byte-wise string compare: `lastActivityAt` is the producer-owned wire value
- * (`eventActivity ?? updatedAt`) and may be a mixed timestamp format (space- vs
- * `T`-separated), where a lexicographic compare would mis-drop a recent row
- * (a space `0x20` sorts before `T` `0x54`). Rows with no — or an unparseable —
- * timestamp are kept rather than silently dropped. `startDate` undefined (the
- * "All time" window) returns the rows unchanged.
- */
+function sortLegacyBranchRows(
+  rows: BranchRow[],
+  key: BranchSortKey,
+  dir: BranchSortDir
+): BranchRow[] {
+  const decorated = rows.map((row) => ({
+    row,
+    sortKey: legacySortValue(row, key),
+  }));
+  decorated.sort((left, right) => {
+    const compared =
+      typeof left.sortKey === "string" && typeof right.sortKey === "string"
+        ? left.sortKey.localeCompare(right.sortKey)
+        : Number(left.sortKey) - Number(right.sortKey);
+    return dir === BranchSortDir.Asc ? compared : -compared;
+  });
+  return decorated.map(({ row }) => row);
+}
+
+function legacySortValue(row: BranchRow, key: BranchSortKey): string | number {
+  switch (key) {
+    case BranchSortKey.Name:
+      return row.branchName;
+    case BranchSortKey.Repo:
+      return shortRepoName(row.repo);
+    case BranchSortKey.Owner:
+      return row.owner;
+    case BranchSortKey.Status:
+      return BRANCH_STATUS_CONFIG[row.status].label;
+    case BranchSortKey.Changes:
+      return (row.additions ?? 0) + (row.deletions ?? 0);
+    case BranchSortKey.LastActivity: {
+      const occurredAt = row.lastActivityAt
+        ? Date.parse(row.lastActivityAt)
+        : Number.NEGATIVE_INFINITY;
+      return Number.isNaN(occurredAt) ? Number.NEGATIVE_INFINITY : occurredAt;
+    }
+    default:
+      return row.sessionCount;
+  }
+}
+
+/** Finite top-level windows retain unavailable Last-active rows. */
 export function filterBranchRowsByWindow(
   rows: BranchRow[],
-  startDate: string | undefined
+  startDate: string | undefined,
+  endDate?: string
 ): BranchRow[] {
-  if (!startDate) {
+  if (!(startDate || endDate)) {
     return rows;
   }
-  const startMs = Date.parse(startDate);
-  if (Number.isNaN(startMs)) {
+  const startMs = startDate ? Date.parse(startDate) : Number.NEGATIVE_INFINITY;
+  const endMs = endDate ? Date.parse(endDate) : Number.POSITIVE_INFINITY;
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) {
     return rows;
   }
   return rows.filter((row) => {
-    if (row.lastActivityAt == null) {
+    if (!row.lastActivityAt) {
       return true;
     }
-    const ms = Date.parse(row.lastActivityAt);
-    return Number.isNaN(ms) || ms >= startMs;
+    const occurredAt = Date.parse(row.lastActivityAt);
+    return (
+      Number.isNaN(occurredAt) || (occurredAt >= startMs && occurredAt <= endMs)
+    );
   });
+}
+
+function sortValue(row: BranchRow, key: BranchSortKey): SortValue {
+  switch (key) {
+    case BranchSortKey.Name:
+      return row.branchName;
+    case BranchSortKey.Owner:
+      return row.owner;
+    case BranchSortKey.Sessions:
+      return row.sessionCount;
+    case BranchSortKey.Changes:
+      return row.additions === null && row.deletions === null
+        ? null
+        : (row.additions ?? 0) + (row.deletions ?? 0);
+    case BranchSortKey.Status:
+      return BRANCH_STATUS_CONFIG[row.status].label;
+    case BranchSortKey.PullRequest:
+      return row.prNumber === null || !row.prRepo
+        ? null
+        : { repo: row.prRepo, number: row.prNumber };
+    case BranchSortKey.LastActivity: {
+      if (!row.lastActivityAt) {
+        return null;
+      }
+      const occurredAt = Date.parse(row.lastActivityAt);
+      return Number.isNaN(occurredAt) ? null : occurredAt;
+    }
+    case BranchSortKey.Repo:
+      return row.repo === RENDER_MISSING ? null : row.repo;
+    default:
+      return null;
+  }
+}
+
+function compareAvailable(left: SortValue, right: SortValue): number | null {
+  if (left === null || right === null) {
+    return left === right ? 0 : null;
+  }
+  if (typeof left === "object" && typeof right === "object") {
+    const repository = left.repo.localeCompare(right.repo);
+    return repository === 0 ? left.number - right.number : repository;
+  }
+  if (typeof left === "number" && typeof right === "number") {
+    return left - right;
+  }
+  return String(left).localeCompare(String(right));
+}
+
+function compareMissing(left: SortValue, right: SortValue): number {
+  if (left === null && right !== null) {
+    return 1;
+  }
+  if (left !== null && right === null) {
+    return -1;
+  }
+  return 0;
 }

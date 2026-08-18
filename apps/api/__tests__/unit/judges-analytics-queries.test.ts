@@ -1,10 +1,10 @@
 /**
  * Unit tests for judges-analytics service query structure.
  *
- * After artifact cutover:
- * 1. Judge score queries filter by evaluation.organizationId directly
- *    AND require evaluation.artifact.type = DOCUMENT for the Plan/PRD path.
- * 2. Multi-org isolation: scores from one org are not returned for another.
+ * After FEA-2809 `getAggregateStats` aggregates DB-side via `$queryRaw`
+ * (power sums grouped by subtype/metric/prompt/case). These tests assert that
+ * the raw aggregation query is scoped to the caller's organization and
+ * reportType — org-A scores never bleed into an org-B request.
  */
 import { EvaluationReportType } from "@repo/api/src/types/evaluation";
 import { withDb } from "@repo/database";
@@ -18,6 +18,7 @@ vi.mock("@repo/database", () => ({
       strings,
       values,
     }),
+    join: (values: unknown[]) => ({ join: values }),
   },
   PromptType: { JUDGE: "JUDGE" },
   ArtifactType: {
@@ -37,17 +38,25 @@ const ORG_A = "org-alpha";
 const START = new Date("2026-01-01");
 const END = new Date("2026-01-31");
 
-function makeDb(judgeScoreFindManyResult: unknown[] = []) {
-  return {
+/**
+ * Wire a `$queryRaw` mock: the first call is the judge-description lookup
+ * (returns []), the second is the aggregate power-sum groups query.
+ */
+function makeDb(groupRows: unknown[] = []) {
+  const queryRaw = vi
+    .fn()
+    // getJudgeDescriptionByPromptName
+    .mockResolvedValueOnce([])
+    // getAggregateJudgeScoreGroups
+    .mockResolvedValueOnce(groupRows);
+  const db = {
     prompt: { findMany: vi.fn().mockResolvedValue([]) },
-    $queryRaw: vi.fn().mockResolvedValue([]),
-    judgeScore: {
-      findMany: vi.fn().mockResolvedValue(judgeScoreFindManyResult),
-    },
+    $queryRaw: queryRaw,
     artifact: { findMany: vi.fn().mockResolvedValue([]) },
     artifactRating: { findMany: vi.fn().mockResolvedValue([]) },
     artifactLink: { findMany: vi.fn().mockResolvedValue([]) },
   };
+  return { db, queryRaw };
 }
 
 describe("judgesAnalyticsService — query structure", () => {
@@ -55,14 +64,12 @@ describe("judgesAnalyticsService — query structure", () => {
     vi.clearAllMocks();
   });
 
-  it("where clause uses evaluation.organizationId directly for org scoping", async () => {
-    const mockDb = makeDb();
+  it("scopes the aggregate query to the caller's organizationId and reportType", async () => {
+    const { db, queryRaw } = makeDb();
 
     vi.mocked(withDb).mockImplementation((callback) =>
       Promise.resolve(
-        callback(
-          mockDb as unknown as Parameters<Parameters<typeof withDb>[0]>[0]
-        )
+        callback(db as unknown as Parameters<Parameters<typeof withDb>[0]>[0])
       )
     );
 
@@ -73,62 +80,38 @@ describe("judgesAnalyticsService — query structure", () => {
       EvaluationReportType.Plan
     );
 
-    const judgeScoreCalls = mockDb.judgeScore.findMany.mock.calls;
-    expect(judgeScoreCalls.length).toBeGreaterThan(0);
-
-    const [firstCall] = judgeScoreCalls;
-    const where = firstCall[0].where;
-
-    // Must scope via evaluation.organizationId directly
-    expect(where.evaluation).toMatchObject({ organizationId: ORG_A });
+    // The second $queryRaw call is the aggregate groups query. Its interpolated
+    // values must carry the org, the reportType and the date window.
+    const aggregateCall = queryRaw.mock.calls[1][0] as { values: unknown[] };
+    expect(aggregateCall.values).toContain(ORG_A);
+    expect(aggregateCall.values).toContain(EvaluationReportType.Plan);
+    expect(aggregateCall.values).toContain(START);
+    expect(aggregateCall.values).toContain(END);
   });
 
-  it("scores from org-B are not returned when querying org-A", async () => {
-    const orgAScore = {
-      caseId: "clarity-judge",
-      metricName: "clarity-judge",
-      promptId: null,
-      score: 0.9,
-      evaluation: {
-        artifactId: "artifact-a1",
-      },
-    };
-
-    // orgB score should never appear in orgA results because the query
-    // filters by organizationId at the evaluation level
-    const mockDb = makeDb([orgAScore]);
-    const artifactFindMany = vi
-      .fn()
-      .mockResolvedValue([
-        { id: "artifact-a1", subtype: "IMPLEMENTATION_PLAN" },
-      ]);
-    mockDb.artifact.findMany = artifactFindMany;
+  it("does not surface scores when the aggregate query returns none for the org", async () => {
+    // Empty group result → empty response, and no cross-org leakage is possible
+    // because the org filter is applied inside the SQL, not in app memory.
+    const { db, queryRaw } = makeDb([]);
 
     vi.mocked(withDb).mockImplementation((callback) =>
       Promise.resolve(
-        callback(
-          mockDb as unknown as Parameters<Parameters<typeof withDb>[0]>[0]
-        )
+        callback(db as unknown as Parameters<Parameters<typeof withDb>[0]>[0])
       )
     );
 
-    await judgesAnalyticsService.getAggregateStats(
+    const result = await judgesAnalyticsService.getAggregateStats(
       ORG_A,
       START,
       END,
       EvaluationReportType.Plan
     );
 
-    // Verify the DB query for judge scores was scoped to ORG_A only
-    const [judgeScoreCall] = mockDb.judgeScore.findMany.mock.calls;
-    expect(judgeScoreCall[0].where.evaluation.organizationId).toBe(ORG_A);
-
-    // Verify the artifact lookup after score fetch is also scoped to ORG_A
-    const artifactCalls = artifactFindMany.mock.calls;
-    const entityLookupCall = artifactCalls.find((call: unknown[]) => {
-      const arg = call[0] as { where?: { organizationId?: string } };
-      return arg?.where?.organizationId === ORG_A;
+    expect(result).toEqual({
+      reportType: EvaluationReportType.Plan,
+      groups: [],
     });
-    expect(entityLookupCall).toBeDefined();
+    const aggregateCall = queryRaw.mock.calls[1][0] as { values: unknown[] };
+    expect(aggregateCall.values).toContain(ORG_A);
   });
 });

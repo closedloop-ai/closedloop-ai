@@ -39,11 +39,15 @@ import {
   SquareCheckIcon,
   UsersIcon,
 } from "lucide-react";
+import { expect, userEvent, within } from "storybook/test";
 
 // Mirrors the finalized GlobalSidebar nav in apps/app
 // (app/(authenticated)/components/sidebar.tsx): top-level items, then the
 // Artifacts / Your Teams / Labs collapsible sections, then the compute and
 // organization rows in the footer.
+
+// The sr-only text inside SidebarTrigger, which is its accessible name.
+const TOGGLE_SIDEBAR_LABEL = "Toggle Sidebar";
 
 type NavItem = {
   title: string;
@@ -54,7 +58,7 @@ type NavItem = {
 const TOP_LEVEL_ITEMS: NavItem[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboardIcon },
   { title: "Inbox", href: "/inbox", icon: InboxIcon },
-  { title: "My Issues", href: "/my-tasks", icon: CopyCheckIcon },
+  { title: "My Tasks", href: "/my-tasks", icon: CopyCheckIcon },
 ];
 
 const ARTIFACT_ITEMS: NavItem[] = [
@@ -68,7 +72,6 @@ const ARTIFACT_ITEMS: NavItem[] = [
 const LABS_ITEMS: NavItem[] = [
   { title: "Insights", href: "/insights", icon: BarChart3 },
   { title: "Loops", href: "/loops", icon: RotateCcwIcon },
-  { title: "Agent Monitoring", href: "/loops/monitoring", icon: BarChart3 },
 ];
 
 type TeamEntry = {
@@ -287,4 +290,54 @@ type Story = StoryObj<typeof Sidebar>;
 
 export const GlobalNav: Story = {
   render: () => <GlobalNavDemo />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(sidebarRoot(canvasElement)).toHaveAttribute(
+      "data-state",
+      "expanded"
+    );
+
+    // Collapse and expand through the real control rather than the provider,
+    // so the trigger's own wiring is what is under test.
+    await userEvent.click(
+      canvas.getByRole("button", { name: TOGGLE_SIDEBAR_LABEL })
+    );
+    await expect(sidebarRoot(canvasElement)).toHaveAttribute(
+      "data-state",
+      "collapsed"
+    );
+
+    await userEvent.click(
+      canvas.getByRole("button", { name: TOGGLE_SIDEBAR_LABEL })
+    );
+    await expect(sidebarRoot(canvasElement)).toHaveAttribute(
+      "data-state",
+      "expanded"
+    );
+
+    // Nav items are real links, so they are keyboard-reachable by construction
+    // rather than by an onClick on a div — tabbing out of the search field
+    // lands on the first one.
+    //
+    // Deliberately never clicked: the preview mounts ONE module-level memory
+    // navigation adapter shared by every story in the sweep, so navigating
+    // here would change the path the other stories render against.
+    const dashboard = canvas.getByRole("link", { name: "Dashboard" });
+    await expect(dashboard).toHaveAttribute("href", "/dashboard");
+
+    canvas.getByPlaceholderText("Search").focus();
+    await userEvent.tab();
+    await expect(dashboard).toHaveFocus();
+  },
 };
+
+// The Sidebar root is the element carrying collapse state; it has no role or
+// accessible name, so `data-slot` is the only handle for it.
+function sidebarRoot(canvasElement: HTMLElement): Element {
+  const root = canvasElement.querySelector('[data-slot="sidebar"]');
+  if (root === null) {
+    throw new Error("sidebar root did not render");
+  }
+  return root;
+}

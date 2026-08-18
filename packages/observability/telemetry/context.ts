@@ -7,13 +7,16 @@ import type { TelemetryTraceContext } from "./schema";
 // No path separators or whitespace allowed.
 // ---------------------------------------------------------------------------
 
+const BUILD_IDENTITY_MAX_LENGTH = 40;
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?(?:\+[a-zA-Z0-9.-]+)?$/;
 const SAFE_VERSION_RE = /^[a-zA-Z0-9.-]{1,40}$/;
 
 const serverVersionSchema = z
   .string()
   .refine(
-    (v: string) => SEMVER_RE.test(v) || SAFE_VERSION_RE.test(v),
+    (v: string) =>
+      v.length <= BUILD_IDENTITY_MAX_LENGTH &&
+      (SEMVER_RE.test(v) || SAFE_VERSION_RE.test(v)),
     "serverVersion must be semver or a max-40-char alphanumeric/dot/dash string with no path separators or whitespace"
   );
 
@@ -31,8 +34,26 @@ function resolveEnvironment(): string {
 }
 
 export function resolveServerVersion(): string {
-  return (
-    process.env.RELEASE_VERSION ?? process.env.npm_package_version ?? "unknown"
+  // VERCEL_GIT_COMMIT_SHA is the deployed commit on every Vercel surface
+  // (api/app/web) and is a valid `version` per SAFE_VERSION_RE (40-char hex).
+  // Before this fell back to "unknown" in the Vercel runtime — neither
+  // RELEASE_VERSION nor npm_package_version is set there — so every prod log
+  // shipped `version:unknown` (FEA-3331 I-9), which is both a Unified Service
+  // Tagging gap and what made the incident harder to slice by build. The SHA is
+  // the correct deployed-version identifier, so use it before giving up.
+  // Non-Vercel surfaces (desktop/relay) have no VERCEL_GIT_COMMIT_SHA and still
+  // resolve to "unknown" unchanged. FEA-3565.
+  return resolveBuildIdentityValue(
+    process.env.RELEASE_VERSION,
+    process.env.npm_package_version,
+    process.env.VERCEL_GIT_COMMIT_SHA
+  );
+}
+
+export function resolveGitSha(): string {
+  return resolveBuildIdentityValue(
+    process.env.VERCEL_GIT_COMMIT_SHA,
+    process.env.GIT_SHA
   );
 }
 
@@ -76,4 +97,14 @@ export function buildTelemetryTraceContext(
       gatewayProtocolVersion: overrides.gatewayProtocolVersion,
     }),
   };
+}
+
+function resolveBuildIdentityValue(...values: (string | undefined)[]): string {
+  for (const value of values) {
+    const parseResult = serverVersionSchema.safeParse(value);
+    if (parseResult.success) {
+      return parseResult.data;
+    }
+  }
+  return "unknown";
 }

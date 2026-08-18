@@ -15,6 +15,7 @@ import {
   type StreamStatus,
   useLoopStream,
 } from "@repo/app/loops/hooks/use-loop-stream";
+import { loopLinkClassName } from "@repo/app/loops/lib/loop-link";
 import { FriendlyErrorAlert } from "@repo/app/shared/components/friendly-error-alert";
 import {
   type DisplayStatus,
@@ -182,8 +183,8 @@ function useElapsedTime(startTimestamp: string | null, isRunning: boolean) {
 function StartedEvent({ timestamp }: { timestamp: string }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30">
-        <PlayIcon className="size-3 text-blue-600 dark:text-blue-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-info/10">
+        <PlayIcon className="size-3 text-info" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="font-medium text-sm">Agent started</div>
@@ -240,15 +241,15 @@ function OutputEvent({ event }: { event: LoopEventOutput }) {
 function ProgressEvent({ event }: { event: LoopEventProgress }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-blue-100 dark:bg-blue-900/30">
-        <LoaderIcon className="size-3 animate-spin text-blue-600 dark:text-blue-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-info/10">
+        <LoaderIcon className="size-3 animate-spin text-info" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="text-sm">{event.stage}</div>
         {event.percent > 0 && (
           <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
             <div
-              className="h-full rounded-full bg-blue-500 transition-all duration-300"
+              className="h-full rounded-full bg-info transition-all duration-300"
               style={{ width: `${Math.min(event.percent, 100)}%` }}
             />
           </div>
@@ -266,8 +267,8 @@ function ToolCallEvent({ event }: { event: LoopEventToolCall }) {
 
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-purple-100 dark:bg-purple-900/30">
-        <TerminalIcon className="size-3 text-purple-600 dark:text-purple-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-ai/10">
+        <TerminalIcon className="size-3 text-ai-foreground" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-sm">
@@ -275,7 +276,7 @@ function ToolCallEvent({ event }: { event: LoopEventToolCall }) {
           {isStart ? (
             <LoaderIcon className="size-3 animate-spin text-muted-foreground" />
           ) : (
-            <CheckCircle2Icon className="size-3 text-green-600 dark:text-green-400" />
+            <CheckCircle2Icon className="size-3 text-success" />
           )}
         </div>
         <div className="mt-1 text-muted-foreground text-xs">
@@ -289,8 +290,8 @@ function ToolCallEvent({ event }: { event: LoopEventToolCall }) {
 function ArtifactCreatedEvent({ event }: { event: LoopEventArtifactCreated }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
-        <FileOutputIcon className="size-3 text-green-600 dark:text-green-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-success/10">
+        <FileOutputIcon className="size-3 text-success" />
       </div>
       <div className="min-w-0 flex-1">
         <div className="text-sm">
@@ -314,16 +315,16 @@ function CompletedEvent({ event }: { event: LoopEventCompleted }) {
 
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30">
-        <CheckCircle2Icon className="size-3 text-green-600 dark:text-green-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-success/10">
+        <CheckCircle2Icon className="size-3 text-success" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-green-700 text-sm dark:text-green-400">
+        <div className="font-medium text-sm text-success">
           Completed successfully
         </div>
         {prUrl && (
           <a
-            className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+            className={loopLinkClassName("mt-1")}
             href={prUrl}
             rel="noopener noreferrer"
             target="_blank"
@@ -348,8 +349,8 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
 
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
-        <AlertCircleIcon className="size-3 text-red-600 dark:text-red-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-destructive/10">
+        <AlertCircleIcon className="size-3 text-destructive" />
       </div>
       <div className="min-w-0 flex-1">
         <FriendlyErrorAlert
@@ -410,17 +411,15 @@ function ErrorEvent({ event }: { event: LoopEventError }) {
 function CancelledEvent({ reason }: { reason?: string }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-orange-100 dark:bg-orange-900/30">
-        <AlertCircleIcon className="size-3 text-orange-600 dark:text-orange-400" />
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-warning/10">
+        <AlertCircleIcon className="size-3 text-warning-foreground" />
       </div>
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-orange-700 text-sm dark:text-orange-400">
+        <div className="font-medium text-sm text-warning-foreground">
           Cancelled
         </div>
         {reason ? (
-          <div className="mt-1 text-orange-600 text-xs dark:text-orange-300">
-            {reason}
-          </div>
+          <div className="mt-1 text-warning-foreground text-xs">{reason}</div>
         ) : null}
       </div>
     </div>
@@ -569,9 +568,7 @@ export function LoopProgressPanel({
       <CardHeader className="flex-row items-center justify-between border-b px-4 py-3">
         <CardTitle className="text-sm">Loop Progress</CardTitle>
         <div className="flex items-center gap-2">
-          {active && (
-            <LoaderIcon className="size-3.5 animate-spin text-blue-600 dark:text-blue-400" />
-          )}
+          {active && <LoaderIcon className="size-3.5 animate-spin text-info" />}
           <Badge
             className={cn("font-medium", displayStatusColors[displayStatus])}
             variant="outline"

@@ -3,7 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { organizationKeys, useUpdateOrganization } from "../use-organizations";
+import {
+  organizationKeys,
+  useInviteMembers,
+  useUpdateOrganization,
+} from "../use-organizations";
 
 const mockToastError = vi.hoisted(() => vi.fn());
 
@@ -17,6 +21,7 @@ vi.mock("@repo/design-system/components/ui/sonner", () => ({
 
 const mockApiClient = {
   put: vi.fn(),
+  post: vi.fn(),
 };
 
 vi.mock("../../../shared/api/use-api-client", () => ({
@@ -103,5 +108,60 @@ describe("useUpdateOrganization", () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
 
     expect(mockToastError).toHaveBeenCalledOnce();
+  });
+});
+
+describe("useInviteMembers", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("posts the invite payload to the BFF invitations route", async () => {
+    mockApiClient.post.mockResolvedValue({
+      invited: 2,
+      results: [
+        { email: "a@example.com", invitationId: "inv_1", status: "invited" },
+        { email: "b@example.com", invitationId: "inv_2", status: "invited" },
+      ],
+    });
+
+    const { result } = renderHook(() => useInviteMembers(), {
+      wrapper: createWrapperWithClient(createTestQueryClient()),
+    });
+
+    act(() => {
+      result.current.mutate({
+        emailAddresses: ["a@example.com", "b@example.com"],
+        role: "org:member",
+      });
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockApiClient.post).toHaveBeenCalledWith(
+      "/organizations/invitations",
+      {
+        emailAddresses: ["a@example.com", "b@example.com"],
+        role: "org:member",
+      }
+    );
+    expect(result.current.data?.invited).toBe(2);
+  });
+
+  it("surfaces rejected invitation errors through mutation state", async () => {
+    const error = new Error("Only organization admins can invite team members");
+    mockApiClient.post.mockRejectedValue(error);
+
+    const { result } = renderHook(() => useInviteMembers(), {
+      wrapper: createWrapperWithClient(createTestQueryClient()),
+    });
+
+    act(() => {
+      result.current.mutate({ emailAddresses: ["a@example.com"] });
+    });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    expect(result.current.error).toBe(error);
   });
 });

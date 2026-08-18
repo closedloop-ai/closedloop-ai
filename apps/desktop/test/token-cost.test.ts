@@ -160,18 +160,6 @@ const VALID_INPUT_FIXTURE: Array<{
     expectedCostUsd: 0,
   },
   {
-    name: "negative + NaN-ish counts are coerced to zero",
-    input: {
-      model: "claude-opus-4-5",
-      inputTokens: -50,
-      outputTokens: Number.NaN,
-      cacheReadTokens: -10,
-      cacheWriteTokens: 0,
-    },
-    expectedProvider: "anthropic",
-    expectedCostUsd: 0,
-  },
-  {
     name: "timestamped historical pricing",
     input: {
       model: "claude-opus-4-5",
@@ -351,6 +339,34 @@ test("a Codex-shaped fresh row with cacheRead > input prices without compute_err
   assert.ok((result.costUsd ?? 0) > 0, "positive costUsd");
 });
 
+test("refuses corrupt token counts (negative / non-finite) with invalid_count, not a lying $0", () => {
+  // A negative or non-finite count is corrupt input. The engine refuses with a
+  // typed reason and a null "unknown" cost instead of coercing to 0 and pricing
+  // as if the component were absent. Ingest keeps such values out of the DB; this
+  // is the defensive floor for anything that slips through.
+  const valid = {
+    model: "claude-opus-4-5",
+    inputTokens: 1000,
+    outputTokens: 100,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+  for (const bad of [
+    { ...valid, inputTokens: -50 },
+    { ...valid, outputTokens: Number.NaN },
+    { ...valid, cacheReadTokens: Number.POSITIVE_INFINITY },
+  ]) {
+    const result = computeTokenCostTwin(bad);
+    assert.equal(result.priced, false, "not priced");
+    assert.equal(
+      result.reason,
+      TokenCostNotPricedReason.InvalidCount,
+      "invalid_count reason"
+    );
+    assert.equal(result.costUsd, null, "null cost (unknown, not $0)");
+  }
+});
+
 // `estimateTokenCost` is the compat wrapper the desktop sync/branch-cost
 // paths call (agent-session-sync-service, branch-usage-projection,
 // shared-branches-api) when a row has no stored cost. FEA-2344 replaced the
@@ -400,4 +416,153 @@ test("estimateTokenCost prices a non-zero costUsd for current flagship models", 
       `components sum to costUsd for: ${name}`
     );
   }
+});
+
+test("FEA-3546: estimateTokenCost prices an unknown Codex model at the Opus-standard fallback (never $0)", () => {
+  // SES-57401: a COMPLETED codex/DESKTOP_SYNC session on gpt-5.6-sol with heavy
+  // token usage reported cost=null / estimatedCost=$0 because genai-prices has
+  // no price entry for gpt-5.6-sol (no_match). The pure engine still refuses,
+  // but the estimate wrapper now applies the Opus-standard unknown-model
+  // fallback so the session is priced instead of collapsing to $0.
+  const pure = computeTokenCostTwin({
+    model: "gpt-5.6-sol",
+    inputTokens: 346_789,
+    outputTokens: 12_366,
+    cacheReadTokens: 2_560_256,
+    cacheWriteTokens: 0,
+  });
+  assert.equal(
+    pure.priced,
+    false,
+    "pure engine still refuses the unknown model"
+  );
+  assert.equal(pure.reason, TokenCostNotPricedReason.NoMatch);
+
+  const estimate = estimateTokenCost({
+    model: "gpt-5.6-sol",
+    inputTokens: 346_789,
+    outputTokens: 12_366,
+    cacheReadTokens: 2_560_256,
+    cacheWriteTokens: 0,
+  });
+  assert.ok(estimate !== undefined, "estimate is priced via the fallback");
+  // Opus-standard tier: input 5, output 25, cacheRead 0.5 (per 1M tokens).
+  const expected =
+    (346_789 / 1e6) * 5 + (12_366 / 1e6) * 25 + (2_560_256 / 1e6) * 0.5;
+  assert.ok(
+    Math.abs(estimate.costUsd - expected) < 1e-9,
+    `fallback costUsd ${estimate.costUsd} ≈ ${expected}`
+  );
+  assert.ok(
+    estimate.costUsd > 1,
+    "heavy usage yields a real, non-trivial cost"
+  );
+});
+
+// `estimateTokenCost` accepts the NULLABLE column shapes its desktop callers
+// read straight off a row (`model`/`*_tokens` are all nullable in SQLite), so
+// the wrapper's own input fallbacks are the contract these pin — not the
+// engine's.
+const NULLABLE_ROW_MODEL = "claude-opus-4-5";
+
+test("estimateTokenCost coerces absent counts to zero rather than refusing the row", () => {
+  // A row whose counts were never recorded is a $0 row, not an unpriceable one:
+  // every component is genuinely zero, so the honest answer is zero — not
+  // `undefined` (which callers render as "unknown").
+  const estimate = estimateTokenCost({
+    model: NULLABLE_ROW_MODEL,
+    inputTokens: null,
+    outputTokens: undefined,
+    cacheReadTokens: null,
+    cacheWriteTokens: undefined,
+  });
+  assert.ok(estimate !== undefined, "a countless row is still priceable");
+  assert.deepEqual(estimate, {
+    costUsd: 0,
+    inputCostUsd: 0,
+    outputCostUsd: 0,
+    cacheReadCostUsd: 0,
+    cacheWriteCostUsd: 0,
+    cacheWriteTtlPremiumUsd: 0,
+  });
+});
+
+test("estimateTokenCost returns undefined for a row with no model, never a fabricated $0", () => {
+  // A null/absent model degrades to the empty model id, which the engine
+  // refuses as `unknown_model` — a DATA DEFECT, deliberately excluded from the
+  // FEA-3546 unknown-model fallback. The wrapper must hand back `undefined`
+  // ("unknown"), and the caller renders "—".
+  for (const model of [null, undefined, ""]) {
+    assert.equal(
+      estimateTokenCost({
+        model,
+        inputTokens: 346_789,
+        outputTokens: 12_366,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      }),
+      undefined,
+      `no model (${JSON.stringify(model)}) must not be priced`
+    );
+  }
+  // The contrast that keeps the above non-vacuous: a NON-empty model the
+  // library simply has no entry for (`no_match`) IS fallback-priced.
+  assert.ok(
+    estimateTokenCost({
+      model: "gpt-5.6-sol",
+      inputTokens: 346_789,
+      outputTokens: 12_366,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    }) !== undefined,
+    "an unknown-but-present model id still prices via the FEA-3546 fallback"
+  );
+});
+
+const OBSERVED_AT_ROW = {
+  model: NULLABLE_ROW_MODEL,
+  inputTokens: 1000,
+  outputTokens: 100,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
+test("estimateTokenCost degrades an unusable observedAt to unstamped pricing", () => {
+  // `observedAt` is a persisted/wire value: an invalid `Date` (the shape
+  // `new Date(<garbage column>)` produces) and an unparseable string both have
+  // to fall back to unstamped pricing. Forwarding an invalid Date onward is the
+  // regression this guards — a NaN-timestamped Date throws from `toISOString()`
+  // and silently mis-selects a price window everywhere else.
+  const unstamped = estimateTokenCost(OBSERVED_AT_ROW);
+  assert.ok(unstamped !== undefined, "baseline row prices");
+  for (const observedAt of [
+    new Date("nope"),
+    "not-a-date",
+    "",
+    null,
+    undefined,
+  ]) {
+    const estimate = estimateTokenCost({ ...OBSERVED_AT_ROW, observedAt });
+    assert.ok(
+      estimate !== undefined,
+      `an unusable observedAt (${String(observedAt)}) must not un-price the row`
+    );
+    assert.deepEqual(
+      estimate,
+      unstamped,
+      `an unusable observedAt (${String(observedAt)}) must price identically to omitting it`
+    );
+  }
+});
+
+test("estimateTokenCost accepts observedAt as an ISO string exactly as it accepts a Date", () => {
+  // The sync path hands this an ISO string off a row; the write-core path hands
+  // it a Date. Both must reach the engine as the same instant.
+  const iso = "2026-01-15T00:00:00.000Z";
+  const fromString = estimateTokenCost({ ...OBSERVED_AT_ROW, observedAt: iso });
+  assert.ok(fromString !== undefined, "an ISO-string observedAt prices");
+  assert.deepEqual(
+    fromString,
+    estimateTokenCost({ ...OBSERVED_AT_ROW, observedAt: new Date(iso) })
+  );
 });

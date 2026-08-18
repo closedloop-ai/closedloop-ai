@@ -31,4 +31,12 @@ describe("formatDurationMs", () => {
     // 1500ms remainder rounds to 2s.
     expect(formatDurationMs(61_500)).toBe("1m 2s");
   });
+
+  it("carries a rounded-up sub-minute remainder into the minute", () => {
+    // 119_500ms: the 59.5s remainder must carry to 2m 0s, never render "1m 60s".
+    expect(formatDurationMs(119_500)).toBe("2m 0s");
+    expect(formatDurationMs(119_900)).toBe("2m 0s");
+    // Just below the carry threshold stays within the same minute.
+    expect(formatDurationMs(119_400)).toBe("1m 59s");
+  });
 });

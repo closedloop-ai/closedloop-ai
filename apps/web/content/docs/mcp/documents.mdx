@@ -1,0 +1,434 @@
+---
+title: Document Management
+description: 'Create, retrieve, and update PRDs, implementation plans, and features via MCP'
+---
+
+## Overview
+
+Documents are the primary deliverables in Closedloop. Three user-facing document types exist:
+
+| Type | Slug Prefix | Description |
+|------|------------|-------------|
+| PRD | `PRD-*` | Product Requirements Document |
+| Implementation Plan | `PLN-*` | Technical implementation plan |
+| Feature | `FEA-*` | A discrete deliverable or feature spec |
+
+All document tools accept either a UUID or a human-readable slug (e.g. `FEA-42`). Pass the slug verbatim — the API resolves it server-side.
+
+---
+
+## Listing Documents
+
+Use `list-documents` to retrieve documents across the organization, optionally filtered by project, type, or assignee.
+
+**Tool**: `list-documents`
+**Underlying API**: `GET /documents`
+
+```
+list-documents(
+  projectId?: string,      // PRO-* slug or UUID
+  assigneeId?: string,     // User UUID
+  type?: "PRD" | "IMPLEMENTATION_PLAN" | "FEATURE" | "DOC" | "TEMPLATE" | "ISSUE",  // "ISSUE" is an alias filtered as "FEATURE"
+  limit?: number,          // 1–100, default 25
+  offset?: number,         // Pagination offset, default 0
+  includeParentArtifact?: boolean  // Include lineage parent. Default true.
+)
+```
+
+The response includes a paginated envelope:
+
+```json
+{
+  "total": 142,
+  "offset": 0,
+  "limit": 25,
+  "returned": 25,
+  "hasMore": true,
+  "nextOffset": 25,
+  "items": [
+    {
+      "id": "...",
+      "slug": "FEA-1035",
+      "title": "Add bulk export",
+      "type": "FEATURE",
+      "status": "IN_PROGRESS",
+      "projectId": "...",
+      "dueDate": "2026-08-01",
+      "sortOrder": 3,
+      "assignee": { "id": "...", "email": "alice@example.com", ... },
+      "webUrl": "https://app.closedloop.ai/acme/features/FEA-1035",
+      "parentArtifact": { ... }
+    }
+  ]
+}
+```
+
+`dueDate` is an ISO 8601 date string (or `null` when unset). `sortOrder` is the stack-rank position within the project — lower values sort first, `null` when the artifact is unranked.
+
+The `parentArtifact` field contains the direct parent from artifact-link lineage (e.g. the implementation plan that produced this feature). Set `includeParentArtifact: false` when you don't need it to skip the extra lookup.
+
+---
+
+## Fetching a Single Document
+
+Use `get-document` to read full metadata for one document, including its latest content version.
+
+**Tool**: `get-document`
+**Underlying API**: `GET /documents/:documentId`
+
+```
+get-document(
+  documentId: string,       // PRD-*, PLN-*, FEA-*, or UUID
+  includeContent?: boolean, // Include the latest version body. Default false.
+  contentMaxChars?: number, // Truncation limit when includeContent=true. Default 4000.
+  includeParentArtifact?: boolean, // Include the direct parentArtifact from lineage. Default true.
+  resolveInlineImages?: boolean,   // Resolve attachment:// inline image refs when includeContent=true. Default true.
+  includeImages?: boolean          // Return bounded inline images as MCP image content blocks. Default false.
+)
+```
+
+Pass the user's slug directly — no UUID lookup is needed. Content is truncated at `contentMaxChars` to avoid token overflow; increase to up to 120,000 for large documents.
+
+`includeImages: true` only returns image content blocks when inline images are actually resolved, which requires `includeContent: true` and `resolveInlineImages` left at its default (`true`). Setting `includeImages: true` while `includeContent` is `false` (its default) or `resolveInlineImages` is `false` is a no-op — no image blocks are returned.
+
+### Response Shape
+
+Beyond the core `id`, `title`, `slug`, `type`, `status`, `projectId`, `priority`, `assigneeId`, `assignee`, and `updatedAt` fields, `get-document` returns:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `dueDate` | `string \| null` | ISO 8601 due date, or `null` when unset. |
+| `sortOrder` | `number \| null` | Stack-rank position within the project (lower sorts first); `null` when unranked. |
+| `fileName` | `string \| null` | Original file name for uploaded documents; `null` for authored ones. |
+| `approverId` | `string \| null` | UUID of the assigned approver, or `null`. |
+| `approver` | `object \| null` | Resolved approver profile, or `null`. |
+| `repositorySnapshot` | `object \| null` | Immutable per-document repository record set at creation, or `null`. |
+| `latestVersion` | `number` | Version number of the most recent content version. |
+| `version` | `object` | The returned content version (its `id`, `version`, and — when `includeContent: true` — body). |
+
+---
+
+## Creating a Document
+
+Use `create-document` to create a new PRD, implementation plan, or feature/issue. Templates are not creatable through this tool.
+
+**Tool**: `create-document`
+**Underlying API**: `POST /documents`
+
+```
+create-document(
+  title: string,
+  type: "PRD" | "IMPLEMENTATION_PLAN" | "FEATURE" | "ISSUE",  // "ISSUE" is an alias stored as "FEATURE" (TEMPLATE/DOC are not creatable here)
+  content: string,          // Initial body content
+  projectId: string,        // Attach to a project (PRO-* slug or UUID)
+
+  // Optional — editable fields settable at creation time:
+  assigneeId?: string | null,   // UUID to assign to (list-users), or null to leave unassigned
+  approverId?: string | null,   // UUID to set as approver (list-users), or null for none
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  dueDate?: string | null,      // ISO 8601 date (YYYY-MM-DD) or timezone-qualified datetime; null to clear
+  fileName?: string,            // File name for the document
+  status?: string,              // Documents: DRAFT | IN_REVIEW | CHANGES_REQUESTED | APPROVED | EXECUTED | OBSOLETE
+                                // Features:  TRIAGE | BACKLOG | TODO | IN_PROGRESS | IN_REVIEW | BLOCKED | DONE | CANCELED
+                                // When omitted, Features default to TRIAGE and other types to DRAFT.
+  repositorySelection?: {       // Repositories this document is created against; snapshot is read-only after creation
+    primary: { fullName: string, branch?: string | null },
+    additional?: { fullName: string, branch?: string | null }[]
+  },
+  inlineImages?: Array<{        // Images to create alongside the initial content
+    placeholder: string, // Exact marker in content to replace, 1-200 characters
+    filename: string,    // 1-255 characters
+    mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+    dataBase64: string,  // Raw base64 image bytes, up to 512KB decoded
+    altText?: string     // Markdown alt text, up to 500 characters
+  }>                            // Up to 5 images
+)
+```
+
+The response includes the assigned slug and a `webUrl`. The slug prefix follows the resolved type — `PRD-*`, `PLN-*`, or `FEA-*` — except that `type: "ISSUE"` mints an `ISS-*` slug (it shares the `FEA` numbering series, so an `ISS-###` and `FEA-###` of the same number are the same document). Use the returned slug for all subsequent calls.
+
+**Example workflow**:
+
+```
+1. list-projects() → find PRO-25
+2. create-document(
+     title: "Bulk Export Feature",
+     type: "FEATURE",
+     content: "## Overview\n...",
+     projectId: "PRO-25"
+   )
+   → returns { slug: "FEA-1036", webUrl: "..." }
+```
+
+### Inline Images at Creation
+
+When `inlineImages` is provided, the placeholder rules are checked before anything is created: each placeholder must be unique, must not overlap another placeholder, and must appear in `content`, and the content that replacement would produce must stay within the 1,048,576-character cap. That cap is measured in JavaScript string length, not encoded bytes, so multibyte content is charged one character per code unit rather than by its UTF-8 size. A violation is rejected with no document and no attachments created.
+
+The tool then creates the document — seeding version 1 with the raw `content`, placeholders still unexpanded — creates the inline image attachments against it, and **overwrites** that version-1 content with each placeholder rewritten to `![alt](attachment://...)`. The rewrite is a second write, so a read that lands between the two sees the raw placeholder text.
+
+If any image creation or that overwrite fails, the API rejects the call and attempts cleanup rather than guaranteeing a rollback. It first deletes the images created earlier in the call, and deletes the document only when every one of those deletes reports success. Cleanup is best effort at two layers, so a rejected call can still leave state behind:
+
+- Deleting an attachment removes its database row and then deletes the stored object best effort. A failed object delete is logged but still reports success, so the bytes can outlive the row; the orphaned-object reconciliation sweep removes them later.
+- If any attachment delete reports failure, the document delete is skipped. That leaves a recoverable document behind — still holding the unexpanded placeholder text — and the failed-attachment count is reported in the error details.
+- If every attachment deletes but the document delete then fails, the attachments are gone while the document remains.
+
+Two size caps apply, and the request-body cap usually binds first: the inline-image request body is capped at 1MB, while each decoded image may be up to 512KB. The 5-image maximum is only reachable with small images — two 512KB images are already about 1.3MB of base64 and are rejected with `413`. Callers who omit `inlineImages`, or pass an empty array, use the existing content-only create path.
+
+Inline images on `create-document` are gated by the same `mcp-upload-attachment` rollout flag as `upload-attachment` and `create-inline-image-attachment`. For API-key/MCP callers, a create call that carries at least one inline image while the flag is off is rejected with `403` and `code: "mcp_attachment_upload_disabled"`. The gate keys on a non-empty list, so a call that omits `inlineImages` or passes an empty array is unaffected by the flag and takes the content-only path.
+
+On success the response carries two additional fields, both omitted when the call passed no inline images:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `inlineImages` | `object[]` | One entry per created image, each with `placeholder`, `attachmentId`, `attachmentRef` (`attachment://...`), and `markdownImage`. |
+| `versionContent` | `string` | The persisted version-1 body after placeholder replacement. |
+
+---
+
+## Updating a Document
+
+Use `update-document` to change a document's title, status, project, assignee, approver, priority, due date, or file name. For content edits, use `create-document-version` instead.
+
+**Tool**: `update-document`
+**Underlying API**: `PUT /documents/:documentId`
+
+```
+update-document(
+  documentId: string,       // PRD-*, PLN-*, FEA-*, or UUID
+  title?: string,
+  // Use the vocabulary that matches the artifact type (see below):
+  //   Documents (PRD, Plan): "DRAFT" | "IN_REVIEW" | "CHANGES_REQUESTED" | "APPROVED" | "EXECUTED" | "OBSOLETE"
+  //   Features (FEA):         "TRIAGE" | "BACKLOG" | "TODO" | "IN_PROGRESS" | "IN_REVIEW" | "BLOCKED" | "DONE" | "CANCELED"
+  status?: string,
+  projectId?: string,       // Move to a different project
+  assigneeId?: string | null,  // UUID, or null to unassign
+  approverId?: string | null,  // UUID, or null to clear the approver
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "URGENT",
+  dueDate?: string | null,     // ISO 8601 date (YYYY-MM-DD) or timezone-qualified datetime; null to clear
+  fileName?: string           // New file name for the document
+)
+```
+
+**Status lifecycle**:
+
+Documents and Features have **separate** status vocabularies — use the one that matches the artifact type. The server rejects a status that doesn't belong to the target artifact's vocabulary.
+
+Documents (PRD, Plan) — an authoring / approval lifecycle:
+
+```
+DRAFT → IN_REVIEW → APPROVED
+```
+
+`APPROVED` is sign-off (terminal). Use `CHANGES_REQUESTED` when a review asks for rework (return to `IN_REVIEW` after), `EXECUTED` for Implementation Plans that have been executed, and `OBSOLETE` for deprecated or replaced documents.
+
+Features (FEA) — a delivery lifecycle:
+
+```
+TRIAGE → BACKLOG → TODO → IN_PROGRESS → IN_REVIEW → DONE
+```
+
+Update status as work progresses. For Features, agents should set `IN_PROGRESS` when starting, `IN_REVIEW` when a PR is opened, and `DONE` when merged; use `BLOCKED` when stuck and `CANCELED` for won't-do.
+
+---
+
+## Managing Content Versions
+
+Every content save creates a new version. Prior versions are preserved in history.
+
+### Append a New Version
+
+**Tool**: `create-document-version`
+**Underlying API**: `POST /documents/:documentId/versions`
+
+```
+create-document-version(
+  documentId: string,  // PRD-*, PLN-*, FEA-*, or UUID
+  content: string,     // Full content for the new version
+  inlineImages?: Array<{
+    placeholder: string, // Exact marker in content to replace, 1-200 characters
+    filename: string,    // 1-255 characters
+    mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+    dataBase64: string,  // Raw base64 image bytes, up to 512KB decoded
+    altText?: string     // Markdown alt text, up to 500 characters
+  }>                    // Up to 5 images
+)
+```
+
+When `inlineImages` is provided, the tool creates the inline image attachments and rewrites each matching placeholder in `content` to `![alt](attachment://...)` before saving the new version. Each placeholder must be unique, must not overlap another placeholder, and must appear in the content; if any image creation or version save fails, the API rejects the operation and cleans up images created earlier in the same call within normal attachment cleanup limits.
+
+The inline-image request body is capped at 1MB of encoded bytes, and the saved content after placeholder replacement is capped at 1,048,576 characters of JavaScript string length. Callers who omit `inlineImages`, or pass an empty array, use the existing content-only version path.
+
+As with `create-document`, and for the same API-key/MCP callers, a version call that carries at least one inline image while the `mcp-upload-attachment` rollout flag is off is rejected with `403` and `code: "mcp_attachment_upload_disabled"`. An empty `inlineImages` array does not trip the gate.
+
+### List Versions
+
+**Tool**: `list-document-versions`
+**Underlying API**: `GET /documents/:documentId/versions`
+
+```
+list-document-versions(
+  documentId: string,
+  limit?: number,
+  offset?: number
+)
+```
+
+Returns version number, creation timestamp, author ID, and content length. Use `get-document(includeContent: true)` to read the actual latest content.
+
+---
+
+## Attachments
+
+### Upload an Attachment
+
+**Tool**: `upload-attachment`
+**Underlying API**: `POST /documents/:entityId/attachments`
+
+```
+upload-attachment(
+  entityId: string,             // PRD-*, PLN-*, FEA-*, or UUID
+  filename: string,
+  mimeType: string,
+  sizeBytes: number,
+  purpose?: "context" | "inline"  // Default: "context"
+)
+```
+
+This write-scoped tool starts a two-step upload. The API returns `attachmentId`, `uploadUrl`, `key`, and `expiresAt`; the caller then uploads the bytes directly to the presigned URL using the same MIME type and declared content length.
+
+```
+curl -T <file> "<uploadUrl>" -H "Content-Type: <mimeType>"
+```
+
+The direct upload route accepts the same document identifiers as other document tools and is protected by the `mcp-upload-attachment` rollout flag for API-key/MCP callers. Upload requests are capped at 60 accepted requests per verified document per 60-minute window. Attachments are limited to 10MB and supported MIME types; `purpose: "inline"` only accepts image MIME types. Inline attachments can be rediscovered with `list-attachments(purpose: "inline")` and are rendered in the editor through `POST /documents/{id}/attachments/resolve` after they are referenced.
+
+### Create an Inline Image Attachment
+
+**Tool**: `create-inline-image-attachment`
+**Underlying API**: `POST /documents/:entityId/attachments/images`
+
+```
+create-inline-image-attachment(
+  entityId: string,    // PRD-*, PLN-*, FEA-*, or UUID
+  filename: string,    // 1-255 characters
+  mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+  dataBase64: string,  // Base64-encoded image bytes
+  altText?: string
+)
+```
+
+This write-scoped tool creates an inline image attachment in one call. It accepts bounded base64 image bytes, validates the MIME type against image magic bytes, stores the object directly, persists the attachment with `purpose: "inline"`, and returns `attachmentId`, `attachmentRef` (`attachment://...`), `markdownImage`, and the attachment metadata. It does not return raw bytes, storage keys, or presigned upload URLs.
+
+Inline image creation uses the same document identifiers, `mcp-upload-attachment` rollout flag, and 60 accepted requests per verified document per 60-minute upload limit as `upload-attachment`. Decoded image bytes are capped at 512KB, and the raw JSON request body is capped at 768KB. Created inline images are immediately visible through `list-attachments(purpose: "inline")`.
+
+### List Attachments
+
+**Tool**: `list-attachments`
+**Underlying API**: `GET /documents/:entityId/attachments`
+
+```
+list-attachments(
+  entityId: string,             // PRD-*, PLN-*, FEA-*, or UUID
+  purpose?: "context" | "inline" | "all",
+  limit?: number,               // 1–100, default 25
+  offset?: number               // Pagination offset, default 0
+)
+```
+
+The response includes a paginated envelope:
+
+```json
+{
+  "total": 3,
+  "offset": 0,
+  "limit": 25,
+  "returned": 3,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    {
+      "id": "...",
+      "artifactId": "...",
+      "filename": "diagram.png",
+      "mimeType": "image/png",
+      "sizeBytes": 20481,
+      "purpose": "inline",
+      "createdAt": "2026-01-15T12:00:00.000Z",
+      "createdById": "...",
+      "previewUrl": "https://..."
+    }
+  ]
+}
+```
+
+Each item carries `id`, `artifactId`, `filename`, `mimeType`, `sizeBytes`, `purpose`, `createdAt`, and `createdById`. `previewUrl` is a presigned URL that is present only for image attachments (omitted otherwise).
+
+<Callout type="warn">
+  The underlying API caps a document's attachment listing at the 200 most recent attachments (newest first). Attachments beyond the first 200 for a document are not listed, and `total`, `hasMore`, and `nextOffset` are all computed over that capped set — so `total` never exceeds 200 even if the document has more attachments. The `limit`/`offset` params paginate within this capped window, not the document's full attachment history.
+</Callout>
+
+### Download an Attachment
+
+**Tool**: `download-attachment`
+**Underlying API**: `GET /documents/:entityId/attachments/:attachmentId`
+
+```
+download-attachment(
+  entityId: string,     // Document slug or UUID
+  attachmentId: string  // Attachment UUID from list-attachments
+)
+```
+
+Returns a presigned `downloadUrl`. The URL expires quickly — download the file immediately after calling this tool.
+
+### Delete an Attachment
+
+**Tool**: `delete-attachment`
+**Underlying API**: `DELETE /documents/:entityId/attachments/:attachmentId`
+
+```
+delete-attachment(
+  entityId: string,     // Document slug or UUID
+  attachmentId: string  // Attachment UUID from list-attachments
+)
+```
+
+Only attachments explicitly created by the authenticated user can be deleted — the API enforces creator-only deletion. Returns `{ "deleted": true }` on success.
+
+---
+
+## Templates
+
+Templates are internal document blueprints used to pre-fill new documents. They are referenced by UUID only (no slug form). End users do not interact with templates directly.
+
+**Tool**: `list-templates`
+**Underlying API**: `GET /templates`
+
+```
+list-templates(
+  limit?: number,
+  offset?: number
+)
+```
+
+The response is a paginated envelope. Each item carries `id`, `title`, `type`, `templateForType`, and `updatedAt`:
+
+```json
+{
+  "total": 4,
+  "offset": 0,
+  "limit": 25,
+  "returned": 4,
+  "hasMore": false,
+  "nextOffset": null,
+  "items": [
+    {
+      "id": "...",
+      "title": "PRD Template",
+      "type": "TEMPLATE",
+      "templateForType": "PRD",
+      "updatedAt": "2026-01-15T14:30:00Z"
+    }
+  ]
+}
+```

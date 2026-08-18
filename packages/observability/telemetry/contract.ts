@@ -9,6 +9,7 @@ export const ReservedLoggerMetadataKey = {
   Origin: "origin",
   Message: "message",
   Level: "level",
+  Status: "status",
   Service: "service",
   Ddsource: "ddsource",
   Ddtags: "ddtags",

@@ -23,3 +23,17 @@ export type StatusCheckRollupState =
   | "ERROR"
   | "PENDING"
   | "EXPECTED";
+
+/**
+ * Status carried on the `?github=` query param when the GitHub OAuth connect
+ * flow bounces back to an in-app surface (e.g. the branches list/detail pages
+ * or settings). The callback writer sets these values and the return-notice
+ * banners read them; keep this the single source of truth so the writer and
+ * every consumer cannot drift.
+ */
+export const GitHubConnectReturnStatus = {
+  Connected: "connected",
+  Error: "error",
+} as const;
+export type GitHubConnectReturnStatus =
+  (typeof GitHubConnectReturnStatus)[keyof typeof GitHubConnectReturnStatus];

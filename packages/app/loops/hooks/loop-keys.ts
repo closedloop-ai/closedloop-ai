@@ -15,6 +15,4 @@ export const loopKeys = {
     [...loopKeys.detail(id), "events-paginated", filters] as const,
   usage: (filters: Record<string, unknown>) =>
     [...loopKeys.all, "usage", filters] as const,
-  summaries: (documentIds: string[]) =>
-    [...loopKeys.all, "summaries", documentIds] as const,
 };

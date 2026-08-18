@@ -3,6 +3,10 @@
  * Handles mapping user IDs to display info and providing mention suggestions
  */
 
+import {
+  mentionMatchDisplayName,
+  mentionQueryMatchesUser,
+} from "../shared/mention-matching";
 import { getConsistentColor } from "../shared/user-colors";
 
 export type UserInfo = {
@@ -27,8 +31,7 @@ export function createResolveUsers(users: UserInfo[]) {
       }
 
       // Generate display name: "FirstName LastName" or fallback to email
-      const name =
-        `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() || user.email;
+      const name = mentionMatchDisplayName(user);
 
       return {
         name,
@@ -48,20 +51,10 @@ export function createResolveMentionSuggestions(users: UserInfo[]) {
     // Filter to active users only
     const activeUsers = users.filter((u) => u.active);
 
-    // If no search text, return all active users
-    if (!text) {
-      return activeUsers.map((u) => u.id);
-    }
-
-    // Filter by name or email containing search text (case-insensitive)
-    const searchLower = text.toLowerCase();
+    // Filter by name or email containing search text (case-insensitive); an
+    // empty query matches all active users.
     return activeUsers
-      .filter((user) => {
-        const fullName =
-          `${user.firstName ?? ""} ${user.lastName ?? ""}`.toLowerCase();
-        const email = user.email.toLowerCase();
-        return fullName.includes(searchLower) || email.includes(searchLower);
-      })
+      .filter((user) => mentionQueryMatchesUser(user, text))
       .map((u) => u.id);
   };
 }

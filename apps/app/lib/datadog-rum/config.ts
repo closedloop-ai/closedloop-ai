@@ -7,6 +7,7 @@ const SESSION_REPLAY_SAMPLE_RATE = 0;
 
 export type DatadogRumConfig = Pick<
   RumInitConfiguration,
+  | "allowedTracingUrls"
   | "applicationId"
   | "beforeSend"
   | "clientToken"
@@ -19,6 +20,7 @@ export type DatadogRumConfig = Pick<
   | "trackLongTasks"
   | "trackResources"
   | "trackUserInteractions"
+  | "traceSampleRate"
   | "version"
 >;
 
@@ -32,6 +34,7 @@ export function getDatadogRumConfig(): DatadogRumConfig | null {
   }
 
   return {
+    ...getDistributedTracingConfig(),
     applicationId,
     beforeSend: scrubDatadogRumEvent,
     clientToken,
@@ -173,4 +176,57 @@ export function setDatadogRumStaffCapture(enabled: boolean): void {
 /** Test/inspection helper: current staff-capture egress state. */
 export function isDatadogRumStaffCaptureEnabled(): boolean {
   return staffCaptureEnabled;
+}
+
+/**
+ * Percentage of browser requests that carry trace context when RUM→APM
+ * correlation is switched on.
+ *
+ * Deliberately NOT 100. The API's sampler is `ParentBased`, whose
+ * `remoteParentSampled` default is AlwaysOn — so every request that arrives
+ * with a sampled `traceparent` is kept server-side regardless of
+ * `DD_TRACE_SAMPLE_RATE`. At 100 the browser would therefore override the
+ * server's ingest budget entirely. Keep this in step with the server default;
+ * raising it raises the Datadog APM bill directly.
+ */
+const DEFAULT_TRACE_SAMPLE_RATE = 10;
+
+/**
+ * ISS-4659: propagate W3C trace context from the browser to `cl-api` so a slow
+ * RUM view links to the server spans it caused.
+ *
+ * **Default off, and deliberately so.** `traceparent` is not a CORS-safelisted
+ * header, so the browser only sends it if `apps/api` advertises it in
+ * `Access-Control-Allow-Headers`. If this turned on while an API without that
+ * header were live — a rollback, a preview pair, a stage lagging prod — every
+ * app→api request would fail preflight and the app would be down, not merely
+ * untraced. Switching it on is therefore a deliberate act *after* confirming
+ * the header is serving, not a side effect of deploying this code.
+ *
+ * Read straight from `process.env` (like `getDatadogRumVersion` above) because
+ * this is an app-local rollout switch, not a cross-package contract that
+ * belongs in `packages/next-config`.
+ */
+function getDistributedTracingConfig(): Pick<
+  DatadogRumConfig,
+  "allowedTracingUrls" | "traceSampleRate"
+> {
+  if (process.env.NEXT_PUBLIC_DATADOG_RUM_TRACING_ENABLED !== "1") {
+    return {};
+  }
+
+  const apiOrigin = env.NEXT_PUBLIC_API_URL;
+  if (!apiOrigin) {
+    return {};
+  }
+
+  return {
+    allowedTracingUrls: [
+      { match: apiOrigin, propagatorTypes: ["tracecontext"] },
+    ],
+    traceSampleRate: parseSampleRate(
+      process.env.NEXT_PUBLIC_DATADOG_RUM_TRACE_SAMPLE_RATE,
+      DEFAULT_TRACE_SAMPLE_RATE
+    ),
+  };
 }

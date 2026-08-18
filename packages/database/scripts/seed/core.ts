@@ -117,6 +117,7 @@ export async function seedCoreEntities(
         update: {
           role: TeamRole.OWNER,
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -199,6 +200,7 @@ export async function seedCoreEntities(
             description: def.description,
             priority: def.priority,
           },
+          select: { id: true },
         }),
       counts,
     });
@@ -232,6 +234,7 @@ export async function seedCoreEntities(
           },
           // Do not reset the counter if it already exists — preserve current value.
           update: {},
+          select: { id: true },
         }),
       counts,
     });
@@ -327,6 +330,7 @@ async function seedArtifacts(
         update: {
           status: GitHubInstallationStatus.ACTIVE,
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -349,6 +353,7 @@ async function seedArtifacts(
         update: {
           fullName: "seed-org/seed-repo",
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -359,8 +364,8 @@ async function seedArtifacts(
   // uniqueness requirement).
   //
   // Statuses: DRAFT, IN_PROGRESS, IN_REVIEW, APPROVED, EXECUTED, DONE, OBSOLETE
-  // Subtypes seeded as regular docs: PRD, IMPLEMENTATION_PLAN, FEATURE
-  // Subtypes seeded as templates:   PRD, IMPLEMENTATION_PLAN, TEMPLATE, FEATURE
+  // Subtypes seeded as regular docs: PRD, IMPLEMENTATION_PLAN, DOC, FEATURE
+  // Subtypes seeded as templates:   PRD, IMPLEMENTATION_PLAN, DOC, TEMPLATE, FEATURE
   // -------------------------------------------------------------------------
 
   type DocumentArtifactDefinition = {
@@ -379,12 +384,14 @@ async function seedArtifacts(
   const featureStatuses = Object.values(FeatureStatus);
 
   // Regular (non-template) Document definitions — one per DocumentStatus,
-  // distributed across the Document subtypes (PRD / IMPLEMENTATION_PLAN) so
-  // every Document status is represented. FEATURE rows are seeded separately
-  // below with the Feature vocabulary.
+  // distributed across the Document subtypes (PRD / IMPLEMENTATION_PLAN / DOC)
+  // so every Document status is represented and every Document-vocabulary
+  // subtype is exercised as a regular DOCUMENT artifact. FEATURE rows are
+  // seeded separately below with the Feature vocabulary.
   const documentSubtypes: ArtifactSubtype[] = [
     ArtifactSubtype.PRD,
     ArtifactSubtype.IMPLEMENTATION_PLAN,
+    ArtifactSubtype.DOC,
   ];
 
   const documentDefinitions: DocumentArtifactDefinition[] =
@@ -413,15 +420,22 @@ async function seedArtifacts(
     })
   );
 
-  // Template definitions — one per concrete ArtifactSubtype (satisfies the
-  // templateForType uniqueness constraint: one template per subtype per org).
+  // Template definitions — one per concrete PERSISTED ArtifactSubtype (satisfies
+  // the templateForType uniqueness constraint: one template per subtype per org).
   // ArtifactSubtype.TEMPLATE itself is excluded — a "template for TEMPLATE" is
-  // semantically nonsensical (templates document the shape of concrete
-  // artifact subtypes, not of the template kind).
+  // semantically nonsensical (templates document the shape of concrete artifact
+  // subtypes, not of the template kind). ArtifactSubtype.ISSUE is also excluded:
+  // it is the FEA-3956 canonical *input* alias for the persisted `FEATURE`
+  // subtype and never persists (normalizeArtifactSubtype maps it back to
+  // FEATURE), so templating it would seed a second, duplicate Feature template.
   const templateDefinitions: DocumentArtifactDefinition[] = Object.values(
     ArtifactSubtype
   )
-    .filter((subtype) => subtype !== ArtifactSubtype.TEMPLATE)
+    .filter(
+      (subtype) =>
+        subtype !== ArtifactSubtype.TEMPLATE &&
+        subtype !== ArtifactSubtype.ISSUE
+    )
     .map((subtype, i) => ({
       key: `artifact:template:${organizationId}:${subtype.toLowerCase()}`,
       name: `Seed Template (${subtype})`,
@@ -519,6 +533,7 @@ async function seedArtifacts(
               name: def.name,
               status: def.status,
             },
+            select: { id: true },
           }),
         counts,
       });
@@ -549,6 +564,7 @@ async function seedArtifacts(
             update: {
               content: `# ${def.name}\n\nSynthetic seed content for development and testing. Replace via the document editor when exercising real authoring flows.\n`,
             },
+            select: { id: true },
           }),
         counts,
       });
@@ -600,6 +616,7 @@ async function seedArtifacts(
         update: {
           name: "seed/feature-branch",
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -648,6 +665,7 @@ async function seedArtifacts(
         update: {
           name: "Preview Deployment (seed)",
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -683,6 +701,7 @@ async function seedArtifacts(
         update: {
           machineName: "seed-machine",
         },
+        select: { id: true },
       }),
     counts,
   });
@@ -726,6 +745,7 @@ async function seedArtifacts(
         update: {
           name: "Seed Agent Session",
         },
+        select: { id: true },
       }),
     counts,
   });

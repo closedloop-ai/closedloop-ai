@@ -50,18 +50,23 @@ describe("GET /branches/[id]/trace", () => {
   });
 
   it("requires read scope and forwards parsed trace query bounds", async () => {
-    const response = await GET(
-      request(`https://api.example.test/branches/${branchId}/trace?limit=25`),
-      routeContext(branchId)
+    const traceRequest = request(
+      `https://api.example.test/branches/${branchId}/trace?limit=25`
     );
+    const response = await GET(traceRequest, routeContext(branchId));
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(mocks.withAnyAuthOptions).toEqual([{ requiredScopes: ["read"] }]);
-    expect(mocks.getBranchTrace).toHaveBeenCalledWith("org-1", branchId, {
-      limit: 25,
-      offset: 0,
-    });
+    expect(mocks.getBranchTrace).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      {
+        limit: 25,
+        offset: 0,
+      },
+      traceRequest.signal
+    );
     expect(body).toEqual({
       success: true,
       data: branchTrace(),
@@ -80,17 +85,35 @@ describe("GET /branches/[id]/trace", () => {
     expect(body.success).toBe(false);
   });
 
+  it("rejects the unbounded complete query before service work", async () => {
+    const response = await GET(
+      request(
+        `https://api.example.test/branches/${branchId}/trace?complete=true`
+      ),
+      routeContext(branchId)
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.getBranchTrace).not.toHaveBeenCalled();
+  });
+
   it("returns not found when the trace service has no scoped branch match", async () => {
     mocks.getBranchTrace.mockResolvedValueOnce(null);
 
-    const response = await GET(request(), routeContext(branchId));
+    const traceRequest = request();
+    const response = await GET(traceRequest, routeContext(branchId));
     const body = await response.json();
 
     expect(response.status).toBe(404);
-    expect(mocks.getBranchTrace).toHaveBeenCalledWith("org-1", branchId, {
-      limit: 50,
-      offset: 0,
-    });
+    expect(mocks.getBranchTrace).toHaveBeenCalledWith(
+      "org-1",
+      branchId,
+      {
+        limit: 50,
+        offset: 0,
+      },
+      traceRequest.signal
+    );
     expect(body).toEqual({
       success: false,
       error: "Branch not found",

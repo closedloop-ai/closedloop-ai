@@ -1,5 +1,6 @@
 import {
   isTransientConnectionError,
+  subprocessCapturedOutput,
   subprocessErrorOutput,
   withRetry,
 } from "./migrate-retry";
@@ -69,8 +70,30 @@ const CREDENTIAL_ENV_ASSIGNMENT_PATTERN =
 // (or newline-separated fields) is sanitized, not only runs of two or more on one line.
 const POSTGRES_ENV_CONNECTION_ASSIGNMENT_PATTERN =
   /\b(?:PGHOST|PGUSER|PGDATABASE|PGPORT|PGPASSWORD)\s*=\s*\S+/g;
+// A connection failure names its endpoint in PROSE, never as a URL or an env
+// assignment, so none of the patterns above ever saw it: P1001 "Can't reach
+// database server at `db.example.com:5432`", P1002 "The database server at ...
+// was reached but timed out", P1003 "... does not exist on the database server
+// at ...", P1000 "Authentication failed against database server at `host`" (no
+// port at all), and libpq's own `connection to server at "host" port 5432
+// failed` nested inside a P0001 Database error. ISS-6558 routed that text into
+// the ensure route's 500 body and a GitHub Actions log (review: wongk).
+//
+// Anchored on the `server at` phrase all five share, and KEEPS it: a blanket
+// host:port sweep would also eat `at or near "SELCT"` and `schema.prisma:12`,
+// and the entire point of surfacing this output is that `exit code 1` told
+// nobody anything — the P-code and the sentence around it must survive.
+const DATABASE_SERVER_ENDPOINT_PATTERN =
+  /(\bserver (?:is running )?at\s+)["`]?[A-Za-z0-9][A-Za-z0-9.-]*["`]?(?:(?::|\s+port\s+)["`]?\d{1,5}["`]?)?/gi;
 const SENSITIVE_INVARIANT_VALUE_MARKER = "[redacted sensitive value]";
 const MAX_OPERATOR_ERROR_FRAGMENT_LENGTH = 500;
+// What "the diagnosis" means for the operator sinks: any Prisma error code, and
+// the migration the CLI names. Deliberately NOT `MIGRATION_NAME_PATTERN` — that
+// one aims `migrate resolve --rolled-back` at a specific migration, and
+// `Applying migration X` is printed for migrations that SUCCEEDED too, so
+// widening it would aim recovery at the wrong one. This is report-only.
+const OPERATOR_DIAGNOSIS_LINE_PATTERN =
+  /\bP\d{4}\b|^Migration name:|^Applying migration/i;
 
 type RecoverMigrateDeployFailureInput = {
   databaseUrl: string;
@@ -91,7 +114,23 @@ type RecoverMigrateDeployFailureDeps = {
     schema: string | null,
     branch: string | undefined
   ) => Promise<void>;
+  // Pre-stamp the CONCURRENTLY perf-index migration(s) as applied on the
+  // freshly-reset preview schema BEFORE re-running migrate deploy, so the reset
+  // path skips their instance-wide-blocking build just like the primary pipeline
+  // (see prestampSkippableMigrationsViaSql in preview-prestamp.ts). Optional and
+  // best-effort — absent (or a no-op) simply degrades to today's behavior.
+  prestampSkippableMigrations?: (
+    databaseUrl: string,
+    schema: string | null
+  ) => Promise<void>;
   registryRetrySleep?: (ms: number) => Promise<void>;
+  /**
+   * Telemetry (ISS-4392): reports which Prisma error forced the preview-schema
+   * reset (a full-history replay). Fires ONLY on the PreviewReset path — the
+   * `none` case is the caller's default. Best-effort — never affects recovery.
+   * A plain string union keeps this module decoupled from `migrate-telemetry.ts`.
+   */
+  onResetKind?: (kind: "p3005" | "p3009" | "p3018") => void;
 };
 
 type MigrateDeployFailureClassificationBase = {
@@ -119,13 +158,18 @@ function parseFailedMigrationName(message: string): string | null {
   return match?.[1] ?? match?.[2] ?? null;
 }
 
-// Protects formatted summaries operators copy into Slack/tickets.
+// Protects formatted summaries operators copy into Slack/tickets, and (ISS-6403)
+// the ensure route's HTTP error body, which a GitHub Actions log prints.
 // Raw Prisma output is already emitted by migrate.ts before recovery sees it.
-function sanitizeOperatorMessageFragment(message: string): string {
+export function sanitizeOperatorMessageFragment(message: string): string {
   return message
     .replace(DATABASE_URL_ASSIGNMENT_PATTERN, SENSITIVE_INVARIANT_VALUE_MARKER)
     .replace(IAM_TOKEN_FRAGMENT_PATTERN, SENSITIVE_INVARIANT_VALUE_MARKER)
     .replace(POSTGRES_CREDENTIAL_URL_PATTERN, SENSITIVE_INVARIANT_VALUE_MARKER)
+    .replace(
+      DATABASE_SERVER_ENDPOINT_PATTERN,
+      `$1${SENSITIVE_INVARIANT_VALUE_MARKER}`
+    )
     .replace(
       POSTGRES_ENV_CONNECTION_ASSIGNMENT_PATTERN,
       SENSITIVE_INVARIANT_VALUE_MARKER
@@ -168,6 +212,17 @@ function truncateOperatorErrorFragment(fragment: string): string {
   }
 
   return `${fragment.slice(0, MAX_OPERATOR_ERROR_FRAGMENT_LENGTH)}...`;
+}
+
+/**
+ * The lines of an already-sanitized output that carry the diagnosis, wherever
+ * they sit — including past a front bound, and on the stream the bound dropped.
+ */
+function extractOperatorDiagnosisLines(output: string): string[] {
+  return output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => OPERATOR_DIAGNOSIS_LINE_PATTERN.test(line));
 }
 
 function parseRetryDatabaseErrorFragment(output: string): string | null {
@@ -332,6 +387,20 @@ export async function recoverMigrateDeployFailure(
   }
 
   if (classification.decision === MigrateDeployRecoveryDecision.PreviewReset) {
+    // Telemetry (ISS-4392): mirror prismaErrorLabel's precedence (P3009 → P3018 →
+    // P3005) so the reported reset kind matches the logged label. Isolated so a
+    // throwing callback can never abort the preview reset recovery below.
+    try {
+      if (classification.isP3009) {
+        deps.onResetKind?.("p3009");
+      } else if (classification.isP3018) {
+        deps.onResetKind?.("p3018");
+      } else {
+        deps.onResetKind?.("p3005");
+      }
+    } catch {
+      // Best-effort; telemetry must never change recovery behavior.
+    }
     console.log(
       `↪ Preview schema ${input.schema} hit ${prismaErrorLabel(
         classification.isP3009,
@@ -339,6 +408,11 @@ export async function recoverMigrateDeployFailure(
       )}, resetting...`
     );
     await deps.resetSchema(input.databaseUrl, input.schema);
+    // Skip the CONCURRENTLY perf-index build on the freshly-reset preview schema
+    // (same rationale as the primary pipeline: empty ephemeral schema, no perf
+    // index needed, CONCURRENTLY's instance-wide wait is what drives the P1002
+    // storm). Best-effort/fail-open — provided by migrate.ts, no-op if absent.
+    await deps.prestampSkippableMigrations?.(input.databaseUrl, input.schema);
     await deps.runMigrateDeploy(input.databaseUrl);
     // Recovery-path registration: re-register schema after reset so FEA-1082 reaper can track it. Same transient-retry protection as the primary path.
     await withRetry(
@@ -395,4 +469,58 @@ export async function recoverMigrateDeployFailure(
   }
 
   throw input.error;
+}
+
+/**
+ * The failing Prisma CLI's own output, sanitized and bounded, for the operator
+ * sinks that until now saw only `failed with exit code 1` (ISS-6558).
+ *
+ * `runMigrateDeploy` attaches the CLI's `stdout`/`stderr` to the error it
+ * throws as PROPERTIES, and every reader downstream goes through `parseError`,
+ * which reads only `.message` — so Prisma's error code and the name of the
+ * failing migration were discarded at that boundary and a live stage schema
+ * could sit behind `main` with the telemetry unable to say why.
+ *
+ * Sanitize BEFORE bounding, never after: the spawn's env carries an IAM-signed
+ * `DATABASE_URL`, and slicing first can cut a connection string in half so that
+ * neither half still matches the credential patterns. Bounding second can only
+ * ever truncate an already-redacted marker, which is harmless.
+ *
+ * Bounded with `truncateOperatorErrorFragment` rather than a second scheme, and
+ * the DIAGNOSIS is extracted before that bound rather than left to survive it
+ * (review: wongk). The window is a front slice of `stderr` then `stdout` joined,
+ * so 500 characters of stderr drop stdout entirely — and the two streams split
+ * the diagnosis between them: `migration-pipeline-prisma-cli.test.ts` pins a
+ * real run writing `Error: P3009` to stderr while the migration name arrives on
+ * stdout as `Applying migration 20260101_add`. Reserving a fixed slice per
+ * stream would still cut blindly, and can halve the migration name; extracting
+ * the lines that carry the code and the name cannot. They are appended after
+ * the window, themselves bounded, so the result stays bounded.
+ *
+ * Every byte returned comes from `sanitized`, which is computed ONCE at the top:
+ * the sanitize-before-bound ordering holds for the appended lines exactly as it
+ * does for the window.
+ *
+ * Returns `null` when the error carries no captured output, so a caller that
+ * already reports the sanitized message does not print it a second time.
+ */
+export function sanitizeOperatorCliOutput(error: unknown): string | null {
+  const captured = subprocessCapturedOutput(error).trim();
+  if (!captured) {
+    return null;
+  }
+
+  const sanitized = sanitizeOperatorMessageFragment(captured);
+  const bounded = truncateOperatorErrorFragment(sanitized);
+  if (bounded === sanitized) {
+    return bounded;
+  }
+
+  const dropped = extractOperatorDiagnosisLines(sanitized).filter(
+    (line) => !bounded.includes(line)
+  );
+  if (dropped.length === 0) {
+    return bounded;
+  }
+  return `${bounded}\n${truncateOperatorErrorFragment(dropped.join("\n"))}`;
 }

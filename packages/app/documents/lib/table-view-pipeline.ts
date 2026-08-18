@@ -215,6 +215,12 @@ function compareBySlug(a: DocumentRowItem, b: DocumentRowItem): number {
   return compareSlugValues(a.data.slug, b.data.slug);
 }
 
+function compareByUpdatedAt(a: DocumentRowItem, b: DocumentRowItem): number {
+  const aDate = new Date(a.data.updatedAt).getTime();
+  const bDate = new Date(b.data.updatedAt).getTime();
+  return aDate - bDate;
+}
+
 const ITEM_SORT_CONFIGS: Record<string, SortConfig<DocumentRowItem>> = {
   title: {
     key: "title",
@@ -230,11 +236,11 @@ const ITEM_SORT_CONFIGS: Record<string, SortConfig<DocumentRowItem>> = {
   },
   dueDate: {
     key: "updatedAt",
-    comparator: (a, b) => {
-      const aDate = new Date(a.data.updatedAt).getTime();
-      const bDate = new Date(b.data.updatedAt).getTime();
-      return aDate - bDate;
-    },
+    comparator: compareByUpdatedAt,
+  },
+  updated: {
+    key: "updatedAt",
+    comparator: compareByUpdatedAt,
   },
   assignee: {
     key: "assignee",
@@ -448,6 +454,47 @@ export function buildRenderedItems({
   if (groupBy !== GroupByMode.None) {
     return flattenGroupedSections(
       groupedSections,
+      isGroupedView,
+      isGroupExpanded
+    );
+  }
+  if (!isGroupedView) {
+    return flatItems;
+  }
+  return flattenDisplayGroups(groups, isGroupExpanded);
+}
+
+/**
+ * The rows the table body will actually paint, for the column-collapse input
+ * (FEA-3945 / FEA-3946). Identical to `buildRenderedItems` except that when a
+ * grouping mode is active it drops rows inside collapsed sections, mirroring
+ * `renderTableBody`'s `sectionOpen && …` gate. `buildRenderedItems` keeps those
+ * rows (selection/prune/rank operate on the whole set), so the collapse rule
+ * must not reuse it: a hidden Urgent row in a closed section must not keep the
+ * Priority column visible for an open section of only Medium rows.
+ */
+export function buildCollapseVisibleItems({
+  groupBy,
+  groupedSections,
+  isGroupedView,
+  flatItems,
+  groups,
+  isGroupExpanded,
+  isSectionExpanded,
+}: {
+  groupBy: GroupByMode;
+  groupedSections: GroupedSection[];
+  isGroupedView: boolean;
+  flatItems: DocumentRowItem[];
+  groups: DisplayGroup[];
+  isGroupExpanded: (key: string) => boolean;
+  isSectionExpanded: (key: string) => boolean;
+}): DocumentRowItem[] {
+  if (groupBy !== GroupByMode.None) {
+    return flattenGroupedSections(
+      groupedSections.filter((section) =>
+        isSectionExpanded(section.descriptor.key)
+      ),
       isGroupedView,
       isGroupExpanded
     );

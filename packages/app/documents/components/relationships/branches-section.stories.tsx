@@ -1,0 +1,107 @@
+/**
+ * ISS-5508: the Build section's empty state is the one place the run-in-flight
+ * explanation renders OUTSIDE a menu — a plain button plus a visible reason
+ * line — and it is the awkward state to reach by hand, because it needs the
+ * poll and the rollout flag both in the right position at once (PR #4714
+ * review, wongk).
+ *
+ * The three stories are a gradient over one axis, so the visual difference the
+ * ticket is about is legible side by side rather than described:
+ * nothing running, a run in flight WITHOUT the flag (the shipped pre-ISS-5508
+ * treatment — greys out, says nothing), and a run in flight WITH it.
+ *
+ * `branches-section.test.tsx` / `branches-section-run-in-flight.test.tsx` pin
+ * the behavior and the accessible contract; these pin the rendered shape those
+ * assertions cannot see.
+ */
+
+import { LinkDirection, LinkQueryMode } from "@repo/api/src/types/artifact";
+import type { GenerationStatus } from "@repo/api/src/types/document";
+import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { artifactLinkKeys } from "@repo/app/documents/hooks/use-artifact-links";
+import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
+import type { Meta, StoryObj } from "@storybook/react";
+import { BranchesSection } from "./branches-section";
+
+const DOCUMENT_ID = "iss-5508-story-document";
+const PROJECT_ID = "iss-5508-story-project";
+const PLAN_ID = "iss-5508-story-plan";
+
+/**
+ * Seeded rather than left to the harness transport so the section renders its
+ * zero-branch empty state deterministically — that is the only branch of the
+ * component that owns "Start Building". Spelled through `artifactLinkKeys` with
+ * the same argument shape `BranchesSection` passes to `useResolvedArtifactLinks`,
+ * so a change to either drifts loudly instead of quietly missing the cache and
+ * falling back to a fixture response.
+ */
+const NO_BRANCH_LINKS = [
+  artifactLinkKeys.list({
+    artifactId: DOCUMENT_ID,
+    direction: LinkDirection.Target,
+    linkType: undefined,
+    maxDepth: undefined,
+    mode: LinkQueryMode.Tree,
+    resolved: true,
+  }),
+  [],
+] as const;
+
+/** An execute run the poll reports as still going. */
+const EXECUTE_RUNNING: GenerationStatus = {
+  status: "RUNNING",
+  command: RunLoopCommand.Execute,
+  htmlUrl: null,
+  startedAt: null,
+  completedAt: null,
+  correlationId: null,
+};
+
+const meta = {
+  title: "App Core/Documents/Branches Section",
+  component: BranchesSection,
+  tags: ["autodocs"],
+  args: {
+    documentId: DOCUMENT_ID,
+    onStartBuild: () => undefined,
+    planId: PLAN_ID,
+    projectId: PROJECT_ID,
+  },
+  parameters: {
+    appCore: { queryData: [NO_BRANCH_LINKS] },
+    layout: "padded",
+  },
+} satisfies Meta<typeof BranchesSection>;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+/** No branches and nothing running: "Start Building" is plainly available. */
+export const EmptyState: Story = {};
+
+/**
+ * A run in flight with the rollout flag OFF — the treatment that shipped before
+ * this change, and the control for the story below. The button greys out via
+ * native `disabled` and no explanation exists anywhere on screen.
+ */
+export const RunInFlightUnexplained: Story = {
+  args: { generationStatus: EXECUTE_RUNNING },
+};
+
+/**
+ * The same run with the flag ON. The button swaps native `disabled` for
+ * `aria-disabled` so it keeps focus and its `aria-describedby` target, and the
+ * reason renders beneath it as ordinary accompanying text — not a banner (which
+ * ISS-5474 removed) and not a `title` tooltip (which neither keyboard nor screen
+ * reader can reach).
+ */
+export const RunInFlightExplained: Story = {
+  args: { generationStatus: EXECUTE_RUNNING },
+  parameters: {
+    appCore: {
+      enabledFlags: [ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY],
+      queryData: [NO_BRANCH_LINKS],
+    },
+  },
+};

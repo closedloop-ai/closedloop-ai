@@ -1,20 +1,14 @@
 "use client";
 
 import type { GitHubIntegrationStatus } from "@repo/api/src/types/github";
-import type {
-  AgentsInsightsResponse,
-  DeliveryInsightsResponse,
-  InsightsGitHubProvenance,
-  InsightsPeriod,
-  InsightsScope,
-  UtilizationInsightsResponse,
-} from "@repo/api/src/types/insights";
+import type { InsightsGitHubProvenance } from "@repo/api/src/types/insights";
 import {
   INSIGHTS_SECTION_OPTIONS,
   InsightsGitHubProvenanceState,
   InsightsScope as InsightsScopeValues,
 } from "@repo/api/src/types/insights";
 import { useGitHubIntegrationStatus } from "@repo/app/github/hooks/use-github-integration";
+import { createHttpInsightsReads } from "@repo/app/insights/data/http-insights-data-source";
 import {
   type InsightsDataSource,
   InsightsDataSourceProvider,
@@ -85,6 +79,7 @@ export function WebInsightsDataSourceProvider({
     queryClient.invalidateQueries({ queryKey: insightsKeys.all });
   }, [githubStatusQuery.data, queryClient]);
 
+  const reads = useMemo(() => createHttpInsightsReads(apiClient), [apiClient]);
   const source = useMemo<InsightsDataSource>(
     () => ({
       availableScopes:
@@ -115,20 +110,9 @@ export function WebInsightsDataSourceProvider({
           }),
           payloadAvailability,
         }),
-      getDelivery: (period, scope, teamId) =>
-        apiClient.get<DeliveryInsightsResponse>(
-          insightsPath("delivery", period, scope, teamId)
-        ),
-      getUtilization: (period, scope, teamId) =>
-        apiClient.get<UtilizationInsightsResponse>(
-          insightsPath("utilization", period, scope, teamId)
-        ),
-      getAgents: (period, scope, teamId) =>
-        apiClient.get<AgentsInsightsResponse>(
-          insightsPath("agents", period, scope, teamId)
-        ),
+      ...reads,
     }),
-    [apiClient, teams, resolvedGitHubConnectHref, githubConnectionState]
+    [reads, teams, resolvedGitHubConnectHref, githubConnectionState]
   );
 
   return (
@@ -184,33 +168,4 @@ function resolveCloudGitHubConnectionState({
     return InsightsGitHubConnectionState.Connected;
   }
   return InsightsGitHubConnectionState.Unknown;
-}
-
-function insightsPath(
-  section: string,
-  period: InsightsPeriod,
-  scope: InsightsScope,
-  teamId?: string
-): string {
-  const params = new URLSearchParams({ period, scope });
-  if (teamId) {
-    params.set("teamId", teamId);
-  }
-  // FEA-2745: send the browser's IANA timezone so the cloud backend labels the
-  // daily trend / by-day bars in the viewer's local calendar — matching the
-  // desktop shell, which buckets in local time. Absent/unresolved → the server
-  // falls back to UTC bucketing.
-  const timeZone = resolveBrowserTimeZone();
-  if (timeZone) {
-    params.set("timeZone", timeZone);
-  }
-  return `/insights/${section}?${params.toString()}`;
-}
-
-function resolveBrowserTimeZone(): string | undefined {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
-  } catch {
-    return undefined;
-  }
 }

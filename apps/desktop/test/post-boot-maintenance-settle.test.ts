@@ -1,18 +1,17 @@
 /**
  * @file post-boot-maintenance-settle.test.ts
- * @description Regression tests for the Dashboard nav throbber that never
- * cleared. The "initial collector import complete" readiness signal (which
- * drives `DashboardThrobber` via `useDashboardReady()`) is fired from
- * `attachPostBootMaintenanceSettle`. Post-boot maintenance is best-effort
- * background re-derivation, so the signal must settle for the active generation
- * on BOTH success and failure — a rejected maintenance run must not strand the
- * throbber "preparing" forever. Generation/supersede semantics are preserved: a
- * superseded generation must NOT fire (a newer generation owns the signal), and
- * the finalizer always runs.
+ * @description Regression tests for the main-process "initial collector import
+ * complete" readiness signal (`getDashboardReady`, surfaced over the runtime-info
+ * IPC). The signal is fired from `attachPostBootMaintenanceSettle`. Post-boot
+ * maintenance is best-effort background re-derivation, so the signal must settle
+ * for the active generation on BOTH success and failure — a rejected maintenance
+ * run must not strand the readiness signal un-fired forever. Generation/supersede
+ * semantics are preserved: a superseded generation must NOT fire (a newer
+ * generation owns the signal), and the finalizer always runs.
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { attachPostBootMaintenanceSettle } from "../src/main/post-boot-maintenance-settle.js";
+import { attachPostBootMaintenanceSettle } from "../src/main/lifecycle/post-boot-maintenance-settle.js";
 
 test("fires the readiness signal when maintenance resolves for the active generation", async () => {
   const settled: number[] = [];

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDownIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 import {
   Collapsible,
@@ -34,9 +34,15 @@ export function SidebarCollapsibleSection({
   className,
   persistenceKey,
 }: SidebarCollapsibleSectionProps) {
-  const [open, setOpen] = useState(() =>
-    readPersistedOpen(persistenceKey, defaultOpen)
-  );
+  // Start from the SSR-stable `defaultOpen`, then apply the persisted state in a
+  // post-mount effect, so the first client render matches the server HTML and
+  // avoids React hydration error #418. Same SSR-safe pattern as the persisted
+  // table view; see `use-persisted-table-view-state.ts` for the full reasoning.
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    setOpen(readPersistedOpen(persistenceKey, defaultOpen));
+  }, [persistenceKey, defaultOpen]);
 
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen);

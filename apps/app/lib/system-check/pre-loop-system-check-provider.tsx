@@ -3,7 +3,6 @@
 import { useAnalytics, useFeatureFlag } from "@repo/analytics/client";
 import {
   ComputePreference,
-  ComputePreferenceRequiredMessage,
   type ComputePreferenceResponse,
   type ComputeTarget,
   type ComputeTargetHealthCheckSnapshot,
@@ -36,9 +35,39 @@ import {
 import { useApiClient } from "@/hooks/use-api-client";
 import type { HealthCheckResponse } from "@/lib/engineer/queries/health-check";
 import { healthCheckOptions } from "@/lib/engineer/queries/health-check";
-import { getHealthCheckCacheAgeMs } from "./health-check-freshness";
-import { getPreLoopHealthCheckTimeoutMs } from "./health-check-timeouts";
+import { PRE_LOOP_CLOUD_FALLBACK_FEATURE_FLAG_KEY } from "./cloud-fallback";
+import { CLOUD_TARGET_VALIDATION_FEATURE_FLAG_KEY } from "./cloud-target-readiness";
+import {
+  classifyHealthCheckFailure,
+  describeHealthCheckFailure,
+  HealthCheckFailureKind,
+  isUnreachableHealthCheckFailure,
+} from "./health-check-failure";
+import { getPreLoopHealthCheckOverallTimeoutMs } from "./health-check-timeouts";
+import { readPersistedHealthCheckSnapshot } from "./persisted-health-check-snapshot";
 import { PLUGIN_AUTO_UPDATE_FEATURE_FLAG_KEY } from "./plugin-auto-update";
+import {
+  type ActivePreLoopAttempt,
+  type AttemptBranchCallbacks,
+  buildUnavailableHealthCheck,
+  type CachedHealthCheckFetchResult,
+  clearActivePreLoopAttempt,
+  type ExecuteCallback,
+  formatHealthCheckFailureReason,
+  formatUnavailableReason,
+  getLatestVersionFromHealthCheckQueryKey,
+  getTargetLabel,
+  type HealthCheckFetchResult,
+  hasPreLoopAttemptBeenCancelled,
+  isActivePreLoopAttemptCancelled,
+  type PendingPreLoopAttempt,
+  type PreLoopHealthEvaluation,
+  requireQueryData,
+  resolveExplicitPreLoopExecutionContext,
+  type UpdateActivePendingAttemptInput,
+  type UpdatePendingAttemptInput,
+  withTimeout,
+} from "./pre-loop-attempt";
 import {
   buildPreLoopAnalyticsProperties,
   createPreLoopAttemptId,
@@ -51,96 +80,9 @@ import {
   type PreLoopMetadata,
   type PreLoopTarget,
 } from "./pre-loop-health-check";
-
-type ExecuteCallback = (
-  context: PreLoopExecutionContext
-) => void | Promise<void>;
-
-type PendingPreLoopAttempt = {
-  attemptId: string;
-  metadata: PreLoopMetadata;
-  target: PreLoopTarget;
-  healthCheckData?: HealthCheckResponse;
-  latestVersion: string | null;
-  pluginAutoUpdateEnabled: boolean;
-  failingRequiredFingerprint?: string;
-  failingCheckIds: string[];
-  recheckAttempts: number;
-  execute: ExecuteCallback;
-};
-
-type ActivePreLoopAttempt = {
-  attemptId: string;
-  metadata: PreLoopMetadata;
-  target?: PreLoopTarget | null;
-  failingRequiredFingerprint?: string;
-  recheckAttempts: number;
-  cancelled: boolean;
-};
-
-type ActivePreLoopAttemptRef = {
-  current: ActivePreLoopAttempt | null;
-};
-
-type HealthCheckFetchResult = {
-  data: HealthCheckResponse;
-  healthCheckCacheAgeMs: number | null;
-  latestVersion: string | null;
-  usedCachedHealthCheck: boolean;
-};
-
-type UpdateActivePendingAttemptInput = {
-  attemptId: string;
-  metadata: PreLoopMetadata;
-  target: PreLoopTarget;
-  latestVersion: string | null;
-  pluginAutoUpdateEnabled: boolean;
-  healthCheckData?: HealthCheckResponse;
-  execute: ExecuteCallback;
-  openedDialog: boolean;
-};
-
-type UpdatePendingAttemptInput = Pick<
-  UpdateActivePendingAttemptInput,
-  "target" | "latestVersion" | "healthCheckData"
-> & { pluginAutoUpdateEnabled: boolean };
-
-type AttemptBranchCallbacks = {
-  wasCancelled: () => boolean;
-  clearActiveAttempt: () => void;
-};
+import { useCloudTargetPreflight } from "./use-cloud-target-preflight";
 
 const BLOCKING_DIALOG_CANCEL_DISMISS_MS = 250;
-
-type CachedHealthCheckFetchResult = HealthCheckFetchResult & {
-  dataUpdatedAt: number;
-};
-
-function getLatestVersionFromHealthCheckQueryKey(
-  queryKey: readonly unknown[]
-): string | null {
-  const latestVersion = queryKey[3];
-  return typeof latestVersion === "string" && latestVersion.length > 0
-    ? latestVersion
-    : null;
-}
-
-type PreLoopHealthEvaluation =
-  | { status: "skip_no_local_target" }
-  | {
-      status: "unavailable";
-      reason: string;
-      target?: PreLoopTarget | null;
-      latestVersion?: string | null;
-      pluginAutoUpdateEnabled?: boolean;
-    }
-  | {
-      status: "available";
-      target: PreLoopTarget;
-      latestVersion: string | null;
-      pluginAutoUpdateEnabled: boolean;
-      healthResult: HealthCheckFetchResult;
-    };
 
 type PreLoopSystemCheckContextValue = {
   runWithPreLoopSystemCheck: (
@@ -156,192 +98,6 @@ type PreLoopSystemCheckContextValue = {
 
 const PreLoopSystemCheckContext =
   createContext<PreLoopSystemCheckContextValue | null>(null);
-
-function buildUnavailableHealthCheck(reason: string): HealthCheckResponse {
-  return {
-    checks: [
-      {
-        id: "pre-loop-health-check",
-        label: "System Check",
-        required: true,
-        passed: false,
-        error: "Unavailable",
-        remediation: `Retry the system check. The command was not started. (${reason})`,
-      },
-    ],
-    allRequiredPassed: false,
-  };
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error("Pre-loop health check timed out"));
-    }, timeoutMs);
-
-    promise.then(resolve, reject).finally(() => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-    });
-  });
-}
-
-function getTargetLabel(target: ComputeTarget): string {
-  return target.machineName || target.ownerName || target.id;
-}
-
-function formatUnavailableReason(scope: string, error: unknown): string {
-  return error instanceof Error
-    ? `${scope}:${error.message}`
-    : `${scope}:unknown`;
-}
-
-function isActivePreLoopAttemptCancelled(
-  activeAttempt: ActivePreLoopAttempt | null,
-  attemptId: string
-): boolean {
-  return (
-    !activeAttempt ||
-    activeAttempt.attemptId !== attemptId ||
-    activeAttempt.cancelled
-  );
-}
-
-function hasPreLoopAttemptBeenCancelled({
-  activeAttempt,
-  pendingAttempt,
-  attemptId,
-  openedDialog,
-}: {
-  activeAttempt: ActivePreLoopAttempt | null;
-  pendingAttempt: PendingPreLoopAttempt | null;
-  attemptId: string;
-  openedDialog: boolean;
-}): boolean {
-  return (
-    isActivePreLoopAttemptCancelled(activeAttempt, attemptId) ||
-    (openedDialog && pendingAttempt?.attemptId !== attemptId)
-  );
-}
-
-function clearActivePreLoopAttempt(
-  activeAttemptRef: ActivePreLoopAttemptRef,
-  attemptId: string
-): void {
-  if (activeAttemptRef.current?.attemptId === attemptId) {
-    activeAttemptRef.current = null;
-  }
-}
-
-async function requireQueryData<T>(
-  currentData: T | undefined,
-  refetch: () => Promise<{ data: T | undefined; error: Error | null }>
-): Promise<T> {
-  if (currentData !== undefined) {
-    return currentData;
-  }
-
-  const result = await refetch();
-  if (result.error) {
-    throw result.error;
-  }
-  if (result.data === undefined) {
-    throw new Error("Required pre-loop query returned no data");
-  }
-  return result.data;
-}
-
-type CapturePreLoopEvent = (
-  event: PreLoopAnalyticsEvent,
-  params: Parameters<typeof buildPreLoopAnalyticsProperties>[0]
-) => void;
-
-type WarnAndBlockUnavailable = (args: {
-  attemptId: string;
-  metadata: PreLoopMetadata;
-  target?: PreLoopTarget | null;
-  reason: string;
-  description?: string;
-}) => PreLoopHealthCheckOutcome;
-
-async function resolveExplicitPreLoopExecutionContext({
-  attemptId,
-  capture,
-  clearActiveAttempt,
-  clearCheckingForAttempt,
-  currentPreference,
-  metadata,
-  refetchPreference,
-  warnAndBlockUnavailable,
-}: {
-  attemptId: string;
-  capture: CapturePreLoopEvent;
-  clearActiveAttempt: () => void;
-  clearCheckingForAttempt: (attemptId: string) => void;
-  currentPreference: ComputePreferenceResponse | undefined;
-  metadata: PreLoopMetadata;
-  refetchPreference: () => Promise<{
-    data: ComputePreferenceResponse | undefined;
-    error: Error | null;
-  }>;
-  warnAndBlockUnavailable: WarnAndBlockUnavailable;
-}): Promise<{
-  executionContext: PreLoopExecutionContext;
-  outcome: PreLoopHealthCheckOutcome | null;
-}> {
-  if (metadata.computeTargetId !== undefined) {
-    return {
-      executionContext: { computeTargetId: metadata.computeTargetId },
-      outcome: null,
-    };
-  }
-
-  let preference: ComputePreferenceResponse;
-  try {
-    preference = await requireQueryData<ComputePreferenceResponse>(
-      currentPreference,
-      refetchPreference
-    );
-  } catch (error) {
-    clearCheckingForAttempt(attemptId);
-    clearActiveAttempt();
-    return {
-      executionContext: {},
-      outcome: warnAndBlockUnavailable({
-        attemptId,
-        metadata,
-        reason: formatUnavailableReason("compute_preference", error),
-        description:
-          "We could not verify your compute preference, so the command was not started. Try again after the page finishes loading.",
-      }),
-    };
-  }
-
-  if (preference.isExplicit !== true) {
-    capture(PreLoopAnalyticsEvent.ComputeSelectionBlocked, {
-      attemptId,
-      metadata,
-      reason: "missing_explicit_compute_selection",
-    });
-    toast.error(ComputePreferenceRequiredMessage);
-    clearCheckingForAttempt(attemptId);
-    clearActiveAttempt();
-    return {
-      executionContext: {},
-      outcome: { status: "blocked_missing_compute_selection", attemptId },
-    };
-  }
-
-  return {
-    executionContext:
-      preference.preferredComputeMode === ComputePreference.Cloud
-        ? { computeTargetId: null }
-        : {},
-    outcome: null,
-  };
-}
 
 /**
  * Owns the global Generate/Execute pre-loop gate, pending command callback,
@@ -363,6 +119,14 @@ export function PreLoopSystemCheckProvider({
   const userId = user?.id ?? "";
   const requireExplicitSelection = useFeatureFlagEnabled(
     EXPLICIT_COMPUTE_SELECTION_FEATURE_FLAG_KEY
+  );
+  const validateCloudTarget = useFeatureFlagEnabled(
+    CLOUD_TARGET_VALIDATION_FEATURE_FLAG_KEY
+  );
+  // Closed-by-default gate for the ISS-5171 Cloud fallback. Off => the previous
+  // hard-block behaviour, so only the ungated bug fixes change for everyone.
+  const cloudFallbackEnabled = useFeatureFlagEnabled(
+    PRE_LOOP_CLOUD_FALLBACK_FEATURE_FLAG_KEY
   );
   const expectedMcpUrl = env.NEXT_PUBLIC_MCP_SERVER_URL ?? null;
   const isCheckingRef = useRef(false);
@@ -436,22 +200,29 @@ export function PreLoopSystemCheckProvider({
     []
   );
 
-  const clearPendingAttemptState = useCallback((delayMs = 0) => {
+  const cancelScheduledPendingAttemptRemoval = useCallback(() => {
     if (pendingRemovalTimerRef.current) {
       clearTimeout(pendingRemovalTimerRef.current);
       pendingRemovalTimerRef.current = null;
     }
-
-    if (delayMs > 0) {
-      pendingRemovalTimerRef.current = setTimeout(() => {
-        pendingRemovalTimerRef.current = null;
-        setPendingAttempt(null);
-      }, delayMs);
-      return;
-    }
-
-    setPendingAttempt(null);
   }, []);
+
+  const clearPendingAttemptState = useCallback(
+    (delayMs = 0) => {
+      cancelScheduledPendingAttemptRemoval();
+
+      if (delayMs > 0) {
+        pendingRemovalTimerRef.current = setTimeout(() => {
+          pendingRemovalTimerRef.current = null;
+          setPendingAttempt(null);
+        }, delayMs);
+        return;
+      }
+
+      setPendingAttempt(null);
+    },
+    [cancelScheduledPendingAttemptRemoval]
+  );
 
   const executeAttempt = useCallback(
     (attempt: PendingPreLoopAttempt) => {
@@ -736,41 +507,14 @@ export function PreLoopSystemCheckProvider({
         return null;
       }
 
-      const entry = {
-        data: snapshot.result,
-        checkedAt: snapshot.checkedAt,
-        expectedMcpUrl: snapshot.expectedMcpUrl,
-        latestVersion: snapshot.latestVersion,
-        pluginAutoUpdateEnabled: snapshot.pluginAutoUpdateEnabled,
-      };
-      if (
-        !isPreLoopHealthCheckFresh({
-          entry,
-          expectedMcpUrl,
-          latestVersion,
-          pluginAutoUpdateEnabled,
-        })
-      ) {
-        return null;
-      }
-
-      const queryLatestVersion = snapshot.latestVersion ?? latestVersion;
-      queryClient.setQueryData(
-        healthCheckOptions(target.targetKey, expectedMcpUrl, {
-          relayTargetId: target.computeTargetId,
-          latestVersion: queryLatestVersion,
-          pluginAutoUpdateEnabled,
-        }).queryKey,
-        snapshot.result,
-        { updatedAt: snapshot.checkedAt.getTime() }
-      );
-
-      return {
-        data: snapshot.result,
-        healthCheckCacheAgeMs: getHealthCheckCacheAgeMs(entry),
-        latestVersion: queryLatestVersion,
-        usedCachedHealthCheck: true,
-      };
+      return readPersistedHealthCheckSnapshot({
+        snapshot,
+        target,
+        expectedMcpUrl,
+        latestVersion,
+        pluginAutoUpdateEnabled,
+        queryClient,
+      });
     },
     [apiClient, expectedMcpUrl, queryClient]
   );
@@ -808,9 +552,15 @@ export function PreLoopSystemCheckProvider({
         latestVersion,
         pluginAutoUpdateEnabled,
       });
+      // Pre-loop checks always carry a `relayTargetId`, so this is always the
+      // relay path — browser -> app -> relay socket -> Electron gateway ->
+      // process spawn. Budget it as such, not as a loopback call (ISS-5169).
       const data = await withTimeout(
         queryClient.fetchQuery(options),
-        getPreLoopHealthCheckTimeoutMs(pluginAutoUpdateEnabled)
+        getPreLoopHealthCheckOverallTimeoutMs({
+          pluginAutoUpdateEnabled,
+          relayTarget: true,
+        })
       );
       return {
         data,
@@ -835,6 +585,7 @@ export function PreLoopSystemCheckProvider({
       latestVersion,
       pluginAutoUpdateEnabled,
       healthCheckData,
+      failureKind,
       execute,
       openedDialog,
     }: UpdateActivePendingAttemptInput): boolean => {
@@ -848,6 +599,12 @@ export function PreLoopSystemCheckProvider({
       if (openedDialog && current?.attemptId !== attemptId) {
         return false;
       }
+
+      // A previous cancel schedules `setPendingAttempt(null)` on a delay so the
+      // dialog can play its exit animation. Installing a new pending attempt
+      // must cancel that timer, or it fires afterwards and blanks the *new*
+      // dialog while the gate still considers an attempt pending (ISS-5170).
+      cancelScheduledPendingAttemptRemoval();
 
       const summary = healthCheckData
         ? getRequiredFailureSummary(healthCheckData, expectedMcpUrl)
@@ -863,6 +620,7 @@ export function PreLoopSystemCheckProvider({
           summary?.fingerprint ?? current?.failingRequiredFingerprint,
         failingCheckIds: summary?.checkIds ?? current?.failingCheckIds ?? [],
         recheckAttempts: current?.recheckAttempts ?? 0,
+        failureKind: failureKind ?? current?.failureKind,
         execute,
       };
       activeAttemptRef.current = {
@@ -878,39 +636,22 @@ export function PreLoopSystemCheckProvider({
       setPendingAttempt(nextAttempt);
       return true;
     },
-    [expectedMcpUrl]
+    [cancelScheduledPendingAttemptRemoval, expectedMcpUrl]
   );
 
-  const finishSkippedNoLocalTarget = useCallback(
-    ({
-      attemptId,
-      execute,
-      executionContext,
-      wasCancelled,
-      clearActiveAttempt,
-    }: AttemptBranchCallbacks & {
-      attemptId: string;
-      execute: ExecuteCallback;
-      executionContext: PreLoopExecutionContext;
-    }): PreLoopHealthCheckOutcome => {
-      clearCheckingForAttempt(attemptId);
-      if (wasCancelled()) {
-        clearActiveAttempt();
-        return { status: "cancelled", attemptId };
-      }
-
-      clearActiveAttempt();
-      execute(executionContext);
-      return { status: "skipped_no_local_target", attemptId };
-    },
-    [clearCheckingForAttempt]
-  );
+  const { finishSkippedNoLocalTarget } = useCloudTargetPreflight({
+    capture,
+    clearCheckingForAttempt,
+    preferredComputeMode: computePreferenceQuery.data?.preferredComputeMode,
+    validateCloudTarget,
+  });
 
   const finishUnavailablePreLoopEvaluation = useCallback(
     ({
       attemptId,
       metadata,
       evaluation,
+      execute,
       wasCancelled,
       clearActiveAttempt,
       updatePendingAttempt,
@@ -918,6 +659,7 @@ export function PreLoopSystemCheckProvider({
       attemptId: string;
       metadata: PreLoopMetadata;
       evaluation: Extract<PreLoopHealthEvaluation, { status: "unavailable" }>;
+      execute: ExecuteCallback;
       updatePendingAttempt: (input: UpdatePendingAttemptInput) => void;
     }): PreLoopHealthCheckOutcome => {
       clearCheckingForAttempt(attemptId);
@@ -926,13 +668,41 @@ export function PreLoopSystemCheckProvider({
         return { status: "cancelled", attemptId };
       }
 
+      // ISS-5171: `isOnline` is a heartbeat, not proof the relay can carry a
+      // command. When the resolved Local target cannot be reached, running on
+      // Cloud is strictly better than refusing to run the command at all.
+      if (
+        cloudFallbackEnabled &&
+        evaluation.target &&
+        isUnreachableHealthCheckFailure(evaluation.failureKind)
+      ) {
+        clearActiveAttempt();
+        capture(PreLoopAnalyticsEvent.SystemCheckCloudFallback, {
+          attemptId,
+          metadata,
+          target: evaluation.target,
+          reason: evaluation.reason,
+        });
+        // One sentence, because the toast auto-dismisses: which target we
+        // could not reach, and what we did about it.
+        toast.info(
+          `Couldn't reach ${evaluation.target.label}, so this ran on Cloud.`
+        );
+        execute({ computeTargetId: null });
+        return { status: "fell_back_to_cloud", attemptId };
+      }
+
       let openedUnavailableDialog = false;
       if (evaluation.target) {
         updatePendingAttempt({
           target: evaluation.target,
           latestVersion: evaluation.latestVersion ?? null,
           pluginAutoUpdateEnabled: evaluation.pluginAutoUpdateEnabled ?? false,
-          healthCheckData: buildUnavailableHealthCheck(evaluation.reason),
+          failureKind: evaluation.failureKind,
+          healthCheckData: buildUnavailableHealthCheck({
+            failureKind: evaluation.failureKind,
+            targetLabel: evaluation.target.label,
+          }),
         });
         openedUnavailableDialog = true;
       }
@@ -942,13 +712,24 @@ export function PreLoopSystemCheckProvider({
         metadata,
         target: evaluation.target,
         reason: evaluation.reason,
+        description: `${
+          describeHealthCheckFailure(
+            evaluation.failureKind,
+            evaluation.target?.label
+          ).description
+        } The command was not started.`,
       });
       if (!openedUnavailableDialog) {
         clearActiveAttempt();
       }
       return outcome;
     },
-    [clearCheckingForAttempt, warnAndBlockUnavailable]
+    [
+      capture,
+      clearCheckingForAttempt,
+      cloudFallbackEnabled,
+      warnAndBlockUnavailable,
+    ]
   );
 
   const evaluatePreLoopTargetHealth = useCallback(
@@ -962,6 +743,7 @@ export function PreLoopSystemCheckProvider({
       } catch (error) {
         return {
           status: "unavailable",
+          failureKind: HealthCheckFailureKind.Unknown,
           reason: formatUnavailableReason("target_resolution", error),
         };
       }
@@ -975,6 +757,7 @@ export function PreLoopSystemCheckProvider({
         return {
           status: "unavailable",
           target,
+          failureKind: HealthCheckFailureKind.TargetOffline,
           reason: "target_offline",
           pluginAutoUpdateEnabled: false,
         };
@@ -990,6 +773,7 @@ export function PreLoopSystemCheckProvider({
         return {
           status: "unavailable",
           target,
+          failureKind: HealthCheckFailureKind.Unknown,
           reason: formatUnavailableReason("latest_release", error),
           pluginAutoUpdateEnabled,
         };
@@ -1023,11 +807,15 @@ export function PreLoopSystemCheckProvider({
           }),
         };
       } catch (error) {
+        const failureKind = classifyHealthCheckFailure(error, {
+          relayTarget: true,
+        });
         return {
           status: "unavailable",
           target,
           latestVersion,
-          reason: formatUnavailableReason("health_check", error),
+          failureKind,
+          reason: formatHealthCheckFailureReason(failureKind, error),
           pluginAutoUpdateEnabled,
         };
       }
@@ -1042,16 +830,12 @@ export function PreLoopSystemCheckProvider({
     ]
   );
 
-  const runWithPreLoopSystemCheck = useCallback(
+  const runPreLoopAttempt = useCallback(
     async (
+      attemptId: string,
       metadata: PreLoopMetadata,
       execute: ExecuteCallback
     ): Promise<PreLoopHealthCheckOutcome> => {
-      if (isCheckingRef.current || pendingAttemptRef.current) {
-        return { status: "duplicate_ignored", attemptId: null };
-      }
-
-      const attemptId = createPreLoopAttemptId();
       capture(PreLoopAnalyticsEvent.CommandAttempted, {
         attemptId,
         metadata,
@@ -1087,12 +871,8 @@ export function PreLoopSystemCheckProvider({
         latestVersion,
         pluginAutoUpdateEnabled,
         healthCheckData,
-      }: {
-        target: PreLoopTarget;
-        latestVersion: string | null;
-        pluginAutoUpdateEnabled: boolean;
-        healthCheckData?: HealthCheckResponse;
-      }) => {
+        failureKind,
+      }: UpdatePendingAttemptInput) => {
         const updated = updateActivePendingAttempt({
           attemptId,
           metadata,
@@ -1100,6 +880,7 @@ export function PreLoopSystemCheckProvider({
           latestVersion,
           pluginAutoUpdateEnabled,
           healthCheckData,
+          failureKind,
           execute,
           openedDialog,
         });
@@ -1139,8 +920,9 @@ export function PreLoopSystemCheckProvider({
 
       const evaluation = await evaluatePreLoopTargetHealth(metadata, attemptId);
       if (evaluation.status === "skip_no_local_target") {
-        return finishSkippedNoLocalTarget({
+        return await finishSkippedNoLocalTarget({
           attemptId,
+          metadata,
           execute,
           executionContext,
           wasCancelled: wasDialogCancelled,
@@ -1152,6 +934,7 @@ export function PreLoopSystemCheckProvider({
           attemptId,
           metadata,
           evaluation,
+          execute,
           wasCancelled: wasDialogCancelled,
           clearActiveAttempt,
           updatePendingAttempt,
@@ -1214,6 +997,50 @@ export function PreLoopSystemCheckProvider({
       userId,
       warnAndBlockUnavailable,
     ]
+  );
+
+  /**
+   * Duplicate-suppression gate around one attempt.
+   *
+   * ISS-5170: `isCheckingRef` / `pendingAttemptRef` make every later command a
+   * silent `duplicate_ignored`, so anything that leaves them latched reads to
+   * the operator as the whole app freezing — no dialog, no toast, buttons that
+   * do nothing. The attempt body therefore runs inside try/catch/finally: an
+   * unexpected throw becomes a visible blocked outcome, and the gate is always
+   * released unless a dismissable dialog is deliberately holding it.
+   */
+  const runWithPreLoopSystemCheck = useCallback(
+    async (
+      metadata: PreLoopMetadata,
+      execute: ExecuteCallback
+    ): Promise<PreLoopHealthCheckOutcome> => {
+      if (isCheckingRef.current || pendingAttemptRef.current) {
+        return { status: "duplicate_ignored", attemptId: null };
+      }
+
+      const attemptId = createPreLoopAttemptId();
+      try {
+        return await runPreLoopAttempt(attemptId, metadata, execute);
+      } catch (error) {
+        return warnAndBlockUnavailable({
+          attemptId,
+          metadata,
+          reason: formatUnavailableReason("pre_loop_unexpected", error),
+          description:
+            "The system check failed unexpectedly, so the command was not started. Try again.",
+        });
+      } finally {
+        // A pending attempt means a dialog owns the gate and has its own
+        // dismissal path; anything else must hand the gate back now.
+        if (!pendingAttemptRef.current) {
+          clearCheckingForAttempt(attemptId);
+          if (clearActivePreLoopAttempt(activeAttemptRef, attemptId)) {
+            setActiveAttemptTarget(null);
+          }
+        }
+      }
+    },
+    [clearCheckingForAttempt, runPreLoopAttempt, warnAndBlockUnavailable]
   );
 
   const cancelPendingAttempt = useCallback(
@@ -1340,6 +1167,32 @@ export function PreLoopSystemCheckProvider({
     [capture, expectedMcpUrl]
   );
 
+  /**
+   * Escape hatch from the blocking dialog: run the blocked command on Cloud
+   * compute instead of leaving the operator with only "Cancel" and "Re-check"
+   * when the local target cannot answer (ISS-5170 / ISS-5171).
+   */
+  const handleRunOnCloud = useCallback(() => {
+    const attempt = pendingAttemptRef.current;
+    if (!attempt) {
+      return;
+    }
+    capture(PreLoopAnalyticsEvent.SystemCheckCloudFallback, {
+      attemptId: attempt.attemptId,
+      metadata: attempt.metadata,
+      target: attempt.target,
+      failingRequiredFingerprint: attempt.failingRequiredFingerprint,
+      recheckAttempts: attempt.recheckAttempts,
+      reason: "dialog_run_on_cloud",
+    });
+    clearActivePreLoopAttempt(activeAttemptRef, attempt.attemptId);
+    setActiveAttemptTarget(null);
+    pendingAttemptRef.current = null;
+    clearPendingAttemptState();
+    clearChecking();
+    attempt.execute({ computeTargetId: null });
+  }, [capture, clearChecking, clearPendingAttemptState]);
+
   const handleResolvedAfterRecheck = useCallback(() => {
     const attempt = pendingAttemptRef.current;
     if (!attempt) {
@@ -1438,16 +1291,20 @@ export function PreLoopSystemCheckProvider({
           initialData={pendingAttempt.healthCheckData}
           isOwnedTarget={pendingAttempt.target.isOwnedByCurrentUser}
           latestVersionOverride={pendingAttempt.latestVersion}
-          mode="blocking-pre-loop"
           onCancel={() => cancelPendingAttempt("dialog_cancelled")}
           onRecheckClick={handleRecheckClick}
           onRecheckResult={handleRecheckResult}
           onRecheckUnavailable={handleRecheckUnavailable}
           onResolvedAfterRecheck={handleResolvedAfterRecheck}
+          onRunOnCloud={cloudFallbackEnabled ? handleRunOnCloud : undefined}
           pluginAutoUpdateEnabled={pendingAttempt.pluginAutoUpdateEnabled}
           relayTargetId={pendingAttempt.target.computeTargetId}
           targetKey={pendingAttempt.target.targetKey}
           targetLabel={pendingAttempt.target.label}
+          targetUnreachable={
+            pendingAttempt.failureKind !== undefined &&
+            isUnreachableHealthCheckFailure(pendingAttempt.failureKind)
+          }
         />
       ) : null}
     </PreLoopSystemCheckContext.Provider>

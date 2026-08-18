@@ -1,0 +1,588 @@
+"use client";
+
+import { useFeatureFlag } from "@repo/analytics/client";
+import { LinkType } from "@repo/api/src/types/artifact";
+import { DocumentType } from "@repo/api/src/types/document";
+import { useCreateArtifactLink } from "@repo/app/documents/hooks/use-artifact-links";
+import { attachmentKeys } from "@repo/app/documents/hooks/use-attachments";
+import {
+  useCreateContextAttachment,
+  useImportGDriveContext,
+} from "@repo/app/documents/hooks/use-context-attachments";
+import {
+  GDRIVE_FOLDER_ID_REGEX,
+  useGDriveFolderFiles,
+  useGoogleIntegrationStatus,
+} from "@repo/app/google/hooks/use-google-integration";
+import { uploadToS3 } from "@repo/app/shared/lib/s3-upload";
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@repo/design-system/components/ui/alert";
+import { Button } from "@repo/design-system/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@repo/design-system/components/ui/dialog";
+import { Input } from "@repo/design-system/components/ui/input";
+import { Label } from "@repo/design-system/components/ui/label";
+import { toast } from "@repo/design-system/components/ui/sonner";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@repo/design-system/components/ui/tabs";
+import { Link } from "@repo/navigation/link";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  AlertCircleIcon,
+  FileIcon,
+  FileTextIcon,
+  Loader2Icon,
+  UploadIcon,
+} from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useOrgSlug } from "@/hooks/use-org-slug";
+import { SelectDocumentDialog } from "./select-document-dialog";
+
+const DEBOUNCE_MS = 300;
+
+const ACCEPTED_FILE_TYPES =
+  ".pdf,.jpg,.jpeg,.png,.gif,.webp,.json,.txt,.md,.doc,.docx,.xls,.xlsx,.mp4,.webm,.mov";
+
+type AddContextDialogProps = {
+  featureId: string;
+  projectId: string | undefined;
+  excludeArtifactIds: Set<string>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
+
+export function AddContextDialog({
+  featureId,
+  projectId,
+  excludeArtifactIds,
+  open,
+  onOpenChange,
+}: Readonly<AddContextDialogProps>) {
+  const [activeTab, setActiveTab] = useState("link");
+  const gdriveFlag = useFeatureFlag("google-drive");
+  const gdriveEnabled = Boolean((gdriveFlag as { enabled?: boolean })?.enabled);
+
+  // Reset tab on close
+  useEffect(() => {
+    if (!open) {
+      setActiveTab("link");
+    }
+  }, [open]);
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="sm:max-w-[500px]">
+        <DialogHeader>
+          <DialogTitle>Add Context</DialogTitle>
+        </DialogHeader>
+        <Tabs onValueChange={setActiveTab} value={activeTab}>
+          <TabsList
+            className={`grid w-full ${gdriveEnabled ? "grid-cols-3" : "grid-cols-2"}`}
+          >
+            <TabsTrigger value="link">Link Existing</TabsTrigger>
+            <TabsTrigger value="upload">Upload File</TabsTrigger>
+            {gdriveEnabled && (
+              <TabsTrigger value="gdrive">Import Google Docs</TabsTrigger>
+            )}
+          </TabsList>
+          <TabsContent value="link">
+            <LinkExistingTab
+              excludeArtifactIds={excludeArtifactIds}
+              featureId={featureId}
+              onOpenChange={onOpenChange}
+              open={open && activeTab === "link"}
+              projectId={projectId}
+            />
+          </TabsContent>
+          <TabsContent value="upload">
+            <UploadFileTab
+              featureId={featureId}
+              onOpenChange={onOpenChange}
+              projectId={projectId}
+            />
+          </TabsContent>
+          {gdriveEnabled && (
+            <TabsContent value="gdrive">
+              <ImportGoogleDocsTab
+                featureId={featureId}
+                onOpenChange={onOpenChange}
+                projectId={projectId}
+              />
+            </TabsContent>
+          )}
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Tab: Link Existing ────────────────────────────────────────────────────────
+
+type LinkExistingTabProps = {
+  featureId: string;
+  projectId: string | undefined;
+  excludeArtifactIds: Set<string>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+};
+
+function LinkExistingTab({
+  featureId,
+  projectId,
+  excludeArtifactIds,
+  open,
+  onOpenChange,
+}: Readonly<LinkExistingTabProps>) {
+  const [prdSelectOpen, setPrdSelectOpen] = useState(false);
+  const [docSelectOpen, setDocSelectOpen] = useState(false);
+  const createArtifactLink = useCreateArtifactLink();
+
+  const linkAsContext = (sourceId: string, linkType: LinkType) => {
+    createArtifactLink.mutate(
+      { sourceId, targetId: featureId, linkType },
+      {
+        onSuccess: () => {
+          setPrdSelectOpen(false);
+          setDocSelectOpen(false);
+          onOpenChange(false);
+        },
+      }
+    );
+  };
+
+  return (
+    <div className="space-y-3 py-2">
+      <p className="text-muted-foreground text-sm">
+        Link an existing document to provide context for this feature.
+      </p>
+      {projectId ? (
+        <Button
+          className="w-full"
+          onClick={() => setPrdSelectOpen(true)}
+          variant="outline"
+        >
+          <FileIcon className="h-4 w-4" />
+          Browse PRDs
+        </Button>
+      ) : (
+        <Alert variant="warning">
+          <AlertCircleIcon />
+          <AlertDescription>
+            This feature is not associated with a project. Assign a project to
+            link existing PRDs as context.
+          </AlertDescription>
+        </Alert>
+      )}
+      <Button
+        className="w-full"
+        onClick={() => setDocSelectOpen(true)}
+        variant="outline"
+      >
+        <FileTextIcon className="h-4 w-4" />
+        Browse Documents
+      </Button>
+      {projectId && (
+        <SelectDocumentDialog
+          description="Choose a PRD to link as context for this feature."
+          documentType={DocumentType.Prd}
+          emptyText="No PRDs found."
+          excludeIds={excludeArtifactIds}
+          icon={FileIcon}
+          onOpenChange={(value) => {
+            setPrdSelectOpen(value);
+            if (!value) {
+              onOpenChange(open);
+            }
+          }}
+          onSelect={(prd) => linkAsContext(prd.id, LinkType.Produces)}
+          open={prdSelectOpen}
+          projectId={projectId}
+          searchPlaceholder="Search PRDs..."
+          title="Select PRD"
+        />
+      )}
+      <SelectDocumentDialog
+        description="Choose an evergreen Document to reference as long-term context for this feature."
+        documentType={DocumentType.Doc}
+        emptyText="No Documents found."
+        excludeIds={excludeArtifactIds}
+        icon={FileTextIcon}
+        onOpenChange={(value) => {
+          setDocSelectOpen(value);
+          if (!value) {
+            onOpenChange(open);
+          }
+        }}
+        onSelect={(doc) => linkAsContext(doc.id, LinkType.RelatesTo)}
+        open={docSelectOpen}
+        orgWide
+        projectId={projectId}
+        searchPlaceholder="Search Documents..."
+        title="Select Document"
+      />
+    </div>
+  );
+}
+
+// ─── Tab: Upload File ──────────────────────────────────────────────────────────
+
+type UploadFileTabProps = {
+  featureId: string;
+  projectId: string | undefined;
+  onOpenChange: (open: boolean) => void;
+};
+
+function UploadFileTab({
+  featureId,
+  projectId,
+  onOpenChange,
+}: Readonly<UploadFileTabProps>) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+  const createAttachment = useCreateContextAttachment(featureId);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setSelectedFile(file);
+    setUploadError("");
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      return;
+    }
+    setUploadError("");
+
+    try {
+      const response = await createAttachment.mutateAsync({
+        filename: selectedFile.name,
+        mimeType: selectedFile.type,
+        sizeBytes: selectedFile.size,
+        projectId,
+      });
+
+      // TODO: If S3 upload fails, the artifact + attachment records remain orphaned in the DB.
+      // Consider storing response.uploadUrl and response.attachmentId in state so a retry
+      // reuses the same records instead of creating new ones via createAttachment.mutateAsync.
+      try {
+        await uploadToS3(response.uploadUrl, selectedFile, selectedFile.type);
+      } catch (s3Error) {
+        setUploadError(
+          s3Error instanceof Error ? s3Error.message : "Failed to upload file"
+        );
+        return;
+      }
+
+      queryClient.invalidateQueries({
+        queryKey: attachmentKeys.list(featureId),
+      });
+      toast.success("File uploaded as context");
+      onOpenChange(false);
+    } catch {
+      // createAttachment mutation errors are handled by the global QueryClient error handler
+    }
+  };
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="space-y-2">
+        <Label htmlFor="context-file">File</Label>
+        <Input
+          accept={ACCEPTED_FILE_TYPES}
+          id="context-file"
+          onChange={handleFileChange}
+          ref={fileInputRef}
+          type="file"
+        />
+        <p className="text-muted-foreground text-sm">
+          Supported: PDF, images, documents, spreadsheets, video
+        </p>
+      </div>
+      {uploadError && (
+        <Alert variant="error">
+          <AlertCircleIcon />
+          <AlertDescription>{uploadError}</AlertDescription>
+        </Alert>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button onClick={() => onOpenChange(false)} variant="outline">
+          Cancel
+        </Button>
+        <Button
+          disabled={!selectedFile || createAttachment.isPending}
+          onClick={handleUpload}
+        >
+          {createAttachment.isPending ? (
+            <>
+              <Loader2Icon className="h-4 w-4 animate-spin" />
+              Uploading...
+            </>
+          ) : (
+            <>
+              <UploadIcon className="h-4 w-4" />
+              Upload
+            </>
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Tab: Import Google Docs ───────────────────────────────────────────────────
+
+type ImportGoogleDocsTabProps = {
+  featureId: string;
+  projectId: string | undefined;
+  onOpenChange: (open: boolean) => void;
+};
+
+function ImportGoogleDocsTab({
+  featureId,
+  projectId,
+  onOpenChange,
+}: Readonly<ImportGoogleDocsTabProps>) {
+  const orgSlug = useOrgSlug();
+  const [folderId, setFolderId] = useState("");
+  const [debouncedFolderId, setDebouncedFolderId] = useState("");
+  const [folderIdError, setFolderIdError] = useState("");
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+  const [importFailures, setImportFailures] = useState<
+    Array<{ docId: string; error: string }>
+  >([]);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up any pending debounce on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
+    };
+  }, []);
+
+  const { data: status } = useGoogleIntegrationStatus();
+  const {
+    data: folderFiles = [],
+    isLoading: filesLoading,
+    isError: filesError,
+    error: filesQueryError,
+  } = useGDriveFolderFiles(debouncedFolderId);
+  const importMutation = useImportGDriveContext(featureId);
+
+  const handleFolderIdChange = (value: string) => {
+    setFolderId(value);
+    setSelectedDocIds(new Set());
+
+    if (value && !GDRIVE_FOLDER_ID_REGEX.test(value)) {
+      setFolderIdError("Invalid folder ID format (28–40 alphanumeric chars)");
+    } else {
+      setFolderIdError("");
+    }
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      setDebouncedFolderId(value);
+    }, DEBOUNCE_MS);
+  };
+
+  const toggleDoc = (docId: string) => {
+    setSelectedDocIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(docId)) {
+        next.delete(docId);
+      } else {
+        next.add(docId);
+      }
+      return next;
+    });
+  };
+
+  const handleImport = async () => {
+    if (selectedDocIds.size === 0 || !projectId) {
+      return;
+    }
+
+    setImportFailures([]);
+
+    try {
+      const result = await importMutation.mutateAsync({
+        docIds: Array.from(selectedDocIds),
+        projectId,
+      });
+
+      const failures = result.results.filter((r) => r.error != null);
+      const successes = result.results.filter((r) => r.error == null);
+
+      if (failures.length > 0) {
+        setImportFailures(
+          failures.map((f) => ({
+            docId: f.docId,
+            error: f.error ?? "Unknown error",
+          }))
+        );
+      }
+
+      if (successes.length > 0) {
+        toast.success(
+          `${successes.length} Google Doc${successes.length === 1 ? "" : "s"} imported as context`
+        );
+        if (failures.length === 0) {
+          onOpenChange(false);
+        }
+      }
+    } catch {
+      // importMutation errors are handled by the global QueryClient error handler
+    }
+  };
+
+  if (!status?.connected) {
+    return (
+      <div className="space-y-3 py-2">
+        <p className="text-muted-foreground text-sm">
+          Connect your Google account to import documents as context.
+        </p>
+        <Button asChild className="w-full" variant="outline">
+          <Link href={`/${orgSlug}/settings?tab=integrations`}>
+            Connect Google Drive
+          </Link>
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 py-2">
+      <div className="space-y-2">
+        <Label htmlFor="gdrive-folder-id">Google Drive Folder ID</Label>
+        <Input
+          id="gdrive-folder-id"
+          onChange={(e) => handleFolderIdChange(e.target.value)}
+          placeholder="1A2B3C4D5E..."
+          value={folderId}
+        />
+        {folderIdError ? (
+          <p className="text-destructive text-sm">{folderIdError}</p>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            Find this in the folder URL:{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              drive.google.com/drive/folders/[FOLDER_ID]
+            </code>
+          </p>
+        )}
+      </div>
+
+      {!projectId && (
+        <Alert variant="warning">
+          <AlertCircleIcon />
+          <AlertDescription>
+            This feature is not associated with a project. Assign a project to
+            import documents.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {GDRIVE_FOLDER_ID_REGEX.test(debouncedFolderId) && (
+        <div className="space-y-2">
+          <Label>Documents</Label>
+          {filesLoading && (
+            <div className="flex items-center gap-2 py-2">
+              <Loader2Icon className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-muted-foreground text-sm">
+                Loading files...
+              </span>
+            </div>
+          )}
+          {!filesLoading && filesError && (
+            <Alert variant="error">
+              <AlertCircleIcon />
+              <AlertDescription>
+                {filesQueryError instanceof Error
+                  ? filesQueryError.message
+                  : "Failed to load files from this folder."}
+              </AlertDescription>
+            </Alert>
+          )}
+          {!(filesLoading || filesError) && folderFiles.length === 0 && (
+            <p className="text-muted-foreground text-sm">
+              No documents found in this folder.
+            </p>
+          )}
+          {!filesLoading && folderFiles.length > 0 && (
+            <div className="max-h-48 overflow-y-auto rounded-md border border-border">
+              {folderFiles.map((file) => (
+                <label
+                  className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-muted/50"
+                  key={file.id}
+                >
+                  <input
+                    checked={selectedDocIds.has(file.id)}
+                    className="h-4 w-4"
+                    onChange={() => toggleDoc(file.id)}
+                    type="checkbox"
+                  />
+                  <span className="truncate text-sm">{file.name}</span>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {importFailures.length > 0 && (
+        <Alert variant="error">
+          <AlertTitle>
+            Failed to import {importFailures.length} document
+            {importFailures.length === 1 ? "" : "s"}:
+          </AlertTitle>
+          <AlertDescription>
+            <ul className="ml-4 space-y-1">
+              {importFailures.map((failure) => (
+                <li key={failure.docId}>
+                  {failure.docId}: {failure.error}
+                </li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      <div className="flex justify-end gap-2">
+        <Button onClick={() => onOpenChange(false)} variant="outline">
+          Cancel
+        </Button>
+        <Button
+          disabled={
+            selectedDocIds.size === 0 || !projectId || importMutation.isPending
+          }
+          onClick={handleImport}
+        >
+          {importMutation.isPending ? (
+            <>
+              <Loader2Icon className="h-4 w-4 animate-spin" />
+              Importing...
+            </>
+          ) : (
+            "Import Selected"
+          )}
+        </Button>
+      </div>
+    </div>
+  );
+}

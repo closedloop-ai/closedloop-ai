@@ -29,15 +29,19 @@ vi.mock("@/app/documents/document-service", () => ({
 
 vi.mock("@/app/comments/service", () => ({
   commentsService: {
+    createArtifactLevelDocumentThread: vi.fn(),
     createDocumentThread: vi.fn(),
-    createUnanchoredDocumentThread: vi.fn(),
     findThreadsByDocument: vi.fn(),
   },
 }));
 
 // --- Imports (after mocks) ---
 
-import { DOCUMENT_THREAD_REQUEST_MAX_BYTES } from "@repo/api/src/types/comment";
+import {
+  DOCUMENT_THREAD_REQUEST_MAX_BYTES,
+  ThreadSource,
+  ThreadStatus,
+} from "@repo/api/src/types/comment";
 import { commentsService } from "@/app/comments/service";
 import { GET, POST } from "@/app/documents/[id]/threads/route";
 import { documentService } from "@/app/documents/document-service";
@@ -102,7 +106,7 @@ describe("POST /artifacts/:id/threads", () => {
       "Summary"
     );
     expect(
-      commentsService.createUnanchoredDocumentThread
+      commentsService.createArtifactLevelDocumentThread
     ).not.toHaveBeenCalled();
   });
 
@@ -182,17 +186,17 @@ describe("POST /artifacts/:id/threads", () => {
     );
   });
 
-  it("creates unanchored thread when anchorText is absent", async () => {
+  it("creates a Liveblocks artifact-level thread when anchorText is absent", async () => {
     vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
     vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createUnanchoredDocumentThread).mockResolvedValue(
-      {
-        threadId: "th_native",
-        commentId: "cm_native",
-      }
-    );
+    vi.mocked(
+      commentsService.createArtifactLevelDocumentThread
+    ).mockResolvedValue({
+      threadId: "th_liveblocks",
+      commentId: "cm_liveblocks",
+    });
 
     const response = await POST(makeRequest({ body: "Hello" }), makeParams());
     const json = await response.json();
@@ -200,14 +204,11 @@ describe("POST /artifacts/:id/threads", () => {
     expect(response.status).toBe(200);
     expect(json).toEqual({
       success: true,
-      data: { threadId: "th_native", commentId: "cm_native" },
+      data: { threadId: "th_liveblocks", commentId: "cm_liveblocks" },
     });
-    expect(commentsService.createUnanchoredDocumentThread).toHaveBeenCalledWith(
-      "org-1",
-      "artifact-uuid",
-      "user-1",
-      "Hello"
-    );
+    expect(
+      commentsService.createArtifactLevelDocumentThread
+    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello");
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
   });
 
@@ -230,6 +231,45 @@ describe("POST /artifacts/:id/threads", () => {
     expect(response.status).toBe(400);
     // The structured anchor reason is surfaced (not the opaque generic message).
     expect(json.error).toBe("Anchor text not found in document");
+  });
+
+  it("keeps unanchored provider 400s on the generic message", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
+    vi.mocked(documentService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(
+      commentsService.createArtifactLevelDocumentThread
+    ).mockRejectedValue({
+      message: "Liveblocks request rejected with upstream detail",
+      status: 400,
+    });
+
+    const response = await POST(makeRequest({ body: "Hello" }), makeParams());
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.error).toBe("Failed to create thread");
+  });
+
+  it("keeps anchored non-validation provider 400s on the generic message", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
+    vi.mocked(documentService.findById).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(commentsService.createDocumentThread).mockRejectedValue({
+      message: "Liveblocks bad request upstream detail",
+      status: 400,
+    });
+
+    const response = await POST(
+      makeRequest({ body: "Hello", anchorText: "Summary" }),
+      makeParams()
+    );
+    const json = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(json.error).toBe("Failed to create thread");
   });
 
   it("keeps 5xx provider failures on the generic message (no upstream leak)", async () => {
@@ -268,7 +308,7 @@ describe("POST /artifacts/:id/threads", () => {
     expect(json.success).toBe(false);
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
     expect(
-      commentsService.createUnanchoredDocumentThread
+      commentsService.createArtifactLevelDocumentThread
     ).not.toHaveBeenCalled();
   });
 
@@ -285,7 +325,7 @@ describe("POST /artifacts/:id/threads", () => {
     expect(json.success).toBe(false);
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
     expect(
-      commentsService.createUnanchoredDocumentThread
+      commentsService.createArtifactLevelDocumentThread
     ).not.toHaveBeenCalled();
   });
 
@@ -305,7 +345,7 @@ describe("POST /artifacts/:id/threads", () => {
     expect(json.success).toBe(false);
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
     expect(
-      commentsService.createUnanchoredDocumentThread
+      commentsService.createArtifactLevelDocumentThread
     ).not.toHaveBeenCalled();
   });
 
@@ -314,24 +354,21 @@ describe("POST /artifacts/:id/threads", () => {
     vi.mocked(documentService.findById).mockResolvedValue({
       slug: "PRD-7",
     } as never);
-    vi.mocked(commentsService.createUnanchoredDocumentThread).mockResolvedValue(
-      {
-        threadId: "th_native",
-        commentId: "cm_native",
-      }
-    );
+    vi.mocked(
+      commentsService.createArtifactLevelDocumentThread
+    ).mockResolvedValue({
+      threadId: "th_liveblocks",
+      commentId: "cm_liveblocks",
+    });
 
     await POST(
       makeRequest({ body: "Hello", userId: "attacker-id" }),
       makeParams()
     );
 
-    expect(commentsService.createUnanchoredDocumentThread).toHaveBeenCalledWith(
-      "org-1",
-      "artifact-uuid",
-      "user-1",
-      "Hello"
-    );
+    expect(
+      commentsService.createArtifactLevelDocumentThread
+    ).toHaveBeenCalledWith("org-1", "PRD-7", "user-1", "Hello");
   });
 
   it("returns 413 when request body exceeds DOCUMENT_THREAD_REQUEST_MAX_BYTES, calls no service", async () => {
@@ -352,7 +389,7 @@ describe("POST /artifacts/:id/threads", () => {
     expect(json.success).toBe(false);
     expect(commentsService.createDocumentThread).not.toHaveBeenCalled();
     expect(
-      commentsService.createUnanchoredDocumentThread
+      commentsService.createArtifactLevelDocumentThread
     ).not.toHaveBeenCalled();
   });
 });
@@ -464,7 +501,30 @@ describe("GET /artifacts/:id/threads", () => {
     expect(commentsService.findThreadsByDocument).toHaveBeenCalledWith(
       "org-1",
       "artifact-uuid",
-      { status: undefined }
+      { source: undefined, status: undefined }
+    );
+  });
+
+  it("passes source and status filters to the comments service", async () => {
+    vi.mocked(resolveDocumentId).mockResolvedValue("artifact-uuid");
+    vi.mocked(documentService.findByIdSimple).mockResolvedValue({
+      slug: "PRD-7",
+    } as never);
+    vi.mocked(commentsService.findThreadsByDocument).mockResolvedValue([]);
+
+    const response = await GET(
+      createMockRequest({
+        url: "http://localhost:3002/artifacts/PRD-7/threads?source=NATIVE&status=OPEN",
+        method: "GET",
+      }),
+      makeParams()
+    );
+
+    expect(response.status).toBe(200);
+    expect(commentsService.findThreadsByDocument).toHaveBeenCalledWith(
+      "org-1",
+      "artifact-uuid",
+      { source: ThreadSource.Native, status: ThreadStatus.Open }
     );
   });
 

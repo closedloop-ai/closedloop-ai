@@ -1,12 +1,15 @@
-import { SESSION_STATUS } from "@closedloop-ai/loops-api/session-status";
 import { ArtifactType } from "@repo/api/src/types/artifact";
 import {
   DocumentStatus,
   DocumentType,
-  FeatureStatus,
+  IssueStatus,
 } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { ProjectStatus } from "@repo/api/src/types/project";
+import {
+  DISPLAYED_SESSION_STATUS,
+  SESSION_STATUS,
+} from "@repo/api/src/types/session-status";
 import {
   getRowTypeConfig,
   isDocumentRowItem,
@@ -47,12 +50,12 @@ describe("getRowTypeConfig", () => {
       kind: "document",
       data: makeFeatureArtifact(),
     });
-    expect(feature?.badgeLabel).toBe("Feature");
-    expect(feature?.route).toBe("/features/FEAT-1");
+    expect(feature?.badgeLabel).toBe("Issue");
+    expect(feature?.route).toBe("/issues/FEAT-1");
     // Delete dialog copy comes from the registry (PLN-874 Task 3.5):
-    // Features delete as "Feature", other document subtypes as "Document",
-    // both with the dialog's default body.
-    expect(feature?.deleteDialogTitle).toBe("Feature");
+    // Features (FEATURE subtype) delete as "Issue", other document subtypes as
+    // "Document", both with the dialog's default body.
+    expect(feature?.deleteDialogTitle).toBe("Issue");
     expect(prd?.deleteDialogTitle).toBe("Document");
     expect(prd?.deleteDialogDescription).toBeNull();
 
@@ -63,6 +66,15 @@ describe("getRowTypeConfig", () => {
     expect(template?.badgeLabel).toBe("Template");
     // Templates have no editor page.
     expect(template?.route).toBeNull();
+
+    // ISS-4382: DOC rows are now navigable — they route to the DOC editor at
+    // /documents/:slug, so a Documents-index row is clickable.
+    const doc = getRowTypeConfig({
+      kind: "document",
+      data: makeArtifact({ type: DocumentType.Doc, slug: "onboarding" }),
+    });
+    expect(doc?.route).toBe("/documents/onboarding");
+    expect(doc?.deleteDialogTitle).toBe("Document");
   });
 
   it("configures branch rows as read-only Pull Request rows routed to the build page", () => {
@@ -107,13 +119,20 @@ describe("getRowTypeConfig", () => {
         data: makeRawArtifact(ArtifactType.Session, { status }),
       })?.statusIcon;
 
-    expect(iconFor("completed")).toBe("complete");
-    expect(iconFor("failed")).toBe("wont-do");
+    // ISS-4586: completed/abandoned collapse into `inactive`, which takes the
+    // "complete" (finished) icon. `error` keeps the wont-do icon; waiting keeps
+    // in-review; active keeps in-progress.
+    //
+    // ISS-5592 (2026-08-15) retired the `failed` alias, so it now takes the
+    // in-flight icon like any spelling this build cannot read — asserted below
+    // alongside the other unrecognized value, not here.
+    expect(iconFor(SESSION_STATUS.INACTIVE)).toBe("complete");
     expect(iconFor("error")).toBe("wont-do");
-    expect(iconFor(SESSION_STATUS.ABANDONED)).toBe("wont-do");
     expect(iconFor("waiting")).toBe("in-review");
     expect(iconFor("active")).toBe("in-progress");
+    // Unknown → active (in-flight), never a fabricated terminal icon (shafty023 P2).
     expect(iconFor("some-new-harness-state")).toBe("in-progress");
+    expect(iconFor("failed")).toBe("in-progress");
   });
 
   it("maps branch statuses onto status labels", () => {
@@ -136,25 +155,50 @@ describe("getRowTypeConfig", () => {
         data: makeRawArtifact(ArtifactType.Session, { status }),
       })?.statusLabel;
 
-    expect(labelFor(SESSION_STATUS.COMPLETED)).toBe("Completed");
-    expect(labelFor(SESSION_STATUS.WAITING)).toBe("Waiting");
+    // ISS-4586: completed/abandoned/unknown all read "Inactive"; waiting stays
+    // "Waiting", error reads "Failed" — one label per displayed state.
+    expect(labelFor(SESSION_STATUS.INACTIVE)).toBe("Inactive");
+    expect(labelFor(DISPLAYED_SESSION_STATUS.WAITING)).toBe("Waiting");
     expect(labelFor(SESSION_STATUS.ACTIVE)).toBe("Active");
     expect(labelFor(SESSION_STATUS.ERROR)).toBe("Failed");
-    expect(labelFor(SESSION_STATUS.ABANDONED)).toBe("Abandoned");
-    expect(labelFor("some-new-harness-state")).toBe("Some new harness state");
+    // Unknown → active (in-flight), never "Inactive" (shafty023 P2).
+    expect(labelFor("some-new-harness-state")).toBe("Active");
   });
 });
 
 describe("isTerminalSessionStatus", () => {
-  it("pattern-matches terminal variants the same way the status-icon mapper does", () => {
-    expect(isTerminalSessionStatus("completed")).toBe(true);
-    expect(isTerminalSessionStatus(SESSION_STATUS.ABANDONED)).toBe(true);
-    expect(isTerminalSessionStatus("failed")).toBe(true);
+  // ISS-5592: this case asserted PATTERN matching -- `failed`,
+  // `execution_failed` and `timeout_error` were terminal by way of two
+  // `includes()` arms. The expectation changed with the code: terminality is
+  // now decided by the canonical fold alone, so a spelling this build does not
+  // recognise is not terminal here, exactly as it is not terminal anywhere
+  // else. The arms were an open-set scan standing in for a closed vocabulary,
+  // and the hide-completed filter was the only surface that honored them.
+  it("decides terminality by the canonical fold", () => {
     expect(isTerminalSessionStatus("error")).toBe(true);
-    expect(isTerminalSessionStatus("execution_failed")).toBe(true);
-    expect(isTerminalSessionStatus("timeout_error")).toBe(true);
+    expect(isTerminalSessionStatus("inactive")).toBe(true);
+    expect(isTerminalSessionStatus("ERROR")).toBe(true);
     expect(isTerminalSessionStatus("active")).toBe(false);
     expect(isTerminalSessionStatus("waiting")).toBe(false);
+  });
+
+  it("no longer treats an unrecognised spelling as terminal", () => {
+    // These three were the whole reason the substring arms existed. They are
+    // unrecognised spellings, so they fold to `active` and read "Unknown" on
+    // every other surface; this table now agrees instead of hiding them.
+    expect(isTerminalSessionStatus("failed")).toBe(false);
+    expect(isTerminalSessionStatus("execution_failed")).toBe(false);
+    expect(isTerminalSessionStatus("timeout_error")).toBe(false);
+  });
+
+  it("does not match the substring false positives the arms admitted", () => {
+    // The negative test the harness-discrimination rule asks for. Each of these
+    // contains "fail" or "error" and means the OPPOSITE of terminal; under the
+    // removed arms all four were classified as finished runs and hidden.
+    expect(isTerminalSessionStatus("no_error")).toBe(false);
+    expect(isTerminalSessionStatus("error_recovery")).toBe(false);
+    expect(isTerminalSessionStatus("failover")).toBe(false);
+    expect(isTerminalSessionStatus("unfailed")).toBe(false);
   });
 });
 
@@ -190,19 +234,19 @@ describe("isRowItemCompleted", () => {
     expect(
       isRowItemCompleted({
         kind: "document",
-        data: makeFeatureArtifact({ status: FeatureStatus.Done }),
+        data: makeFeatureArtifact({ status: IssueStatus.Done }),
       })
     ).toBe(true);
     expect(
       isRowItemCompleted({
         kind: "document",
-        data: makeFeatureArtifact({ status: FeatureStatus.Canceled }),
+        data: makeFeatureArtifact({ status: IssueStatus.Canceled }),
       })
     ).toBe(true);
     expect(
       isRowItemCompleted({
         kind: "document",
-        data: makeFeatureArtifact({ status: FeatureStatus.InProgress }),
+        data: makeFeatureArtifact({ status: IssueStatus.InProgress }),
       })
     ).toBe(false);
     expect(
@@ -221,8 +265,10 @@ describe("isRowItemCompleted", () => {
         }),
       })
     ).toBe(false);
-    // Sessions use the pattern-matched terminal definition, so harness
-    // variants like "execution_failed" count as completed too.
+    // ISS-5592: sessions use the CANONICAL fold, so an unrecognised harness
+    // variant is not completed. This asserted the opposite while the substring
+    // arms existed; the expectation moved with them, and the row now stays
+    // visible here exactly as it reads Active/Unknown everywhere else.
     expect(
       isRowItemCompleted({
         kind: "session",
@@ -230,12 +276,20 @@ describe("isRowItemCompleted", () => {
           status: "execution_failed",
         }),
       })
+    ).toBe(false);
+    expect(
+      isRowItemCompleted({
+        kind: "session",
+        data: makeRawArtifact(ArtifactType.Session, {
+          status: SESSION_STATUS.ERROR,
+        }),
+      })
     ).toBe(true);
     expect(
       isRowItemCompleted({
         kind: "session",
         data: makeRawArtifact(ArtifactType.Session, {
-          status: SESSION_STATUS.ABANDONED,
+          status: SESSION_STATUS.INACTIVE,
         }),
       })
     ).toBe(true);

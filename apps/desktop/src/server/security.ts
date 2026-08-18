@@ -1,8 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Observability } from "../main/observability.js";
+import { Observability } from "../main/telemetry/observability.js";
 import { expandHomePath } from "../shared/path-utils.js";
+import {
+  isBroadScopeRoot,
+  tccProtectedDirectories,
+} from "../shared/sandbox-policy.js";
 
 export class DirectoryNotAllowedError extends Error {
   readonly targetPath: string;
@@ -32,6 +36,15 @@ export function isPathAllowed(
   for (const allowedDirectory of allowedDirectories) {
     const resolvedAllowedDirectory =
       canonicalizePathForPolicy(allowedDirectory);
+    // FEA-4005: fail closed on a scope root that canonicalizes (post symlink
+    // resolution) to a broad root. A `/tmp/scope -> /` symlink retargeted after
+    // the persist-time risky-root check would otherwise admit the whole
+    // filesystem; re-checking the canonical form here rejects it at enforcement.
+    // `isBroadScopeRoot` (not the persist-time `isRiskyAllowedDirectory`) so a
+    // legitimate canonical temp path under `/private/var/...` is not denied.
+    if (isBroadScopeRoot(resolvedAllowedDirectory)) {
+      continue;
+    }
     if (resolvedTarget === resolvedAllowedDirectory) {
       return true;
     }
@@ -126,6 +139,10 @@ const SENSITIVE_DENY_PATHS = [
   path.join(os.homedir(), ".gnupg"),
   path.join(os.homedir(), ".aws"),
   path.join(os.homedir(), "Library", "Keychains"),
+  // FEA-3641: treat TCC-protected user folders (Music, Pictures, Documents, …)
+  // as hard-denies alongside credential dirs — the gateway never legitimately
+  // reads them, and touching them triggers a macOS permission prompt.
+  ...tccProtectedDirectories(),
   "/etc",
   "/bin",
   "/sbin",

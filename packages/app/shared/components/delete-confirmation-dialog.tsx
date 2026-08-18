@@ -1,14 +1,7 @@
 "use client";
 
 import { Button } from "@repo/design-system/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@repo/design-system/components/ui/dialog";
+import { useResponsiveModal } from "@repo/design-system/hooks/use-responsive-modal";
 
 type DeleteConfirmationDialogProps = {
   open: boolean;
@@ -34,6 +27,11 @@ export function DeleteConfirmationDialog({
   isPending = false,
   description,
 }: Readonly<DeleteConfirmationDialogProps>) {
+  // Dialog on desktop, bottom Sheet below `sm` — one markup tree, the hook
+  // swaps the catalog primitive family and keeps focus trap / Escape / a11y.
+  const { Root, Content, Header, Footer, Title, Description } =
+    useResponsiveModal();
+
   const handleDelete = async () => {
     try {
       const success = await onConfirm();
@@ -49,16 +47,16 @@ export function DeleteConfirmationDialog({
   };
 
   return (
-    <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete {title}</DialogTitle>
-          <DialogDescription>
+    <Root onOpenChange={onOpenChange} open={open}>
+      <Content>
+        <Header>
+          <Title>Delete {title}</Title>
+          <Description>
             {description ??
               `Are you sure you want to delete "${itemName}"? This action cannot be undone.`}
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
+          </Description>
+        </Header>
+        <Footer>
           <Button onClick={() => onOpenChange(false)} variant="outline">
             Cancel
           </Button>
@@ -69,8 +67,8 @@ export function DeleteConfirmationDialog({
           >
             {isPending ? "Deleting..." : "Delete"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </Footer>
+      </Content>
+    </Root>
   );
 }

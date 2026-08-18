@@ -7,8 +7,8 @@ import {
   emitDecisionTableVerificationTelemetry,
   redactWorkdirPaths,
   scanDecisionTableVerificationTelemetry,
-} from "../src/main/decision-table-verification-telemetry.js";
-import type { TelemetryEventPayload } from "../src/main/telemetry-protocol.js";
+} from "../src/main/telemetry/decision-table-verification-telemetry.js";
+import type { TelemetryEventPayload } from "../src/main/telemetry/telemetry-protocol.js";
 
 const tempPathsToClean: string[] = [];
 

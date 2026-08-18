@@ -1,0 +1,39 @@
+{
+  "name": "prototypes",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/generate-registry.mjs && next dev -p 3030",
+    "build": "node scripts/generate-registry.mjs && next build",
+    "start": "next start -p 3030",
+    "generate:registry": "node scripts/generate-registry.mjs",
+    "test": "node scripts/check-catalog-imports.mjs && vitest run",
+    "test:coverage": "node scripts/check-catalog-imports.mjs && vitest run --coverage --coverage.reporter=json --coverage.reporter=json-summary --coverage.reportOnFailure '--coverage.include=app/**/*.{ts,tsx}' '--coverage.include=lib/**/*.{ts,tsx}'",
+    "typecheck": "node scripts/generate-registry.mjs && tsc --noEmit --emitDeclarationOnly false --incremental --tsBuildInfoFile ./tsconfig.tsbuildinfo",
+    "clean": "git clean -xdf .cache .turbo dist *.tsbuildinfo node_modules"
+  },
+  "dependencies": {
+    "@repo/design-system": "workspace:@closedloop-ai/design-system@*",
+    "date-fns": "^4.1.0",
+    "lucide-react": "^0.556.0",
+    "next": "catalog:",
+    "next-themes": "^0.4.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "^3.7.0",
+    "remark-breaks": "^4.0.0"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@tailwindcss/postcss": "^4.1.18",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.5.10",
+    "tailwindcss": "^4.1.18",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
+    "vitest": "^4.1.9"
+  }
+}

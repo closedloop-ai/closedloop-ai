@@ -1,18 +1,15 @@
 import { DESKTOP_API_NAMESPACE_CAPABILITY_KEY } from "@repo/api/src/desktop-api-namespace";
-import type {
-  HealthCheckResponse,
-  McpProviderAvailability,
-} from "@repo/api/src/types/compute-target";
+import type { HealthCheckResponse } from "@repo/api/src/types/compute-target";
 import {
   COMMAND_SIGNING_CAPABILITY_KEY,
   COMMAND_SIGNING_REQUIRED_CAPABILITY_KEY,
   DesktopSecurityStatus,
-  deriveAvailableHarnesses,
   HarnessType,
   PluginUpdateOutcome,
 } from "@repo/api/src/types/compute-target";
 import { beforeEach, describe, expect, it, test, vi } from "vitest";
 import { hasDesktopCommandSigningEnforcement } from "@/lib/command-signing-enforcement";
+import { DB_FANOUT_MAX_CONCURRENCY } from "@/lib/db-fanout";
 
 const mocks = vi.hoisted(() => ({
   isDesktopManagedPopEnforcementEnabled: vi.fn(),
@@ -110,6 +107,63 @@ describe("computeTargetsService security status", () => {
       reason: "feature_disabled",
     });
     mocks.isAgentSessionSyncSupportedForUser.mockResolvedValue(false);
+  });
+
+  // FEA-3299: `listAvailableForOrg` reads every target in the org shared with
+  // the caller (no `take`), then fans out per DISTINCT OWNER. That set grows
+  // with org headcount — nothing in the schema or the query caps it — so a large
+  // org could demand more than the whole 20-connection pool from a single GET on
+  // a hot authenticated path, and each task holds its connection across a
+  // co-scheduled PostHog flag check, widening the hold window (PRD-528).
+  it("bounds concurrent per-owner capability lookups as an org grows", async () => {
+    // Sized off the bound, not hardcoded: must always exceed
+    // DB_FANOUT_MAX_CONCURRENCY or the assertion has no power.
+    const OWNER_COUNT = DB_FANOUT_MAX_CONCURRENCY * 2 + 2;
+    const targets = Array.from({ length: OWNER_COUNT }, (_, i) =>
+      buildTarget({
+        id: `target-${i}`,
+        userId: `user-${i}`,
+        gatewayId: `gateway-${i}`,
+        isSharedWithOrg: true,
+        user: { firstName: "Org", lastName: `Member${i}` },
+      })
+    );
+    installDb({
+      computeTarget: { findMany: vi.fn().mockResolvedValue(targets) },
+      apiKey: { findMany: vi.fn().mockResolvedValue([]) },
+    });
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    mocks.loadActiveDesktopManagedGatewayIds.mockImplementation(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      inFlight -= 1;
+      return {
+        status: "ineligible",
+        gatewayIds: new Set<string>(),
+        reason: "feature_disabled",
+      };
+    });
+
+    const result = await computeTargetsService.listAvailableForOrg(
+      "org-1",
+      "user-0",
+      "clerk-user-0"
+    );
+
+    // Every owner's capabilities are still resolved...
+    expect(result).toHaveLength(OWNER_COUNT);
+    expect(mocks.loadActiveDesktopManagedGatewayIds).toHaveBeenCalledTimes(
+      OWNER_COUNT
+    );
+    // ...but an unbounded Promise.all would have peaked at 12 — one pooled
+    // connection per org member sharing a target.
+    expect(peakInFlight).toBeLessThanOrEqual(DB_FANOUT_MAX_CONCURRENCY);
+    expect(peakInFlight).toBeGreaterThan(1);
   });
 
   it("computes the full owned/shared Desktop security status matrix", async () => {
@@ -1522,101 +1576,6 @@ describe("upsertHealthCheckSnapshot auto-default harness selection", () => {
   });
 });
 
-function makeNeutralAvailability(available: boolean): McpProviderAvailability {
-  return {
-    available,
-    serverName: null,
-    matchedUrl: null,
-    checkedAt: "2026-06-09T00:00:00.000Z",
-  };
-}
-
-function makeHealthCheck(
-  mcpServers?: HealthCheckResponse["mcpServers"]
-): HealthCheckResponse {
-  return {
-    checks: [],
-    allRequiredPassed: true,
-    ...(mcpServers === undefined ? {} : { mcpServers }),
-  };
-}
-
-describe("deriveAvailableHarnesses", () => {
-  const cases: {
-    label: string;
-    input: HealthCheckResponse;
-    expected: HarnessType[];
-  }[] = [
-    {
-      label: "both claude and codex available → returns both harnesses",
-      input: makeHealthCheck({
-        claude: makeNeutralAvailability(true),
-        codex: makeNeutralAvailability(true),
-      }),
-      expected: [HarnessType.Claude, HarnessType.Codex],
-    },
-    {
-      label: "only claude available → returns claude only",
-      input: makeHealthCheck({
-        claude: makeNeutralAvailability(true),
-        codex: makeNeutralAvailability(false),
-      }),
-      expected: [HarnessType.Claude],
-    },
-    {
-      label: "only codex available → returns codex only",
-      input: makeHealthCheck({
-        claude: makeNeutralAvailability(false),
-        codex: makeNeutralAvailability(true),
-      }),
-      expected: [HarnessType.Codex],
-    },
-    {
-      label: "neither available → returns empty set",
-      input: makeHealthCheck({
-        claude: makeNeutralAvailability(false),
-        codex: makeNeutralAvailability(false),
-      }),
-      expected: [],
-    },
-    {
-      label: "no mcpServers field → returns empty set",
-      input: makeHealthCheck(),
-      expected: [],
-    },
-    {
-      label:
-        "legacy closedloopAvailable=true for claude → includes claude harness",
-      input: makeHealthCheck({
-        claude: {
-          closedloopAvailable: true,
-          checkedAt: "2026-06-09T00:00:00.000Z",
-        },
-        codex: makeNeutralAvailability(false),
-      }),
-      expected: [HarnessType.Claude],
-    },
-    {
-      label: "legacy closedloopAvailable=false for both → returns empty set",
-      input: makeHealthCheck({
-        claude: {
-          closedloopAvailable: false,
-          checkedAt: "2026-06-09T00:00:00.000Z",
-        },
-        codex: {
-          closedloopAvailable: false,
-          checkedAt: "2026-06-09T00:00:00.000Z",
-        },
-      }),
-      expected: [],
-    },
-  ];
-
-  test.each(cases)("$label", ({ input, expected }) => {
-    expect(deriveAvailableHarnesses(input)).toEqual(expected);
-  });
-});
-
 // ---------------------------------------------------------------------------
 // FEA-2923 (Gap A): device-facing listings must exclude the synthetic per-org
 // "cloud" sentinel compute target that owns backfilled cloud-authored agents.
@@ -1688,6 +1647,36 @@ describe("computeTargetsService cloud-sentinel exclusion", () => {
           isCloudSentinel: false,
         }),
       })
+    );
+  });
+
+  // PRD-536 §5: the Sessions onboarding empty-state signal must be ORG-wide, so
+  // a teammate's unshared desktop still counts as "connected" for another user.
+  it("hasAnyForOrg queries the whole org (no userId filter) and excludes the sentinel", async () => {
+    const findFirst = vi.fn().mockResolvedValue({ id: "target-1" });
+    installDb({ computeTarget: { findFirst } });
+
+    const result = await computeTargetsService.hasAnyForOrg("org-1");
+
+    expect(result).toBe(true);
+    const where = findFirst.mock.calls[0]?.[0]?.where;
+    expect(where).toMatchObject({
+      organizationId: "org-1",
+      isCloudSentinel: false,
+    });
+    // Org-wide: it must NOT scope to a single user (that's the bug the review
+    // caught — the user-scoped listing misclassifies teammates' targets).
+    expect(where).not.toHaveProperty("userId");
+    expect(where).not.toHaveProperty("OR");
+  });
+
+  it("hasAnyForOrg returns false when the org has no real targets", async () => {
+    installDb({
+      computeTarget: { findFirst: vi.fn().mockResolvedValue(null) },
+    });
+
+    await expect(computeTargetsService.hasAnyForOrg("org-1")).resolves.toBe(
+      false
     );
   });
 });

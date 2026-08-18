@@ -17,6 +17,11 @@ const mockUseFeatureFlagEnabled = vi.fn();
 
 vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: (flag: string) => mockUseFeatureFlagEnabled(flag),
+  // ProjectNameCell reads the completion-empty-state gate through the optional
+  // hook (ISS-4792). This tags-focused test does not exercise the ring, so keep
+  // the gate OFF to match the production default rather than routing it through
+  // the tag flag mock.
+  useFeatureFlagEnabledOptional: () => false,
 }));
 
 vi.mock(

@@ -13,6 +13,17 @@ const meta = {
     children: {
       control: "text",
     },
+    variant: {
+      options: [
+        "default",
+        "destructive",
+        "outline",
+        "secondary",
+        "ghost",
+        "link",
+      ],
+      control: { type: "radio" },
+    },
     size: {
       options: ["default", "sm", "lg", "icon", "icon-sm", "icon-lg"],
       control: { type: "radio" },

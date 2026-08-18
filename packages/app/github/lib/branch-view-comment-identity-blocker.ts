@@ -8,15 +8,32 @@ import { z } from "zod";
 import { ApiError } from "../../shared/api/api-error";
 import { toastMutationError } from "../../shared/query/query-client";
 
+/**
+ * Field validators for the identity blocker, kept as a standalone literal so
+ * the keys-covered guard below can see them.
+ *
+ * `satisfies Record<keyof BranchViewCommentIdentityBlocker, z.ZodTypeAny>` makes
+ * the shape total over the contract: adding a field to
+ * {@link BranchViewCommentIdentityBlocker} without teaching it here fails `tsc`
+ * rather than silently degrading the prompt at runtime (the FEA-3701 class of
+ * drift recorded in the root AGENTS.md).
+ *
+ * Scope: this proves KEY COVERAGE only. `z.ZodTypeAny` is the top type, so it
+ * does NOT pin a key's bounds or its optionality. It is also compile-time only:
+ * a server that adds a field to `identityBlocker` still fails this `.strict()`
+ * parse at runtime, which returns null and falls back to the generic toast.
+ */
+const branchViewCommentIdentityBlockerShape = {
+  status: z.enum([
+    BranchViewCommentWriteIdentityStatus.Missing,
+    BranchViewCommentWriteIdentityStatus.Expired,
+    BranchViewCommentWriteIdentityStatus.Revoked,
+    BranchViewCommentWriteIdentityStatus.DecryptionFailed,
+  ]),
+} satisfies Record<keyof BranchViewCommentIdentityBlocker, z.ZodTypeAny>;
+
 const branchViewCommentIdentityBlockerSchema = z
-  .object({
-    status: z.enum([
-      BranchViewCommentWriteIdentityStatus.Missing,
-      BranchViewCommentWriteIdentityStatus.Expired,
-      BranchViewCommentWriteIdentityStatus.Revoked,
-      BranchViewCommentWriteIdentityStatus.DecryptionFailed,
-    ]),
-  })
+  .object(branchViewCommentIdentityBlockerShape)
   .strict();
 
 /**

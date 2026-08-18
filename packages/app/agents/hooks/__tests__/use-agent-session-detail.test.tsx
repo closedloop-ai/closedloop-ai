@@ -244,5 +244,6 @@ function detailOnlySource(
     detail: () => Promise.resolve(detail),
     usage: () => Promise.reject(new Error("usage unused")),
     analytics: () => Promise.reject(new Error("analytics unused")),
+    pageData: () => Promise.reject(new Error("pageData unused")),
   };
 }

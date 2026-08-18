@@ -5,11 +5,14 @@ import {
   type CreateDocumentInput,
   type Document,
   type DocumentDetail,
+  type DocumentListPage,
+  type DocumentListPageParams,
   type DocumentWithProject,
   type FindDocumentsOptions,
   type GenerationStatus,
   isActiveGenerationStatus,
   type MergeDocumentsInput,
+  normalizeDocumentListResponse,
   type PullRequestInfo,
   type UpdateDocumentInput,
 } from "@repo/api/src/types/document";
@@ -17,7 +20,6 @@ import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { projectKeys } from "@repo/app/projects/hooks/project-keys";
 import { projectTreeKeys } from "@repo/app/projects/hooks/use-project-tree";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
-import { toast } from "@repo/design-system/components/ui/sonner";
 import {
   type QueryClient,
   type UseQueryOptions,
@@ -26,6 +28,23 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { invalidateArtifactLinkQueries } from "./use-artifact-links";
+
+/**
+ * Serialize `FindDocumentsOptions` into the `GET /documents` query string.
+ * Shared by the bare-array and paged readers so the two cannot drift on how a
+ * filter is spelled (a drifted spelling would silently widen one of them).
+ */
+function buildDocumentListSearchParams(
+  searchParams: FindDocumentsOptions | DocumentListPageParams
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (value !== undefined) {
+      params.set(key, value.toString());
+    }
+  }
+  return params.toString();
+}
 
 // Queries
 export function useDocuments(
@@ -36,17 +55,10 @@ export function useDocuments(
 
   return useQuery({
     queryKey: documentKeys.list(searchParams),
-    queryFn: () => {
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(searchParams)) {
-        if (value !== undefined) {
-          params.set(key, value.toString());
-        }
-      }
-      return apiClient.get<DocumentWithProject[]>(
-        `/documents?${params.toString()}`
-      );
-    },
+    queryFn: () =>
+      apiClient.get<DocumentWithProject[]>(
+        `/documents?${buildDocumentListSearchParams(searchParams)}`
+      ),
     ...options,
   });
 }
@@ -201,9 +213,6 @@ export function useUpdateDocument() {
       queryClient.invalidateQueries({
         queryKey: documentKeys.bySlug(data.slug),
       });
-      if (input.projectId) {
-        queryClient.invalidateQueries({ queryKey: projectKeys.all });
-      }
       invalidateArtifactCaches(queryClient, { artifactId: input.id });
     },
   });
@@ -272,45 +281,6 @@ export function useCreateDocumentVersion(documentId: string) {
     },
     onSuccess: (result) => {
       invalidateDocumentDetailCaches(queryClient, documentId, result.slug);
-    },
-  });
-}
-
-/**
- * Dismiss the currently displayed generation status (shared across users).
- */
-export function useDismissDocumentGenerationStatus() {
-  const queryClient = useQueryClient();
-  const apiClient = useApiClient();
-
-  return useMutation({
-    mutationFn: ({
-      documentId,
-      runKey,
-    }: {
-      documentId: string;
-      runKey: string | null;
-    }) =>
-      apiClient.put<GenerationStatus>(
-        `/documents/${documentId}/generation-status/dismiss`,
-        { runKey }
-      ),
-    onSuccess: (status, { documentId }) => {
-      queryClient.setQueryData(
-        documentKeys.generationStatus(documentId),
-        status
-      );
-      queryClient.invalidateQueries({
-        queryKey: documentKeys.detail(documentId),
-      });
-      queryClient.invalidateQueries({ queryKey: documentKeys.bySlugs() });
-      queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
-      // Row-level generation indicators on the project page read from the
-      // tree query's document rows (PLN-874) — refresh them as well.
-      queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
-    },
-    onError: () => {
-      toast.error("Failed to dismiss generation status");
     },
   });
 }
@@ -418,6 +388,14 @@ export function invalidateArtifactCaches(
   { artifactId, projectId }: { artifactId?: string; projectId?: string | null }
 ): void {
   queryClient.invalidateQueries({ queryKey: documentKeys.lists() });
+  // Creating the first document or deleting the last one flips a project's
+  // completion population between empty and non-empty (ISS-4679), and any
+  // create/delete/update shifts its completionPercentage. The team project
+  // list carries that number with a 60s stale time, so it must be invalidated
+  // on every artifact mutation or the ring stays stale after the transition
+  // (org-wide: `projectKeys.all`, since an artifact can belong to any project
+  // and the client does not always know which).
+  queryClient.invalidateQueries({ queryKey: projectKeys.all });
   if (artifactId) {
     // Also invalidates projectTreeKeys.all — see the doc comment above.
     invalidateArtifactLinkQueries(queryClient, artifactId);
@@ -428,4 +406,71 @@ export function invalidateArtifactCaches(
   } else {
     queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
   }
+}
+
+/**
+ * Read ONE page of `GET /documents` together with the real server-side total
+ * (ISS-4576).
+ *
+ * `useDocuments` collapses the response to an array, which is fine for an
+ * unbounded read but hides truncation the moment a caller passes `limit`: the
+ * array cannot say how many rows it did not include, and a UI that counts it
+ * reports a total that silently caps at the page size. This hook keeps the
+ * envelope's `total`/`hasMore` in its own contract so a paging surface states a
+ * total the server actually returned. `includeTotal` is forced on rather than
+ * left to the caller — the envelope IS this hook's contract, and a caller that
+ * passed `false` would get an array back and break the return type.
+ */
+export function useDocumentsPage(
+  searchParams: FindDocumentsOptions,
+  options?: Omit<UseQueryOptions<DocumentListPage>, "queryKey" | "queryFn">
+) {
+  const apiClient = useApiClient();
+  const pageParams = buildDocumentsPageParams(searchParams);
+
+  return useQuery({
+    queryKey: documentsPageQueryKey(searchParams),
+    // Read the raw body and normalize it rather than trusting the envelope
+    // shape (shafty023 review): an older API that predates `includeTotal` strips
+    // the unknown param and returns the legacy bare `DocumentWithProject[]`. Read
+    // as an envelope that would find no `.items`/`.total` and render an empty
+    // queue; `normalizeDocumentListResponse` folds that array into an honest
+    // one-page envelope (and a malformed body into a safe empty page) so the
+    // old-server/new-client path degrades gracefully instead of blanking.
+    queryFn: async () => {
+      const response = await apiClient.get<unknown>(
+        `/documents?${buildDocumentListSearchParams(pageParams)}`
+      );
+      return normalizeDocumentListResponse(response);
+    },
+    ...options,
+  });
+}
+
+/**
+ * The exact params {@link useDocumentsPage} sends for a given filter set — the
+ * caller's filters plus the `includeTotal` discriminator the hook forces on.
+ * Returns the dedicated {@link DocumentListPageParams} shape, not
+ * `FindDocumentsOptions`: the flag lives on the paged params type, not the filter
+ * type, so only the paged reader can select the envelope response.
+ */
+function buildDocumentsPageParams(
+  searchParams: FindDocumentsOptions
+): DocumentListPageParams {
+  return { ...searchParams, includeTotal: true };
+}
+
+/**
+ * The cache key {@link useDocumentsPage} registers for a given filter set.
+ *
+ * Exported because a caller that writes optimistically into the paged cache (the
+ * My Tasks kanban's drag handler) must target the SAME entry the hook populates.
+ * `documentKeys.list` hashes the filters object verbatim, so a key rebuilt from
+ * the caller's own params — which do not carry `includeTotal` — is a DIFFERENT
+ * entry: the write lands on a stray key nothing is subscribed to and the
+ * optimistic update silently does nothing until a refetch. Deriving both from
+ * one function is what stops that drift.
+ */
+export function documentsPageQueryKey(searchParams: FindDocumentsOptions) {
+  return documentKeys.list(buildDocumentsPageParams(searchParams));
 }

@@ -30,9 +30,12 @@ import {
   coachingPackSlug,
   installCoachingPackFromDistribution,
   shouldHonorDistributionDefault,
-} from "../src/main/agent-coaching-packs.js";
+} from "../src/main/agent-monitor/agent-coaching-packs.js";
 import { installCoachingDistribution } from "../src/main/packs/coaching-distribution-install.js";
 import { RequiredPluginInstaller } from "../src/main/packs/required-plugin-installer.js";
+
+const HTTPS_FAILURE_PATTERN = /https/;
+const MAX_SIZE_FAILURE_PATTERN = /max size/;
 
 let root: string;
 
@@ -321,6 +324,135 @@ describe("installCoachingDistribution", () => {
 
     assert.equal(outcome.status, "skipped");
     assert.equal(downloadCalls, 0, "must not download when skipping");
+  });
+
+  test("fails (without fetching) when the asset URL is not https", async () => {
+    let downloadCalls = 0;
+    const fakeFetch = (() => {
+      downloadCalls += 1;
+      return Promise.resolve(
+        new Response(new Uint8Array([1]), { status: 200 })
+      );
+    }) as unknown as typeof fetch;
+
+    const outcome = await installCoachingDistribution(
+      makeCoachingDistribution({
+        assetDownloadUrl: "http://example.test/asset.zip",
+      }),
+      {
+        packsDir: path.join(root, "coaching-packs"),
+        coachingPackSlug,
+        shouldHonorDistributionDefault,
+        installCoachingPackFromDistribution,
+        fetch: fakeFetch,
+        extractZip: () => {
+          throw new Error("must not extract for a non-https asset URL");
+        },
+      }
+    );
+
+    assert.equal(outcome.status, "failed");
+    assert.match(String(outcome.failureReason), HTTPS_FAILURE_PATTERN);
+    assert.equal(downloadCalls, 0, "must not fetch a non-https asset URL");
+  });
+
+  test("refuses to follow redirects (redirect: error) on the asset download", async () => {
+    // A 3xx from the (attacker-influenceable) asset host could point at http or
+    // an internal address; the download must pass redirect: "error" so fetch
+    // never follows it. Assert the init the downloader hands to fetch.
+    const packsDir = path.join(root, "coaching-packs");
+    const sourcePack = path.join(root, "source-pack");
+    writeCoachingPackSource(sourcePack);
+
+    let seenRedirect: RequestRedirect | undefined;
+    const fakeFetch = ((_url: string | URL, init?: RequestInit) => {
+      seenRedirect = init?.redirect;
+      return Promise.resolve(
+        new Response(new Uint8Array([1, 2, 3, 4]), { status: 200 })
+      );
+    }) as unknown as typeof fetch;
+
+    const outcome = await installCoachingDistribution(
+      makeCoachingDistribution(),
+      {
+        packsDir,
+        coachingPackSlug,
+        shouldHonorDistributionDefault,
+        installCoachingPackFromDistribution,
+        fetch: fakeFetch,
+        extractZip: (_bytes, destDir) => {
+          cpSync(sourcePack, destDir, { recursive: true });
+        },
+      }
+    );
+
+    assert.equal(outcome.status, "installed");
+    assert.equal(
+      seenRedirect,
+      "error",
+      "asset download must pass redirect: error so a 3xx cannot bypass the https guard"
+    );
+  });
+
+  test("fails when the advertised Content-Length exceeds the cap", async () => {
+    const fakeFetch = (() =>
+      Promise.resolve(
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          status: 200,
+          headers: { "Content-Length": "1000" },
+        })
+      )) as unknown as typeof fetch;
+
+    const outcome = await installCoachingDistribution(
+      makeCoachingDistribution(),
+      {
+        packsDir: path.join(root, "coaching-packs"),
+        coachingPackSlug,
+        shouldHonorDistributionDefault,
+        installCoachingPackFromDistribution,
+        fetch: fakeFetch,
+        maxAssetBytes: 8,
+        extractZip: () => {
+          throw new Error("must not extract an over-cap asset");
+        },
+      }
+    );
+
+    assert.equal(outcome.status, "failed");
+    assert.match(String(outcome.failureReason), MAX_SIZE_FAILURE_PATTERN);
+  });
+
+  test("fails when the streamed body exceeds the cap (untrusted Content-Length)", async () => {
+    // Body is larger than the cap but advertises no Content-Length, so the
+    // over-cap must be caught while streaming the bytes, not from the header.
+    const fakeFetch = (() => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(6));
+          controller.enqueue(new Uint8Array(6));
+          controller.close();
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const outcome = await installCoachingDistribution(
+      makeCoachingDistribution(),
+      {
+        packsDir: path.join(root, "coaching-packs"),
+        coachingPackSlug,
+        shouldHonorDistributionDefault,
+        installCoachingPackFromDistribution,
+        fetch: fakeFetch,
+        maxAssetBytes: 8,
+        extractZip: () => {
+          throw new Error("must not extract an over-cap asset");
+        },
+      }
+    );
+
+    assert.equal(outcome.status, "failed");
+    assert.match(String(outcome.failureReason), MAX_SIZE_FAILURE_PATTERN);
   });
 
   test("fails when there is no asset download URL", async () => {

@@ -3,6 +3,7 @@
 import { Priority } from "@repo/api/src/types/common";
 import type { CreateProjectInput } from "@repo/api/src/types/project";
 import { PRIORITY_LABELS } from "@repo/app/shared/lib/priority-constants";
+import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { useTeamMembers } from "@repo/app/teams/hooks/use-team-members";
 import { useCurrentUser } from "@repo/app/users/hooks/use-users";
 import { Button } from "@repo/design-system/components/ui/button";
@@ -28,13 +29,13 @@ import {
 } from "@repo/design-system/components/ui/select";
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import { UserSelectPopover } from "@repo/design-system/components/ui/user-select-popover";
-import { PlusIcon } from "lucide-react";
+import { LoaderIcon, PlusIcon } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 type CreateProjectModalProps = {
   teamId: string;
   teamName: string;
-  onCreateProject?: (project: CreateProjectInput) => void;
+  onCreateProject?: (project: CreateProjectInput) => unknown;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 };
@@ -46,6 +47,7 @@ export function CreateProjectModal({
   open: externalOpen,
   onOpenChange: externalOnOpenChange,
 }: CreateProjectModalProps) {
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = externalOpen ?? internalOpen;
   const setOpen = externalOnOpenChange ?? setInternalOpen;
@@ -69,12 +71,9 @@ export function CreateProjectModal({
   // Default owner to current user when dialog opens
   useEffect(() => {
     if (open && !assigneeInitialized && currentUser) {
-      const name = [currentUser.firstName, currentUser.lastName]
-        .filter(Boolean)
-        .join(" ");
       setAssignee({
         id: currentUser.id,
-        name: name || currentUser.email,
+        name: getUserDisplayName(currentUser),
         avatarUrl: currentUser.avatarUrl ?? undefined,
       });
       setAssigneeInitialized(true);
@@ -84,10 +83,10 @@ export function CreateProjectModal({
     }
   }, [open, assigneeInitialized, currentUser]);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
 
-    if (!name.trim()) {
+    if (!name.trim() || isSubmitting) {
       return;
     }
 
@@ -100,8 +99,20 @@ export function CreateProjectModal({
       teamIds: [teamId],
     };
 
-    onCreateProject?.(projectData);
-    handleClose();
+    setIsSubmitting(true);
+    try {
+      // Await so the modal only closes + resets on success; on failure it
+      // stays mounted with the user's input intact (the global mutation
+      // error handler still toasts the failure).
+      await onCreateProject?.(projectData);
+      handleClose();
+    } catch {
+      // Keep the dialog open with all fields retained. The rejection is
+      // surfaced by the mutation's global onError toast; do not swallow it
+      // with a local toast.
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleClose = () => {
@@ -198,8 +209,15 @@ export function CreateProjectModal({
             <Button onClick={handleClose} type="button" variant="outline">
               Cancel
             </Button>
-            <Button disabled={!name.trim()} type="submit">
-              Create Project
+            <Button disabled={!name.trim() || isSubmitting} type="submit">
+              {isSubmitting ? (
+                <>
+                  <LoaderIcon className="h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Create Project"
+              )}
             </Button>
           </DialogFooter>
         </form>

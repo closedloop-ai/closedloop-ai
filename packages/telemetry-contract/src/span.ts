@@ -5,6 +5,7 @@ import {
   boundedText,
   hasMaxCodePointLength,
   hasNoControlCharacters,
+  TelemetryDurationMsMax,
   TelemetryTextMaxLength,
 } from "./schema-primitives";
 
@@ -78,7 +79,11 @@ export const SpanTelemetrySchema = z
       .min(100)
       .max(599),
     [TelemetryAttribute.UrlPath]: UrlPathSchema,
-    [TelemetryAttribute.DurationMs]: z.number().int().min(0).max(86_400_000),
+    [TelemetryAttribute.DurationMs]: z
+      .number()
+      .int()
+      .min(0)
+      .max(TelemetryDurationMsMax),
     [TelemetryAttribute.CodeFunctionName]: boundedText(
       TelemetryTextMaxLength.CodeFunctionName
     ).optional(),
@@ -143,7 +148,7 @@ export const SpanEnvelopeSchema = z
     name: boundedText(MAX_SPAN_NAME_LENGTH),
     kind: z.enum(SpanKind),
     status: SpanStatusSchema,
-    duration_ms: z.number().int().min(0).max(86_400_000),
+    duration_ms: z.number().int().min(0).max(TelemetryDurationMsMax),
     links: z.array(SpanLinkSchema).max(MAX_SPAN_LINKS).optional(),
     schema_name: z.enum(TelemetrySchemaName),
     attributes: z.record(z.string(), z.unknown()),

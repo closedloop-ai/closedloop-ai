@@ -1,0 +1,53 @@
+-- FEA-1718 back-link, step 1 of 2: index `session_detail.source_loop_id`.
+--
+-- WHY: `source_loop_id` is the only column recording which Loop a session came
+-- from, and until now nothing indexed it. Every reverse read of that lineage —
+-- "which session materialized loop X" — sequentially scanned `session_detail`.
+-- The sibling migration (20260811130100) backfills `loops.session_artifact_id`
+-- by grouping this whole column, and the loops-list read path resolves the same
+-- lineage per page (up to 1000 loops), so without this index the scan cost is
+-- paid on every list load rather than once.
+--
+-- ORDERING IS LOAD-BEARING: this file MUST apply before the backfill, so the
+-- backfill's grouping/join drives from an index instead of a full sort of
+-- `session_detail`. `prisma migrate deploy` applies pending migrations in
+-- lexicographic directory order, and 130000 < 130100.
+--
+-- CONCURRENTLY, and therefore alone in this file. `session_detail` is the hot
+-- session-ingest table (desktop sync writes to it continuously), so a plain
+-- `CREATE INDEX` would hold ACCESS EXCLUSIVE for the whole build and stall
+-- ingest at production size — the exact failure mode PRD-547 was opened for
+-- after FEA-3638, and the reason ISS-4565 re-landed the model index this way.
+-- `CREATE INDEX CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE, so concurrent
+-- INSERT/UPDATE/DELETE proceed while it builds.
+--
+-- The cost of CONCURRENTLY is that it cannot run inside a transaction block
+-- (SQLSTATE 25001). `prisma migrate deploy` splits a migration file into
+-- statements and sends each as its own simple query — but only when it can split
+-- the file confidently; embedded semicolons and dollar-quoting push it onto a
+-- whole-file fallback that wraps everything in one implicit transaction and
+-- fails the build 25001. So this file is ONE bare statement: do not add a
+-- BEGIN/COMMIT, a `DO $$ ... $$` block, or a `DROP INDEX CONCURRENTLY` here.
+--
+-- NO `IF NOT EXISTS` (matching FEA-3001's queue index, the most recent
+-- precedent): a cancelled or crashed concurrent build leaves an INVALID index of
+-- the same name behind, and `IF NOT EXISTS` would silently skip the rebuild and
+-- record the migration APPLIED over a permanently-unusable index. Without it the
+-- retry fails closed on SQLSTATE 42P07 and an operator drops the remnant
+-- (`DROP INDEX CONCURRENTLY`, in psql autocommit) before re-running.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations.ts). Ephemeral `preview_*`
+-- schemas replay the whole history on every deploy and CONCURRENTLY waits
+-- instance-wide for transactions to drain, which is the ISS-4437 P1002
+-- advisory-lock amplifier. This index is perf-only on a throwaway schema, so it
+-- is pre-stamped and skipped there. That registration is CI-enforced by
+-- packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only. Name and columns
+-- match the schema.prisma declaration
+-- `@@index([sourceLoopId], map: "session_detail_source_loop_id_idx")`, so the
+-- Prisma drift check stays green.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "session_detail_source_loop_id_idx" ON "session_detail"("source_loop_id");

@@ -10,6 +10,14 @@ import {
   GitHubPRState,
   type GitHubPullRequestSummary,
 } from "@repo/api/src/types/github";
+import type {
+  CreatePrArtifactInput,
+  CreatePrArtifactResponse,
+} from "@repo/api/src/types/pull-request-artifact-link";
+import {
+  buildLinkedPullRequestToast,
+  LinkedPullRequestToastTone,
+} from "@repo/app/documents/components/relationships/linked-pr-toast";
 import {
   useCreateArtifactLink,
   useResolvedArtifactLinks,
@@ -65,30 +73,20 @@ type SelectPullRequestDialogProps = {
 
 // PR artifact creation posts to /artifact-links/pull-requests, which both
 // creates the PR artifact and links it to the source document/project.
-type CreatePrArtifactInput = {
-  projectId: string;
-  title: string;
-  externalUrl: string;
-  number: number;
-  githubId: string;
-  headBranch: string;
-  baseBranch: string;
-  headSha?: string | null;
-  state: GitHubPRState;
-  isDraft?: boolean;
-  closedAt?: string | null;
-  mergedAt?: string | null;
-  mergeCommitSha?: string | null;
-};
-
-type CreatedPrArtifact = { id: string };
-
+//
+// ISS-4764: the request/response shape is owned by
+// `@repo/api/src/types/pull-request-artifact-link` and imported, never
+// re-declared. The hand-written copy that used to live here was structurally
+// valid on its own, so `tsc` could not see it drift from the route's schema.
 function useCreateBranchArtifact() {
   const apiClient = useApiClient();
 
   return useMutation({
     mutationFn: (input: CreatePrArtifactInput) =>
-      apiClient.post<CreatedPrArtifact>("/artifact-links/pull-requests", input),
+      apiClient.post<CreatePrArtifactResponse>(
+        "/artifact-links/pull-requests",
+        input
+      ),
   });
 }
 
@@ -102,7 +100,16 @@ export function SelectPullRequestDialog({
   const [isLinking, setIsLinking] = useState(false);
   const createBranchArtifact = useCreateBranchArtifact();
   const createArtifactLink = useCreateArtifactLink();
+  // The PLAN owns the branch relationship link (planId first), matching how the
+  // rest of the branch surface attributes work to the plan when one exists.
   const linkSourceId = planId ?? documentId ?? null;
+  // ISS-4664: but the tags to propagate are the *implementing issue's* tags, so
+  // the label source is the ISS document first (documentId), independent of the
+  // relationship owner. Plan tags are a separate set; on the common
+  // issue-with-plan flow, reading them here would miss the ISS tags the feature
+  // is supposed to carry. Fall back to the plan only when there is no issue
+  // document (e.g. a plan-only surface).
+  const tagSourceArtifactId = documentId ?? planId ?? null;
 
   // Resolve the project's repos via the post-PLN-237 chain: project
   // override → single-team inheritance.
@@ -215,15 +222,28 @@ export function SelectPullRequestDialog({
         closedAt: pr.closedAt,
         mergedAt: pr.mergedAt,
         mergeCommitSha: pr.mergeCommitSha,
+        // Tags come from the implementing issue, not the plan that owns the
+        // link (see tagSourceArtifactId above) — ISS-4664.
+        sourceArtifactId: tagSourceArtifactId ?? undefined,
+        // ISS-4759: ask the API to write the PRODUCES link inside the same
+        // transaction as the branch upsert, so GitHub is never labelled against
+        // a relationship this client failed to write afterwards.
+        linkSourceArtifactId: linkSourceId,
       });
 
-      await createArtifactLink.mutateAsync({
-        sourceId: linkSourceId,
-        targetId: pullRequestArtifact.id,
-        linkType: LinkType.Produces,
-      });
+      // Only write the link here when the API did NOT. An API that predates
+      // ISS-4759 ignores `linkSourceArtifactId` and echoes nothing back, so the
+      // out-of-band write is still needed; a newer one already committed it
+      // transactionally and repeating it would be a pointless round trip.
+      if (pullRequestArtifact.linkedSourceArtifactId !== linkSourceId) {
+        await createArtifactLink.mutateAsync({
+          sourceId: linkSourceId,
+          targetId: pullRequestArtifact.id,
+          linkType: LinkType.Produces,
+        });
+      }
 
-      toast.success(`Linked PR #${pr.number}`);
+      showLinkedPullRequestToast(pr.number, pullRequestArtifact);
       onOpenChange(false);
     } finally {
       setIsLinking(false);
@@ -280,8 +300,9 @@ export function SelectPullRequestDialog({
       <DialogContent className="sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle>Select Existing PR</DialogTitle>
-          <DialogDescription className="sr-only">
-            Link an existing pull request to this feature
+          <DialogDescription>
+            Tags on this feature are applied to the pull request as GitHub
+            labels.
           </DialogDescription>
         </DialogHeader>
         {isLinking && (
@@ -455,4 +476,26 @@ function PrStateBadge({ pr }: Readonly<{ pr: GitHubPullRequestSummary }>) {
       Open
     </Badge>
   );
+}
+
+/**
+ * ISS-4764: route the link confirmation through the tone its outcome deserves.
+ * Two of the outcomes `buildLinkedPullRequestToast` produces are failures, and
+ * sending those out through `toast.success` told the user the labels were fine
+ * when they were not — the same success/warning split `move-entity-dialog.tsx`
+ * already uses for a partial batch move.
+ */
+function showLinkedPullRequestToast(
+  prNumber: number,
+  response: CreatePrArtifactResponse
+): void {
+  const { tone, message } = buildLinkedPullRequestToast(
+    prNumber,
+    response.labelSync
+  );
+  if (tone === LinkedPullRequestToastTone.Warning) {
+    toast.warning(message);
+    return;
+  }
+  toast.success(message);
 }

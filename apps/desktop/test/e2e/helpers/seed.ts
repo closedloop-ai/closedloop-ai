@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { E2E_POISON_TRANSCRIPT_MARKER } from "../../../src/main/collectors/engine/e2e-parse-quarantine-seam.js";
 
 // ─── Sessions ─────────────────────────────────────────────────────────────
 
@@ -60,7 +61,13 @@ export function seedClaudeTranscripts(
   for (const session of sessions) {
     const transcriptPath = path.join(projectDir, `${session.sessionId}.jsonl`);
     const timestamp = session.timestamp ?? recentTranscriptTimestamp();
-    const lines = [
+    // Each element is one raw provider-shaped JSONL record written verbatim to
+    // disk (see the `JSON.stringify` below), and the records are deliberately
+    // heterogeneous — the `tool_use`/`tool_result` pair appended for
+    // `pushBranch` carries fields the opening pair does not. Annotating the
+    // array stops TypeScript inferring the narrow shape of the first literal
+    // and rejecting the later `push`.
+    const lines: Record<string, unknown>[] = [
       {
         type: "user",
         timestamp,
@@ -144,6 +151,40 @@ export function seedClaudeTranscripts(
   }
 }
 
+/**
+ * ISS-4573: seed a POISON Claude transcript whose filename carries the
+ * `E2E_POISON_TRANSCRIPT_MARKER`. Combined with the E2E parse-quarantine launch env
+ * (`CLOSEDLOOP_E2E_PARSE_QUARANTINE=1`), the historical-parse worker treats this
+ * source's parse as never-settling, so the tightened per-source parse deadline
+ * dead-letters it and (with the threshold dropped to 1) quarantines it on the first
+ * pass — letting the launched-app E2E reach a nonzero `quarantinedCount` fast. The
+ * on-disk shape is a normal Claude transcript; only the filename marker (read by the
+ * worker) makes it poison, and only while the seam is armed. Returns the seeded
+ * transcript path.
+ */
+export function seedPoisonClaudeTranscript(
+  claudeHome: string,
+  project = "e2e-poison-project"
+): string {
+  const projectDir = path.join(claudeHome, "projects", project);
+  fs.mkdirSync(projectDir, { recursive: true });
+  const sessionId = `${E2E_POISON_TRANSCRIPT_MARKER}-${Date.now()}`;
+  const transcriptPath = path.join(projectDir, `${sessionId}.jsonl`);
+  const timestamp = new Date(Date.now() - 60_000).toISOString();
+  const line = {
+    type: "user",
+    timestamp,
+    cwd: path.join(os.tmpdir(), project),
+    gitBranch: "main",
+    version: "1.0.0",
+    slug: E2E_POISON_TRANSCRIPT_MARKER,
+    entrypoint: "claude",
+    message: { role: "user", content: "Poison transcript for E2E quarantine." },
+  };
+  fs.writeFileSync(transcriptPath, `${JSON.stringify(line)}\n`, "utf8");
+  return transcriptPath;
+}
+
 // ─── Approvals ──────────────────────────────────────────────────────────────
 
 export type SeedApproval = {
@@ -194,4 +235,103 @@ function bumpSeconds(iso: string, seconds: number): string {
 
 function recentTranscriptTimestamp(): string {
   return new Date(Date.now() - 60_000).toISOString();
+}
+
+/**
+ * ISS-4677: seed subagent SIDECHAIN transcripts for an already-seeded session,
+ * so a desktop-local session detail reports more than one transcript file and
+ * the shared `TranscriptFileSwitcher` renders its disclosure.
+ *
+ * Claude's on-disk layout for sidechains is
+ * `<claudeHome>/projects/<project>/<sessionId>/subagents/agent-*.jsonl`. The
+ * `agent-` filename prefix is load-bearing: `walkSubagentTranscripts` ignores
+ * anything else under `subagents/`.
+ */
+export function seedClaudeSubagentTranscripts(
+  claudeHome: string,
+  sessionId: string,
+  subagentIds: readonly string[],
+  project = "e2e-project"
+): void {
+  const dir = path.join(
+    claudeHome,
+    "projects",
+    project,
+    sessionId,
+    "subagents"
+  );
+  fs.mkdirSync(dir, { recursive: true });
+  const timestamp = recentTranscriptTimestamp();
+  for (const subagentId of subagentIds) {
+    const lines = [
+      {
+        type: "user",
+        timestamp,
+        cwd: path.join(os.tmpdir(), project),
+        gitBranch: "main",
+        version: "1.0.0",
+        entrypoint: "claude",
+        message: {
+          role: "user",
+          content: `Sidechain prompt for ${subagentId}.`,
+        },
+      },
+      {
+        type: "assistant",
+        timestamp: bumpSeconds(timestamp, 5),
+        message: {
+          model: "claude-opus-4-5",
+          usage: {
+            input_tokens: 6,
+            output_tokens: 3,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+          content: [
+            { type: "text", text: `Sidechain reply from ${subagentId}.` },
+          ],
+        },
+      },
+    ];
+    fs.writeFileSync(
+      path.join(dir, `${subagentId}.jsonl`),
+      `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
+      "utf8"
+    );
+  }
+}
+
+/**
+ * Stamp every seeded transcript under `claudeHome` with `stamp` as its mtime.
+ *
+ * WHY. The import classifies a run as still-live from the transcript FILE's
+ * mtime, not from the timestamps inside the JSONL
+ * (`buildImportSessionContext` compares `fileModifiedAt` against
+ * `RECENT_ACTIVITY_MS`, 10 minutes). A corpus written moments ago therefore
+ * imports entirely as `active`, and everything that selects TERMINAL rows — the
+ * data-revision rebuild, and any spec that stales them — then finds nothing at
+ * all and silently measures an empty population. So a spec that needs a FINISHED
+ * corpus must back-date its files past that window.
+ *
+ * Takes an EXPLICIT stamp rather than an age-from-now, because this walks the
+ * whole corpus and callers seed in more than one batch. With an age-from-now the
+ * second batch silently re-dates the FIRST batch's files too, and a changed mtime
+ * is precisely what makes the per-file catchup cache treat an
+ * already-imported transcript as new work — so the next launch re-imports the
+ * corpus it should have skipped. One shared stamp keeps repeat calls idempotent.
+ */
+export function ageSeededTranscripts(claudeHome: string, stamp: Date): void {
+  const projectsRoot = path.join(claudeHome, "projects");
+  if (!fs.existsSync(projectsRoot)) {
+    return;
+  }
+  for (const entry of fs.readdirSync(projectsRoot, {
+    recursive: true,
+    withFileTypes: true,
+  })) {
+    if (!(entry.isFile() && entry.name.endsWith(".jsonl"))) {
+      continue;
+    }
+    fs.utimesSync(path.join(entry.parentPath, entry.name), stamp, stamp);
+  }
 }

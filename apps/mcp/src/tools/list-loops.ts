@@ -1,27 +1,28 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { LoopStatus } from "@repo/api/src/types/loop.js";
+import { LoopCommand, LoopStatus } from "@repo/api/src/types/loop.js";
 import { z } from "zod";
 import type { ApiClient } from "../api-client.js";
 import {
   asRecord,
-  buildLoopUrl,
   buildPaginatedPayload,
   buildQuery,
   describeIdOrSlug,
   MAX_PAGE_LIMIT,
+  type McpUrlBuilder,
   readString,
   withErrorHandling,
 } from "./tool-utils.js";
 
 export function registerListLoops(
   server: McpServer,
-  apiClient: ApiClient
+  apiClient: ApiClient,
+  urls: McpUrlBuilder
 ): void {
   server.registerTool(
     "list-loops",
     {
       description:
-        "List automation runs (loops) with optional filters by document or status. The documentId filter accepts a document slug (PRD-*, PLN-*, FEA-*) verbatim.",
+        "List automation runs (loops) with optional filters by document, status, project, or command. The documentId filter accepts a document slug (PRD-*, PLN-*, FEA-*) verbatim, and the projectId filter accepts a project slug (PRO-*) verbatim.",
       inputSchema: {
         documentId: z
           .string()
@@ -30,6 +31,14 @@ export function registerListLoops(
             describeIdOrSlug("Document", ["PRD-7", "PLN-12", "FEA-42"])
           ),
         status: z.enum(LoopStatus).optional().describe("Filter by loop status"),
+        command: z
+          .enum(LoopCommand)
+          .optional()
+          .describe("Filter by loop command type"),
+        projectId: z
+          .string()
+          .optional()
+          .describe(describeIdOrSlug("Project", "PRO-7")),
         limit: z
           .number()
           .int()
@@ -45,9 +54,9 @@ export function registerListLoops(
           .describe("Starting offset for pagination (default 0)"),
       },
     },
-    ({ documentId, status, limit, offset }) =>
+    ({ documentId, status, command, projectId, limit, offset }) =>
       withErrorHandling(async () => {
-        const query = buildQuery({ documentId, status });
+        const query = buildQuery({ documentId, status, command, projectId });
 
         const loops = await apiClient.get<unknown[]>("/loops", query);
         const payload = buildPaginatedPayload(loops, {
@@ -64,7 +73,7 @@ export function registerListLoops(
               createdAt: readString(row.createdAt),
               startedAt: readString(row.startedAt),
               completedAt: readString(row.completedAt),
-              webUrl: id ? buildLoopUrl(id) : null,
+              webUrl: id ? urls.buildLoopUrl(id) : null,
             };
           },
         });

@@ -76,6 +76,7 @@ export async function seedExtendedEntities(
             score: def.score,
             comment: def.comment,
           },
+          select: { id: true },
         }),
       counts,
     });
@@ -110,6 +111,7 @@ export async function seedExtendedEntities(
           update: {
             filename: "design-notes.txt",
           },
+          select: { id: true },
         }),
       counts,
     });
@@ -145,6 +147,7 @@ export async function seedExtendedEntities(
           update: {
             data: { note: "Seed event" },
           },
+          select: { id: true },
         }),
       counts,
     });
@@ -205,6 +208,7 @@ export async function seedExtendedEntities(
           update: {
             description: def.description,
           },
+          select: { id: true },
         }),
       counts,
     });

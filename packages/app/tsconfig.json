@@ -1,13 +1,21 @@
 {
   "extends": "@repo/typescript-config/react-library.json",
   "compilerOptions": {
-    "baseUrl": ".",
+    // The packs convert→install UI (FEA-4080) imports the shared convert
+    // contract at `@repo/api/src/types/convert-install`, whose sibling imports
+    // carry explicit `.ts` extensions so the Turbopack/Vercel source bundle
+    // resolves them (the FEA-4078/4079 dual-consumption contract). `@repo/app`
+    // is a source-only workspace package typechecked with `tsc --noEmit`, so it
+    // needs the same flag the other `.ts`-extension consumers set (apps/api,
+    // packages/lib, the desktop renderer) to resolve those imports.
+    "allowImportingTsExtensions": true,
     "paths": {
       // Resolve workspace packages from source (same mechanism as apps/app
       // and @repo/typescript-config/nextjs.json): @closedloop-ai/design-system's
       // exports map points at dist/, which is not built in CI typecheck.
       // FEA-1512 (design system as live workspace dependency) supersedes this.
       "@closedloop-ai/loops-api/*": ["../../packages/loops-api/src/*"],
+      "@repo/loops-api/*": ["../../packages/loops-api/src/*"],
       "@repo/*": ["../../packages/*"]
     }
   },

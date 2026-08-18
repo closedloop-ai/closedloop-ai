@@ -94,69 +94,26 @@ vi.mock("socket.io", () => {
 // HTTP listener to RELAY_PORT (20500) — the T-3.11 SIGTERM test must reload
 // the module with NODE_ENV="development" to register the SIGTERM handler,
 // which otherwise leaks a port-bound server across test runs (EADDRINUSE).
-vi.mock("node:http", () => {
-  type Listener = (...args: unknown[]) => void;
-  return {
-    createServer: vi.fn(() => {
-      const listeners = new Map<string, Set<Listener>>();
-      const addListener = (evt: string, fn: Listener) => {
-        let set = listeners.get(evt);
-        if (!set) {
-          set = new Set();
-          listeners.set(evt, set);
-        }
-        set.add(fn);
-      };
-      const mockServer = {
-        listening: false,
-        listen: vi.fn(function listen() {
-          mockServer.listening = true;
-          // Emit "listening" on next tick so the Promise in startRelayServer resolves.
-          queueMicrotask(() => {
-            for (const fn of listeners.get("listening") ?? []) {
-              fn();
-            }
-          });
-          return mockServer;
-        }),
-        close: vi.fn((cb?: () => void) => {
-          mockServer.listening = false;
-          cb?.();
-          return mockServer;
-        }),
-        on: vi.fn((evt: string, fn: Listener) => {
-          addListener(evt, fn);
-          return mockServer;
-        }),
-        once: vi.fn((evt: string, fn: Listener) => {
-          const wrapper: Listener = (...args) => {
-            listeners.get(evt)?.delete(wrapper);
-            fn(...args);
-          };
-          addListener(evt, wrapper);
-          return mockServer;
-        }),
-        off: vi.fn((evt: string, fn: Listener) => {
-          listeners.get(evt)?.delete(fn);
-          return mockServer;
-        }),
-      };
-      return mockServer;
-    }),
-  };
+vi.mock("node:http", async () => {
+  const { createMockHttpServerFactory } = await import("./http-server-mock.js");
+  return { createServer: vi.fn(createMockHttpServerFactory()) };
 });
 
 // ---------------------------------------------------------------------------
 // Mock emitProtocolMetric so we can assert on connection state emissions
 // ---------------------------------------------------------------------------
 
-const { mockEmitProtocolMetric, mockLogFlush, mockLogWarn } = vi.hoisted(
-  () => ({
-    mockEmitProtocolMetric: vi.fn(),
-    mockLogFlush: vi.fn().mockResolvedValue(undefined),
-    mockLogWarn: vi.fn(),
-  })
-);
+const {
+  mockEmitProtocolMetric,
+  mockFlushLogsWithDeadline,
+  mockLogFlush,
+  mockLogWarn,
+} = vi.hoisted(() => ({
+  mockEmitProtocolMetric: vi.fn(),
+  mockFlushLogsWithDeadline: vi.fn().mockResolvedValue(undefined),
+  mockLogFlush: vi.fn().mockResolvedValue(undefined),
+  mockLogWarn: vi.fn(),
+}));
 
 vi.mock("@repo/observability/telemetry/metrics", async (importOriginal) => {
   const actual =
@@ -186,6 +143,10 @@ vi.mock("@repo/observability/log", async (importOriginal) => {
   };
 });
 
+vi.mock("@repo/observability/shutdown", () => ({
+  flushLogsWithDeadline: mockFlushLogsWithDeadline,
+}));
+
 // ---------------------------------------------------------------------------
 // Setup environment and import the module under test
 // ---------------------------------------------------------------------------
@@ -205,6 +166,7 @@ beforeEach(async () => {
   // We use vi.resetModules so the module is freshly evaluated.
   vi.resetModules();
   mockEmitProtocolMetric.mockReset();
+  mockFlushLogsWithDeadline.mockReset().mockResolvedValue(undefined);
   mockLogFlush.mockReset().mockResolvedValue(undefined);
   mockLogWarn.mockReset();
   capturedMiddleware = null;
@@ -1211,6 +1173,7 @@ describe("T-3.11: SIGTERM shutdown sweep", () => {
 
       // Clear metric calls after registration
       mockEmitProtocolMetric.mockClear();
+      mockFlushLogsWithDeadline.mockClear();
       mockLogFlush.mockClear();
 
       // Verify SIGTERM listener was registered
@@ -1234,8 +1197,8 @@ describe("T-3.11: SIGTERM shutdown sweep", () => {
 
       expect(disconnectedCalls.length).toBeGreaterThanOrEqual(2);
 
-      // Assert log.flush called
-      expect(mockLogFlush).toHaveBeenCalled();
+      expect(mockFlushLogsWithDeadline).toHaveBeenCalledTimes(1);
+      expect(mockLogFlush).not.toHaveBeenCalled();
 
       // Assert process.exit(0) called
       expect(exitSpy).toHaveBeenCalledWith(0);
@@ -1260,4 +1223,82 @@ describe("T-3.11: SIGTERM shutdown sweep", () => {
       process.removeAllListeners("SIGINT");
     }
   });
+
+  it("still exits once when shutdown log flush rejects", async () => {
+    const result = await runRelayShutdownWithFlushFailure(() =>
+      Promise.reject(new Error("flush failed"))
+    );
+
+    expect(result.disconnectedCalls).toHaveLength(1);
+    expect(mockFlushLogsWithDeadline).toHaveBeenCalledTimes(1);
+    expect(result.exitSpy).toHaveBeenCalledTimes(1);
+    expect(result.exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("still exits once when shutdown log flush helper reaches its timeout", async () => {
+    const result = await runRelayShutdownWithFlushFailure(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 5000))
+    );
+
+    expect(result.disconnectedCalls).toHaveLength(1);
+    expect(mockFlushLogsWithDeadline).toHaveBeenCalledTimes(1);
+    expect(result.exitSpy).toHaveBeenCalledTimes(1);
+    expect(result.exitSpy).toHaveBeenCalledWith(0);
+  });
 });
+
+async function runRelayShutdownWithFlushFailure(
+  flushResult: () => Promise<void>
+): Promise<{
+  disconnectedCalls: unknown[][];
+  exitSpy: ReturnType<typeof vi.spyOn>;
+}> {
+  vi.useFakeTimers();
+  const exitSpy = vi
+    .spyOn(process, "exit")
+    .mockImplementation(() => undefined as never);
+
+  vi.resetModules();
+  mockEmitProtocolMetric.mockReset();
+  capturedMiddleware = null;
+  capturedConnectionHandler = null;
+  mockFlushLogsWithDeadline.mockImplementationOnce(flushResult);
+
+  vi.stubEnv("NODE_ENV", "development");
+
+  let freshModule: typeof import("../index") | undefined;
+
+  try {
+    freshModule = await import("../index");
+
+    const socket = makeMockSocket("socket-t311-failing-flush");
+    socket.data.auth = { organizationId: TEST_ORG_ID, userId: TEST_USER_ID };
+    await registerWorkerViaHello(socket, "ct_sigterm_failing_flush", "gw-fail");
+
+    mockEmitProtocolMetric.mockClear();
+
+    process.emit("SIGTERM");
+    await vi.advanceTimersByTimeAsync(5100);
+
+    const disconnectedCalls = mockEmitProtocolMetric.mock.calls.filter(
+      (call) =>
+        (call[0] as { metric: string; state?: string }).metric ===
+          "connection_state_count" &&
+        (call[0] as { state: string }).state === ConnectionState.Disconnected
+    );
+
+    return { disconnectedCalls, exitSpy };
+  } finally {
+    if (freshModule?.stopRelayServer) {
+      try {
+        vi.useRealTimers();
+        await freshModule.stopRelayServer();
+      } catch {
+        // best-effort cleanup; do not mask the test's primary failure
+      }
+    }
+    vi.unstubAllEnvs();
+    process.removeAllListeners("SIGTERM");
+    process.removeAllListeners("SIGINT");
+  }
+}

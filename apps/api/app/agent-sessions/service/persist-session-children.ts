@@ -3,14 +3,18 @@ import type {
   SyncedAgentSession,
   SyncedAgentSessionTokenUsage,
 } from "@repo/api/src/types/agent-session";
-import { Prisma } from "@repo/database";
 import {
-  maxDate,
-  normalizeNullableString,
-  roundCost,
-  toDate,
-} from "./coercion";
+  BranchParticipationKind,
+  normalizeRepoFullName,
+} from "@repo/api/src/types/branch";
+import type { SyncedArtifactRef } from "@repo/api/src/types/session-artifact-link";
+import { Prisma } from "@repo/database";
+import { normalizeRepositoryIdentity } from "@repo/lib/sessions/repository-identity";
+import { persistSessionActivitySegments } from "./activity-segment-persistence";
+import { collectBranchRefs } from "./artifact-links/shared";
+import { normalizeNullableString, roundCost, toDate } from "./coercion";
 import type { AgentSessionUpsertTx } from "./records";
+import { persistSessionTokenEvents } from "./token-event-persistence";
 
 /**
  * Collapse events that share an `externalEventId` down to a single row (last
@@ -48,17 +52,62 @@ function dedupeEventsByExternalId(
  * Persist a session's event + token-usage child rows (keyed on the session's
  * artifact id) and recompute the event-derived counts. Extracted from the
  * upsert loop to keep that method's cognitive complexity in check.
+ *
+ * Org isolation (apps/api/AGENTS.md "Org scoping"). These child tables carry no
+ * `organization_id` column of their own — org lives on the parent `artifacts`
+ * row (JOIN-REACHED design, see the schema doc comments) — so tenant isolation
+ * holds in two complementary layers:
+ *
+ *   1. OWNERSHIP IS PROVEN ONCE AT THE CALLER, WITHOUT AN EXTRA QUERY HERE. The
+ *      only caller (`upsertSessions` in `../service.ts`) runs a fail-closed
+ *      `computeTarget.findFirst({ id, organizationId })` — in
+ *      `service/resolve-batch-lookups.ts`, a pooled read BEFORE any per-session
+ *      transaction opens, so it gates the whole batch rather than each write —
+ *      that throws `compute_target_not_found` for a cross-org target, then derives
+ *      `artifactId` from a `session_detail` row keyed on that same
+ *      `computeTargetId` (its `findUnique`/`upsert` both key on
+ *      `computeTargetId_externalSessionId`, and the create arm connects the
+ *      artifact to `organizationId`). Because `session_detail.computeTargetId`
+ *      FK-references the org-verified compute target, the `artifactId` handed to
+ *      this helper is provably owned by `organizationId` — so the WRITE lanes
+ *      that key on `agentSessionId = artifactId` alone (the raw
+ *      `agent_session_events` INSERT, the token-usage `createMany`, and the
+ *      downstream token-event / activity-segment / analytics writes) cannot
+ *      touch another tenant's rows. This ownership proof is the caller's single
+ *      compute-target check, not a per-session round-trip in this hot path
+ *      (which would regress the 4-to-2 round-trip collapse this file exists to
+ *      make; ISS-4439).
+ *   2. IN-QUERY PREDICATES (defence in depth). The Prisma delete lanes still
+ *      filter on `session.artifact.organizationId`, and the two raw statements
+ *      (the counts SELECT and the `session_detail` UPDATE) still constrain via
+ *      the `artifacts` row that owns the session, so a cross-org `artifactId`
+ *      matches nothing — the counts scan reads zero rows and the UPDATE touches
+ *      zero rows — even if the caller's guarantee were ever bypassed.
  */
+export type PersistSessionChildrenResult = {
+  lastActivityAt: Date | null;
+  maxEventCreatedAt: Date | null;
+};
+
 export async function persistSessionChildren(
   tx: AgentSessionUpsertTx,
   artifactId: string,
+  organizationId: string,
   session: SyncedAgentSession,
   normalizedTokenUsage: readonly SyncedAgentSessionTokenUsage[],
-  shouldReplace = false
-): Promise<void> {
-  if (shouldReplace) {
+  options: {
+    shouldReplace: boolean;
+    shouldUpdateTokenEventCosts: boolean;
+  }
+): Promise<PersistSessionChildrenResult> {
+  if (options.shouldReplace) {
     await tx.agentSessionEvent.deleteMany({
-      where: { agentSessionId: artifactId },
+      where: {
+        agentSessionId: artifactId,
+        // Org-scope the destructive delete through the parent artifact so a
+        // cross-org artifactId can never wipe another tenant's event rows.
+        session: { artifact: { organizationId } },
+      },
     });
   }
 
@@ -96,10 +145,13 @@ export async function persistSessionChildren(
     );
   }
 
-  // Recompute event-derived counts from the full child table. A single
-  // conditional-aggregation query (COUNT(*) FILTER) collapses what were two
-  // sequential COUNT round-trips — tool-use and errors — into one table scan
-  // (FEA-2913). The FILTER predicates mirror the previous Prisma `count`
+  // Recompute event-derived counts AND the latest genuine-activity timestamp
+  // from the full child table in ONE conditional-aggregation scan. Two
+  // COUNT(*) FILTER predicates collapse what were two sequential COUNT
+  // round-trips — tool-use and errors — into one table scan (FEA-2913), and
+  // MAX("event_created_at") folds the previously-separate `_max` aggregate into
+  // that same scan over the identical `WHERE agent_session_id = $1` rows
+  // (ISS-4439). The FILTER predicates mirror the previous Prisma `count`
   // filters exactly:
   //   - tool-use: `event_type = 'tool_use'` OR a non-empty `tool_name`.
   //   - errors:   `event_type ILIKE '%<term>%'` for each ERROR_EVENT_TERMS
@@ -112,51 +164,81 @@ export async function persistSessionChildren(
     ERROR_EVENT_TERMS.map((_, i) => `"event_type" ILIKE $${i + 2}`).join(
       " OR "
     ) || "FALSE";
+  // The org predicate is the last positional bind ($N, after artifactId and the
+  // ERROR_EVENT_TERMS ILIKE params) so the existing param positions ($1 =
+  // artifactId, $2.. = error terms) are unchanged. It scopes the scan through
+  // the parent `artifacts` row: a cross-org artifactId matches no artifact, so
+  // the EXISTS is false and the aggregate reads zero rows.
+  const countsOrgParam = ERROR_EVENT_TERMS.length + 2;
   const [counts] = await tx.$queryRawUnsafe<
-    { toolUseCount: bigint; errorCount: bigint }[]
+    {
+      toolUseCount: bigint;
+      errorCount: bigint;
+      maxEventCreatedAt: Date | null;
+    }[]
   >(
     `SELECT
        COUNT(*) FILTER (
          WHERE "event_type" = 'tool_use'
             OR ("tool_name" IS NOT NULL AND "tool_name" <> '')
        ) AS "toolUseCount",
-       COUNT(*) FILTER (WHERE ${errorFilter}) AS "errorCount"
+       COUNT(*) FILTER (WHERE ${errorFilter}) AS "errorCount",
+       MAX("event_created_at") AS "maxEventCreatedAt"
      FROM "agent_session_events"
-     WHERE "agent_session_id" = $1::uuid`,
+     WHERE "agent_session_id" = $1::uuid
+       AND EXISTS (
+         SELECT 1 FROM "artifacts"
+          WHERE "artifacts"."id" = $1::uuid
+            AND "artifacts"."organization_id" = $${countsOrgParam}::uuid
+       )`,
     artifactId,
-    ...ERROR_EVENT_TERMS.map((term) => `%${term}%`)
+    ...ERROR_EVENT_TERMS.map((term) => `%${term}%`),
+    organizationId
   );
   const totalToolUse = Number(counts?.toolUseCount ?? 0);
   const totalErrors = Number(counts?.errorCount ?? 0);
+  const maxEventCreatedAt = counts?.maxEventCreatedAt ?? null;
 
   // Genuine-activity timestamp (PLN-1034): the latest real agent event, floored
   // at the session start. Derived ONLY from the cloud's persisted event stream
-  // (the authoritative source) — NOT session_updated_at (bumped by OTEL ingest /
-  // enrichment / sync), and NOT the incoming payload's lastActivityAt (a Desktop
-  // hint the cloud should not trust over its own events). Monotonic via GREATEST
-  // with the existing value so a replacement sync (events deleted + re-inserted
-  // with a smaller/older set) can never move it backward.
-  const latestEvent = await tx.agentSessionEvent.aggregate({
-    where: { agentSessionId: artifactId },
-    _max: { eventCreatedAt: true },
-  });
-  const existingDetail = await tx.sessionDetail.findUnique({
-    where: { artifactId },
-    select: { lastActivityAt: true },
-  });
-  const lastActivityAt = maxDate(
-    existingDetail?.lastActivityAt,
-    new Date(session.startedAt),
-    latestEvent._max.eventCreatedAt
+  // (the authoritative MAX("event_created_at") above) — NOT session_updated_at
+  // (bumped by OTEL ingest / enrichment / sync), and NOT the incoming payload's
+  // lastActivityAt (a Desktop hint the cloud should not trust over its own
+  // events). The monotonic GREATEST — including the column's own existing value —
+  // now runs inside this single UPDATE (ISS-4439) so the counts and the advanced
+  // timestamp land in one write with no preceding read of session_detail, and a
+  // replacement sync (events deleted + re-inserted with a smaller/older set) can
+  // still never move it backward. The parent sessionDetail.upsert always created
+  // this row before persistSessionChildren runs, so the UPDATE matches exactly
+  // one row. GREATEST ignores NULL operands, mirroring maxDate's skip semantics.
+  const startedAt = new Date(session.startedAt);
+  const startedAtParam = Number.isNaN(startedAt.getTime()) ? null : startedAt;
+  // Org-scope the authoritative counts/last_activity_at write through the parent
+  // `artifacts` row ($6, appended so $1..$5 keep their positions). The
+  // `session_detail.artifact_id` -> `artifacts.id` join is 1:1, so this matches
+  // exactly one row for an in-org session and zero rows for a cross-org
+  // artifactId. `last_activity_at`/`artifact_id` are session_detail-only columns
+  // so they stay unqualified (unambiguous under the join).
+  const [updatedDetail] = await tx.$queryRawUnsafe<
+    { lastActivityAt: Date | null }[]
+  >(
+    `UPDATE "session_detail"
+        SET "tool_use_count" = $2,
+            "error_count" = $3,
+            "last_activity_at" = GREATEST("last_activity_at", $4::timestamp, $5::timestamp)
+       FROM "artifacts"
+      WHERE "artifact_id" = $1::uuid
+        AND "artifacts"."id" = "artifact_id"
+        AND "artifacts"."organization_id" = $6::uuid
+      RETURNING "last_activity_at" AS "lastActivityAt"`,
+    artifactId,
+    totalToolUse,
+    totalErrors,
+    startedAtParam,
+    maxEventCreatedAt,
+    organizationId
   );
-  await tx.sessionDetail.update({
-    where: { artifactId },
-    data: {
-      toolUseCount: totalToolUse,
-      errorCount: totalErrors,
-      lastActivityAt,
-    },
-  });
+  const lastActivityAt = updatedDetail?.lastActivityAt ?? null;
 
   // Token usage is a full per-model snapshot, replaced atomically. An empty
   // array means the payload carried no replacement data (non-desktop caller,
@@ -167,7 +249,12 @@ export async function persistSessionChildren(
   // clear it. Only when replacement rows are present do we delete + recreate.
   if (normalizedTokenUsage.length > 0) {
     await tx.agentSessionTokenUsage.deleteMany({
-      where: { agentSessionId: artifactId },
+      where: {
+        agentSessionId: artifactId,
+        // Org-scope the destructive delete through the parent artifact (same
+        // boundary as the event delete above).
+        session: { artifact: { organizationId } },
+      },
     });
     await tx.agentSessionTokenUsage.createMany({
       data: normalizedTokenUsage.map((row) => ({
@@ -177,6 +264,9 @@ export async function persistSessionChildren(
         outputTokens: row.outputTokens,
         cacheReadTokens: row.cacheReadTokens,
         cacheWriteTokens: row.cacheWriteTokens,
+        // FEA-3419: additive TTL subdivision; null = never reported (absent).
+        cacheWrite5mTokens: row.cacheWrite5mTokens ?? null,
+        cacheWrite1hTokens: row.cacheWrite1hTokens ?? null,
         estimatedCost: roundCost(row.estimatedCostUsd ?? 0),
       })),
     });
@@ -184,51 +274,27 @@ export async function persistSessionChildren(
 
   // FEA-2730: persist the two new per-session sections. Both follow the same
   // "a payload that omits data must never clear it" rule as tokenUsage above.
-  await persistSessionTokenEvents(tx, artifactId, session);
+  await persistSessionTokenEvents(
+    tx,
+    artifactId,
+    organizationId,
+    session,
+    options.shouldUpdateTokenEventCosts
+  );
   await persistSessionAnalytics(tx, artifactId, session);
-}
+  // ISS-4541: chunk-aware activity-segment persistence. `shouldReplace` is the
+  // caller's chunk-0-of-an-advancing-revision signal (from `resolveChunkGating`):
+  // chunk 0 delete-replaces the stored tiling; every later chunk appends its slice
+  // idempotently. See `persistSessionActivitySegments`.
+  await persistSessionActivitySegments(
+    tx,
+    artifactId,
+    organizationId,
+    session,
+    options.shouldReplace
+  );
 
-/**
- * FEA-2730 (G1): persist raw per-event token rows. These are an append-only,
- * keep-all log: `externalEventId` is a content hash of the immutable desktop row
- * (session + model + timestamp + token counts), so a row's identity IS its
- * content and `skipDuplicates` makes re-sync (and chunk/backfill overlap) an
- * idempotent no-op.
- *
- * Persistence is intentionally additive and never deletes — unlike the
- * snapshot-style `tokenUsageByModel` lane, there is NO revision-driven
- * delete-then-recreate here. That matters because the desktop chunker paginates
- * events and tokenEvents into SEPARATE chunks (each a distinct request): a
- * delete gated on the one-shot `shouldReplace` would fire on the first
- * (events-only) chunk and wipe every prior token-event row while its
- * replacements ride later chunks, leaving a data-visibility gap that becomes
- * permanent if the sync is interrupted mid-run. Append-only sidesteps that
- * entirely and is the correct model for an immutable raw-event stream.
- */
-export async function persistSessionTokenEvents(
-  tx: AgentSessionUpsertTx,
-  artifactId: string,
-  session: SyncedAgentSession
-): Promise<void> {
-  const tokenEvents = session.tokenEvents ?? [];
-  if (tokenEvents.length === 0) {
-    return;
-  }
-  await tx.agentSessionTokenEvent.createMany({
-    data: tokenEvents.map((event) => ({
-      agentSessionId: artifactId,
-      externalEventId: event.externalEventId,
-      agentExternalId: event.agentExternalId ?? null,
-      model: event.model,
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheReadTokens: event.cacheReadTokens,
-      cacheWriteTokens: event.cacheWriteTokens,
-      estimatedCost: roundCost(event.estimatedCostUsd ?? 0),
-      eventCreatedAt: new Date(event.createdAt),
-    })),
-    skipDuplicates: true,
-  });
+  return { lastActivityAt, maxEventCreatedAt };
 }
 
 /**
@@ -292,6 +358,7 @@ type NullableJsonPatch =
 
 type SessionTraceDetailPatch = {
   billingMode?: string | null;
+  endsWithError?: boolean | null;
   branch?: string | null;
   pullRequests?: NullableJsonPatch;
   wallClock?: string | null;
@@ -318,15 +385,49 @@ type SessionTraceDetailPatch = {
   phases?: NullableJsonPatch;
   phaseIterations?: NullableJsonPatch;
   phaseLoopbacks?: NullableJsonPatch;
+  frustrationRaw?: number | null;
+  frustrationScoreVersion?: number | null;
 };
+
+/**
+ * ISS-4431: resolve the best repository identity from the session's branch-kind
+ * artifact refs. Preference: a ref with `branchParticipation === Wrote` wins
+ * (strongest write evidence); otherwise the first qualifying ref is used.
+ * Returns a `normalizeRepoFullName`-canonicalized value, or `null` when no
+ * branch ref carries a `repositoryFullName`.
+ */
+export function resolveRepositoryFromBranchRefs(
+  artifactRefs: SyncedArtifactRef[] | undefined
+): string | null {
+  const branchRefs = collectBranchRefs(artifactRefs);
+  if (branchRefs.length === 0) {
+    return null;
+  }
+  let best: string | null = null;
+  for (const ref of branchRefs) {
+    if (
+      !(
+        ref.repositoryFullName &&
+        normalizeRepositoryIdentity(ref.repositoryFullName)
+      )
+    ) {
+      continue;
+    }
+    if (ref.branchParticipation === BranchParticipationKind.Wrote) {
+      return normalizeRepoFullName(ref.repositoryFullName);
+    }
+    best ??= ref.repositoryFullName;
+  }
+  return best ? normalizeRepoFullName(best) : null;
+}
 
 export function toAttributionColumns(
   session: SyncedAgentSession
 ): SessionAttributionColumns {
   return {
-    repositoryFullName: normalizeNullableString(
-      session.attribution?.repositoryFullName
-    ),
+    repositoryFullName:
+      normalizeNullableString(session.attribution?.repositoryFullName) ??
+      resolveRepositoryFromBranchRefs(session.artifactRefs),
     worktreePath: normalizeNullableString(session.attribution?.worktreePath),
     sourceArtifactId: normalizeNullableString(
       session.attribution?.sourceArtifactId
@@ -344,9 +445,39 @@ export function toNullableJsonPatch(value: unknown): NullableJsonPatch {
  * Sync-owned Session Trace detail fields. Undefined means the desktop build did
  * not send the field and existing cloud values must be preserved; null is an
  * intentional clear for nullable storage.
+ *
+ * FEA-4022: the frustration signal is persisted ONLY when the org opted into
+ * `calculateSessionFrustration` (`options.includeFrustration`). When the org has
+ * NOT opted in, the fields are left off the patch entirely (undefined), so the
+ * column is preserved — never written and never cleared by an omitting caller —
+ * matching the additive omission semantics of every other trace field.
+ *
+ * ISS-4586: `endsWithError` is regression-guarded like the frustration/cost/time
+ * columns — it feeds the reaper's ERROR-vs-INACTIVE classification, so a late
+ * retry of an OLDER batch must not flip a newer sync's flag (e.g. overwrite a
+ * recovered session's `false` with a stale `true`). The caller passes
+ * `includeEndsWithError` from the `updatedAt >= sessionUpdatedAt` freshness
+ * watermark (true on create); when stale, the field is left off the patch and
+ * the stored value is preserved.
+ *
+ * ISS-4946: the legacy `pullRequests` blob is regression-guarded the same way
+ * (`includePullRequests`) — ISS-4768 gave it a destructive CLEAR branch, so a
+ * redelivered older batch could wipe a newer sync's PR list. That option is
+ * truthy-gated like `includeEndsWithError` (NOT `!== false` like
+ * `includeTraceDurations`), so omitting it preserves the stored blob instead of
+ * silently restoring the unconditional clear. Its value must be the same gate
+ * the session→PR link lane uses (`resolveSessionPullRequestWriteGate`) — the two
+ * lanes describe one PR state and a row where only one of them was written is a
+ * state the read boundary reconciles wrongly.
  */
 export function toTraceDetailPatch(
-  session: SyncedAgentSession
+  session: SyncedAgentSession,
+  options?: {
+    includeFrustration?: boolean;
+    includeEndsWithError?: boolean;
+    includeTraceDurations?: boolean;
+    includePullRequests?: boolean;
+  }
 ): SessionTraceDetailPatch {
   const patch: SessionTraceDetailPatch = {};
   setPatchValue(
@@ -355,47 +486,100 @@ export function toTraceDetailPatch(
     session.billingMode,
     normalizeNullableString
   );
+  // ISS-4586: additive boolean flag — undefined (older desktop build omits it)
+  // preserves the stored value; a boolean/null is written as-is so the reaper
+  // reads the desktop's latest ends_with_error signal. Gated behind the caller's
+  // freshness watermark so a delayed older batch can't regress the flag.
+  if (options?.includeEndsWithError) {
+    setPatchValue(
+      patch,
+      "endsWithError",
+      session.endsWithError,
+      identityPatchValue
+    );
+  }
   setPatchValue(patch, "branch", session.branch, normalizeNullableString);
-  setPatchValue(patch, "pullRequests", session.prs, toNullableJsonPatch);
-  setPatchValue(patch, "wallClock", session.wallClock, normalizeNullableString);
-  setPatchValue(
-    patch,
-    "activeAgent",
-    session.activeAgent,
-    normalizeNullableString
-  );
-  setPatchValue(
-    patch,
-    "waitingUser",
-    session.waitingUser,
-    normalizeNullableString
-  );
-  // gitDiffStats is the source-tagged variant of the loose lines/files scalars.
-  // Persist it into the same dedicated columns, preferring it when present so a
-  // git-derived count wins over a heuristic scalar from the same payload. The
-  // source tag is recorded separately in loc_source so readers can rehydrate
-  // gitDiffStats and distinguish git-derived LOC from agent-estimated scalars.
-  setPatchValue(
-    patch,
-    "linesAdded",
-    session.gitDiffStats?.linesAdded ?? session.linesAdded,
-    identityPatchValue
-  );
+  // ISS-4946: gated like `endsWithError` above. ISS-4768 made an omitted `prs`
+  // with a present `prRefs` CLEAR the stored blob, and that write was
+  // unconditional — so a redelivered older batch (desktop sync is at-least-once
+  // and can reorder) wiped a newer sync's list, permanently on an ended session.
+  // The whole write is gated, not just the clear: a stale batch's own `prs` list
+  // overwriting a newer one is the same regression. Truthy-gated so a call site
+  // that forgets the option fails toward PRESERVING the blob rather than toward
+  // restoring that destructive clear.
+  if (options?.includePullRequests) {
+    setPatchValue(
+      patch,
+      "pullRequests",
+      resolvePullRequestsBlobPatchInput(session),
+      toNullableJsonPatch
+    );
+  }
+  // ISS-4688 (wongk, #4121): the trace-duration triple is gated behind the SAME
+  // freshness watermark as `endsWithError` above. These three were written
+  // unconditionally, so a delayed sync from an older Desktop build — arriving at
+  // the same dataRevision, after a newer one already landed — overwrote
+  // `wallClock` with its stale value and pinned every Duration display (the
+  // Sessions list cell, the detail Duration card, and the Properties row that
+  // now shares their derivation) to the older number.
+  //
+  // The three are gated TOGETHER, not just `wallClock`: they are one decomposition
+  // (`wall` is the headline, `active`/`waiting` its sub-facts), so gating only the
+  // headline would let a stale batch pair a new `activeAgent` with an old
+  // `wallClock` and produce an internally inconsistent row — a worse failure than
+  // the one being fixed. An absent option preserves the previous write-always
+  // behavior for callers that have not opted in.
+  if (options?.includeTraceDurations !== false) {
+    setPatchValue(
+      patch,
+      "wallClock",
+      session.wallClock,
+      normalizeNullableString
+    );
+    setPatchValue(
+      patch,
+      "activeAgent",
+      session.activeAgent,
+      normalizeNullableString
+    );
+    setPatchValue(
+      patch,
+      "waitingUser",
+      session.waitingUser,
+      normalizeNullableString
+    );
+  }
+  // FEA-3922/FEA-3923: the per-session lines/files columns are now sourced ONLY
+  // from the transcript-derived loose scalars, NEVER from the git-derived
+  // gitDiffStats. This is a source-of-truth change, not a correctness patch on
+  // git. The two git provenances are genuinely different measurements and must
+  // not be conflated: `loc_source="git"` is real per-session, authored-commit
+  // LOC, whereas `loc_source="branch_fallback"` is the shared whole-branch/PR
+  // total — a single figure fanned out identically to every authoring session on
+  // the branch (per the canonical agent-session contract). We deliberately make
+  // the transcript the authoritative per-session source of truth so the shared
+  // branch_fallback total can never masquerade as one session's own diff
+  // (FEA-3922) and gh's spurious files_changed=0 can never surface (FEA-3923).
+  // The desktop git-enrichment sweep that populated these columns is already
+  // dormant (FEA-2608); this ingest is the effective off-switch. The full git-LOC
+  // stack (gitLocRows, branch_fallback, loc_source, gitDiffStats plumbing, the
+  // dormant enrichment modules) is tracked for removal in ISS-4423.
+  setPatchValue(patch, "linesAdded", session.linesAdded, identityPatchValue);
   setPatchValue(
     patch,
     "linesRemoved",
-    session.gitDiffStats?.linesRemoved ?? session.linesRemoved,
+    session.linesRemoved,
     identityPatchValue
   );
   setPatchValue(
     patch,
     "filesChanged",
-    session.gitDiffStats?.filesChanged ?? session.filesChanged,
+    session.filesChanged,
     identityPatchValue
   );
-  // Record provenance whenever the payload carries any LOC signal. A present
-  // gitDiffStats tags the scalars as "git"; loose scalars alone clear the marker
-  // so a re-sync without git stats does not keep rendering stale LOC as git.
+  // Provenance is now always cleared (null) whenever any LOC signal is present:
+  // the columns hold transcript scalars, never git-tagged values. `undefined`
+  // when the payload omits LOC entirely so the existing column value is preserved.
   setPatchValue(
     patch,
     "locSource",
@@ -454,21 +638,39 @@ export function toTraceDetailPatch(
     session.phaseLoopbacks,
     toNullableJsonPatch
   );
+  // FEA-4022: persist the raw frustration signal + scorer version ONLY when the
+  // org opted in. Gated at ingest (the desktop always computes it locally), so
+  // an org that has not opted in never has the value written cloud-side — the
+  // column stays NULL and Insights renders an empty state. Omission preserves
+  // whatever the cloud already stored (like every other trace field).
+  if (options?.includeFrustration) {
+    setPatchValue(
+      patch,
+      "frustrationRaw",
+      session.frustrationRaw,
+      identityPatchValue
+    );
+    setPatchValue(
+      patch,
+      "frustrationScoreVersion",
+      session.frustrationScoreVersion,
+      identityPatchValue
+    );
+  }
   return patch;
 }
 
 /**
- * Provenance for the flattened LOC scalar columns. "git" when the payload
- * carries source-tagged gitDiffStats; null when only loose scalars are present
- * (clears a stale marker on re-sync); undefined when the payload omits LOC
- * entirely so the existing column value is preserved.
+ * Provenance for the flattened LOC scalar columns. FEA-3922/FEA-3923: the
+ * per-session scalars are now always transcript-derived, never git, so this is
+ * `null` whenever any LOC signal is present (clears a stale "git"/"branch_fallback"
+ * marker left by an older sync) and `undefined` when the payload omits LOC
+ * entirely so the existing column value is preserved. `session.gitDiffStats` is
+ * intentionally NOT consulted — see the write comment in `toTraceDetailPatch`.
  */
 function resolveLocSourcePatch(
   session: SyncedAgentSession
 ): string | null | undefined {
-  if (session.gitDiffStats) {
-    return session.gitDiffStats.source;
-  }
   const hasLooseScalars =
     session.linesAdded !== undefined ||
     session.linesRemoved !== undefined ||
@@ -521,4 +723,88 @@ export function toNonNullAttributionPatch(
   return Object.fromEntries(
     Object.entries(columns).filter(([, value]) => value !== null)
   );
+}
+
+/**
+ * ISS-4768 (wongk review): what the legacy `pullRequests` blob patch should carry
+ * for this snapshot — the payload's own list, an explicit CLEAR, or nothing.
+ *
+ * An omitted `prs` is NOT always "this build does not send PRs". The desktop
+ * producer emits the field conditionally — `...(prs.length > 0 ? { prs } : {})`
+ * in `apps/desktop/src/main/database/session-trace.ts` — so a CURRENT-generation
+ * session whose PR set legitimately recalculated to EMPTY (a link retracted, a PR
+ * ref reclassified) also arrives with `prs` omitted. Treating that as "preserve"
+ * left the previously stored blob in place forever, and because the same snapshot's
+ * `prRefs: []` DOES delete the session→PR links, the row settled into
+ * stale-blob-plus-zero-links — precisely the state the read boundary's authoring
+ * gate reads as "no link adjudicates this PR, keep it". The phantom would outlive
+ * the very sync that retracted it.
+ *
+ * `prRefs` disambiguates, and is the only field that can: it is emitted
+ * UNCONDITIONALLY by every build that extracts session→PR links (`prRefs:
+ * boundedPrRefs` in `sync-source.ts`), and the chunked-sync builders replicate the
+ * whole session into every chunk (`baseFor` spreads `...session`), so a
+ * continuation chunk can never present `prRefs` without `prs` by accident.
+ *   - `prs` present → write it (unchanged).
+ *   - `prs` omitted, `prRefs` present → a current producer that recalculated to
+ *     empty. CLEAR the blob so the stored row matches what the producer sees.
+ *   - `prs` omitted, `prRefs` omitted → a pre-link-extraction build that sends
+ *     neither. PRESERVE (Compatibility Guardrail: this is the genuine legacy row
+ *     the read boundary's compat escape exists for).
+ */
+function resolvePullRequestsBlobPatchInput(
+  session: SyncedAgentSession
+): SyncedAgentSession["prs"] | undefined {
+  if (session.prs !== undefined) {
+    return session.prs;
+  }
+  return session.prRefs === undefined ? undefined : null;
+}
+
+/**
+ * ISS-4946 (wongk review, PR #4327): whether this snapshot carries PR evidence,
+ * reported PER LANE. Used as the equal-watermark tie-breaker in
+ * `resolveSessionPullRequestWriteGate`, where a pre-3bc26f527 build's empty
+ * pre-link snapshot and populated post-link snapshot share one `updatedAt` and
+ * only the populated one may win.
+ *
+ * The two shapes are reported SEPARATELY, and that separation is load-bearing.
+ * The obvious version of this helper ORs them into one boolean handed to both
+ * lanes, which reintroduces the exact defect the gate exists to prevent: the two
+ * producers have independent 100-row caps and different admission predicates
+ * (see `session-pr-status.ts`), so a snapshot can legitimately carry
+ * `prs: [ ... ]` with `prRefs: []`. Under an OR that snapshot clears the gate on
+ * blob evidence alone, the blob lane writes its list, and then
+ * `persistSessionPrArtifactLinks` runs with an empty ref list and its
+ * `deleteMany` wipes every `session_pr` row — settling the record into
+ * populated-blob-plus-zero-links, the split state this whole change was written
+ * to eliminate.
+ *
+ * Each lane must therefore prove evidence for ITSELF before it is allowed to
+ * perform a destructive replacement at a tie. A lane with nothing to write
+ * preserves instead.
+ *
+ * `hasBlobWrite` / `hasLinkWrite` are a SEPARATE question from evidence: whether
+ * the lane would have written anything had the gate admitted it. A pre-link
+ * -extraction build sends neither `prs` nor `prRefs`, so the blob patch resolves
+ * to `undefined` (no column in the patch) and `persistSessionPrArtifactLinks`
+ * early-returns on an undefined ref list — the gate's skip suppresses nothing.
+ * Only a lane that actually had a write to lose belongs in the tie counter, per
+ * the AGENTS.md rule that a quality signal increments inside the branch its
+ * precondition held in.
+ */
+export function resolveSessionPullRequestEvidence(
+  session: SyncedAgentSession
+): {
+  hasBlobEvidence: boolean;
+  hasLinkEvidence: boolean;
+  hasBlobWrite: boolean;
+  hasLinkWrite: boolean;
+} {
+  return {
+    hasBlobEvidence: (session.prs?.length ?? 0) > 0,
+    hasLinkEvidence: (session.prRefs?.length ?? 0) > 0,
+    hasBlobWrite: resolvePullRequestsBlobPatchInput(session) !== undefined,
+    hasLinkWrite: session.prRefs !== undefined,
+  };
 }

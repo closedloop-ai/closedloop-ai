@@ -2,18 +2,20 @@
 
 import { LoopCommand, LoopStatus } from "@closedloop-ai/loops-api/commands";
 import { Priority } from "@closedloop-ai/loops-api/common";
+import { DocumentStatus, IssueStatus } from "@closedloop-ai/loops-api/document";
 import {
-  DocumentStatus,
-  FeatureStatus,
-} from "@closedloop-ai/loops-api/document";
-import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
+  LoopErrorCode,
+  LoopErrorCodeSchema,
+} from "@closedloop-ai/loops-api/error-codes";
 import {
   LoopEventType,
   type LoopEventType as LoopEventTypeType,
 } from "@closedloop-ai/loops-api/events";
 import { resolveFriendlyError } from "@closedloop-ai/loops-api/friendly-error";
-import { FEATURE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
+import { ISSUE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import { Badge } from "@repo/design-system/components/ui/badge";
+import type { ToneLabelVariant } from "@repo/design-system/components/ui/tone-label";
+import { ToneLabel } from "@repo/design-system/components/ui/tone-label";
 import { cn } from "@repo/design-system/lib/utils";
 
 type StatusBadgeProps = {
@@ -103,35 +105,34 @@ export function DocumentStatusBadge({
 export const PrdStatusBadge = DocumentStatusBadge;
 export const ImplementationPlanStatusBadge = DocumentStatusBadge;
 
-// Feature (subtype = FEATURE) delivery-lifecycle vocabulary (PRD-495). Distinct
+// Issue (subtype = FEATURE) delivery-lifecycle vocabulary (PRD-495). Distinct
 // from the Document maps above — no longer an alias.
-export const featureStatusColors: Record<FeatureStatus, string> = {
-  [FeatureStatus.Triage]: COLOR_AI,
-  [FeatureStatus.Backlog]: "bg-muted text-muted-foreground border-muted",
-  [FeatureStatus.Todo]: COLOR_PENDING,
-  [FeatureStatus.InProgress]: COLOR_PROGRESS,
-  [FeatureStatus.InReview]: COLOR_PROGRESS,
-  [FeatureStatus.Blocked]: COLOR_FAILURE,
-  [FeatureStatus.Done]: COLOR_SUCCESS,
-  [FeatureStatus.Canceled]: COLOR_INACTIVE,
+export const issueStatusColors: Record<IssueStatus, string> = {
+  [IssueStatus.Triage]: COLOR_AI,
+  [IssueStatus.Backlog]: "bg-muted text-muted-foreground border-muted",
+  [IssueStatus.Todo]: COLOR_PENDING,
+  [IssueStatus.InProgress]: COLOR_PROGRESS,
+  [IssueStatus.InReview]: COLOR_PROGRESS,
+  [IssueStatus.Blocked]: COLOR_FAILURE,
+  [IssueStatus.Done]: COLOR_SUCCESS,
+  [IssueStatus.Canceled]: COLOR_INACTIVE,
 };
 
 // Labels are owned by project-constants (single source of truth); re-exported
 // here so the badge and its consumers keep one import surface. Colors above are
 // badge-specific tokens and intentionally distinct from the icon/text colors in
 // project-constants. (PRD-495 review: dedupe the duplicated label strings.)
-export const featureStatusLabels = FEATURE_STATUS_LABELS;
+export const issueStatusLabels = ISSUE_STATUS_LABELS;
 
-export function FeatureStatusBadge({
+export function IssueStatusBadge({
   status,
-}: Readonly<{ status: FeatureStatus }>) {
-  const displayStatus = featureStatusLabels[status] ?? status;
+}: Readonly<{ status: IssueStatus }>) {
+  const displayStatus = issueStatusLabels[status] ?? status;
   return (
     <Badge
       className={cn(
         "font-medium",
-        featureStatusColors[status] ??
-          featureStatusColors[FeatureStatus.Backlog]
+        issueStatusColors[status] ?? issueStatusColors[IssueStatus.Backlog]
       )}
       variant="outline"
     >
@@ -140,29 +141,29 @@ export function FeatureStatusBadge({
   );
 }
 
-export const featurePriorityColors: Record<Priority, string> = {
+export const issuePriorityColors: Record<Priority, string> = {
   [Priority.Low]: COLOR_PROGRESS,
   [Priority.Medium]: COLOR_PENDING,
   [Priority.High]: COLOR_FAILURE,
   [Priority.Urgent]: COLOR_FAILURE,
 };
 
-export const featurePriorityLabels: Record<Priority, string> = {
+export const issuePriorityLabels: Record<Priority, string> = {
   [Priority.Low]: "Low",
   [Priority.Medium]: "Medium",
   [Priority.High]: "High",
   [Priority.Urgent]: "Urgent",
 };
 
-export function FeaturePriorityBadge({
+export function IssuePriorityBadge({
   priority,
 }: Readonly<{ priority: Priority }>) {
-  const displayPriority = featurePriorityLabels[priority] ?? priority;
+  const displayPriority = issuePriorityLabels[priority] ?? priority;
   return (
     <Badge
       className={cn(
         "font-medium",
-        featurePriorityColors[priority] ?? featurePriorityColors[Priority.Low]
+        issuePriorityColors[priority] ?? issuePriorityColors[Priority.Low]
       )}
       variant="outline"
     >
@@ -207,20 +208,33 @@ export function LoopStatusBadge({
   ghostLoopUx = false,
 }: Readonly<{
   status: LoopStatus;
-  errorCode?: LoopErrorCode;
+  // `string`, not `LoopErrorCode`: the producer side (`LoopError.code`, and the
+  // `error` JSON column behind it) is an open string, so a newer runner can
+  // persist a code this client has never heard of. Binding the prop to the
+  // closed union would only have forced a cast at the call site and hidden that
+  // -- the unknown code is narrowed below instead.
+  errorCode?: string;
   ghostLoopUx?: boolean;
 }>) {
   const showErrorCode =
     ghostLoopUx && status === LoopStatus.Failed && errorCode !== undefined;
   const friendlyErrorCode = showErrorCode ? errorCode : undefined;
 
+  // `resolveFriendlyError` already tolerates an unknown code (it falls back to a
+  // generic failure template), but the color map is keyed by the closed union,
+  // so narrow through the schema rather than index it with an arbitrary string.
+  const knownErrorCode = friendlyErrorCode
+    ? LoopErrorCodeSchema.safeParse(friendlyErrorCode)
+    : undefined;
+
   const displayStatus = friendlyErrorCode
     ? resolveFriendlyError({ code: friendlyErrorCode }).title
     : (loopStatusLabels[status] ?? status);
 
   const colorClass = friendlyErrorCode
-    ? (loopErrorCodeColors[friendlyErrorCode] ??
-      loopStatusColors[LoopStatus.Failed])
+    ? ((knownErrorCode?.success
+        ? loopErrorCodeColors[knownErrorCode.data]
+        : undefined) ?? loopStatusColors[LoopStatus.Failed])
     : (loopStatusColors[status] ?? loopStatusColors[LoopStatus.Pending]);
 
   return (
@@ -306,22 +320,62 @@ export function LoopEventTypeBadge({
   );
 }
 
-export const loopCommandColors: Record<LoopCommand, string> = {
-  [LoopCommand.Plan]: COLOR_AI,
-  [LoopCommand.Execute]: COLOR_PROGRESS,
-  [LoopCommand.Chat]: COLOR_PENDING,
-  [LoopCommand.Explore]: COLOR_AI,
-  [LoopCommand.RequestChanges]: COLOR_PENDING,
-  [LoopCommand.RequestPrdChanges]: COLOR_PENDING,
-  [LoopCommand.Decompose]: COLOR_AI,
-  [LoopCommand.EvaluatePrd]: COLOR_AI,
-  [LoopCommand.GeneratePrd]: COLOR_AI,
-  [LoopCommand.EvaluatePlan]: COLOR_AI,
-  [LoopCommand.EvaluateCode]: COLOR_AI,
-  [LoopCommand.EvaluateFeature]: COLOR_AI,
-  [LoopCommand.Bootstrap]: COLOR_AI,
-  [LoopCommand.Manual]: COLOR_PENDING,
+// FEA-3968: one command→tone SSOT. Each tone carries BOTH the filled-badge
+// className and its text-only sibling, so the two can never drift — there is no
+// second hand-maintained 14-entry map. `LoopCommandBadge` reads `.badge` and
+// `LoopCommandLabel` reads `.labelVariant` off the SAME entry.
+//
+// FEA-4035: the text half is no longer a `text-*` literal, it is a variant name
+// from the shared `Badge`/`ToneLabel` vocabulary, so `LoopCommandLabel` renders
+// through the `ToneLabel` primitive instead of a bespoke span with its own color
+// map. `ToneLabel` resolves each of these to the SAME `text-*` utility this map
+// used to spell out (`ai` → `text-ai-foreground`, `info` →
+// `text-info-foreground`, `warning` → `text-warning-foreground`), asserted in
+// `__tests__/loop-command-label.test.tsx`, so no label's color moves.
+//
+// The BADGE half deliberately stays a `COLOR_*` className rather than the
+// matching `badgeVariants` variant: the two are NOT the same treatment. This
+// surface's `COLOR_PROGRESS` is `bg-info/10 … border-info/30` against
+// `badgeVariants.info`'s `bg-info/12 … border-info/25`, and its text reads the
+// `-foreground` token where the badge variant reads the fill token. Repointing
+// it would visibly restyle every loop badge in the product — a perceivable
+// change needing its own gate, not a consolidation. Only the label, whose
+// utilities already match exactly, moves onto the shared primitive here.
+type LoopCommandTone = { badge: string; labelVariant: ToneLabelVariant };
+
+const LOOP_COMMAND_TONE_AI: LoopCommandTone = {
+  badge: COLOR_AI,
+  labelVariant: "ai",
 };
+const LOOP_COMMAND_TONE_PROGRESS: LoopCommandTone = {
+  badge: COLOR_PROGRESS,
+  labelVariant: "info",
+};
+const LOOP_COMMAND_TONE_PENDING: LoopCommandTone = {
+  badge: COLOR_PENDING,
+  labelVariant: "warning",
+};
+
+const loopCommandTones: Record<LoopCommand, LoopCommandTone> = {
+  [LoopCommand.Plan]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.Execute]: LOOP_COMMAND_TONE_PROGRESS,
+  [LoopCommand.Chat]: LOOP_COMMAND_TONE_PENDING,
+  [LoopCommand.Explore]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.RequestChanges]: LOOP_COMMAND_TONE_PENDING,
+  [LoopCommand.RequestPrdChanges]: LOOP_COMMAND_TONE_PENDING,
+  [LoopCommand.Decompose]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.EvaluatePrd]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.GeneratePrd]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.EvaluatePlan]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.EvaluateCode]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.EvaluateFeature]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.Bootstrap]: LOOP_COMMAND_TONE_AI,
+  [LoopCommand.Manual]: LOOP_COMMAND_TONE_PENDING,
+};
+
+function loopCommandTone(command: LoopCommand): LoopCommandTone {
+  return loopCommandTones[command] ?? loopCommandTones[LoopCommand.Execute];
+}
 
 export const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.Plan]: "Plan",
@@ -335,7 +389,7 @@ export const loopCommandLabels: Record<LoopCommand, string> = {
   [LoopCommand.GeneratePrd]: "Generate PRD",
   [LoopCommand.EvaluatePlan]: "Evaluate Plan",
   [LoopCommand.EvaluateCode]: "Evaluate PR",
-  [LoopCommand.EvaluateFeature]: "Evaluate Feature",
+  [LoopCommand.EvaluateFeature]: "Evaluate Issue",
   [LoopCommand.Bootstrap]: "Bootstrap",
   [LoopCommand.Manual]: "Manual",
 };
@@ -346,13 +400,28 @@ export function LoopCommandBadge({
   const displayCommand = loopCommandLabels[command] ?? command;
   return (
     <Badge
-      className={cn(
-        "font-medium",
-        loopCommandColors[command] ?? loopCommandColors[LoopCommand.Execute]
-      )}
+      className={cn("font-medium", loopCommandTone(command).badge)}
       variant="outline"
     >
       {displayCommand}
     </Badge>
+  );
+}
+
+/**
+ * Plain colored text label for a loop Command — the low-emphasis sibling of
+ * {@link LoopCommandBadge} (FEA-3968). Command is low-variance categorical
+ * metadata (often "Manual" on every row), so the table renders it as a plain
+ * colored string; the color is the text half of the SAME per-command tone the
+ * badge uses (`loopCommandTone`), so the label and badge can never drift.
+ */
+export function LoopCommandLabel({
+  command,
+}: Readonly<{ command: LoopCommand }>) {
+  const displayCommand = loopCommandLabels[command] ?? command;
+  return (
+    <ToneLabel variant={loopCommandTone(command).labelVariant}>
+      {displayCommand}
+    </ToneLabel>
   );
 }

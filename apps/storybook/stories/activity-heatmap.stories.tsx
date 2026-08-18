@@ -34,10 +34,23 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 // A cost-metric heatmap: cells carry USD spend, so a custom `valueFormatter`
-// renders each day's tooltip as currency instead of the default "N events".
+// renders each day's tooltip and accessible label as currency instead of the
+// default "N events".
 export const CurrencyTooltips: Story = {
   args: {
     valueFormatter: (count) =>
       count.toLocaleString("en-US", { style: "currency", currency: "USD" }),
+  },
+};
+
+// Product surfaces name each instance (dashboards can pin several heatmaps) and
+// can re-hue the ramp off any design-system color token — here contributions
+// read green off `--success` instead of the default `--primary`.
+export const NamedGreenAccent: Story = {
+  args: {
+    label: "Contributions by day",
+    accentVar: "--success",
+    valueFormatter: (count) =>
+      `${count.toLocaleString()} contribution${count === 1 ? "" : "s"}`,
   },
 };

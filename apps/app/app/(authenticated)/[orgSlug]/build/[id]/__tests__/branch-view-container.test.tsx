@@ -31,7 +31,7 @@ const mockMutationFactory = vi.hoisted(() => () => ({
 
 const OPEN_IN_GITHUB_NAME = /open in github/i;
 const VIEW_PLAN_NAME = /view plan/i;
-const VIEW_FEATURE_NAME = /view feature/i;
+const VIEW_FEATURE_NAME = /view issue/i;
 const BACK_TO_PROJECT_NAME = /back to project/i;
 const RETRY_NAME = /retry/i;
 
@@ -296,7 +296,7 @@ describe("BranchViewContainer comment diff navigation", () => {
     );
     expect(
       screen.getByRole("link", { name: VIEW_FEATURE_NAME })
-    ).toHaveAttribute("href", "/acme/features/feature-1");
+    ).toHaveAttribute("href", "/acme/issues/feature-1");
     expect(
       screen.getByRole("link", { name: BACK_TO_PROJECT_NAME })
     ).toHaveAttribute("href", "/acme/teams/team-1/projects/project-1");

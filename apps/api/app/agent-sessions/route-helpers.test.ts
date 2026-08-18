@@ -18,11 +18,6 @@ vi.mock("@/lib/auth/org-admin", () => ({
   isOrgAdmin: mocks.isOrgAdmin,
 }));
 
-vi.mock("@/lib/agent-session-sync-feature", () => ({
-  isAgentMonitoringEnabledForUser: vi.fn(),
-}));
-
-import { isAgentMonitoringEnabledForUser } from "@/lib/agent-session-sync-feature";
 import { authorizeAgentSessionTeamScope } from "./route-helpers";
 
 const AUTH_INPUT = {
@@ -35,7 +30,6 @@ const AUTH_INPUT = {
 describe("authorizeAgentSessionTeamScope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(isAgentMonitoringEnabledForUser).mockResolvedValue(true);
   });
 
   it("allows non-team requests without team lookup", async () => {
@@ -89,17 +83,25 @@ describe("authorizeAgentSessionTeamScope", () => {
     ).resolves.toBe(true);
   });
 
-  it("denies team requests when monitoring is disabled before team lookup", async () => {
-    vi.mocked(isAgentMonitoringEnabledForUser).mockResolvedValueOnce(false);
+  // FEA-4155 (wongk review #3789): team-scope authorization no longer consults
+  // the winding-down `DESKTOP_AGENT_SESSION_SYNC` monitoring flag, so an in-team
+  // request goes straight to team membership + org-admin RBAC. It must not fail
+  // closed on that flag as it winds down.
+  it("authorizes an in-team request on membership alone, no monitoring gate (FEA-4155)", async () => {
+    mocks.findById.mockResolvedValueOnce({ id: "team-1" });
+    mocks.isMember.mockResolvedValueOnce(true);
 
     await expect(
       authorizeAgentSessionTeamScope({
         ...AUTH_INPUT,
         filters: { teamId: "019f0fcb-8336-7c4d-9f64-528fb9520c32" },
       })
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
 
-    expect(mocks.findById).not.toHaveBeenCalled();
+    expect(mocks.findById).toHaveBeenCalledWith(
+      "019f0fcb-8336-7c4d-9f64-528fb9520c32",
+      AUTH_INPUT.organizationId
+    );
   });
 
   it("allows org admins when they are not team members", async () => {

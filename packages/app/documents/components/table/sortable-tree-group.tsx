@@ -2,6 +2,7 @@
 
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { ariaPresentationProps } from "@repo/design-system/lib/grid-table-aria";
 import { GripVerticalIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -22,10 +23,19 @@ export function SortableTreeGroup({
   id,
   renderRoot,
   children,
+  insideAriaTable = false,
 }: {
   id: string;
   renderRoot: (dragHandle: ReactNode) => ReactNode;
   children?: ReactNode;
+  /**
+   * ISS-4761: on the stack-rank surface this drag wrapper is the only element
+   * between the `role="table"` and its rows, so when the table declares ARIA
+   * semantics it is marked presentational — a purely structural dnd container
+   * should not sit in the accessibility tree between a table and the rows it
+   * owns. `TreeGroupRows` marks its non-sortable wrapper the same way.
+   */
+  insideAriaTable?: boolean;
 }) {
   const {
     attributes,
@@ -55,7 +65,9 @@ export function SortableTreeGroup({
   const dragHandle = (
     <button
       aria-label="Reorder row"
-      className="flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 active:cursor-grabbing group-hover/row:opacity-100"
+      // Touch pointers have no row hover to reveal the drag handle, so
+      // `touch:opacity-100` keeps it visible; the mouse hover reveal is unchanged.
+      className="flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 touch:opacity-100 hover:bg-muted hover:text-foreground focus-visible:opacity-100 active:cursor-grabbing group-hover/row:opacity-100"
       type="button"
       {...attributes}
       {...listeners}
@@ -65,7 +77,11 @@ export function SortableTreeGroup({
   );
 
   return (
-    <div ref={setNodeRef} style={style}>
+    <div
+      {...ariaPresentationProps(insideAriaTable)}
+      ref={setNodeRef}
+      style={style}
+    >
       {renderRoot(dragHandle)}
       {children}
     </div>

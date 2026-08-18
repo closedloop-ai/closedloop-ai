@@ -4,14 +4,21 @@ import type {
   AgentSessionAnalytics,
   AgentSessionDetail,
   AgentSessionListResponse,
+  AgentSessionsPageData,
   AgentSessionUsageSummary,
 } from "@repo/api/src/types/agent-session";
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { type UseQueryOptions, useQuery } from "@tanstack/react-query";
-import type { AgentSessionQueryFilters } from "../data-source/agent-sessions-data-source";
+import type {
+  AgentSessionQueryFilters,
+  AgentSessionUsageQueryFilters,
+} from "../data-source/agent-sessions-data-source";
 import { useAgentSessionsDataSource } from "../data-source/provider";
 
-export type { AgentSessionQueryFilters } from "../data-source/agent-sessions-data-source";
+export type {
+  AgentSessionQueryFilters,
+  AgentSessionUsageQueryFilters,
+} from "../data-source/agent-sessions-data-source";
 
 /**
  * The filter-based reads (`list`/`usage`/`analytics`) carry a `scope` segment —
@@ -35,6 +42,12 @@ export const agentSessionKeys = {
   lists: () => [...agentSessionKeys.all, "list"] as const,
   list: (scope: string, filters: Record<string, unknown>) =>
     [...agentSessionKeys.lists(), scope, filters] as const,
+  // FEA-4157: the combined list + usage read (mirrors `branchesKeys.pageData`).
+  // Scoped after the prefix like the other filter-based reads, so the unscoped
+  // `pageDataRoot` prefix still matches every scope for invalidation.
+  pageDataRoot: () => [...agentSessionKeys.all, "page-data"] as const,
+  pageData: (scope: string, filters: Record<string, unknown>) =>
+    [...agentSessionKeys.pageDataRoot(), scope, filters] as const,
   details: () => [...agentSessionKeys.all, "detail"] as const,
   detail: (scope: string, id: string) =>
     [...agentSessionKeys.details(), scope, id] as const,
@@ -57,7 +70,7 @@ export const agentSessionKeys = {
 };
 
 export function useAgentSessionUsage(
-  filters: AgentSessionQueryFilters = {},
+  filters: AgentSessionUsageQueryFilters = {},
   options?: Omit<
     UseQueryOptions<AgentSessionUsageSummary>,
     "queryKey" | "queryFn"
@@ -86,6 +99,37 @@ export function useAgentSessions(
     ...options,
     queryKey: agentSessionKeys.list(dataSource.scope, filters),
     queryFn: () => dataSource.list(filters),
+    enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
+  });
+}
+
+/**
+ * Combined list + usage read (FEA-4157). Both surfaces mount the Sessions table
+ * and its prop-driven summary cards together, so this is one query — one
+ * underlying `pageData` read — instead of the table and the cards each issuing
+ * an independent fetch that redundantly scans the same rows. Mirrors
+ * `useBranchesPageData`: a stable scope+filters `queryKey` shares/reuses the
+ * cache across navigation, and callers pass the Branches caching affordances
+ * (`placeholderData`/`keepPreviousData`, `staleTime`/`gcTime`) so a filter or
+ * time-range change shows last-good instead of a spinner. `useAgentSessions`
+ * (list-only) stays for surfaces that render the list without the summary cards.
+ *
+ * ISS-6041: takes the USAGE filter shape, so a host that renders the summary
+ * cards can ask this one read for the ISS-5809 period-over-period comparison
+ * exactly as `useAgentSessionUsage` does. The opt-in rides the `queryKey` like
+ * every other filter, so a surface that starts (or stops) asking for it never
+ * serves the other shape from cache.
+ */
+export function useAgentSessionsPageData(
+  filters: AgentSessionUsageQueryFilters = {},
+  options?: Omit<UseQueryOptions<AgentSessionsPageData>, "queryKey" | "queryFn">
+) {
+  const dataSource = useAgentSessionsDataSource();
+
+  return useQuery({
+    ...options,
+    queryKey: agentSessionKeys.pageData(dataSource.scope, filters),
+    queryFn: () => dataSource.pageData(filters),
     enabled: isAgentSessionQueryEnabled(filters) && (options?.enabled ?? true),
   });
 }

@@ -1,4 +1,4 @@
-import { gatewayLog } from "../../main/gateway-logger.js";
+import { gatewayLog } from "../../main/logging/gateway-logger.js";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import { json } from "./response-utils.js";
 

@@ -6,7 +6,10 @@ import type {
   ProjectWithDetails,
 } from "@repo/api/src/types/project";
 import type { DocumentRowItem } from "@repo/app/documents/components/table/document-row";
-import { DocumentRow } from "@repo/app/documents/components/table/document-row";
+import {
+  DocumentRow,
+  getDocumentTableColumnCount,
+} from "@repo/app/documents/components/table/document-row";
 import type { RowEditHandlers } from "@repo/app/documents/components/table/row-edit-context";
 import { DocumentTableHeader } from "@repo/app/documents/components/table/table-header";
 import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-confirmation-dialog";
@@ -27,6 +30,7 @@ import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
 import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { User as PopoverUser } from "@repo/design-system/components/ui/user-select-popover";
+import { ariaTableProps } from "@repo/design-system/lib/grid-table-aria";
 import { FolderIcon } from "lucide-react";
 import { useMemo } from "react";
 import { ProjectRowActions } from "./project-row-actions";
@@ -111,6 +115,15 @@ export function ProjectsTable({
     [projects, sortBy, sortDir]
   );
 
+  // ISS-4761: opts into the same shared `GridTable` ARIA semantics as the
+  // Documents tree, because this table renders the same header and row
+  // components — opting in separately would let one carry table roles while the
+  // other did not. ISS-5280 retired the flag that staged both, so this is now
+  // unconditional and needs no flag provider to mount (Storybook and the
+  // mini-table tests host none — ISS-4792 pins that case).
+  const insideAriaTable = true;
+  const ariaColumnCount = getDocumentTableColumnCount(visibleColumns.length);
+
   const deleteConfirmation = useDeleteConfirmation({
     onDelete: onDelete ?? (async () => false),
     getId: (project: ProjectWithDetails) => project.id,
@@ -162,8 +175,16 @@ export function ProjectsTable({
 
   return (
     <>
-      <div className="min-w-fit">
+      {/* ISS-4761: this table shares the Documents tree's header + row
+          renderers, so it opts into the same ARIA table semantics under the same
+          flag — otherwise flipping the tree on would leave a second table
+          rendering `role="row"`-less rows against an opted-in header. */}
+      <div
+        {...ariaTableProps(insideAriaTable, ariaColumnCount)}
+        className="min-w-fit"
+      >
         <DocumentTableHeader
+          insideAriaTable={insideAriaTable}
           onSort={(column, dir: SortDirection) =>
             setSort(column as ProjectSortColumn, dir)
           }
@@ -176,6 +197,7 @@ export function ProjectsTable({
           return (
             <DocumentRow
               editHandlers={editHandlers}
+              insideAriaTable={insideAriaTable}
               item={item}
               key={project.id}
               moreMenuContent={

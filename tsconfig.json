@@ -7,7 +7,8 @@
     "declarationMap": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "incremental": false,
+    "incremental": true,
+    "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "isolatedModules": true,
     "lib": ["es2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
@@ -19,9 +20,11 @@
     "strict": true,
     "target": "ES2022",
     "strictNullChecks": true,
-    "baseUrl": ".",
     "paths": {
       "@/*": ["./apps/app/*", "./apps/web/*", "./apps/api/*"],
+      "@closedloop-ai/telemetry-contract/*": [
+        "./packages/telemetry-contract/src/*"
+      ],
       "@repo/*": ["./packages/*"]
     }
   },

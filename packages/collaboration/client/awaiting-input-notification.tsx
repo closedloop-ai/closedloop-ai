@@ -4,6 +4,7 @@ import {
   InboxNotification,
   type InboxNotificationCustomKindProps,
 } from "@liveblocks/react-ui";
+import { resolveSessionNotificationTitle } from "../shared/notification-labels";
 
 type AwaitingInputNotificationProps =
   InboxNotificationCustomKindProps<"$awaitingInput">;
@@ -13,7 +14,11 @@ export function AwaitingInputNotification({
   ...props
 }: AwaitingInputNotificationProps) {
   const activity = inboxNotification.activities[0];
-  const sessionTitle = String(activity?.data?.sessionTitle ?? "your run");
+  // The visible label must be human-readable — never a raw session UUID
+  // (FEA-3969). The UUID stays the link target only, via `sessionUrl`.
+  const sessionTitle = resolveSessionNotificationTitle(
+    activity?.data?.sessionTitle
+  );
   const sessionUrl = String(activity?.data?.sessionUrl ?? "");
 
   return (

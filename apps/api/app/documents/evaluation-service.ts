@@ -187,6 +187,7 @@ export const documentEvaluationService = {
         return { status: "not_found", data: null };
       }
 
+      const evaluationCreatedAt = evaluation.createdAt.toISOString();
       const data = evaluation.judgeScores.map((js) => ({
         judgeScoreId: js.id,
         caseId: js.caseId,
@@ -196,6 +197,7 @@ export const documentEvaluationService = {
         justification: js.justification,
         finalStatus: js.finalStatus,
         promptName: js.prompt?.name ?? null,
+        evaluationCreatedAt,
       }));
       return { status: "success", data };
     } catch (error) {

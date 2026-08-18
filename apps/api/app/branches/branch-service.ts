@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  BranchBaseBranchSource,
+  type BranchBaseBranchSource,
   BranchFileCacheStatus,
-  BranchHeadShaSource,
+  type BranchHeadShaSource,
   type BranchPushSource,
   BranchSyncStatus,
   LinkType,
@@ -24,6 +24,7 @@ import {
   type TransactionClient,
   withDb,
 } from "@repo/database";
+import { indexBranchArtifactAfterCommit } from "@/app/branches/branch-search-index";
 import { parseStoredSnapshot } from "@/app/documents/repository-snapshot-helpers";
 import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
 import { getPrismaErrorCode } from "@/lib/db-utils";
@@ -33,7 +34,23 @@ import {
 } from "@/lib/github-fetch-provenance";
 import { isUuid } from "@/lib/identifier-utils";
 import { bumpBranchActivity, stampBranchFirstPush } from "./branch-push-state";
+import {
+  applyDeleteTransition,
+  applyHeadTransition,
+  decideBranchStatus,
+  type HeadTransitionResult,
+  parseBranchBaseBranchSource,
+  parseBranchHeadShaSource,
+  parseGitHubPRState,
+  resolveBaseProvenance,
+  scheduleFileChangeCacheRefresh,
+} from "./branch-state-transitions";
+import { resolveCloudBranchWriteEligibility } from "./branch-write-eligibility";
 import { adoptRepolessPullRequestDetail } from "./github-projection-writer";
+import {
+  type PullRequestHeadRepositoryObservation,
+  persistPullRequestHeadRepositoryAuthority,
+} from "./pull-request-head-authority";
 import { pullRequestLocData } from "./pull-request-loc-data";
 
 type BranchDetailWithCurrentPr = BranchDetail & {
@@ -56,9 +73,12 @@ export type UpsertBranchPullRequestInput = {
   additions?: number | null;
   deletions?: number | null;
   changedFiles?: number | null;
+  // FEA-3552: GitHub PR createdAt — anchors the rail's "PR opened" dot.
+  githubCreatedAt?: Date | null;
   closedAt?: Date | null;
   mergedAt?: Date | null;
   mergeCommitSha?: string | null;
+  headRepositoryObservation?: PullRequestHeadRepositoryObservation;
 };
 
 export type UpsertBranchArtifactInput = {
@@ -71,7 +91,14 @@ export type UpsertBranchArtifactInput = {
   repositoryId?: string | null;
   repositoryFullName: string;
   branchName: string;
+  /** Compatibility-only caller assertion. Never used as authority. */
   defaultBranch?: string | null;
+  /** Fresh provider observation. Present-but-unavailable never falls back. */
+  repositoryDefaultObservation?: PullRequestHeadRepositoryObservation;
+  /** Base installation repository retained as PullRequestDetail context. */
+  pullRequestRepositoryId?: string | null;
+  /** Verified PR base repository used for source-document authorization. */
+  pullRequestBaseRepositoryFullName?: string;
   projectId: string | null;
   createdById?: string | null;
   baseBranch?: string | null;
@@ -79,6 +106,12 @@ export type UpsertBranchArtifactInput = {
   headSha?: string | null;
   headShaSource?: BranchHeadShaSource | null;
   headShaObservedAt?: Date | null;
+  /**
+   * Activity evidence carried by this write. Omit to preserve the historical
+   * head-observation fallback; pass null when the producer can observe the head
+   * but cannot prove when qualifying Branch activity occurred.
+   */
+  activityAt?: Date | null;
   beforeSha?: string | null;
   /**
    * Explicit push evidence (PRD-510 FR2 / PLN-1099 Phase 2). When a producer has
@@ -109,28 +142,6 @@ export type UpsertBranchArtifactInput = {
   fetchProvenance?: GitHubFetchProvenance;
 };
 
-export type HeadTransitionState = {
-  headSha: string | null;
-  headShaSource: BranchHeadShaSource | null;
-  headShaObservedAt: Date | null;
-  lastPushBeforeSha: string | null;
-  deletedAt?: Date | null;
-};
-
-export type HeadTransitionResult = HeadTransitionState & {
-  accepted: boolean;
-  reason:
-    | "no_head_input"
-    | "first_observation"
-    | "push_confirmed"
-    | "sequential_push"
-    | "duplicate_push"
-    | "recreated_after_delete"
-    | "stale_push"
-    | "duplicate_harness_input"
-    | "authoritative_refresh";
-};
-
 export const SourceArtifactTargetRepoAuthorizationProvenance = {
   LoopBranchArtifactCallback: "loop_branch_artifact_callback",
 } as const;
@@ -143,298 +154,14 @@ export type SourceArtifactTargetRepoAuthorization = {
   repositoryFullNames: readonly string[];
 };
 
-const baseBranchSourcePriority: Record<BranchBaseBranchSource, number> = {
-  [BranchBaseBranchSource.PullRequestBase]: 50,
-  [BranchBaseBranchSource.HarnessInput]: 40,
-  [BranchBaseBranchSource.McpInput]: 30,
-  [BranchBaseBranchSource.MigrationPrBase]: 20,
-  [BranchBaseBranchSource.RepositoryDefault]: 10,
+type SourceArtifactEvidence = {
+  createdById: string | null;
 };
 
 const branchInclude = {
   branch: { include: { currentPullRequestDetail: true } },
   pullRequest: true,
 } as const;
-
-function parseBranchBaseBranchSource(
-  value: string | null
-): BranchBaseBranchSource | null {
-  switch (value) {
-    case BranchBaseBranchSource.PullRequestBase:
-      return BranchBaseBranchSource.PullRequestBase;
-    case BranchBaseBranchSource.HarnessInput:
-      return BranchBaseBranchSource.HarnessInput;
-    case BranchBaseBranchSource.McpInput:
-      return BranchBaseBranchSource.McpInput;
-    case BranchBaseBranchSource.MigrationPrBase:
-      return BranchBaseBranchSource.MigrationPrBase;
-    case BranchBaseBranchSource.RepositoryDefault:
-      return BranchBaseBranchSource.RepositoryDefault;
-    default:
-      return null;
-  }
-}
-
-function parseBranchHeadShaSource(
-  value: string | null
-): BranchHeadShaSource | null {
-  switch (value) {
-    case BranchHeadShaSource.PushWebhook:
-      return BranchHeadShaSource.PushWebhook;
-    case BranchHeadShaSource.PullRequestWebhook:
-      return BranchHeadShaSource.PullRequestWebhook;
-    case BranchHeadShaSource.HarnessInput:
-      return BranchHeadShaSource.HarnessInput;
-    case BranchHeadShaSource.McpInput:
-      return BranchHeadShaSource.McpInput;
-    case BranchHeadShaSource.ExplicitSync:
-      return BranchHeadShaSource.ExplicitSync;
-    case BranchHeadShaSource.MigrationPrHead:
-      return BranchHeadShaSource.MigrationPrHead;
-    default:
-      return null;
-  }
-}
-
-function parseGitHubPRState(value: string | null | undefined) {
-  switch (value) {
-    case GitHubPRState.Open:
-      return GitHubPRState.Open;
-    case GitHubPRState.Merged:
-      return GitHubPRState.Merged;
-    case GitHubPRState.Closed:
-      return GitHubPRState.Closed;
-    default:
-      return null;
-  }
-}
-
-/**
- * Maps branch, PR, and delete state to the parent artifact status without
- * changing cache state or mutating input.
- */
-export function decideBranchStatus(input: {
-  isDelete?: boolean;
-  pullRequestState?: GitHubPRStateValue | null;
-  currentStatus?: string | null;
-}): GitHubPRStateValue {
-  if (input.pullRequestState) {
-    return input.pullRequestState;
-  }
-  if (input.isDelete) {
-    return parseGitHubPRState(input.currentStatus) === GitHubPRState.Merged
-      ? GitHubPRState.Merged
-      : GitHubPRState.Closed;
-  }
-  return parseGitHubPRState(input.currentStatus) ?? GitHubPRState.Open;
-}
-
-/**
- * Applies base-branch source priority. Lower-priority observations cannot
- * overwrite stronger provenance already stored for the branch.
- */
-export function resolveBaseProvenance(
-  input: {
-    baseBranch?: string | null;
-    baseBranchSource?: BranchBaseBranchSource | null;
-  },
-  existing: {
-    baseBranch: string | null;
-    baseBranchSource: BranchBaseBranchSource | null;
-  } | null
-): {
-  baseBranch: string | null;
-  baseBranchSource: BranchBaseBranchSource | null;
-} {
-  if (!(input.baseBranch && input.baseBranchSource)) {
-    return {
-      baseBranch: existing?.baseBranch ?? null,
-      baseBranchSource: existing?.baseBranchSource ?? null,
-    };
-  }
-
-  const existingSource = existing?.baseBranchSource ?? null;
-  if (
-    existingSource &&
-    baseBranchSourcePriority[existingSource] >
-      baseBranchSourcePriority[input.baseBranchSource]
-  ) {
-    return {
-      baseBranch: existing?.baseBranch ?? null,
-      baseBranchSource: existingSource,
-    };
-  }
-
-  return {
-    baseBranch: input.baseBranch,
-    baseBranchSource: input.baseBranchSource,
-  };
-}
-
-/**
- * Applies the `lastPushBeforeSha` lifecycle. Push observations must be first,
- * sequential, or exact duplicate; stale pushes are rejected without clobbering
- * stored head or predecessor state. Non-push observations are authoritative
- * refreshes and clear stale push predecessor state. Harness callbacks are
- * idempotent when exact duplicates, but a new harness head is still accepted:
- * the loop materialization callback is the API acknowledgement of a branch
- * Desktop just pushed.
- */
-export function applyHeadTransition(
-  input: {
-    headSha?: string | null;
-    headShaSource?: BranchHeadShaSource | null;
-    beforeSha?: string | null;
-    observedAt?: Date | null;
-    isCreate?: boolean;
-  },
-  existing: HeadTransitionState | null
-): HeadTransitionResult {
-  const current = existing ?? {
-    headSha: null,
-    headShaSource: null,
-    headShaObservedAt: null,
-    lastPushBeforeSha: null,
-  };
-  if (!input.headSha) {
-    return { ...current, accepted: true, reason: "no_head_input" };
-  }
-
-  const observedAt = input.observedAt ?? new Date();
-  if (isAcceptedGitHubRecreate(input, current)) {
-    return {
-      headSha: input.headSha,
-      headShaSource: BranchHeadShaSource.PushWebhook,
-      headShaObservedAt: observedAt,
-      lastPushBeforeSha: input.beforeSha ?? null,
-      accepted: true,
-      reason: "recreated_after_delete",
-    };
-  }
-  if (isStaleGitHubRecreate(input, current)) {
-    return { ...current, accepted: false, reason: "stale_push" };
-  }
-
-  if (
-    input.headShaSource === BranchHeadShaSource.HarnessInput &&
-    current.headSha &&
-    current.headSha === input.headSha
-  ) {
-    return { ...current, accepted: true, reason: "duplicate_harness_input" };
-  }
-  if (input.headShaSource !== BranchHeadShaSource.PushWebhook) {
-    return {
-      headSha: input.headSha,
-      headShaSource: input.headShaSource ?? BranchHeadShaSource.ExplicitSync,
-      headShaObservedAt: observedAt,
-      lastPushBeforeSha: null,
-      accepted: true,
-      reason: "authoritative_refresh",
-    };
-  }
-
-  if (!current.headSha) {
-    return {
-      headSha: input.headSha,
-      headShaSource: BranchHeadShaSource.PushWebhook,
-      headShaObservedAt: observedAt,
-      lastPushBeforeSha: input.beforeSha ?? null,
-      accepted: true,
-      reason: "first_observation",
-    };
-  }
-
-  if (
-    current.headSha === input.headSha &&
-    current.lastPushBeforeSha === (input.beforeSha ?? null)
-  ) {
-    return { ...current, accepted: true, reason: "duplicate_push" };
-  }
-
-  if (
-    !current.deletedAt &&
-    current.headSha === input.headSha &&
-    current.headShaSource !== BranchHeadShaSource.PushWebhook
-  ) {
-    const confirmedObservedAt = latestDate(
-      current.headShaObservedAt,
-      observedAt
-    );
-    return {
-      headSha: input.headSha,
-      headShaSource: BranchHeadShaSource.PushWebhook,
-      headShaObservedAt: confirmedObservedAt,
-      lastPushBeforeSha: input.beforeSha ?? null,
-      accepted: true,
-      reason: "push_confirmed",
-    };
-  }
-
-  if (current.headSha === input.beforeSha) {
-    return {
-      headSha: input.headSha,
-      headShaSource: BranchHeadShaSource.PushWebhook,
-      headShaObservedAt: observedAt,
-      lastPushBeforeSha: input.beforeSha ?? null,
-      accepted: true,
-      reason: "sequential_push",
-    };
-  }
-
-  return { ...current, accepted: false, reason: "stale_push" };
-}
-
-/**
- * Applies branch-delete state without forcing a file-cache refresh.
- */
-export function applyDeleteTransition(input: {
-  isDelete?: boolean;
-  deletedAt?: Date | null;
-  currentStatus?: string | null;
-  beforeSha?: string | null;
-  currentHeadSha?: string | null;
-  currentHeadShaObservedAt?: Date | null;
-}): { deletedAt: Date | null; status: GitHubPRStateValue } | null {
-  if (!input.isDelete) {
-    return null;
-  }
-  const deletedAt = input.deletedAt ?? new Date();
-  if (isStaleGitHubDelete(input, deletedAt)) {
-    return null;
-  }
-  return {
-    deletedAt,
-    status:
-      parseGitHubPRState(input.currentStatus) === GitHubPRState.Merged
-        ? GitHubPRState.Merged
-        : GitHubPRState.Closed,
-  };
-}
-
-/**
- * Initial scheduling state for background file-cache refresh. The actual
- * compare/fetch replacement is owned by the explicit sync/cache service.
- */
-export function scheduleFileChangeCacheRefresh(input: {
-  isDelete?: boolean;
-  headTransition: HeadTransitionResult;
-}): { shouldSchedule: boolean; fileCacheStatus?: BranchFileCacheStatus } {
-  if (input.headTransition.reason === "duplicate_harness_input") {
-    return { shouldSchedule: false };
-  }
-  if (
-    input.isDelete ||
-    !input.headTransition.accepted ||
-    !input.headTransition.headSha ||
-    input.headTransition.headShaSource !== BranchHeadShaSource.PushWebhook
-  ) {
-    return { shouldSchedule: false };
-  }
-  return {
-    shouldSchedule: true,
-    fileCacheStatus: BranchFileCacheStatus.Scheduled,
-  };
-}
 
 function buildBranchTreeUrl(repositoryFullName: string, branchName: string) {
   return `https://github.com/${repositoryFullName}/tree/${encodeURIComponent(
@@ -445,9 +172,9 @@ function buildBranchTreeUrl(repositoryFullName: string, branchName: string) {
 async function validateSourceArtifact(
   tx: TransactionClient,
   input: UpsertBranchArtifactInput
-): Promise<Result<null, StatusCode>> {
+): Promise<Result<SourceArtifactEvidence, StatusCode>> {
   if (!input.sourceArtifactId) {
-    return Result.ok(null);
+    return Result.ok({ createdById: null });
   }
   const sourceArtifactBaseWhere: Prisma.ArtifactWhereInput = {
     id: input.sourceArtifactId,
@@ -464,7 +191,10 @@ async function validateSourceArtifact(
   };
   const source = await tx.artifact.findFirst({
     where: sourceArtifactBaseWhere,
-    select: { document: { select: { repositorySnapshot: true } } },
+    select: {
+      createdById: true,
+      document: { select: { repositorySnapshot: true } },
+    },
   });
   if (!source) {
     return Result.err(Status.Forbidden);
@@ -473,14 +203,23 @@ async function validateSourceArtifact(
   // A source with an empty snapshot has no repo constraint (analogous to the
   // old NULL case); otherwise the requested repo must appear in the snapshot.
   const snapshot = parseStoredSnapshot(source.document?.repositorySnapshot);
+  const evidence = { createdById: source.createdById ?? null };
   if (!snapshot || snapshot.repositories.length === 0) {
-    return Result.ok(null);
+    return Result.ok(evidence);
   }
+  const authorizedRepositoryFullName =
+    input.pullRequest &&
+    input.pullRequestRepositoryId &&
+    input.pullRequestBaseRepositoryFullName
+      ? input.pullRequestBaseRepositoryFullName
+      : input.repositoryFullName;
   const allowed = snapshot.repositories.some(
-    (repo: { fullName: string }) => repo.fullName === input.repositoryFullName
+    (repo: { fullName: string }) =>
+      normalizeRepoFullName(repo.fullName) ===
+      normalizeRepoFullName(authorizedRepositoryFullName)
   );
   if (allowed || hasSupplementarySourceRepoAuthorization(input)) {
-    return Result.ok(null);
+    return Result.ok(evidence);
   }
   return Result.err(Status.Forbidden);
 }
@@ -519,8 +258,16 @@ function resolvePushState(
   };
 }
 
+function resolveBranchActivityAt(
+  input: Pick<UpsertBranchArtifactInput, "activityAt">,
+  headShaObservedAt: Date | null
+): Date | null {
+  return input.activityAt === undefined ? headShaObservedAt : input.activityAt;
+}
+
 function buildBranchCreateData(
   input: UpsertBranchArtifactInput,
+  createdById: string | null,
   headTransition: HeadTransitionResult,
   base: {
     baseBranch: string | null;
@@ -534,7 +281,7 @@ function buildBranchCreateData(
     type: ArtifactType.BRANCH,
     organizationId: input.organizationId,
     projectId: input.projectId,
-    createdById: input.createdById ?? null,
+    createdById,
     name: input.branchName,
     status,
     externalUrl: buildBranchTreeUrl(input.repositoryFullName, input.branchName),
@@ -552,10 +299,13 @@ function buildBranchCreateData(
         headSha: headTransition.headSha,
         headShaSource: headTransition.headShaSource,
         headShaObservedAt: headTransition.headShaObservedAt,
-        // PLN-1034: a freshly observed branch is active as of the push that
-        // surfaced it. Null (branch created without a head) leaves readers to
-        // fall back to the artifact's createdAt.
-        lastActivityAt: headTransition.headShaObservedAt,
+        // Existing callers preserve the historical head-observation fallback.
+        // Webhook producers with no authoritative occurrence timestamp pass an
+        // explicit null so receipt time cannot fabricate Last active.
+        lastActivityAt: resolveBranchActivityAt(
+          input,
+          headTransition.headShaObservedAt
+        ),
         lastPushBeforeSha: headTransition.lastPushBeforeSha,
         // PRD-510 FR2 / Phase 2: explicit push evidence, if the producer supplied
         // it. On create there is no prior state, so a producer-supplied push is
@@ -577,7 +327,8 @@ async function upsertCurrentPullRequestDetail(
   organizationId: string,
   repositoryId: string,
   input: UpsertBranchPullRequestInput,
-  fetchProvenance: GitHubFetchProvenance | undefined
+  fetchProvenance: GitHubFetchProvenance | undefined,
+  headRef: { name: string; oid: string | null }
 ) {
   const detailId = randomUUID();
   const provenance = gitHubFetchProvenanceData(fetchProvenance);
@@ -607,6 +358,8 @@ async function upsertCurrentPullRequestDetail(
       isDraft: input.isDraft ?? false,
       ...pullRequestLocData(input),
       isCurrent: true,
+      // FEA-3552: persist the GitHub PR createdAt for the rail's "PR opened" dot.
+      githubCreatedAt: input.githubCreatedAt ?? null,
       closedAt: input.closedAt ?? null,
       mergedAt: input.mergedAt ?? null,
       mergeCommitSha: input.mergeCommitSha ?? null,
@@ -621,6 +374,9 @@ async function upsertCurrentPullRequestDetail(
       isDraft: input.isDraft ?? false,
       ...pullRequestLocData(input),
       isCurrent: true,
+      // FEA-3552: keep the persisted createdAt fresh; the value is idempotent
+      // (GitHub PR createdAt never changes), so a repeated projection is a no-op.
+      githubCreatedAt: input.githubCreatedAt ?? null,
       closedAt: input.closedAt ?? null,
       mergedAt: input.mergedAt ?? null,
       mergeCommitSha: input.mergeCommitSha ?? null,
@@ -640,11 +396,18 @@ async function upsertCurrentPullRequestDetail(
     where: { artifactId },
     data: { currentPullRequestDetailId: detail.id },
   });
+  await persistPullRequestHeadRepositoryAuthority(
+    tx,
+    { organizationId, pullRequestDetailId: detail.id },
+    input.headRepositoryObservation,
+    headRef
+  );
 }
 
 async function createBranchArtifact(
   tx: TransactionClient,
-  input: UpsertBranchArtifactInput
+  input: UpsertBranchArtifactInput,
+  createdById: string | null
 ): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
   const base = resolveBaseProvenance(
     {
@@ -680,6 +443,7 @@ async function createBranchArtifact(
   const created = await tx.artifact.create({
     data: buildBranchCreateData(
       input,
+      createdById,
       headTransition,
       base,
       cacheSchedule.fileCacheStatus ?? BranchFileCacheStatus.Absent,
@@ -691,14 +455,17 @@ async function createBranchArtifact(
   // A PullRequestDetail requires a (non-null) installation repo — PRs only exist
   // for App repos, which always carry repositoryId. Desktop non-App branches
   // arrive without a PR, so this simply doesn't run for them.
-  if (input.pullRequest && input.repositoryId) {
+  const pullRequestRepositoryId =
+    input.pullRequestRepositoryId ?? input.repositoryId;
+  if (input.pullRequest && pullRequestRepositoryId) {
     await upsertCurrentPullRequestDetail(
       tx,
       created.id,
       input.organizationId,
-      input.repositoryId,
+      pullRequestRepositoryId,
       input.pullRequest,
-      input.fetchProvenance
+      input.fetchProvenance,
+      { name: input.branchName, oid: input.headSha ?? null }
     );
   }
   return rereadBranchArtifact(tx, created.id);
@@ -708,6 +475,7 @@ async function updateBranchArtifact(
   tx: TransactionClient,
   artifactId: string,
   input: UpsertBranchArtifactInput,
+  createdById: string | null,
   existing: BranchDetail,
   currentArtifact: { createdById: string | null; status: string | null }
 ): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
@@ -789,10 +557,13 @@ async function updateBranchArtifact(
         input.repositoryFullName,
         input.branchName
       ),
-      projectId: input.projectId,
-      ...(input.createdById && !currentArtifact.createdById
-        ? { createdById: input.createdById }
-        : {}),
+      // FEA-1749: (re)parent only, never clear. Dropping the old
+      // `projectId === null → BadRequest` guard let a null reach this update;
+      // writing it back would strip a project an existing branch legitimately
+      // has. Mirrors the deployment update path — a branch is still parented
+      // when a later producer supplies a real project, just never un-parented.
+      ...(input.projectId ? { projectId: input.projectId } : {}),
+      ...(createdById && !currentArtifact.createdById ? { createdById } : {}),
     },
   });
   await tx.branchDetail.update({
@@ -817,11 +588,15 @@ async function updateBranchArtifact(
         : {}),
     },
   });
+  const activityAt = resolveBranchActivityAt(
+    input,
+    headTransition.headShaObservedAt
+  );
   if (existing.headSha !== headTransition.headSha) {
     await invalidateBranchStatusChecksForHeadChange(tx, artifactId);
     // PLN-1034: a new head SHA means a commit was pushed — genuine activity.
     // Monotonic so a re-delivered/stale push can't regress the timestamp.
-    await bumpBranchActivity(tx, artifactId, headTransition.headShaObservedAt);
+    await bumpBranchActivity(tx, artifactId, activityAt);
   } else if (
     shouldClearDeletedAt ||
     headTransition.reason === "push_confirmed"
@@ -829,17 +604,20 @@ async function updateBranchArtifact(
     // Recreating a deleted ref is genuine branch activity even when GitHub
     // recreates it at the same SHA. Same-SHA push confirmation is also genuine
     // remote activity for a previously local-only branch.
-    await bumpBranchActivity(tx, artifactId, headTransition.headShaObservedAt);
+    await bumpBranchActivity(tx, artifactId, activityAt);
   }
   // See the create path: PR detail requires a non-null installation repo.
-  if (input.pullRequest && input.repositoryId) {
+  const pullRequestRepositoryId =
+    input.pullRequestRepositoryId ?? input.repositoryId;
+  if (input.pullRequest && pullRequestRepositoryId) {
     await upsertCurrentPullRequestDetail(
       tx,
       artifactId,
       input.organizationId,
-      input.repositoryId,
+      pullRequestRepositoryId,
       input.pullRequest,
-      input.fetchProvenance
+      input.fetchProvenance,
+      { name: input.branchName, oid: input.headSha ?? null }
     );
   }
   return rereadBranchArtifact(tx, artifactId);
@@ -900,34 +678,45 @@ async function linkSourceIfRequested(
 async function upsertBranchArtifact(
   input: UpsertBranchArtifactInput
 ): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
-  try {
-    return await upsertBranchArtifactOnce(input);
-  } catch (error) {
+  const result = await runUpsertBranchArtifact(input);
+  if (result.ok) {
+    // FEA-3930: fail-open, post-commit index of the branch + its current PR into
+    // the unified-search projection. Never blocks or fails the branch write.
+    indexBranchArtifactAfterCommit(result.value);
+  }
+  return result;
+}
+
+function runUpsertBranchArtifact(
+  input: UpsertBranchArtifactInput
+): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
+  return upsertBranchArtifactOnce(input).catch((error) => {
     if (getPrismaErrorCode(error) !== "P2002") {
       throw error;
     }
     return upsertBranchArtifactOnce(input);
-  }
+  });
 }
 
 function upsertBranchArtifactOnce(
   input: UpsertBranchArtifactInput
 ): Promise<Result<BranchArtifactWithDetail, StatusCode>> {
   return withDb.tx(async (tx) => {
-    if (input.defaultBranch && input.branchName === input.defaultBranch) {
+    const eligibility = await resolveCloudBranchWriteEligibility(tx, input);
+    if (eligibility.kind === "not_materialized") {
       return Result.err(Status.BadRequest);
     }
-    // Artifact.projectId is nullable at the schema level solely for SESSION
-    // artifacts (FEA-1699). Branch artifacts must stay project-parented, so
-    // fail closed rather than create or unparent a projectless branch when an
-    // upstream resolution unexpectedly yields null.
-    if (input.projectId === null) {
-      return Result.err(Status.BadRequest);
-    }
+    // FEA-1749: a null projectId is legitimate, not a resolution failure. Branch
+    // identity is (organizationId, repositoryFullName, branchName) — PRD-510 D2
+    // — and has never included a project. `buildBranchCreateData` already takes
+    // `string | null`. This used to fail closed here, which is what made the
+    // desktop lane (the producer that by definition has no project) unable to
+    // create a branch at all.
     const sourceResult = await validateSourceArtifact(tx, input);
     if (!sourceResult.ok) {
       return sourceResult;
     }
+    const createdById = input.createdById ?? sourceResult.value.createdById;
 
     // PRD-510 D2: resolve by the org-scoped full-name key, uniform across
     // producers and independent of App installation. `existing` is normalized
@@ -949,10 +738,11 @@ function upsertBranchArtifactOnce(
           tx,
           existing.artifactId,
           input,
+          createdById,
           existing,
           existing.artifact
         )
-      : await createBranchArtifact(tx, input);
+      : await createBranchArtifact(tx, input, createdById);
 
     if (result.ok) {
       await linkSourceIfRequested(tx, input, result.value.id);
@@ -969,7 +759,9 @@ function hasSupplementarySourceRepoAuthorization(
     authorization?.provenance ===
       SourceArtifactTargetRepoAuthorizationProvenance.LoopBranchArtifactCallback &&
     authorization.repositoryFullNames.some(
-      (repositoryFullName) => repositoryFullName === input.repositoryFullName
+      (repositoryFullName) =>
+        normalizeRepoFullName(repositoryFullName) ===
+        normalizeRepoFullName(input.repositoryFullName)
     )
   );
 }
@@ -1006,73 +798,6 @@ function resolveUpdateBranchStatus(input: {
     return GitHubPRState.Open;
   }
   return decideBranchStatus({ currentStatus: input.currentStatus });
-}
-
-function isGitHubZeroSha(value: string | null | undefined): boolean {
-  return value === "0000000000000000000000000000000000000000";
-}
-
-function isAcceptedGitHubRecreate(
-  input: {
-    beforeSha?: string | null;
-    observedAt?: Date | null;
-    isCreate?: boolean;
-  },
-  current: HeadTransitionState
-): boolean {
-  return Boolean(
-    current.deletedAt &&
-      input.isCreate &&
-      isGitHubZeroSha(input.beforeSha) &&
-      isAfter(input.observedAt, current.deletedAt)
-  );
-}
-
-function isStaleGitHubRecreate(
-  input: {
-    beforeSha?: string | null;
-    observedAt?: Date | null;
-    isCreate?: boolean;
-  },
-  current: HeadTransitionState
-): boolean {
-  return Boolean(
-    current.deletedAt &&
-      input.isCreate &&
-      isGitHubZeroSha(input.beforeSha) &&
-      !isAfter(input.observedAt, current.deletedAt)
-  );
-}
-
-function isStaleGitHubDelete(
-  input: {
-    beforeSha?: string | null;
-    currentHeadSha?: string | null;
-    currentHeadShaObservedAt?: Date | null;
-  },
-  deletedAt: Date
-): boolean {
-  if (!input.currentHeadSha) {
-    return false;
-  }
-  if (input.beforeSha && input.beforeSha !== input.currentHeadSha) {
-    return true;
-  }
-  return Boolean(
-    input.currentHeadShaObservedAt &&
-      !isAfter(deletedAt, input.currentHeadShaObservedAt)
-  );
-}
-
-function isAfter(candidate: Date | null | undefined, reference: Date): boolean {
-  return candidate ? candidate.getTime() > reference.getTime() : false;
-}
-
-function latestDate(first: Date | null, second: Date): Date {
-  if (!first) {
-    return second;
-  }
-  return first.getTime() > second.getTime() ? first : second;
 }
 
 /**

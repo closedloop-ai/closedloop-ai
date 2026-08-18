@@ -13,6 +13,7 @@ import {
 } from "@repo/design-system/components/ui/dialog";
 import { useState } from "react";
 import { CatalogItemUpload } from "./catalog-item-upload";
+import { ImportResultSummary } from "./import-result-summary";
 
 type Props = {
   open: boolean;
@@ -38,6 +39,23 @@ export function ImportZipDialog({
   const [result, setResult] = useState<ImportPackZipResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const reset = () => {
+    setUploaded(false);
+    setResult(null);
+    setError(null);
+  };
+
+  // Route every close (backdrop, Esc, or the Done button) through here so the
+  // dialog's success state is cleared before it can be reopened. Radix never
+  // calls the Dialog's own onOpenChange for an externally-controlled close, so
+  // wiring Done straight to the parent open-setter would skip this reset.
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      reset();
+    }
+    onOpenChange(next);
+  };
+
   const handleImport = async () => {
     setError(null);
     try {
@@ -50,17 +68,7 @@ export function ImportZipDialog({
   };
 
   return (
-    <Dialog
-      onOpenChange={(next) => {
-        if (!next) {
-          setUploaded(false);
-          setResult(null);
-          setError(null);
-        }
-        onOpenChange(next);
-      }}
-      open={open}
-    >
+    <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Import from zip</DialogTitle>
@@ -80,22 +88,13 @@ export function ImportZipDialog({
             fileType="zip"
             onSuccess={() => setUploaded(true)}
           />
-          {result ? (
-            <p className="text-sm">
-              Imported {result.created} component
-              {result.created === 1 ? "" : "s"}
-              {result.skipped > 0
-                ? `, skipped ${result.skipped} already present`
-                : ""}
-              .
-            </p>
-          ) : null}
+          {result ? <ImportResultSummary result={result} /> : null}
           {error ? <p className="text-destructive text-sm">{error}</p> : null}
         </div>
 
         <DialogFooter>
           {result ? (
-            <Button onClick={() => onOpenChange(false)}>Done</Button>
+            <Button onClick={() => handleOpenChange(false)}>Done</Button>
           ) : (
             <Button
               disabled={!uploaded || importZip.isPending}

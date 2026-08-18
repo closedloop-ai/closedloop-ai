@@ -11,7 +11,7 @@ import { getMemoryPressure } from "../src/main/database/db-host/db-host-memory-w
 import {
   awaitMemoryPressureClearForAdmission,
   yieldDbHostLoopUnderMemoryPressure,
-} from "../src/main/database/yield-db-host-loop.js";
+} from "../src/main/database/db-host/yield-db-host-loop.js";
 
 const HEAP_HIGH = 8 * 1024 * 1024 * 1024;
 const RSS_HIGH = 10 * 1024 * 1024 * 1024;

@@ -19,11 +19,21 @@ import { importPackRepoComponents } from "../../service";
 import { importPackRepoBodySchema } from "../../validators";
 
 /**
+ * This route walks the repo tree and fetches every component blob before it
+ * responds, so it runs well past the platform default. The client pairs it with
+ * `LONG_RUNNING_API_TIMEOUT_MS` (5 minutes); declaring the same ceiling here is
+ * what makes that deadline meaningful — without it the platform terminates the
+ * function first and the client surfaces a 504 long before its own deadline
+ * fires (PR #4321 review).
+ */
+export const maxDuration = 300;
+
+/**
  * POST /catalog/{id}/import-repo
  *
  * Admin-only. Import components from a GitHub repo the org has App visibility to
  * (canonical Claude Code layout), optionally under a subpath. Returns
- * { created, skipped }.
+ * { created, skipped, invalid }.
  */
 export const POST = withAnyAuth<
   ImportPackZipResponse,

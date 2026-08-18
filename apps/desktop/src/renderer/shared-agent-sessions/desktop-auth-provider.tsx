@@ -1,3 +1,4 @@
+import type { DesktopSignInProvider } from "@repo/api/src/types/desktop-authorize-url";
 import type {
   AuthAdapter,
   AuthSnapshot,
@@ -6,16 +7,17 @@ import { AuthAdapterProvider } from "@repo/app/shared/auth/provider";
 import {
   createContext,
   type ReactNode,
-  useCallback,
   useContext,
   useMemo,
   useRef,
   useSyncExternalStore,
 } from "react";
+import { DESKTOP_AUTH_TOKEN_SENTINEL } from "../../shared/cloud-api-fetch-contract";
 import type {
   DesktopAuthState,
   DesktopBrowserSignInResult,
 } from "../types/desktop-api";
+import { type BridgeStore, createBridgeStore } from "./bridge-store";
 
 const LOADING_STATE: DesktopAuthState = {
   status: "loading",
@@ -39,82 +41,38 @@ function hasDesktopAuthBridge(): boolean {
   return typeof window.desktopApi?.getDesktopAuthState === "function";
 }
 
-type DesktopAuthStore = {
-  subscribe: (onStoreChange: () => void) => () => void;
-  getSnapshot: () => DesktopAuthState;
-};
+type DesktopAuthStore = BridgeStore<DesktopAuthState>;
 
 /**
  * External store that mirrors the main-process auth state into the renderer over
- * IPC, shaped for {@link useSyncExternalStore}: `subscribe` wires the bridge —
- * an initial pull plus a push subscription for every transition — on the first
- * listener and tears it down on the last, and `getSnapshot` returns the latest
- * mirrored snapshot (a stable reference between transitions). Bridge-absent (a
- * partial test stub) settles to a signed-out, loaded snapshot rather than
- * stranding the app-core root in "loading".
+ * IPC (see {@link createBridgeStore} for the shared wiring/teardown contract).
+ * Bridge-absent (a partial test stub) settles to a signed-out, loaded snapshot
+ * rather than stranding the app-core root in "loading" (`initial`).
  */
 function createDesktopAuthStore(): DesktopAuthStore {
-  let snapshot: DesktopAuthState = hasDesktopAuthBridge()
-    ? LOADING_STATE
-    : SIGNED_OUT_STATE;
-  const listeners = new Set<() => void>();
-  let unwire: (() => void) | undefined;
-
-  const setSnapshot = (next: DesktopAuthState) => {
-    snapshot = next;
-    for (const listener of listeners) {
-      listener();
-    }
-  };
-
-  const wire = () => {
-    if (!hasDesktopAuthBridge()) {
-      return;
-    }
-    let cancelled = false;
-    window.desktopApi
-      .getDesktopAuthState()
-      .then((next) => {
-        if (!cancelled) {
-          setSnapshot(next);
-        }
-      })
-      .catch(() => {
-        // Main unreachable → stay in loading; a later push corrects it.
-      });
+  return createBridgeStore<DesktopAuthState>({
+    hasBridge: hasDesktopAuthBridge,
+    pull: () => window.desktopApi.getDesktopAuthState(),
     // Optional-chain the subscription: a harness may stub the pull but not the
     // push channel.
-    const unsubscribe =
-      window.desktopApi.onDesktopAuthStateChanged?.(setSnapshot);
-    unwire = () => {
-      cancelled = true;
-      unsubscribe?.();
-      unwire = undefined;
-    };
-  };
-
-  return {
-    getSnapshot: () => snapshot,
-    subscribe: (onStoreChange) => {
-      if (listeners.size === 0) {
-        wire();
-      }
-      listeners.add(onStoreChange);
-      return () => {
-        listeners.delete(onStoreChange);
-        if (listeners.size === 0) {
-          unwire?.();
-        }
-      };
-    },
-  };
+    subscribe: (onChange) =>
+      window.desktopApi.onDesktopAuthStateChanged?.(onChange),
+    initial: LOADING_STATE,
+    fallback: SIGNED_OUT_STATE,
+  });
 }
 
 export type DesktopAuthContextValue = {
   /** Live main-process auth state (status + identity). */
   state: DesktopAuthState;
   /** Begin interactive system-browser sign-in. */
-  beginSignIn: () => Promise<DesktopBrowserSignInResult>;
+  /**
+   * ISS-5112: `provider` pre-selects the social provider on the web sign-in
+   * detour. Optional — omit it and the web page shows its normal chooser.
+   */
+  beginSignIn: (
+    provider?: DesktopSignInProvider
+  ) => Promise<DesktopBrowserSignInResult>;
   /** Cancel an in-flight sign-in (no-op when none is running). */
   cancelSignIn: () => Promise<void>;
   /** Sign out and clear credentials. */
@@ -134,9 +92,12 @@ const DesktopAuthContext = createContext<DesktopAuthContextValue | null>(null);
  * Settings account panel. Replaces the static signed-out adapter the renderer
  * used before first-party desktop auth existed.
  *
- * `getToken()` is the only path that surfaces an access token to the renderer,
- * for `Authorization: Bearer` attachment; it is fetched on demand from main and
- * never held here.
+ * `getToken()` never surfaces the real access token (PLN-1138 D-G): while a
+ * desktop session exists it resolves the opaque
+ * {@link DESKTOP_AUTH_TOKEN_SENTINEL} — enough for the shared `useApiClient`
+ * to treat the surface as signed in — and the main-process cloud-API fetch
+ * bridge attaches the genuine credential itself. The token has no renderer
+ * IPC channel at all.
  */
 export function DesktopAuthProvider({
   children,
@@ -150,29 +111,24 @@ export function DesktopAuthProvider({
   const store = storeRef.current;
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
 
-  // Stable across renders: getToken always proxies to main regardless of state,
-  // so consumers depending on it in effect deps don't re-run on every auth tick.
-  // Bridge-absent (partial test stub) is fail-safe: honor the nullable
-  // AuthSnapshot.getToken contract with null rather than throwing.
-  const getToken = useCallback(
-    () =>
-      hasDesktopAuthBridge()
-        ? window.desktopApi.getDesktopAccessToken()
-        : Promise.resolve(null),
-    []
-  );
-
   const authAdapter = useMemo<AuthAdapter>(() => {
+    // Sentinel, not the credential (PLN-1138 D-G): non-null while a session
+    // exists so `useApiClient` composes an Authorization header and its
+    // signed-in token-wait settles; the cloud-API fetch bridge discards it and
+    // the main process injects the real token. Null in every other state keeps
+    // signed-out requests unauthenticated.
+    const token =
+      state.status === "authenticated" ? DESKTOP_AUTH_TOKEN_SENTINEL : null;
     const snapshot: AuthSnapshot = {
       isLoaded: state.status !== "loading",
       userId: state.userId,
       orgId: state.organizationId,
-      getToken,
+      getToken: () => Promise.resolve(token),
     };
     // Static per-state snapshot: returning the closed-over object satisfies the
     // referential-stability contract without calling any hooks.
     return { useAuthSnapshot: () => snapshot };
-  }, [state, getToken]);
+  }, [state]);
 
   // The sign-in actions honor the same bridge-absent guard as the state sync and
   // getToken above. In the packaged app the preload always attaches these; when a
@@ -181,9 +137,9 @@ export function DesktopAuthProvider({
   const contextValue = useMemo<DesktopAuthContextValue>(
     () => ({
       state,
-      beginSignIn: () =>
+      beginSignIn: (provider?: DesktopSignInProvider) =>
         hasDesktopAuthBridge()
-          ? window.desktopApi.beginDesktopSignIn()
+          ? window.desktopApi.beginDesktopSignIn(provider)
           : Promise.resolve<DesktopBrowserSignInResult>({
               ok: false,
               reason: "unavailable",

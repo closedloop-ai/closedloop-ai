@@ -6,7 +6,10 @@ import {
   type BoundedFileContentAtRefResult,
   getBoundedFileContentAtRef,
   getMergeBaseSha,
-} from "@repo/github";
+} from "@repo/github/file-content";
+import type { Octokit } from "@repo/github/user-token-auth";
+import type { GitHubAccessError } from "@/lib/github/github-access";
+import { runBranchViewRead } from "@/lib/github/github-branch-view-read-client";
 import type { PrContext } from "@/lib/resolve-pr-context";
 
 // Common binary extensions
@@ -41,8 +44,18 @@ function isBinaryPath(path: string): boolean {
 }
 
 export type GetFileDiffResult =
-  | { data: BranchViewFileDiff; error: null }
-  | { data: null; error: string };
+  | { data: BranchViewFileDiff; error: null; accessDenial?: undefined }
+  | {
+      data: null;
+      error: string;
+      /**
+       * Present when GitHub refused the read. Carries the whole denial, not
+       * just its reason: `retryAfterSeconds` rides on rate-limit denials and
+       * the route turns it into a `Retry-After`, and the reason decides
+       * whether the failure is an authorization one at all (see the route).
+       */
+      accessDenial?: GitHubAccessError;
+    };
 
 export async function findCachedBranchFileChange(
   ctx: PrContext,
@@ -81,13 +94,19 @@ export async function findCachedBranchFileChange(
  * base branch tip instead would surface unrelated changes whenever the base has
  * advanced past the fork. Falls back to the base branch ref if the merge-base
  * cannot be resolved.
+ *
+ * GitHub reads run as the requesting user through the PLN-1525 resolver, with
+ * no installation-credential fallback: a user who cannot reach the repository
+ * on GitHub gets an `accessDenial` for the route to surface, not someone
+ * else's view of the file. See `@/lib/github/github-branch-view-read-client`.
  */
 export async function getFileDiff(
   ctx: PrContext,
+  userId: string,
   path: string,
   previousPath: string | null
 ): Promise<GetFileDiffResult> {
-  const { installationId, owner, repo } = ctx;
+  const { owner, repo } = ctx;
   const cachedFile = await findCachedBranchFileChange(ctx, path, previousPath);
   if (!cachedFile) {
     return { data: null, error: "File is not part of this branch" };
@@ -115,35 +134,59 @@ export async function getFileDiff(
     return { data: null, error: "File diff refs unavailable" };
   }
 
-  // Match GitHub's PR diff, which compares against the fork point rather than
-  // the base branch's current tip.
-  const mergeBaseSha = await getMergeBaseSha(
-    installationId,
-    owner,
-    repo,
-    baseBranch,
-    headRef
-  );
-  const baseRef = mergeBaseSha ?? baseBranch;
+  const readDiffContents = async (octokit: Octokit) => {
+    // Match GitHub's PR diff, which compares against the fork point rather
+    // than the base branch's current tip.
+    const mergeBaseSha = await getMergeBaseSha(
+      octokit,
+      owner,
+      repo,
+      baseBranch,
+      headRef
+    );
+    const baseRef = mergeBaseSha ?? baseBranch;
+    return await Promise.all([
+      getBoundedFileContentAtRef(
+        octokit,
+        owner,
+        repo,
+        basePath,
+        baseRef,
+        MAX_FILE_CONTENT_BYTES
+      ),
+      getBoundedFileContentAtRef(
+        octokit,
+        owner,
+        repo,
+        path,
+        headRef,
+        MAX_FILE_CONTENT_BYTES
+      ),
+    ]);
+  };
 
-  const [oldContent, newContent] = await Promise.all([
-    getBoundedFileContentAtRef(
-      installationId,
-      owner,
-      repo,
-      basePath,
-      baseRef,
-      MAX_FILE_CONTENT_BYTES
-    ),
-    getBoundedFileContentAtRef(
-      installationId,
-      owner,
-      repo,
-      path,
-      headRef,
-      MAX_FILE_CONTENT_BYTES
-    ),
-  ]);
+  // Client resolved once per request and threaded into every read above
+  // (PLN-1525 pool-protection rule 1). The cached file is a changed file of
+  // this branch, so BOTH sides missing is implausible and flagged as a likely
+  // cloaked 404 — GitHub's answer when the user lost access to the repo.
+  const contents = await runBranchViewRead(
+    {
+      organizationId: ctx.externalLink.organizationId,
+      userId,
+      target: { owner, repo },
+    },
+    readDiffContents,
+    ([oldSide, newSide]) =>
+      oldSide.status === "missing" && newSide.status === "missing"
+  );
+  if (!contents.ok) {
+    return {
+      data: null,
+      error: "File diff unavailable",
+      accessDenial: contents.error,
+    };
+  }
+  const [oldContent, newContent] = contents.value;
 
   if (oldContent.status === "too_large" || newContent.status === "too_large") {
     return { data: null, error: "File content exceeds 1 MiB limit" };

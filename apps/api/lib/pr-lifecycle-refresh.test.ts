@@ -9,8 +9,15 @@ import {
   GitHubFetchTrigger,
   GitHubSyncResultReason,
 } from "@repo/api/src/types/github-read-model";
+import {
+  RepositoryDefaultAvailability,
+  RepositoryDefaultCompleteness,
+  RepositoryDefaultSource,
+} from "@repo/api/src/types/repository-default-identity";
+import { VcsProviderKind } from "@repo/api/src/types/vcs-provider-kind";
 import type * as GitHubModule from "@repo/github";
 import { GitHubProviderResultStatus } from "@repo/github";
+import type { Octokit } from "@repo/github/user-token-auth";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mockGetSinglePullRequest } = vi.hoisted(() => ({
@@ -50,6 +57,8 @@ import { refreshPullRequestLifecycle } from "./pr-lifecycle-refresh";
 const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
   tx: ReturnType<typeof vi.fn>;
 };
+/** Marker client threaded through the input (PLN-1525: caller mints it). */
+const mockOctokit = { marker: "installation-octokit" } as unknown as Octokit;
 describe("refreshPullRequestLifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,6 +70,7 @@ describe("refreshPullRequestLifecycle", () => {
         count: vi.fn().mockResolvedValue(1),
       },
       pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(emptyStoredAuthority()),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -74,6 +84,7 @@ describe("refreshPullRequestLifecycle", () => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(emptyStoredAuthority()),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -97,6 +108,26 @@ describe("refreshPullRequestLifecycle", () => {
       additions: 33,
       deletions: 7,
       changedFiles: 4,
+      headRepository: {
+        repository: {
+          provider: VcsProviderKind.GitHub,
+          providerRepositoryId: "5826",
+          fullName: "fork-owner/repo",
+        },
+        evidence: {
+          availability: RepositoryDefaultAvailability.Available,
+          completeness: RepositoryDefaultCompleteness.Complete,
+          defaultBranch: "trunk",
+        },
+        provenance: {
+          source: RepositoryDefaultSource.PullRequestRest,
+          mechanism: GitHubFetchMechanism.Rest,
+          trigger: GitHubFetchTrigger.Backfill,
+          credentialType: GitHubFetchCredentialType.GitHubApp,
+          observationKey: "rest-attempt-1",
+          observedAt: "2026-08-10T21:34:09.312Z",
+        },
+      },
     });
 
     const result = await refreshPullRequestLifecycle(baseInput());
@@ -109,10 +140,15 @@ describe("refreshPullRequestLifecycle", () => {
       pullRequestDetailId: "pr-detail-1",
     });
     expect(mockGetSinglePullRequest).toHaveBeenCalledWith(
-      "install-1",
+      mockOctokit,
       "acme",
       "repo",
-      42
+      42,
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
     );
     expect(mockDb.branchDetail.count).toHaveBeenCalledWith({
       where: expectedGuardedBranchWhere(),
@@ -124,6 +160,16 @@ describe("refreshPullRequestLifecycle", () => {
         ...expectedRestProvenance(GitHubSyncResultReason.Unknown),
       }),
     });
+    expect(mockTx.pullRequestDetail.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          headRepositoryGithubId: "5826",
+          headRepositoryFullName: "fork-owner/repo",
+          headRepositoryDefaultBranchName: "trunk",
+          headRepositoryDefaultBranchObservationKey: "rest-attempt-1",
+        }),
+      })
+    );
     expect(mockTx.artifact.updateMany).toHaveBeenCalledWith({
       where: { id: "branch-artifact-1", organizationId: "org-1" },
       data: { status: GitHubPRState.Closed },
@@ -162,6 +208,7 @@ describe("refreshPullRequestLifecycle", () => {
         count: vi.fn().mockResolvedValue(1),
       },
       pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(null),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -228,6 +275,7 @@ describe("refreshPullRequestLifecycle", () => {
         count: vi.fn().mockResolvedValue(1),
       },
       pullRequestDetail: {
+        findFirst: vi.fn().mockResolvedValue(null),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -380,7 +428,7 @@ describe("refreshPullRequestLifecycle", () => {
 function baseInput() {
   return {
     organizationId: "org-1",
-    installationId: "install-1",
+    octokit: mockOctokit,
     owner: "acme",
     repo: "repo",
     pullNumber: 42,
@@ -432,5 +480,24 @@ function expectedRestProvenance(resultReason: GitHubSyncResultReason) {
     fetchTrigger: GitHubFetchTrigger.SurfaceOpen,
     fetchObservedAt: expect.any(Date),
     fetchResultReason: resultReason,
+  };
+}
+
+function emptyStoredAuthority() {
+  return {
+    headRepositoryGithubId: null,
+    headRepositoryFullName: null,
+    headRepositoryDefaultBranchName: null,
+    headRepositoryDefaultBranchAvailability: null,
+    headRepositoryDefaultBranchCompleteness: null,
+    headRepositoryDefaultBranchReason: null,
+    headRepositoryDefaultBranchSource: null,
+    headRepositoryDefaultBranchMechanism: null,
+    headRepositoryDefaultBranchTrigger: null,
+    headRepositoryDefaultBranchCredentialType: null,
+    headRepositoryDefaultBranchCredentialOwnerId: null,
+    headRepositoryDefaultBranchObservationKey: null,
+    headRepositoryDefaultBranchObservedAt: null,
+    headRepositoryDefaultBranchEventAt: null,
   };
 }

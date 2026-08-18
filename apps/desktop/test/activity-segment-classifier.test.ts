@@ -9,6 +9,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import {
+  COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
+  DATA_REVISION,
+} from "../src/main/collectors/engine/data-revision.js";
+import {
+  ACTIVITY_CLASSIFIER_VERSION,
   ACTIVITY_IDLE_GAP_MS,
   type ActivitySegmentRecord,
   activitySegmentId,
@@ -17,8 +22,10 @@ import {
   segmentIndexForMs,
 } from "../src/main/collectors/parsing/activity-segment-classifier.js";
 import { ACTIVITY_PHASE } from "../src/main/collectors/parsing/activity-taxonomy.js";
+import { BUILTIN_TRANSCRIPT_SOURCES } from "../src/main/collectors/parsing/transcript-sources.js";
 import {
   Harness,
+  type NormalizedMessage,
   type NormalizedSession,
   type NormalizedTokenRecord,
 } from "../src/main/collectors/types.js";
@@ -255,6 +262,41 @@ test("idle gap before a final turn at the session end → positive-width final s
   );
 });
 
+test("AA-01: a late UNCATEGORIZED tool (null adapter category) anchors activity, not trailing idle", () => {
+  // buildEvidenceTimeline drops tools the harness adapter cannot categorize
+  // (TodoWrite / Task, and EVERY tool from an unknown harness), so anchoring idle on
+  // the scored timeline alone would let a late uncategorized tool sit inside the new
+  // trailing idle span and be mis-reported as dead time. AA-01 unions the RAW
+  // session.toolUses timestamps into the anchor set, so the tool's instant counts as
+  // observed activity regardless of whether the adapter recognized the tool name.
+  const session = makeSession({
+    sessionId: "late-uncategorized-tool",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: "2026-01-01T00:25:30.000Z",
+    toolUses: [
+      toolUse("Read", "2026-01-01T00:01:00.000Z"),
+      // TodoWrite carries no structural category → absent from the scored timeline.
+      toolUse("TodoWrite", "2026-01-01T00:25:00.000Z"),
+    ],
+  });
+  const segments = classifyActivitySegments(session, Harness.Claude);
+  assertContiguousComplete(segments, session);
+  const todoMs = ms("2026-01-01T00:25:00.000Z");
+  const idx = segmentIndexForMs(segments, todoMs);
+  assert.notEqual(idx, -1, "the late tool instant is attributed to a segment");
+  assert.notEqual(
+    segments[idx].phase,
+    ACTIVITY_PHASE.Idle,
+    "the uncategorized tool anchors ACTIVE time, not swallowed by trailing idle"
+  );
+  // The dead ~24-minute gap BEFORE the tool is still idle — only the observed
+  // instants (the early Read and the late TodoWrite) are active.
+  assert.ok(
+    segments.some((s) => s.phase === ACTIVITY_PHASE.Idle),
+    "the pre-tool inactivity is still an idle gap"
+  );
+});
+
 test("deriveSessionBoundsMs encloses declared + observed timestamps; null when none parse", () => {
   const session = makeSession({
     sessionId: "bounds",
@@ -339,7 +381,12 @@ test("pure-planning session: no fabricated implement; declared provenance record
   assertContiguousComplete(segments, session);
 });
 
-test("no assumed order: implement before explore stays two distinct windows (FR-10)", () => {
+test("no assumed plan-first order: a session may START in implement (FR-10)", () => {
+  // The engine carries no plan→build→review prior — a debugging-first session can
+  // open directly in `implement`. Under the state-aware model the trailing reads
+  // then INHERIT that implement state (explore is only the LEADING orientation,
+  // before the first strong phase), so the whole session tiles to implement rather
+  // than spawning a fresh trailing `explore`.
   const session = makeSession({
     sessionId: "debug-first",
     startedAt: "2026-01-01T00:00:00.000Z",
@@ -352,11 +399,17 @@ test("no assumed order: implement before explore stays two distinct windows (FR-
     ],
   });
   const segments = classifyActivitySegments(session, Harness.Claude);
+  // Opens in implement (not a forced leading explore); the trailing sustained
+  // reads INHERIT implement — but AA-05 marks the inherited window `carried`
+  // rather than coalescing it, so the phase sequence is implement→implement
+  // (same phase, distinct carried provenance), never a fresh trailing `explore`.
   assert.deepEqual(
     segments.map((s) => s.phase),
-    [ACTIVITY_PHASE.Implement, ACTIVITY_PHASE.Explore],
-    "the engine carries no plan→build→review prior"
+    [ACTIVITY_PHASE.Implement, ACTIVITY_PHASE.Implement],
+    "opens in implement; trailing reads inherit it as a carried window"
   );
+  // The inherited (carried) trailing window claims no first-hand evidence.
+  assert.deepEqual(segments.at(-1)?.evidenceLayers, []);
   assertContiguousComplete(segments, session);
 });
 
@@ -404,6 +457,72 @@ test("ambiguous window (read + mutate tie) lands in explicit `other` below the f
   assertContiguousComplete(segments, session);
 });
 
+test("FEA-4184: a bare-human → declared-plan transition is not absorbed by hysteresis (no retro-relabel)", () => {
+  // wongk's case: a bare human tick (scores `other` — no plan-specific
+  // declaration) followed by ONE declared-plan tick. With dwell = 2 the lone plan
+  // tick used to be a transient, absorbed into the leading `other` run;
+  // appendActiveSegments then rescored the COMBINED {human, DeclaredPlan} counts as
+  // `plan`, relabelling the whole run from the human tick's start. The plan tick is
+  // now a hard boundary, so the human region keeps its non-plan label and `plan`
+  // begins exactly at the declaration.
+  const session = makeSession({
+    sessionId: "bare-human-then-plan",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: "2026-01-01T00:05:00.000Z",
+    // a bare human turn (a plain prompt) BEFORE any plan is declared
+    messages: [
+      { role: "human", timestamp: "2026-01-01T00:01:00.000Z", text: null },
+    ],
+    // then the user actually declares a plan
+    slashCommands: [
+      { name: "create-plan", timestamp: "2026-01-01T00:01:30.000Z" },
+    ],
+  });
+  const segments = classifyActivitySegments(session, Harness.Claude);
+  assertContiguousComplete(segments, session);
+
+  // The first (leading, pre-declaration) segment must NOT be `plan` — the bare
+  // human turn is ambient steering, and the plan declaration must not reach back
+  // and relabel it.
+  assert.notEqual(
+    segments[0].phase,
+    ACTIVITY_PHASE.Plan,
+    "the bare-human region before the declaration is never relabelled plan"
+  );
+  // A `plan` segment DOES appear, and it begins at/after the declaration instant
+  // — never before it.
+  const planSeg = segments.find((s) => s.phase === ACTIVITY_PHASE.Plan);
+  assert.ok(planSeg, "the declared plan still produces a plan segment");
+  assert.ok(
+    planSeg.startMs >= ms("2026-01-01T00:01:30.000Z"),
+    "plan begins at the declaration, not at the earlier bare-human turn"
+  );
+});
+
+test("FEA-4184: a bare human turn with NO plan declaration never yields a plan segment", () => {
+  // The default false-positive shape the bug produced: session-start human turns
+  // with no plan-specific declaration must tile to explore/other, never plan.
+  const session = makeSession({
+    sessionId: "bare-human-only",
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: "2026-01-01T00:05:00.000Z",
+    messages: [
+      { role: "human", timestamp: "2026-01-01T00:01:00.000Z", text: null },
+      { role: "human", timestamp: "2026-01-01T00:02:00.000Z", text: null },
+    ],
+    // a GENERIC (non-plan) declaration must not gate plan either
+    toolUses: [
+      toolUse("mcp__closedloop__get-document", "2026-01-01T00:02:30.000Z"),
+    ],
+  });
+  const segments = classifyActivitySegments(session, Harness.Claude);
+  assert.ok(
+    segments.every((s) => s.phase !== ACTIVITY_PHASE.Plan),
+    "no plan segment without a plan-specific declaration"
+  );
+  assertContiguousComplete(segments, session);
+});
+
 test("a compaction marker does not split or relabel a window", () => {
   const base = {
     sessionId: "compaction",
@@ -434,5 +553,130 @@ test("a compaction marker does not split or relabel a window", () => {
   assert.deepEqual(
     withoutCompaction.map((s) => s.phase),
     [ACTIVITY_PHASE.Implement]
+  );
+});
+
+// ── AA-01: idle anchored on the harness-blind union of ALL activity instants ──
+
+function humanMsg(timestamp: string): NormalizedMessage {
+  return { role: "human", timestamp, text: "…" };
+}
+
+test("AA-01: a zero-assistant-turn session detects idle from human-message instants", () => {
+  // edac412f shape: no tokenSeries at all, only two human turns ~22 min apart.
+  // Before AA-01 the idle-gap loop (sourced from tokenSeries only) never ran and
+  // the whole span tiled active; now the human-message instants anchor the gap.
+  // Uses NO tool vocabulary, so it proves idle detection with zero harness signal.
+  const session = makeSession({
+    sessionId: "human-only-idle",
+    startedAt: "2026-06-26T14:11:57.859Z",
+    endedAt: "2026-06-26T14:34:00.382Z",
+    tokenSeries: [],
+    userMessages: 2,
+    messages: [
+      humanMsg("2026-06-26T14:11:57.859Z"),
+      humanMsg("2026-06-26T14:34:00.382Z"),
+    ],
+  });
+  const segments = classifyActivitySegments(session, Harness.Claude);
+  const idle = segments.filter((s) => s.phase === ACTIVITY_PHASE.Idle);
+  assert.equal(
+    idle.length,
+    1,
+    "the 22-minute dead gap is now a single idle span"
+  );
+  assert.ok(
+    idle[0].endMs - idle[0].startMs >= ACTIVITY_IDLE_GAP_MS,
+    "idle span clears the gap threshold"
+  );
+  assertContiguousComplete(segments, session);
+});
+
+for (const harness of [Harness.Claude, Harness.Codex]) {
+  test(`AA-01: dead time AFTER the last activity instant tiles as trailing idle (${harness})`, () => {
+    // f7441d99 shape: one turn, then the declared session end driven far past it by
+    // trailing machine records. The tail must be idle, not swallowed by an active
+    // segment. Runs for a non-Claude harness too — the union is harness-blind.
+    const session = makeSession({
+      sessionId: `tail-idle-${harness}`,
+      startedAt: "2026-06-17T00:53:00.000Z",
+      endedAt: "2026-06-17T01:53:00.000Z", // 59 min past the only turn
+      tokenSeries: [turn("2026-06-17T00:54:00.000Z")],
+    });
+    const segments = classifyActivitySegments(session, harness);
+    assert.equal(
+      segments.at(-1)?.phase,
+      ACTIVITY_PHASE.Idle,
+      "the final segment is idle, not a multi-minute active tail"
+    );
+    assertContiguousComplete(segments, session);
+  });
+}
+
+test("AA-01: dead time BEFORE the first activity instant tiles as leading idle", () => {
+  // Declared start sits an hour before any observed activity.
+  const session = makeSession({
+    sessionId: "head-idle",
+    startedAt: "2026-06-17T00:00:00.000Z",
+    endedAt: "2026-06-17T01:00:30.000Z",
+    tokenSeries: [turn("2026-06-17T01:00:00.000Z")], // first activity 60 min in
+  });
+  const segments = classifyActivitySegments(session, Harness.Claude);
+  assert.equal(
+    segments[0].phase,
+    ACTIVITY_PHASE.Idle,
+    "the leading hour of dead time is idle, not active"
+  );
+  assertContiguousComplete(segments, session);
+});
+
+// ── FEA-4184 (wongk): the classifier-version backfill enumerates only
+// BUILTIN_TRANSCRIPT_SOURCES (Claude/Codex/Cursor), so Copilot/OpenCode re-tile
+// through the DATA_REVISION-driven collector rebuild instead. These pin both
+// halves of that routing so a future classifier bump can't silently strand
+// Copilot/OpenCode on a stale version.
+
+test("FEA-4184: the classifier re-tiles Copilot/OpenCode sessions at the current version", () => {
+  // The collector rebuild re-imports a session and re-runs classifyActivitySegments
+  // for EVERY harness — including the two the segment backfill can't reach. Prove
+  // the classifier produces current-version segments for both, so a DATA_REVISION
+  // rebuild lifts their stale v5 rows to v6.
+  for (const harness of [Harness.Copilot, Harness.OpenCode]) {
+    const session = makeSession({
+      sessionId: `retile-${harness}`,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: "2026-01-01T00:05:00.000Z",
+      toolUses: [
+        toolUse("patch", "2026-01-01T00:01:00.000Z"),
+        toolUse("patch", "2026-01-01T00:02:00.000Z"),
+      ],
+    });
+    const segments = classifyActivitySegments(session, harness);
+    assertContiguousComplete(segments, session);
+    assert.ok(
+      segments.every((s) => s.version === ACTIVITY_CLASSIFIER_VERSION),
+      `${harness} segments carry the current classifier version`
+    );
+  }
+});
+
+test("FEA-4184: Copilot/OpenCode are absent from the segment-backfill source list (the gap the DATA_REVISION bump covers)", () => {
+  const backfillHarnesses = new Set(
+    BUILTIN_TRANSCRIPT_SOURCES.map((s) => s.harness)
+  );
+  assert.ok(
+    !backfillHarnesses.has(Harness.Copilot),
+    "Copilot is not a BUILTIN_TRANSCRIPT_SOURCE — it can't be re-tiled by the classifier backfill"
+  );
+  assert.ok(
+    !backfillHarnesses.has(Harness.OpenCode),
+    "OpenCode is not a BUILTIN_TRANSCRIPT_SOURCE — it can't be re-tiled by the classifier backfill"
+  );
+  // …so the classifier bump MUST be paired with a DATA_REVISION bump that drives
+  // the collector rebuild (which reprocesses every harness). Guard that the bump
+  // advanced past the last rebuild-worthy revision, so the rebuild actually runs.
+  assert.ok(
+    DATA_REVISION > COMPONENT_INVOCATION_STORED_REBUILD_REVISION,
+    "DATA_REVISION advanced so the collector rebuild reprocesses Copilot/OpenCode to the new classifier version"
   );
 });

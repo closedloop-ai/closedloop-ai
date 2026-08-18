@@ -13,9 +13,13 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+// Generic Artifact tag mutations refresh Branch list/detail data because those
+// shared records now project the same tag associations.
+import { branchRowQueryKeys } from "../../branches/hooks/branch-query-keys";
 import { documentKeys } from "../../documents/hooks/document-keys";
 import { loopKeys } from "../../loops/hooks/loop-keys";
 import { projectKeys } from "../../projects/hooks/project-keys";
+import { projectTreeKeys } from "../../projects/hooks/use-project-tree";
 import { useApiClient } from "../../shared/api/use-api-client";
 
 export const tagKeys = {
@@ -133,4 +137,12 @@ function invalidateEntityQueries(
   queryClient.invalidateQueries({ queryKey: projectKeys.all });
   queryClient.invalidateQueries({ queryKey: documentKeys.all });
   queryClient.invalidateQueries({ queryKey: loopKeys.all });
+  // FEA-2940: the project page's artifact grid renders its rows (and their tag
+  // chips) from the project-tree query, not documentKeys.list — so a tag
+  // apply/remove/create must refresh the tree too, or the change only appears
+  // after a full page reload. Matches invalidateArtifactCaches in use-documents.
+  queryClient.invalidateQueries({ queryKey: projectTreeKeys.all });
+  queryClient.invalidateQueries({ queryKey: branchRowQueryKeys.lists });
+  queryClient.invalidateQueries({ queryKey: branchRowQueryKeys.details });
+  queryClient.invalidateQueries({ queryKey: branchRowQueryKeys.pageData });
 }

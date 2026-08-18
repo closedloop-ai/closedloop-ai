@@ -7,15 +7,17 @@
  * watcher would double-count turns). Historical import remains idempotent
  * against any hook-written events.
  */
-import { readdirSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
 import type { FileHarnessCollector } from "../types.js";
 import {
   getProjectsDir,
   listAllTranscriptFiles,
   sessionIdFromTranscriptPath,
+  walkSubagentTranscripts,
 } from "./claude-home.js";
 import { parseSessionFile } from "./claude-parser.js";
+import { subagentMetaPathFor } from "./claude-subagent-meta.js";
 
 const PATH_SEGMENT_SEPARATOR_RE = /[\\/]+/;
 
@@ -29,6 +31,17 @@ const PATH_SEGMENT_SEPARATOR_RE = /[\\/]+/;
 export type CreateClaudeCollectorOptions = {
   listSources?: () => string[];
   watchRoots?: () => string[];
+  /**
+   * Where the parser reports what it could not decode (unknown record types and
+   * undecoded attributes), once per parse.
+   *
+   * DESKTOP-ONLY on purpose. The drift report is an operator/monitoring signal
+   * for the machine doing the importing; the cloud renderer parses one archived
+   * transcript for display and has nowhere to put it — and `packages/app` bans
+   * logging outright, since it bundles to the browser. Omitted, the parser's
+   * reporters short-circuit and cost nothing.
+   */
+  log?: (message: string) => void;
 };
 
 export function createClaudeCollector(
@@ -46,7 +59,7 @@ export function createClaudeCollector(
     ],
     listSources,
     parse: async (filePath: string) => {
-      const session = await parseSessionFile(filePath);
+      const session = await parseSessionFile(filePath, options.log);
       return session ? [session] : [];
     },
     /**
@@ -67,29 +80,34 @@ function defaultClaudeWatchRoots(): string[] {
 /**
  * FEA-1459 Fix 11: Compute the max mtimeMs across all subagent files for a
  * given main transcript path. Returns null when no subagent dir exists.
+ *
+ * FEA-3420: walks the subagents/ tree recursively so a change to a nested
+ * workflow agent (subagents/workflows/<id>/agent-*.jsonl) also invalidates the
+ * catchup cache and re-imports the parent — the old direct-children-only scan
+ * left nested-workflow edits invisible to catchup.
+ *
+ * ISS-4592: each sidecar's sibling `agent-<hex>.meta.json` counts too. That
+ * file became a load-bearing input to the delegation-kickoff join
+ * (`readSubagentMeta`), so a meta-only write after the transcript's last
+ * change would otherwise leave the parent session's enrichment stale until an
+ * unrelated edit or a DATA_REVISION bump forced a re-import.
  */
 function maxSubagentMtime(mainTranscriptPath: string): number | null {
   const sessionId = path.basename(mainTranscriptPath, ".jsonl");
   const sessionDir = path.dirname(mainTranscriptPath);
   const subagentsDir = path.join(sessionDir, sessionId, "subagents");
   let maxMtime: number | null = null;
-  try {
-    const entries = readdirSync(subagentsDir);
-    for (const entry of entries) {
-      if (!(entry.startsWith("agent-") && entry.endsWith(".jsonl"))) {
-        continue;
-      }
+  for (const { filePath } of walkSubagentTranscripts(subagentsDir)) {
+    for (const candidate of [filePath, subagentMetaPathFor(filePath)]) {
       try {
-        const st = statSync(path.join(subagentsDir, entry));
+        const st = statSync(candidate);
         if (maxMtime === null || st.mtimeMs > maxMtime) {
           maxMtime = st.mtimeMs;
         }
       } catch {
-        // skip unreadable files
+        // skip unreadable / absent files (the meta sibling is optional)
       }
     }
-  } catch {
-    // no subagents dir — normal
   }
   return maxMtime;
 }

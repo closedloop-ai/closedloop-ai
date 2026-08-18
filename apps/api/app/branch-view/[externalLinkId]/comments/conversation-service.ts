@@ -137,7 +137,7 @@ async function createBranchViewConversationComment(input: {
   let githubComment: GitHubPullRequestIssueComment;
   try {
     githubComment = await createPullRequestIssueCommentWithUserToken(
-      identityResult.value.token,
+      identityResult.value.octokit,
       mutationContext.owner,
       mutationContext.repo,
       mutationContext.pullNumber,
@@ -268,7 +268,7 @@ async function editBranchViewConversationComment(input: {
   let githubComment: GitHubPullRequestIssueComment;
   try {
     githubComment = await updatePullRequestIssueCommentWithUserToken(
-      identityResult.value.token,
+      identityResult.value.octokit,
       mutationContext.owner,
       mutationContext.repo,
       numericCommentId,
@@ -398,7 +398,7 @@ async function deleteBranchViewConversationComment(input: {
 
   try {
     await deletePullRequestIssueCommentWithUserToken(
-      identityResult.value.token,
+      identityResult.value.octokit,
       mutationContext.owner,
       mutationContext.repo,
       numericCommentId
@@ -633,6 +633,9 @@ function resolveGitHubAuthorForIssueComment(
           login: githubComment.user.login,
           avatar_url: githubComment.user.avatar_url,
           html_url: `https://github.com/${githubComment.user.login}`,
+          ...(githubComment.user.actorType
+            ? { actorType: githubComment.user.actorType }
+            : {}),
         }
       : null,
     source: {

@@ -1,24 +1,56 @@
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  createReadStream,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import electron, {
   app,
   BrowserWindow,
+  nativeImage,
   protocol,
   shell,
   type WebContents,
 } from "electron";
 import { CONTENT_SECURITY_POLICY_HEADER } from "../shared/content-security-policy.js";
-import { isAllowedExternalUrl } from "./external-url-allowlist.js";
-import { gatewayLog } from "./gateway-logger.js";
-import { resolveDevRendererUrl } from "./renderer-dev-url.js";
+import { RendererReadyPhase } from "../shared/renderer-ready-phase.js";
+import {
+  DEFAULT_WINDOW_HEIGHT,
+  DEFAULT_WINDOW_WIDTH,
+} from "../shared/window-defaults.js";
 import {
   evaluateFrameRecovery,
   evaluateRenderProcessGone,
   isFrameDisposed,
+  isTrustedRendererSender,
   sendToRendererWindow,
-} from "./renderer-ipc.js";
+} from "./ipc/renderer-ipc.js";
+import {
+  InitialWindowRevealGate,
+  WindowRevealReason,
+  WindowShowIntent,
+} from "./lifecycle/initial-window-reveal-gate.js";
+import {
+  isWindowRevealSuppressed,
+  windowRevealSuppressedWebPreferences,
+} from "./lifecycle/window-reveal-suppression.js";
+import { gatewayLog } from "./logging/gateway-logger.js";
+import {
+  resolveDevRendererUrl,
+  resolveTranscriptAllowedOrigin,
+} from "./renderer-dev-url.js";
 import { loadRendererContent } from "./renderer-load.js";
+import { resolveResourcesDir } from "./resources-dir.js";
+import { isAllowedRendererExternalUrl } from "./settings/external-url-allowlist.js";
+import {
+  resolveCachedTranscriptFile,
+  resolveTranscriptCacheDir,
+  TRANSCRIPT_APP_PATH_PREFIX,
+} from "./transcript/transcript-read-cache.js";
 
 const { powerMonitor } = electron;
 
@@ -38,6 +70,20 @@ const TRAFFIC_LIGHT_POSITION = { x: 19, y: 17 };
 // FEA-2648: window title in golden launch mode. Re-asserted on did-finish-load
 // because the renderer HTML `<title>` would otherwise override the option.
 const GOLDEN_WINDOW_TITLE = "Closedloop — GOLDEN";
+
+// The native window background painted before the renderer document paints. It
+// must match the splash palette in `renderer/design-system/index.html`, which
+// carries the design-system LIGHT `--background` token value (oklch(0.989 0 0))
+// because the mounted app resolves to light by default (`defaultTheme="light"`
+// in `renderer/main.tsx`). The previous hardcoded dark `#0f1723` here and in the
+// splash produced a dark frame in front of a light app on every default boot.
+const INITIAL_WINDOW_BACKGROUND_COLOR = "#fbfbfb";
+
+// FEA-4001: the default size for a FRESH window (no persisted bounds) lives in
+// the electron-free leaf `../shared/window-defaults.js` (ISS-5068) so tests and
+// E2E specs that measure the app at its launch width can import the real value
+// instead of re-declaring 1380 locally. This module still owns where they are
+// APPLIED, the `BrowserWindow` call below.
 
 let appProtocolRegistered = false;
 
@@ -74,10 +120,31 @@ function registerAppProtocol(): void {
   appProtocolRegistered = true;
 }
 
+/**
+ * CORS headers for an app:// response, using the single canonical loopback-origin
+ * validator {@link resolveTranscriptAllowedOrigin}. Packaged builds serve the
+ * renderer from app://renderer (same-origin) and get `{}` — no ACAO is emitted.
+ * Only the unpackaged Vite dev renderer fetches app:// assets cross-origin, and
+ * it always presents a bare loopback http origin (see {@link resolveDevRendererUrl}).
+ * Reflect exactly that origin so the dev renderer can fetch assets; never a
+ * wildcard, and never a non-loopback or credentialed origin.
+ */
+function corsHeadersForDevOrigin(request: Request): Record<string, string> {
+  const allowedOrigin = resolveTranscriptAllowedOrigin(
+    request.headers.get("Origin")
+  );
+  if (!allowedOrigin) {
+    return {};
+  }
+  return { "Access-Control-Allow-Origin": allowedOrigin, Vary: "Origin" };
+}
+
 function serveAppProtocolAsset(request: Request): Response {
   if (request.method !== "GET") {
     return new Response("Method not allowed", { status: 405 });
   }
+
+  const corsHeaders = corsHeadersForDevOrigin(request);
 
   let url: URL;
   try {
@@ -99,6 +166,16 @@ function serveAppProtocolAsset(request: Request): Response {
 
   if (decodedPathname.includes("\0") || decodedPathname.includes("\\")) {
     return new Response("Not found", { status: 404 });
+  }
+
+  // Cached cloud transcripts (FEA-3324 Option B2) live under userData (outside
+  // RENDERER_DIR) and stream rather than buffer, so they take a dedicated path
+  // before the bundled-asset resolution below.
+  if (decodedPathname.startsWith(TRANSCRIPT_APP_PATH_PREFIX)) {
+    // Thread the fetch's `Origin` so the streamed response can echo an ACAO
+    // header for the loopback dev origin (the `app://` scheme is corsEnabled;
+    // see startup.ts). Same-origin (packaged) fetches carry no Origin header.
+    return serveTranscriptAsset(decodedPathname, request.headers.get("Origin"));
   }
 
   const assetRoot = resolveAppProtocolRoot(decodedPathname);
@@ -139,7 +216,10 @@ function serveAppProtocolAsset(request: Request): Response {
   }
 
   const data = readFileSync(realFile);
-  const headers: Record<string, string> = { "Content-Type": mimeType(ext) };
+  const headers: Record<string, string> = {
+    "Content-Type": mimeType(ext),
+    ...corsHeaders,
+  };
   // Deliver the strict CSP on the renderer document itself. The session-wide
   // onHeadersReceived hook (content-security-policy.ts) sets the same header,
   // but attaching it to the protocol.handle Response guarantees enforcement
@@ -161,19 +241,110 @@ function resolveAppProtocolRoot(pathname: string): string | null {
   return null;
 }
 
+/**
+ * Serve a prepared cloud transcript (FEA-3324 Option B2) from the userData
+ * cache, streamed via the `app://` scheme so the (multi-MB) bytes reach the
+ * renderer over Chromium's network stack — not the IPC bridge — and under the
+ * unchanged `connect-src 'self' app:`. The main process has already authorized
+ * and downloaded the file (`transcript-read-ipc.ts`); this only serves bytes
+ * already on disk. Path validation + the traversal/realpath guard live in
+ * {@link resolveCachedTranscriptFile}.
+ */
+function serveTranscriptAsset(
+  pathname: string,
+  requestOrigin: string | null
+): Response {
+  // In dev the renderer fetches this from the loopback Vite origin, which is
+  // cross-origin to `app://`; the `corsEnabled` scheme (startup.ts) requires the
+  // response — SUCCESS AND ERROR alike — to echo that origin, otherwise the
+  // renderer's `fetch()` rejects with a generic CORS TypeError instead of seeing
+  // the clean status. Only a bare loopback HTTP origin is granted (never `*`,
+  // never a remote origin); packaged same-origin fetches send no Origin and get
+  // no ACAO, which is correct.
+  const allowedOrigin = resolveTranscriptAllowedOrigin(requestOrigin);
+  const corsHeaders: Record<string, string> = allowedOrigin
+    ? {
+        "Access-Control-Allow-Origin": allowedOrigin,
+        // The origin varies per dev port, so mark the response as
+        // origin-dependent for any intermediary/HTTP cache correctness.
+        Vary: "Origin",
+      }
+    : {};
+
+  const resolved = resolveCachedTranscriptFile(
+    resolveTranscriptCacheDir(app.getPath("userData")),
+    pathname
+  );
+  if (!resolved) {
+    return new Response("Not found", { status: 404, headers: corsHeaders });
+  }
+  const body = Readable.toWeb(
+    createReadStream(resolved.filePath)
+  ) as unknown as ReadableStream<Uint8Array>;
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Content-Length": String(resolved.size),
+      // Content-addressed immutable bytes, but the URL is minted per read and the
+      // cache evicts, so don't let the renderer HTTP-cache pin them.
+      "Cache-Control": "no-store",
+      ...corsHeaders,
+    },
+  });
+}
+
 export type DesktopWindowOptions = {
   /** FEA-2648: mark the window as golden launch mode. */
   golden?: boolean;
+  /**
+   * ISS-4898 (wongk + codex review): the web-app origin this desktop is
+   * CONFIGURED against, read fresh on every open so a profile switch takes
+   * effect without a relaunch. Renderer-opened links on this exact origin are
+   * admitted alongside the fixed production host set — without it, every
+   * session-detail linked-artifact pill on a stage/preview/localhost profile
+   * rendered live and was silently denied. Omitted (or returning null) leaves
+   * only the fixed allowlist, which is the correct fail-closed posture.
+   */
+  resolveWebAppOrigin?: () => string | null;
+  /**
+   * ISS-5346: bounded wait for the renderer to mount, resolving to the reason
+   * the window is being revealed. Wired in production to
+   * `RendererReadinessGates.waitForInitialWindowRevealReadiness()`, whose own
+   * fail-open guarantees this settles.
+   *
+   * Omitted (bare constructions in harnesses/tests) keeps the pre-ISS-5346
+   * behavior: reveal as soon as the renderer reports nonblank shell content.
+   */
+  waitForInitialRevealReadiness?: () => Promise<WindowRevealReason>;
+  /**
+   * ISS-5346: report the `Mounted` phase of `desktop:renderer-ready`. Wired in
+   * production to `RendererReadinessGates.notifyRendererMounted()`, which is
+   * what releases {@link waitForInitialRevealReadiness}. The two are passed
+   * separately because the gates object is main-process application state that
+   * `DesktopWindow` deliberately does not own.
+   */
+  onRendererMounted?: () => void;
 };
 
 export class DesktopWindow {
   private readonly golden: boolean;
+  /**
+   * ISS-5987: this launch never puts its window on screen. Resolved once, at
+   * construction, from the launch arguments — see
+   * {@link isWindowRevealSuppressed}.
+   */
+  private readonly revealSuppressed: boolean;
+  private readonly resolveWebAppOrigin: () => string | null;
   private browserWindow: BrowserWindow | null = null;
   private disposing = false;
   private quitting = false;
   private allowedRendererUrl: string | null = null;
   private initiallyShown = false;
   private readonly initialShowResolvers = new Set<() => void>();
+  /** ISS-5346: sequences the one-shot reveal behind the renderer mount. */
+  private readonly revealGate: InitialWindowRevealGate;
+  private readonly onRendererMounted?: () => void;
   private crashReloadTimestamps: number[] = [];
   private recovering = false;
   private resumeHandler: (() => void) | null = null;
@@ -183,6 +354,23 @@ export class DesktopWindow {
 
   constructor(options?: DesktopWindowOptions) {
     this.golden = options?.golden ?? false;
+    this.revealSuppressed = isWindowRevealSuppressed(process.argv, {
+      isPackaged: app.isPackaged,
+    });
+    this.resolveWebAppOrigin = options?.resolveWebAppOrigin ?? (() => null);
+    this.onRendererMounted = options?.onRendererMounted;
+    const waitForInitialRevealReadiness =
+      options?.waitForInitialRevealReadiness ??
+      (() => Promise.resolve(WindowRevealReason.RendererReady));
+    this.revealGate = new InitialWindowRevealGate({
+      waitForReadiness: waitForInitialRevealReadiness,
+      reveal: (reason) => this.showInitialWindow(reason),
+      onReadinessError: (message) =>
+        gatewayLog.warn(
+          "startup",
+          `Initial window readiness wait failed, revealing anyway: ${message}`
+        ),
+    });
   }
 
   init(): void {
@@ -192,10 +380,10 @@ export class DesktopWindow {
 
     this.allowedRendererUrl = null;
     this.browserWindow = new BrowserWindow({
-      width: 1280,
-      height: 800,
+      width: DEFAULT_WINDOW_WIDTH,
+      height: DEFAULT_WINDOW_HEIGHT,
       show: false,
-      backgroundColor: "#0f1723",
+      backgroundColor: INITIAL_WINDOW_BACKGROUND_COLOR,
       ...(this.golden ? { title: GOLDEN_WINDOW_TITLE } : {}),
       // macOS: drop the native title bar/title text so the renderer fills to the
       // top of the window, but keep the stoplight buttons — the renderer nests
@@ -207,12 +395,20 @@ export class DesktopWindow {
             titleBarStyle: "hidden" as const,
             trafficLightPosition: TRAFFIC_LIGHT_POSITION,
           }
-        : {}),
+        : {
+            icon: nativeImage.createFromPath(
+              path.join(resolveResourcesDir(), "icon-1024.png")
+            ),
+          }),
       webPreferences: {
         contextIsolation: true,
         sandbox: false,
         preload: this.resolvePreloadPath(),
         additionalArguments: ["--closedloop-agent-dashboard-design-system"],
+        // ISS-6112: an off-screen e2e launch keeps its renderer unthrottled and
+        // reporting `visible`. Empty for every other launch, so a real user's
+        // window still throttles when they background it.
+        ...windowRevealSuppressedWebPreferences(this.revealSuppressed),
       },
     });
     this.browserWindow.on("close", (event) => {
@@ -263,13 +459,26 @@ export class DesktopWindow {
     });
   }
 
+  /** The configured web-app origin, or null when it cannot be resolved. */
+  private readWebAppOrigin(): string | null {
+    try {
+      return this.resolveWebAppOrigin();
+    } catch {
+      return null;
+    }
+  }
+
   private installNavigationGuards(): void {
     if (!this.browserWindow) {
       return;
     }
 
     this.browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-      if (isAllowedExternalUrl(url)) {
+      // ISS-4898: the fixed production host set PLUS the exact origin this
+      // desktop is configured against, resolved per open so a profile switch
+      // needs no relaunch. A throwing resolver must never wedge a link, and
+      // must never widen the allowlist — it degrades to the fixed set.
+      if (isAllowedRendererExternalUrl(url, this.readWebAppOrigin())) {
         void shell.openExternal(url);
       }
       return { action: "deny" };
@@ -381,6 +590,15 @@ export class DesktopWindow {
    * FEA-2648: keep the golden-mode window title asserted. The `title`
    * BrowserWindow option is clobbered once the renderer document's
    * `<title>` loads, so re-set it on every finished load.
+   *
+   * ISS-5574 (codex review on #4661): `did-finish-load` alone was not enough
+   * once the renderer gained a reason to retitle itself AFTER load. Electron
+   * mirrors every `document.title` write onto the native window title via
+   * `page-title-updated`, so a renderer-side title (the Sessions/Branches Labs
+   * toggle, or anything added later) would silently overwrite the GOLDEN marker
+   * a walkthrough identifies the window by. Suppressing the default here keeps
+   * the marker authoritative for the life of a golden window; non-golden windows
+   * are untouched and still take their title from the page.
    */
   private installGoldenTitle(): void {
     if (!(this.golden && this.browserWindow)) {
@@ -388,6 +606,10 @@ export class DesktopWindow {
     }
 
     this.browserWindow.webContents.on("did-finish-load", () => {
+      this.browserWindow?.setTitle(GOLDEN_WINDOW_TITLE);
+    });
+    this.browserWindow.on("page-title-updated", (event) => {
+      event.preventDefault();
       this.browserWindow?.setTitle(GOLDEN_WINDOW_TITLE);
     });
   }
@@ -470,7 +692,18 @@ export class DesktopWindow {
     return sendToRendererWindow(this.browserWindow, channel, ...args);
   }
 
-  show(): void {
+  /**
+   * Show and focus the window.
+   *
+   * ISS-5346: the INITIAL reveal belongs to the gate, and this is the path that
+   * used to steal it — Electron emits `activate` on the first macOS launch,
+   * which `startup.ts` routes through `handleActivate()` to here. The `intent`
+   * is what separates that cold-launch event from a real user-initiated open;
+   * see {@link WindowShowIntent}. It defaults to `UserRequested` because every
+   * caller but `handleActivate` is an unambiguous user action, and because a
+   * method named `show()` defaulting to "don't show" would be a trap.
+   */
+  show(intent: WindowShowIntent = WindowShowIntent.UserRequested): void {
     // A destroyed-but-not-null BrowserWindow makes .show()/.focus() throw
     // "Object has been destroyed". Async callers (e.g. a notification click
     // that fires long after teardown) can hit exactly that state, so guard
@@ -478,26 +711,64 @@ export class DesktopWindow {
     if (!this.browserWindow || this.browserWindow.isDestroyed()) {
       return;
     }
-    this.browserWindow.show();
-    this.browserWindow.focus();
+    this.revealGate.requestShow(intent, () => {
+      this.presentWindow({ focus: true });
+    });
   }
 
   /**
-   * Shows the hidden BrowserWindow only after the trusted renderer has
-   * nonblank shell content and has notified main. Electron's ready-to-show can
-   * fire before useful content exists, which makes fast launches look white.
+   * The ONE place the OS window is actually put on screen.
+   *
+   * ISS-5987: a suppressed launch stops here and nowhere earlier, so everything
+   * upstream — the reveal gate, its reason logging, the `whenInitiallyShown`
+   * waiters, and every caller that asks for a show — behaves exactly as it does
+   * in production. Only the window stays off screen. Routing both show paths
+   * through this method is what keeps a later caller (a notification click, a
+   * macOS `activate`) from reintroducing a window mid-run.
    */
-  handleRendererReady(sender: WebContents): void {
+  private presentWindow({ focus }: { focus: boolean }): void {
+    if (this.revealSuppressed) {
+      return;
+    }
+    this.browserWindow?.show();
+    if (focus) {
+      this.browserWindow?.focus();
+    }
+  }
+
+  /**
+   * Handles a renderer readiness milestone from the trusted renderer.
+   *
+   * ISS-5346: this no longer reveals the window itself, and the PHASE is what
+   * decides. `renderer-ready-signal.ts` sends `Shell` BEFORE the React entry
+   * mounts, so revealing on it exposed a shell that was mounted but not live;
+   * `Shell` now only ARMS the (bounded) reveal gate. `main.tsx` sends `Mounted`
+   * after React commits its first render, which is what actually releases the
+   * reveal.
+   *
+   * Deliberately non-blocking: the `desktop:renderer-ready` IPC handler goes on
+   * to send `desktop:db:ready`/`desktop:db:changed`, and awaiting anything here
+   * would stall that ack behind the very renderer it is acking.
+   */
+  handleRendererReady(sender: WebContents, phase: RendererReadyPhase): void {
     if (!this.isTrustedSender(sender)) {
       return;
     }
 
-    this.showInitialWindow("renderer-ready");
+    if (phase === RendererReadyPhase.Mounted) {
+      this.onRendererMounted?.();
+    }
+    this.revealGate.requestReveal();
   }
 
-  /** True when an IPC event came from this app's current renderer window. */
+  /**
+   * True when an IPC event came from this app's current renderer window. See
+   * {@link isTrustedRendererSender} for the destroyed-window state it fails
+   * closed on — the bare `sender === this.browserWindow?.webContents` this
+   * replaces threw out of every IPC handler gated on it during teardown.
+   */
   isTrustedSender(sender: WebContents): boolean {
-    return sender === this.browserWindow?.webContents;
+    return isTrustedRendererSender(this.browserWindow, sender);
   }
 
   /** Resolves once the initial renderer window has been shown at least once. */
@@ -534,17 +805,20 @@ export class DesktopWindow {
     this.browserWindow = null;
     this.allowedRendererUrl = null;
     this.initiallyShown = false;
+    // ISS-5346: re-arm the one-shot reveal so a rebuilt window can be revealed
+    // again, matching the `initiallyShown` reset above.
+    this.revealGate.reset();
     this.disposing = false;
   }
 
-  private showInitialWindow(reason: string): void {
+  private showInitialWindow(reason: WindowRevealReason): void {
     if (this.initiallyShown) {
       return;
     }
 
     this.initiallyShown = true;
     gatewayLog.info("startup", `Desktop window visible reason=${reason}`);
-    this.browserWindow?.show();
+    this.presentWindow({ focus: false });
     for (const resolve of this.initialShowResolvers) {
       resolve();
     }

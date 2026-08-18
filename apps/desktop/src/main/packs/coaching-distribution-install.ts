@@ -22,10 +22,23 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DistributionDto } from "@repo/api/src/types/distribution";
 import type { CoachingPackInfo } from "../../shared/coaching-pack-contract.js";
-import { gatewayLog } from "../gateway-logger.js";
+import { gatewayLog } from "../logging/gateway-logger.js";
+import { requireHttps } from "../util/require-https.js";
 import type { CoachingInstallOutcome } from "./required-plugin-installer.js";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Ceiling on the coaching-pack asset body we will buffer into memory before
+ * handing the bytes to adm-zip. `assetDownloadUrl` is a presigned URL an
+ * attacker can influence (a compromised cloud response or a downgraded asset
+ * host), and this download auto-fires on every cloud-online reconcile, so an
+ * unbounded `response.arrayBuffer()` could return a multi-GB body and OOM/crash
+ * the Electron main process. Like every other network-body ingest in main
+ * (gateway-dispatch, otlp-http-receiver), we cap it. Coaching packs are a few
+ * KB; this ceiling is generous while staying bounded.
+ */
+const MAX_ASSET_BYTES = 64 * 1024 * 1024;
 
 export type CoachingDistributionInstallDeps = {
   /** Absolute path to the managed coaching-packs store (userData/coaching-packs). */
@@ -52,6 +65,8 @@ export type CoachingDistributionInstallDeps = {
   fetch?: typeof fetch;
   /** Injectable temp-dir factory (defaults to os.tmpdir mkdtemp). */
   makeTempDir?: () => string;
+  /** Max asset bytes to buffer (defaults to `MAX_ASSET_BYTES`). Injectable for tests. */
+  maxAssetBytes?: number;
 };
 
 /**
@@ -92,7 +107,11 @@ export async function installCoachingDistribution(
 
   let zipBytes: Buffer;
   try {
-    zipBytes = await downloadAsset(url, deps.fetch ?? fetch);
+    zipBytes = await downloadAsset(
+      url,
+      deps.fetch ?? fetch,
+      deps.maxAssetBytes ?? MAX_ASSET_BYTES
+    );
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     return { status: "failed", failureReason: `download failed: ${msg}` };
@@ -134,14 +153,82 @@ export async function installCoachingDistribution(
 
 async function downloadAsset(
   url: string,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  maxBytes: number
 ): Promise<Buffer> {
+  // The presigned URL is attacker-influenceable — require https so a downgraded
+  // asset host cannot serve the pack over cleartext http.
+  requireHttps(url, "asset download URL");
+
+  // The https check above only vets the ORIGINAL url; a 3xx would let the asset
+  // host redirect us to http or an internal address (169.254.169.254, a private
+  // range) and fetch would silently follow it, defeating the guard. Refuse to
+  // follow any redirect, matching the presigned-download fetches in
+  // transcript-read-cache.ts / loop-finalizer.ts.
   const response = await fetchImpl(url, {
+    redirect: "error",
     signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
-  const arrayBuffer = await response.arrayBuffer();
-  return Buffer.from(arrayBuffer);
+
+  // Reject early on an advertised over-cap Content-Length, then enforce the
+  // same ceiling on the bytes actually received (the header is untrusted).
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`asset exceeds max size (${declared} > ${maxBytes} bytes)`);
+  }
+
+  return await readCappedBody(response, maxBytes);
+}
+
+/**
+ * Stream `response` into a Buffer, aborting as soon as the accumulated body
+ * exceeds `maxBytes`. Prevents a lying/absent Content-Length from OOM-ing the
+ * main process the way an unbounded `arrayBuffer()` would.
+ */
+async function readCappedBody(
+  response: Response,
+  maxBytes: number
+): Promise<Buffer> {
+  const body = response.body;
+  if (!body) {
+    // No streamable body — fall back to a buffered read, itself bounded by the
+    // already-checked Content-Length, and re-verify the received length.
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > maxBytes) {
+      throw new Error(
+        `asset exceeds max size (${arrayBuffer.byteLength} > ${maxBytes} bytes)`
+      );
+    }
+    return Buffer.from(arrayBuffer);
+  }
+
+  const reader = body.getReader();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+      size += value.byteLength;
+      if (size > maxBytes) {
+        // Stop pulling the (attacker-sized) body instead of draining it.
+        await reader.cancel();
+        throw new Error(`asset exceeds max size (> ${maxBytes} bytes)`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    // Deterministically drop the lock on every path (normal completion, an
+    // over-cap throw, or a mid-stream read rejection such as the timeout abort).
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks);
 }

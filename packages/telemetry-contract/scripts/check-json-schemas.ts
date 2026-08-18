@@ -189,6 +189,9 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.ServiceVersion]: maxUnicodeText(
             TelemetryTextMaxLength.ServiceVersion
           ),
+          [TelemetryAttribute.DeviceId]: maxUnicodeText(
+            TelemetryTextMaxLength.DeviceId
+          ),
           [TelemetryAttribute.HarnessName]: "claude",
         },
       },
@@ -238,8 +241,31 @@ const schemaChecks: SchemaCheck[] = [
         },
       },
       {
+        name: "device id above Unicode maximum",
+        payload: {
+          [TelemetryAttribute.ServiceName]: "cl-api",
+          [TelemetryAttribute.DeviceId]: overflowUnicodeText(
+            TelemetryTextMaxLength.DeviceId
+          ),
+        },
+      },
+      {
+        name: "control character device id",
+        payload: {
+          [TelemetryAttribute.ServiceName]: "cl-api",
+          [TelemetryAttribute.DeviceId]: "device\nid",
+        },
+      },
+      {
         name: "wrong type service name",
         payload: { [TelemetryAttribute.ServiceName]: 123 },
+      },
+      {
+        name: "wrong type device id",
+        payload: {
+          [TelemetryAttribute.ServiceName]: "cl-api",
+          [TelemetryAttribute.DeviceId]: false,
+        },
       },
       {
         name: "wrong type service version",
@@ -476,7 +502,7 @@ const schemaChecks: SchemaCheck[] = [
   },
   {
     path: "dist/schemas/sync.schema.json",
-    id: "https://closedloop.ai/schemas/telemetry-contract/sync/v0.3.schema.json",
+    id: "https://closedloop.ai/schemas/telemetry-contract/sync/v0.6.schema.json",
     validPayloads: [
       {
         name: "empty sync payload",
@@ -489,6 +515,7 @@ const schemaChecks: SchemaCheck[] = [
           [TelemetryAttribute.SyncOutcome]: "dead_letter",
           [TelemetryAttribute.SyncPayloadBytes]: 512,
           [TelemetryAttribute.SyncLatencyMs]: 12.5,
+          [TelemetryAttribute.SyncReason]: "ack_timeout",
         },
       },
     ],
@@ -496,6 +523,10 @@ const schemaChecks: SchemaCheck[] = [
       {
         name: "unknown sync attribute",
         payload: syncPayload({ "sync.session_id": "session-123" }),
+      },
+      {
+        name: "wrong sync reason",
+        payload: syncPayload({ [TelemetryAttribute.SyncReason]: "partial" }),
       },
       {
         name: "wrong sync event",

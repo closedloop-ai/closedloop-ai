@@ -8,6 +8,7 @@ import { withReadSource } from "@repo/app/shared/lib/read-source";
 import {
   SHARED_AGENT_SESSIONS_NOT_FOUND_CODE,
   SHARED_AGENT_SESSIONS_SOURCE_ERROR_CODE,
+  SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE,
 } from "../../shared/shared-agent-sessions-contract";
 import { runSource } from "../shared/run-source";
 import type { DesktopApi } from "../types/desktop-api";
@@ -46,7 +47,8 @@ export function createLocalAgentSessionsDataSource(
     runSource(
       run,
       "Agent sessions source failed.",
-      SHARED_AGENT_SESSIONS_SOURCE_ERROR_CODE
+      SHARED_AGENT_SESSIONS_SOURCE_ERROR_CODE,
+      SHARED_AGENT_SESSIONS_TRANSIENT_ERROR_CODE
     );
 
   return {
@@ -75,6 +77,26 @@ export function createLocalAgentSessionsDataSource(
       sanitize(() => desktopApi.agentSessionsApi.usage(filters)),
     analytics: (filters) =>
       sanitize(() => desktopApi.agentSessionsApi.analytics(filters)),
+    // FEA-4157: combined list + usage read over ONE IPC call so the Sessions
+    // table + summary cards share one raw scan. Same FEA-3120 stamp as `list`,
+    // applied to the nested list so the combined read still carries local
+    // provenance for the ReadSourceBadge (mirrors the branches local pageData).
+    pageData: async (filters) => {
+      // ISS-6041: the port carries the ISS-5809 `comparison` opt-in for the
+      // sources that can honor it. This one cannot — the local SQLite producer
+      // aggregates the requested window only and has no prior-window read — so
+      // drop it at the boundary rather than send the IPC contract a field it does
+      // not model. The response then carries no `comparison`, which the summary
+      // cards already read as "no chip", never as a zero.
+      const { comparison: _comparison, ...localFilters } = filters;
+      const response = await sanitize(() =>
+        desktopApi.agentSessionsApi.pageData(localFilters)
+      );
+      return {
+        ...response,
+        list: withReadSource(response.list, ReadSource.Local),
+      };
+    },
     subscribe: onDbChanged
       ? (onChange: (change: AgentSessionsChange) => void) =>
           onDbChanged((payload) => onChange(payload))

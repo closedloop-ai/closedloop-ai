@@ -69,6 +69,43 @@ describe("redactSensitiveText", () => {
     ).toBe(`token ${REDACTED}`);
   });
 
+  it("scrubs EVERY secret in one string, not just the first", () => {
+    // ISS-6233 moved the pattern to `@closedloop-ai/loops-api/secret-value-pattern`,
+    // which exports a non-global `.test()` twin beside the global `.replace()`
+    // one. Importing the wrong twin here still scrubs the FIRST secret in a
+    // string and ships the rest to the Datadog intake and the log drain — every
+    // other case above carries a single secret, so all of them stay green under
+    // that mutation. This one does not.
+    expect(
+      redactSensitiveText(
+        "a sk_live_abc123def456 and gho_0123456789abcdef0123456789abcdef"
+      )
+    ).toBe(`a ${REDACTED} and ${REDACTED}`);
+  });
+
+  it("scrubs a bare Google OAuth access token carrying no Bearer prefix", () => {
+    // googleapis quotes the offending credential bare in its error text, so the
+    // `bearer …` alternative never sees it. Asserted separately from the
+    // prefixed form below precisely because only one of the two was covered.
+    expect(
+      redactSensitiveText("Invalid Credentials: ya29.a0AfH6SMBx7Qm-3lKd_9Zt")
+    ).toBe(`Invalid Credentials: ${REDACTED}`);
+  });
+
+  it("scrubs a Google refresh token", () => {
+    expect(
+      redactSensitiveText("refresh failed for 1//04dXm9_Kq2LpZr7TnVw3Ye8Bs")
+    ).toBe(`refresh failed for ${REDACTED}`);
+  });
+
+  it("leaves a slash-heavy file path alone despite the Google token rule", () => {
+    // Google OAuth tokens are base64url and contain no "/", so the `1//` rule
+    // must not accept one — otherwise an ordinary path segment starting "1//"
+    // is long enough to match and a diagnostic log line is redacted away.
+    const path = "failed reading /1//some/long/path/segments/here";
+    expect(redactSensitiveText(path)).toBe(path);
+  });
+
   it("scrubs email addresses", () => {
     expect(redactSensitiveText("from user jane.doe@example.com here")).toBe(
       `from user ${REDACTED} here`

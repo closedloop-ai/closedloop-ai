@@ -16,14 +16,14 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { PrismaLibSql } from "@prisma/adapter-libsql";
+import { PrismaClient } from "../src/main/database/generated/client.js";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
-} from "../src/main/database/baseline-schema.js";
-import { PrismaClient } from "../src/main/database/generated/client.js";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
-import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
-import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
+} from "../src/main/database/migration/baseline-schema.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
+import { runDesktopMigrations } from "../src/main/database/migration/migration-runner.js";
+import { MIGRATIONS } from "../src/main/database/migration/migrations-manifest.js";
 
 const FORCED_ROLLBACK_RE = /forced rollback/;
 

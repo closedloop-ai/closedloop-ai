@@ -22,11 +22,15 @@ export type CategoryCounters = {
   // tracked separately from per-category drop failures so operators can tell
   // "couldn't classify schema" from "failed to DROP schema".
   registryReadErrored: number;
+  // Eligible drops the sweep never attempted because it ran out of its time
+  // budget. Not an error — the next sweep resumes them — but it must be visible,
+  // or a partial sweep is indistinguishable from a complete one in the summary.
+  deferredDrops: number;
 };
 
 export type CounterBucket = Exclude<
   keyof CategoryCounters,
-  "registryReadErrored"
+  "registryReadErrored" | "deferredDrops"
 >;
 
 export type CategorizeSchemaInput = {
@@ -96,6 +100,10 @@ const CATEGORIES = [
  *
  * Format (one line per category, all four categories always present):
  *   summary: ttl-expired[dropped=N kept=N errored=N] orphan[...] orphan-branch[...] pr-closed[...]
+ *
+ * `deferred` closes the line: it is the number of eligible drops the sweep ran
+ * out of time to attempt, so a budget-truncated run cannot read as a complete
+ * one in the log operators actually look at.
  */
 export function buildSummary(counters: CategoryCounters): string {
   const parts = CATEGORIES.map((cat) => {
@@ -103,6 +111,7 @@ export function buildSummary(counters: CategoryCounters): string {
     return `${cat}[dropped=${dropped} kept=${kept} errored=${errored}]`;
   });
   parts.push(`registry-read[errored=${counters.registryReadErrored}]`);
+  parts.push(`deferred=${counters.deferredDrops}`);
 
   return `summary: ${parts.join(" ")}`;
 }
@@ -219,6 +228,10 @@ export function parseCliArgs(argv: string[]): ParsedCliArgs {
 
 /**
  * Returns 0 if no errors across all categories, 1 if any errored > 0.
+ *
+ * `deferredDrops` is deliberately ignored: running out of the sweep's time
+ * budget is not a failure — the next daily sweep re-enumerates `pg_namespace`
+ * and resumes — and routing it here would page on a correctly-handled run.
  */
 export function computeExitCode(counters: CategoryCounters): 0 | 1 {
   const hasCategoryErrors = CATEGORIES.some((cat) => counters[cat].errored > 0);
@@ -263,5 +276,50 @@ export function makeCounters(): CategoryCounters {
     "orphan-branch": { kept: 0, dropped: 0, errored: 0 },
     "pr-closed": { kept: 0, dropped: 0, errored: 0 },
     registryReadErrored: 0,
+    deferredDrops: 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Merge-queue preview identification
+// ---------------------------------------------------------------------------
+
+/**
+ * Vercel git ref prefix for GitHub merge-queue (merge-group) builds. Every
+ * merge group is a distinct ref, so each one mints its own preview schema.
+ */
+export const MERGE_QUEUE_REF_PREFIX = "gh-readonly-queue/";
+
+/**
+ * The schema-name form of {@link MERGE_QUEUE_REF_PREFIX}. `normalizePreviewSchemaName`
+ * lowercases the ref and maps every `[^a-z0-9_]+` run to a single `_`, so a
+ * `gh-readonly-queue/...` ref deterministically produces this prefix.
+ */
+export const MERGE_QUEUE_SCHEMA_PREFIX = "preview_gh_readonly_queue_";
+
+/**
+ * Whether a preview schema belongs to the merge-queue family.
+ *
+ * Branch-first, name-second: the registry `branch` column is authoritative when
+ * it carries a value, but it is nullable, so the derived schema name is the
+ * fallback. A blank branch counts as absent, not as a non-queue branch —
+ * `upsertSchemaRegistry` stores `branch ?? null` straight from
+ * `VERCEL_GIT_COMMIT_REF`, which preserves an empty string, and treating `""`
+ * as authoritative would deny a queue schema its short TTL *and* feed it to the
+ * branch-aware pass, where no live branch can ever match `""`.
+ *
+ * Merge-queue previews are disposable within hours — GitHub deletes the queue
+ * branch the moment the merge group merges or is ejected, and nobody browses a
+ * queue preview (ISS-5285 already skips their data clone on that basis) — so
+ * callers give this family a much shorter TTL than ordinary branch previews.
+ */
+export function isMergeQueuePreview(input: {
+  schemaName: string;
+  branch: string | null;
+}): boolean {
+  const branch = input.branch?.trim();
+  if (branch) {
+    return branch.startsWith(MERGE_QUEUE_REF_PREFIX);
+  }
+  return input.schemaName.startsWith(MERGE_QUEUE_SCHEMA_PREFIX);
 }

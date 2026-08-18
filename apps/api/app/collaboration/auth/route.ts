@@ -4,6 +4,7 @@ import { parseDocumentRoomId } from "@repo/collaboration/shared/room-utils";
 import { getConsistentColor } from "@repo/collaboration/shared/user-colors";
 import { log } from "@repo/observability/log";
 import { z } from "zod";
+import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { usersService } from "../../users/service";
 
@@ -22,13 +23,13 @@ export async function POST(request: Request): Promise<Response> {
     // session (comment + Y.Doc mutations), so a read-only API key must not pass.
     // Scopes are only enforced for `sk_live_*` callers; Clerk sessions (the web
     // shell's path) bypass the scope check.
-    const authContext = await resolveAnyAuthContext(request, {
+    const authResult = await resolveAnyAuthContext(request, {
       requiredScopes: ["write"],
     });
-    if (!authContext) {
-      return new Response("Unauthorized", { status: 401 });
+    if (!authResult.ok) {
+      return authContextFailureResponse(authResult.failure);
     }
-    const { userId, organizationId } = authContext;
+    const { userId, organizationId } = authResult.context;
 
     let roomId: string | undefined;
     try {

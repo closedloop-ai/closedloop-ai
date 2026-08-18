@@ -1,7 +1,5 @@
 "use client";
 
-import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -16,21 +14,25 @@ import { Check, Circle, Loader2Icon, SparklesIcon, X } from "lucide-react";
 import { useAgentOnboarding } from "@/hooks/queries/use-agent-onboarding";
 import { useOrgSlug } from "@/hooks/use-org-slug";
 import { getGitHubConnectUrl } from "@/lib/integration-connect-urls";
+import { useOnboardingChecklist } from "./use-onboarding-checklist";
 
 export function AgentOnboardingCard() {
-  return (
-    <FeatureFlagged flag={AGENTS_FEATURE_FLAG_KEY}>
-      <AgentOnboardingCardInner />
-    </FeatureFlagged>
-  );
-}
-
-function AgentOnboardingCardInner() {
   const orgSlug = useOrgSlug();
   const onboarding = useAgentOnboarding();
+  const checklist = useOnboardingChecklist();
   const githubConnectUrl = getGitHubConnectUrl("install");
 
   if (!onboarding.shouldShow) {
+    return null;
+  }
+
+  // ISS-5490: stand down while the setup checklist is up. The two cards look
+  // alike (dismiss X, circle/check rows), both ask for GitHub, and both ask for
+  // Desktop — off DIFFERENT signals, so a user with Desktop installed but closed
+  // saw a tick and an empty circle for the same fact, a few hundred pixels
+  // apart. The `web-onboarding-flow` prototype resolves this by not rendering
+  // this card at all next to the checklist; this matches that.
+  if (checklist.visible) {
     return null;
   }
 

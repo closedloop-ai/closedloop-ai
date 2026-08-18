@@ -8,16 +8,29 @@ import {
 } from "@repo/api/src/types/branch-view";
 import type { GitHubPRState } from "@repo/api/src/types/github";
 import {
+  GitHubFetchCredentialType,
   type GitHubFetchTrigger,
+  GitHubFetchTrigger as GitHubFetchTriggerValue,
   GitHubSyncResultReason,
 } from "@repo/api/src/types/github-read-model";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import {
+  type GitHubProviderResult,
   GitHubProviderResultStatus,
   type getSinglePullRequest,
   getSinglePullRequestWithProviderResult,
 } from "@repo/github";
+import type { Octokit } from "@repo/github/user-token-auth";
 import { log } from "@repo/observability/log";
+import {
+  createPullRequestRestAuthorityProvenance,
+  persistPullRequestProviderFailure,
+  toPullRequestRestAuthorityObservation,
+} from "@/app/branches/pull-request-authority-producer";
+import {
+  persistPullRequestHeadRepositoryAuthority,
+  pullRequestHeadRepositoryObservation,
+} from "@/app/branches/pull-request-head-authority";
 import { pullRequestLocData } from "@/app/branches/pull-request-loc-data";
 import { invalidateBranchStatusChecksForHeadChange } from "@/lib/branch-status-checks";
 import {
@@ -61,9 +74,9 @@ export type GitHubPullRequestLifecycle = NonNullable<
   Awaited<ReturnType<typeof getSinglePullRequest>>
 >;
 
-type RefreshPullRequestLifecycleInput = {
+/** The rows a refresh targets, independent of which client reads GitHub. */
+export type PrLifecycleRefreshTarget = {
   organizationId: string;
-  installationId: string;
   owner: string;
   repo: string;
   pullNumber: number | null;
@@ -75,6 +88,11 @@ type RefreshPullRequestLifecycleInput = {
   artifactPatch?: {
     updateBranchIdentity?: boolean;
   };
+};
+
+type RefreshPullRequestLifecycleInput = PrLifecycleRefreshTarget & {
+  /** The caller's GitHub client (PLN-1525: resolved once per operation). */
+  octokit: Octokit;
 };
 
 class GuardedWriteFailed extends Error {}
@@ -131,13 +149,24 @@ export async function refreshPullRequestLifecycle(
     return guardedWriteFailed(input, "stamp");
   }
 
+  const authorityProvenance = createPullRequestRestAuthorityProvenance({
+    trigger: input.fetchTrigger ?? GitHubFetchTriggerValue.Backfill,
+    credentialType: GitHubFetchCredentialType.GitHubApp,
+    observedAt: now,
+  });
   const freshPrResult = await getSinglePullRequestWithProviderResult(
-    input.installationId,
+    input.octokit,
     input.owner,
     input.repo,
-    input.pullNumber
+    input.pullNumber,
+    toPullRequestRestAuthorityObservation(authorityProvenance)
   );
   if (freshPrResult.status === GitHubProviderResultStatus.ProviderRateLimit) {
+    await persistLifecycleFailureAuthority(
+      input,
+      freshPrResult,
+      authorityProvenance
+    );
     await stampRefreshResultReason(
       input,
       GitHubSyncResultReason.ProviderUnavailable
@@ -147,11 +176,12 @@ export async function refreshPullRequestLifecycle(
       retryAfterSeconds: freshPrResult.retryAfterSeconds,
     };
   }
-  const freshPr =
-    freshPrResult.status === GitHubProviderResultStatus.Success
-      ? freshPrResult.value
-      : null;
-  if (!freshPr) {
+  if (freshPrResult.status !== GitHubProviderResultStatus.Success) {
+    await persistLifecycleFailureAuthority(
+      input,
+      freshPrResult,
+      authorityProvenance
+    );
     await stampRefreshResultReason(
       input,
       GitHubSyncResultReason.ProviderUnavailable
@@ -164,6 +194,7 @@ export async function refreshPullRequestLifecycle(
       details: { reason: BranchViewSyncFailureReason.GitHubPrUnavailable },
     };
   }
+  const freshPr = freshPrResult.value;
 
   try {
     await withDb.tx(async (tx) => {
@@ -226,6 +257,14 @@ export async function refreshPullRequestLifecycle(
       if (detail.count === 0) {
         throw new GuardedWriteFailed("pull_request_detail");
       }
+      await persistPullRequestHeadRepositoryAuthority(
+        tx,
+        {
+          organizationId: input.organizationId,
+          pullRequestDetailId: input.pullRequestDetailId!,
+        },
+        pullRequestHeadRepositoryObservation(freshPr)
+      );
     });
   } catch (error) {
     if (error instanceof GuardedWriteFailed) {
@@ -241,6 +280,27 @@ export async function refreshPullRequestLifecycle(
     state: freshPr.state,
     pullRequestDetailId: input.pullRequestDetailId,
   };
+}
+
+async function persistLifecycleFailureAuthority(
+  input: RefreshPullRequestLifecycleInput,
+  result: Parameters<typeof persistPullRequestProviderFailure>[2],
+  provenance: Parameters<typeof persistPullRequestProviderFailure>[3]
+): Promise<void> {
+  if (!input.pullRequestDetailId) {
+    return;
+  }
+  await withDb((db) =>
+    persistPullRequestProviderFailure(
+      db,
+      {
+        organizationId: input.organizationId,
+        pullRequestDetailId: input.pullRequestDetailId!,
+      },
+      result,
+      provenance
+    )
+  );
 }
 
 export function buildBranchTreeUrl(
@@ -272,7 +332,7 @@ function pullRequestLifecycleData(
   };
 }
 
-function guardedPullRequestWhere(input: RefreshPullRequestLifecycleInput) {
+function guardedPullRequestWhere(input: PrLifecycleRefreshTarget) {
   return {
     id: input.pullRequestDetailId!,
     branchArtifactId: input.branchArtifactId!,
@@ -291,7 +351,7 @@ function guardedPullRequestWhere(input: RefreshPullRequestLifecycleInput) {
   };
 }
 
-function guardedBranchWhere(input: RefreshPullRequestLifecycleInput) {
+function guardedBranchWhere(input: PrLifecycleRefreshTarget) {
   return {
     artifactId: input.branchArtifactId!,
     repositoryId: input.repositoryId!,
@@ -344,4 +404,66 @@ async function stampRefreshResultReason(
       ),
     })
   );
+}
+
+/**
+ * Record a refresh attempt that never reached GitHub because the caller could
+ * not resolve a client. `lastRefreshAttemptAt` is the read-repair debounce key
+ * (`isPrReadRepairEligible`), so a caller that resolves its own client and
+ * skips this stamp leaves the row looking un-attempted and every later read
+ * reschedules the same repair.
+ */
+export async function stampPrLifecycleRefreshAttemptFailure(
+  target: PrLifecycleRefreshTarget
+): Promise<void> {
+  if (
+    !(
+      target.branchArtifactId &&
+      target.pullRequestDetailId &&
+      target.repositoryId
+    )
+  ) {
+    return;
+  }
+  const now = new Date();
+  await withDb((db) =>
+    db.pullRequestDetail.updateMany({
+      where: guardedPullRequestWhere(target),
+      data: {
+        lastRefreshAttemptAt: now,
+        ...gitHubFetchProvenanceData(
+          githubAppRestFetchProvenance({
+            observedAt: now,
+            resultReason: GitHubSyncResultReason.ProviderUnavailable,
+            trigger: target.fetchTrigger,
+          })
+        ),
+      },
+    })
+  );
+}
+
+/**
+ * Report a failed installation-client acquisition as the same result member
+ * `refreshPullRequestLifecycle` produces for a failed provider read, so a
+ * caller that resolves its own client handles both identically. The rate-limit
+ * member passes through to preserve its retry window, and no refresh-attempt
+ * provenance is stamped because GitHub was never reached.
+ */
+export function prLifecycleFailureFromClientAcquisition(
+  acquired: Exclude<
+    GitHubProviderResult<unknown>,
+    { status: typeof GitHubProviderResultStatus.Success }
+  >
+): PrLifecycleRefreshResult {
+  if (acquired.status === GitHubProviderResultStatus.ProviderRateLimit) {
+    return acquired;
+  }
+  return {
+    status: GitHubProviderResultStatus.ProviderUnavailable,
+    code: BranchViewSyncErrorCode.PrLifecycleUnavailable,
+    message: "Failed to refresh pull request lifecycle",
+    httpStatus: 502,
+    details: { reason: BranchViewSyncFailureReason.GitHubPrUnavailable },
+  };
 }

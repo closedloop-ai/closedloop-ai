@@ -9,6 +9,11 @@ import {
   trimBranchPrCommentBody,
 } from "@repo/api/src/types/branch";
 import {
+  type BranchSelectedPullRequestIdentity,
+  branchSelectedPullRequestQuerySchema,
+} from "@repo/api/src/types/branch-associated-pull-request";
+import { normalizeRepoFullName } from "@repo/api/src/types/branch-repository";
+import {
   ArtifactType,
   GitHubCommentThreadKind,
   GitHubLegacyCommentState,
@@ -27,10 +32,13 @@ import {
   listPullRequestReviewsWithProviderResult,
 } from "@repo/github";
 import { z } from "zod";
+import { parseGitHubAuthorProviderDetailActorType } from "@/app/comments/github-author-provider-detail";
+import { acquireInstallationClient } from "@/lib/github/installation-client";
 import {
-  BRANCH_CURRENT_PULL_REQUEST_DETAIL_CANDIDATE_LIMIT,
-  getOwnedCurrentPullRequestDetail,
-} from "./branch-remote-evidence";
+  projectCloudBranchAssociatedPullRequests,
+  resolveCloudBranchAssociatedPullRequest,
+} from "./branch-associated-pull-request-projection";
+import { branchHasCloudEligibility } from "./cloud-branch-eligibility";
 
 export const BRANCH_COMMENTS_MAX_COMMENTS = BranchCommentsBudget.MaxComments;
 export const BRANCH_COMMENTS_PAGE_SIZE = BranchCommentsBudget.PageSize;
@@ -40,7 +48,7 @@ export const BRANCH_COMMENTS_MAX_RESPONSE_BYTES =
 
 const UUID_SCHEMA = z.uuid();
 
-export const branchCommentsQuerySchema = z.object({}).strict();
+export const branchCommentsQuerySchema = branchSelectedPullRequestQuerySchema;
 export type BranchCommentsQuery = z.infer<typeof branchCommentsQuerySchema>;
 
 type BranchCommentsClient = Parameters<typeof withDb>[0] extends (
@@ -51,6 +59,7 @@ type BranchCommentsClient = Parameters<typeof withDb>[0] extends (
 
 type BranchCommentsContext = {
   branchId: string;
+  repositoryFullName: string;
   prNumber: number | null;
   prUrl: string | null;
   owner: string;
@@ -78,12 +87,20 @@ export const branchCommentsService = {
     }
 
     const context = await withDb((db) =>
-      findBranchCommentsContext(db, organizationId, branchId)
+      findBranchCommentsContext(db, organizationId, branchId, _query)
     );
     if (!context) {
       return null;
     }
-
+    const prNumber = context.prNumber;
+    if (prNumber === null) {
+      return buildResponse(context, [], {
+        state: BranchCommentsState.UnsyncedUnknown,
+        mixedProjection: false,
+        providerProofedAt: null,
+        stale: false,
+      });
+    }
     const pullRequestDetailId = context.pullRequestDetailId;
     const projectionRows: ProjectionRow[] = pullRequestDetailId
       ? await withDb((db) =>
@@ -108,8 +125,7 @@ export const branchCommentsService = {
     }
 
     const installationId = context.installationId;
-    const prNumber = context.prNumber;
-    if (!(installationId && prNumber)) {
+    if (!installationId) {
       return buildResponse(context, [], {
         state: BranchCommentsState.UnsyncedUnknown,
         mixedProjection,
@@ -166,6 +182,7 @@ const projectionCommentSelect = {
           displayName: true,
           avatarUrl: true,
           profileUrl: true,
+          providerDetail: true,
         },
       },
     },
@@ -190,17 +207,32 @@ const projectionCommentSelect = {
 const branchCommentsContextSelect = {
   id: true,
   pullRequestDetails: {
-    where: { isCurrent: true },
     orderBy: [{ repositoryId: "asc" }, { number: "desc" }, { id: "asc" }],
     select: {
       id: true,
       branchArtifactId: true,
       repositoryId: true,
+      repositoryFullName: true,
       isCurrent: true,
       number: true,
+      title: true,
       htmlUrl: true,
+      prState: true,
+      isDraft: true,
+      reviewDecision: true,
+      githubCreatedAt: true,
+      closedAt: true,
+      mergedAt: true,
+      lastVerifiedAt: true,
+      repository: {
+        select: {
+          fullName: true,
+          owner: true,
+          name: true,
+          installation: { select: { installationId: true } },
+        },
+      },
     },
-    take: BRANCH_CURRENT_PULL_REQUEST_DETAIL_CANDIDATE_LIMIT,
   },
   branch: {
     select: {
@@ -209,6 +241,7 @@ const branchCommentsContextSelect = {
       // headShaSource-derived gate (the stale_push trap).
       firstPushedAt: true,
       repositoryId: true,
+      repositoryFullName: true,
       currentPullRequestDetail: {
         select: {
           id: true,
@@ -221,6 +254,7 @@ const branchCommentsContextSelect = {
       },
       repository: {
         select: {
+          fullName: true,
           owner: true,
           name: true,
           installation: {
@@ -235,8 +269,13 @@ const branchCommentsContextSelect = {
 async function findBranchCommentsContext(
   db: BranchCommentsClient,
   organizationId: string,
-  branchId: string
+  branchId: string,
+  query: BranchCommentsQuery
 ): Promise<BranchCommentsContext | null> {
+  // Fail before projecting comments context or acquiring any provider client.
+  if (!(await branchHasCloudEligibility(db, organizationId, branchId))) {
+    return null;
+  }
   const row = await db.artifact.findFirst({
     where: {
       id: branchId,
@@ -245,20 +284,45 @@ async function findBranchCommentsContext(
       branch: {
         deletedAt: null,
       },
-      AND: [branchCommentsRemoteEvidenceWhere(branchId)],
     },
     select: branchCommentsContextSelect,
   });
-  if (!hasVisibleBranchCommentsContext(row)) {
+  if (!hasBranchCommentsContextRow(row)) {
     return null;
   }
-  const detail = getOwnedCurrentPullRequestDetail(row);
-  const repository = row?.branch?.repository;
+  const associated = projectCloudBranchAssociatedPullRequests(row);
+  const resolved = resolveCloudBranchAssociatedPullRequest(
+    row,
+    associated,
+    selectedPullRequestIdentity(query)
+  );
+  if (!resolved) {
+    return null;
+  }
+  const selected = resolved.selected;
+  const detail = selected?.source ?? null;
+  const repositoryFullName = normalizeRepoFullName(
+    selected?.repositoryFullName ??
+      row.branch.repository?.fullName ??
+      row.branch.repositoryFullName ??
+      ""
+  );
+  const selectedRepository = detail?.repository ?? row.branch.repository;
+  const repository =
+    selectedRepository &&
+    normalizeRepoFullName(selectedRepository.fullName) === repositoryFullName
+      ? selectedRepository
+      : await findExactOrganizationRepository(
+          db,
+          organizationId,
+          repositoryFullName
+        );
   if (!(repository?.owner && repository.name)) {
     return null;
   }
   return {
     branchId: row.id,
+    repositoryFullName,
     prNumber: detail?.number ?? null,
     prUrl: detail?.htmlUrl ?? null,
     owner: repository.owner,
@@ -268,34 +332,45 @@ async function findBranchCommentsContext(
   };
 }
 
-function branchCommentsRemoteEvidenceWhere(
-  branchId: string
-): Prisma.ArtifactWhereInput {
-  return {
-    OR: [
-      {
-        pullRequestDetails: {
-          some: { branchArtifactId: branchId, isCurrent: true },
-        },
-      },
-      { branch: { firstPushedAt: { not: null } } },
-    ],
-  };
+function findExactOrganizationRepository(
+  db: BranchCommentsClient,
+  organizationId: string,
+  repositoryFullName: string
+) {
+  if (!repositoryFullName) {
+    return Promise.resolve(null);
+  }
+  return db.gitHubInstallationRepository.findFirst({
+    where: {
+      fullName: { equals: repositoryFullName, mode: "insensitive" },
+      installation: { organizationId },
+    },
+    select: {
+      fullName: true,
+      owner: true,
+      name: true,
+      installation: { select: { installationId: true } },
+    },
+  });
 }
 
-function hasVisibleBranchCommentsContext(
+function selectedPullRequestIdentity(
+  query: BranchCommentsQuery
+): BranchSelectedPullRequestIdentity | undefined {
+  return query.repositoryFullName && query.pullRequestNumber
+    ? {
+        repositoryFullName: query.repositoryFullName,
+        pullRequestNumber: query.pullRequestNumber,
+      }
+    : undefined;
+}
+
+function hasBranchCommentsContextRow(
   row: BranchCommentsContextRow | null
 ): row is BranchCommentsContextRow & {
   branch: NonNullable<BranchCommentsContextRow["branch"]>;
 } {
-  const branch = row?.branch;
-  if (!(row && branch)) {
-    return false;
-  }
-  return (
-    Boolean(getOwnedCurrentPullRequestDetail(row)) ||
-    branch.firstPushedAt !== null
-  );
+  return Boolean(row?.branch);
 }
 
 function findActiveProjectionRows(
@@ -320,7 +395,7 @@ function findActiveProjectionRows(
         },
       },
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: BRANCH_COMMENTS_MAX_COMMENTS + 1,
     select: projectionCommentSelect,
   });
@@ -331,6 +406,9 @@ function toProjectedComment(row: ProjectionRow): BranchPrComment {
   const threadProjection = row.thread.githubProjection;
   const body = commentBody(row.body, row.plainText);
   const trimmed = trimBranchPrCommentBody(body);
+  const actorType = parseGitHubAuthorProviderDetailActorType(
+    projection?.externalAuthor?.providerDetail
+  );
   return {
     id: row.id,
     providerNodeId: null,
@@ -349,6 +427,7 @@ function toProjectedComment(row: ProjectionRow): BranchPrComment {
       displayName: projection?.externalAuthor?.displayName ?? null,
       avatarUrl: projection?.externalAuthor?.avatarUrl ?? null,
       profileUrl: projection?.externalAuthor?.profileUrl ?? null,
+      ...(actorType ? { actorType } : {}),
     },
     body: trimmed.body,
     createdAt: row.createdAt.toISOString(),
@@ -378,6 +457,7 @@ function toProviderIssueComment(
       displayName: null,
       avatarUrl: comment.user?.avatar_url ?? null,
       profileUrl: null,
+      ...(comment.user?.actorType ? { actorType: comment.user.actorType } : {}),
     },
     body: trimmed.body,
     createdAt: comment.created_at,
@@ -409,6 +489,7 @@ function toProviderReviewComment(
       displayName: null,
       avatarUrl: comment.user?.avatar_url ?? null,
       profileUrl: null,
+      ...(comment.user?.actorType ? { actorType: comment.user.actorType } : {}),
     },
     body: trimmed.body,
     createdAt: comment.created_at,
@@ -438,6 +519,7 @@ function toProviderReviewBody(
       displayName: null,
       avatarUrl: review.user?.avatar_url ?? null,
       profileUrl: null,
+      ...(review.user?.actorType ? { actorType: review.user.actorType } : {}),
     },
     body: trimmed.body,
     createdAt: review.submitted_at ?? new Date(0).toISOString(),
@@ -465,6 +547,7 @@ function buildResponse(
   ).length;
   const initial: BranchPrCommentsResponse = {
     branchId: context.branchId,
+    repositoryFullName: context.repositoryFullName,
     state:
       comments.length > BRANCH_COMMENTS_MAX_COMMENTS
         ? BranchCommentsState.OverLimitTruncated
@@ -507,8 +590,17 @@ async function fetchProviderCommentsProof(
     }
 > {
   const comments: BranchPrComment[] = [];
+  // One installation client for all three proof reads (PLN-1525: resolve once
+  // per operation, thread down). A failed acquisition carries the same provider
+  // failure statuses as a failed read, so this helper resolves instead of
+  // rejecting.
+  const acquired = await acquireInstallationClient(context.installationId);
+  if (acquired.status !== GitHubProviderResultStatus.Success) {
+    return acquired;
+  }
+  const octokit = acquired.value;
   const issueComments = await listPullRequestIssueCommentsWithProviderResult(
-    context.installationId,
+    octokit,
     context.owner,
     context.repo,
     context.prNumber,
@@ -524,7 +616,7 @@ async function fetchProviderCommentsProof(
   }
 
   const reviewComments = await listPullRequestReviewCommentsWithProviderResult(
-    context.installationId,
+    octokit,
     context.owner,
     context.repo,
     context.prNumber,
@@ -543,7 +635,7 @@ async function fetchProviderCommentsProof(
   }
 
   const reviews = await listPullRequestReviewsWithProviderResult(
-    context.installationId,
+    octokit,
     context.owner,
     context.repo,
     context.prNumber,

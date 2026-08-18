@@ -17,6 +17,10 @@ import {
   ClaudeCodePermissionSource,
   persistClaudeCodeOtelSignals,
 } from "../src/main/otel/claude-code-persistence.js";
+import {
+  emptyExpectedByModelRows,
+  projectTokenAnalyticsByModelRows,
+} from "./fixtures/analytics-golden.js";
 
 const NOW = "2026-06-18T19:30:00.000Z";
 const LATER = "2026-06-18T19:31:00.000Z";
@@ -91,6 +95,8 @@ test("persists Claude Code OTel cost, permission, API request, and token usage s
         outputTokens: 40,
         cacheReadTokens: 6,
         cacheWriteTokens: 3,
+        cacheWrite5mTokens: null,
+        cacheWrite1hTokens: null,
         estimatedCostUsd: 0.000_973_049_999_999_999_9,
       },
     ]);
@@ -159,6 +165,8 @@ test("replaying natural keys updates intended rows without duplicates", async ()
         outputTokens: 55,
         cacheReadTokens: 6,
         cacheWriteTokens: 3,
+        cacheWrite5mTokens: null,
+        cacheWrite1hTokens: null,
         estimatedCostUsd: 0.001_837_05,
       },
     ]);
@@ -259,6 +267,8 @@ test("OTel token usage overwrites transcript rows, including all-zero totals, an
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
+        cacheWrite5mTokens: null,
+        cacheWrite1hTokens: null,
         estimatedCostUsd: 0,
       },
     ]);
@@ -271,7 +281,10 @@ test("OTel token usage overwrites transcript rows, including all-zero totals, an
     assert.equal(analytics.totalOutputTokens, 0);
     assert.equal(analytics.totalCacheReadTokens, 0);
     assert.equal(analytics.totalCacheWriteTokens, 0);
-    assert.deepEqual(analytics.byModel, []);
+    assert.deepEqual(
+      projectTokenAnalyticsByModelRows(analytics.byModel),
+      emptyExpectedByModelRows()
+    );
   } finally {
     await cleanup();
   }
@@ -322,6 +335,8 @@ test("invalid events are rejected without writes and warnings exclude raw payloa
         outputTokens: 15,
         cacheReadTokens: 6,
         cacheWriteTokens: 3,
+        cacheWrite5mTokens: null,
+        cacheWrite1hTokens: null,
         estimatedCostUsd: 0.000_463_05,
       },
     ]);
@@ -362,14 +377,12 @@ test("Date.parse-parseable malformed timestamps are rejected before writes", asy
 
 test("all-invalid batches do not enter the write queue", async () => {
   let writeCalls = 0;
-  const prisma = {
-    client: {},
+  const prisma: Pick<DesktopPrisma, "write"> = {
     write: () => {
       writeCalls += 1;
       throw new Error("write should not be called");
     },
-    disconnect: async () => undefined,
-  } as DesktopPrisma;
+  };
 
   const summary = await persistClaudeCodeOtelSignals({
     prisma,
@@ -387,14 +400,12 @@ test("unknown signal warnings do not expose raw discriminators", async () => {
   let writeCalls = 0;
   const warnings: ClaudeCodeOtelPersistenceWarning[] = [];
   const rawDiscriminator = "secret prompt token should not be logged";
-  const prisma = {
-    client: {},
+  const prisma: Pick<DesktopPrisma, "write"> = {
     write: () => {
       writeCalls += 1;
       throw new Error("write should not be called");
     },
-    disconnect: async () => undefined,
-  } as DesktopPrisma;
+  };
 
   const summary = await persistClaudeCodeOtelSignals(
     {
@@ -412,41 +423,37 @@ test("unknown signal warnings do not expose raw discriminators", async () => {
 });
 
 test("accepted database batches use one prisma.write transaction", async () => {
-  let writeCalls = 0;
-  let transactionCalls = 0;
-  const prisma = {
-    client: {},
-    write: (callback) => {
-      writeCalls += 1;
-      const client = {
-        claudeCodeCostEvent: {
-          upsert: () => Promise.resolve({}),
-        },
-        tokenUsage: {
-          upsert: () => Promise.resolve({}),
-        },
-        $transaction: (operations: unknown[]) => {
-          transactionCalls += 1;
-          assert.equal(operations.length, 2);
-          return Promise.all(operations);
-        },
-      } as PrismaClient;
-      return callback(client);
-    },
-    disconnect: async () => undefined,
-  } as DesktopPrisma;
+  const { db, cleanup } = await openTestDatabase();
+  try {
+    await seedSession(db, SESSION_ID);
+    let writeCalls = 0;
+    const transactionSizes: number[] = [];
+    // Counts the queue-serialized write and instruments `$transaction` on the
+    // REAL client: a structural stand-in cannot honestly satisfy the generated
+    // PrismaClient, so the batch runs for real and only the call is observed.
+    const prisma: Pick<DesktopPrisma, "write"> = {
+      write: (callback) => {
+        writeCalls += 1;
+        return db.prisma.write((client) =>
+          callback(withTransactionCounter(client, transactionSizes))
+        );
+      },
+    };
 
-  const summary = await persistClaudeCodeOtelSignals(
-    {
-      prisma,
-      events: [makeCostUsage({}), makeTokenUsage({})],
-    },
-    { now: () => NOW }
-  );
+    const summary = await persistClaudeCodeOtelSignals(
+      {
+        prisma,
+        events: [makeCostUsage({}), makeTokenUsage({})],
+      },
+      { now: () => NOW }
+    );
 
-  assert.deepEqual(summary, { accepted: 2, rejected: 0 });
-  assert.equal(writeCalls, 1);
-  assert.equal(transactionCalls, 1);
+    assert.deepEqual(summary, { accepted: 2, rejected: 0 });
+    assert.equal(writeCalls, 1);
+    assert.deepEqual(transactionSizes, [2]);
+  } finally {
+    await cleanup();
+  }
 });
 
 test("database transaction failure rolls back all accepted events", async () => {
@@ -631,4 +638,30 @@ function makeTokenUsage(overrides: Record<string, unknown>) {
     cacheCreationTokens: 3,
     ...overrides,
   };
+}
+
+/**
+ * `client` with `$transaction` instrumented: every call records how many
+ * operations the batch handed it, then delegates to the real client so the
+ * upserts still execute inside the same transaction.
+ */
+function withTransactionCounter(
+  client: PrismaClient,
+  transactionSizes: number[]
+): PrismaClient {
+  return new Proxy(client, {
+    get(target, property) {
+      const value = Reflect.get(target, property);
+      if (property !== "$transaction" || typeof value !== "function") {
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return (...args: unknown[]) => {
+        const [operations] = args;
+        transactionSizes.push(
+          Array.isArray(operations) ? operations.length : 0
+        );
+        return Reflect.apply(value, target, args);
+      };
+    },
+  });
 }

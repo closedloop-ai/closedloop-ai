@@ -1,0 +1,113 @@
+/*
+ * App-native docs theme (FEA-3886).
+ *
+ * `fumadocs-ui/css/shadcn.css` already remaps the core `--color-fd-*` family
+ * onto our shadcn token names (--background, --primary, --muted, --border,
+ * #nd-sidebar → --sidebar*, --color-fd-error → --destructive), all of which
+ * `@repo/design-system/styles/globals.css` defines with the ClosedLoop brand.
+ * This file only closes the gaps that preset leaves on Fumadocs' raw defaults,
+ * pointing each at an existing design-system token. It is imported LAST in
+ * docs/layout.tsx so it wins the cascade.
+ *
+ * Every override is authored for both :root and .dark. The docs site is
+ * forcedTheme="light" today, but the dark values must stay correct if it ever
+ * unpins. No theme toggle is added here — that would be scope creep.
+ */
+
+:root,
+.dark {
+  /* Reuse the app radius token (Fumadocs reads --radius for card/callout/button
+     rounding). Not a new px value — this is the same 0.5rem globals.css sets. */
+  --radius: 0.5rem;
+
+  /* Semantic callout colors. shadcn.css leaves --color-fd-success/warning/info/
+     idea on Fumadocs' raw oklch defaults; map them onto the app's semantic
+     tokens. There is no dedicated "idea" token, so it reuses --info rather than
+     minting a one-off token. --color-fd-error is already --destructive via the
+     preset. These resolve per-theme because --success/--warning/--info are
+     themselves redefined under .dark in globals.css. */
+  --color-fd-success: var(--success);
+  /* Warning uses --warning-foreground, not --warning: Fumadocs paints this color
+     as the callout's icon glyph and left rule (not a fill behind text), and raw
+     --warning (a bright ~0.82 L yellow) is low-contrast as a glyph on the
+     near-white callout card. --warning-foreground is the darker amber in light
+     and the lighter amber in dark, so the glyph stays legible in both themes. */
+  --color-fd-warning: var(--warning-foreground);
+  --color-fd-info: var(--info);
+  --color-fd-idea: var(--info);
+
+  /* Dialog/search overlay scrim. No design-system token owns this value, so it
+     mirrors the app dialog's overlay exactly — DialogOverlay uses `bg-black/50`
+     (components/ui/dialog.tsx). This is the only literal in the file, and it is
+     a copy of that value, not an invented one. */
+  --color-fd-overlay: color-mix(in oklab, black 50%, transparent);
+
+  /* Diff-highlight colors (--color-fd-diff-add/remove/symbol) are deliberately
+     left on Fumadocs' defaults: we have no diff tokens, and these only surface
+     inside fenced ```diff blocks. This is an intentional decision, not an
+     omission — mint diff tokens in globals.css first if brand alignment there
+     ever matters. */
+}
+
+/* Sidebar surface reconciliation (FEA-3888, Track 1 of FEA-3886).
+   `shadcn.css`'s `#nd-sidebar` block remaps only accent/ring/primary-foreground
+   onto our --sidebar* tokens; it leaves --color-fd-muted / --color-fd-secondary
+   / --color-fd-muted-foreground inheriting the top-level app tokens (--muted,
+   --secondary, --muted-foreground). Worse, `neutral.css` (pulled in by
+   fumadocs-ui/style.css) pins those three to raw Fumadocs grays under
+   `.dark #nd-sidebar`, so the dark docs sidebar drifts off-brand entirely.
+
+   Scope of these three tokens in Fumadocs 16.8.0's docs sidebar (verified
+   against dist/layouts/docs/slots/sidebar.js): the active/hovered nav-item
+   backgrounds do NOT read them. Hover is `bg-fd-accent/50` and active is
+   `bg-fd-primary/10`, and shadcn.css already maps --color-fd-accent onto
+   --sidebar-accent under #nd-sidebar (active's --color-fd-primary stays the app
+   --primary). What these three actually paint is the sidebar's secondary chrome:
+   the section/search triggers and folder toggles (`bg-fd-secondary/50`), the
+   de-emphasized label text (`text-fd-muted-foreground`), and the collapsed
+   floating popout ([data-sidebar-panel], `bg-fd-muted text-fd-muted-foreground`).
+   Those should track the app's *sidebar* surface (--sidebar-accent) rather than
+   the page body, to read as the same product as app.closedloop.ai's nav.
+
+   --color-fd-muted-foreground deliberately stays on --muted-foreground (the body
+   token), not --sidebar-accent-foreground: it renders as de-emphasized label text
+   on the base --sidebar surface, never directly on an accent or active fill, so
+   the muted foreground is the intended low-emphasis look; the fills carry their
+   own foregrounds (--sidebar-accent-foreground for hover, --primary for active).
+
+   Selectors cover all three surfaces Fumadocs renders the docs nav into:
+   #nd-sidebar (desktop <aside>), #nd-sidebar-mobile (the drawer <aside>), and
+   [data-sidebar-panel] (the collapsed popout, a sibling of #nd-sidebar that would
+   not inherit its overrides), so the mapping stays consistent across breakpoints
+   and collapse states. The token values are redefined per-theme in globals.css,
+   so one mapping covers both. Each surface is listed twice: the bare selector
+   (0,1,0) is the light-mode fix (shadcn.css leaves these three inheriting the
+   body tokens), and the `.dark` variant (0,2,0) out-specifies neutral.css's
+   same-specificity `.dark #nd-sidebar` block, imported before this file. Docs is
+   forcedTheme="light" today; the dark rules keep that path correct if it ever
+   unpins. */
+#nd-sidebar,
+#nd-sidebar-mobile,
+[data-sidebar-panel],
+.dark #nd-sidebar,
+.dark #nd-sidebar-mobile,
+.dark [data-sidebar-panel] {
+  --color-fd-muted: var(--sidebar-accent);
+  --color-fd-muted-foreground: var(--muted-foreground);
+  --color-fd-secondary: var(--sidebar-accent);
+}
+
+/* Type: inherit the app's Geist stack. The GeistSans/GeistMono `.variable`
+   classes are already on <html> (from [locale]/layout.tsx), so --font-sans /
+   --font-mono resolve here. Fumadocs sets no font-family of its own (it
+   inherits from body); we pin its docs root and code surfaces explicitly so the
+   docs match the app rather than relying on inherited body font. */
+#nd-docs-layout {
+  font-family: var(--font-sans);
+}
+
+#nd-docs-layout code,
+#nd-docs-layout kbd,
+#nd-docs-layout pre {
+  font-family: var(--font-mono);
+}

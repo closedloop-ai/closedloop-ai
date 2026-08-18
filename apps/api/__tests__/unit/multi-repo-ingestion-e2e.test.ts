@@ -131,7 +131,11 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       // withDb (non-tx) returns the installation repo for the success entry
       mockWithDbCall({
         gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue({ id: "install-repo-success" }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: "install-repo-success",
+            fullName: "org/repo-success",
+            installation: { installationId: "installation-success" },
+          }),
         },
       });
 
@@ -159,7 +163,11 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
 
       mockWithDbCall({
         gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue({ id: "install-repo-success" }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: "install-repo-success",
+            fullName: "org/repo-success",
+            installation: { installationId: "installation-success" },
+          }),
         },
       });
 
@@ -170,11 +178,9 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
 
       expect(mockEnsurePrLinkageRecords).toHaveBeenCalledTimes(1);
       expect(mockEnsurePrLinkageRecords).toHaveBeenCalledWith(
-        mockTx,
         expect.objectContaining({
           organizationId: "org-e2e",
           documentId: "doc-e2e",
-          prUrl: "https://github.com/org/repo-success/pull/100",
           prNumber: 100,
         })
       );
@@ -194,7 +200,11 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
       // Only one DB lookup for the single success entry
       mockWithDbCall({
         gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue({ id: "install-repo-success" }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: "install-repo-success",
+            fullName: "org/repo-success",
+            installation: { installationId: "installation-success" },
+          }),
         },
       });
 
@@ -224,7 +234,11 @@ describe("parseExecutionResultFile + ingestRepoExecutionResults (end-to-end chai
 
       mockWithDbCall({
         gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue({ id: "install-repo-success" }),
+          findFirst: vi.fn().mockResolvedValue({
+            id: "install-repo-success",
+            fullName: "org/repo-success",
+            installation: { installationId: "installation-success" },
+          }),
         },
       });
 

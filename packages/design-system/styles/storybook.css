@@ -1,0 +1,35 @@
+/*
+ * Storybook's Tailwind entry. Imported ONLY by apps/storybook/.storybook/preview.tsx.
+ *
+ * Exists for one line: the `@source` below. Storybook indexes desktop-renderer
+ * stories (one of the four globs in apps/storybook/.storybook/main.ts is rooted
+ * at apps/desktop/src/renderer/components), but Tailwind v4 only emits utilities
+ * it finds in a scanned tree — so without this, a class used ONLY in the
+ * renderer has no rule in the preview and a desktop story renders with its type
+ * scale, spacing and layout silently missing. Measured before the fix: the guest
+ * landing's `h1` came out at 30px instead of 72, `min-h-full` computed to 0, and
+ * `pl-[5.25rem]` to 24px.
+ *
+ * The ISS-5287 sweep does not catch that: it mounts and plays stories in jsdom
+ * and asserts text and roles, not geometry. A desktop story is not visual
+ * evidence unless this file is in the preview.
+ *
+ * Why it is NOT in `globals.css` next door: that stylesheet is imported by
+ * apps/app, apps/web, apps/prototypes and packages/rich-text as well. None of
+ * them render the Electron renderer, so sourcing it there emitted dead CSS into
+ * the product and marketing bundles and made every renderer edit invalidate
+ * their CSS — and apps/app's Docker image is built from a `turbo prune app
+ * --docker` closure in which `apps/desktop` is not present at all.
+ *
+ * Why it is HERE rather than under apps/storybook: postcss-load-config resolves
+ * per processed file, and `apps/storybook/postcss.config.mjs` still declares the
+ * Tailwind v3 plugin shape (`tailwindcss: {}`), which v4 rejects outright. That
+ * config is dead today because nothing under apps/storybook is a PostCSS entry;
+ * putting this file there would have made it live and broken the build. Left
+ * alone deliberately — see the resolve report for cr-50603.
+ *
+ * The renderer's own globals.css keeps its `@source` for the Vite app build;
+ * this is the Storybook half.
+ */
+@import "./globals.css";
+@source "../../../apps/desktop/src/renderer/**/*.{ts,tsx}";

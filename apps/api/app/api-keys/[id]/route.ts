@@ -1,3 +1,8 @@
+import { AuditAction, AuditObjectType } from "@repo/api/src/types/audit";
+import {
+  dispatchAuditEvent,
+  userAuditActor,
+} from "@/app/audit/audit-emit-service";
 import { withAuth } from "@/lib/auth/with-auth";
 import {
   deleteResponse,
@@ -20,6 +25,16 @@ export const DELETE = withAuth<{ deleted: true }, "/api-keys/[id]">(
       if (!revoked) {
         return notFoundResponse("API key");
       }
+
+      // Record the key revocation on the tamper-evident audit ledger (FEA-3862).
+      // Non-blocking/best-effort; only the key id is recorded, no secret.
+      dispatchAuditEvent({
+        organizationId: user.organizationId,
+        actor: userAuditActor(user.id),
+        action: AuditAction.ApiKeyRevoked,
+        objectType: AuditObjectType.ApiKey,
+        objectId: id,
+      });
 
       return deleteResponse();
     } catch (error) {

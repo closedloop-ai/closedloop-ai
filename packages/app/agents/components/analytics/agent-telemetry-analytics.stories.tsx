@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
+import type { FixtureRoute } from "../../../shared/storybook/fixture-fetch";
 import {
   createAgentSessionAnalyticsFixture,
   createAgentSessionUsageSummaryFixture,
@@ -20,78 +20,72 @@ const queryState: AgentTelemetryAnalyticsQueryState = {
   status: "all",
 };
 
+const storyApiRoutes: FixtureRoute[] = [
+  {
+    method: "GET",
+    path: "/agent-sessions/usage",
+    respond: () =>
+      createAgentSessionUsageSummaryFixture("organization", {
+        byModel: [
+          {
+            cacheReadTokens: 400,
+            cacheWriteTokens: 100,
+            estimatedCost: 12,
+            inputTokens: 120_000,
+            model: "gpt-5.5",
+            outputTokens: 48_000,
+            sessionCount: 2,
+          },
+        ],
+        byUser: [
+          {
+            cacheReadTokens: 400,
+            cacheWriteTokens: 100,
+            estimatedCost: 12,
+            inputTokens: 120_000,
+            outputTokens: 48_000,
+            sessionCount: 2,
+            userAvatarUrl: null,
+            userEmail: "user@example.com",
+            userId: "user-1",
+            userName: "User Person",
+          },
+        ],
+        totalEstimatedCost: 12,
+        totalInputTokens: 120_000,
+        totalOutputTokens: 48_000,
+        totalSessions: 2,
+      }),
+  },
+  {
+    method: "GET",
+    path: "/agent-sessions",
+    respond: () => ({
+      items: populatedAgentSessionListFixtures,
+      total: populatedAgentSessionListFixtures.length,
+      viewerScope: "organization",
+    }),
+  },
+  {
+    method: "GET",
+    path: "/agent-sessions/analytics",
+    respond: () => createAgentSessionAnalyticsFixture("organization"),
+  },
+  {
+    method: "GET",
+    path: "/teams",
+    respond: () => [{ id: "team-1", name: "Platform" }],
+  },
+  {
+    method: "GET",
+    path: "/projects",
+    respond: () => [{ id: "project-1", name: "Platform" }],
+  },
+];
+
 const meta: Meta<typeof AgentTelemetryAnalytics> = {
   component: AgentTelemetryAnalytics,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders
-        apiRoutes={[
-          {
-            method: "GET",
-            path: "/agent-sessions/usage",
-            respond: () =>
-              createAgentSessionUsageSummaryFixture("organization", {
-                byModel: [
-                  {
-                    cacheReadTokens: 400,
-                    cacheWriteTokens: 100,
-                    estimatedCost: 12,
-                    inputTokens: 120_000,
-                    model: "gpt-5.5",
-                    outputTokens: 48_000,
-                    sessionCount: 2,
-                  },
-                ],
-                byUser: [
-                  {
-                    cacheReadTokens: 400,
-                    cacheWriteTokens: 100,
-                    estimatedCost: 12,
-                    inputTokens: 120_000,
-                    outputTokens: 48_000,
-                    sessionCount: 2,
-                    userAvatarUrl: null,
-                    userEmail: "user@example.com",
-                    userId: "user-1",
-                    userName: "User Person",
-                  },
-                ],
-                totalEstimatedCost: 12,
-                totalInputTokens: 120_000,
-                totalOutputTokens: 48_000,
-                totalSessions: 2,
-              }),
-          },
-          {
-            method: "GET",
-            path: "/agent-sessions",
-            respond: () => ({
-              items: populatedAgentSessionListFixtures,
-              total: populatedAgentSessionListFixtures.length,
-              viewerScope: "organization",
-            }),
-          },
-          {
-            method: "GET",
-            path: "/agent-sessions/analytics",
-            respond: () => createAgentSessionAnalyticsFixture("organization"),
-          },
-          {
-            method: "GET",
-            path: "/teams",
-            respond: () => [{ id: "team-1", name: "Platform" }],
-          },
-          {
-            method: "GET",
-            path: "/projects",
-            respond: () => [{ id: "project-1", name: "Platform" }],
-          },
-        ]}
-      >
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
+  parameters: { appCore: { apiRoutes: storyApiRoutes } },
   title: "App Core/Agents/Telemetry Analytics",
 };
 

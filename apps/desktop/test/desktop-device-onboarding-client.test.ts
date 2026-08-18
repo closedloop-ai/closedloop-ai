@@ -3,7 +3,7 @@ import { test } from "node:test";
 import {
   pollDeviceOnboarding,
   startDeviceOnboarding,
-} from "../src/main/desktop-device-onboarding-client.js";
+} from "../src/main/onboarding/desktop-device-onboarding-client.js";
 
 const API_ORIGIN = "https://api.closedloop.test";
 

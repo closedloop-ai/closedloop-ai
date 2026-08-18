@@ -1248,20 +1248,20 @@ describe("sanitizeDesktopTelemetryDiagnostics", () => {
     expect(encoded.byteLength).toBeLessThanOrEqual(4096);
   });
 
-  it("bounds credential-scan cost for a long credential-free line", () => {
-    // A long single line of repeated word/hyphen segments with no credential
-    // suffix is the ReDoS shape for CREDENTIAL_RE's nested quantifiers. The
-    // pre-truncation + per-line cap must keep this fast and still redact-free.
+  it("truncates a long credential-free line before scanning it, and keeps it unredacted", () => {
+    // Repeated word/hyphen segments with no credential suffix are the ReDoS
+    // shape for CREDENTIAL_RE's nested quantifiers. The guard — pre-truncation
+    // plus the per-line cap in `sanitizeTextTail` — is directly observable: the
+    // scan sees only the first 4096 bytes, so the output is the truncated prefix
+    // and the line survives unredacted, which proves the regex input is bounded.
+    // The explicit 2 s budget (not vitest's 5 s default) is what a widened cap
+    // must beat; a budget is not an elapsed-time assertion.
     const pathological = `${"a-".repeat(200_000)}b`;
-    const start = Date.now();
     const result = sanitizeDesktopTelemetryDiagnostics({
       logTail: pathological,
     });
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(1000);
-    const encoded = new TextEncoder().encode(result?.logTail ?? "");
-    expect(encoded.byteLength).toBeLessThanOrEqual(4096);
-  });
+    expect(result?.logTail).toBe(pathological.slice(0, 4096));
+  }, 2000);
 
   it("does not truncate logTail that fits within 4096 bytes", () => {
     const shortLog = "short log line\nsecond line";

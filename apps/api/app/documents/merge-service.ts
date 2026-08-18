@@ -2,6 +2,7 @@ import { escapeXmlClosingTags, generateText, models } from "@repo/ai/server";
 import { type Document, DocumentType } from "@repo/api/src/types/document";
 import { Result, Status, type StatusCode } from "@repo/api/src/types/result";
 import { withDb } from "@repo/database";
+import { log } from "@repo/observability/log";
 import { documentTemplatesService } from "../templates/service";
 import { documentService } from "./document-service";
 import { documentVersionService } from "./document-version-service";
@@ -254,10 +255,12 @@ export const documentMergeService = {
             content: sanitizedMergedContent,
             createdById: userId,
           },
+          select: { id: true },
         }),
         tx.documentDetail.update({
           where: { artifactId: primary.id },
           data: { latestVersion: nextVersion },
+          select: { artifactId: true },
         }),
       ]);
 
@@ -273,7 +276,24 @@ export const documentMergeService = {
       return txResult;
     }
 
-    await deleteDocumentRoom(organizationId, secondary.slug);
+    // Best-effort: the merge (new version + secondary-artifact delete) already
+    // committed atomically above, so that DB commit is authoritative. Deleting
+    // the secondary's Liveblocks room is a follow-up network call — if it fails
+    // (e.g. Liveblocks is down) we must not surface a 500 for a merge that
+    // actually succeeded, or a client retry would return NotFound (the
+    // secondary artifact is already gone). Log the leaked room for follow-up
+    // cleanup instead, matching the post-commit best-effort convention (e.g.
+    // retention-service's S3 purge).
+    try {
+      await deleteDocumentRoom(organizationId, secondary.slug);
+    } catch (error) {
+      log.error("[merge-service] failed to delete secondary document room", {
+        error: error instanceof Error ? error.message : String(error),
+        organizationId,
+        secondaryDocumentId: secondary.id,
+        secondarySlug: secondary.slug,
+      });
+    }
 
     const updated = await documentService.findByIdSimple(
       primary.id,

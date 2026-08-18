@@ -2,7 +2,13 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
-import { branchesKeys, useBranches } from "../../hooks/use-branches";
+import { makeBranchAnalytics } from "../../components/branch-analytics-fixtures";
+import {
+  type BranchesQueryIdentity,
+  branchesKeys,
+  useBranchCohortAnalytics,
+  useBranchesPageData,
+} from "../../hooks/use-branches";
 import type {
   BranchesChange,
   BranchesDataSource,
@@ -39,20 +45,31 @@ afterEach(() => {
   }
 });
 
+const ANALYTICS_FIXTURE = makeBranchAnalytics();
+
 function liveFakeSource(withSubscribe: boolean) {
   let cb: ((change: BranchesChange) => void) | null = null;
   let calls = 0;
+  let cohortCalls = 0;
   const source: BranchesDataSource = {
     scope: "local",
-    list: () => {
-      calls += 1;
-      return Promise.resolve({ items: [], total: calls, viewerScope: "self" });
-    },
+    list: () => Promise.reject(new Error("unused")),
     detail: () => Promise.reject(new Error("unused")),
     comments: () => Promise.reject(new Error("unused")),
     trace: () => Promise.reject(new Error("unused")),
     usage: () => Promise.reject(new Error("unused")),
     analytics: () => Promise.reject(new Error("unused")),
+    cohortAnalytics: () => {
+      cohortCalls += 1;
+      return Promise.resolve(null);
+    },
+    pageData: () => {
+      calls += 1;
+      return Promise.resolve({
+        list: { items: [], total: calls, viewerScope: "self" as const },
+        analytics: ANALYTICS_FIXTURE,
+      });
+    },
     ...(withSubscribe
       ? {
           subscribe: (onChange: (change: BranchesChange) => void) => {
@@ -67,12 +84,14 @@ function liveFakeSource(withSubscribe: boolean) {
   return {
     source,
     emit: (change: BranchesChange = {}) => cb?.(change),
+    cohortCalls: () => cohortCalls,
     listCalls: () => calls,
   };
 }
 
 function ListProbe() {
-  useBranches({});
+  useBranchesPageData({});
+  useBranchCohortAnalytics({ branchIds: ["repo%2Fowner::main"] });
   return null;
 }
 
@@ -83,10 +102,17 @@ async function advance(ms: number) {
   });
 }
 
-function renderBridge(source: BranchesDataSource) {
+function renderBridge(
+  source: BranchesDataSource,
+  queryIdentity?: BranchesQueryIdentity
+) {
   return render(
     <AppCoreStoryProviders>
-      <BranchesDataSourceProvider dataSource={source}>
+      <BranchesDataSourceProvider
+        dataSource={source}
+        queryIdentity={queryIdentity}
+        queryPolicy={{ staleTime: Number.POSITIVE_INFINITY }}
+      >
         <BranchesLiveBridge />
         <ListProbe />
       </BranchesDataSourceProvider>
@@ -101,10 +127,12 @@ describe("BranchesLiveBridge", () => {
 
     await advance(INVALIDATION_THROTTLE_MS);
     expect(fake.listCalls()).toBe(1);
+    expect(fake.cohortCalls()).toBe(1);
 
     fake.emit({ branchId: "repo%2Fowner::main" });
     await advance(INVALIDATION_THROTTLE_MS);
     expect(fake.listCalls()).toBe(2);
+    expect(fake.cohortCalls()).toBe(2);
   });
 
   it("collapses a burst of changes into a single refetch", async () => {
@@ -204,7 +232,7 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     return keys;
   }
 
-  it("scopes a branchId change to list + usage + analytics + that one detail + trace + comments", async () => {
+  it("scopes a branchId change to corpus reads + that one detail + trace + comments", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -214,9 +242,10 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     await advance(INVALIDATION_THROTTLE_MS);
 
     const keys = invalidatedKeys();
-    expect(keys).toContain(JSON.stringify(branchesKeys.lists()));
     expect(keys).toContain(JSON.stringify(branchesKeys.usages()));
     expect(keys).toContain(JSON.stringify(branchesKeys.analyticsRoot()));
+    expect(keys).toContain(JSON.stringify(branchesKeys.cohortAnalyticsRoot()));
+    expect(keys).toContain(JSON.stringify(branchesKeys.pageDataRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.detail("local", "b1")));
     // PLN-1148 Phase 2: the lazy trace is scoped to its own branch, not broad.
     expect(keys).toContain(JSON.stringify(branchesKeys.trace("local", "b1")));
@@ -228,7 +257,32 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     expect(keys).not.toContain(JSON.stringify(branchesKeys.commentsRoot()));
   });
 
-  it("expands a {} change to list + usage + analytics + all details + all traces + all comments", async () => {
+  it("applies the active cache identity to scoped branch invalidations", async () => {
+    const queryIdentity = { cacheScope: "desktop-local" };
+    const fake = liveFakeSource(true);
+    renderBridge(fake.source, queryIdentity);
+    await advance(INVALIDATION_THROTTLE_MS);
+    invalidateSpy.mockClear();
+
+    fake.emit({ branchId: "b1" });
+    await advance(INVALIDATION_THROTTLE_MS);
+
+    const keys = invalidatedKeys();
+    expect(keys).toContain(
+      JSON.stringify(branchesKeys.detail("local", "b1", queryIdentity))
+    );
+    expect(keys).toContain(
+      JSON.stringify(branchesKeys.trace("local", "b1", queryIdentity))
+    );
+    expect(keys).toContain(
+      JSON.stringify(branchesKeys.comments("local", "b1", queryIdentity))
+    );
+    expect(keys).not.toContain(
+      JSON.stringify(branchesKeys.detail("local", "b1"))
+    );
+  });
+
+  it("expands a {} change to every corpus and branch-scoped read", async () => {
     const fake = liveFakeSource(true);
     renderBridge(fake.source);
     await advance(INVALIDATION_THROTTLE_MS);
@@ -238,9 +292,10 @@ describe("BranchesLiveBridge invalidation scoping", () => {
     await advance(INVALIDATION_THROTTLE_MS);
 
     const keys = invalidatedKeys();
-    expect(keys).toContain(JSON.stringify(branchesKeys.lists()));
     expect(keys).toContain(JSON.stringify(branchesKeys.usages()));
     expect(keys).toContain(JSON.stringify(branchesKeys.analyticsRoot()));
+    expect(keys).toContain(JSON.stringify(branchesKeys.cohortAnalyticsRoot()));
+    expect(keys).toContain(JSON.stringify(branchesKeys.pageDataRoot()));
     expect(keys).toContain(JSON.stringify(branchesKeys.details()));
     // PLN-1148 Phase 2: a broad change refreshes every open trace too.
     expect(keys).toContain(JSON.stringify(branchesKeys.traces()));

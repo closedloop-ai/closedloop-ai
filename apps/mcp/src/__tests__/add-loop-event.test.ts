@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../tools/tool-utils.js", () => ({
-  buildLoopUrl: (loopId: string) => `https://app.example/loops/${loopId}`,
   encodePathSegment: (id: string) => encodeURIComponent(id),
   withErrorHandling: (fn: () => Promise<unknown>) => fn(),
 }));
 
 import { registerAddLoopEvent } from "../tools/add-loop-event.js";
+import { stubLoopUrls } from "./fixtures/tool-harness.js";
 
 const registerTool = vi.fn();
 const apiClient = {
@@ -32,7 +32,11 @@ async function callHandler(input: Record<string, unknown>) {
 describe("add-loop-event MCP tool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    registerAddLoopEvent({ registerTool } as never, apiClient as never);
+    registerAddLoopEvent(
+      { registerTool } as never,
+      apiClient as never,
+      stubLoopUrls as never
+    );
   });
 
   it("posts the message as an output event to the loop", async () => {

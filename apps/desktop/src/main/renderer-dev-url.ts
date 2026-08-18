@@ -36,7 +36,7 @@ export function resolveDevRendererUrl(
   return null;
 }
 
-function isLoopbackHttpUrl(url: URL): boolean {
+export function isLoopbackHttpUrl(url: URL): boolean {
   return (
     url.protocol === "http:" &&
     url.username === "" &&
@@ -45,4 +45,37 @@ function isLoopbackHttpUrl(url: URL): boolean {
       url.hostname === "localhost" ||
       url.hostname === "[::1]")
   );
+}
+
+/**
+ * Compute the `Access-Control-Allow-Origin` value for a renderer `fetch()` of a
+ * prepared `app://` transcript, given the request's `Origin` header (or null).
+ *
+ * The `app://` scheme is registered `corsEnabled` (startup.ts) so the renderer
+ * can fetch transcripts cross-origin from the loopback Vite dev origin. Chromium
+ * then requires the response to echo that origin back. We reflect the request
+ * `Origin` ONLY when it is a bare loopback HTTP origin — the exact same
+ * constraint {@link resolveDevRendererUrl} enforces on the dev renderer URL — so
+ * no remote/arbitrary origin is ever allowed. In packaged builds the renderer
+ * document itself is served from `app://`, so the fetch is same-origin and
+ * carries no `Origin` header; we return null (no ACAO header needed, and none is
+ * granted). This never returns `*`.
+ */
+export function resolveTranscriptAllowedOrigin(
+  requestOrigin: string | null
+): string | null {
+  if (!requestOrigin) {
+    return null;
+  }
+  try {
+    const parsed = new URL(requestOrigin);
+    if (isLoopbackHttpUrl(parsed)) {
+      // `origin` normalizes to scheme://host[:port] with no trailing slash —
+      // exactly the ACAO grammar.
+      return parsed.origin;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }

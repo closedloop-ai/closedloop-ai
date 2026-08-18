@@ -1,0 +1,587 @@
+/* Branch-detail Epic-E timeline surfaces (PR activity timeline, event-dot rail,
+   hover tooltips, actor Gantt) — split out of branch-detail.css so each
+   feature stylesheet stays under the 1000-line ceiling (FEA-4234). */
+/* PR activity timeline (Epic E / E1): per-hour stacked token bars, by actor */
+.bq-act {
+  margin-top: 0;
+}
+
+/* PR timeline header (bars → dots → axis): pins to the top of the left timeline
+   scroller while the combined trace scrolls beneath it. A bottom border
+   separates it from the trace. */
+.bq-timeline-sticky {
+  position: sticky;
+  top: 0;
+  isolation: isolate;
+  z-index: 20;
+  padding-top: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.bq-act-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+/* Same real-heading treatment as `.bq-sec-title` (foreground, 13px, normal
+   case), not the muted uppercase eyebrow: the Sessions & timeline tab's "PR
+   timeline" and "Combined session trace" headings must not speak a different
+   heading language from the Branch details tab on the same page (FEA-4234). The
+   `.bq-act-sub` modifier below restores the smaller normal-weight trailing detail. */
+.bq-act-title {
+  flex: 0 0 auto;
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+
+/* Trailing detail on a heading (session label / count): subordinate to the
+   foreground `.bq-act-title` — smaller, normal weight, muted. */
+.bq-act-sub {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.bq-act-legend {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.bq-lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-family: inherit;
+}
+
+.bq-lg-sw {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 2px;
+}
+
+.bq-lg-name {
+  color: var(--muted-foreground);
+  font-weight: 400;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bq-bars-wrap {
+  position: relative;
+  padding-top: 14px;
+}
+
+.bq-bars {
+  position: relative;
+  display: flex;
+  height: 92px;
+  align-items: flex-end;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.bq-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 3px;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: none;
+  border-radius: 2px 2px 0 0;
+  padding: 0;
+  background: #94a3b8;
+  cursor: pointer;
+}
+
+.bq-bar > i {
+  display: block;
+  width: 100%;
+}
+
+.bq-bar.hot {
+  outline: 1px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  outline-offset: 1px;
+}
+
+.bq-bar.idle {
+  height: 6px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 32%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 32%, transparent) 4px
+  );
+}
+
+/* Event-dot rail (Epic E / E3): green/red local outcomes + orange PR comments */
+.bq-drail-wrap {
+  position: relative;
+  /* Dots sit just under the bars (the time-axis row follows the dots). */
+  margin-top: 4px;
+}
+
+.bq-drail {
+  position: relative;
+  height: 14px;
+}
+
+.bq-dot {
+  position: absolute;
+  top: 3px;
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.1s;
+  transform: translateX(-50%);
+}
+
+.bq-dot:hover,
+.bq-dot.hot {
+  transform: translateX(-50%) scale(1.4);
+}
+
+.bq-dot.d-green {
+  background: var(--success-foreground);
+}
+
+.bq-dot.d-red {
+  background: var(--destructive);
+}
+
+.bq-dot.d-orange {
+  background: var(--warning, #d9a441);
+}
+
+.bq-drail-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.bq-drail-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bq-drail-comments .bq-dot {
+  position: static;
+  transform: none;
+}
+
+.bq-drail-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Hover tooltips (Epic E): the design handoff's `bq-tip` card. The bar tooltip
+   shows the hour + total + per-actor input/output/cache split; the `bq-tip-mk`
+   variant lists event markers. Positioned absolutely within `.bq-bars-wrap` /
+   `.bq-drail-wrap` via an inline `left`; `is-left` flips the anchor near the
+   right edge. Pointer-events:none so it never eats the hover. */
+.bq-tip {
+  position: absolute;
+  bottom: 100%;
+  z-index: 12;
+  margin-bottom: 8px;
+  min-width: 180px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.16));
+  padding: 9px 11px;
+  pointer-events: none;
+}
+
+.bq-tip.is-left {
+  transform: translateX(-86%);
+}
+
+/* Portaled to <body> with fixed positioning (BranchTipPortal): escapes the
+   sticky toggle/timeline stacking contexts and the page scroller's overflow, so
+   a tall tooltip is never clipped behind the sticky chrome. Overrides the
+   absolute/transform base above. */
+.bq-tip-fixed {
+  position: fixed;
+  bottom: auto;
+  z-index: 70;
+  margin: 0;
+  transform: none;
+}
+
+.bq-tip-h {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--foreground);
+  font-size: 12px;
+}
+
+.bq-tip-h .font-mono {
+  font-weight: 600;
+}
+
+.bq-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 0;
+  font-size: 11.5px;
+}
+
+.bq-tip-sw {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.bq-tip-name {
+  flex: 1;
+  color: var(--foreground);
+}
+
+.bq-tip-tok {
+  color: var(--muted-foreground);
+}
+
+.bq-tip-srow {
+  padding: 3px 0;
+}
+
+.bq-tip-srow + .bq-tip-srow {
+  border-top: 1px solid var(--border);
+}
+
+.bq-tip-split {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 1px 15px;
+}
+
+/* Unit caption for the token split — marks the boundary between the USD figures
+   above and the TOKEN counts below so the two units never read as one. */
+.bq-tip-splitlabel {
+  margin-bottom: 1px;
+  color: var(--muted-foreground);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bq-tip-sp {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+}
+
+.bq-tip-spdot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.bq-tip-spk {
+  flex: 1;
+  color: var(--muted-foreground);
+}
+
+.bq-tip-spv {
+  color: var(--foreground);
+}
+
+.bq-tip-mk {
+  min-width: 230px;
+  max-width: 320px;
+}
+
+.bq-tip-mkhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.bq-tip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.bq-tip-li {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.bq-tip-litop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.bq-tip-lt {
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.bq-tip-ll {
+  min-width: 0;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+/* Actor Gantt swimlane (Epic E / E4): one lane per session, active bursts solid */
+.bq-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.bq-lane {
+  display: grid;
+  grid-template-columns: 200px 1fr 120px;
+  align-items: center;
+  gap: 12px;
+}
+
+.bq-lane-id {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+/* FEA-4257: the lane identity cluster (icon + name + sub) is one link, so it
+   carries the same inline-flex alignment and gap the cluster used, keeps the
+   min-width:0 that lets the name/sub ellipsize, and inherits its text color
+   (the name/sub tokens stay authoritative, not a link accent). */
+.bq-lane-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: inherit;
+}
+
+.bq-aico {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid;
+  border-radius: 50%;
+  background: var(--card);
+}
+
+.bq-lane-name {
+  flex: 0 0 auto;
+  overflow: hidden;
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bq-lane-sub {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bq-lane-tag {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0 4px;
+  color: var(--muted-foreground);
+  font-weight: 700;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.bq-lane-resumed {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: color-mix(in oklab, #c0762b 16%, transparent);
+  color: #9a5a1e;
+  font-weight: 600;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.bq-lane-track {
+  position: relative;
+  height: 16px;
+  border-radius: calc(var(--radius) - 4px);
+}
+
+.bq-lane-extent {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  border-radius: 3px;
+  background: var(--muted);
+}
+
+.bq-lane-seg {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  border: none;
+  border-radius: 3px;
+  opacity: 0.92;
+  cursor: pointer;
+}
+
+.bq-lane-seg:hover {
+  outline: 1px solid color-mix(in oklab, var(--primary) 45%, transparent);
+  opacity: 1;
+}
+
+.bq-lane-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1.5px solid var(--foreground);
+  pointer-events: none;
+}
+
+.bq-lane-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* PR timeline header stat cluster (cost / value / duration) + time axis */
+.bq-stats {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.bq-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.bq-stat b {
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .bq-act-head {
+    align-items: flex-start;
+    gap: 8px 12px;
+  }
+
+  .bq-act-legend,
+  .bq-stats {
+    flex-basis: 100%;
+  }
+
+  .bq-act-legend:empty {
+    display: none;
+  }
+
+  .bq-stats {
+    gap: 6px 12px;
+  }
+}
+
+.bq-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* Shown in place of the bars when sessions ran but the cost-sized chart can't be
+   drawn (no measurable duration, or a whole un-priced span) — the section header
+   and stat strip above still render, so the panel keeps answering "what did this
+   branch cost" (FEA-4269). Muted, in-panel body text, not a full-page empty
+   state. */
+.bq-act-nobars {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  min-height: 72px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ── ob-pulse (FEA-3179) ───────────────────────────────────────────────────
+   The soft opacity pulse originally authored for the desktop first-launch
+   onboarding surface (apps/desktop/src/renderer/globals.css). Registered here
+   in the shared @repo/app stylesheet so BOTH surfaces (web app + desktop
+   renderer, which each import this file) can drive the same animation from
+   shared components — e.g. the agents-table "live" activity dot. Reused
+   verbatim; not a new animation. */
+@keyframes ob-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}

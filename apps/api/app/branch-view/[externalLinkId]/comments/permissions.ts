@@ -9,6 +9,7 @@ import {
   CommentKind,
   type CommentKind as CommentKindType,
 } from "@repo/api/src/types/branch-view";
+import { apiKeyScopesAllow } from "@/lib/auth/api-key-scopes";
 import type { AuthContext } from "@/lib/auth/with-auth";
 
 const HTTP_READ_METHODS = new Set(["GET", "HEAD"]);
@@ -127,9 +128,13 @@ function checkOrganizationAndApiKeyScope(
     method: "POST",
     action: input.action,
   });
-  const scopes = input.auth.apiKeyScopes ?? ["read", "write", "delete"];
-  const hasRequiredScopes = requiredScopes.every((scope) =>
-    scopes.includes(scope)
+  // ISS-4905: an empty/absent/all-unrecognized scope set fails closed here too.
+  // This used to substitute a hardcoded ["read","write","delete"] grant, which
+  // made the least-specified credential the most privileged one.
+  const hasRequiredScopes = apiKeyScopesAllow(
+    input.auth.apiKeyScopes,
+    requiredScopes,
+    "branch_view_comment_permissions"
   );
 
   return hasRequiredScopes

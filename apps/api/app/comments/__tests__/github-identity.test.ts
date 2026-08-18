@@ -18,6 +18,18 @@ vi.mock("@/lib/integration-encryption", () => ({
   decryptIntegrationToken: vi.fn(),
 }));
 
+const { mockGetUserTokenOctokit, USER_OCTOKIT } = vi.hoisted(() => {
+  const octokit = { marker: "user-token-octokit" };
+  return {
+    mockGetUserTokenOctokit: vi.fn().mockReturnValue(octokit),
+    USER_OCTOKIT: octokit,
+  };
+});
+
+vi.mock("@repo/github/user-token-auth", () => ({
+  getUserTokenOctokit: mockGetUserTokenOctokit,
+}));
+
 import { withDb } from "@repo/database";
 import {
   getGitHubWriteIdentityStatus,
@@ -41,6 +53,8 @@ type GitHubUserConnectionFixture = {
   revokedAt: Date | null;
   tokenExpiresAt: Date | null;
   scopes: string[];
+  rateLimitTier: number | null;
+  lastUsedAt: Date | null;
 };
 
 const CONNECTION: GitHubUserConnectionFixture = {
@@ -53,6 +67,8 @@ const CONNECTION: GitHubUserConnectionFixture = {
   revokedAt: null,
   tokenExpiresAt: new Date("2026-05-20T13:00:00.000Z"),
   scopes: ["repo"],
+  rateLimitTier: null,
+  lastUsedAt: null,
 };
 
 describe("requireGitHubWriteIdentity", () => {
@@ -85,7 +101,7 @@ describe("requireGitHubWriteIdentity", () => {
       },
       data: { lastUsedAt: NOW },
     });
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: true,
       value: {
         userId: "user-1",
@@ -93,10 +109,32 @@ describe("requireGitHubWriteIdentity", () => {
         githubUserConnectionId: "connection-1",
         githubUserId: "123",
         login: "octocat",
-        token: "decrypted-token",
         scopes: ["repo"],
       },
     });
+    // The decrypted token is no longer handed to callers; it is spent building
+    // the one bounded client the write path threads into every GitHub call
+    // (PLN-1525). Callers cannot re-mint from it, by construction.
+    expect(result.ok && result.value).not.toHaveProperty("token");
+    expect(mockGetUserTokenOctokit).toHaveBeenCalledWith("decrypted-token");
+    expect(result.ok && result.value.octokit).toBe(USER_OCTOKIT);
+  });
+
+  it("skips the lastUsedAt write for a recently used connection (PLN-1525 sampling)", async () => {
+    const db = makeDb({
+      ...CONNECTION,
+      lastUsedAt: new Date("2026-05-20T11:59:00.000Z"),
+    });
+
+    const result = await requireGitHubWriteIdentity({
+      organizationId: "org-1",
+      userId: "user-1",
+      now: NOW,
+      db: db as never,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(db.gitHubUserConnection.updateMany).not.toHaveBeenCalled();
   });
 
   it("uses withDb when no client is provided", async () => {

@@ -1,0 +1,104 @@
+---
+title: Agent Components
+description: 'Browse the org registry of harness components and read a single component definition'
+---
+
+## Overview
+
+Agent-component tools expose the org's registry of harness components — the subagents, skills, commands, MCP servers, hooks, plugins, workflows, config, and built-in/orchestration tools discovered across your compute targets and surfaced in the `[orgSlug]/agents` workspace. AI clients can enumerate that registry and pull a single component's definition programmatically.
+
+Both tools are **read-only** and scoped to your organization. The list tool paginates and sorts server-side, so never re-slice a returned page.
+
+---
+
+## Tool Reference
+
+### List Agent Components
+
+**Tool**: `list-agent-components`
+**Underlying API**: `GET /agent-components`
+
+```
+list-agent-components(
+  kinds?: string[],      // e.g. ["skill", "subagent"] — omit for every kind
+  collaborator?: string, // single collaborator (author) display name — discoverer plus editors, else the owner fallback
+  owner?: string,        // deprecated alias for collaborator; collaborator wins when both are set
+  source?: string,       // single source label (pack, repo, MCP server, or config scope)
+  harness?: string,      // "claude" | "codex" | "opencode" | "both"
+  search?: string,       // free-text filter over component names
+  startDate?: string,    // ISO 8601 — usage window on lastInvokedAt (drops unused components)
+  endDate?: string,      // ISO 8601 — usage window on lastInvokedAt
+  sortBy?: string,       // "name" | "type" | "metric" | "source" | "harness" | "invocations" | "sessions"
+  sortDir?: string,      // "asc" | "desc"
+  limit?: number,        // 1-100; the API defaults to 50
+  offset?: number        // pagination offset (default 0)
+)
+```
+
+Returns the registry rows you are authorized to see, each with its `slug`, name, kind, source, harness, usage metrics (invocations, sessions, LOC-per-dollar — lines per dollar), ownership, and provenance, plus the page's `returned`, `total`, and `hasMore`.
+
+<Callout>
+  `startDate` / `endDate` are a **usage** window on each component's `lastInvokedAt`, not an inventory-observation filter: they drop components with no in-window usage. Omit both for the all-time inventory view.
+</Callout>
+
+Use a returned `slug` with `get-agent-component` to pull that component's definition and version history.
+
+### Get Agent Component
+
+**Tool**: `get-agent-component`
+**Underlying API**: `GET /agent-components/{slug}`
+
+```
+get-agent-component(
+  slug: string,           // the `slug` from list-agent-components, formed as `kind::key` (e.g. "skill::code-review")
+  includePrompt?: boolean, // include the selected revision's definition text (default false)
+  promptMaxChars?: number, // max definition characters when includePrompt=true (default 4000, max 120000)
+  versionHash?: string     // read a specific historical revision instead of the current one
+)
+```
+
+Returns the list row plus definition metadata (path, format, model, allowed tools), content-hash version history, per-device provenance, and the sessions that invoked it. Pass the `slug` verbatim — it is URL-encoded for you, and the `id` UUID is **not** accepted here.
+
+<Callout>
+  Definition bodies can reach 256 KiB, so the definition text is off by default. `promptLength` and each revision's `contentLength` are always returned, so you can size a read before requesting the body. Set `includePrompt: true` (optionally with `versionHash` and `promptMaxChars`) to fetch the text of one revision.
+</Callout>
+
+<Callout>
+  **`versionHash` is coupled to `includePrompt`.** `versionHash` only selects *which* revision's text is returned; the definition text itself (the `prompt` field, plus the `promptVersionHash` that reports which revision it came from) is returned **only when `includePrompt: true`**. Passing `versionHash` with `includePrompt` omitted or `false` has no observable effect — no text is returned, and `promptLength` still reports the selected revision's length. To read a historical revision's body, pass **both** `versionHash` and `includePrompt: true`. Omit `versionHash` to select the current revision. A `versionHash` that matches no entry in `versions` falls back to the component's live definition text.
+</Callout>
+
+---
+
+## Example
+
+```
+# The org's skills and subagents, most-invoked first
+list-agent-components(
+  kinds: ["skill", "subagent"],
+  sortBy: "invocations",
+  sortDir: "desc"
+)
+
+# Components used in July 2026 (usage window on lastInvokedAt)
+list-agent-components(
+  startDate: "2026-07-01",
+  endDate: "2026-07-31"
+)
+
+# One component's metadata and version history (no definition text)
+get-agent-component(slug: "skill::code-review")
+
+# The current definition text, up to 8000 characters
+get-agent-component(
+  slug: "skill::code-review",
+  includePrompt: true,
+  promptMaxChars: 8000
+)
+
+# A specific historical revision's text — versionHash REQUIRES includePrompt: true
+get-agent-component(
+  slug: "skill::code-review",
+  versionHash: "<a hash from the versions[] list>",
+  includePrompt: true
+)
+```

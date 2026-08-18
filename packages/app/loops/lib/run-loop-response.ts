@@ -51,9 +51,23 @@ export function handleRunLoopResponse(
     return;
   }
 
-  // 429 rate limit: concurrent loop limit exceeded
-  if (response instanceof ApiError && response.status === 429) {
-    callbacks.onRateLimited?.(response.message);
+  // 429 rate limit: concurrent loop limit exceeded.
+  //
+  // `onRateLimited` is optional, and the earlier `callbacks.onRateLimited?.()`
+  // + unconditional `return` meant a caller that omitted it turned a refused
+  // launch into a total no-op. Every `use-document-generation` call site does
+  // omit it, and both of its mutations set `suppressDefaultErrorToast: true`
+  // with no `onError` — so hitting the concurrent-loop limit there produced
+  // nothing at all: no toast, no spinner change, no error. Falling through to
+  // the trailing toast keeps the single fallback path that already covers
+  // every other unhandled status (ISS-5687: a dispatch that cannot broker
+  // surfaces an explicit, honest error — never a silent no-op).
+  if (
+    response instanceof ApiError &&
+    response.status === 429 &&
+    callbacks.onRateLimited
+  ) {
+    callbacks.onRateLimited(response.message);
     return;
   }
 

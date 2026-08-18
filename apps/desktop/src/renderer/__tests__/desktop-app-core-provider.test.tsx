@@ -88,6 +88,7 @@ function agentSessionListItem(): AgentSessionListItem {
     computeTarget: {
       id: "local-desktop",
       isOnline: true,
+      lastAgentSessionSyncAt: timestamp,
       lastSeenAt: timestamp,
       machineName: "Local Desktop",
     },
@@ -100,6 +101,7 @@ function agentSessionListItem(): AgentSessionListItem {
     id: "provider-session",
     inputTokens: 0,
     lastActivityAt: timestamp,
+    lastSyncedAt: timestamp,
     model: "gpt-test",
     name: "Provider-wired session",
     outputTokens: 0,

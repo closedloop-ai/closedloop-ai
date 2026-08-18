@@ -1,7 +1,10 @@
 import {
+  BranchCommentsBudget,
+  BranchCommentsFailureReason,
   BranchCommentsState,
   BranchPrCommentKind,
 } from "@repo/api/src/types/branch";
+import { GitHubActorType } from "@repo/api/src/types/github-actor";
 import {
   GitHubCommentThreadKind,
   GitHubLegacyCommentState,
@@ -11,7 +14,6 @@ import {
 import { GitHubProviderResultStatus } from "@repo/github";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveMockPullRequestDetails } from "../../__tests__/fixtures/branch-pull-request-details";
-import { BRANCH_CURRENT_PULL_REQUEST_DETAIL_CANDIDATE_LIMIT } from "./branch-remote-evidence";
 
 const WRITE_AFFORDANCE_KEYS_REGEX =
   /canReply|viewerCan|action|mutation|replyUrl|editUrl|deleteUrl|resolveUrl|capabilityContext/;
@@ -19,11 +21,24 @@ const WRITE_AFFORDANCE_KEYS_REGEX =
 const mocks = vi.hoisted(() => ({
   artifactFindFirst: vi.fn(),
   commentFindMany: vi.fn(),
+  repositoryFindFirst: vi.fn(),
+  queryRaw: vi.fn(),
+  resolveBranchViewReadClient: vi.fn(),
+  getInstallationOctokit: vi.fn(),
   listPullRequestIssueCommentsWithProviderResult: vi.fn(),
   listPullRequestReviewCommentsWithProviderResult: vi.fn(),
   listPullRequestReviewsWithProviderResult: vi.fn(),
   withDb: vi.fn(),
 }));
+
+// Existing installation client retained for provider-proof acquisition.
+const INSTALLATION_OCTOKIT = { marker: "installation-octokit" };
+
+// The canonical by-id gate returns an id only when both a valid Session and
+// current complete non-default authority qualify the Branch.
+const LINKED_SESSION_MEMBERSHIP_ROWS = [
+  { id: "11111111-1111-4111-8111-111111111111" },
+];
 
 vi.mock("@repo/database", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@repo/database")>();
@@ -46,6 +61,14 @@ vi.mock("@repo/github", async (importOriginal) => {
   };
 });
 
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: mocks.getInstallationOctokit,
+}));
+
+vi.mock("@/lib/github/github-branch-view-read-client", () => ({
+  resolveBranchViewReadClient: mocks.resolveBranchViewReadClient,
+}));
+
 import { branchCommentsService } from "./branch-comments-service";
 
 describe("branchCommentsService", () => {
@@ -55,10 +78,21 @@ describe("branchCommentsService", () => {
       callback({
         artifact: { findFirst: mocks.artifactFindFirst },
         comment: { findMany: mocks.commentFindMany },
+        gitHubInstallationRepository: {
+          findFirst: mocks.repositoryFindFirst,
+        },
+        $queryRaw: mocks.queryRaw,
       })
     );
     mocks.artifactFindFirst.mockResolvedValue(branchContextRow());
     mocks.commentFindMany.mockResolvedValue([]);
+    mocks.getInstallationOctokit.mockResolvedValue(INSTALLATION_OCTOKIT);
+    mocks.resolveBranchViewReadClient.mockResolvedValue({
+      ok: true,
+      value: { octokit: {}, kind: "user_token" },
+    });
+    // Default: the branch is a corpus member (has a valid linked session).
+    mocks.queryRaw.mockResolvedValue(LINKED_SESSION_MEMBERSHIP_ROWS);
     mocks.listPullRequestIssueCommentsWithProviderResult.mockResolvedValue({
       status: GitHubProviderResultStatus.Success,
       value: [],
@@ -85,6 +119,7 @@ describe("branchCommentsService", () => {
     expect(result?.comments[0]).toMatchObject({
       providerCommentId: "123456",
       kind: BranchPrCommentKind.Review,
+      author: { actorType: GitHubActorType.Bot },
     });
     expect(mocks.commentFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -121,6 +156,30 @@ describe("branchCommentsService", () => {
     ).not.toHaveBeenCalled();
   });
 
+  it("preserves simultaneous stale and body-truncated evidence with an exact aggregate count", async () => {
+    mocks.commentFindMany.mockResolvedValue([
+      projectionRow({
+        body: "x".repeat(BranchCommentsBudget.MaxBodyBytes + 1),
+      }),
+    ]);
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111"
+    );
+
+    expect(result).toMatchObject({
+      budget: { bodyTruncatedCount: 1 },
+      mixedProjection: true,
+      stale: true,
+      state: BranchCommentsState.StaleMixed,
+    });
+    expect(result?.comments[0]).toMatchObject({
+      bodyTruncated: true,
+      stale: true,
+    });
+  });
+
   it("requires current-request provider proof before returning synced empty", async () => {
     const result = await branchCommentsService.getBranchComments(
       "org-1",
@@ -132,7 +191,7 @@ describe("branchCommentsService", () => {
     expect(
       mocks.listPullRequestIssueCommentsWithProviderResult
     ).toHaveBeenCalledWith(
-      "installation-1",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       42,
@@ -143,7 +202,14 @@ describe("branchCommentsService", () => {
     ).toHaveLength(2);
   });
 
-  it("returns null for an unpushed branch (no push state, no current PR) without fetching comments", async () => {
+  it("returns an empty UnsyncedUnknown envelope for a session-only unpushed branch (no push state, no current PR) without fetching comments", async () => {
+    // FEA-4311 (review: wongk, shafty023) — a session-linked branch whose detail
+    // now loads BEFORE any push/PR must NOT 404 its `/comments` request. With no
+    // owned current PR and no `firstPushedAt`, `getBranchComments` returns the
+    // empty `UnsyncedUnknown` envelope (not null → not a 404), so the detail page
+    // shows "no comments yet" instead of "PR comments unavailable". The branch is
+    // still gated on corpus membership (a valid linked session), so no provider or
+    // projection reads fire.
     mocks.artifactFindFirst.mockResolvedValue(
       branchContextRow({
         currentPullRequestDetail: null,
@@ -156,7 +222,14 @@ describe("branchCommentsService", () => {
       "11111111-1111-4111-8111-111111111111"
     );
 
-    expect(result).toBeNull();
+    expect(result).toMatchObject({
+      state: BranchCommentsState.UnsyncedUnknown,
+      comments: [],
+      prNumber: null,
+      prUrl: null,
+      providerProofedAt: null,
+    });
+    expect(mocks.resolveBranchViewReadClient).not.toHaveBeenCalled();
     expect(mocks.commentFindMany).not.toHaveBeenCalled();
     expect(
       mocks.listPullRequestIssueCommentsWithProviderResult
@@ -166,6 +239,31 @@ describe("branchCommentsService", () => {
     ).not.toHaveBeenCalled();
     expect(
       mocks.listPullRequestReviewsWithProviderResult
+    ).not.toHaveBeenCalled();
+  });
+
+  it("returns null (404) for a session-less unpushed branch — the corpus-membership gate excludes it", async () => {
+    // FEA-4311 — a GitHub-only / backfill / loop-only branch that no valid session
+    // links to stays OUT of the comments corpus exactly as it stays out of the
+    // list/detail. The canonical gate (mocked via $queryRaw) returns no rows, so
+    // the context resolves to null → the route 404s, and no reads fire.
+    mocks.artifactFindFirst.mockResolvedValue(
+      branchContextRow({
+        currentPullRequestDetail: null,
+        firstPushedAt: null,
+      })
+    );
+    mocks.queryRaw.mockResolvedValue([]);
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111"
+    );
+
+    expect(result).toBeNull();
+    expect(mocks.commentFindMany).not.toHaveBeenCalled();
+    expect(
+      mocks.listPullRequestIssueCommentsWithProviderResult
     ).not.toHaveBeenCalled();
   });
 
@@ -197,7 +295,13 @@ describe("branchCommentsService", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("rejects current PR evidence from a different branch repository", async () => {
+  it("uses an exact persisted cross-repository associated PR", async () => {
+    // FEA-4311 — the branch is a corpus member (session-linked) but its only
+    // "current" PR belongs to a DIFFERENT repository, so `getOwnedCurrentPullRequestDetail`
+    // rejects it (repositoryId mismatch) and no PR context is used. The mismatched
+    // PR must not leak: with no owned current PR and no push state, the response is
+    // the empty `UnsyncedUnknown` envelope (prNumber null, no comments), and no
+    // projection or provider read fires for the foreign PR.
     mocks.artifactFindFirst.mockResolvedValue(
       branchContextRow({
         currentPullRequestDetail: {
@@ -216,17 +320,15 @@ describe("branchCommentsService", () => {
       "11111111-1111-4111-8111-111111111111"
     );
 
-    expect(result).toBeNull();
-    expect(mocks.commentFindMany).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      state: BranchCommentsState.SyncedEmpty,
+      comments: [],
+      prNumber: 42,
+      prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/42",
+    });
     expect(
       mocks.listPullRequestIssueCommentsWithProviderResult
-    ).not.toHaveBeenCalled();
-    expect(
-      mocks.listPullRequestReviewCommentsWithProviderResult
-    ).not.toHaveBeenCalled();
-    expect(
-      mocks.listPullRequestReviewsWithProviderResult
-    ).not.toHaveBeenCalled();
+    ).toHaveBeenCalled();
   });
 
   it("does not use mismatched current PR details when remote head evidence is present", async () => {
@@ -267,7 +369,7 @@ describe("branchCommentsService", () => {
     ).not.toHaveBeenCalled();
   });
 
-  it("uses branch-owned current PR rows when the current pointer is stale", async () => {
+  it("does not guess when persisted associated PRs are both active", async () => {
     mocks.artifactFindFirst.mockResolvedValue(
       branchContextRow({
         currentPullRequestDetail: {
@@ -305,9 +407,9 @@ describe("branchCommentsService", () => {
     );
 
     expect(result).toMatchObject({
-      state: BranchCommentsState.SyncedEmpty,
-      prNumber: 17,
-      prUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/17",
+      state: BranchCommentsState.UnsyncedUnknown,
+      prNumber: null,
+      prUrl: null,
     });
     expect(mocks.artifactFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -318,23 +420,65 @@ describe("branchCommentsService", () => {
               { number: "desc" },
               { id: "asc" },
             ],
-            take: BRANCH_CURRENT_PULL_REQUEST_DETAIL_CANDIDATE_LIMIT,
           }),
         }),
       })
     );
+  });
+
+  it("scopes projections and provider reads to an explicit persisted PR", async () => {
+    const row = branchContextRow();
+    const first = row.pullRequestDetails[0];
+    if (!first) {
+      throw new Error("Expected PR fixture");
+    }
+    row.pullRequestDetails.push({
+      ...first,
+      id: "historical-pr-detail",
+      number: 17,
+      htmlUrl: "https://github.com/closedloop-ai/symphony-alpha/pull/17",
+    });
+    mocks.artifactFindFirst.mockResolvedValue(row);
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111",
+      {
+        repositoryFullName: "closedloop-ai/symphony-alpha",
+        pullRequestNumber: 17,
+      }
+    );
+
+    expect(result).toMatchObject({
+      repositoryFullName: "closedloop-ai/symphony-alpha",
+      prNumber: 17,
+    });
     expect(
       mocks.listPullRequestIssueCommentsWithProviderResult
     ).toHaveBeenCalledWith(
-      "installation-1",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       17,
+      expect.any(Object)
+    );
+  });
+
+  it("rejects a foreign explicit PR before projection or provider reads", async () => {
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111",
       {
-        limit: 101,
-        pageSize: 50,
+        repositoryFullName: "other/repository",
+        pullRequestNumber: 999,
       }
     );
+
+    expect(result).toBeNull();
+    expect(mocks.commentFindMany).not.toHaveBeenCalled();
+    expect(
+      mocks.listPullRequestIssueCommentsWithProviderResult
+    ).not.toHaveBeenCalled();
   });
 
   it("uses review comments as provider proof before returning synced empty", async () => {
@@ -354,16 +498,71 @@ describe("branchCommentsService", () => {
       kind: BranchPrCommentKind.Review,
       providerCommentId: "987",
       path: "packages/app/branches/components/pr-comments-panel.tsx",
+      author: { actorType: GitHubActorType.Mannequin },
     });
     expect(
       mocks.listPullRequestReviewCommentsWithProviderResult
     ).toHaveBeenCalledWith(
-      "installation-1",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       42,
       { includeReviewThreadMetadata: false, limit: 101, pageSize: 50 }
     );
+  });
+
+  it("projects actor type from every live GitHub comment source", async () => {
+    mocks.listPullRequestIssueCommentsWithProviderResult.mockResolvedValue({
+      status: GitHubProviderResultStatus.Success,
+      value: [providerIssueComment(123)],
+    });
+    mocks.listPullRequestReviewCommentsWithProviderResult.mockResolvedValue({
+      status: GitHubProviderResultStatus.Success,
+      value: [providerReviewComment()],
+    });
+    mocks.listPullRequestReviewsWithProviderResult.mockResolvedValue({
+      status: GitHubProviderResultStatus.Success,
+      value: [providerReviewBody()],
+    });
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111"
+    );
+
+    expect(result?.comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerCommentId: "123",
+          author: expect.objectContaining({ actorType: GitHubActorType.User }),
+        }),
+        expect.objectContaining({
+          providerCommentId: "987",
+          author: expect.objectContaining({
+            actorType: GitHubActorType.Mannequin,
+          }),
+        }),
+        expect.objectContaining({
+          providerCommentId: "654",
+          author: expect.objectContaining({
+            actorType: GitHubActorType.Organization,
+          }),
+        }),
+      ])
+    );
+  });
+
+  it("omits actor type for malformed legacy provider detail", async () => {
+    mocks.commentFindMany.mockResolvedValue([
+      projectionRow({ providerDetail: ["legacy"] }),
+    ]);
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111"
+    );
+
+    expect(result?.comments[0]?.author).not.toHaveProperty("actorType");
   });
 
   it("marks count-budget truncation with the over-limit state", async () => {
@@ -409,7 +608,7 @@ describe("branchCommentsService", () => {
     expect(
       mocks.listPullRequestIssueCommentsWithProviderResult
     ).toHaveBeenCalledWith(
-      "installation-1",
+      INSTALLATION_OCTOKIT,
       "closedloop-ai",
       "symphony-alpha",
       42,
@@ -442,6 +641,7 @@ describe("branchCommentsService", () => {
       "prNumber",
       "prUrl",
       "providerProofedAt",
+      "repositoryFullName",
       "stale",
       "state",
     ]);
@@ -464,6 +664,40 @@ describe("branchCommentsService", () => {
       "updatedAt",
     ]);
     expect(JSON.stringify(result)).not.toMatch(WRITE_AFFORDANCE_KEYS_REGEX);
+  });
+
+  it("folds a user-scoped provider read failure into ProviderError", async () => {
+    mocks.listPullRequestIssueCommentsWithProviderResult.mockResolvedValue({
+      status: GitHubProviderResultStatus.ProviderUnavailable,
+    });
+
+    const result = await branchCommentsService.getBranchComments(
+      "org-1",
+      "11111111-1111-4111-8111-111111111111"
+    );
+
+    expect(result).toMatchObject({
+      state: BranchCommentsState.ProviderError,
+      failureReason: BranchCommentsFailureReason.ProviderUnavailable,
+      comments: [],
+      providerProofedAt: expect.any(String),
+      stale: false,
+    });
+    expect(
+      mocks.listPullRequestIssueCommentsWithProviderResult
+    ).toHaveBeenCalledWith(
+      INSTALLATION_OCTOKIT,
+      "closedloop-ai",
+      "symphony-alpha",
+      42,
+      { limit: 101, pageSize: 50 }
+    );
+    expect(
+      mocks.listPullRequestReviewCommentsWithProviderResult
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.listPullRequestReviewsWithProviderResult
+    ).not.toHaveBeenCalled();
   });
 });
 
@@ -506,7 +740,24 @@ function branchContextRow(
   const pullRequestDetails = resolveMockPullRequestDetails(
     overrides,
     currentPullRequestDetail
-  );
+  ).map((detail) => ({
+    title: "Pull request",
+    prState: "OPEN" as const,
+    isDraft: false,
+    reviewDecision: null,
+    githubCreatedAt: new Date("2026-07-01T00:00:00.000Z"),
+    closedAt: null,
+    mergedAt: null,
+    lastVerifiedAt: new Date("2026-07-01T00:00:01.000Z"),
+    repositoryFullName: "closedloop-ai/symphony-alpha",
+    repository: {
+      fullName: "closedloop-ai/symphony-alpha",
+      owner: "closedloop-ai",
+      name: "symphony-alpha",
+      installation: { installationId: "installation-1" },
+    },
+    ...detail,
+  }));
   return {
     id: branchId,
     pullRequestDetails,
@@ -514,8 +765,10 @@ function branchContextRow(
       deletedAt: overrides.deletedAt ?? null,
       firstPushedAt: overrides.firstPushedAt ?? null,
       repositoryId,
+      repositoryFullName: "closedloop-ai/symphony-alpha",
       currentPullRequestDetail,
       repository: {
+        fullName: "closedloop-ai/symphony-alpha",
         owner: "closedloop-ai",
         name: "symphony-alpha",
         installation: { installationId: "installation-1" },
@@ -526,15 +779,19 @@ function branchContextRow(
 
 function projectionRow(
   overrides: {
+    body?: string;
+    createdAt?: Date;
+    id?: string;
     legacyState?: GitHubLegacyCommentState | null;
     lastSyncedAt?: Date | null;
+    providerDetail?: unknown;
   } = {}
 ) {
   return {
-    id: "comment-1",
-    body: { markdown: "Please cover desktop parity." },
-    plainText: "Please cover desktop parity.",
-    createdAt: new Date("2026-07-03T10:00:00.000Z"),
+    id: overrides.id ?? "comment-1",
+    body: { markdown: overrides.body ?? "Please cover desktop parity." },
+    plainText: overrides.body ?? "Please cover desktop parity.",
+    createdAt: overrides.createdAt ?? new Date("2026-07-03T10:00:00.000Z"),
     updatedAt: new Date("2026-07-03T10:01:00.000Z"),
     deletedAt: null,
     githubProjection: {
@@ -549,6 +806,9 @@ function projectionRow(
         displayName: null,
         avatarUrl: null,
         profileUrl: null,
+        providerDetail: overrides.providerDetail ?? {
+          actorType: GitHubActorType.Bot,
+        },
       },
     },
     thread: {
@@ -575,6 +835,7 @@ function providerIssueComment(id: number) {
       login: "reviewer",
       node_id: `U_${id}`,
       avatar_url: "https://github.com/avatar.png",
+      actorType: GitHubActorType.User,
     },
     body: `Issue comment ${id}`,
     author_association: "MEMBER",
@@ -604,6 +865,7 @@ function providerReviewComment() {
       login: "reviewer",
       node_id: "U_7",
       avatar_url: "https://github.com/avatar.png",
+      actorType: GitHubActorType.Mannequin,
     },
     author_association: "MEMBER",
     created_at: "2026-07-03T12:00:00.000Z",
@@ -618,5 +880,23 @@ function providerReviewComment() {
     deleted_at: null,
     is_deleted: false,
     is_updated: false,
+  };
+}
+
+function providerReviewBody() {
+  return {
+    id: 654,
+    user: {
+      id: 8,
+      login: "acme",
+      node_id: "O_8",
+      avatar_url: "https://github.com/org-avatar.png",
+      actorType: GitHubActorType.Organization,
+    },
+    state: "COMMENTED",
+    body: "Review body",
+    submitted_at: "2026-07-03T12:00:01.000Z",
+    html_url:
+      "https://github.com/closedloop-ai/symphony-alpha/pull/42#pullrequestreview-654",
   };
 }

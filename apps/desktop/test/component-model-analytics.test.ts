@@ -12,6 +12,9 @@
 
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+import { normalizeComponentKey } from "@repo/api/src/types/agent-component-analytics";
+import { rawKeyInClause } from "../src/main/dashboard/hash-scope-predicates.js";
+import { matchingUsageRawKeys } from "../src/main/dashboard/shared-agent-components-api.js";
 import { localDay } from "../src/main/database/db-helpers.js";
 import type { DesktopPrisma } from "../src/main/database/prisma-client.js";
 import { openTestPrisma } from "./prisma-test-utils.js";
@@ -200,6 +203,15 @@ async function queryComponentModelTrend(
   const latencyModelFilter_ = modelFilter ? "AND car.model = ?" : "";
   const modelArgs_ = modelFilter ? [modelFilter] : [];
 
+  // FEA-3264: mirrors production — `componentKey` arrives already normalized
+  // (the slug key half), so the raw stored keys that fold to it are resolved in
+  // JS and bound as an explicit key list, never compared with a case-sensitive
+  // `component_key = ?`.
+  const keyIn = rawKeyInClause(
+    await matchingUsageRawKeys(prisma, componentKind, componentKey),
+    "acsu.component_key"
+  );
+
   // FEA-2999: mirrors the production queries in
   // agent-dashboard-design-system-runtime.ts — day buckets are re-derived from
   // the raw session timestamp in LOCAL time (strftime(..., 'localtime')) via a
@@ -218,13 +230,13 @@ async function queryComponentModelTrend(
     INNER JOIN sessions s ON s.id = acsu.session_id
     INNER JOIN token_events te ON te.session_id = acsu.session_id
     WHERE acsu.component_kind = ?
-      AND acsu.component_key = ?
+      AND ${keyIn.clause}
       AND ${localDay("s.started_at")} >= ?
       ${modelFilter_}
     GROUP BY day, te.model
     ORDER BY day ASC, te.model ASC`,
     componentKind,
-    componentKey,
+    ...keyIn.params,
     cutoffDay,
     ...modelArgs_
   );
@@ -239,13 +251,13 @@ async function queryComponentModelTrend(
     INNER JOIN sessions s ON s.id = acsu.session_id
     INNER JOIN claude_code_api_request car ON car.session_id = acsu.session_id
     WHERE acsu.component_kind = ?
-      AND acsu.component_key = ?
+      AND ${keyIn.clause}
       AND ${localDay("s.started_at")} >= ?
       ${latencyModelFilter_}
     GROUP BY day, car.model
     ORDER BY day ASC, car.model ASC`,
     componentKind,
-    componentKey,
+    ...keyIn.params,
     cutoffDay,
     ...modelArgs_
   );
@@ -262,12 +274,12 @@ async function queryComponentModelTrend(
       ON ev.session_id = acsu.session_id
       AND ev.event_type = 'Compaction'
     WHERE acsu.component_kind = ?
-      AND acsu.component_key = ?
+      AND ${keyIn.clause}
       AND ${localDay("s.started_at")} >= ?
       ${modelFilter_}
     GROUP BY day, te.model`,
     componentKind,
-    componentKey,
+    ...keyIn.params,
     cutoffDay,
     ...modelArgs_
   );
@@ -332,6 +344,12 @@ async function querySubagentFrequency(
   subagentKey: string,
   cutoffDay: string
 ): Promise<SubagentFrequencyPoint[]> {
+  // FEA-3264: mirrors production — fold the raw keys in JS (see
+  // queryComponentModelTrend).
+  const keyIn = rawKeyInClause(
+    await matchingUsageRawKeys(prisma, "subagent", subagentKey),
+    "acsu.component_key"
+  );
   // FEA-2999: mirrors production — LOCAL-day bucket via the sessions join, with
   // the UTC started_day kept only as the window pre-filter.
   const rows = await prisma.client.$queryRawUnsafe<
@@ -344,11 +362,11 @@ async function querySubagentFrequency(
     FROM agent_component_session_usage acsu
     INNER JOIN sessions s ON s.id = acsu.session_id
     WHERE acsu.component_kind = 'subagent'
-      AND acsu.component_key = ?
+      AND ${keyIn.clause}
       AND ${localDay("s.started_at")} >= ?
     GROUP BY day
     ORDER BY day ASC`,
-    subagentKey,
+    ...keyIn.params,
     cutoffDay
   );
   return rows.map((r) => ({
@@ -369,10 +387,16 @@ async function queryIsSkillLoaded(
   prisma: DesktopPrisma,
   skillKey: string
 ): Promise<SkillLoadedResult> {
-  const [inventoryRow, usageRow] = await Promise.all([
-    prisma.client.agentComponent.findFirst({
-      where: { componentKind: "skill", componentKey: skillKey },
-      select: { id: true },
+  // FEA-3264: mirrors production — both the inventory match and the usage
+  // aggregate fold the raw stored key in JS instead of comparing it to the
+  // already-normalized `skillKey` with a case-sensitive `=`.
+  const keyIn = rawKeyInClause(
+    await matchingUsageRawKeys(prisma, "skill", skillKey)
+  );
+  const [inventoryRows, usageRow] = await Promise.all([
+    prisma.client.agentComponent.findMany({
+      where: { componentKind: "skill" },
+      select: { componentKey: true, name: true },
     }),
     prisma.client.$queryRawUnsafe<
       { total_invocations: bigint; last_used_at: string | null }[]
@@ -382,15 +406,17 @@ async function queryIsSkillLoaded(
         MAX(last_invoked_at) AS last_used_at
       FROM agent_component_session_usage
       WHERE component_kind = 'skill'
-        AND component_key = ?`,
-      skillKey
+        AND ${keyIn.clause}`,
+      ...keyIn.params
     ),
   ]);
 
   const usage = usageRow[0];
   const totalInvocations = Number(usage?.total_invocations ?? 0);
   return {
-    existsInInventory: inventoryRow !== null,
+    existsInInventory: inventoryRows.some(
+      (row) => normalizeComponentKey(row.componentKey, row.name) === skillKey
+    ),
     hasUsage: totalInvocations > 0,
     totalInvocations,
     lastUsedAt: usage?.last_used_at ?? null,
@@ -781,7 +807,7 @@ test("getComponentModelTrend: buckets the Day axis in LOCAL time, not the stored
   const { prisma, close } = await openTestPrisma();
   try {
     await insertSession(prisma, "s-tz-1", "2026-06-30T04:30:00.000Z");
-    // started_day carries the UTC day, exactly as write-core.ts stores it.
+    // started_day carries the UTC day, exactly as session-analytics-rollup.ts stores it.
     await insertUsage(prisma, "s-tz-1", "command", "review", 1, "2026-06-30");
     await insertTokenEvent(
       prisma,
@@ -1094,6 +1120,113 @@ test("getComponentModelTrend: empty result when component key has no usage rows"
       CUTOFF_DAY
     );
     assert.equal(points.length, 0, "no points for unknown component");
+  } finally {
+    await close();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FEA-3264: mixed-case stored keys
+// ---------------------------------------------------------------------------
+//
+// The panel is handed the org-identity slug key, which is already lowercased +
+// trimmed, while the usage table stores the RAW key. Every built-in Claude tool
+// is stored mixed-case (`Bash`, `Read`, `Edit`, `Task`), so a case-sensitive
+// `component_key = ?` returned nothing and the Optimization panel rendered 0
+// while the detail page above it showed real invocations.
+
+test("getComponentModelTrend: mixed-case and padded stored keys resolve for the normalized slug key (FEA-3264)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    // Two raw spellings of the same identity, in different sessions.
+    await insertSession(prisma, "s-bash-1", "2026-06-01T12:00:00.000Z");
+    await insertSession(prisma, "s-bash-2", "2026-06-01T13:00:00.000Z");
+    await insertUsage(prisma, "s-bash-1", "tool", "Bash", 1, "2026-06-01");
+    await insertUsage(prisma, "s-bash-2", "tool", "  bash  ", 1, "2026-06-01");
+    await insertTokenEvent(
+      prisma,
+      "s-bash-1",
+      "sonnet",
+      100,
+      10,
+      0,
+      0,
+      0.1,
+      "2026-06-01T12:00:00.000Z"
+    );
+    await insertTokenEvent(
+      prisma,
+      "s-bash-2",
+      "sonnet",
+      200,
+      20,
+      0,
+      0,
+      0.2,
+      "2026-06-01T13:00:00.000Z"
+    );
+
+    // The renderer passes the normalized slug key, never the raw stored casing.
+    const points = await queryComponentModelTrend(
+      prisma,
+      "tool",
+      "bash",
+      CUTOFF_DAY
+    );
+
+    assert.equal(points.length, 1, "both raw spellings fold to one identity");
+    assert.equal(
+      points[0].inputTokens,
+      300,
+      "tokens from BOTH raw key variants are summed"
+    );
+  } finally {
+    await close();
+  }
+});
+
+test("getSubagentFrequency: mixed-case stored key resolves for the normalized slug key (FEA-3264)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertSession(prisma, "s-rev", "2026-06-01T12:00:00.000Z");
+    await insertUsage(prisma, "s-rev", "subagent", "Reviewer", 4, "2026-06-01");
+
+    const points = await querySubagentFrequency(prisma, "reviewer", CUTOFF_DAY);
+
+    assert.equal(
+      points.length,
+      1,
+      "the `Reviewer` row is found via `reviewer`"
+    );
+    assert.equal(points[0].invocations, 4);
+  } finally {
+    await close();
+  }
+});
+
+test("isSkillLoaded: mixed-case inventory and usage keys resolve for the normalized slug key (FEA-3264)", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    await insertSession(prisma, "s-skill", "2026-06-01T12:00:00.000Z");
+    await insertAgentComponent(prisma, "c-skill", "skill", "DeepResearch");
+    await insertUsage(
+      prisma,
+      "s-skill",
+      "skill",
+      "DeepResearch",
+      2,
+      "2026-06-01"
+    );
+
+    const result = await queryIsSkillLoaded(prisma, "deepresearch");
+
+    assert.equal(
+      result.existsInInventory,
+      true,
+      "the mixed-case inventory row is matched"
+    );
+    assert.equal(result.hasUsage, true);
+    assert.equal(result.totalInvocations, 2);
   } finally {
     await close();
   }

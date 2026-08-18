@@ -80,6 +80,7 @@ describe("projectsService.addFavorite", () => {
       },
       create: { userId: TEST_USER_ID, projectId: TEST_PROJECT_ID },
       update: {},
+      select: { id: true },
     });
   });
 });

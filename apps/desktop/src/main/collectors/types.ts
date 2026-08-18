@@ -8,6 +8,7 @@
  * semantics) and `SourceImportSnapshot` stay in this module.
  */
 import type { Harness, NormalizedSession } from "@repo/lib/harness/types";
+import type { OpencodeWithheldSubagentReport } from "./opencode/opencode-withheld-subagents.js";
 
 // biome-ignore lint/performance/noBarrelFile: re-exports the extracted NormalizedSession contract (FEA-2717); collector descriptors below stay local
 export * from "@repo/lib/harness/types";
@@ -122,8 +123,16 @@ export type BatchHarnessCollector = BaseHarnessCollector & {
   /**
    * Called after a source has been successfully imported. Batch collectors use
    * this to persist durable fingerprints when parsing happened off-main-process.
+   *
+   * ISS-5028 (wongk review): returns whether the snapshot was actually
+   * COMMITTED. A collector may legitimately refuse — OpenCode declines a
+   * snapshot that moved under the pass — and the caller must be able to tell,
+   * because a refused source returns as pending on the next scan and so is not
+   * finished for first-pass progress purposes. An implementation that cannot
+   * refuse returns `true`; the caller also reads an ABSENT hook as committed,
+   * since a collector with no hook has nothing to refuse.
    */
-  markSourceImported?(source: string, snapshot?: SourceImportSnapshot): void;
+  markSourceImported?(source: string, snapshot?: SourceImportSnapshot): boolean;
   /**
    * Clears collector-owned durable ingest state that lives outside SQLite.
    * Used when the local derived session cache is reset so old source
@@ -136,6 +145,43 @@ export type BatchHarnessCollector = BaseHarnessCollector & {
    * changes while the parsed snapshot is still being written.
    */
   sourceFingerprint?(source: string): string | null;
+  /**
+   * ISS-5266 (wongk review): apply the side-report of a parse that ran
+   * OUT-OF-PROCESS, on this collector's behalf.
+   *
+   * A batch collector's `parse` can have durable side effects beyond the
+   * sessions it returns — OpenCode records which subagent subtrees it WITHHELD,
+   * so an under-count is distinguishable from a real zero. In-process those
+   * effects run inside `parse` via an injected sink. The historical/boot import
+   * parses in a utility process instead, on a throwaway collector instance with
+   * no sink, so the effect never happened for THIS instance: the record was
+   * dropped and — worse — the failure latch that makes {@link markSourceImported}
+   * refuse a premature seal was never armed.
+   *
+   * Handing the report back here replays the effect on the instance that
+   * actually owns the fingerprint, through the same sink and the same latch the
+   * in-process path uses. That is what keeps the seal gate a SINGLE mechanism
+   * rather than two copies of one check that can drift.
+   *
+   * Never rejects: a failed record is latched internally (exactly as in `parse`)
+   * so it surfaces as a refused seal and a retry next launch, not as a failed
+   * import of sessions that parsed fine.
+   */
+  applyParseSideReport?(report: CollectorParseSideReport): Promise<void>;
+};
+
+/**
+ * ISS-5266: what an out-of-process parse learned that is not a session.
+ *
+ * A discriminated bag rather than a bare report, so the next collector that
+ * needs to carry something back adds a member instead of a parallel channel.
+ */
+export type CollectorParseSideReport = {
+  /**
+   * Present only for an OpenCode batch load. Optional and additive: absent for
+   * every other harness, and never emitted as `null`.
+   */
+  withheldOpencodeSubagents?: OpencodeWithheldSubagentReport;
 };
 
 /**

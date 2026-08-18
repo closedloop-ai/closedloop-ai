@@ -28,7 +28,7 @@ import { describe, test } from "node:test";
 import {
   type DetectSuccessOutcome,
   detectSuccessFromOutput,
-} from "../src/main/token-usage.js";
+} from "../src/main/cost/token-usage.js";
 import { createTempDirManager } from "./helpers/temp-dir.js";
 
 // ---------------------------------------------------------------------------

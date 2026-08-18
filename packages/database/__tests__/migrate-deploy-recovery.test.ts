@@ -348,6 +348,38 @@ message: "${safeInvariantPrefix} ${SENSITIVE_PASSWORD_URL}"
     expect(deps.resolveFailedMigration).not.toHaveBeenCalled();
   });
 
+  it("pre-stamps skippable migrations after reset and before the re-deploy on the preview path", async () => {
+    const deps = createDeps();
+    const prestampSkippableMigrations = vi.fn(() => {
+      deps.callOrder.push("prestampSkippableMigrations");
+      return Promise.resolve();
+    });
+
+    const result = await recoverMigrateDeployFailure(
+      {
+        databaseUrl: DATABASE_URL,
+        schema: PREVIEW_SCHEMA,
+        branch: BRANCH,
+        error: createDeployError({ stderr: PREVIEW_P3005_OUTPUT }),
+      },
+      { ...deps, prestampSkippableMigrations }
+    );
+
+    expect(result).toBe(true);
+    // Order matters: the freshly-reset schema must be pre-stamped BEFORE the
+    // re-deploy, or the re-deploy re-runs the CONCURRENTLY build.
+    expect(deps.callOrder).toEqual([
+      "resetSchema",
+      "prestampSkippableMigrations",
+      "runMigrateDeploy",
+      "upsertSchemaRegistry",
+    ]);
+    expect(prestampSkippableMigrations).toHaveBeenCalledWith(
+      DATABASE_URL,
+      PREVIEW_SCHEMA
+    );
+  });
+
   it("awaits preview deploy retry before re-registering the schema", async () => {
     const deps = createDeps();
     const deployRetry = createDeferredVoid();

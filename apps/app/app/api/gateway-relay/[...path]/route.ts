@@ -32,6 +32,7 @@ import {
 import { collectCommandSigningHeaders } from "@/lib/desktop-command-signing/relay-command-signing";
 import {
   GATEWAY_HEALTH_CHECK_PATH,
+  GATEWAY_HEALTH_CHECK_REPAIR_PATH,
   GATEWAY_PATH_PREFIX,
   GATEWAY_RELAY_PATH_PREFIX,
 } from "@/lib/engineer/constants";
@@ -194,6 +195,12 @@ function isHealthCheckPath(path: string): boolean {
   return new URL(path, "http://local").pathname === GATEWAY_HEALTH_CHECK_PATH;
 }
 
+function isHealthCheckRepairPath(path: string): boolean {
+  return (
+    new URL(path, "http://local").pathname === GATEWAY_HEALTH_CHECK_REPAIR_PATH
+  );
+}
+
 function isPluginAutoUpdateEnabledPath(path: string): boolean {
   const url = new URL(path, "http://local");
   return (
@@ -218,6 +225,20 @@ const healthCheckResponseSchema = z
     allRequiredPassed: z.boolean(),
   })
   .passthrough();
+
+const repairResponseSchema = z
+  .object({ result: healthCheckResponseSchema })
+  .passthrough();
+
+/**
+ * The re-checked health check a repair carries, or `undefined` when the body is
+ * not a repair envelope. An older gateway that answered the repair path with a
+ * bare health check falls through to no persistence rather than storing a
+ * half-understood shape.
+ */
+function getRepairedHealthCheck(body: unknown): unknown {
+  return repairResponseSchema.safeParse(body).data?.result;
+}
 
 async function persistHealthCheckSnapshot({
   apiOrigin,
@@ -282,20 +303,23 @@ function scheduleHealthCheckPersistence({
   pluginAutoUpdateEnabled: boolean;
   value: unknown;
 }): void {
-  if (!isHealthCheckPath(path)) {
+  const isRepair = isHealthCheckRepairPath(path);
+  if (!(isHealthCheckPath(path) || isRepair)) {
     return;
   }
 
   const parsed = parseRelayHttpResponse(value);
-  if (
-    !parsed ||
-    parsed.status < 200 ||
-    parsed.status >= 300 ||
-    !healthCheckResponseSchema.safeParse(parsed.body).success
-  ) {
+  if (!parsed || parsed.status < 200 || parsed.status >= 300) {
     return;
   }
-  const result = parsed.body as HealthCheckResponse;
+  // Repair returns the freshly re-run check NESTED under `result`. Without this
+  // the tab that ran the repair looked fixed while every reload and every other
+  // client kept hydrating the stale pre-repair snapshot (ISS-5389 review).
+  const body = isRepair ? getRepairedHealthCheck(parsed.body) : parsed.body;
+  if (!healthCheckResponseSchema.safeParse(body).success) {
+    return;
+  }
+  const result = body as HealthCheckResponse;
 
   after(() =>
     persistHealthCheckSnapshot({
@@ -303,7 +327,10 @@ function scheduleHealthCheckPersistence({
       authToken,
       targetId,
       request,
-      pluginAutoUpdateEnabled,
+      // A repair always runs the sweep with plugin auto-remediation requested,
+      // so the snapshot it produces was made under that mode regardless of the
+      // query param the repair request carried.
+      pluginAutoUpdateEnabled: isRepair ? true : pluginAutoUpdateEnabled,
       result,
     }).catch((error) => {
       log.warn("Failed to persist relay health check snapshot", {
@@ -387,6 +414,18 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
   const gatewayPath = toGatewayPath(request, {
     stripPluginAutoUpdate: Boolean(target.ownerName),
   });
+  // Repair mutates the target machine (clears binary-path overrides, runs
+  // plugin-enable commands). A target shared with you by someone else is theirs
+  // to heal — same boundary the auto-remediating health check draws by stripping
+  // `pluginAutoUpdate` above (ISS-5389).
+  if (target.ownerName && isHealthCheckRepairPath(gatewayPath)) {
+    return NextResponse.json(
+      {
+        error: `Repair is only available on compute targets you own. ${target.ownerName} owns this one.`,
+      },
+      { status: 403 }
+    );
+  }
   const pluginAutoUpdateEnabled = isPluginAutoUpdateEnabledPath(gatewayPath);
   const path = rewriteDesktopApiPath(
     gatewayPath,
@@ -460,10 +499,15 @@ async function handleRelayRequest(request: NextRequest): Promise<Response> {
     });
   }
 
+  // Hand the request's own cancellation down. Without it the browser giving up
+  // on a health check at its 20s budget left this command's result stream open
+  // for the full 120s while the immediate retry opened a second one against the
+  // same target (ISS-5169).
   const { value } = await relayClient.executeOperation(
     targetId,
     relayRequest,
-    commandSigning
+    commandSigning,
+    { signal: request.signal }
   );
   scheduleHealthCheckPersistence({
     apiOrigin,

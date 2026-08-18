@@ -7,16 +7,13 @@
  * - Sync repositories when installation is created
  * - Preserve organization link on installation deletion so same-account
  *   reconnect can reuse the row in-place (see PLN-634)
- * - Preserve/restore status appropriately on suspension/unsuspension
+ *
+ * The suspend/unsuspend handlers have their own suite in
+ * `webhook-installation-suspension.test.ts`; the lifecycle scenarios below
+ * still drive them end to end. Payload builders are shared through
+ * `@/__tests__/support/webhooks/github/installation-handler.test-fixtures`.
  */
 
-import type {
-  InstallationCreatedEvent,
-  InstallationDeletedEvent,
-  InstallationSuspendEvent,
-  InstallationUnsuspendEvent,
-} from "@octokit/webhooks-types";
-import type { GitHubInstallation } from "@repo/database";
 import { GitHubInstallationStatus } from "@repo/database";
 import {
   afterEach,
@@ -27,6 +24,13 @@ import {
   type Mock,
   vi,
 } from "vitest";
+import {
+  createInstallationCreatedEvent,
+  createInstallationDeletedEvent,
+  createInstallationSuspendEvent,
+  createInstallationUnsuspendEvent,
+  createMockInstallation,
+} from "@/__tests__/support/webhooks/github/installation-handler.test-fixtures";
 
 // Mock modules before importing
 vi.mock("@repo/observability/log", () => ({
@@ -83,362 +87,6 @@ const mockDb = {
     update: vi.fn(),
   },
 };
-
-/**
- * Helper to create minimal installation_created event
- */
-function createInstallationCreatedEvent(
-  installationId: number,
-  accountLogin: string,
-  repositories: Array<{
-    id: number;
-    node_id: string;
-    full_name: string;
-    name: string;
-    private: boolean;
-  }> = []
-): InstallationCreatedEvent {
-  return {
-    action: "created",
-    installation: {
-      id: installationId,
-      account: {
-        login: accountLogin,
-        id: 12_345,
-        node_id: "U_12345",
-        avatar_url: "",
-        gravatar_id: "",
-        url: "",
-        html_url: "",
-        followers_url: "",
-        following_url: "",
-        gists_url: "",
-        starred_url: "",
-        subscriptions_url: "",
-        organizations_url: "",
-        repos_url: "",
-        events_url: "",
-        received_events_url: "",
-        type: "Organization",
-        site_admin: false,
-      },
-      target_type: "Organization",
-      permissions: {
-        metadata: "read",
-      },
-      events: ["push", "pull_request"],
-      repository_selection: "all",
-      access_tokens_url: "",
-      repositories_url: "",
-      html_url: "",
-      app_id: 123,
-      app_slug: "test-app",
-      target_id: 12_345,
-      created_at: "2026-02-06T00:00:00Z",
-      updated_at: "2026-02-06T00:00:00Z",
-      single_file_name: null,
-      has_multiple_single_files: false,
-      single_file_paths: [],
-      suspended_by: null,
-      suspended_at: null,
-    },
-    repositories,
-    sender: {
-      login: "test-user",
-      id: 1,
-      node_id: "U_1",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User",
-      site_admin: false,
-    },
-    requester: undefined,
-  } as InstallationCreatedEvent;
-}
-
-/**
- * Helper to create minimal installation_deleted event
- */
-function createInstallationDeletedEvent(
-  installationId: number,
-  accountLogin: string
-): InstallationDeletedEvent {
-  return {
-    action: "deleted",
-    installation: {
-      id: installationId,
-      account: {
-        login: accountLogin,
-        id: 12_345,
-        node_id: "U_12345",
-        avatar_url: "",
-        gravatar_id: "",
-        url: "",
-        html_url: "",
-        followers_url: "",
-        following_url: "",
-        gists_url: "",
-        starred_url: "",
-        subscriptions_url: "",
-        organizations_url: "",
-        repos_url: "",
-        events_url: "",
-        received_events_url: "",
-        type: "Organization",
-        site_admin: false,
-      },
-      target_type: "Organization",
-      permissions: {
-        metadata: "read",
-      },
-      events: ["push", "pull_request"],
-      repository_selection: "all",
-      access_tokens_url: "",
-      repositories_url: "",
-      html_url: "",
-      app_id: 123,
-      app_slug: "test-app",
-      target_id: 12_345,
-      created_at: "2026-02-06T00:00:00Z",
-      updated_at: "2026-02-06T00:00:00Z",
-      single_file_name: null,
-      has_multiple_single_files: false,
-      single_file_paths: [],
-      suspended_by: null,
-      suspended_at: null,
-    },
-    sender: {
-      login: "test-user",
-      id: 1,
-      node_id: "U_1",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User",
-      site_admin: false,
-    },
-    repositories: [],
-  } as InstallationDeletedEvent;
-}
-
-/**
- * Helper to create minimal installation_suspend event
- */
-function createInstallationSuspendEvent(
-  installationId: number,
-  accountLogin: string,
-  suspendedBy: string
-): InstallationSuspendEvent {
-  return {
-    action: "suspend",
-    installation: {
-      id: installationId,
-      account: {
-        login: accountLogin,
-        id: 12_345,
-        node_id: "U_12345",
-        avatar_url: "",
-        gravatar_id: "",
-        url: "",
-        html_url: "",
-        followers_url: "",
-        following_url: "",
-        gists_url: "",
-        starred_url: "",
-        subscriptions_url: "",
-        organizations_url: "",
-        repos_url: "",
-        events_url: "",
-        received_events_url: "",
-        type: "Organization",
-        site_admin: false,
-      },
-      target_type: "Organization",
-      permissions: {
-        metadata: "read",
-      },
-      events: ["push", "pull_request"],
-      repository_selection: "all",
-      access_tokens_url: "",
-      repositories_url: "",
-      html_url: "",
-      app_id: 123,
-      app_slug: "test-app",
-      target_id: 12_345,
-      created_at: "2026-02-06T00:00:00Z",
-      updated_at: "2026-02-06T00:00:00Z",
-      single_file_name: null,
-      has_multiple_single_files: false,
-      single_file_paths: [],
-      suspended_by: {
-        login: suspendedBy,
-        id: 999,
-        node_id: "U_999",
-        avatar_url: "",
-        gravatar_id: "",
-        url: "",
-        html_url: "",
-        followers_url: "",
-        following_url: "",
-        gists_url: "",
-        starred_url: "",
-        subscriptions_url: "",
-        organizations_url: "",
-        repos_url: "",
-        events_url: "",
-        received_events_url: "",
-        type: "User",
-        site_admin: false,
-      },
-      suspended_at: "2026-02-06T00:00:00Z",
-    },
-    sender: {
-      login: suspendedBy,
-      id: 999,
-      node_id: "U_999",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User",
-      site_admin: false,
-    },
-  } as InstallationSuspendEvent;
-}
-
-/**
- * Helper to create minimal installation_unsuspend event
- */
-function createInstallationUnsuspendEvent(
-  installationId: number,
-  accountLogin: string
-): InstallationUnsuspendEvent {
-  return {
-    action: "unsuspend",
-    installation: {
-      id: installationId,
-      account: {
-        login: accountLogin,
-        id: 12_345,
-        node_id: "U_12345",
-        avatar_url: "",
-        gravatar_id: "",
-        url: "",
-        html_url: "",
-        followers_url: "",
-        following_url: "",
-        gists_url: "",
-        starred_url: "",
-        subscriptions_url: "",
-        organizations_url: "",
-        repos_url: "",
-        events_url: "",
-        received_events_url: "",
-        type: "Organization",
-        site_admin: false,
-      },
-      target_type: "Organization",
-      permissions: {
-        metadata: "read",
-      },
-      events: ["push", "pull_request"],
-      repository_selection: "all",
-      access_tokens_url: "",
-      repositories_url: "",
-      html_url: "",
-      app_id: 123,
-      app_slug: "test-app",
-      target_id: 12_345,
-      created_at: "2026-02-06T00:00:00Z",
-      updated_at: "2026-02-06T00:00:00Z",
-      single_file_name: null,
-      has_multiple_single_files: false,
-      single_file_paths: [],
-      suspended_by: null,
-      suspended_at: null,
-    },
-    sender: {
-      login: "test-user",
-      id: 1,
-      node_id: "U_1",
-      avatar_url: "",
-      gravatar_id: "",
-      url: "",
-      html_url: "",
-      followers_url: "",
-      following_url: "",
-      gists_url: "",
-      starred_url: "",
-      subscriptions_url: "",
-      organizations_url: "",
-      repos_url: "",
-      events_url: "",
-      received_events_url: "",
-      type: "User",
-      site_admin: false,
-    },
-  } as InstallationUnsuspendEvent;
-}
-
-/**
- * Helper to create mock installation record
- */
-function createMockInstallation(
-  partial: Partial<GitHubInstallation> = {}
-): GitHubInstallation {
-  return {
-    id: "installation-uuid",
-    installationId: "123456",
-    accountId: "12345",
-    accountLogin: "test-org",
-    accountType: "Organization",
-    senderLogin: "test-user",
-    senderId: "1",
-    status: GitHubInstallationStatus.ACTIVE,
-    permissions: {},
-    events: [],
-    repositorySelection: "all",
-    organizationId: "org-uuid",
-    claimedAt: new Date(),
-    claimedByUserId: "user-uuid",
-    suspendedAt: null,
-    suspendedBy: null,
-    pendingNewInstallationId: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...partial,
-  };
-}
 
 describe("toRepositoryInput", () => {
   it("extracts repository data correctly", () => {
@@ -708,6 +356,7 @@ describe("handleInstallationDeleted", () => {
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
       },
+      select: { id: true },
     });
   });
 
@@ -741,180 +390,8 @@ describe("handleInstallationDeleted", () => {
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
       },
+      select: { id: true },
     });
-  });
-});
-
-describe("handleInstallationSuspended", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("updates status to SUSPENDED with suspension metadata", async () => {
-    const event = createInstallationSuspendEvent(
-      123_456,
-      "test-org",
-      "admin-user"
-    );
-    const existingInstallation = createMockInstallation({
-      id: "installation-uuid",
-      installationId: "123456",
-      status: GitHubInstallationStatus.ACTIVE,
-    });
-
-    mockFindInstallation.mockResolvedValue(existingInstallation);
-    mockUpdateInstallationStatus.mockResolvedValue(existingInstallation);
-
-    await handleInstallationSuspended(event);
-
-    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
-    expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
-      "installation-uuid",
-      GitHubInstallationStatus.SUSPENDED,
-      {
-        suspendedAt: expect.any(Date),
-        suspendedBy: "admin-user",
-      }
-    );
-  });
-
-  it("handles suspension when installation not found in database", async () => {
-    const event = createInstallationSuspendEvent(
-      123_456,
-      "test-org",
-      "admin-user"
-    );
-
-    mockFindInstallation.mockResolvedValue(null);
-
-    await handleInstallationSuspended(event);
-
-    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
-    expect(mockUpdateInstallationStatus).not.toHaveBeenCalled();
-  });
-});
-
-describe("handleInstallationUnsuspended", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it("restores ACTIVE status for claimed installation", async () => {
-    const event = createInstallationUnsuspendEvent(123_456, "test-org");
-    const existingInstallation = createMockInstallation({
-      id: "installation-uuid",
-      installationId: "123456",
-      status: GitHubInstallationStatus.SUSPENDED,
-      organizationId: "org-uuid",
-    });
-
-    mockFindInstallation.mockResolvedValue(existingInstallation);
-    mockUpdateInstallationStatus.mockResolvedValue(existingInstallation);
-
-    await handleInstallationUnsuspended(event);
-
-    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
-    expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
-      "installation-uuid",
-      GitHubInstallationStatus.ACTIVE,
-      {
-        suspendedAt: null,
-        suspendedBy: null,
-      }
-    );
-  });
-
-  it("restores PENDING_CLAIM status for unclaimed installation", async () => {
-    const event = createInstallationUnsuspendEvent(123_456, "test-org");
-    const existingInstallation = createMockInstallation({
-      id: "installation-uuid",
-      installationId: "123456",
-      status: GitHubInstallationStatus.SUSPENDED,
-      organizationId: null,
-    });
-
-    mockFindInstallation.mockResolvedValue(existingInstallation);
-    mockUpdateInstallationStatus.mockResolvedValue(existingInstallation);
-
-    await handleInstallationUnsuspended(event);
-
-    expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
-      "installation-uuid",
-      GitHubInstallationStatus.PENDING_CLAIM,
-      {
-        suspendedAt: null,
-        suspendedBy: null,
-      }
-    );
-  });
-
-  it("keeps UNINSTALLED status unchanged", async () => {
-    const event = createInstallationUnsuspendEvent(123_456, "test-org");
-    const existingInstallation = createMockInstallation({
-      id: "installation-uuid",
-      installationId: "123456",
-      status: GitHubInstallationStatus.UNINSTALLED,
-      organizationId: null,
-    });
-
-    mockFindInstallation.mockResolvedValue(existingInstallation);
-    mockUpdateInstallationStatus.mockResolvedValue(existingInstallation);
-
-    await handleInstallationUnsuspended(event);
-
-    expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
-      "installation-uuid",
-      GitHubInstallationStatus.UNINSTALLED,
-      {
-        suspendedAt: null,
-        suspendedBy: null,
-      }
-    );
-  });
-
-  it("handles unsuspension when installation not found in database", async () => {
-    const event = createInstallationUnsuspendEvent(123_456, "test-org");
-
-    mockFindInstallation.mockResolvedValue(null);
-
-    await handleInstallationUnsuspended(event);
-
-    expect(mockFindInstallation).toHaveBeenCalledWith("123456");
-    expect(mockUpdateInstallationStatus).not.toHaveBeenCalled();
-  });
-
-  it("clears suspension metadata on unsuspension", async () => {
-    const event = createInstallationUnsuspendEvent(123_456, "test-org");
-    const existingInstallation = createMockInstallation({
-      id: "installation-uuid",
-      installationId: "123456",
-      status: GitHubInstallationStatus.SUSPENDED,
-      organizationId: "org-uuid",
-      suspendedAt: new Date(),
-      suspendedBy: "admin-user",
-    });
-
-    mockFindInstallation.mockResolvedValue(existingInstallation);
-    mockUpdateInstallationStatus.mockResolvedValue(existingInstallation);
-
-    await handleInstallationUnsuspended(event);
-
-    expect(mockUpdateInstallationStatus).toHaveBeenCalledWith(
-      "installation-uuid",
-      GitHubInstallationStatus.ACTIVE,
-      {
-        suspendedAt: null,
-        suspendedBy: null,
-      }
-    );
   });
 });
 
@@ -1039,6 +516,7 @@ describe("integration scenarios", () => {
       data: {
         status: GitHubInstallationStatus.UNINSTALLED,
       },
+      select: { id: true },
     });
   });
 

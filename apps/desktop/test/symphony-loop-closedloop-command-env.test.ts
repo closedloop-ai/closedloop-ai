@@ -16,6 +16,11 @@ import { LoopCommand } from "@closedloop-ai/loops-api/commands";
 import { LoopHarness } from "@closedloop-ai/loops-api/desktop-request";
 import { setShellPathForTest } from "../src/server/shell-path.js";
 import {
+  SHEBANG_LINE,
+  WRITE_REQUIRED_ARTIFACT_SH,
+  writeFakeClaudeScript,
+} from "./helpers/fake-harness-artifacts.js";
+import {
   makeFakeWorktreeProvider,
   makeMultiRepoGateway,
   makeMultiRepoTestHarness,
@@ -92,9 +97,7 @@ for (const { enum: cmd, expected, loopId } of NATIVE_LOOP_COMMANDS) {
       `echo '{"type":"result"}'`,
       "exit 0",
     ].join("\n");
-    await fs.writeFile(path.join(fakeBin, "claude"), spyScript, {
-      mode: 0o755,
-    });
+    await writeFakeClaudeScript(fakeBin, spyScript);
 
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
     setShellPathForTest();
@@ -185,7 +188,7 @@ test("DECOMPOSE loop propagates CLOSEDLOOP_COMMAND=DECOMPOSE to the raw-claude p
     `echo '{"type":"result"}'`,
     "exit 0",
   ].join("\n");
-  await fs.writeFile(path.join(fakeBin, "claude"), spyScript, { mode: 0o755 });
+  await writeFakeClaudeScript(fakeBin, spyScript);
 
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -274,7 +277,13 @@ test("Codex native prompt pipeline passes prompt content through stdin", async (
     `echo '{"type":"result"}'`,
     "exit 0",
   ].join("\n");
-  await fs.writeFile(path.join(fakeBin, "codex"), spyScript, { mode: 0o755 });
+  // The Codex harness is the same native pipeline under a different binary, so
+  // its fixture owes the same deliverable a real successful run would write.
+  await fs.writeFile(
+    path.join(fakeBin, "codex"),
+    spyScript.replace(SHEBANG_LINE, `$1${WRITE_REQUIRED_ARTIFACT_SH}`),
+    { mode: 0o755 }
+  );
 
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();
@@ -398,9 +407,7 @@ async function runHarnessDefaultCase({
     `echo '{"type":"result"}'`,
     "exit 0",
   ].join("\n");
-  await fs.writeFile(path.join(fakeBin, "claude"), spyScript, {
-    mode: 0o755,
-  });
+  await writeFakeClaudeScript(fakeBin, spyScript);
 
   process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
   setShellPathForTest();

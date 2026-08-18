@@ -1,10 +1,16 @@
+import { LANDING_HERO_SUBTITLE } from "@repo/lib/landing-hero-copy";
 import { createMetadata } from "@repo/seo/metadata";
 import { Github } from "lucide-react";
 import type { Metadata } from "next";
 
 export const siteTitle = "Closedloop.ai";
-export const siteDescription =
-  "Team-based agentic development for production software.";
+/**
+ * ISS-5490: the same sentence the landing hero leads with. These had drifted —
+ * the page said one thing and the tab, search result and social card said
+ * another, so a visitor met two different products depending on where they
+ * looked.
+ */
+export const siteDescription = LANDING_HERO_SUBTITLE;
 
 export const locales = ["en", "de", "es", "fr", "pt", "zh"] as const;
 

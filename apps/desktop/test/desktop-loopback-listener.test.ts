@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { startDesktopLoopbackListener } from "../src/main/desktop-loopback-listener.js";
+import { startDesktopLoopbackListener } from "../src/main/auth/desktop-loopback-listener.js";
 
 test("binds 127.0.0.1 on an ephemeral port and delivers the callback params", async () => {
   const listener = await startDesktopLoopbackListener();
@@ -17,7 +17,11 @@ test("binds 127.0.0.1 on an ephemeral port and delivers the callback params", as
     assert.equal(res.status, 200);
     await res.text();
 
-    assert.deepEqual(await waiting, { code: "the-code", state: "the-state" });
+    assert.deepEqual(await waiting, {
+      code: "the-code",
+      state: "the-state",
+      error: null,
+    });
   } finally {
     await listener.close();
   }
@@ -34,7 +38,7 @@ test("responds 404 to non-callback paths without delivering a callback", async (
     // The real callback still resolves afterwards.
     const waiting = listener.waitForCallback(new AbortController().signal);
     await fetch(`${listener.redirectUri}?code=c&state=s`).then((r) => r.text());
-    assert.deepEqual(await waiting, { code: "c", state: "s" });
+    assert.deepEqual(await waiting, { code: "c", state: "s", error: null });
   } finally {
     await listener.close();
   }
@@ -62,7 +66,7 @@ test("delivers a callback that arrived before waitForCallback was called", async
 
     assert.deepEqual(
       await listener.waitForCallback(new AbortController().signal),
-      { code: "early", state: "st" }
+      { code: "early", state: "st", error: null }
     );
   } finally {
     await listener.close();
@@ -77,4 +81,23 @@ test("close is idempotent and frees the port", async () => {
   await listener.close();
 
   await assert.rejects(fetch(`${origin}/cb`));
+});
+
+test("delivers an OAuth error callback so a cancel is not silence", async () => {
+  // The web consent screen reports a cancel by redirecting here with `error`
+  // and no `code`. Before this the listener dropped the param and the session
+  // manager could not tell a cancel from a browser that never came back.
+  const listener = await startDesktopLoopbackListener();
+  try {
+    const controller = new AbortController();
+    const waiting = listener.waitForCallback(controller.signal);
+    await fetch(`${listener.redirectUri}?error=access_denied&state=the-state`);
+    assert.deepEqual(await waiting, {
+      code: null,
+      state: "the-state",
+      error: "access_denied",
+    });
+  } finally {
+    await listener.close();
+  }
 });

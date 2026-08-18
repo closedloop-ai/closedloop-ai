@@ -12,6 +12,7 @@ import {
   hasMainTranscript,
   isTranscriptReadable,
   MAIN_FILE_KEY,
+  normalizeSkipReason,
   sessionTranscriptIdentityWhere,
 } from "./transcript-availability";
 
@@ -128,6 +129,7 @@ function missingDescriptor(fileKey: string): TranscriptFileDescriptor {
     rawSha256: null,
     uploadedAt: null,
     lastObservedAt: null,
+    permanentFailureReason: null,
   };
 }
 
@@ -148,6 +150,9 @@ async function toDescriptor(
     rawSha256: row.rawSha256,
     uploadedAt: row.uploadedAt?.toISOString() ?? null,
     lastObservedAt: row.lastObservedAt.toISOString(),
+    // FEA-3476: only a `permanentlyUnavailable` (skipped) row carries a reason;
+    // narrow the free-text column to the contract enum, else null.
+    permanentFailureReason: normalizeSkipReason(row.permanentFailureReason),
   };
 }
 

@@ -19,10 +19,14 @@ import type {
   JudgeStatsResponse,
   RadarAxes,
 } from "@repo/api/src/types/judges-analytics";
-import { computeMean as computeMeanFromUtils } from "@repo/api/src/utils/math";
+import {
+  clamp,
+  computeMean as computeMeanFromUtils,
+} from "@repo/api/src/utils/math";
 import { ArtifactType, Prisma, PromptType, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { normalizeJudgeName } from "@/lib/judge-name-utils";
+import { toNumber } from "@/lib/prisma-number";
 
 type HumanCountsByType = {
   humanRatingsByType: Map<DocumentType, number>;
@@ -335,12 +339,55 @@ export type JudgeScoreInput = {
   };
 };
 
-/** Aggregates judge scores by document type and judge name. */
+/**
+ * A DB-side pre-aggregation of judge scores over one
+ * `(documentType, metricName, promptId, caseId)` partition. Emitted by the
+ * grouped `getAggregateStats` query so the app folds a bounded number of groups
+ * instead of the full per-score population. Carries power sums plus the distinct
+ * artifact ids in the group (needed for human-rating pooling / documentsEvaluated).
+ */
+export type JudgeScoreGroup = {
+  caseId: string;
+  metricName: string;
+  promptId: string | null;
+  documentType: DocumentType;
+  count: number;
+  sum: number;
+  sumSq: number;
+  min: number;
+  max: number;
+  documentIds: string[];
+};
+
+/**
+ * Aggregates judge scores by document type and judge name.
+ *
+ * Alongside the raw `scores` array (retained for the pure-function contract of
+ * {@link aggregateJudgeScoreRows}), the accumulator carries power sums
+ * (count/sum/sumSq/min/max). The power sums are what {@link computeJudgeStats}
+ * reads, so a caller can fold in *pre-aggregated* DB groups (via `addGroup`)
+ * without ever materializing the full judge-score population in app memory.
+ */
 type AggregatedJudgeData = {
+  /** Raw scores — populated only by the per-score `addScore` path. */
   scores: number[];
+  count: number;
+  sum: number;
+  sumSq: number;
+  min: number;
+  max: number;
   documentIds: Set<string>;
   promptName: string;
   metricName: string;
+};
+
+/** Power sums over one score partition. `min`/`max` are ignored when count=0. */
+type JudgeScorePowerSums = {
+  count: number;
+  sum: number;
+  sumSq: number;
+  min: number;
+  max: number;
 };
 
 class JudgeScoreAggregator {
@@ -349,6 +396,35 @@ class JudgeScoreAggregator {
     Map<string, AggregatedJudgeData>
   >();
 
+  private ensureEntry(
+    documentType: DocumentType,
+    aggregationKey: string,
+    promptName: string,
+    metricName: string
+  ): AggregatedJudgeData {
+    if (!this.data.has(documentType)) {
+      this.data.set(documentType, new Map());
+    }
+    const judgeMap = this.data.get(documentType)!;
+    let judgeData = judgeMap.get(aggregationKey);
+    if (judgeData === undefined) {
+      judgeData = {
+        scores: [],
+        count: 0,
+        sum: 0,
+        sumSq: 0,
+        min: Number.POSITIVE_INFINITY,
+        max: Number.NEGATIVE_INFINITY,
+        documentIds: new Set(),
+        promptName,
+        metricName,
+      };
+      judgeMap.set(aggregationKey, judgeData);
+    }
+    return judgeData;
+  }
+
+  /** Fold a single score (per-score path — keeps the raw `scores` array). */
   addScore(
     documentType: DocumentType,
     aggregationKey: string,
@@ -357,23 +433,53 @@ class JudgeScoreAggregator {
     score: number,
     documentId: string
   ): void {
-    if (!this.data.has(documentType)) {
-      this.data.set(documentType, new Map());
-    }
-
-    const judgeMap = this.data.get(documentType)!;
-    if (!judgeMap.has(aggregationKey)) {
-      judgeMap.set(aggregationKey, {
-        scores: [],
-        documentIds: new Set(),
-        promptName,
-        metricName,
-      });
-    }
-
-    const judgeData = judgeMap.get(aggregationKey)!;
+    const judgeData = this.ensureEntry(
+      documentType,
+      aggregationKey,
+      promptName,
+      metricName
+    );
     judgeData.scores.push(score);
+    judgeData.count += 1;
+    judgeData.sum += score;
+    judgeData.sumSq += score * score;
+    judgeData.min = Math.min(judgeData.min, score);
+    judgeData.max = Math.max(judgeData.max, score);
     judgeData.documentIds.add(documentId);
+  }
+
+  /**
+   * Fold a pre-aggregated group (power sums over one
+   * `(documentType, metricName, promptId, caseId)` partition) into the
+   * running per-`(documentType, aggregationKey)` accumulator. Multiple groups
+   * can map to the same aggregationKey (collision resolution), so sums are
+   * combined and min/max reduced. Does NOT populate `scores`.
+   */
+  addGroup(
+    documentType: DocumentType,
+    aggregationKey: string,
+    promptName: string,
+    metricName: string,
+    group: JudgeScorePowerSums,
+    documentIds: Iterable<string>
+  ): void {
+    if (group.count === 0) {
+      return;
+    }
+    const judgeData = this.ensureEntry(
+      documentType,
+      aggregationKey,
+      promptName,
+      metricName
+    );
+    judgeData.count += group.count;
+    judgeData.sum += group.sum;
+    judgeData.sumSq += group.sumSq;
+    judgeData.min = Math.min(judgeData.min, group.min);
+    judgeData.max = Math.max(judgeData.max, group.max);
+    for (const id of documentIds) {
+      judgeData.documentIds.add(id);
+    }
   }
 
   getResults(): Map<DocumentType, Map<string, AggregatedJudgeData>> {
@@ -381,13 +487,20 @@ class JudgeScoreAggregator {
   }
 }
 
+/** Minimal identity a row/group needs for aggregation-key + route-name resolution. */
+type JudgeScoreIdentity = {
+  caseId: string;
+  metricName: string;
+  promptId: string | null;
+};
+
 /**
  * For each row, determine the aggregation key.
  * If the same metricName appears from multiple distinct promptIds, use
  * "{normalizedPromptName}-{metricName}" as the key to disambiguate.
  */
 function resolveAggregationKey(
-  row: JudgeScoreInput,
+  row: JudgeScoreIdentity,
   collisionMetrics: Set<string>,
   promptNameById: Map<string, string>
 ): string {
@@ -401,7 +514,7 @@ function resolveAggregationKey(
 }
 
 function resolvePromptRouteName(
-  row: JudgeScoreInput,
+  row: JudgeScoreIdentity,
   promptNameById: Map<string, string>
 ): string {
   if (row.promptId) {
@@ -446,6 +559,44 @@ export function aggregateJudgeScoreRows(
   return aggregator.getResults();
 }
 
+/**
+ * Aggregates pre-grouped judge-score power sums into the same nested map that
+ * {@link aggregateJudgeScoreRows} produces from raw scores — but bounded by the
+ * number of DB groups rather than the full score population.
+ */
+export function aggregateJudgeScoreGroups(
+  groups: JudgeScoreGroup[],
+  collisionMetrics: Set<string> = new Set(),
+  promptNameById: Map<string, string> = new Map()
+): Map<DocumentType, Map<string, AggregatedJudgeData>> {
+  const aggregator = new JudgeScoreAggregator();
+
+  for (const group of groups) {
+    const aggregationKey = resolveAggregationKey(
+      group,
+      collisionMetrics,
+      promptNameById
+    );
+    const promptName = resolvePromptRouteName(group, promptNameById);
+    aggregator.addGroup(
+      group.documentType,
+      aggregationKey,
+      promptName,
+      group.metricName,
+      {
+        count: group.count,
+        sum: group.sum,
+        sumSq: group.sumSq,
+        min: group.min,
+        max: group.max,
+      },
+      group.documentIds
+    );
+  }
+
+  return aggregator.getResults();
+}
+
 /** Collects all unique artifact IDs from the aggregator across all types and judges. */
 function collectAllArtifactIds(
   aggregator: Map<DocumentType, Map<string, AggregatedJudgeData>>
@@ -461,24 +612,43 @@ function collectAllArtifactIds(
   return Array.from(allIds);
 }
 
-/** Computes aggregate stats for a single judge given its scores and human ratings lookup. */
+/**
+ * Population standard deviation derived from power sums.
+ *
+ * Algebraically equal to {@link computeStdDev} (`sqrt(mean((v-mean)^2))`) via
+ * `variance = E[x^2] - E[x]^2`. The `Math.max(0, …)` guards against a tiny
+ * negative variance from floating-point cancellation.
+ */
+function stdDevFromPowerSums(
+  count: number,
+  sum: number,
+  sumSq: number
+): number {
+  if (count === 0) {
+    return 0;
+  }
+  const mean = sum / count;
+  const variance = Math.max(0, sumSq / count - mean * mean);
+  return Math.sqrt(variance);
+}
+
+/** Computes aggregate stats for a single judge given its power sums and human ratings lookup. */
 function computeJudgeStats(
   judgeDisplayName: string,
   judgeData: AggregatedJudgeData,
   humanRatingsByArtifact: Map<string, number[]>,
   judgeDescriptionByMetricName: Map<string, string>
 ): JudgeAggregateStats | null {
-  const scores = judgeData.scores;
-  const count = scores.length;
+  const count = judgeData.count;
 
   if (count === 0) {
     return null;
   }
 
-  const min = Math.min(...scores);
-  const max = Math.max(...scores);
-  const mean = computeMean(scores);
-  const stdDev = computeStdDev(scores, mean);
+  const min = judgeData.min;
+  const max = judgeData.max;
+  const mean = judgeData.sum / count;
+  const stdDev = stdDevFromPowerSums(count, judgeData.sum, judgeData.sumSq);
 
   // Pool all human scores across this judge's artifacts
   const judgeHumanScores: number[] = [];
@@ -666,11 +836,311 @@ async function getJudgeDescriptionByPromptName(
 }
 
 /**
- * Returns the description for a single JudgeScoreInput row, consulting promptId first
+ * DB-side pre-aggregation for {@link judgesAnalyticsService.getAggregateStats}.
+ *
+ * Groups judge scores by `(subtype, metric_name, prompt_id, case_id)` and emits
+ * power sums (COUNT / SUM(score) / SUM(score^2) / MIN / MAX) plus the DISTINCT
+ * artifact ids per group. Scoping (org / reportType / DOCUMENT / evaluation
+ * createdAt window) is applied in SQL, so only one bounded row per group crosses
+ * the wire — never the full per-score population.
+ */
+async function getAggregateJudgeScoreGroups(
+  organizationId: string,
+  startDate: Date,
+  endDate: Date,
+  reportType: EvaluationReportType
+): Promise<JudgeScoreGroup[]> {
+  const rows = await withDb((db) =>
+    db.$queryRaw<
+      {
+        caseId: string;
+        metricName: string;
+        promptId: string | null;
+        subtype: string;
+        count: number;
+        sum: number;
+        sumSq: number;
+        min: number;
+        max: number;
+        documentIds: string[];
+      }[]
+    >(
+      Prisma.sql`
+        SELECT
+          js."case_id" AS "caseId",
+          js."metric_name" AS "metricName",
+          js."prompt_id"::text AS "promptId",
+          a."subtype"::text AS "subtype",
+          COUNT(*)::int AS "count",
+          SUM(js."score")::double precision AS "sum",
+          SUM(js."score" * js."score")::double precision AS "sumSq",
+          MIN(js."score")::double precision AS "min",
+          MAX(js."score")::double precision AS "max",
+          array_agg(DISTINCT ae."artifact_id"::text) AS "documentIds"
+        FROM "judge_scores" js
+        JOIN "artifact_evaluations" ae ON ae."id" = js."evaluation_id"
+        JOIN "artifacts" a ON a."id" = ae."artifact_id"
+        WHERE ae."organization_id" = ${organizationId}::uuid
+          AND ae."report_type" = ${reportType}::"EvaluationReportType"
+          AND ae."created_at" >= ${startDate}
+          AND ae."created_at" <= ${endDate}
+          AND a."type" = ${ArtifactType.DOCUMENT}::"ArtifactType"
+          AND a."subtype" IS NOT NULL
+        GROUP BY js."case_id", js."metric_name", js."prompt_id", a."subtype"
+      `
+    )
+  );
+
+  return rows.map((row) => ({
+    caseId: row.caseId,
+    metricName: row.metricName,
+    promptId: row.promptId,
+    documentType: row.subtype as DocumentType,
+    count: toNumber(row.count),
+    sum: toNumber(row.sum),
+    sumSq: toNumber(row.sumSq),
+    min: toNumber(row.min),
+    max: toNumber(row.max),
+    documentIds: row.documentIds,
+  }));
+}
+
+/** Per-prompt-version power moments plus the min/max used by the version panel. */
+type JudgeDetailMoments = ScorePowerMoments & { min: number; max: number };
+
+/**
+ * DB-side per-promptId power-sum aggregation for
+ * {@link judgesAnalyticsService.getJudgeDetail}. Emits COUNT / SUM(score) /
+ * SUM(score^2) / SUM(score^3) / SUM(score^4) / MIN / MAX and the extreme-score
+ * count per matching prompt version, so the moments (mean/stdDev/skew/kurtosis/
+ * bimodality/certainty) are reconstructed from a handful of grouped rows rather
+ * than the full judge-score population. Scoping matches the prior in-app filter.
+ */
+async function getJudgeDetailPowerMoments(
+  organizationId: string,
+  reportType: EvaluationReportType,
+  promptIds: string[]
+): Promise<Map<string, JudgeDetailMoments>> {
+  if (promptIds.length === 0) {
+    return new Map();
+  }
+
+  const promptIdCsv = Prisma.join(
+    promptIds.map((id) => Prisma.sql`${id}::uuid`)
+  );
+  const extremeHigh = JUDGE_RADAR_METRICS.certainty.extremeHighScore;
+  const extremeLow = JUDGE_RADAR_METRICS.certainty.extremeLowScore;
+
+  const rows = await withDb((db) =>
+    db.$queryRaw<
+      {
+        promptId: string;
+        count: number;
+        sum: number;
+        sumSq: number;
+        sum3: number;
+        sum4: number;
+        min: number;
+        max: number;
+        extremeCount: number;
+      }[]
+    >(
+      Prisma.sql`
+        SELECT
+          js."prompt_id"::text AS "promptId",
+          COUNT(*)::int AS "count",
+          SUM(js."score")::double precision AS "sum",
+          SUM(js."score" * js."score")::double precision AS "sumSq",
+          SUM(js."score" * js."score" * js."score")::double precision AS "sum3",
+          SUM(js."score" * js."score" * js."score" * js."score")::double precision AS "sum4",
+          MIN(js."score")::double precision AS "min",
+          MAX(js."score")::double precision AS "max",
+          COUNT(*) FILTER (
+            WHERE js."score" > ${extremeHigh} OR js."score" < ${extremeLow}
+          )::int AS "extremeCount"
+        FROM "judge_scores" js
+        JOIN "artifact_evaluations" ae ON ae."id" = js."evaluation_id"
+        JOIN "artifacts" a ON a."id" = ae."artifact_id"
+        WHERE js."prompt_id" IN (${promptIdCsv})
+          AND ae."organization_id" = ${organizationId}::uuid
+          AND ae."report_type" = ${reportType}::"EvaluationReportType"
+          AND a."type" = ${ArtifactType.DOCUMENT}::"ArtifactType"
+        GROUP BY js."prompt_id"
+      `
+    )
+  );
+
+  const byPromptId = new Map<string, JudgeDetailMoments>();
+  for (const row of rows) {
+    byPromptId.set(row.promptId, {
+      count: toNumber(row.count),
+      sum: toNumber(row.sum),
+      sumSq: toNumber(row.sumSq),
+      sum3: toNumber(row.sum3),
+      sum4: toNumber(row.sum4),
+      extremeCount: toNumber(row.extremeCount),
+      min: toNumber(row.min),
+      max: toNumber(row.max),
+    });
+  }
+  return byPromptId;
+}
+
+/** One paginated, delta-ranked judge-score row (raw-query shape). */
+type JudgeScoresPageRow = {
+  judgeScoreId: string;
+  metricName: string;
+  documentId: string;
+  subtype: string;
+  documentTitle: string;
+  documentSlug: string | null;
+  judgeScore: number;
+  avgUserRating: number;
+  userRatingCount: number;
+  delta: number;
+  evaluatedAt: Date;
+  totalRows: number;
+  ratedRows: number;
+};
+
+/**
+ * DB-side, delta-ranked, paginated page for
+ * {@link judgesAnalyticsService.getJudgeScores}.
+ *
+ * Per judge score: `avgUserRating` = AVG(human score) when rated else the judge
+ * score (concurrence default), `delta` = |avgUserRating − score| when rated else
+ * 0. Ordered by `delta DESC, score DESC` (unrated rows last), with `id` as a
+ * deterministic final tiebreak. `COUNT(*) OVER()` / `COUNT(*) FILTER (…) OVER()`
+ * carry the full-population totals so coverage is exact without a second pass.
+ */
+async function getJudgeScoresPage(
+  organizationId: string,
+  reportType: EvaluationReportType,
+  promptIds: string[],
+  limit: number,
+  offset: number
+): Promise<JudgeScoresPageRow[]> {
+  if (promptIds.length === 0) {
+    return [];
+  }
+  const promptIdCsv = Prisma.join(
+    promptIds.map((id) => Prisma.sql`${id}::uuid`)
+  );
+
+  return await withDb((db) =>
+    db.$queryRaw<JudgeScoresPageRow[]>(
+      Prisma.sql`
+        WITH scored AS (
+          SELECT
+            js."id" AS "judgeScoreId",
+            js."metric_name" AS "metricName",
+            a."id" AS "documentId",
+            a."subtype"::text AS "subtype",
+            a."name" AS "documentTitle",
+            a."slug" AS "documentSlug",
+            js."score" AS "judgeScore",
+            js."created_at" AS "evaluatedAt",
+            COUNT(hs."id") AS "userRatingCount",
+            CASE
+              WHEN COUNT(hs."id") > 0 THEN AVG(hs."score")
+              ELSE js."score"
+            END AS "avgUserRating",
+            CASE
+              WHEN COUNT(hs."id") > 0
+                THEN ABS(AVG(hs."score") - js."score")
+              ELSE 0
+            END AS "delta"
+          FROM "judge_scores" js
+          JOIN "artifact_evaluations" ae ON ae."id" = js."evaluation_id"
+          JOIN "artifacts" a ON a."id" = ae."artifact_id"
+          LEFT JOIN "judge_human_scores" hs ON hs."judge_score_id" = js."id"
+          WHERE js."prompt_id" IN (${promptIdCsv})
+            AND ae."organization_id" = ${organizationId}::uuid
+            AND ae."report_type" = ${reportType}::"EvaluationReportType"
+            AND a."type" = ${ArtifactType.DOCUMENT}::"ArtifactType"
+            AND a."subtype" IS NOT NULL
+          GROUP BY js."id", js."metric_name", a."id", a."subtype",
+                   a."name", a."slug", js."score", js."created_at"
+        )
+        SELECT
+          "judgeScoreId",
+          "metricName",
+          "documentId",
+          "subtype",
+          "documentTitle",
+          "documentSlug",
+          "judgeScore"::double precision AS "judgeScore",
+          "avgUserRating"::double precision AS "avgUserRating",
+          "userRatingCount"::int AS "userRatingCount",
+          "delta"::double precision AS "delta",
+          "evaluatedAt",
+          COUNT(*) OVER ()::int AS "totalRows",
+          COUNT(*) FILTER (WHERE "userRatingCount" > 0) OVER ()::int AS "ratedRows"
+        FROM scored
+        ORDER BY "delta" DESC, "judgeScore" DESC, "judgeScoreId" ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `
+    )
+  );
+}
+
+/**
+ * Full-population totals (total rows + rated rows) for
+ * {@link judgesAnalyticsService.getJudgeScores}, used only when the requested
+ * page is empty (out-of-range or zero scores) and the windowed counts on the
+ * page rows are therefore unavailable.
+ */
+async function getJudgeScoresTotals(
+  organizationId: string,
+  reportType: EvaluationReportType,
+  promptIds: string[]
+): Promise<{ totalRows: number; ratedRows: number }> {
+  if (promptIds.length === 0) {
+    return { totalRows: 0, ratedRows: 0 };
+  }
+  const promptIdCsv = Prisma.join(
+    promptIds.map((id) => Prisma.sql`${id}::uuid`)
+  );
+
+  const rows = await withDb((db) =>
+    db.$queryRaw<{ totalRows: number; ratedRows: number }[]>(
+      Prisma.sql`
+        WITH scored AS (
+          SELECT
+            js."id" AS "judgeScoreId",
+            COUNT(hs."id") AS "userRatingCount"
+          FROM "judge_scores" js
+          JOIN "artifact_evaluations" ae ON ae."id" = js."evaluation_id"
+          JOIN "artifacts" a ON a."id" = ae."artifact_id"
+          LEFT JOIN "judge_human_scores" hs ON hs."judge_score_id" = js."id"
+          WHERE js."prompt_id" IN (${promptIdCsv})
+            AND ae."organization_id" = ${organizationId}::uuid
+            AND ae."report_type" = ${reportType}::"EvaluationReportType"
+            AND a."type" = ${ArtifactType.DOCUMENT}::"ArtifactType"
+            AND a."subtype" IS NOT NULL
+          GROUP BY js."id"
+        )
+        SELECT
+          COUNT(*)::int AS "totalRows",
+          COUNT(*) FILTER (WHERE "userRatingCount" > 0)::int AS "ratedRows"
+        FROM scored
+      `
+    )
+  );
+
+  const row = rows[0];
+  return {
+    totalRows: toNumber(row?.totalRows),
+    ratedRows: toNumber(row?.ratedRows),
+  };
+}
+
+/**
+ * Returns the description for a single judge row/group, consulting promptId first
  * then falling back to the prompt-name-based map via caseId.
  */
 function resolveMetricDescription(
-  js: JudgeScoreInput,
+  js: JudgeScoreIdentity,
   descriptionById: Map<string, string>,
   judgeDescriptionByPromptName: Map<string, string>
 ): string | undefined {
@@ -690,7 +1160,7 @@ function resolveMetricDescription(
  */
 function populateMetricDescriptionMap(
   map: Map<string, string>,
-  judgeScores: JudgeScoreInput[],
+  judgeScores: JudgeScoreIdentity[],
   descriptionById: Map<string, string>,
   judgeDescriptionByPromptName: Map<string, string>,
   collisionMetrics: Set<string>,
@@ -719,13 +1189,14 @@ type CollisionResolution = {
 
 /**
  * Detects metrics that appear from multiple distinct promptIds and builds
- * a promptId → normalizedName map for disambiguation.
+ * a promptId → normalizedName map for disambiguation. Works over either raw
+ * per-score rows or pre-aggregated groups (both are {@link JudgeScoreIdentity}).
  */
 function detectMetricCollisions(
-  judgeScores: JudgeScoreInput[]
+  rows: JudgeScoreIdentity[]
 ): CollisionResolution {
   const metricNameToPromptIds = new Map<string, Set<string>>();
-  for (const row of judgeScores) {
+  for (const row of rows) {
     if (row.promptId) {
       const ids =
         metricNameToPromptIds.get(row.metricName) ?? new Set<string>();
@@ -743,7 +1214,7 @@ function detectMetricCollisions(
 
   const promptNameById = new Map<string, string>();
   if (collisionMetrics.size > 0) {
-    for (const row of judgeScores) {
+    for (const row of rows) {
       if (row.promptId && !promptNameById.has(row.promptId)) {
         promptNameById.set(row.promptId, normalizeJudgeName(row.caseId));
       }
@@ -759,7 +1230,7 @@ function detectMetricCollisions(
  * promptId is not present.
  */
 async function buildMetricNameDescriptionMap(
-  judgeScores: JudgeScoreInput[],
+  judgeScores: JudgeScoreIdentity[],
   judgeDescriptionByPromptName: Map<string, string>,
   collisionMetrics: Set<string>,
   promptNameById: Map<string, string>
@@ -821,34 +1292,23 @@ export const judgesAnalyticsService = {
     const judgeDescriptionByPromptName =
       await getJudgeDescriptionByPromptName(organizationId);
 
-    // Query JudgeScore rows joined through ArtifactEvaluation. The evaluation
-    // now always points to an Artifact directly (no more entity polymorphism);
-    // we filter DOCUMENT-typed artifacts for the legacy Plan/PRD path.
-    const rawJudgeScores = await withDb((db) =>
-      db.judgeScore.findMany({
-        where: {
-          evaluation: {
-            reportType,
-            organizationId,
-            artifact: { type: ArtifactType.DOCUMENT },
-            createdAt: { gte: startDate, lte: endDate },
-          },
-        },
-        select: {
-          caseId: true,
-          metricName: true,
-          promptId: true,
-          score: true,
-          evaluation: {
-            select: {
-              artifactId: true,
-            },
-          },
-        },
-      })
+    // Aggregate JudgeScore rows DB-side, grouped by
+    // (subtype, metric_name, prompt_id, case_id), joined through
+    // ArtifactEvaluation → Artifact. We push COUNT / SUM(score) / SUM(score^2)
+    // / MIN / MAX to the database so app memory stays bounded by the number of
+    // distinct groups instead of the full per-score population. array_agg of
+    // the DISTINCT artifact ids per group (bounded by distinct scored
+    // artifacts) preserves documentsEvaluated + human-rating pooling. The
+    // evaluation-level createdAt window and DOCUMENT/reportType/org scoping
+    // match the prior in-app filters exactly.
+    const judgeScoreGroups = await getAggregateJudgeScoreGroups(
+      organizationId,
+      startDate,
+      endDate,
+      reportType
     );
 
-    if (rawJudgeScores.length === 0) {
+    if (judgeScoreGroups.length === 0) {
       log.warn("No judge scores found for judges analytics query", {
         organizationId,
         startDate: startDate.toISOString(),
@@ -858,56 +1318,20 @@ export const judgesAnalyticsService = {
       return { reportType, groups: [] };
     }
 
-    // Batch-fetch artifact subtypes to populate JudgeScoreInput
-    const evalEntityIds = [
-      ...new Set(rawJudgeScores.map((js) => js.evaluation.artifactId)),
-    ];
-    const evalArtifactRows = await withDb((db) =>
-      db.artifact.findMany({
-        where: {
-          id: { in: evalEntityIds },
-          organizationId,
-          type: ArtifactType.DOCUMENT,
-        },
-        select: { id: true, subtype: true },
-      })
-    );
-    const documentTypeByEntityId = new Map<string, DocumentType>(
-      evalArtifactRows.flatMap((a) =>
-        a.subtype === null ? [] : [[a.id, a.subtype as DocumentType] as const]
-      )
-    );
-    const judgeScores: JudgeScoreInput[] = rawJudgeScores.flatMap((js) => {
-      const documentType = documentTypeByEntityId.get(js.evaluation.artifactId);
-      if (!documentType) {
-        return [];
-      }
-      return [
-        {
-          ...js,
-          evaluation: {
-            documentId: js.evaluation.artifactId,
-            entityId: js.evaluation.artifactId,
-            documentType,
-          },
-        },
-      ];
-    });
-
     // Detect collisions: same metricName from multiple distinct promptIds
     const { collisionMetrics, promptNameById } =
-      detectMetricCollisions(judgeScores);
+      detectMetricCollisions(judgeScoreGroups);
 
-    // Aggregate scores by artifact type and metricName
-    const aggregator = aggregateJudgeScoreRows(
-      judgeScores,
+    // Aggregate power sums by artifact type and metricName
+    const aggregator = aggregateJudgeScoreGroups(
+      judgeScoreGroups,
       collisionMetrics,
       promptNameById
     );
 
     // Build metricName → description map for the description lookup in computeJudgeStats
     const judgeDescriptionByMetricName = await buildMetricNameDescriptionMap(
-      judgeScores,
+      judgeScoreGroups,
       judgeDescriptionByPromptName,
       collisionMetrics,
       promptNameById
@@ -1046,43 +1470,35 @@ export const judgesAnalyticsService = {
 
     const { promptIds, matchingPrompts } = resolved;
     const latestPrompt = matchingPrompts[0];
-    const promptIdSet = new Set(promptIds);
 
-    // 3. Load score rows — match by promptId (relational) scoped to org.
-    // Evaluations now always target an artifact directly; filter DOCUMENT
-    // artifacts for the legacy Plan/PRD path.
-    const allScores = await withDb((db) =>
-      db.judgeScore.findMany({
-        where: {
-          promptId: { in: promptIds },
-          evaluation: {
-            reportType,
-            organizationId,
-            artifact: { type: ArtifactType.DOCUMENT },
-          },
-        },
-        select: {
-          promptId: true,
-          score: true,
-          threshold: true,
-          finalStatus: true,
-          createdAt: true,
-        },
-      })
+    // 3. Aggregate score power sums DB-side, grouped by promptId, scoped to org
+    // / reportType / DOCUMENT. Only one bounded row per prompt version crosses
+    // the wire — the full per-score population never enters app memory. The
+    // `promptId IN (…)` filter guarantees every returned group belongs to a
+    // matching prompt (there are no unknown-version scores under that filter).
+    const momentsByPromptId = await getJudgeDetailPowerMoments(
+      organizationId,
+      reportType,
+      promptIds
     );
 
-    const scoreValues = allScores.map((s) => s.score);
-    const scoreCount = scoreValues.length;
+    // Overall = roll-up of every matching prompt version.
+    let overall = EMPTY_POWER_MOMENTS;
+    for (const moments of momentsByPromptId.values()) {
+      overall = addPowerMoments(overall, moments);
+    }
+    const scoreCount = overall.count;
+    const unknownVersionScoreCount = 0;
 
     // 4. Compute radar axes (null when insufficient scores)
     let radarAxes: RadarAxes | null = null;
     let labels: CharacteristicLabel[] = [];
 
     if (scoreCount >= JUDGE_THRESHOLDS.minScoreCount) {
-      const mean = computeMean(scoreValues);
-      const stdDev = computeStdDev(scoreValues, mean);
-      const bimodality = computeBimodalityCoefficient(scoreValues);
-      const certaintyFraction = computeCertaintyFraction(scoreValues);
+      const mean = meanFromMoments(overall);
+      const stdDev = stdDevFromMoments(overall);
+      const bimodality = bimodalityFromMoments(overall);
+      const certaintyFraction = certaintyFractionFromMoments(overall);
 
       radarAxes = toRadarAxes(stdDev, mean, bimodality, certaintyFraction);
 
@@ -1096,33 +1512,20 @@ export const judgesAnalyticsService = {
     }
 
     // 6. Build per-version stats
-    const scoresByPromptId = new Map<string, number[]>();
-    let unknownVersionScoreCount = 0;
-
-    for (const s of allScores) {
-      if (s.promptId && promptIdSet.has(s.promptId)) {
-        const bucket = scoresByPromptId.get(s.promptId) ?? [];
-        bucket.push(s.score);
-        scoresByPromptId.set(s.promptId, bucket);
-      } else {
-        unknownVersionScoreCount++;
-      }
-    }
-
     const promptVersions: JudgePromptVersion[] = [];
     for (const prompt of matchingPrompts) {
-      const versionScores = scoresByPromptId.get(prompt.id);
-      if (!versionScores || versionScores.length === 0) {
+      const vMoments = momentsByPromptId.get(prompt.id);
+      if (!vMoments || vMoments.count === 0) {
         continue;
       }
 
-      const vMean = computeMean(versionScores);
-      const vStdDev = computeStdDev(versionScores, vMean);
+      const vMean = meanFromMoments(vMoments);
+      const vStdDev = stdDevFromMoments(vMoments);
 
       let versionRadarAxes: RadarAxes | null = null;
-      if (versionScores.length >= JUDGE_THRESHOLDS.minScoreCount) {
-        const vBimodality = computeBimodalityCoefficient(versionScores);
-        const vCertaintyFraction = computeCertaintyFraction(versionScores);
+      if (vMoments.count >= JUDGE_THRESHOLDS.minScoreCount) {
+        const vBimodality = bimodalityFromMoments(vMoments);
+        const vCertaintyFraction = certaintyFractionFromMoments(vMoments);
         versionRadarAxes = toRadarAxes(
           vStdDev,
           vMean,
@@ -1134,11 +1537,11 @@ export const judgesAnalyticsService = {
       promptVersions.push({
         promptId: prompt.id,
         version: prompt.version,
-        scoreCount: versionScores.length,
+        scoreCount: vMoments.count,
         mean: vMean,
         stdDev: vStdDev,
-        min: Math.min(...versionScores),
-        max: Math.max(...versionScores),
+        min: vMoments.min,
+        max: vMoments.max,
         createdAt: prompt.createdAt.toISOString(),
         radarAxes: versionRadarAxes,
       });
@@ -1181,118 +1584,75 @@ export const judgesAnalyticsService = {
 
     const { promptIds } = resolved;
 
-    // Load judge scores by prompt identity, scoped to org and reportType
-    const judgeScores = await withDb((db) =>
-      db.judgeScore.findMany({
-        where: {
-          promptId: { in: promptIds },
-          evaluation: {
-            reportType,
-            organizationId,
-            artifact: { type: ArtifactType.DOCUMENT },
-          },
-        },
-        select: {
-          id: true,
-          score: true,
-          metricName: true,
-          createdAt: true,
-          evaluation: {
-            select: {
-              artifactId: true,
-            },
-          },
-          judgeHumanScores: {
-            select: { score: true },
-          },
-        },
-        // TODO: Move sorting and pagination into SQL once score ordering is DB-backed.
-      })
+    // The relation-derived `delta` sort (|avgUserRating − score|) cannot be
+    // expressed by Prisma's `orderBy`, so a bounded `findMany`/`take` would
+    // corrupt both the ranking and the coverage totals. Instead we push the
+    // human-rating aggregation, delta computation, `ORDER BY delta DESC, score
+    // DESC`, windowed COUNT(*) OVER() and LIMIT/OFFSET into one `$queryRaw`, so
+    // exactly one page (+ full-population totals) crosses the wire.
+    const offset = (page - 1) * pageSize;
+    const rawRows = await getJudgeScoresPage(
+      organizationId,
+      reportType,
+      promptIds,
+      pageSize,
+      offset
     );
 
-    if (judgeScores.length === 0) {
+    if (rawRows.length === 0) {
+      // No page rows: either there are truly zero scores, or the requested page
+      // is past the end. Re-derive the population totals cheaply so pagination
+      // metadata stays correct for out-of-range pages.
+      const totals = await getJudgeScoresTotals(
+        organizationId,
+        reportType,
+        promptIds
+      );
+      const totalRows = totals.totalRows;
+      const ratedRows = totals.ratedRows;
       return {
         rows: [],
-        totalDocuments: 0,
-        ratedDocuments: 0,
-        coveragePct: 0,
-        pagination: { page, pageSize, totalRows: 0, totalPages: 0 },
+        totalDocuments: totalRows,
+        ratedDocuments: ratedRows,
+        coveragePct: totalRows > 0 ? (ratedRows / totalRows) * 100 : 0,
+        pagination: {
+          page,
+          pageSize,
+          totalRows,
+          totalPages: Math.ceil(totalRows / pageSize),
+        },
       };
     }
 
-    // Batch-fetch artifact data by artifactId
-    const entityIds = [
-      ...new Set(judgeScores.map((js) => js.evaluation.artifactId)),
-    ];
-    const artifactRows = await withDb((db) =>
-      db.artifact.findMany({
-        where: {
-          id: { in: entityIds },
-          organizationId,
-          type: ArtifactType.DOCUMENT,
-        },
-        select: { id: true, subtype: true, name: true, slug: true },
-      })
-    );
-    const artifactsByEntityId = new Map(artifactRows.map((a) => [a.id, a]));
+    // Population totals come back on every windowed row (COUNT(*) OVER()).
+    const totalRows = toNumber(rawRows[0].totalRows);
+    const ratedRows = toNumber(rawRows[0].ratedRows);
 
-    // 3. Build rows with concurrence default
-    const rows: JudgeScoreRow[] = judgeScores.flatMap((js) => {
-      const artifact = artifactsByEntityId.get(js.evaluation.artifactId);
-      if (!artifact || artifact.subtype === null) {
-        return [];
-      }
-
-      const humanScores = js.judgeHumanScores.map((hs) => hs.score);
-      const userRatingCount = humanScores.length;
-      const avgUserRating =
-        userRatingCount > 0 ? computeMean(humanScores) : js.score;
-      const delta =
-        userRatingCount > 0 ? Math.abs(avgUserRating - js.score) : 0;
-
-      return [
-        {
-          judgeScoreId: js.id,
-          metricName: js.metricName,
-          documentId: artifact.id,
-          documentType: artifact.subtype as DocumentType,
-          documentTitle: artifact.name,
-          documentSlug: artifact.slug ?? "",
-          judgeScore: js.score,
-          avgUserRating,
-          userRatingCount,
-          delta,
-          evaluatedAt: js.createdAt.toISOString(),
-        },
-      ];
-    });
-
-    // 4. Sort: delta DESC, then judgeScore DESC (delta=0 rows last)
-    rows.sort((a, b) => {
-      if (a.delta !== b.delta) {
-        return b.delta - a.delta;
-      }
-      return b.judgeScore - a.judgeScore;
-    });
-
-    // 5. Summary counts
-    const totalArtifacts = rows.length;
-    const ratedArtifacts = rows.filter((r) => r.userRatingCount > 0).length;
-    const coveragePct =
-      totalArtifacts > 0 ? (ratedArtifacts / totalArtifacts) * 100 : 0;
-
-    // 6. Paginate
-    const totalRows = rows.length;
-    const totalPages = Math.ceil(totalRows / pageSize);
-    const start = (page - 1) * pageSize;
-    const paginatedRows = rows.slice(start, start + pageSize);
+    const rows: JudgeScoreRow[] = rawRows.map((r) => ({
+      judgeScoreId: r.judgeScoreId,
+      metricName: r.metricName,
+      documentId: r.documentId,
+      documentType: r.subtype as DocumentType,
+      documentTitle: r.documentTitle,
+      documentSlug: r.documentSlug ?? "",
+      judgeScore: toNumber(r.judgeScore),
+      avgUserRating: toNumber(r.avgUserRating),
+      userRatingCount: toNumber(r.userRatingCount),
+      delta: toNumber(r.delta),
+      evaluatedAt: r.evaluatedAt.toISOString(),
+    }));
 
     return {
-      rows: paginatedRows,
-      totalDocuments: totalArtifacts,
-      ratedDocuments: ratedArtifacts,
-      coveragePct,
-      pagination: { page, pageSize, totalRows, totalPages },
+      rows,
+      totalDocuments: totalRows,
+      ratedDocuments: ratedRows,
+      coveragePct: totalRows > 0 ? (ratedRows / totalRows) * 100 : 0,
+      pagination: {
+        page,
+        pageSize,
+        totalRows,
+        totalPages: Math.ceil(totalRows / pageSize),
+      },
     };
   },
 };
@@ -1300,10 +1660,6 @@ export const judgesAnalyticsService = {
 // ---------------------------------------------------------------------------
 // Statistical helper functions
 // ---------------------------------------------------------------------------
-
-export function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
 
 export function computeMean(values: number[]): number {
   return computeMeanFromUtils(values);
@@ -1378,6 +1734,114 @@ export function computeCertaintyFraction(values: number[]): number {
       v < JUDGE_RADAR_METRICS.certainty.extremeLowScore
   ).length;
   return extremeCount / values.length;
+}
+
+// ---------------------------------------------------------------------------
+// Power-sum moment reconstruction
+//
+// These derive the exact same mean / stdDev / skewness / excess-kurtosis /
+// bimodality / certainty values as the array-based helpers above, but from
+// DB-computed power sums — so a caller never has to materialize the full score
+// population. Central moments are recovered from raw power sums via the
+// standard binomial expansions:
+//   m2 = Σx²/n − μ²
+//   m3 = Σx³/n − 3μ·Σx²/n + 2μ³
+//   m4 = Σx⁴/n − 4μ·Σx³/n + 6μ²·Σx²/n − 3μ⁴
+// Skewness = m3/σ³ and excess kurtosis = m4/σ⁴ − 3 (population, matching the
+// array implementations). The `n<3` / `n<4` / `σ===0` guards are replicated so
+// the outputs stay bit-for-bit identical to the prior in-app computation.
+// ---------------------------------------------------------------------------
+
+/** Raw power sums (+ extreme count) over one score population. */
+export type ScorePowerMoments = {
+  count: number;
+  sum: number;
+  sumSq: number;
+  sum3: number;
+  sum4: number;
+  extremeCount: number;
+};
+
+export const EMPTY_POWER_MOMENTS: ScorePowerMoments = {
+  count: 0,
+  sum: 0,
+  sumSq: 0,
+  sum3: 0,
+  sum4: 0,
+  extremeCount: 0,
+};
+
+/** Combine two power-sum accumulators (used to roll per-version → overall). */
+export function addPowerMoments(
+  a: ScorePowerMoments,
+  b: ScorePowerMoments
+): ScorePowerMoments {
+  return {
+    count: a.count + b.count,
+    sum: a.sum + b.sum,
+    sumSq: a.sumSq + b.sumSq,
+    sum3: a.sum3 + b.sum3,
+    sum4: a.sum4 + b.sum4,
+    extremeCount: a.extremeCount + b.extremeCount,
+  };
+}
+
+function meanFromMoments(m: ScorePowerMoments): number {
+  return m.count === 0 ? 0 : m.sum / m.count;
+}
+
+function stdDevFromMoments(m: ScorePowerMoments): number {
+  return stdDevFromPowerSums(m.count, m.sum, m.sumSq);
+}
+
+function skewnessFromMoments(m: ScorePowerMoments, stdDev: number): number {
+  const n = m.count;
+  if (n < 3 || stdDev === 0) {
+    return 0;
+  }
+  const mean = m.sum / n;
+  const m3 = m.sum3 / n - (3 * mean * m.sumSq) / n + 2 * mean ** 3;
+  return m3 / stdDev ** 3;
+}
+
+function excessKurtosisFromMoments(
+  m: ScorePowerMoments,
+  stdDev: number
+): number {
+  const n = m.count;
+  if (n < 4 || stdDev === 0) {
+    return 0;
+  }
+  const mean = m.sum / n;
+  const m4 =
+    m.sum4 / n -
+    (4 * mean * m.sum3) / n +
+    (6 * mean ** 2 * m.sumSq) / n -
+    3 * mean ** 4;
+  return m4 / stdDev ** 4 - 3;
+}
+
+function bimodalityFromMoments(m: ScorePowerMoments): number {
+  const n = m.count;
+  if (n < 4) {
+    return 0;
+  }
+  const stdDev = stdDevFromMoments(m);
+  if (stdDev === 0) {
+    return 0;
+  }
+  const skewness = skewnessFromMoments(m, stdDev);
+  const excessKurtosis = excessKurtosisFromMoments(m, stdDev);
+  const denominator = excessKurtosis + (3 * (n - 1) ** 2) / ((n - 2) * (n - 3));
+  if (denominator <= 0) {
+    return 0;
+  }
+  const bc = (skewness ** 2 + 1) / denominator;
+  return clamp(bc, 0, 1);
+}
+
+function certaintyFractionFromMoments(m: ScorePowerMoments): number {
+  return m.count === 0 ? 0 : m.extremeCount / m.count;
 }
 
 function toRadarAxes(

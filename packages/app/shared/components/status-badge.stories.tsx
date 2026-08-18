@@ -1,15 +1,15 @@
 import {
   DocumentStatusBadge,
-  FeaturePriorityBadge,
-  FeatureStatusBadge,
+  IssuePriorityBadge,
+  IssueStatusBadge,
   LoopCommandBadge,
 } from "@repo/app/shared/components/status-badge";
 import {
   mockDocumentStatusOptions,
-  mockFeaturePriorityOptions,
-  mockFeatureStatusOptions,
+  mockIssuePriorityOptions,
+  mockIssueStatusOptions,
   mockLoopCommandOptions,
-} from "@repo/design-system/storybook/mock-data";
+} from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 
@@ -23,18 +23,18 @@ const BadgeGallery = () => (
       title="Document statuses"
     />
     <BadgeSection
-      items={mockFeatureStatusOptions.map((value) => ({
+      items={mockIssueStatusOptions.map((value) => ({
         label: value,
-        badge: <FeatureStatusBadge status={value} />,
+        badge: <IssueStatusBadge status={value} />,
       }))}
-      title="Feature statuses"
+      title="Issue statuses"
     />
     <BadgeSection
-      items={mockFeaturePriorityOptions.map((value) => ({
+      items={mockIssuePriorityOptions.map((value) => ({
         label: value,
-        badge: <FeaturePriorityBadge priority={value} />,
+        badge: <IssuePriorityBadge priority={value} />,
       }))}
-      title="Feature priorities"
+      title="Issue priorities"
     />
     <BadgeSection
       items={mockLoopCommandOptions.map((value) => ({

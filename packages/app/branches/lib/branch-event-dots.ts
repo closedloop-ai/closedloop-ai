@@ -1,4 +1,5 @@
-import type { BranchCommit, MergedTraceItem } from "@repo/api/src/types/branch";
+import type { BranchCommit } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 
 /**
  * Pure event-dot derivation (Epic E / E3). Maps the merged trace's `event` items

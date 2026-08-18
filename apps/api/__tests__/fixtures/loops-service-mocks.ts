@@ -129,3 +129,31 @@ export const docPrServiceModuleMock = (): Record<string, unknown> => ({
 export const uploadedArtifactsModuleMock = (): Record<string, unknown> => ({
   extractUploadedPlanRaw: vi.fn().mockReturnValue(null),
 });
+
+/**
+ * A minimal `GitHubInstallationRepository` row as `authorizeAdditionalRepos`
+ * and the project-pool membership paths read it. `installation.installationId`
+ * is the value those paths mint an installation client from.
+ */
+export function makeInstallationRepo(
+  fullName: string,
+  overrides?: Record<string, unknown>
+) {
+  const [owner, name] = fullName.split("/");
+  return {
+    id: `repo-id-${fullName}`,
+    fullName,
+    name,
+    owner,
+    private: false,
+    githubRepoId: 1,
+    installationId: "installation-abc",
+    lastPushedAt: null,
+    createdAt: new Date("2024-01-01"),
+    updatedAt: new Date("2024-01-01"),
+    installation: {
+      installationId: "12345",
+    },
+    ...overrides,
+  };
+}

@@ -63,12 +63,12 @@ describe("SidebarCollapsibleSection", () => {
         persistenceKey="test-sidebar-labs-open"
         title="Labs"
       >
-        <span>Loops</span>
+        <span>Judges</span>
       </SidebarCollapsibleSection>
     );
 
     expect(getToggle("Labs")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Loops")).toBeInTheDocument();
+    expect(screen.getByText("Judges")).toBeInTheDocument();
   });
 
   test("persists toggle state across remounts", () => {
@@ -77,7 +77,7 @@ describe("SidebarCollapsibleSection", () => {
         persistenceKey="test-sidebar-labs-open"
         title="Labs"
       >
-        <span>Loops</span>
+        <span>Judges</span>
       </SidebarCollapsibleSection>
     );
 
@@ -92,12 +92,12 @@ describe("SidebarCollapsibleSection", () => {
         persistenceKey="test-sidebar-labs-open"
         title="Labs"
       >
-        <span>Loops</span>
+        <span>Judges</span>
       </SidebarCollapsibleSection>
     );
 
     expect(getToggle("Labs")).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Loops")).not.toBeInTheDocument();
+    expect(screen.queryByText("Judges")).not.toBeInTheDocument();
 
     fireEvent.click(getToggle("Labs"));
     expect(globalThis.localStorage.getItem("test-sidebar-labs-open")).toBe(

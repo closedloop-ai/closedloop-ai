@@ -3,11 +3,11 @@ import { test } from "node:test";
 import type {
   DesktopPopHeaders,
   DesktopPopSigningRequest,
-} from "../src/main/desktop-pop.js";
+} from "../src/main/auth/desktop-pop.js";
 import {
   refreshDesktopSession,
   revokeDesktopSession,
-} from "../src/main/desktop-session-client.js";
+} from "../src/main/session/desktop-session-client.js";
 
 const API_ORIGIN = "https://api.closedloop.test";
 

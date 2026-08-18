@@ -1,0 +1,11 @@
+language js
+
+// FEA-4114 — ban `as unknown as T` and chained double-casts in production
+// source. A double cast tells the compiler to stop checking: it turns a
+// malformed-shape failure into a silent one that surfaces far from the cast.
+// Validate unknown data with a Zod schema, narrow with a type guard, or fix
+// the Prisma `select`/`include` so the query result already has the shape.
+// Test code is exempt (partial fixtures are allowed) — see biome.jsonc.
+`$expr as $intermediate as $target` where {
+  register_diagnostic(span=$intermediate, message="Banned double cast (FEA-4114). `as unknown as T` and chained `as A as B` disable type checking and hide malformed-shape failures. Validate unknown data with a Zod schema, narrow with a type guard, or fix the Prisma select/include so the result already matches. Test files are exempt. To add a file to the shrink-only allowlist in biome.jsonc you need explicit approval — the list may only shrink, never grow; delete your file's entry once its casts are gone.")
+}

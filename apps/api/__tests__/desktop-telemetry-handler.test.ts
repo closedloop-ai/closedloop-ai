@@ -23,6 +23,7 @@ import {
   handleTelemetryEvent,
   type TelemetryHandlerContext,
 } from "@/lib/desktop-telemetry-handler";
+import { stubLogExporterEnv } from "./utils/telemetry-env";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -231,7 +232,7 @@ describe("buildEntry() — valid meta.origin overrides ORIGIN", () => {
   });
 
   it("emits entry with origin: Origin.Desktop when meta supplies Origin.Desktop", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
 
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
@@ -275,7 +276,7 @@ describe("buildEntry() — invalid meta.origin falls back to ORIGIN silently", (
   });
 
   it("emits entry with origin: Origin.Api and does not throw when meta.origin is an invalid value", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
 
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
@@ -619,7 +620,7 @@ describe("handleTelemetryEvent — decision-table verification telemetry", () =>
   });
 
   it("flushes decision-table verification diagnostics and telemetryMessage in Datadog metadata", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
@@ -849,7 +850,7 @@ describe("handleTelemetryEvent — outbound network telemetry", () => {
   });
 
   it("flushes descriptor-only outbound network diagnostics in Datadog metadata", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
@@ -924,7 +925,7 @@ describe("handleTelemetryEvent — outbound network telemetry", () => {
       text: () => Promise.resolve("accepted"),
     });
     globalThis.fetch = fetchMock;
-    process.env.DD_API_KEY = "test-key";
+    stubLogExporterEnv();
     process.env.DD_SITE = "datadoghq.com";
     process.env.DD_SERVICE = "api";
     process.env.ORIGIN = Origin.Api;
@@ -1001,7 +1002,7 @@ describe("handleTelemetryEvent — support upload telemetry", () => {
       text: () => Promise.resolve("accepted"),
     });
     globalThis.fetch = fetchMock;
-    process.env.DD_API_KEY = "test-key";
+    stubLogExporterEnv();
     process.env.DD_SITE = "datadoghq.com";
     process.env.DD_SERVICE = "api";
     process.env.ORIGIN = Origin.Api;
@@ -1199,12 +1200,12 @@ describe("sanitizeDesktopTelemetryDiagnostics — envSnapshot filtering", () => 
 // Verifies that the handler is category-agnostic: a synthetic loop.perf.agent
 // event flows through without filtering and reaches the Datadog HTTP intake
 // with origin: Origin.Desktop and the category string preserved. Asserts on
-// the flushed Datadog entry per CLAUDE.md "assert on observable behavior".
+// the flushed Datadog entry per AGENTS.md "assert on observable behavior".
 // ---------------------------------------------------------------------------
 
 describe("handleTelemetryEvent — loop.perf.agent category pass-through", () => {
   beforeEach(() => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
@@ -1264,7 +1265,7 @@ describe("handleTelemetryEvent — loop.perf.agent category pass-through", () =>
 
 describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () => {
   beforeEach(() => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
@@ -1664,7 +1665,7 @@ describe("handleTelemetryEvent — loopPerf payload-preservation (AC-006)", () =
 // regardless of whether the failure came from the server emitter.ts path or
 // this handler. Observes the flushed Datadog entry rather than spying on
 // log.warn, matching the "assert on observable behavior" convention in
-// CLAUDE.md.
+// AGENTS.md.
 // ---------------------------------------------------------------------------
 
 describe("handleTelemetryEvent — validation failures emit category attribute", () => {
@@ -1681,7 +1682,7 @@ describe("handleTelemetryEvent — validation failures emit category attribute",
   };
 
   it("(a) schema parse failure flushes entry with category: TelemetryValidationFailed", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     // Populate version + git_sha so log.ts's module-load fallback warnings
     // do not displace the validation-failed entry in the flushed batch.
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
@@ -1721,7 +1722,7 @@ describe("handleTelemetryEvent — validation failures emit category attribute",
   });
 
   it("(b) computeTargetId mismatch flushes entry with category: TelemetryValidationFailed", async () => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");
 
@@ -1759,7 +1760,7 @@ describe("handleTelemetryEvent — validation failures emit category attribute",
 
 describe("handleTelemetryEvent — onboarding popup telemetry (AC-003)", () => {
   beforeEach(() => {
-    vi.stubEnv("DD_API_KEY", "test-key");
+    stubLogExporterEnv();
     vi.stubEnv("DD_SERVICE", "api");
     vi.stubEnv("RELEASE_VERSION", "1.0.0");
     vi.stubEnv("VERCEL_GIT_COMMIT_SHA", "testsha");

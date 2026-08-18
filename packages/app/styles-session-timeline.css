@@ -1,0 +1,529 @@
+/*
+ * The Session Timeline strip on the session-detail screen: its cost bars, the
+ * event dot rail beneath them, and the axis row under both. Extracted from
+ * `styles.css` (ISS-5075) so the aggregate stays on its shrink-only path and
+ * this surface's rules live in one feature-owned file, the way the Activity
+ * phases strip and the Branch detail panels already do.
+ *
+ * The shared "you are here" line (`.tl-here`) stays in `styles.css`: it is one
+ * rule serving BOTH this strip and the Branch timeline, so it belongs to
+ * neither surface alone.
+ */
+
+/* ISS-5548: the strip's three geometry numbers were already literals scattered
+   across the rules that used them; naming them lets the column-height hit target
+   below DERIVE the usable column height instead of restating a fourth number
+   that would silently drift the first time any of these changes.
+
+   Declared on the WRAPPER, not on `.sd3-bars2` itself (code review). There was a
+   fifth copy of the strip height — `.sd3-bars2-wrap .tl-here { height: 78px }`
+   in `styles.css`, the "you are here" line — and custom properties inherit
+   DOWNWARD only, so a declaration on `.sd3-bars2` could never reach its own
+   sibling. Bumping `--sd3-bars2-height` used to leave the marker pointing at a
+   strip it no longer matched, which is exactly the drift this block claims to
+   close. `.sd3-bars2-wrap` is the nearest common ancestor of both (see
+   `agent-session-detail-view.tsx`, where `.sd3-bars2` is the wrapper's only
+   occurrence), so every consumer now reads one number.
+
+   The generic `.tl-here` rule stays in `styles.css` because it serves the Branch
+   timeline too; only the Session-strip-specific height binding moves onto this
+   variable. */
+.sd3-bars2-wrap {
+  --sd3-bars2-height: 78px;
+  --sd3-bars2-pad-top: 15px;
+  --sd3-bars2-rule: 1px;
+  --sd3-bars2-inner-height: calc(
+    var(--sd3-bars2-height) -
+    var(--sd3-bars2-pad-top) -
+    var(--sd3-bars2-rule)
+  );
+}
+
+.sd3-bars2 {
+  /* `box-sizing: border-box` is why the padding and the rule come out of the
+     declared height. */
+  display: flex;
+  box-sizing: border-box;
+  height: var(--sd3-bars2-height);
+  align-items: flex-end;
+  gap: 2px;
+  padding-top: var(--sd3-bars2-pad-top);
+  border-bottom: var(--sd3-bars2-rule) solid var(--border);
+}
+
+.sd3-bar2 {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  overflow: hidden;
+  min-height: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px 2px 0 0;
+  background: #94a3b8;
+  cursor: pointer;
+}
+
+.sd3-bar2 > i {
+  display: block;
+  width: 100%;
+  flex: 0 0 auto;
+}
+
+.sd3-bar2:hover,
+.sd3-bar2.hot {
+  outline: 1px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  outline-offset: 1px;
+}
+
+/* ISS-5479: a bucket with no transcript turn in its slice has no jump row
+   (`tl0 == null`), so it is not a control — ISS-4821 keeps those deliberately
+   non-jumping. It was still painted like one: pointer cursor and the primary
+   hover outline. `.unread` right below already established what "not a control"
+   looks like on this strip, so this matches it rather than inventing a second
+   vocabulary. Keyed off jumpability, NOT off cost — `.idle` above is the
+   cost-driven hatch and the two do not always agree. The hover tooltip still
+   fires; only the promise of a click is withdrawn. */
+.sd3-bar2.no-jump {
+  cursor: default;
+}
+
+/* `:not(:focus-visible)` is load-bearing, not tidiness. These bars are
+   `aria-disabled`, NOT `disabled`, so they stay in the tab order, and an author
+   `outline: none` beats the browser's default focus ring. Without this guard,
+   tabbing onto an idle bar while the pointer happens to rest on that same bar
+   (or while it is the `.hot` one) drops the ring and focus becomes invisible.
+   The withdrawn-affordance signal is for the POINTER; the keyboard ring below
+   always wins. */
+.sd3-bar2.no-jump:hover:not(:focus-visible),
+.sd3-bar2.no-jump.hot:not(:focus-visible) {
+  outline: none;
+}
+
+/* Stated explicitly rather than left to the UA default: the rules above and the
+   `.sd3-bar2:hover` outline are both author rules on this element, so the focus
+   ring has to be an author rule too if it is to be guaranteed to survive them.
+   Distinct from the 50% hover outline — a focused bar is a stronger state than a
+   hovered one and reads that way. */
+.sd3-bar2:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* ISS-5566: an ACTIVE bar on a SYNTHESIZED strip — one the collector never
+   persisted buckets for, so the timeline rebuilt it from the transcript. It
+   keeps its full height, because the height is an honest relative-activity
+   encoding, but it loses the in/out/cache stack: that stack is this strip's
+   vocabulary for a measured token split, and behind a synthesized bar the split
+   is three fixed ratios repeated identically on every bar.
+
+   45deg, matching `.idle` and `.cb-gap` below — the family already distinguishes
+   its states by height and density, not by direction, and a mirrored diagonal on
+   a 3px repeat is not legible across a ~12px bar anyway. The reference point is
+   the SOLID default `.sd3-bar2` fill this replaces: averaging ~22% of
+   muted-foreground, a synthesized bar reads markedly softer than a measured one
+   while staying denser than `.unread`'s flat 10% wash, so the three treatments
+   stay ordered by how much the strip actually knows.
+
+   Declared BEFORE `.idle`/`.cb-gap` deliberately. All three selectors tie on
+   specificity, and the view only ever adds this class on top of `.stacked`
+   (see `SYNTHESIZED_BAR_CLASS`) — but if a future caller stopped gating, source
+   order means the zero-cost hatches still win rather than being silently
+   repainted as active-but-unpriced. */
+.sd3-bar2.synthesized {
+  /* ISS-5566 design review: more-than-nothing must always read TALLER than
+     nothing. Once the in/out/cache stack comes off, the only thing separating a
+     barely-active synthesized bar from the `.idle` stub beside it is stripe
+     density (3px vs 2px) — and the ordering actually inverted. `.sd3-bars2` is
+     78px tall with 15px of label gutter and a 1px bottom border, so the content
+     box is 62px, and `getBarStyle`'s 9% floor works out to ~5.6px: the shortest
+     active bar came out SHORTER than the 7px `.idle` stub next to it. A measured
+     strip gets away with that floor because its bars are solid and carry the
+     three chart colours; a synthesized one has only height left. Floored here on
+     `.synthesized` rather than by raising `getBarStyle`'s 9%, which would resize
+     measured strips that never had the problem. Must stay > `.idle`'s 7px. */
+  min-height: 9px;
+  background: repeating-linear-gradient(
+    45deg,
+    color-mix(in oklab, var(--muted-foreground) 30%, transparent),
+    color-mix(in oklab, var(--muted-foreground) 30%, transparent) 3px,
+    color-mix(in oklab, var(--muted-foreground) 14%, transparent) 3px,
+    color-mix(in oklab, var(--muted-foreground) 14%, transparent) 6px
+  );
+}
+
+/* ISS-5548 — the column-height hit target, behind the
+   `session-timeline-column-hit-target` flag (`.reach` is only ever applied with
+   that flag on).
+
+   The bar IS the button, so today the bar's height is also the entire click
+   target: `getBarStyle` floors an active bar at 9% of a ~62px column, and the
+   `.idle` / `.cb-gap` rules pin theirs at 7px and 4px. The quiet buckets a
+   reader is most likely to probe are therefore the hardest to hit. `::before`
+   lays a full-column, fill-free hit box over the slot, so the target stops
+   tracking the value while the bar itself is left exactly as it was — still the
+   honest visual encoding of magnitude, still painting through the box.
+
+   `.reach` is applied only to bars that HAVE a transcript anchor
+   (`getBucketReachClass`), so this can never enlarge an inert target — the
+   distinction ISS-5479 (PR #4615) drew between an unreachable bar and a
+   reachable-but-inert one survives either flag, in either order. */
+.sd3-bar2.reach {
+  /* The hit box is a child, and this button's own `overflow: hidden` would clip
+     it straight back to the bar. Lifting the clip is safe here because the hit
+     box is the bar's ONLY out-of-box descendant.
+
+     This used to name `.sd3-bar2-lbl` as a second one, "held back explicitly
+     below" — both halves of which were already untrue when they were written
+     (ISS-5761). ISS-5563 had moved the cost labels out of the bar and into the
+     `.sd3-bars2-lbls` rail two hours earlier, so the label is a SIBLING, and the
+     guard that held it back was a descendant selector matching nothing. See the
+     note where that guard used to sit, further down. */
+  overflow: visible;
+}
+
+/* Anchored to the column floor and one column tall, so it covers the slot
+   exactly once at every bar height — the bar keeps painting through it, since
+   this box never carries a fill. `bottom: 0` works because `align-items:
+   flex-end` puts every bar's bottom edge ON the column floor. */
+.sd3-bar2.reach::before {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--sd3-bars2-inner-height);
+  content: "";
+}
+
+/* An invisible hit box that silently swallows clicks in blank space would be
+   magic, so the reachable region says so — by MOVING the bar's existing hover
+   stroke out to the column rather than inventing a second affordance.
+   Deliberately not a fill: a filled block is this chart's encoding for VALUE, so
+   washing the empty space above a quiet bar makes the cheapest bucket the
+   tallest-looking thing on the strip at exactly the moment the reader is reading
+   it (design review). A hollow stroke says "this column is the target" while the
+   6px bar underneath goes on telling the truth about magnitude, and it is
+   theme-portable by construction, where a fill has to be tuned twice — at 10%
+   over the dark card it composited DARKER than ground, the only mark on this
+   strip that does.
+
+   `:not(:disabled)` because `:hover` still matches a disabled button: FEA-4252
+   passes `disabled` precisely so the bars stop promising navigation they cannot
+   perform, and lighting a whole column for a control that will not answer is
+   that promise at ten times the size. (Belt and braces since the fix for the
+   review above: `.reach` is no longer emitted for a disabled bar at all, so
+   these `:not(:disabled)` scopes now guard a state the markup cannot reach —
+   they stay because the class is a stylesheet contract, not a private detail.) */
+.sd3-bar2.reach:not(:disabled):hover::before,
+.sd3-bar2.reach:not(:disabled).hot::before {
+  outline: 1px solid color-mix(in oklab, var(--primary) 50%, transparent);
+  outline-offset: 1px;
+}
+
+/* Focus is LOUDER than hover, not equal to it (design review). Folding
+   `:focus-visible` into the rule above gave a keyboard user the identical 1px
+   half-transparent stroke a mouse user gets, so tabbing across the strip
+   signalled nothing beyond "the pointer is somewhere here" — and it stood in for
+   a browser ring the suppression rule below removes, which is a net contrast
+   LOSS even though it covers more area.
+
+   2px solid `--ring` rather than a heavier `--primary` tint: the merge with main
+   brought in `.sd3-bar2:focus-visible { outline: 2px solid var(--ring) }`
+   (ISS-5479), which is now this element's established focus treatment. That rule
+   is specificity (0,2,0) and the suppression rule below is (0,4,0), so on a
+   `.reach` bar it silently lost — a keyboard user would have been dropped from a
+   2px ring back to the 1px hover stroke purely as a merge artifact. This moves
+   the SAME ring out to the column the click now lands in, so the two flags agree
+   on what focus looks like instead of the stronger one being outranked.
+
+   Placed after the hover rule deliberately: equal specificity, so source order
+   is what makes focus win when a bar is hovered and focused at once. */
+.sd3-bar2.reach:not(:disabled):focus-visible::before {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+/* One stroke, not two. Without this the bar's own `:hover` rule above still
+   fires and draws a second outline around the 6px sliver inside the outlined
+   column, which reads as two nested controls.
+
+   The selector list mirrors the `::before` rule above EXACTLY — all three
+   states, and the same `:not(:disabled)` scope — because the two rules are one
+   decision: wherever the column stroke is drawn, the bar stroke must be
+   suppressed, and nowhere else. `:focus-visible` has to be here or a keyboard
+   user gets the UA ring on the 6px box PLUS the column outline, which is the
+   two-nested-controls defect this rule exists to prevent (code review). The
+   `:not(:disabled)` scope keeps a disabled bar on exactly today's hover
+   treatment — this flag changes the hit target, not what a dead control looks
+   like. */
+.sd3-bar2.reach:not(:disabled):hover,
+.sd3-bar2.reach:not(:disabled):focus-visible,
+.sd3-bar2.reach:not(:disabled).hot {
+  outline: none;
+}
+
+.sd3-bar2.idle {
+  height: 7px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 34%, transparent) 4px
+  );
+}
+
+.sd3-bar2.cb-gap {
+  height: 4px !important;
+  align-self: flex-end;
+  border-radius: 0;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    color-mix(in oklab, var(--muted-foreground) 18%, transparent) 2px,
+    color-mix(in oklab, var(--muted-foreground) 18%, transparent) 4px
+  );
+}
+
+/* ISS-5075: the tail the detail read never reached. The axis spans the whole
+   run while the bars stop at the cut, so this region has to say "not read" on
+   its own — a solid wash rather than the .idle / .cb-gap hatch, which on this
+   strip already means "observed, and nothing happened". The dashed edge on the
+   first unread bucket marks where the reading stopped. */
+.sd3-bar2.unread {
+  align-self: stretch;
+  border-radius: 0;
+  background: color-mix(in oklab, var(--muted-foreground) 10%, transparent);
+  cursor: default;
+}
+
+.sd3-bar2:not(.unread) + .sd3-bar2.unread {
+  border-left: 1px dashed
+    color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+}
+
+/* ISS-5563 (code review): the cost labels are a RAIL above the bars, not
+   children of them. `.sd3-bar2` is `overflow: hidden` (it clips its own stacked
+   cost segments), and these labels used to be `position: absolute; top: -14px`
+   inside it — outside the padding box of their own containing block, so they
+   were clipped away entirely and never rendered. Horizontally the same clip
+   capped the label at roughly the bar's ~18px width, which is about `$1`, which
+   is why the label could only ever be a rounded figure.
+
+   The rail mirrors `.sd3-bars2`'s geometry exactly — same `display: flex`, same
+   2px gap, one `flex: 1 1 0` cell per bucket — so each label centers over its
+   own bar with no absolute positioning and no per-bucket left math. Nothing
+   here clips, so an exact `$0.0025` has the room to be exact. */
+.sd3-bars2-lbls {
+  display: flex;
+  gap: 2px;
+  align-items: flex-end;
+  min-height: 13px;
+}
+
+/* ISS-5761 (design review): `display: flex` + `justify-content: center` rather
+   than `text-align: center`, because `text-align` does NOT centre a line wider
+   than its box — the line anchors at the content-box start and the entire
+   overflow goes one way. Measured at the real strip: a 3px cell holding a 32px
+   figure put the label's centre 14.5px right of its own bar, so a printed label
+   pointed at its NEIGHBOUR. A flex line overflows a centred container equally in
+   both directions, which is the only geometry under which "each label is
+   centred over its own bar" is true, and it is also the assumption the
+   collision arithmetic in `session-timeline-bar-label-fit.ts` is built on.
+
+   `line-height` is pinned to the rail's own `min-height` so a rail that prints
+   and a rail that stays quiet are the SAME height. At 9.5px the inherited line
+   box measures 14.25px, so without this the strip, the dot rail and the axis all
+   jogged 1.25px the moment the pane crossed the fit threshold — the one thing
+   keeping the empty cells was supposed to prevent. */
+.sd3-bar2-lbl {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  justify-content: center;
+  color: var(--foreground);
+  font-weight: 600;
+  font-size: 9.5px;
+  line-height: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ISS-5585 / ISS-5578, answered by ISS-5761: a `.sd3-bar2.reach .sd3-bar2-lbl`
+   guard used to sit here, added by ISS-5548 (PR #4634) to keep the labels
+   invisible once `.reach` lifted the bar's `overflow: hidden`. It has been
+   removed because it could not have been doing anything: ISS-5563 (PR #4642)
+   had ALREADY moved the labels out of the bar into the `.sd3-bars2-lbls` rail
+   two hours earlier, and that rule is a DESCENDANT selector against a `span`
+   that is no longer a descendant of any `.sd3-bar2`. It matched nothing on the
+   day it merged.
+
+   Which also settles the two questions those tickets left open, in the opposite
+   direction to the way they were asked. Both were written on the premise that
+   the labels "have never painted" — true until #4642, false from #4642 onward,
+   and #4634's own note (written against a pre-rail main) repeated it a day
+   late. The labels paint. ISS-5761 is the report of what that looks like at 40
+   columns. So `.sd3-bar2-lbl` and the `bar.showLabel` branch STAY, the 15px
+   `--sd3-bars2-pad-top` is not reclaimed, and the collision is fixed where it
+   is caused — in the rail's own width, see `session-timeline-bar-label-fit.ts`,
+   which prints only when the print is legible. */
+
+.sd3-drail {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 36px;
+  margin-top: 6px;
+}
+
+.sd3-dcell {
+  display: flex;
+  min-width: 0;
+  min-height: 36px;
+  flex: 1 1 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+}
+
+.sd3-dot {
+  box-sizing: border-box;
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  transition: transform 0.1s;
+  cursor: pointer;
+}
+
+.sd3-dot:hover,
+.sd3-dot.hot {
+  transform: scale(1.4);
+}
+
+/* ISS-5479: the dot's half of `.sd3-bar2.no-jump` above. A dot whose lane holds
+   an event with no resolvable row cannot land a click, and it sits ~6px from
+   bars that already say so — it withdraws the same two promises in the same
+   vocabulary (the pointer cursor and the hover response) rather than inventing a
+   second one. The dot's hover response is the scale, not an outline, so nothing
+   here can eat the focus ring and no `:focus-visible` guard is needed; the
+   tooltip still fires, because the events ARE real and worth reading. */
+.sd3-dot.no-jump {
+  cursor: default;
+}
+
+.sd3-dot.no-jump:hover,
+.sd3-dot.no-jump.hot {
+  transform: none;
+}
+
+.sd3-dot.d-b {
+  background: var(--primary);
+}
+
+.sd3-dot.d-g {
+  background: var(--success);
+}
+
+.sd3-dot.d-r {
+  background: var(--destructive);
+}
+
+/* ISS-4955 / ISS-5366: equal `1fr` cheeks around an `auto` middle centre the
+   `calendar span` caption BY CONSTRUCTION. The prior `flex` +
+   `justify-content: space-between` only centred it when the two edge labels
+   happened to be the same width — `9:04 AM` and `12:46 PM` are not — so the
+   caption drifted off centre and wandered as the session times changed.
+
+   The ticks are on the type scale (`--text-xs`) rather than the off-scale
+   10.5px they used to carry: now that they are the load-bearing part of the row
+   rather than decoration, they belong at the same size as the `sd3-act-span`
+   caption beside them. These declarations lived inline in
+   `session-timeline-axis.tsx` while the `session-timeline-axis-reconciliation`
+   flag was live and moved here when it retired, so ONE owner decides this row's
+   layout instead of three. */
+.sd3-act-axis {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  /* The middle track is `auto`, so it claims its content width FIRST and the two
+     cheeks divide what is left. Without a gap the caption butts straight into
+     both ticks the moment they are long — and they get long by design: a
+     cross-day session date-qualifies BOTH ticks (`formatAxisSpan`), which is the
+     widest form this row can take, and the ticks moved up from 10.5px to
+     `--text-xs` here so the row needs more room than it used to. 6px matches the
+     `gap` the sibling rows in this file already use (design review). */
+  column-gap: 6px;
+  margin-top: 5px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+/* The ticks yield before the caption does. A truncated end time is legible; a
+   caption that has to reconcile two contradicting totals is the one thing on
+   this row that must never be cut, and `min-width: 0` is what lets a grid item
+   shrink below its content at all. */
+.sd3-act-axis > span:first-child,
+.sd3-act-axis > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Only the colour: the size is inherited from `.sd3-act-axis` now that the ticks
+   sit on the same `--text-xs` step. */
+.sd3-act-span {
+  color: var(--foreground);
+}
+
+/* ISS-5970: with the run-level summary beside it, a muted title made the
+   section heading the palest thing in its own header row while `$12.50` was the
+   darkest — the eye landed on the number instead of the section (#design
+   review). The prototype has both at `text-foreground`; this restores that
+   order.
+
+   Scoped to `h2` ON PURPOSE: `.sd3-act-head`/`.sd3-act-title` is a shared header
+   convention, and the Activity phases header one section below reuses it with a
+   `span` (`session-activity-segments-shell.tsx`). Only the Session Timeline
+   renders the heading element, so this reaches that header alone. Higher
+   specificity than `.sd3-act-title` so it wins regardless of layer order. */
+.sd3-act-head h2.sd3-act-title {
+  color: var(--foreground);
+}
+
+/* ISS-5970: the run-level summary's em-dash must be the size of the digits it
+   stands in for. `GridEmptyValue` ships `text-sm` and this strip runs `text-xs`,
+   so an unmatched dash lands a point larger than the numbers around it. Twin of
+   the rule ISS-5565 added for the Properties pane
+   (`styles-session-detail-props.css`), for the identical reason. */
+.sd3-act-head [data-slot="grid-empty-value"] {
+  font-size: inherit;
+}
+
+/* ISS-5970: let the header row reflow once the run summary shares it. The
+   shipped `.sd3-act-head` is `flex` with no `flex-wrap`, so a title plus three
+   unbreakable facts (~257px, ~287px on a long run) could not fit the 288px a
+   320px phone leaves this row — and `.sd3-scroll` above it is
+   `overflow-x: hidden`, so the third fact was clipped rather than scrollable
+   (#4869 design review). Mirrors `.sd3-segs-headmeta`, which already solved
+   exactly this for the Activity phases header one section below.
+
+   Scoped by `:has(> h2.sd3-act-title)` for the same reason the colour rule above
+   is scoped to `h2`: only the Session Timeline renders a heading element there,
+   so every OTHER `.sd3-act-head` on the page — the Activity phases header, and
+   the story frames that reuse the convention — keeps its single-line layout. A
+   bare `.sd3-act-head` rule here would reflow all of them. */
+.sd3-act-head:has(> h2.sd3-act-title) {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}

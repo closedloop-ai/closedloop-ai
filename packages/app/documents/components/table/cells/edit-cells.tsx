@@ -8,7 +8,10 @@ import { RowEditContext } from "@repo/app/documents/components/table/row-edit-co
 import { getRowTypeConfig } from "@repo/app/documents/components/table/row-type-registry";
 import { AssigneeAvatar } from "@repo/app/shared/components/assignee-avatar";
 import { ensureDate, formatDateCompact } from "@repo/app/shared/lib/date-utils";
-import { PRIORITY_LABELS } from "@repo/app/shared/lib/priority-constants";
+import {
+  DEFAULT_PRIORITY,
+  PRIORITY_LABELS,
+} from "@repo/app/shared/lib/priority-constants";
 import { getUserDisplayName } from "@repo/app/shared/lib/user-utils";
 import { DatePickerPopover } from "@repo/design-system/components/ui/date-picker-popover";
 import {
@@ -155,55 +158,76 @@ export function AssigneeCell({ item }: { item: DocumentRowItem }) {
   );
 }
 
+/**
+ * Priority cell content shared by the read-only and editable branches so the
+ * two can't drift. Renders a compact leading `PriorityIcon` whenever a priority
+ * is set, followed by the text label. On the single-scope "My Issues" view
+ * (`compact`) the redundant default "Medium" text is dropped so a page of
+ * default-priority rows reads as quiet icons, not a column of repeated
+ * "Medium"; every other surface keeps the full label. Unset priority renders a
+ * dash.
+ */
+function PriorityContent({
+  priority,
+  compact,
+}: {
+  priority: Priority | null;
+  compact: boolean;
+}) {
+  if (!priority) {
+    return <span className="font-medium text-muted-foreground text-xs">—</span>;
+  }
+  const showLabel = !(compact && priority === DEFAULT_PRIORITY);
+  return (
+    <>
+      <div className="flex shrink-0 items-center p-2">
+        <PriorityIcon priority={priority} />
+      </div>
+      {showLabel && (
+        <span className="truncate font-medium text-muted-foreground text-xs">
+          {PRIORITY_LABELS[priority]}
+        </span>
+      )}
+    </>
+  );
+}
+
 export function PriorityCell({ item }: { item: DocumentRowItem }) {
-  const { onUpdatePriority } = useContext(RowEditContext);
+  const { onUpdatePriority, surfaceVariant } = useContext(RowEditContext);
   if (getRowTypeConfig(item)?.editable === false) {
     return (
       <div className={cn(CELL_CLASSES, "text-muted-foreground text-xs")}>—</div>
     );
   }
   const priority = item.data.priority ?? null;
+  // Compact (label-omitting) presentation is a My Issues affordance only; the
+  // general artifacts/Projects table always shows the priority label.
+  const compact = surfaceVariant === "my-tasks";
 
   if (!onUpdatePriority) {
-    if (!priority) {
-      return (
-        <div className={CELL_CLASSES}>
-          <span className="font-medium text-muted-foreground text-xs">—</span>
-        </div>
-      );
-    }
     return (
       <div className={cn(CELL_CLASSES, "gap-0")}>
-        <div className="flex shrink-0 items-center p-2">
-          <PriorityIcon priority={priority} />
-        </div>
-        <span className="truncate font-medium text-muted-foreground text-xs">
-          {PRIORITY_LABELS[priority]}
-        </span>
+        <PriorityContent compact={compact} priority={priority} />
       </div>
     );
   }
+
+  // The trigger renders only the colored icon when the label is suppressed, so
+  // it needs an explicit accessible name naming the current priority + action.
+  const triggerLabel = priority
+    ? `Priority: ${PRIORITY_LABELS[priority]}`
+    : "Set priority";
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
+          aria-label={triggerLabel}
           className={cn(CELL_CLASSES, "gap-0 hover:bg-muted/50")}
           onClick={(e) => e.stopPropagation()}
           type="button"
         >
-          {priority ? (
-            <>
-              <div className="flex shrink-0 items-center p-2">
-                <PriorityIcon priority={priority} />
-              </div>
-              <span className="truncate font-medium text-muted-foreground text-xs">
-                {PRIORITY_LABELS[priority]}
-              </span>
-            </>
-          ) : (
-            <span className="font-medium text-muted-foreground text-xs">—</span>
-          )}
+          <PriorityContent compact={compact} priority={priority} />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">

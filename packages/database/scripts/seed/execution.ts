@@ -344,6 +344,7 @@ export async function seedExecutionEntities(
               tokensOutput: def.tokensOutput,
               error: def.error ?? undefined,
             },
+            select: { id: true },
           }),
         counts,
       });

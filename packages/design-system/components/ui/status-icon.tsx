@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { EMPTY_RING_TRACK_COLOR } from "./internal/status-icon-shared";
 import {
   FilledStatusCircle,
   type StatusGlyph,
@@ -57,7 +58,12 @@ function getStatusConfig(status: StatusIconStatus): StatusConfig {
       return { percentage: 0, color: "var(--progress)", dashed: true };
     }
     case "todo": {
-      return { percentage: 0, color: "var(--progress)", dashed: false };
+      return {
+        percentage: 0,
+        color: "var(--progress)",
+        dashed: false,
+        trackColor: EMPTY_RING_TRACK_COLOR,
+      };
     }
     case "started": {
       return {

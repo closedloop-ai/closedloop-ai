@@ -1,4 +1,8 @@
 import {
+  DocumentThreadAnchorStatus,
+  type DocumentThreadAnchorStatus as DocumentThreadAnchorStatusType,
+} from "@repo/api/src/types/comment";
+import {
   FeedFilterCommentType,
   FeedFilterVersionOfOrigin,
 } from "../feed-filter-context";
@@ -45,7 +49,7 @@ export type LiveblocksItemClassification = {
    * Effective anchor status. "anchored" matches the Anchored sub-filter;
    * "floating" + "artifact-level" both match Document-level.
    */
-  anchorStatus: "anchored" | "floating" | "artifact-level";
+  anchorStatus: DocumentThreadAnchorStatusType;
 };
 
 export function passesLiveblocksFilter(
@@ -111,7 +115,10 @@ function passesCommentType(
     return true;
   }
   if (commentType === FeedFilterCommentType.Anchored) {
-    return anchorStatus === "anchored";
+    return anchorStatus === DocumentThreadAnchorStatus.Anchored;
   }
-  return anchorStatus === "floating" || anchorStatus === "artifact-level";
+  return (
+    anchorStatus === DocumentThreadAnchorStatus.Floating ||
+    anchorStatus === DocumentThreadAnchorStatus.ArtifactLevel
+  );
 }

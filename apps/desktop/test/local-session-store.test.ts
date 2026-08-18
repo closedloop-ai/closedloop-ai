@@ -1,41 +1,35 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { LocalSessionStore } from "../src/main/local-session-store.js";
+import { LocalSessionStore } from "../src/main/auth/local-session-store.js";
+import { nodeTestTimers } from "./support/node-test-fake-timers.js";
 
-// Each test creates its own store instance; no shared state to clean up.
+const PINNED_NOW_MS = Date.parse("2026-07-01T00:00:00.000Z");
+const DEFAULT_TTL_MS = 600_000;
+
+// Each test creates its own store instance; only the pinned clock is shared
+// state, and only the tests that install it are affected.
 afterEach(() => {
-  // nothing to tear down
+  nodeTestTimers.reset();
 });
 
 test("create() returns a session token and ISO expiration date", () => {
+  // Pin the clock rather than bracketing the call with real `Date.now()` reads:
+  // the TTL is exact, so the expiry can be asserted exactly instead of "inside
+  // a ±1s window", which is both stronger and immune to a loaded runner.
+  nodeTestTimers.enable(["Date"], { now: PINNED_NOW_MS });
+
   const store = new LocalSessionStore();
-  const before = Date.now();
   const { sessionToken, expiresAt } = store.create("http://localhost:3000");
-  const after = Date.now();
 
   assert.ok(
     typeof sessionToken === "string",
     "sessionToken should be a string"
   );
   assert.ok(sessionToken.length > 0, "sessionToken should not be empty");
-
-  const expiresAtMs = new Date(expiresAt).getTime();
-  assert.ok(
-    !Number.isNaN(expiresAtMs),
-    "expiresAt should be a valid ISO date string"
-  );
-  assert.ok(
-    expiresAtMs > before,
-    "expiresAt should be in the future relative to before-create time"
-  );
-  assert.ok(
-    expiresAtMs > after,
-    "expiresAt should be in the future relative to after-create time"
-  );
-  // Default TTL is 600 seconds; verify the expiry is within a reasonable window
-  assert.ok(
-    expiresAtMs <= after + 601_000,
-    "expiresAt should not exceed TTL + 1s buffer"
+  assert.equal(
+    expiresAt,
+    new Date(PINNED_NOW_MS + DEFAULT_TTL_MS).toISOString(),
+    "expiresAt should be exactly the default 600s TTL past creation"
   );
 });
 

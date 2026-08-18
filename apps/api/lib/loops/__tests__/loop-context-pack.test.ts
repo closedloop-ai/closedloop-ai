@@ -30,8 +30,11 @@ vi.mock("@repo/database", () => ({
   withDb: vi.fn(),
 }));
 
+import { LoopCommand } from "@repo/api/src/types/loop";
 import { withDb } from "@repo/database";
 import { listAgentsForContextPack } from "@/app/catalog/service";
+import { buildContextPackInMemory } from "../loop-context-pack";
+import type { LoopForContextPack } from "../loop-context-pack-types";
 
 const mockWithDb = withDb as unknown as Mock;
 
@@ -381,20 +384,78 @@ describe("listAgentsForContextPack — repoConfigs/criticGates", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Flag-off simulation — empty output when no enabled CatalogItems exist
+// Empty output when no enabled CatalogItems exist
 // ---------------------------------------------------------------------------
 
-describe("listAgentsForContextPack — empty output when flag is off (simulated)", () => {
-  it("returns empty agents and repoConfigs when the DB returns no rows (flag-off simulation)", async () => {
-    // When AGENTS_FEATURE_FLAG_KEY is disabled the upstream caller
-    // (fetchAgentsForContextPack in loop-context-pack.ts) short-circuits and
-    // never calls listAgentsForContextPack.  We test the catalogue service
-    // separately to confirm it returns empty output for empty DB results,
-    // which is the same result the caller would return on flag-off.
+describe("listAgentsForContextPack — empty output for empty DB results", () => {
+  it("returns empty agents and repoConfigs when the DB returns no rows", async () => {
+    // The catalogue service returns empty output for empty DB results — the
+    // same shape the caller (fetchAgentsForContextPack in loop-context-pack.ts)
+    // surfaces when an org has no enabled CatalogItems.
     mockDbForListAgents([]);
 
     const result = await listAgentsForContextPack("org-1");
 
     expect(result).toEqual({ agents: [], repoConfigs: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary: buildContextPackInMemory now unconditionally includes agents.
+//
+// FEA-3994 removed the per-user `isAgentsEnabledForUser` short-circuit from
+// `fetchAgentsForContextPack`. Testing `listAgentsForContextPack` alone (above)
+// does NOT prove the removal: a regression that restored the gate — or dropped
+// `agentData.agents` from the returned pack — would stay green. This drives the
+// real boundary and asserts the agents reach the final ContextPack with no flag
+// enabled anywhere.
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal loop that keeps every non-agent fetcher inert: no `documentId`
+ * (primary artifact + attachments skipped), no `parentLoopId` (no prior-loop
+ * summary), no `contextRefs` (no ref fan-out), no `repo`, and an EXECUTE
+ * command (not GENERATE_PRD / EVALUATE_CODE / PLAN, so template, code-eval, and
+ * user-context branches all early-return). Only the agents branch does work.
+ */
+const AGENTLESS_LOOP: LoopForContextPack = {
+  id: "loop-1",
+  userId: "user-1",
+  command: LoopCommand.Execute,
+  prompt: "do the thing",
+  documentId: null,
+  documentVersion: null,
+  parentLoopId: null,
+  repo: null,
+  contextRefs: null,
+};
+
+describe("buildContextPackInMemory — agents included without a feature flag", () => {
+  it("surfaces enabled agents in the final pack (gate removed)", async () => {
+    mockDbForListAgents([
+      {
+        role: "code-reviewer",
+        name: "Code Reviewer",
+        versions: [{ content: "You are a code reviewer." }],
+      },
+    ]);
+
+    const pack = await buildContextPackInMemory(AGENTLESS_LOOP, "org-1");
+
+    expect(pack.agents).toBeDefined();
+    expect(pack.agents).toHaveLength(1);
+    expect(pack.agents?.[0]).toEqual({
+      slug: "code-reviewer",
+      name: "Code Reviewer",
+      prompt: "You are a code reviewer.",
+    });
+  });
+
+  it("omits agents (undefined) when the org has none enabled", async () => {
+    mockDbForListAgents([]);
+
+    const pack = await buildContextPackInMemory(AGENTLESS_LOOP, "org-1");
+
+    expect(pack.agents).toBeUndefined();
   });
 });

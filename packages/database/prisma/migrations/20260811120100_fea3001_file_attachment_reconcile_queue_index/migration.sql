@@ -1,0 +1,58 @@
+-- FEA-3001: index the DB-row-side attachment reconcile sweep's work queue.
+--
+-- WHAT THIS INDEX IS FOR. `attachmentRowReconcileService` runs two queries per
+-- sweep, and they partition the table on `reconcile_absent` — see
+-- apps/api/app/documents/attachment-row-reconcile-service.ts:
+--
+--   • confirm:   WHERE bucket = $1 AND reconcile_absent = true
+--                  AND reconciled_at < $2  ORDER BY reconciled_at ASC  LIMIT n
+--   • discovery: WHERE bucket = $1 AND reconcile_absent = false
+--                  AND reconciled_at < $2  ORDER BY reconciled_at ASC  LIMIT n
+--
+-- `file_attachments` carried no index on either column (only `(artifact_id)`,
+-- `(artifact_id, purpose)`, `(bucket, key)` and the id primary key), so both
+-- would seq-scan the whole table and then sort it, every night, to return at
+-- most a few hundred rows.
+--
+-- SHAPE. `(bucket, reconcile_absent, reconciled_at)` matches each query's full
+-- equality prefix and leaves `reconciled_at` as the ordered range column, so
+-- each phase is one ordered index scan that stops at its LIMIT — no sort node,
+-- and the confirm phase touches only the (small) absent-marked partition.
+-- `created_at` is deliberately NOT a key column: the sweep also filters
+-- `created_at < now() - 900s`, but that excludes only rows still inside the
+-- presigned-upload window — a handful at most — so as a key column it would add
+-- width without narrowing the scan. It stays a heap filter.
+--
+-- WRITE-PATH COST. The sweep stamps `reconciled_at` on every row it examines, so
+-- each examined row moves one index entry — bounded by the per-run scan cap
+-- (2000/run) and paid by a nightly cron. Attachment inserts pay one entry each,
+-- as they already do for the three existing indexes.
+--
+-- CONCURRENTLY, NON-TRANSACTIONAL BY DESIGN — WHY THIS FILE IS BARE STATEMENTS.
+-- `CREATE INDEX CONCURRENTLY` takes SHARE UPDATE EXCLUSIVE instead of the
+-- write-blocking ACCESS EXCLUSIVE a plain build holds for its whole duration, so
+-- attachment uploads keep working while it builds. It cannot run inside a
+-- transaction block (PostgreSQL SQLSTATE 25001); `prisma migrate deploy` splits
+-- a migration file into per-statement simple queries so bare top-level
+-- statements each run outside a transaction, but that split is best-effort and a
+-- `DO $$ … $$` block, embedded semicolons, or a `DROP INDEX CONCURRENTLY` push
+-- the whole file onto the single-transaction fallback where every CONCURRENTLY
+-- statement fails 25001. Keep this file to the single bare `CREATE INDEX
+-- CONCURRENTLY` below — do NOT add a BEGIN/COMMIT, a `DO` block, or the column
+-- DDL from the sibling migration. (See
+-- 20260730180000_iss4565_session_detail_model_index_concurrent for the full
+-- invalid-remnant recovery runbook; it applies identically here.)
+--
+-- NO `IF NOT EXISTS` (fail-closed retry): the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) requires CREATE INDEX
+-- CONCURRENTLY to OMIT it, so a retry after a cancelled or crashed build fails
+-- closed on the same-named INVALID index remnant instead of silently marking the
+-- migration applied over a broken index.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations.ts) — a pure non-unique
+-- perf-only index an ephemeral preview schema does not need. CI-enforced by the
+-- drift guard in packages/database/__tests__/preview-heavy-migrations.test.ts.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "file_attachments_bucket_reconcile_absent_reconciled_at_idx" ON "file_attachments"("bucket", "reconcile_absent", "reconciled_at");

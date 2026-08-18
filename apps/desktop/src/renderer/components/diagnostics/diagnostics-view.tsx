@@ -10,13 +10,18 @@ import {
   TabsList,
   TabsTrigger,
 } from "@closedloop-ai/design-system/components/ui/tabs";
+import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DiagnosticsData } from "../../../shared/diagnostics-contract";
+import { DESKTOP_OPENCODE_WITHHELD_DIAGNOSTICS_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
+import { pageTitleForNav } from "../../navigation/nav-config";
+import { NavId } from "../../navigation/route-table";
+import { PageShell } from "../layout/page-shell";
 import { BackfillTab } from "./backfill-tab";
-import { EnrichmentTab } from "./enrichment-tab";
 import { LogsPanel } from "./LogsPanel";
 import { LinksTab } from "./links-tab";
 import { ReposTab } from "./repos-tab";
+import { WithheldTab } from "./withheld-tab";
 
 const AUTO_REFRESH_MS = 5000;
 
@@ -41,14 +46,6 @@ function renderTabContent(
     return null;
   }
   switch (tab) {
-    case "enrichment":
-      return (
-        <EnrichmentTab
-          enrichmentQueue={data.enrichmentQueue}
-          pendingArtifacts={data.pendingArtifacts}
-          stalledArtifacts={data.stalledArtifacts}
-        />
-      );
     case "repos":
       return <ReposTab repos={data.repos} />;
     case "backfill":
@@ -56,6 +53,13 @@ function renderTabContent(
     case "links":
       return (
         <LinksTab linkStats={data.linkStats} linkTotals={data.linkTotals} />
+      );
+    case "withheld":
+      return (
+        <WithheldTab
+          scans={data.opencodeWithheldScans}
+          withheld={data.opencodeWithheld}
+        />
       );
     default:
       return null;
@@ -70,6 +74,12 @@ export function DiagnosticsView({
   const [error, setError] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const loadingRef = useRef(false);
+  // ISS-5266 (ISS-4779 closed-by-default): the Withheld tab is off by default.
+  // Only the DISPLAY is gated — the underlying record is written and read
+  // regardless, so turning the toggle on never has to wait for a re-import.
+  const withheldEnabled = useFeatureFlagEnabled(
+    DESKTOP_OPENCODE_WITHHELD_DIAGNOSTICS_FEATURE_FLAG_KEY
+  );
 
   const load = useCallback(async () => {
     if (loadingRef.current) {
@@ -136,11 +146,8 @@ export function DiagnosticsView({
   }, [load]);
 
   return (
-    <div className="space-y-4 p-6">
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold text-[var(--foreground)] text-lg">
-          Diagnostics
-        </h2>
+    <PageShell
+      actions={
         <div className="flex items-center gap-2">
           <Button
             onClick={() => setAutoRefresh((v) => !v)}
@@ -158,26 +165,26 @@ export function DiagnosticsView({
             Refresh
           </Button>
         </div>
-      </div>
-
+      }
+      description="Gateway health, logs, backfill state and withheld data."
+      title={pageTitleForNav(NavId.Diagnostics)}
+    >
       {error && (
         <Alert variant="error">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
-      <Tabs defaultValue="enrichment">
+      <Tabs defaultValue="repos">
         <TabsList>
-          <TabsTrigger value="enrichment">Enrichment</TabsTrigger>
           <TabsTrigger value="repos">Repos</TabsTrigger>
           <TabsTrigger value="backfill">Backfill</TabsTrigger>
           <TabsTrigger value="links">Links</TabsTrigger>
+          {withheldEnabled && (
+            <TabsTrigger value="withheld">Withheld</TabsTrigger>
+          )}
           <TabsTrigger value="logs">Gateway Logs</TabsTrigger>
         </TabsList>
-
-        <TabsContent value="enrichment">
-          {renderTabContent(loading, data, "enrichment")}
-        </TabsContent>
 
         <TabsContent value="repos">
           {renderTabContent(loading, data, "repos")}
@@ -191,10 +198,16 @@ export function DiagnosticsView({
           {renderTabContent(loading, data, "links")}
         </TabsContent>
 
+        {withheldEnabled && (
+          <TabsContent value="withheld">
+            {renderTabContent(loading, data, "withheld")}
+          </TabsContent>
+        )}
+
         <TabsContent value="logs">
           <LogsPanel />
         </TabsContent>
       </Tabs>
-    </div>
+    </PageShell>
   );
 }

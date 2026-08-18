@@ -1,11 +1,34 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import {
+  BranchTraceCompletenessState,
+  BranchTraceSessionHydrationState,
+  BranchTraceUnavailableReason,
+  type MergedTraceItem,
+} from "@repo/api/src/types/branch-trace";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { buildActorColorDomain } from "../../lib/branch-actor-domain";
 import { BranchMergedTrace } from "../branch-merged-trace";
+
+// FEA-3490: TraceCommentsRail resolves persisted @-mention IDs to labels via
+// useOrganizationUsers. BranchMergedTrace renders that rail outside an auth
+// provider here, so stub the org-member query to an empty list.
+vi.mock("@repo/app/users/hooks/use-users", () => ({
+  useOrganizationUsers: () => ({ data: [] }),
+}));
 
 const NO_TRACE_RE = /no trace captured/i;
 const COMMENT_BUTTON_NAME_RE = /comment/i;
+const UNAVAILABLE_SESSION_RE = /Unavailable Session/;
+const CUMULATIVE_COST_RE = /Cumulative:/;
+const SESSION_TOTAL_RE = /done · Session total \$3\.00/;
+const ANY_SESSION_TOTAL_RE = /Session total/;
+const NO_MERGED_TRACE_RE = /No merged trace/;
+const SESSION_TRACE_UNAVAILABLE_RE = /^Session trace unavailable$/;
+const SOME_SESSION_TRACES_UNAVAILABLE_RE =
+  /^Some Session traces are unavailable$/;
+const GENERIC_PARTIAL_TRACE_UNAVAILABLE_RE =
+  /^Some Session trace activity is unavailable$/;
 
 const traceItems: MergedTraceItem[] = [
   {
@@ -34,6 +57,40 @@ const traceItems: MergedTraceItem[] = [
 ];
 
 describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
+  it("renders two actor initials in the right gutter using the Branch color domain", () => {
+    const actorDomain = buildActorColorDomain(["alice", "bob"]);
+    render(
+      <BranchMergedTrace
+        actorDomain={actorDomain}
+        traceItems={[
+          ...traceItems.slice(0, 2),
+          {
+            type: "prompt",
+            sessionId: "s1",
+            t: "2026-06-10T10:01:30.000Z",
+            tMs: 0,
+            cumCostUsd: null,
+            actorName: "bob",
+            text: "Please continue",
+          },
+        ]}
+      />
+    );
+
+    const alice = screen.getByLabelText("alice");
+    const bob = screen.getByLabelText("bob");
+    expect(alice).toHaveTextContent("A");
+    expect(bob).toHaveTextContent("B");
+    expect(alice.firstElementChild).toHaveStyle({
+      background: actorDomain.colorPairFor("alice").soft,
+      color: actorDomain.colorPairFor("alice").strong,
+    });
+    expect(bob.firstElementChild).toHaveStyle({
+      background: actorDomain.colorPairFor("bob").soft,
+      color: actorDomain.colorPairFor("bob").strong,
+    });
+  });
+
   it("renders via the shared SessionTrace (st-* markup) with the trace content", () => {
     const { container } = render(<BranchMergedTrace traceItems={traceItems} />);
     // Reuses the agents SessionTrace: its root is `.st`, not a bespoke renderer.
@@ -43,9 +100,307 @@ describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
     expect(screen.getByText("done")).toBeInTheDocument();
   });
 
-  it("renders the empty state for an empty trace", () => {
-    render(<BranchMergedTrace traceItems={[]} />);
+  it("renders the empty state only for a complete empty trace", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={[]}
+        traceState={{
+          aggregateCompleteness: {
+            state: BranchTraceCompletenessState.Complete,
+          },
+          completeness: { state: BranchTraceCompletenessState.Complete },
+          qualifyingSessionCount: 0,
+          sessions: [],
+        }}
+      />
+    );
     expect(screen.getByText(NO_TRACE_RE)).toBeInTheDocument();
+    expect(
+      screen.queryByText(SESSION_TRACE_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+  });
+
+  it("treats missing trace state as unavailable instead of genuinely empty", () => {
+    render(<BranchMergedTrace traceItems={[]} />);
+
+    expect(screen.getByText(SESSION_TRACE_UNAVAILABLE_RE)).toBeVisible();
+    expect(screen.queryByText(NO_MERGED_TRACE_RE)).not.toBeInTheDocument();
+  });
+
+  it("shows aggregate unavailable copy with named Sessions instead of an empty trace", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={[]}
+        traceState={{
+          aggregateCompleteness: {
+            reason: BranchTraceUnavailableReason.Permission,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          completeness: {
+            reason: BranchTraceUnavailableReason.Permission,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          qualifyingSessionCount: 2,
+          sessions: [
+            unavailableSession("session-1", "Implementation Session"),
+            unavailableSession("session-2", "Review Session"),
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByText(SESSION_TRACE_UNAVAILABLE_RE)).toBeVisible();
+    expect(
+      screen.getByText(
+        "Linked Sessions remain part of this Branch. Trace activity could not be loaded for: Implementation Session, Review Session."
+      )
+    ).toBeVisible();
+    expect(screen.queryByText(NO_MERGED_TRACE_RE)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SOME_SESSION_TRACES_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows aggregate unavailable copy when Session identities are unknown", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={[]}
+        traceState={{
+          aggregateCompleteness: {
+            reason: BranchTraceUnavailableReason.LegacyResponse,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          completeness: {
+            reason: BranchTraceUnavailableReason.LegacyResponse,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          qualifyingSessionCount: null,
+          sessions: [],
+        }}
+      />
+    );
+
+    expect(screen.getByText(SESSION_TRACE_UNAVAILABLE_RE)).toBeVisible();
+    expect(
+      screen.getByText(
+        "Linked Sessions remain part of this Branch, but their trace activity could not be loaded."
+      )
+    ).toBeVisible();
+    expect(screen.queryByText(NO_MERGED_TRACE_RE)).not.toBeInTheDocument();
+  });
+
+  it("keeps loaded turns visible and names unavailable Sessions during partial hydration", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={traceItems}
+        traceState={{
+          aggregateCompleteness: {
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+          completeness: { state: BranchTraceCompletenessState.Incomplete },
+          qualifyingSessionCount: 2,
+          sessions: [
+            {
+              identity: {
+                artifactId: "session-1",
+                externalSessionId: "s1",
+                name: "Loaded Session",
+                navigableRef: "SES-1",
+                slug: "SES-1",
+              },
+              state: BranchTraceSessionHydrationState.Loaded,
+            },
+            {
+              identity: {
+                artifactId: "session-2",
+                externalSessionId: "s2",
+                name: "Unavailable Session",
+                navigableRef: "SES-2",
+                slug: "SES-2",
+              },
+              reason: BranchTraceUnavailableReason.Permission,
+              state: BranchTraceSessionHydrationState.Unavailable,
+            },
+          ],
+        }}
+      />
+    );
+
+    expect(screen.getByText("Hello from the trace")).toBeInTheDocument();
+    expect(screen.getByText(UNAVAILABLE_SESSION_RE)).toBeInTheDocument();
+    expect(screen.getByText(SOME_SESSION_TRACES_UNAVAILABLE_RE)).toBeVisible();
+    expect(
+      screen.getByText(
+        "Loaded trace turns remain visible. Unavailable: Unavailable Session."
+      )
+    ).toBeVisible();
+  });
+
+  it("keeps loaded turns visible with generic partial copy when identities are unknown", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={traceItems}
+        traceState={{
+          aggregateCompleteness: {
+            reason: BranchTraceUnavailableReason.LegacyResponse,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          completeness: {
+            reason: BranchTraceUnavailableReason.LegacyResponse,
+            state: BranchTraceCompletenessState.Unavailable,
+          },
+          qualifyingSessionCount: null,
+          sessions: [],
+        }}
+      />
+    );
+
+    expect(screen.getByText("Hello from the trace")).toBeVisible();
+    expect(
+      screen.getByText(GENERIC_PARTIAL_TRACE_UNAVAILABLE_RE)
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Loaded trace turns remain visible. Additional Session trace activity could not be loaded."
+      )
+    ).toBeVisible();
+  });
+
+  it("does not add an unavailable warning for truncation-only evidence", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={traceItems}
+        traceState={{
+          aggregateCompleteness: {
+            eventsTruncated: true,
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+          completeness: {
+            eventsTruncated: true,
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+          qualifyingSessionCount: 1,
+          sessions: [],
+        }}
+      />
+    );
+
+    expect(screen.getByText("Hello from the trace")).toBeVisible();
+    expect(
+      screen.queryByText(SESSION_TRACE_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SOME_SESSION_TRACES_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(GENERIC_PARTIAL_TRACE_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not render the genuine-empty state for zero-item truncation evidence", () => {
+    render(
+      <BranchMergedTrace
+        traceItems={[]}
+        traceState={{
+          aggregateCompleteness: {
+            eventsTruncated: true,
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+          completeness: {
+            eventsTruncated: true,
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+          qualifyingSessionCount: 1,
+          sessions: [],
+        }}
+      />
+    );
+
+    expect(screen.queryByText(NO_MERGED_TRACE_RE)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(SESSION_TRACE_UNAVAILABLE_RE)
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows Session totals only for complete aggregate evidence", () => {
+    const sessionTotals = [
+      { label: "Session one", sessionId: "s1", totalCostUsd: 3 },
+    ];
+    const completeState = {
+      aggregateCompleteness: {
+        state: BranchTraceCompletenessState.Complete,
+      },
+      completeness: { state: BranchTraceCompletenessState.Complete },
+      qualifyingSessionCount: 1,
+      sessions: [],
+    };
+    const { rerender } = render(
+      <BranchMergedTrace
+        sessionTotals={sessionTotals}
+        traceItems={traceItems}
+        traceState={completeState}
+      />
+    );
+    expect(screen.getByText(SESSION_TOTAL_RE)).toBeVisible();
+
+    rerender(
+      <BranchMergedTrace
+        sessionTotals={sessionTotals}
+        traceItems={traceItems}
+        traceState={{
+          ...completeState,
+          aggregateCompleteness: {
+            state: BranchTraceCompletenessState.Incomplete,
+          },
+        }}
+      />
+    );
+    expect(screen.queryByText(ANY_SESSION_TOTAL_RE)).not.toBeInTheDocument();
+  });
+
+  it("renders per-turn deltas without exposing a cumulative running total", () => {
+    const costItems: MergedTraceItem[] = [
+      {
+        actor: { harness: "claude", name: "Agent" },
+        sessionId: "cost-session",
+        t: "2026-06-10T10:00:00.000Z",
+        type: "sessionstart",
+      },
+      {
+        actorName: "Agent",
+        cumCostUsd: 1,
+        sessionId: "cost-session",
+        t: "2026-06-10T10:01:00.000Z",
+        text: "First agent turn",
+        tMs: Date.parse("2026-06-10T10:01:00.000Z"),
+        type: "say",
+      },
+      {
+        actorName: "Human",
+        cumCostUsd: 1,
+        sessionId: "cost-session",
+        t: "2026-06-10T10:02:00.000Z",
+        text: "Continue",
+        tMs: Date.parse("2026-06-10T10:02:00.000Z"),
+        type: "prompt",
+      },
+      {
+        actorName: "Agent",
+        cumCostUsd: 3,
+        sessionId: "cost-session",
+        t: "2026-06-10T10:03:00.000Z",
+        text: "Second agent turn",
+        tMs: Date.parse("2026-06-10T10:03:00.000Z"),
+        type: "say",
+      },
+    ];
+
+    render(<BranchMergedTrace traceItems={costItems} />);
+
+    expect(screen.getByText("$1.00")).toBeVisible();
+    expect(screen.getByText("$2.00")).toBeVisible();
+    expect(screen.queryByTitle(CUMULATIVE_COST_RE)).not.toBeInTheDocument();
+    expect(screen.queryByText("$3.00")).not.toBeInTheDocument();
   });
 
   it("jumps to the item's row on event-row click and marks the active row", async () => {
@@ -192,6 +547,20 @@ describe("BranchMergedTrace (D2 → shared SessionTrace)", () => {
     }
   });
 });
+
+function unavailableSession(artifactId: string, name: string) {
+  return {
+    identity: {
+      artifactId,
+      externalSessionId: artifactId,
+      name,
+      navigableRef: artifactId,
+      slug: artifactId,
+    },
+    reason: BranchTraceUnavailableReason.Permission,
+    state: BranchTraceSessionHydrationState.Unavailable,
+  } as const;
+}
 
 function selectRenderedText(container: HTMLElement, text: string): void {
   const node = findTextNode(container, text);

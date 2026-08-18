@@ -145,10 +145,7 @@ async function deleteObject(key: string): Promise<void> {
 // --- Context Pack (uploaded by backend before container start) ---
 // Types re-exported from @closedloop-ai/loops-api/context-pack (shared contract)
 
-export type {
-  ContextPack,
-  ContextPackAttachment,
-} from "@closedloop-ai/loops-api/context-pack";
+export type { ContextPack } from "@closedloop-ai/loops-api/context-pack";
 
 // Canonical, long-lived context pack object. Always born pre-scrubbed of the raw
 // API key / git tokens (see stripContextPackSecrets), so there is no exposure

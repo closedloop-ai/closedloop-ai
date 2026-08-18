@@ -4,36 +4,46 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { InsightsSection } from "@closedloop-ai/loops-api/insights";
+import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
+import { PullRequestState } from "@repo/api/src/types/document";
+import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
 import {
   SESSION_TRACE_SOURCE_LIMITS,
   SessionPrLifecycleStatus,
   SessionTraceCorrectionKind,
   SessionTracePhaseSourceType,
-} from "@repo/api/src/session-trace/derivation";
-import { PullRequestState } from "@repo/api/src/types/document";
-import { SessionPrRelationType } from "@repo/api/src/types/session-artifact-link";
-import {
-  buildAgentSessionSyncSourceKey,
-  SESSION_PAYLOAD_BYTE_CAP,
-} from "../src/main/agent-session-sync-service.js";
+} from "@repo/lib/session-trace/derivation";
+import { SESSION_PAYLOAD_BYTE_CAP } from "../src/main/agent-sync/agent-session-sync-backoff-policy.js";
+import { buildAgentSessionSyncSourceKey } from "../src/main/agent-sync/agent-session-sync-source.js";
+import { resolveTokenUsageCostUsd } from "../src/main/agent-sync/agent-session-token-cost-resolution.js";
+import { getSharedBranches } from "../src/main/branch/shared-branches-api.js";
 import { parseSessionFile as parseClaudeFile } from "../src/main/collectors/claude/claude-parser.js";
 import { createCodexCollector } from "../src/main/collectors/codex/codex-collector.js";
 import type { NormalizedSession } from "../src/main/collectors/types.js";
+import { InvalidTokenCountError } from "../src/main/cost/token-counts.js";
 import { normalizeRepoFullName } from "../src/main/database/db-helpers.js";
+import { chunkWatermark } from "../src/main/database/session-sync-watermark.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
-import { recomputeSessionLastActivityAt } from "../src/main/database/write-core.js";
 import {
   artifactIdFromIdentityKey,
   computeIdentityKey,
 } from "../src/main/enrichment/identity-key.js";
 import { repairPollutedRepoFullNames } from "../src/main/enrichment/repo-fullname-repair.js";
-import { getSharedAgentSessionAnalytics } from "../src/main/shared-agent-sessions-api.js";
-import { getSharedBranches } from "../src/main/shared-branches-api.js";
-import { InvalidTokenCountError } from "../src/main/token-counts.js";
+import { getSharedAgentSessionAnalytics } from "../src/main/session/shared-agent-sessions-api.js";
+import { initGitRepoWithOrigin } from "./attribution-test-helpers.js";
+import {
+  insertSqliteEvent,
+  insertSqliteSession,
+} from "./sqlite-session-fixtures.js";
 
-// PR #1837 perf guard: a temp-b-tree filesort in an EXPLAIN QUERY PLAN means the
-// last-activity sort is NOT being served by idx_sessions_last_activity.
-const TEMP_BTREE_SORT_PATTERN = /TEMP B-TREE FOR ORDER BY/i;
+// `getInsights` returns a union; narrow `charts` to the Delivery arm first.
+const DELIVERY_CHARTS_MESSAGE = "expected the Delivery insights charts";
+
+// FEA-4299: the Repository breakdown keys on the resolved Git remote
+// `repositoryFullName`, never a `worktreePath`/`cwd` folder name. To exercise the
+// per-repo fold with real identities, seed real git repos whose `origin` remote
+// resolves via the shared `initGitRepoWithOrigin` helper — the same technique as
+// `sync-source-repo-attribution.test.ts`.
 
 test("SQLite dashboard database starts empty and fills from hook events", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
@@ -89,10 +99,14 @@ test("FEA-1962: sync_state round-trips across reopen, separates by source key, a
   const stateA = {
     observedTopUpdatedAt: "2026-06-08T12:05:00.000Z",
     observedIdsAtTopUpdatedAt: ["a", "b"],
+    // Migration 0022: dead-lettered ids round-trip on the cursor so the
+    // watermark can advance past intentionally-abandoned rows.
+    deadLetteredIds: ["dead-1", "dead-2"],
   };
   const stateB = {
     observedTopUpdatedAt: "2026-06-09T01:00:00.000Z",
     observedIdsAtTopUpdatedAt: ["x"],
+    deadLetteredIds: [],
   };
 
   const db = await openSqliteAgentDatabase({
@@ -126,13 +140,32 @@ test("FEA-1962: sync_state round-trips across reopen, separates by source key, a
   try {
     assert.deepEqual(await reopened.syncSource.loadSyncState?.(keyA), stateA);
 
-    // A cursor stamped under a different DATA_REVISION must load as absent so a
-    // parser-semantics bump forces a one-time full re-backfill.
+    // Backward compat (migration 0022): a cursor written before the
+    // dead_lettered_ids column existed has a NULL value; it must load as `[]`
+    // (no dead-letters set aside) rather than throwing or dropping the cursor.
+    await reopened.run(
+      "UPDATE sync_state SET dead_lettered_ids = NULL WHERE source_key = $1",
+      keyA
+    );
+    assert.deepEqual(await reopened.syncSource.loadSyncState?.(keyA), {
+      ...stateA,
+      deadLetteredIds: [],
+    });
+
+    // FEA-3659: a cursor stamped under a different DATA_REVISION must now SURVIVE
+    // (targeted re-sync). Previously it loaded as `null` to force a full corpus
+    // re-walk; that is no longer needed because a byte-identical re-derivation no
+    // longer bumps updated_at, so the incremental watermark scan picks up only the
+    // genuinely-changed rows. The durable watermark/ids/dead-letters must load
+    // unchanged despite the stale stamp.
     await reopened.run(
       "UPDATE sync_state SET data_revision = data_revision + 1 WHERE source_key = $1",
       keyA
     );
-    assert.equal(await reopened.syncSource.loadSyncState?.(keyA), null);
+    assert.deepEqual(await reopened.syncSource.loadSyncState?.(keyA), {
+      ...stateA,
+      deadLetteredIds: [],
+    });
   } finally {
     await reopened.close();
     await rm(dir, { recursive: true, force: true });
@@ -188,24 +221,18 @@ test("SQLite live hook event data is capped before storage", async () => {
   });
 
   try {
-    await db.processEvent(
-      "SessionStart",
-      {
-        session_id: "large-event-session",
-        cwd: "/workspace/project",
-        tool_input: "x".repeat(70 * 1024),
-      },
-      "claude"
-    );
+    // `tool_input` is a hook payload object, not a bare string (`HookData`).
+    const oversizedPayload = {
+      session_id: "large-event-session",
+      cwd: "/workspace/project",
+      tool_input: { command: "x".repeat(70 * 1024) },
+    };
+    await db.processEvent("SessionStart", oversizedPayload, "claude");
 
     const events = await db.events.getBySession("large-event-session");
     assert.deepEqual(JSON.parse(events[0].data ?? "{}"), {
       truncated: true,
-      bytes: JSON.stringify({
-        session_id: "large-event-session",
-        cwd: "/workspace/project",
-        tool_input: "x".repeat(70 * 1024),
-      }).length,
+      bytes: JSON.stringify(oversizedPayload).length,
     });
   } finally {
     await db.close();
@@ -358,14 +385,14 @@ test("SQLite workflow avgDurationSec excludes clock-skew (negative) sessions", a
     // bad clock can't drag avgDurationSec negative.
     await db.run(
       `INSERT INTO sessions (id, status, started_at, ended_at, updated_at)
-       VALUES ($1, 'completed', $2, $3, $3)`,
+       VALUES ($1, 'inactive', $2, $3, $3)`,
       "workflow-dur-ok",
       "2026-06-07T12:00:00.000Z",
       "2026-06-07T12:01:00.000Z"
     );
     await db.run(
       `INSERT INTO sessions (id, status, started_at, ended_at, updated_at)
-       VALUES ($1, 'completed', $2, $3, $3)`,
+       VALUES ($1, 'inactive', $2, $3, $3)`,
       "workflow-dur-skew",
       "2026-06-07T12:05:00.000Z",
       "2026-06-07T12:00:00.000Z"
@@ -415,6 +442,7 @@ test("SQLite dashboard core features are filled from imported sessions", async (
     // merged PRs. This fixture's PR is reference-only (no `gh pr create`) and
     // un-enriched (no pr_state='merged'), so it is captured (KPI = 1 above) but
     // excluded from the merged-by-repo breakdown.
+    assert.ok("prByRepo" in deliveryInsights.charts, DELIVERY_CHARTS_MESSAGE);
     assert.deepEqual(deliveryInsights.charts.prByRepo, []);
     assert.equal(
       features.tools.some((tool) => tool.toolName === "Skill"),
@@ -548,10 +576,9 @@ test("SQLite importer attributes a created PR to the branch active at `gh pr cre
   try {
     const createdUrl =
       "https://github.com/closedloop-ai/symphony-alpha/pull/2000";
-    // The session STARTS on `main` (gitBranch), then checks out `fea-real-head`
-    // and opens a PR from it. The transcript records the working branch per tool,
-    // so the PR's head ref is known for certain — it must be `fea-real-head`, NOT
-    // the stale session start branch `main`.
+    // The session STARTS on `main` (gitBranch), then pushes `fea-real-head`
+    // and opens a PR from it. The preceding successful write is exact evidence:
+    // the PR's head must be `fea-real-head`, never the stale session start branch.
     const session: NormalizedSession = {
       ...makeNormalizedSession(),
       sessionId: "pr-head-branch-session",
@@ -561,10 +588,10 @@ test("SQLite importer attributes a created PR to the branch active at `gh pr cre
         {
           name: "Bash",
           timestamp: "2026-06-07T11:02:00.000Z",
-          input: { command: "gh pr create --fill" },
+          input: {
+            command: "git push -u origin fea-real-head && gh pr create --fill",
+          },
           output: `Creating pull request...\n${createdUrl}`,
-          // The user was on `fea-real-head` when the PR was created.
-          gitBranch: "fea-real-head",
         },
       ],
       artifacts: {
@@ -622,7 +649,7 @@ test("getPullRequests sources the branch from pull_requests, so an upgrade re-de
   try {
     await db.run(
       `INSERT INTO sessions (id, name, status, started_at, updated_at, harness)
-       VALUES ($1, $2, 'completed', $3, $3, 'claude')`,
+       VALUES ($1, $2, 'inactive', $3, $3, 'claude')`,
       "stale-pr-session",
       "Stale PR session",
       "2026-06-07T10:00:00.000Z"
@@ -719,6 +746,7 @@ test("SQLite importer persists OpenCode PR artifacts for delivery insights", asy
     assert.equal(deliveryInsights.kpis[0].value, 1);
     // FEA-2862: the OpenCode PR is captured (KPI = 1) but reference-only and
     // un-merged, so it does not appear in the merged-by-repository breakdown.
+    assert.ok("prByRepo" in deliveryInsights.charts, DELIVERY_CHARTS_MESSAGE);
     assert.deepEqual(deliveryInsights.charts.prByRepo, []);
   } finally {
     await db.close();
@@ -742,7 +770,7 @@ test("FEA-2862: prByRepo counts only in-session-created, merged PRs — not refe
     // that FEA-2862 removed from the "Merged PRs by repository" chart.
     await db.run(
       `INSERT INTO sessions (id, status, started_at, updated_at)
-       VALUES ('fea2862-session', 'completed', $1, $1)`,
+       VALUES ('fea2862-session', 'inactive', $1, $1)`,
       "2026-06-16T10:00:00.000Z"
     );
 
@@ -775,6 +803,7 @@ test("FEA-2862: prByRepo counts only in-session-created, merged PRs — not refe
       new Date("2026-06-20T12:00:00.000Z")
     );
 
+    assert.ok("prByRepo" in delivery.charts, DELIVERY_CHARTS_MESSAGE);
     assert.deepEqual(delivery.charts.prByRepo, [
       {
         key: "closedloop-ai/symphony-alpha",
@@ -803,7 +832,7 @@ test("SQLite agent insights rejects unsafe persisted BIGINT token counts", async
        VALUES ($1, $2, $3, $4, $5, $6)`,
       "unsafe-insights-session",
       "Unsafe insights session",
-      "completed",
+      "inactive",
       "2026-06-07T10:00:00.000Z",
       "2026-06-07T10:01:00.000Z",
       "claude"
@@ -849,9 +878,9 @@ test("SQLite metered usage rows include only metered sessions within the cutoff"
     await db.run(
       `INSERT INTO sessions (id, status, started_at, updated_at, harness, billing_mode)
        VALUES
-        ($1, 'completed', $2, $2, 'claude', 'api'),
-        ($3, 'completed', $4, $4, 'claude', 'subscription_unknown'),
-        ($5, 'completed', $6, $6, 'claude', 'api')`,
+        ($1, 'inactive', $2, $2, 'claude', 'api'),
+        ($3, 'inactive', $4, $4, 'claude', 'subscription_unknown'),
+        ($5, 'inactive', $6, $6, 'claude', 'api')`,
       "metered-in-window",
       "2026-05-20T10:00:00.000Z",
       "subscription-in-window",
@@ -902,7 +931,7 @@ test("SQLite token analytics supports sums above PostgreSQL integer range", asyn
   try {
     await db.run(
       `INSERT INTO sessions (id, status, started_at, updated_at, harness, billing_mode)
-       VALUES ($1, 'completed', $2, $2, 'codex', 'api')`,
+       VALUES ($1, 'inactive', $2, $2, 'codex', 'api')`,
       "large-token-session",
       "2026-06-07T10:00:00.000Z"
     );
@@ -930,7 +959,7 @@ test("SQLite token analytics supports sums above PostgreSQL integer range", asyn
     const analytics = await db.dashboard.getAnalytics(
       new Date("2026-06-07T12:00:00.000Z")
     );
-    const summary = await db.dashboard.getSummary();
+    const summary = await db.getSummary();
     const detail = await db.sessions.getDetailsById("large-token-session");
 
     assert.equal(analytics.tokens.totalInputTokens, 3_000_000_000);
@@ -1139,7 +1168,7 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
     );
 
     const kanban = await db.sessions.getKanbanPages(
-      ["running", "waiting", "completed"],
+      ["running", "waiting", "inactive"],
       25
     );
     assert.deepEqual(
@@ -1148,7 +1177,7 @@ test("SQLite sessions pagination preserves details, filters, escaping, and deter
       // ended-but-non-terminal awaiting-input session.
       ["waiting-1"]
     );
-    assert.ok(kanban.completed.sessions.length > 0);
+    assert.ok(kanban.inactive.sessions.length > 0);
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });
@@ -1198,7 +1227,7 @@ test("SQLite session list reads map every SessionRow field with explicit project
          user_id, organization_id, trace_phase_sources
        )
        VALUES (
-         'proj-done', 'Done Projection', 'completed', '/work/proj-done',
+         'proj-done', 'Done Projection', 'inactive', '/work/proj-done',
          'gpt-5', '2026-06-07T09:00:00.000Z', '2026-06-07T09:10:00.000Z',
          '2026-06-07T09:10:00.000Z', NULL, '{"done":true}', 'codex', 'api',
          'u-proj', 'org-proj', '[{"phase":"impl"}]'
@@ -1221,6 +1250,10 @@ test("SQLite session list reads map every SessionRow field with explicit project
       userId: "u-proj",
       organizationId: "org-proj",
     };
+    // `Object.keys` widens to `string[]`; these keys are known, so the
+    // detail-row lookups below stay typed against `SessionWithAgents`.
+    type ExpectedKey = keyof typeof expectedActive;
+    const expectedActiveKeys = Object.keys(expectedActive) as ExpectedKey[];
 
     // getById — explicit plain-column projection.
     assert.deepEqual(await db.sessions.getById("proj-active"), expectedActive);
@@ -1245,10 +1278,10 @@ test("SQLite session list reads map every SessionRow field with explicit project
     const activeDetail = activeDetails.find((s) => s.id === "proj-active");
     assert.ok(activeDetail);
     // Every base SessionRow field maps identically alongside the detail fields.
-    for (const [key, value] of Object.entries(expectedActive)) {
+    for (const key of expectedActiveKeys) {
       assert.deepEqual(
-        (activeDetail as Record<string, unknown>)[key],
-        value,
+        activeDetail[key],
+        expectedActive[key],
         `getActiveWithDetails.${key}`
       );
     }
@@ -1269,12 +1302,8 @@ test("SQLite session list reads map every SessionRow field with explicit project
     const page = await db.sessions.getPage({ limit: 50, offset: 0 });
     const pageActive = page.sessions.find((s) => s.id === "proj-active");
     assert.ok(pageActive);
-    for (const [key, value] of Object.entries(expectedActive)) {
-      assert.deepEqual(
-        (pageActive as Record<string, unknown>)[key],
-        value,
-        `getPage.${key}`
-      );
+    for (const key of expectedActiveKeys) {
+      assert.deepEqual(pageActive[key], expectedActive[key], `getPage.${key}`);
     }
   } finally {
     await db.close();
@@ -1346,310 +1375,142 @@ test("SQLite lifecycle, store, and sync source preserve identity columns", async
   }
 });
 
-test("SQLite sync cursor rows are ordered by update time", async () => {
+// FEA-3591: recomputeSessionLastActivityAt floors last_activity_at at started_at,
+// so the denormalized value can never precede the session start — even when a
+// resumed/continued run inherits events whose created_at predates its resume
+// started_at. Prior to the floor these rows (63 in the curation sweep) violated
+// the `last_activity_at >= started_at` invariant the cloud read path documents,
+// and — since FEA-3580 derives endedAt from last_activity_at — produced negative
+// durations. Normal sessions (events at/after started_at) still report the real
+// MAX(events.created_at), so the floor is transparent for well-formed data.
+test("recomputeSessionLastActivityAt floors last_activity_at at started_at (FEA-3591)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
   const dataDir = path.join(dir, "agent-dashboard.pgdata");
   const db = await openSqliteAgentDatabase({
     dataDir,
     detectBillingMode: () => "api",
-    now: () => "2026-06-07T12:00:00.000Z",
+    now: () => "2026-07-14T12:00:00.000Z",
   });
 
   try {
-    await insertSqliteSession(db, "newest-session-time", {
-      startedAt: "2026-06-18T12:00:00.000Z",
-      updatedAt: "2026-06-18T12:00:00.000Z",
-    });
-    await insertSqliteSession(db, "newest-update-time", {
-      startedAt: "2026-06-17T12:00:00.000Z",
-      updatedAt: "2026-06-19T12:00:00.000Z",
-    });
-    await insertSqliteSession(db, "newest-update-tie", {
-      startedAt: "2026-06-16T12:00:00.000Z",
-      updatedAt: "2026-06-19T12:00:00.000Z",
-    });
+    // "resumed": a continuation run whose started_at is the resume time but whose
+    // events were inherited from the parent transcript ~2.2h BEFORE the resume.
+    // MAX(events.created_at) is earlier than started_at → the floor must clamp it.
+    const resumeStart = "2026-07-14T01:23:24.000Z";
+    await insertSqliteSession(db, "resumed", { startedAt: resumeStart });
+    await insertSqliteEvent(db, "resumed", "2026-07-13T23:07:02.000Z"); // pre-start
+    await insertSqliteEvent(db, "resumed", "2026-07-13T23:00:00.000Z"); // pre-start
 
-    const rows = await db.syncSource.listAllSessionCursorRows();
-    const topRows = await db.syncSource.listTopSessionCursorRows?.();
+    // "normal": events at/after started_at — the floor is a no-op, real MAX wins.
+    const normalStart = "2026-07-14T00:00:00.000Z";
+    await insertSqliteSession(db, "normal", { startedAt: normalStart });
+    await insertSqliteEvent(db, "normal", "2026-07-14T02:00:00.000Z"); // MAX
+    await insertSqliteEvent(db, "normal", "2026-07-14T01:00:00.000Z");
 
-    assert.deepEqual(
-      rows.map((row) => row.id),
-      ["newest-update-time", "newest-update-tie", "newest-session-time"]
-    );
-    assert.deepEqual(
-      topRows?.map((row) => row.id),
-      ["newest-update-time", "newest-update-tie"]
-    );
-
-    await insertSqliteEvent(
-      db,
-      "newest-session-time",
-      "2026-06-20T12:00:00.000Z"
-    );
-    const activityPage = await db.syncSource.listSessionCursorPage?.({
-      limit: 2,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-    });
-    assert.deepEqual(
-      activityPage?.rows.map((row) => row.id),
-      ["newest-session-time", "newest-update-time"]
-    );
-    assert.equal(activityPage?.total, 3);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("SQLite session cursor page applies date and search filters before paging", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "api",
-    now: () => "2026-06-24T12:00:00.000Z",
-  });
-
-  try {
-    await insertSqliteSession(db, "old-matching-branch", {
-      startedAt: "2026-06-17T00:00:00.000Z",
-      metadata: JSON.stringify({ gitBranch: "fea-2161" }),
-    });
-    await insertSqliteSession(db, "recent-other-branch", {
-      startedAt: "2026-06-20T00:00:00.000Z",
-      metadata: JSON.stringify({ gitBranch: "fea-9999" }),
-    });
-    await insertSqliteSession(db, "recent-matching-branch", {
-      startedAt: "2026-06-21T00:00:00.000Z",
-      metadata: JSON.stringify({ gitBranch: "fea-2161" }),
-    });
-
-    const page = await db.syncSource.listSessionCursorPage?.({
-      limit: 25,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-      startDate: new Date("2026-06-18T00:00:00.000Z"),
-      search: "fea-2161",
-    });
-
-    assert.deepEqual(
-      page?.rows.map((row) => row.id),
-      ["recent-matching-branch"]
-    );
-    assert.equal(page?.total, 1);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("SQLite session cursor page filters the date window by recent activity", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "api",
-    now: () => "2026-06-24T12:00:00.000Z",
-  });
-
-  try {
-    await insertSqliteSession(db, "old-start-recent-activity", {
-      startedAt: "2026-06-01T00:00:00.000Z",
-    });
-    await insertSqliteEvent(
-      db,
-      "old-start-recent-activity",
-      "2026-06-23T00:00:00.000Z"
-    );
-    await insertSqliteSession(db, "recent-start-no-events", {
-      startedAt: "2026-06-22T00:00:00.000Z",
-    });
-    await insertSqliteSession(db, "old-start-old-activity", {
-      startedAt: "2026-06-01T00:00:00.000Z",
-    });
-    await insertSqliteEvent(
-      db,
-      "old-start-old-activity",
-      "2026-06-02T00:00:00.000Z"
-    );
-
-    const page = await db.syncSource.listSessionCursorPage?.({
-      limit: 25,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-      startDate: new Date("2026-06-18T00:00:00.000Z"),
-    });
-
-    assert.deepEqual(
-      page?.rows.map((row) => row.id),
-      ["old-start-recent-activity", "recent-start-no-events"]
-    );
-    assert.equal(page?.total, 2);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("cursor last-activity sort uses denormalized last_activity_at and matches the old MAX(events.created_at) semantics", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
-  const dataDir = path.join(dir, "agent-dashboard.pgdata");
-  const db = await openSqliteAgentDatabase({
-    dataDir,
-    detectBillingMode: () => "api",
-    now: () => "2026-06-07T12:00:00.000Z",
-  });
-
-  try {
-    // "alpha": latest event is the newest activity overall.
-    await insertSqliteSession(db, "alpha", {
-      startedAt: "2026-06-01T00:00:00.000Z",
-    });
-    await insertSqliteEvent(db, "alpha", "2026-06-02T00:00:00.000Z");
-    await insertSqliteEvent(db, "alpha", "2026-06-10T00:00:00.000Z"); // MAX
-
-    // "bravo": events present but all OLDER than alpha's MAX; activity = its MAX.
-    await insertSqliteSession(db, "bravo", {
-      startedAt: "2026-06-03T00:00:00.000Z",
-    });
-    await insertSqliteEvent(db, "bravo", "2026-06-05T00:00:00.000Z"); // MAX
-
-    // "charlie": NO events → activity falls back to its started_at floor.
-    await insertSqliteSession(db, "charlie", {
-      startedAt: "2026-06-08T00:00:00.000Z",
-    });
-
-    // "delta": NO events, same started_at floor as charlie → tie broken by id.
-    await insertSqliteSession(db, "delta", {
-      startedAt: "2026-06-08T00:00:00.000Z",
-    });
-
-    // Expected last_activity values (the old COALESCE(MAX(events),started) key):
-    //   alpha   = 2026-06-10 (event MAX)
-    //   charlie = 2026-06-08 (started floor, no events)
-    //   delta   = 2026-06-08 (started floor, no events)
-    //   bravo   = 2026-06-05 (event MAX)
-    // DESC order, id DESC tie-break between charlie/delta → delta before charlie.
-    const expectedDesc = ["alpha", "delta", "charlie", "bravo"];
-
-    const fullDesc = await db.syncSource.listSessionCursorPage?.({
-      limit: 10,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-    });
-    assert.deepEqual(
-      fullDesc?.rows.map((row) => row.id),
-      expectedDesc
-    );
-    assert.equal(fullDesc?.total, 4);
-
-    // Perf regression guard (review comment, PR #1837): the whole point of the
-    // denormalized NOT NULL column is that the last-activity sort can be served
-    // by `idx_sessions_last_activity` directly. Ordering by the bare column (no
-    // COALESCE wrapper) must let SQLite walk the index instead of materializing a
-    // temp b-tree. This EXPLAIN QUERY PLAN mirrors the CTE shape that
-    // listSqliteSessionCursorPage builds for the last-activity sort.
-    const plan = await db.prisma.client.$queryRawUnsafe<{ detail: string }[]>(
-      `EXPLAIN QUERY PLAN
-         WITH activity AS (
-           SELECT
-             s.id,
-             s.updated_at,
-             s.started_at AS sort_started_at,
-             s.last_activity_at AS sort_last_activity_at
-           FROM sessions s
-         )
-         SELECT id, updated_at
-         FROM activity
-         ORDER BY sort_last_activity_at DESC, id DESC
-         LIMIT 10 OFFSET 0`
-    );
-    const planText = plan.map((r) => r.detail).join("\n");
-    assert.ok(
-      planText.includes("idx_sessions_last_activity"),
-      `last-activity sort must use idx_sessions_last_activity; plan was:\n${planText}`
-    );
-    assert.ok(
-      !TEMP_BTREE_SORT_PATTERN.test(planText),
-      `last-activity sort must not require a temp-b-tree filesort; plan was:\n${planText}`
-    );
-
-    // The denormalized column was populated for every session, so the read path
-    // no longer depends on the events table at query time. Re-deriving the old
-    // key directly from events/started_at must yield the same ordering.
-    const recomputed = await db.prisma.client.$queryRawUnsafe<
-      { id: string; key: string }[]
-    >(
-      `SELECT s.id AS id,
-              COALESCE(
-                (SELECT MAX(CASE WHEN e.created_at GLOB
-                   '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
-                   THEN e.created_at ELSE NULL END)
-                 FROM events e WHERE e.session_id = s.id),
-                CASE WHEN s.started_at GLOB
-                  '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
-                  THEN s.started_at ELSE '1970-01-01T00:00:00.000Z' END
-              ) AS key
-       FROM sessions s
-       ORDER BY key DESC, s.id DESC`
-    );
-    assert.deepEqual(
-      recomputed.map((row) => row.id),
-      expectedDesc,
-      "stored column ordering must equal the old per-page MAX(events) computation"
-    );
-    // The stored column value equals that recomputed key for every row.
     const stored = await db.prisma.client.$queryRawUnsafe<
+      { id: string; started_at: string; last_activity_at: string }[]
+    >("SELECT id, started_at, last_activity_at FROM sessions ORDER BY id");
+    const byId = new Map(stored.map((r) => [r.id, r]));
+
+    // Floored: last_activity_at == started_at, NOT the earlier pre-start event MAX.
+    assert.equal(byId.get("resumed")?.last_activity_at, resumeStart);
+    // Normal: unchanged — the real MAX(events.created_at).
+    assert.equal(
+      byId.get("normal")?.last_activity_at,
+      "2026-07-14T02:00:00.000Z"
+    );
+
+    // The invariant the ticket asserts: no row may have last_activity < started.
+    for (const row of stored) {
+      assert.ok(
+        row.last_activity_at >= row.started_at,
+        `${row.id}: last_activity_at (${row.last_activity_at}) must be >= started_at (${row.started_at})`
+      );
+    }
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3591: end-to-end boot ordering — the awaited floor heal runs BEFORE the
+// orphan sweep and the retention sweep, so (a) pre-existing violations are
+// repaired no matter how the rows got there (rebuild-unreachable rows
+// included), (b) a stale active is still swept afterwards (the heal must not
+// bump its updated_at) and its ended_at is the HEALED activity, and (c) the
+// terminal row's correction is stamped with a cursor-visible ISO watermark.
+test("boot heals last_activity_at floor violations before the orphan and retention sweeps (FEA-3591)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const seedNow = "2026-07-14T02:00:00.000Z";
+  const bootNow = "2026-07-14T12:00:00.000Z";
+  const resumeStart = "2026-07-14T01:00:00.000Z";
+  const inheritedActivity = "2026-07-13T23:00:00.000Z";
+
+  const db1 = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => seedNow,
+  });
+  await insertSqliteSession(db1, "boot-bad-completed", {
+    status: "inactive",
+    startedAt: resumeStart,
+    updatedAt: "2026-07-10T00:00:00.000Z",
+  });
+  // updated_at 10h before bootNow → stale under the 180-min orphan cutoff.
+  await insertSqliteSession(db1, "boot-stale-active", {
+    status: "active",
+    startedAt: resumeStart,
+    updatedAt: seedNow,
+  });
+  // Corrupt the denormalized key into the pre-floor stored shape (the
+  // curation-sweep signature: inherited activity ~2h before the resume start).
+  await db1.run(
+    "UPDATE sessions SET last_activity_at = $1 WHERE id IN ($2, $3)",
+    inheritedActivity,
+    "boot-bad-completed",
+    "boot-stale-active"
+  );
+  await db1.close();
+
+  const db2 = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "api",
+    now: () => bootNow,
+  });
+  try {
+    const rows = await db2.prisma.client.$queryRawUnsafe<
       {
         id: string;
+        status: string;
+        started_at: string;
         last_activity_at: string;
+        ended_at: string | null;
+        updated_at: string;
       }[]
-    >("SELECT id, last_activity_at FROM sessions ORDER BY id");
-    const byId = new Map(stored.map((r) => [r.id, r.last_activity_at]));
-    assert.equal(byId.get("alpha"), "2026-06-10T00:00:00.000Z");
-    assert.equal(byId.get("bravo"), "2026-06-05T00:00:00.000Z");
-    assert.equal(byId.get("charlie"), "2026-06-08T00:00:00.000Z");
-    assert.equal(byId.get("delta"), "2026-06-08T00:00:00.000Z");
-
-    // ASC mirrors DESC (key ASC, id ASC tie-break): charlie before delta.
-    const fullAsc = await db.syncSource.listSessionCursorPage?.({
-      limit: 10,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "asc",
-    });
-    assert.deepEqual(
-      fullAsc?.rows.map((row) => row.id),
-      ["bravo", "charlie", "delta", "alpha"]
+    >(
+      "SELECT id, status, started_at, last_activity_at, ended_at, updated_at FROM sessions ORDER BY id"
     );
+    const byId = new Map(rows.map((r) => [r.id, r]));
 
-    // Paging is stable across page boundaries (limit/offset over the same order).
-    const page1 = await db.syncSource.listSessionCursorPage?.({
-      limit: 2,
-      offset: 0,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-    });
-    const page2 = await db.syncSource.listSessionCursorPage?.({
-      limit: 2,
-      offset: 2,
-      sortBy: "lastActivity",
-      sortDir: "desc",
-    });
-    assert.deepEqual(
-      [
-        ...(page1?.rows.map((r) => r.id) ?? []),
-        ...(page2?.rows.map((r) => r.id) ?? []),
-      ],
-      expectedDesc
-    );
+    const completed = byId.get("boot-bad-completed");
+    assert.equal(completed?.last_activity_at, resumeStart);
+    assert.equal(completed?.updated_at, chunkWatermark(bootNow, 0));
+
+    const sweptActive = byId.get("boot-stale-active");
+    assert.equal(sweptActive?.status, "inactive");
+    assert.equal(sweptActive?.last_activity_at, resumeStart);
+    assert.equal(sweptActive?.ended_at, resumeStart);
+    assert.equal(sweptActive?.updated_at, bootNow);
+
+    for (const row of rows) {
+      assert.ok(
+        row.last_activity_at >= row.started_at,
+        `${row.id}: last_activity_at (${row.last_activity_at}) must be >= started_at (${row.started_at})`
+      );
+    }
   } finally {
-    await db.close();
+    await db2.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -2097,6 +1958,13 @@ test("SQLite importer exposes Claude transcript PR refs through synced prs and p
         prNumber: 3210,
         prUrl,
         relationType: SessionPrRelationType.Created,
+        branchLifecycleEvents: [
+          {
+            kind: BranchLifecycleBoundaryKind.PrRaised,
+            observedAt: "2026-06-16T10:01:00.000Z",
+            evidenceId: "desktop-artifact-link:d922aa13b3fe3833",
+          },
+        ],
       },
     ]);
   } finally {
@@ -2202,6 +2070,13 @@ test("SQLite importer exposes Codex transcript PR refs through synced prs and pr
         prNumber: 3211,
         prUrl,
         relationType: SessionPrRelationType.Created,
+        branchLifecycleEvents: [
+          {
+            kind: BranchLifecycleBoundaryKind.PrRaised,
+            observedAt: "2026-06-16T10:10:01.000Z",
+            evidenceId: "desktop-artifact-link:d6f19d697557af28",
+          },
+        ],
       },
     ]);
   } finally {
@@ -2276,7 +2151,7 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
       `INSERT INTO sessions
          (id, name, status, cwd, model, started_at, updated_at, ended_at,
           awaiting_input_since, metadata, harness, billing_mode)
-       VALUES ($1, $2, 'completed', $3, $4, $5, $6, $6, NULL, $7, 'codex', 'api')`,
+       VALUES ($1, $2, 'inactive', $3, $4, $5, $6, $6, NULL, $7, 'codex', 'api')`,
       "trace-upgrade-session",
       "Trace upgrade session",
       "/workspace/project",
@@ -2299,7 +2174,7 @@ test("SQLite upgraded stores add Session Trace columns before local projection",
       `INSERT INTO sessions
          (id, name, status, cwd, model, started_at, updated_at, ended_at,
           awaiting_input_since, metadata, harness, billing_mode)
-       VALUES ($1, $2, 'completed', $3, $4, $5, $6, $6, NULL, $7, 'codex', 'api')`,
+       VALUES ($1, $2, 'inactive', $3, $4, $5, $6, $6, NULL, $7, 'codex', 'api')`,
       "metadata-only-trace-upgrade-session",
       "Metadata-only trace upgrade session",
       "/workspace/project-metadata-only",
@@ -2479,6 +2354,7 @@ test("SQLite lifecycle processes status transitions, subagents, transcript token
       ]),
       compactionCount: 0,
       records: [],
+      hasTrailingApiError: false,
     }),
     now: () => "2026-06-07T12:00:00.000Z",
   });
@@ -2540,7 +2416,7 @@ test("SQLite lifecycle processes status transitions, subagents, transcript token
     );
 
     const session = await db.sessions.getById("life-1");
-    assert.equal(session?.status, "completed");
+    assert.equal(session?.status, "inactive");
     assert.equal(session?.model, "claude-opus-4-5");
     const agents = await db.agents.getBySession("life-1");
     assert.equal(
@@ -2647,7 +2523,7 @@ test("session-completion notice fires once per terminal transition (error via St
 
     assert.deepEqual(notices, [
       { sessionId: "notify-error", status: "error" },
-      { sessionId: "notify-done", status: "completed" },
+      { sessionId: "notify-done", status: "inactive" },
     ]);
   } finally {
     await db.close();
@@ -3019,12 +2895,21 @@ test("SQLite importer persists parser-supplied nested subagents without session 
     permissionMode: null,
     thinkingBlockCount: 0,
     toolResultErrors: [],
-    usageExtras: { service_tiers: [], speeds: [], inference_geos: [] },
+    usageExtras: {
+      service_tiers: [],
+      speeds: [],
+      inference_geos: [],
+      reasoning_output_tokens: 0,
+      web_search_requests: 0,
+    },
     messages: [],
     tokenSeries: [],
     diffStats: null,
     slashCommands: [],
+    skills: [],
+    hooks: [],
     artifacts: { prs: [], issues: [], repo: null },
+    prLinks: [],
   };
 
   try {
@@ -3158,7 +3043,21 @@ test("SQLite importer persists overlapping Claude inline and sidecar tool use on
     assert.equal(readEvents.length, 1);
     assert.equal(readEvents[0]?.agentId, subagent.id);
     assert.deepEqual(JSON.parse(readEvents[0]?.data ?? "{}"), {
-      file_path: "inline.ts",
+      providerToolUseId: "toolu_duplicate_import",
+      // FEA-2642: the Claude parser tags each tool-use event's data with its
+      // classified kind. Read is a built-in tool, so kind="builtin".
+      kind: "builtin",
+      // Bug 019f881c: importToolEventData persists the per-call input under the
+      // live-hook `tool_input` key so the Session Trace's expandable rows show
+      // captured detail for imported sessions too. The raw input is NO LONGER
+      // ALSO flat-spread to top-level keys (thread PRRT_kwDOQ4gDpM6S0qJP), so
+      // `file_path` appears only nested under `tool_input` — the top level keeps
+      // ONLY the small derived analytics/identity keys (`kind` and the provider
+      // tool-use id). This tool_use has no tool_result, so no `tool_response` is
+      // present. The dedup guarantee below (readEvents.length === 1) is what this
+      // test pins — the overlapping inline+sidecar tool use is still persisted
+      // exactly ONCE, from the inline (parent) source.
+      tool_input: { file_path: "inline.ts" },
     });
     assert.deepEqual(
       await db.tokenUsage.getBySession(sessionId),
@@ -3188,12 +3087,11 @@ test("SQLite importer is idempotent and can append new historical events", async
     const firstEventCount = (await db.events.getBySession(session.sessionId))
       .length;
     const firstTokenRows = await db.tokenUsage.getBySession(session.sessionId);
-    // FEA-1459 (PR #1511 review): a re-import now purges + re-derives the
-    // import-owned rows, so `skipped` reports false — idempotency is asserted
-    // on the resulting state (identical counts and token rows) below.
+    // FEA-3227: a byte-identical re-import is a true no-op — `skipped` is true
+    // when metadata, data_revision, and artifact links are unchanged.
     assert.equal(
       (await db.importer.importSession(session, "codex")).skipped,
-      false
+      true
     );
     assert.equal(
       (await db.events.getBySession(session.sessionId)).length,
@@ -3401,76 +3299,6 @@ test("SQLite importer stores folded Codex child tool uses only on subagent", asy
   }
 });
 
-async function insertSqliteSession(
-  db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
-  id: string,
-  overrides: {
-    name?: string;
-    status?: string;
-    cwd?: string;
-    model?: string;
-    startedAt?: string;
-    updatedAt?: string;
-    endedAt?: string | null;
-    awaitingInputSince?: string | null;
-    metadata?: string | null;
-  } = {}
-): Promise<void> {
-  const startedAt = overrides.startedAt ?? "2024-03-09T16:00:00.000Z";
-  const updatedAt = overrides.updatedAt ?? startedAt;
-  await db.run(
-    `INSERT INTO sessions (
-       id, name, status, cwd, model, started_at, updated_at, ended_at,
-       awaiting_input_since, metadata, harness, billing_mode
-     )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'codex', 'api')`,
-    id,
-    overrides.name ?? `Session ${id}`,
-    overrides.status ?? "completed",
-    overrides.cwd ?? `/work/${id}`,
-    overrides.model ?? "gpt-5",
-    startedAt,
-    updatedAt,
-    overrides.endedAt ?? null,
-    overrides.awaitingInputSince ?? null,
-    overrides.metadata ?? null
-  );
-  // Seed the denormalized cursor sort key to the started-at floor, mirroring
-  // what ingest (recomputeSessionLastActivityAt) writes for an event-less
-  // session. insertSqliteEvent refreshes it from MAX(events) afterwards.
-  await db.run(
-    `UPDATE sessions
-       SET last_activity_at = CASE
-         WHEN started_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
-           THEN started_at
-         ELSE '1970-01-01T00:00:00.000Z'
-       END
-     WHERE id = $1`,
-    id
-  );
-}
-
-async function insertSqliteEvent(
-  db: Awaited<ReturnType<typeof openSqliteAgentDatabase>>,
-  sessionId: string,
-  createdAt: string
-): Promise<void> {
-  await db.run(
-    `INSERT INTO events (id, session_id, event_type, created_at)
-     VALUES ($1, $2, 'tool_use', $3)`,
-    `${sessionId}-${createdAt}`,
-    sessionId,
-    createdAt
-  );
-  // Maintain the denormalized cursor sort key the same way ingest does: this
-  // fixture writes an event directly, bypassing the importer/hook paths that
-  // normally refresh last_activity_at. Call the production function rather than
-  // re-implementing its SQL, so the test can never drift from ingest.
-  await db.prisma.write((client) =>
-    client.$transaction((tx) => recomputeSessionLastActivityAt(tx, sessionId))
-  );
-}
-
 // FEA-1899: PRs surface from artifact links (relation 'created'/'workspace')
 // joined to the canonical artifacts table — no longer from the pull_requests
 // detail store. Mirrors persistNormalizedPullRequests' identity_key/id scheme.
@@ -3537,7 +3365,7 @@ test("FEA-2868: median PR size ignores un-enriched PRs while KLOC still counts t
   try {
     await db.run(
       `INSERT INTO sessions (id, status, started_at, updated_at)
-       VALUES ('fea2868-s', 'completed', $1, $1)`,
+       VALUES ('fea2868-s', 'inactive', $1, $1)`,
       "2026-06-16T10:00:00.000Z"
     );
 
@@ -3701,7 +3529,7 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
     );
     await db.run(
       `INSERT INTO sessions (id, status, started_at, updated_at)
-       VALUES ('fea2866-s', 'completed', $1, $1)`,
+       VALUES ('fea2866-s', 'inactive', $1, $1)`,
       "2026-06-07T10:00:00.000Z"
     );
 
@@ -3752,6 +3580,79 @@ test("FEA-2866: repairPollutedRepoFullNames resolves known bare repos, nulls jun
     assert.equal(byNumber.get(2)?.git_dir, null);
 
     // Idempotent: nothing bare remains, so a second pass repairs zero rows.
+    assert.equal(
+      await repairPollutedRepoFullNames(db.prisma, () => undefined),
+      0
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FEA-3371: repairPollutedRepoFullNames backfills NULL repo_full_name from git_dir, idempotently", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    await db.whenBootMaintenanceSettled();
+    // A repo whose remote resolved (canonical owner/repo known) keyed by git_dir.
+    await db.run(
+      `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
+       VALUES ('fea3371-repo', '/w/symphony-alpha/.git', 'git@github.com:closedloop-ai/symphony-alpha.git', 'closedloop-ai/symphony-alpha', 'main', $1, $1)`,
+      "2026-06-07T00:00:00.000Z"
+    );
+    // An orphan git_dir with no canonical name — its artifact must stay NULL.
+    await db.run(
+      `INSERT INTO repos (id, git_dir, remote_url, repo_full_name, default_branch, last_seen_at, created_at)
+       VALUES ('fea3371-orphan', '/w/no-remote/.git', NULL, NULL, NULL, $1, $1)`,
+      "2026-06-07T00:00:00.000Z"
+    );
+
+    // Artifact A: NULL repo_full_name but a git_dir that maps to the canonical repo
+    // → backfilled. Artifact B: NULL repo_full_name + git_dir to the orphan repo
+    // (no canonical) → left NULL. Artifact C: NULL repo_full_name + NULL git_dir →
+    // untouched (nothing to resolve from).
+    await db.run(
+      `INSERT INTO artifacts (id, identity_key, kind, repo_full_name, git_dir, branch_name, created_at, last_seen_at)
+       VALUES
+         ('fea3371-a', 'k-a', 'branch', NULL, '/w/symphony-alpha/.git', 'feature/a', $1, $1),
+         ('fea3371-b', 'k-b', 'branch', NULL, '/w/no-remote/.git', 'feature/b', $1, $1),
+         ('fea3371-c', 'k-c', 'branch', NULL, NULL, 'feature/c', $1, $1)`,
+      "2026-06-07T00:00:00.000Z"
+    );
+
+    const repaired = await repairPollutedRepoFullNames(
+      db.prisma,
+      () => undefined
+    );
+    assert.equal(
+      repaired,
+      1,
+      "only artifact A had a resolvable canonical name"
+    );
+
+    const byId = new Map(
+      (
+        await db.prisma.client.$queryRawUnsafe<
+          { id: string; repo_full_name: string | null }[]
+        >("SELECT id, repo_full_name FROM artifacts")
+      ).map((row) => [row.id, row.repo_full_name])
+    );
+    assert.equal(
+      byId.get("fea3371-a"),
+      "closedloop-ai/symphony-alpha",
+      "NULL repo_full_name backfilled from the git_dir's canonical repo"
+    );
+    assert.equal(byId.get("fea3371-b"), null, "orphan git_dir stays NULL");
+    assert.equal(byId.get("fea3371-c"), null, "NULL git_dir stays NULL");
+
+    // Idempotent: a second pass backfills zero (A already filled, B/C unresolvable).
     assert.equal(
       await repairPollutedRepoFullNames(db.prisma, () => undefined),
       0
@@ -3817,16 +3718,21 @@ function makeNormalizedSession(): NormalizedSession {
       service_tiers: [],
       speeds: [],
       inference_geos: [],
+      reasoning_output_tokens: 0,
+      web_search_requests: 0,
     },
     messages: [],
     tokenSeries: [],
     diffStats: null,
     slashCommands: [],
+    skills: [],
+    hooks: [],
     artifacts: {
       prs: [{ number: "275", repo: "closedloop-ai/closedloop-electron" }],
       issues: [],
       repo: "closedloop-ai/closedloop-electron",
     },
+    prLinks: [],
   };
 }
 
@@ -3845,20 +3751,27 @@ test("FEA-2038: SQL analytics aggregate matches the hydrate-path buildAnalytics"
   });
 
   try {
-    // Two sessions sharing one cwd (so byRepository merges them), one with a
-    // distinct cwd, and one with NULL cwd (→ "unknown"). cwds have no git repo,
-    // so attribution.repositoryFullName is null → falls back to cwd.
+    // FEA-4299: two sessions sharing one repo cwd (so byRepository merges them
+    // by the resolved remote), one in a distinct repo, and one with NULL cwd (no
+    // resolvable remote → dropped from the breakdown, matching the facet). The
+    // cwds are REAL git repos so `repositoryFullName` resolves to the remote.
+    const sharedRepoDir = path.join(dir, "wt-shared");
+    const otherRepoDir = path.join(dir, "wt-other");
+    await mkdir(sharedRepoDir, { recursive: true });
+    await mkdir(otherRepoDir, { recursive: true });
+    initGitRepoWithOrigin(sharedRepoDir, "acme/repo-shared");
+    initGitRepoWithOrigin(otherRepoDir, "acme/repo-other");
     const sessionRows: [string, string | null][] = [
-      ["s1", "/tmp/repo-shared"],
-      ["s2", "/tmp/repo-shared"],
-      ["s3", "/tmp/repo-other"],
+      ["s1", sharedRepoDir],
+      ["s2", sharedRepoDir],
+      ["s3", otherRepoDir],
       ["s4", null],
     ];
     for (const [id, cwd] of sessionRows) {
       await db.run(
         `INSERT INTO sessions
            (id, name, status, cwd, model, started_at, updated_at, harness, billing_mode, data_revision)
-         VALUES ($1, $2, 'completed', $3, 'claude-sonnet-4-5', '2026-06-01T00:00:00.000Z', '2026-06-01T01:00:00.000Z', 'claude', 'metered_api', 1)`,
+         VALUES ($1, $2, 'inactive', $3, 'claude-sonnet-4-5', '2026-06-01T00:00:00.000Z', '2026-06-01T01:00:00.000Z', 'claude', 'metered_api', 1)`,
         id,
         id,
         cwd
@@ -4075,9 +3988,12 @@ test("FEA-2038: SQL analytics aggregate matches the hydrate-path buildAnalytics"
         avgDurationMs: 30_000,
       },
     ]);
+    // FEA-4299: s4 (null cwd → no resolved remote) is dropped from the breakdown
+    // — it renders "Unknown" and is not a Repository facet option. The remaining
+    // rows key on the resolved Git remote, not a folder name.
     assert.deepEqual(sortRepo(sqlAnalytics.byRepository), [
       {
-        repositoryFullName: "/tmp/repo-other",
+        repositoryFullName: "acme/repo-other",
         sessionCount: 1,
         inputTokens: 5,
         outputTokens: 5,
@@ -4085,22 +4001,443 @@ test("FEA-2038: SQL analytics aggregate matches the hydrate-path buildAnalytics"
         errorCount: 0,
       },
       {
-        repositoryFullName: "/tmp/repo-shared",
+        repositoryFullName: "acme/repo-shared",
         sessionCount: 2,
         inputTokens: 330,
         outputTokens: 140,
         estimatedCost: 0.06,
         errorCount: 2,
       },
-      {
-        repositoryFullName: "unknown",
-        sessionCount: 1,
-        inputTokens: 0,
-        outputTokens: 0,
-        estimatedCost: 0,
-        errorCount: 1,
-      },
     ]);
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3318: the SQL analytics per-(cwd, model) cost rollup must reprice an
+// unpriced + COMPACTED session on its EFFECTIVE tokens (current + pre-compaction
+// `baseline_*`), matching the hydrate loader (FEA-2922) and the storage-path
+// reprice (FEA-2879). Before the fix the rollup summed post-compaction tokens
+// only, undercounting per-repository cost. The row is unpriced
+// (`cost_usd_estimated IS NULL`) so it exercises the on-the-fly reprice, and
+// carries baselines so the effective cost exceeds the current-only cost.
+test("FEA-3318: SQL per-repo cost rollup folds baseline for compacted unpriced sessions", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  try {
+    // FEA-4299: a REAL git repo cwd so `repositoryFullName` resolves to the
+    // remote (a folder-only cwd would render "Unknown" and be dropped, which is
+    // not what this cost-reprice fold intends to test).
+    const compactedRepoDir = path.join(dir, "wt-compacted");
+    await mkdir(compactedRepoDir, { recursive: true });
+    initGitRepoWithOrigin(compactedRepoDir, "acme/repo-compacted");
+    await db.run(
+      `INSERT INTO sessions
+         (id, name, status, cwd, model, started_at, updated_at, harness, billing_mode, data_revision)
+       VALUES ('sc1', 'sc1', 'inactive', $1, 'claude-sonnet-4-5', '2026-06-01T00:00:00.000Z', '2026-06-01T01:00:00.000Z', 'claude', 'metered_api', 1)`,
+      compactedRepoDir
+    );
+    // Unpriced (cost_usd_estimated NULL) + compacted (baseline_* > 0): effective
+    // totals are current + baseline = 400 in / 160 out.
+    await db.run(
+      `INSERT INTO token_usage
+         (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+          baseline_input, baseline_output, baseline_cache_read, baseline_cache_write,
+          cost_usd_estimated, created_at, updated_at)
+       VALUES ('sc1', 'claude-sonnet-4-5', 100, 40, 0, 0, 300, 120, 0, 0, NULL, '2026-06-01T00:00:00.000Z', '2026-06-01T00:00:00.000Z')`
+    );
+
+    const priceOf = (inputTokens: number, outputTokens: number) =>
+      resolveTokenUsageCostUsd({
+        session_id: "sc1",
+        model: "claude-sonnet-4-5",
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        created_at: "2026-06-01T00:00:00.000Z",
+        cost_usd_estimated: null,
+      }) ?? 0;
+    const effectiveCost = priceOf(400, 160);
+    const currentOnlyCost = priceOf(100, 40);
+    // Sanity: the baselines make the effective cost strictly larger than the
+    // post-compaction-only cost, so a missed fold is observable.
+    assert.ok(
+      effectiveCost > currentOnlyCost && currentOnlyCost > 0,
+      `effective ${effectiveCost} should exceed current-only ${currentOnlyCost} > 0`
+    );
+
+    // SQL path (no ids) → aggregateSqliteAnalytics; hydrate path (explicit ids) →
+    // buildAnalytics, the parity oracle that folds baseline via loadWorkingSessions.
+    const sqlAnalytics = await getSharedAgentSessionAnalytics(
+      db.syncSource,
+      {}
+    );
+    const hydrateAnalytics = await getSharedAgentSessionAnalytics(
+      db.syncSource,
+      {
+        ids: ["sc1"],
+      }
+    );
+    const sqlRepo = sqlAnalytics.byRepository.find(
+      (r) => r.repositoryFullName === "acme/repo-compacted"
+    );
+    const hydrateRepo = hydrateAnalytics.byRepository.find(
+      (r) => r.repositoryFullName === "acme/repo-compacted"
+    );
+    assert.ok(sqlRepo, "SQL byRepository must include the compacted repo");
+    assert.ok(
+      hydrateRepo,
+      "hydrate byRepository must include the compacted repo"
+    );
+
+    // Displayed tokens are the effective (baseline-folded) totals, consistent
+    // with the cost repriced from them — and with the hydrate oracle.
+    assert.equal(sqlRepo.inputTokens, 400);
+    assert.equal(sqlRepo.outputTokens, 160);
+    assert.equal(sqlRepo.inputTokens, hydrateRepo.inputTokens);
+    assert.equal(sqlRepo.outputTokens, hydrateRepo.outputTokens);
+    assert.equal(sqlRepo.sessionCount, hydrateRepo.sessionCount);
+
+    // The rollup reprices on the effective (baseline-folded) tokens, matching
+    // both the absolute oracle and the hydrate path.
+    assert.ok(
+      Math.abs(sqlRepo.estimatedCost - effectiveCost) < 1e-12,
+      `SQL repo cost ${sqlRepo.estimatedCost} should equal effective ${effectiveCost}`
+    );
+    assert.ok(
+      Math.abs(sqlRepo.estimatedCost - hydrateRepo.estimatedCost) < 1e-12,
+      `SQL repo cost ${sqlRepo.estimatedCost} should match hydrate ${hydrateRepo.estimatedCost}`
+    );
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// PRD-538: web search is billed per request, not per token. It must land on the
+// SESSION cost exactly ONCE (in the rollup), never on a per-model token_usage
+// row, and re-import must not accumulate it.
+test("web-search cost is added once at the session level and never double-counts", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  const makeSession = (
+    id: string,
+    webSearchRequests: number
+  ): NormalizedSession => ({
+    sessionId: id,
+    name: id,
+    cwd: "/workspace/project",
+    model: "claude-opus-4-5",
+    version: null,
+    slug: null,
+    gitBranch: null,
+    startedAt: "2026-06-07T12:00:00.000Z",
+    endedAt: "2026-06-07T12:05:00.000Z",
+    teams: [],
+    userMessages: 1,
+    assistantMessages: 1,
+    // 1000 fresh input on claude-opus-4-5 ⇒ $0.005 token cost (genai-prices).
+    tokensByModel: {
+      "claude-opus-4-5": {
+        input: 1000,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+      },
+    },
+    messageTimestamps: ["2026-06-07T12:00:30.000Z"],
+    toolUses: [],
+    plans: [],
+    compactions: [],
+    apiErrors: [],
+    fileModifiedAt: null,
+    turnDurations: [],
+    entrypoint: "claude",
+    permissionMode: null,
+    thinkingBlockCount: 0,
+    toolResultErrors: [],
+    usageExtras: {
+      service_tiers: [],
+      speeds: [],
+      inference_geos: [],
+      reasoning_output_tokens: 0,
+      web_search_requests: webSearchRequests,
+    },
+    messages: [],
+    tokenSeries: [],
+    diffStats: null,
+    slashCommands: [],
+    skills: [],
+    hooks: [],
+    artifacts: { prs: [], issues: [], repo: null },
+    prLinks: [],
+  });
+
+  const sessionCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { cost_usd_estimated: number | null }[]
+    >("SELECT cost_usd_estimated FROM sessions WHERE id = $1", id);
+    return Number(rows[0]?.cost_usd_estimated ?? 0);
+  };
+  // PRD-538: session_analytics.est_cost is the dashboard/sync-facing session
+  // total, so it must include web-search cost too (kept out of token_usage on
+  // purpose). It reads the SAME single web-search source the authoritative
+  // sessions.cost_usd_estimated does, so the two must agree exactly.
+  const analyticsCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { est_cost: number | null }[]
+    >("SELECT est_cost FROM session_analytics WHERE session_id = $1", id);
+    return Number(rows[0]?.est_cost ?? 0);
+  };
+  const tokenRowsCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<{ s: number | null }[]>(
+      "SELECT COALESCE(SUM(cost_usd_estimated), 0) AS s FROM token_usage WHERE session_id = $1",
+      id
+    );
+    return Number(rows[0]?.s ?? 0);
+  };
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+
+  try {
+    await db.importer.importSession(makeSession("no-web", 0), "claude");
+    await db.importer.importSession(makeSession("web", 3), "claude");
+
+    const baseTokenCost = await tokenRowsCost("no-web");
+    assert.ok(baseTokenCost > 0, "opus-4-5 token cost should be priced");
+
+    // GUARD 1: the per-model token_usage rows carry ONLY token cost — the
+    // web-search session's rows are identical to the no-web session's.
+    assert.ok(near(await tokenRowsCost("web"), baseTokenCost));
+
+    // The session total includes web search exactly once: tokens + 3 × $0.01.
+    assert.ok(near(await sessionCost("web"), baseTokenCost + 0.03));
+    assert.ok(near(await sessionCost("no-web"), baseTokenCost));
+    // The delta between the two sessions is exactly the web-search cost.
+    assert.ok(
+      near((await sessionCost("web")) - (await sessionCost("no-web")), 0.03)
+    );
+
+    // GUARD 2 (PRD-538 P2): session_analytics.est_cost — the dashboard/sync
+    // session total — now includes web-search cost (previously it summed only
+    // token_usage.cost_usd_estimated and undercounted every web-search session).
+    // It reads the SAME single web-search source as sessions.cost_usd_estimated,
+    // so for the web session the analytics rollup equals the authoritative total
+    // exactly (token cost + 3 × $0.01), never undercounting.
+    assert.ok(near(await analyticsCost("web"), baseTokenCost + 0.03));
+    assert.ok(near(await analyticsCost("web"), await sessionCost("web")));
+
+    // GUARD 3: re-importing the same session must NOT accumulate web search
+    // (the rollup recomputes from scratch, so it stays tokens + $0.03).
+    await db.importer.importSession(makeSession("web", 3), "claude");
+    assert.ok(near(await sessionCost("web"), baseTokenCost + 0.03));
+    assert.ok(near(await analyticsCost("web"), baseTokenCost + 0.03));
+    assert.ok(near(await tokenRowsCost("web"), baseTokenCost));
+  } finally {
+    await db.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// FEA-3419: the Claude 1h cache-write TTL premium is priced PER EVENT inside
+// estimateTokenCost (cacheWrite1hTokens) — it lands in the token_events cost
+// columns and the per-model token_usage cost, and the session rollup is a pure
+// Σ(token_usage) + web search with NO separate premium line item (the FEA-3636
+// session-level blob-based term was removed as a double-count). Conservation
+// (Σ events == usage cost) holds WITH the premium included on both sides, and
+// re-import must not accumulate it.
+test("1h cache-write TTL premium is priced per event, conserves, and never double-counts", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "agent-dashboard-sqlite-"));
+  const dataDir = path.join(dir, "agent-dashboard.pgdata");
+  const db = await openSqliteAgentDatabase({
+    dataDir,
+    detectBillingMode: () => "metered_api",
+    now: () => "2026-06-07T12:00:00.000Z",
+  });
+
+  // 1000 cache-write tokens on claude-opus-4-5, of which `oneHourTokens` were
+  // one-hour ephemeral writes — carried as the TYPED cacheWriteTtl split on both
+  // the per-model counts and the per-event record (there is no session blob).
+  // All other counts zero so the session total is exactly the cache-write cost.
+  const makeSession = (
+    id: string,
+    oneHourTokens: number
+  ): NormalizedSession => ({
+    sessionId: id,
+    name: id,
+    cwd: "/workspace/project",
+    model: "claude-opus-4-5",
+    version: null,
+    slug: null,
+    gitBranch: null,
+    startedAt: "2026-06-07T12:00:00.000Z",
+    endedAt: "2026-06-07T12:05:00.000Z",
+    teams: [],
+    userMessages: 1,
+    assistantMessages: 1,
+    tokensByModel: {
+      "claude-opus-4-5": {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 1000,
+        cacheWriteTtl: { fiveM: 1000 - oneHourTokens, oneH: oneHourTokens },
+      },
+    },
+    messageTimestamps: ["2026-06-07T12:00:30.000Z"],
+    toolUses: [],
+    plans: [],
+    compactions: [],
+    apiErrors: [],
+    fileModifiedAt: null,
+    turnDurations: [],
+    entrypoint: "claude",
+    permissionMode: null,
+    thinkingBlockCount: 0,
+    toolResultErrors: [],
+    usageExtras: {
+      service_tiers: [],
+      speeds: [],
+      inference_geos: [],
+      reasoning_output_tokens: 0,
+      web_search_requests: 0,
+    },
+    messages: [],
+    tokenSeries: [
+      {
+        timestamp: "2026-06-07T12:00:30.000Z",
+        model: "claude-opus-4-5",
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 1000,
+        cacheWriteTtl: { fiveM: 1000 - oneHourTokens, oneH: oneHourTokens },
+      },
+    ],
+    diffStats: null,
+    slashCommands: [],
+    skills: [],
+    hooks: [],
+    artifacts: { prs: [], issues: [], repo: null },
+    prLinks: [],
+  });
+
+  const sessionCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { cost_usd_estimated: number | null }[]
+    >("SELECT cost_usd_estimated FROM sessions WHERE id = $1", id);
+    return Number(rows[0]?.cost_usd_estimated ?? 0);
+  };
+  const analyticsCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<
+      { est_cost: number | null }[]
+    >("SELECT est_cost FROM session_analytics WHERE session_id = $1", id);
+    return Number(rows[0]?.est_cost ?? 0);
+  };
+  const tokenRowsCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<{ s: number | null }[]>(
+      "SELECT COALESCE(SUM(cost_usd_estimated), 0) AS s FROM token_usage WHERE session_id = $1",
+      id
+    );
+    return Number(rows[0]?.s ?? 0);
+  };
+  const eventRowsCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<{ s: number | null }[]>(
+      "SELECT COALESCE(SUM(cost_usd_estimated), 0) AS s FROM token_events WHERE session_id = $1",
+      id
+    );
+    return Number(rows[0]?.s ?? 0);
+  };
+  // The per-event cache-write lane cost (includes the premium post-FEA-3419).
+  const cacheWriteCost = async (id: string): Promise<number> => {
+    const rows = await db.prisma.client.$queryRawUnsafe<{ s: number | null }[]>(
+      "SELECT COALESCE(SUM(cache_creation_cost_usd_estimated), 0) AS s FROM token_events WHERE session_id = $1",
+      id
+    );
+    return Number(rows[0]?.s ?? 0);
+  };
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+
+  try {
+    await db.importer.importSession(makeSession("no-1h", 0), "claude");
+    await db.importer.importSession(makeSession("half-1h", 400), "claude");
+
+    const baseTokenCost = await tokenRowsCost("no-1h");
+    assert.ok(baseTokenCost > 0, "opus-4-5 cache-write cost should be priced");
+
+    // Expected premium: 400 of the 1000 cache-write tokens at 0.6x the model's
+    // per-token 5m cache-write rate (derived from the all-5m session's priced
+    // cache-write lane so it tracks genai-prices' actual rate).
+    const perToken5m = (await cacheWriteCost("no-1h")) / 1000;
+    const expectedPremium = 400 * perToken5m * 0.6;
+    assert.ok(
+      expectedPremium > 0,
+      "premium should be non-zero for a 1h session"
+    );
+
+    // GUARD 1 (inverted from FEA-3636): the premium now LIVES in the token
+    // rows — per-model token_usage carries it, and so does the per-event
+    // cache-write lane. There is no separate session-level line item.
+    assert.ok(
+      near(await tokenRowsCost("half-1h"), baseTokenCost + expectedPremium)
+    );
+    assert.ok(
+      near(await cacheWriteCost("half-1h"), 1000 * perToken5m + expectedPremium)
+    );
+
+    // Conservation with the premium on BOTH sides: usage cost == Σ event costs.
+    assert.ok(
+      near(await tokenRowsCost("half-1h"), await eventRowsCost("half-1h"))
+    );
+    assert.ok(near(await tokenRowsCost("no-1h"), await eventRowsCost("no-1h")));
+
+    // The session rollup is pure Σ(token_usage): the premium appears exactly
+    // once, via the token rows, never as an extra rollup term.
+    assert.ok(
+      near(await sessionCost("half-1h"), baseTokenCost + expectedPremium)
+    );
+    assert.ok(near(await sessionCost("no-1h"), baseTokenCost));
+    assert.ok(
+      near(
+        (await sessionCost("half-1h")) - (await sessionCost("no-1h")),
+        expectedPremium
+      )
+    );
+
+    // GUARD 2: session_analytics.est_cost equals the authoritative total.
+    assert.ok(
+      near(await analyticsCost("half-1h"), baseTokenCost + expectedPremium)
+    );
+    assert.ok(
+      near(await analyticsCost("half-1h"), await sessionCost("half-1h"))
+    );
+    assert.ok(near(await analyticsCost("no-1h"), baseTokenCost));
+
+    // GUARD 3: re-importing must NOT accumulate the premium (delete+reinsert +
+    // recompute-from-scratch keep it exactly once).
+    await db.importer.importSession(makeSession("half-1h", 400), "claude");
+    assert.ok(
+      near(await sessionCost("half-1h"), baseTokenCost + expectedPremium)
+    );
+    assert.ok(
+      near(await analyticsCost("half-1h"), baseTokenCost + expectedPremium)
+    );
+    assert.ok(
+      near(await tokenRowsCost("half-1h"), baseTokenCost + expectedPremium)
+    );
   } finally {
     await db.close();
     await rm(dir, { recursive: true, force: true });

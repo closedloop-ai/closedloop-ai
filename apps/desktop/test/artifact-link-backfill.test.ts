@@ -123,6 +123,96 @@ test("artifact-link backfill preserves launch-metadata artifact links", async ()
   }
 });
 
+test("artifact-link backfill re-enqueues the session when a reviewed-PR link method changes (FEA-3851)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "artifact-backfill-method-requeue-"));
+  const transcriptPath = join(dir, "method-requeue.jsonl");
+  try {
+    writeFileSync(transcriptPath, "{}\n");
+    const db = await openTestDb(dir);
+    try {
+      // A session whose bundled command reviews PR #4242 (feedback write). The
+      // fixed extractor classifies it pr_review_feedback_command.
+      const session = makeSession("method-requeue", {
+        artifacts: {
+          prs: [],
+          issues: [],
+          repo: "closedloop-ai/symphony-alpha",
+        },
+        toolUses: [
+          {
+            name: "Bash",
+            timestamp: "2026-06-07T12:01:00.000Z",
+            input: { command: "gh pr review 4242 --approve" },
+          },
+        ],
+      });
+      await db.importer.importSession(session, Harness.Claude);
+
+      const linkKey = { sessionId: "method-requeue", relation: "reviewed" };
+      const readMethod = async () => {
+        const rows = await db.prisma.client.$queryRawUnsafe<
+          { method: string }[]
+        >(
+          `SELECT method FROM session_artifact_links
+             WHERE session_id = $1 AND relation = $2`,
+          linkKey.sessionId,
+          linkKey.relation
+        );
+        return rows[0]?.method ?? null;
+      };
+      assert.equal(
+        await readMethod(),
+        "pr_review_feedback_command",
+        "the reviewed PR should first persist as a feedback write"
+      );
+
+      // Simulate a pre-fix store: the link was mis-classified read-only, the
+      // seen marker is stale (older extractor version so the backfill re-derives),
+      // and updated_at sits at an old value.
+      await db.run(
+        `UPDATE session_artifact_links SET method = 'pr_review_command'
+           WHERE session_id = $1 AND relation = $2`,
+        linkKey.sessionId,
+        linkKey.relation
+      );
+      const staleUpdatedAt = "2020-01-01T00:00:00.000Z";
+      await db.run(
+        "UPDATE sessions SET updated_at = $1 WHERE id = $2",
+        staleUpdatedAt,
+        "method-requeue"
+      );
+
+      const result = await backfillArtifactLinksFromTranscripts(db.prisma, {
+        listTranscriptFiles: () => [transcriptPath],
+        sessionIdFromPath: () => "method-requeue",
+        parseSessionFile: () => Promise.resolve(session),
+      });
+      assert.equal(result.scanned, 1);
+
+      // The correction is re-derived (feedback write again)...
+      assert.equal(
+        await readMethod(),
+        "pr_review_feedback_command",
+        "the backfill re-derives the corrected feedback-write method"
+      );
+      // ...and the method change re-enqueues the session for cloud sync — even
+      // though no segment work_item_ref moved — so updated_at advances past the
+      // stale value.
+      const sessionRows = await db.prisma.client.$queryRawUnsafe<
+        { updated_at: string }[]
+      >("SELECT updated_at FROM sessions WHERE id = $1", "method-requeue");
+      assert.ok(
+        (sessionRows[0]?.updated_at ?? "") > staleUpdatedAt,
+        "a method-only correction must bump sessions.updated_at to re-sync"
+      );
+    } finally {
+      await db.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("artifact-link backfill does not mark seen after partial link persistence", async () => {
   const dir = mkdtempSync(join(tmpdir(), "artifact-backfill-partial-"));
   const transcriptPath = join(dir, "partial.jsonl");
@@ -601,6 +691,11 @@ function fakeBackfillDb(options?: {
   const tx = {
     $queryRawUnsafe: queryRawUnsafe,
     $executeRawUnsafe: executeRawUnsafe,
+    // FEA-2272: the backfill's per-session tx now calls stampSegmentWorkItemRefs,
+    // which reads segments via the typed delegate. No segments exist in this mock,
+    // so return none — the stamp then early-returns as a no-op (these tests cover
+    // the link re-derive path, not work-item stamping).
+    sessionActivitySegment: { findMany: () => Promise.resolve([]) },
   };
   const writeClient = {
     ...tx,

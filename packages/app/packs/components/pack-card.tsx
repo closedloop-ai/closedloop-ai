@@ -1,5 +1,6 @@
 "use client";
 
+import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -12,16 +13,12 @@ import {
   ExternalLinkIcon,
   ShieldCheckIcon,
   StarIcon,
+  TrendingUpIcon,
 } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import type { PackView } from "../lib/pack-view";
 import type { PacksContext } from "../lib/packs-context";
-import {
-  contentSummary,
-  formatStars,
-  InstallerStack,
-  visibleContentKinds,
-} from "./pack-meta";
+import { contentSummary, formatStars, InstallerStack } from "./pack-meta";
 
 type PackCardProps = {
   pack: PackView;
@@ -31,6 +28,13 @@ type PackCardProps = {
   /** Local install (desktop). When absent on an install-capable surface, the
    *  card falls back to a GitHub redirect. */
   onInstall?: (packId: string) => void;
+  /** Secondary qualifier (kind / version / id) shown under the name when this
+   *  pack shares its display name with another in the catalog (FEA-3972). */
+  disambiguator?: string;
+  /** Whether this pack stands out as trending relative to the catalog — the
+   *  workspace decides this once over the full set (`trendingPackIds`) so the
+   *  marker is selective, not per-card-always-on (FEA-3236). */
+  trending?: boolean;
 };
 
 // The primary card action adapts to the surface: local install on desktop, a
@@ -96,6 +100,8 @@ export const PackCard = ({
   selected = false,
   onSelect,
   onInstall,
+  disambiguator,
+  trending = false,
 }: PackCardProps) => {
   const open = () => onSelect(pack.id);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -105,10 +111,7 @@ export const PackCard = ({
     }
   };
 
-  const summary = contentSummary(
-    pack,
-    visibleContentKinds(context.capabilities.showExtendedContentKinds)
-  );
+  const summary = contentSummary(pack);
   const showInstallers =
     context.capabilities.showTeamUsage &&
     (pack.teamUsage?.installers.length ?? 0) > 0;
@@ -138,9 +141,39 @@ export const PackCard = ({
                 />
               ) : null}
             </span>
-            {pack.publisher ? (
-              <span className="block truncate text-muted-foreground text-xs">
-                {pack.publisher}
+            {disambiguator || pack.publisher || trending ? (
+              <span className="flex min-w-0 items-center gap-1 text-muted-foreground text-xs">
+                {/* The qualifier is the signal — lead with it and keep it whole,
+                 *  so a long publisher or a narrow card never drops the one bit
+                 *  that tells same-named cards apart (FEA-3972). */}
+                {disambiguator ? (
+                  <span className="shrink-0 font-medium text-foreground/70">
+                    {disambiguator}
+                  </span>
+                ) : null}
+                {disambiguator && pack.publisher ? (
+                  <span aria-hidden="true" className="shrink-0">
+                    ·
+                  </span>
+                ) : null}
+                {pack.publisher ? (
+                  <span className="truncate">{pack.publisher}</span>
+                ) : null}
+                {/* Trending lives on the meta row, not the name row: the name is
+                 *  truncate and the badge is shrink-0, so badging it there would
+                 *  eat characters off the one thing a grid is scanned for. It's
+                 *  a muted pill so trust (the Verified shield) still outranks
+                 *  momentum in the header (FEA-3236). */}
+                {trending ? (
+                  <Badge
+                    aria-label="Trending"
+                    className="ms-auto"
+                    variant="muted"
+                  >
+                    <TrendingUpIcon aria-hidden="true" />
+                    Trending
+                  </Badge>
+                ) : null}
               </span>
             ) : null}
           </div>

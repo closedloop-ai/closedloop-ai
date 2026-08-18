@@ -5,6 +5,7 @@ import {
   useDocument,
   useDocuments,
   useDocumentsByProject,
+  useDocumentsPage,
   useUpdateDocument,
 } from "@repo/app/documents/hooks/use-documents";
 import { createMockDocument } from "@repo/app/shared/test-fixtures/documents";
@@ -54,6 +55,107 @@ describe("Artifact Query Hooks", () => {
       });
 
       expect(expectedKey).toEqual(["documents", "list", searchParams]);
+    });
+
+    test("the bare-array hook rejects the includeTotal discriminator at compile time (shafty023)", () => {
+      // includeTotal selects the ENVELOPE response arm; a caller that passed it
+      // to useDocuments (which promises DocumentWithProject[]) would get the
+      // envelope back and fail on .map. It lives on DocumentListPageParams, not
+      // FindDocumentsOptions, so this must not type-check.
+      renderHook(
+        () =>
+          useDocuments({
+            type: "PRD",
+            // @ts-expect-error includeTotal is not a member of FindDocumentsOptions
+            includeTotal: true,
+          }),
+        { wrapper: createWrapper() }
+      );
+
+      expect(mockApiClient.get).toHaveBeenCalled();
+    });
+  });
+
+  describe("useDocumentsPage (ISS-4576)", () => {
+    test("requests the paged envelope and exposes the server total, not just an array", async () => {
+      const page = {
+        items: [createMockDocument({ id: "1" })],
+        total: 1204,
+        limit: 50,
+        offset: 0,
+        hasMore: true,
+      };
+
+      mockApiClient.get.mockResolvedValueOnce(page);
+
+      const { result } = renderHook(
+        () => useDocumentsPage({ assigneeId: "user-1", limit: 50, offset: 0 }),
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      expect(mockApiClient.get).toHaveBeenCalledWith(
+        "/documents?assigneeId=user-1&limit=50&offset=0&includeTotal=true"
+      );
+      // The adapter must NOT collapse the envelope to `items` — the continuation
+      // metadata is what keeps a paging surface from truncating silently.
+      expect(result.current.data?.total).toBe(1204);
+      expect(result.current.data?.hasMore).toBe(true);
+    });
+
+    test("keys the paged read separately from the bare-array read of the same filters", () => {
+      const filters = { assigneeId: "user-1", limit: 50, offset: 0 };
+
+      renderHook(() => useDocumentsPage(filters), {
+        wrapper: createWrapper(),
+      });
+
+      // A shared key would let an array response satisfy an envelope reader.
+      expect(documentKeys.list(filters)).not.toEqual(
+        documentKeys.list({ ...filters, includeTotal: true })
+      );
+    });
+
+    test("normalizes an older API's legacy bare array into an honest one-page envelope (version skew, shafty023)", async () => {
+      // An API that predates `includeTotal` strips the unknown param and returns
+      // the legacy `DocumentWithProject[]` — and it ignored the `limit` too, so
+      // the array is the WHOLE matching set. Without normalization the board read
+      // missing `.items`/`.total` as an empty queue. It must instead fold to
+      // "everything on one unbounded page".
+      const legacyArray = [
+        createMockDocument({ id: "1" }),
+        createMockDocument({ id: "2" }),
+      ];
+
+      mockApiClient.get.mockResolvedValueOnce(legacyArray);
+
+      const { result } = renderHook(
+        () => useDocumentsPage({ assigneeId: "user-1", limit: 50, offset: 0 }),
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      expect(result.current.data?.items).toHaveLength(2);
+      expect(result.current.data?.total).toBe(2);
+      expect(result.current.data?.limit).toBeNull();
+      expect(result.current.data?.hasMore).toBe(false);
+    });
+
+    test("degrades a malformed response to a safe empty page rather than crashing the render", async () => {
+      mockApiClient.get.mockResolvedValueOnce({ unexpected: "shape" });
+
+      const { result } = renderHook(
+        () => useDocumentsPage({ assigneeId: "user-1", limit: 50, offset: 0 }),
+        { wrapper: createWrapper() }
+      );
+
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+      expect(result.current.data?.items).toEqual([]);
+      expect(result.current.data?.total).toBe(0);
+      expect(result.current.data?.hasMore).toBe(false);
     });
   });
 

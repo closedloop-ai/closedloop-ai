@@ -1,0 +1,158 @@
+---
+title: Branches
+description: The Branches surface — the list, detail, and timeline of every branch your AI sessions produced, plus the branch/PR/commit artifact model, enrichment state, delivery metrics, and branch-to-session attribution behind it.
+---
+
+A **branch** on the Branches surface is a git branch that at least one observed AI coding session actually wrote to. The surface is where you read them: a filterable **list** of branches with roll-up KPIs, and a **detail** page per branch carrying its pull request, its commits, its files changed, and the sessions that produced it. It renders from one shared package on both the web app and the desktop client.
+
+This page describes the surface and the model behind it. The [aggregated-data](./aggregated-data) layer covers the Insights dashboards, and [parsers and collectors](./parsers-collectors) covers how a session's branch and PR references are extracted in the first place.
+
+## What makes a branch appear
+
+A branch is in the corpus if and only if it has **at least one valid linked session that wrote to it**. That is the whole membership rule, and it is worth stating plainly because it explains most "why isn't this here" questions:
+
+- A branch someone pushed by hand, with no observed AI session, does not appear.
+- A branch whose only link is a *review* rather than a write does not count as a write link for membership.
+- A link whose session record is orphaned — a link row pointing at a session that has no detail record — does not count either.
+- GitHub push or pull-request evidence **enriches** a branch, but no longer gates it. A branch with no GitHub App installation still shows up as long as a session wrote to it.
+
+The same predicate gates the detail page, so a GitHub-only, zero-session branch returns a 404 on its detail URL rather than rendering an empty shell.
+
+## The artifact model
+
+Branches are artifacts. The platform stores one parent `Artifact` row per branch with `type = BRANCH`, plus a one-to-one `BranchDetail` record holding the branch-specific state: the branch name, base branch, head SHA, last activity, checks status, the file-change cache state, the sync state, and a pointer to the branch's current pull request.
+
+"Artifact" is overloaded across these docs, so be precise about which sense is meant here. This page is about the **stored record** — a row in the platform's artifact table, alongside documents, deployments, and sessions. The separate [artifacts](./artifacts) page covers a different sense: the files a loop writes to its session work directory (`plan.json`, judge reports, learnings). The two are unrelated.
+
+Two things about that shape are easy to get wrong:
+
+**A pull request is nested state on a branch, not a peer artifact.** `PullRequestDetail` rows hang off the branch artifact, and `BranchDetail` carries a denormalized pointer to the current one. Branch-first is the intended direction for new surfaces — you ask a branch for its PR, not the other way round.
+
+**A commit is not an artifact subtype at all.** There is no `COMMIT` artifact type. Commits live in their own standalone table, uniquely keyed by organization plus repository full name plus SHA — the organization is part of the identity because the same SHA under the same `owner/name` can exist in two tenants, so the two-field pair alone is not unique. Each row links back to the branch artifact. On the wire, the detail page sees a commit as just its SHA, timestamp, and message.
+
+Each of the three carries provenance for where its facts came from, rather than presenting every value as equally trustworthy. A branch records separately where its base branch came from (a pull request's base, harness input, MCP input, or the repository default) and where its head SHA came from (a push webhook, a pull-request webhook, harness or MCP input, or an explicit sync). Commits record whether they came from desktop sync, a push webhook, or the GitHub API, and only some of those sources count as authoritative.
+
+Repository identity is likewise two-tier. A branch is uniquely identified by organization plus **repository full name** plus branch name — the `owner/name` string, not a GitHub numeric id — because a branch must be representable before any GitHub App is installed. The numeric repository id and the PR's GitHub id are nullable enrichment filled in later when GitHub adoption happens.
+
+## Branch → session attribution
+
+A branch's sessions come from artifact links, not from any harness-reported branch field. The link runs from the session artifact to the branch artifact, tagged with the kind of reference (a branch reference or a PR reference) and with the session's **participation** in that branch: `wrote` or `reviewed`.
+
+Only *write* participation makes a branch appear in the corpus and counts toward its session set on the list. Reviewed participation is included on the detail page and the timeline, where it is genuinely informative, and surfaced separately as the branch's reviewed participants.
+
+This is the same discipline the session side applies: attribution derives from structured evidence of what a run actually did, never from the branch the session's working directory happened to be checked out on. See [parsers and collectors](./parsers-collectors) for how those references are minted.
+
+The branch timeline is bounded on purpose. It merges at most 30 linked sessions, newest link first, and hydrates them with bounded concurrency; a truncation is logged rather than silently dropped.
+
+## Status
+
+A branch's status is derived from evidence at read time, with a fixed precedence:
+
+1. **Merged** wins over everything. If merge evidence exists, the branch is Merged even if the PR still says draft.
+2. Otherwise a draft PR makes it **Draft**.
+3. Otherwise a closed artifact or closed PR makes it **Closed**.
+4. Otherwise it is **Open**.
+
+The status filter on the list accepts exactly those four values. The underlying status vocabulary also declares `review` and `blocked`, but the cloud read path never produces them and the filter does not accept them.
+
+## Enrichment
+
+"Enrichment" on this surface means three separate things. Conflating them is the most common source of confusion, so they are listed separately.
+
+### File-change cache (the LOC basis)
+
+A branch's lines-changed figures come from a cached GitHub compare, stored per file. The cache has its own state: `absent` (never fetched), `scheduled` (a refresh is queued), `fresh` (a compare succeeded), `stale`, or `failed`.
+
+Two properties matter for reading the numbers honestly:
+
+- **The cache is head-pinned.** File totals only count when the cache's head SHA matches the branch's current head SHA. A cache left over from an older head reads as unknown, not as a stale number presented as current.
+- **Totals are all-or-nothing per dimension.** If any single file's count is missing, the branch's total for that dimension is null rather than a partial sum. A branch with no usable cache falls back to the connected PR's own additions, deletions, and changed-file counts.
+
+A failed refresh deliberately does not wipe the previous rows, and leaves the cached head SHA pointing at the old head — a transient GitHub failure degrades to "last known", and the head-pinning above is what stops that last-known set being *presented* as current.
+
+The cache is refreshed by events, not by a cron sweep. A refresh is scheduled only when an accepted new head arrives from a **GitHub push webhook** — a head SHA supplied by harness or MCP input does not schedule one.
+
+### Sync state
+
+Separately, each branch tracks a sync lifecycle — `idle`, `syncing`, `fresh`, `stale`, or `failed` — with the timestamps and error code of the last attempt. That state feeds the detail page's data state, which is what stops a missing-data page from lying: a branch mid-sync reports **sync in progress**, one with no linked sessions reports **no sessions yet**, and one that is gone reports **no longer present** — never a generic blank that reads as "nothing happened here".
+
+### Manual refresh
+
+A branch's GitHub state for its current PR can also be re-pulled on demand. That path is budgeted, not free: 20 refreshes per organization and 5 per actor within a rolling 30-second window. It reports a specific outcome — refreshed, stale, not applicable, retryable, or failed — with a machine-readable reason when it declines: already refreshing, budget exhausted, no current pull request, GitHub identity required, expired, or of insufficient scope, provider rate-limited, or provider unavailable. A throttled response carries a `Retry-After` header, not just a body field.
+
+## Cost attribution: three different numbers
+
+A session can write to several branches, so "what did this branch cost" has more than one defensible answer. The surface exposes all three rather than picking one silently:
+
+| Figure | Basis |
+|---|---|
+| Raw branch cost | Each linked session's whole cost, added once per branch it touched. Sums across branches to more than the real total when sessions are shared. |
+| Attributed cost | Each session's cost divided evenly across every branch it actively wrote to. Sums correctly across branches. |
+| Per-session cost map | Each session's cost, exactly once, keyed by session. The reconciliation basis for any total. |
+
+The branch detail page reports the even-split figure. Any org-level total is computed from distinct sessions, so a shared session is never double-counted into a headline number.
+
+Date filters bound the **spend**, not the identity. A date range narrows which token *events* are accumulated into cost — a session straddling the boundary contributes only its in-window events — while the branch's linked-session metadata stays lifetime-accurate. A branch whose events all predate the window keeps its session list and reports no in-window spend, rather than vanishing. An event with a null timestamp is excluded from a window rather than silently counted, and with no window at all no per-event read is issued and lifetime spend is used unchanged.
+
+## Summary metrics
+
+The list's summary cards are computed over the **whole filtered corpus**, not over the visible page. Every one of them reports its own availability rather than rendering a misleading zero:
+
+| Metric | How it is derived |
+|---|---|
+| AI spend | Distinct-session cost across the filtered corpus. Null when the total is zero, whether nothing was priced or the priced sessions summed to zero. |
+| Value per dollar | Total churn (additions plus deletions) over LOC-enriched branches, divided by the even-split spend attributable to those same branches. Null when nothing is enriched or spend is zero. |
+| Active branches | Branches whose derived status is neither Merged nor Closed. |
+| Merge rate | Merged over *decided* (merged plus closed), as a percentage. Open PRs are excluded from the denominator, so an in-flight branch never drags the rate down. Null when nothing is decided. |
+| Median PR size | Median lines changed (additions plus deletions) across **merged, LOC-enriched** branches only. The basis is the branch's own file cache, not the PR's reported counts — a PR's numbers fold in merge commits and base-diff churn. An un-enriched branch is **excluded** from the median rather than folded in as zero, which would drag the median toward 0. |
+
+A pull request is classified into exactly one of active, merged, or closed, and merge evidence beats a stale provider state.
+
+Two KPIs on this surface — median time to merge and lead time for change — are currently reported as **gated** rather than computed, and the build-vs-rework split reports as unavailable. They render as an explicit "no data" state, not as a zero.
+
+## Delivery metrics are a different read
+
+The **Merged PRs** and time-to-merge figures on the Insights delivery dashboard are computed by a different service than the Branches summary, so it is worth being explicit about what the two do and do not share.
+
+They read the same underlying per-branch file-cache line totals, but *not through the same predicate*, so they are not guaranteed to agree on a given branch's size. The Branches read is strict about cache currency: it counts file totals only when the cache's head SHA matches the branch's current head SHA, and treats a missing per-file count as a null (all-or-nothing) total. The Insights delivery read is looser: it treats a branch as enriched on `fileCacheStatus = fresh` alone — it does not re-check that the cached head still matches the current head — and it coalesces a missing aggregate to zero. So for a merged branch whose head moved after a fresh cache (a new head arriving via harness, MCP, PR-webhook, or an explicit sync), the two screens *can* report different sizes: Branches reads it as unknown, delivery still folds in the stale/partial total. The Branches merged count and the merge-rate numerator do come from one classifier, shared with the desktop producer, so the count and the rate can never disagree — but the LOC size is a projection-specific read, not a shared invariant.
+
+What differs is the read shape. Delivery's headline merged-PR count is an exact database `COUNT`, while the row set it hydrates for distribution work is separately capped — so the headline stays exact even when the distributions reflect a bounded window. See [aggregated data](./aggregated-data) for that dashboard.
+
+## The list
+
+The list is one row per branch. Columns: name, owner, repository, status, last active, linked sessions, changes, pull request, and checks — with the checks column hidden entirely when no row has check data, rather than rendered as a column of dashes.
+
+Reads are offset-paginated — `limit` (default 50, max 100) and `offset`, with no cursor. **The API exposes no sort parameter.** Any column sorting you see is applied client-side over the fetched page; there is no server sort key behind the headers.
+
+The accepted filters are repository, status, a free-text search, a start/end date window, project, contributor, linked-session presence (has or none), and a lines-changed range. Status accepts exactly Open, Merged, Closed, and Draft.
+
+The query schema is **strict**: a parameter it does not recognize is rejected with a validation error rather than accepted and quietly ignored — so a client cannot believe it applied a filter the server dropped. An inverted lines-changed range (minimum above maximum) is rejected up front rather than silently returning an empty list, and a blank bound is treated as unset rather than as zero.
+
+The list and the summary cards are fetched as two independent requests, so a failure computing analytics degrades to an analytics error beside a working table instead of blanking the page.
+
+## The detail page
+
+The detail page has two tabs, both deep-linkable:
+
+- **Branch details** — the properties panel, refresh status, a multi-PR notice when applicable, the headline cards, a lead-time waterfall, cost-to-merge, what was delivered, PR status, and files changed (or, when the file overlay is unavailable, an explicit unavailable state rather than an empty panel).
+- **Sessions and timeline** — the merged, turn-level timeline across the branch's linked sessions, plus the trace-comments rail, which is mounted only under this tab.
+
+A mention notification can deep-link straight to either tab; the tab ids come from the notification-route source of truth, so a deep link and the page's own tab ids cannot drift apart.
+
+Both tabs render only once the branch's data state is `ready`. Otherwise the page names the specific reason — `awaiting_sync`, `no_sessions`, or `not_present` — instead of an empty layout.
+
+The cloud read resolves exactly one **owned current** pull request for a branch — a candidate must be marked current, belong to this branch, and match the branch's repository. Because of that, the cloud producer reports at most one linked PR number per branch and never raises the multi-PR notice; multi-PR branches are represented, but the current-PR pointer is singular.
+
+## Related reading
+
+<Cards>
+  <Card title="Parsers and collectors" href="./parsers-collectors">
+    How a session's branch, PR, and commit references are extracted from its tool use.
+  </Card>
+  <Card title="Aggregated data" href="./aggregated-data">
+    The Insights dashboards, including the delivery metrics described above.
+  </Card>
+  <Card title="GitHub integration" href="../integrations/github">
+    What connecting GitHub adds to a branch's enrichment.
+  </Card>
+</Cards>

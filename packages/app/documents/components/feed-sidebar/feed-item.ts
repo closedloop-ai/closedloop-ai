@@ -1,7 +1,9 @@
 export const FeedItemKind = {
   LiveblocksComment: "liveblocks-comment",
+  NativeDocumentComment: "native-document-comment",
   PrComment: "pr-comment",
-  // Activity + AgentJob added by future sources without breaking existing ones.
+  Activity: "activity",
+  // AgentJob added by future sources without breaking existing ones.
 } as const;
 export type FeedItemKind = (typeof FeedItemKind)[keyof typeof FeedItemKind];
 

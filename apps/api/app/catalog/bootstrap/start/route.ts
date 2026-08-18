@@ -5,6 +5,13 @@ import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import { launchBootstrapLoop } from "@/lib/loops/launch-bootstrap-loop";
 import {
+  CALLBACK_UNAVAILABLE_DISPATCH_MESSAGE,
+  LAUNCH_FAILED_DISPATCH_MESSAGE,
+  MISSING_ANTHROPIC_API_KEY_MESSAGE,
+  PARENT_STATE_UNAVAILABLE_DISPATCH_MESSAGE,
+} from "@/lib/loops/loop-dispatch-utils";
+import {
+  badRequestResponse,
   errorResponse,
   parseBody,
   scheduleLogFlush,
@@ -75,20 +82,26 @@ export const POST = withAnyAuth(async ({ user }, request) => {
         429
       );
     }
+    if (result.error === "missing_anthropic_api_key") {
+      // `badRequestResponse`, not `errorResponse`: a keyless Cloud user is an
+      // expected configuration state, and `errorResponse` logs `log.error()`
+      // before returning — which would report every one of them to Datadog as a
+      // server error. Matches the sibling in `start-loop-from-local`.
+      return badRequestResponse(MISSING_ANTHROPIC_API_KEY_MESSAGE);
+    }
+    if (result.error === "parent_state_unavailable") {
+      // Not reachable today (bootstrap loops have no `requiresParent` handler),
+      // but handled explicitly so the code can never fall through to the
+      // offline-desktop copy below, which would be untrue for a guard that
+      // never dispatched anything.
+      return badRequestResponse(PARENT_STATE_UNAVAILABLE_DISPATCH_MESSAGE);
+    }
     if (result.error === "callback_unavailable") {
-      return errorResponse(
-        "Loop dispatch failed because the desktop app could not reach the cloud callback endpoint. Check cloud connection in the desktop app and retry.",
-        null,
-        502
-      );
+      return errorResponse(CALLBACK_UNAVAILABLE_DISPATCH_MESSAGE, null, 502);
     }
 
     // launch_failed
-    return errorResponse(
-      "Loop dispatch failed. The desktop app may be disconnected.",
-      null,
-      502
-    );
+    return errorResponse(LAUNCH_FAILED_DISPATCH_MESSAGE, null, 502);
   }
 
   log.info("[catalog/bootstrap/start] Bootstrap loop launched", {

@@ -7,13 +7,19 @@
  */
 
 import { execFile, execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { type Dirent, mkdirSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import {
+  LoopEventCompletedSchema,
+  LoopEventType,
+} from "@closedloop-ai/loops-api/events";
+import { z } from "zod";
+import { hermeticGitEnv } from "../scripts/hermetic-git-env.mjs";
 import type { WorktreeProvider } from "../src/server/operations/symphony-loop.js";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
@@ -21,6 +27,8 @@ import {
   setShellPathForTest,
 } from "../src/server/shell-path.js";
 import { EMPTY_CAPABILITIES } from "../src/shared/contracts.js";
+import { WRITE_REQUIRED_ARTIFACT_SH } from "./helpers/fake-harness-artifacts.js";
+import { GIT_FIXTURE_CHILD_TIMEOUT_MS } from "./helpers/git-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Multi-repo PRD command set
@@ -91,6 +99,24 @@ export function restoreEnv(saved: Record<string, string | undefined>): void {
 // Git helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a throwaway git repo for a test fixture.
+ *
+ * HERMETIC (ISS-5836): both spawns below run with `GIT_CONFIG_GLOBAL` and
+ * `GIT_CONFIG_SYSTEM` nulled, so the operator's `~/.gitconfig` cannot reach the
+ * fixture. Without it, a global `core.hooksPath` runs that machine's
+ * `pre-commit` hook on the commit below — measured rejecting 3 of 22 tests in
+ * `git-action-diff-ops.test.ts` on the reporting machine, and green in CI, which
+ * only containers lacking such a config ever see.
+ *
+ * The runner sets the same env process-wide, so this is belt-and-braces there.
+ * It is the ONLY protection when a developer runs one file directly
+ * (`pnpm exec tsx --test test/foo.test.ts`) and bypasses the runner.
+ *
+ * The repo-local `user.email`/`user.name` below are required, not incidental:
+ * nulling the global config also removes any global identity the commit would
+ * otherwise have inherited.
+ */
 export async function initGitRepo(
   repoPath: string,
   options: { allowEmpty?: boolean } = {}
@@ -98,16 +124,20 @@ export async function initGitRepo(
   const commitStep = options.allowEmpty
     ? "git commit --allow-empty -m initial"
     : `echo "# initial" > README.md && git add . && git commit -m initial`;
-  await execFileAsync("/bin/sh", [
-    "-c",
+  await execFileAsync(
+    "/bin/sh",
     [
-      `git init -b main "${repoPath}"`,
-      `cd "${repoPath}"`,
-      "git config user.email test@test.com",
-      "git config user.name Test",
-      commitStep,
-    ].join(" && "),
-  ]);
+      "-c",
+      [
+        `git init -b main "${repoPath}"`,
+        `cd "${repoPath}"`,
+        "git config user.email test@test.com",
+        "git config user.name Test",
+        commitStep,
+      ].join(" && "),
+    ],
+    { env: hermeticGitEnv(), timeout: GIT_FIXTURE_CHILD_TIMEOUT_MS }
+  );
   // Fail loudly if a fake git binary on PATH no-op'd init without creating
   // .git metadata. Otherwise callers that depend on real git state (e.g.,
   // `makeRecordingGitWorktreeProvider`) silently break.
@@ -115,6 +145,8 @@ export async function initGitRepo(
     execFileSync("git", ["rev-parse", "--git-dir"], {
       cwd: repoPath,
       stdio: "pipe",
+      env: hermeticGitEnv(),
+      timeout: GIT_FIXTURE_CHILD_TIMEOUT_MS,
     });
   } catch (err) {
     throw new Error(
@@ -129,7 +161,11 @@ export async function findFileRecursive(
   dir: string,
   filename: string
 ): Promise<string | null> {
-  let entries: Awaited<ReturnType<typeof fs.readdir>>;
+  // `Awaited<ReturnType<typeof fs.readdir>>` resolves against the LAST overload
+  // (the Buffer-encoding one), so it typed `entry.name` as a Buffer while the
+  // `withFileTypes: true` call below actually yields `Dirent<string>`. Name the
+  // shape the call really returns.
+  let entries: Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch {
@@ -402,11 +438,22 @@ export const FAKE_CLAUDE_SUCCESS_WITH_TOKENS_NO_RESULT = [
  * the 0-token EXECUTE guard from converting the completed event into an error.
  * Pass `skipTokens: true` to keep the original script as-is (for tests that
  * intentionally exercise the 0-token path).
+ *
+ * Since ISS-5872 it ALSO writes the deliverable the command owes, for the same
+ * reason: a fixture that exits 0 stands for a run that succeeded, and a
+ * successful PLAN/DECOMPOSE/GENERATE_PRD/EVALUATE_* run always writes its
+ * required artifact. Without it every such fixture would now terminalize as
+ * MISSING_REQUIRED_ARTIFACTS, and tests about env propagation or multi-repo
+ * spawn would fail for a reason they are not about. Pass `skipArtifacts: true`
+ * to exercise the missing-artifact path deliberately. Scripts that write their
+ * own artifact are unaffected — the injected line never overwrites an existing
+ * file.
  */
+
 export async function createFakeRunLoopScript(
   homeDir: string,
   scriptContent: string,
-  opts?: { skipTokens?: boolean }
+  opts?: { skipTokens?: boolean; skipArtifacts?: boolean }
 ): Promise<string> {
   const scriptDir = path.join(
     homeDir,
@@ -428,6 +475,12 @@ export async function createFakeRunLoopScript(
     const tokenLine = `mkdir -p "$CLOSEDLOOP_WORKDIR" 2>/dev/null; echo '${FAKE_TOKEN_JSONL}' >> "$CLOSEDLOOP_WORKDIR/claude-output.jsonl"\n`;
     // Insert after the shebang line
     finalContent = scriptContent.replace(/^(#!\/bin\/sh\n)/, `$1${tokenLine}`);
+  }
+  if (!opts?.skipArtifacts) {
+    finalContent = finalContent.replace(
+      /^(#!\/bin\/sh\n)/,
+      `$1${WRITE_REQUIRED_ARTIFACT_SH}`
+    );
   }
 
   await fs.writeFile(scriptPath, finalContent, { mode: 0o755 });
@@ -453,6 +506,36 @@ export async function writeFakeGhScript(
 // ---------------------------------------------------------------------------
 
 /**
+ * The `completed` loop event as the DESKTOP gateway posts it (ISS-5154).
+ *
+ * This IS the cloud ingest contract: `LoopEventCompletedSchema`, the schema
+ * `apps/api/app/loops/validators.ts` validates the POST against. An earlier
+ * local re-declaration here dropped `timestamp`, `result` and `tokensUsed` on
+ * the theory that the desktop emitter never sends a timestamp — it does
+ * (`postLoopEvent` in `src/server/operations/loop-http.ts` injects one before
+ * the request is recorded), so the only effect was that an integration suite
+ * could go green on a payload cloud ingestion would answer with a 400.
+ *
+ * `.loose()` keeps the passthrough behaviour callers rely on: the shared
+ * `LoopCompletedResultSchema` is itself loose, so command-specific keys
+ * (`executeFinalizationStatus`, `has_changes`, …) still arrive as `unknown` and
+ * callers assert on them directly instead of casting the whole event.
+ */
+const completedEventTypeSchema = z.looseObject({
+  type: z.literal(LoopEventType.Completed),
+});
+
+const completedLoopEventSchema = LoopEventCompletedSchema.loose();
+
+/** A parsed `completed` loop event. */
+export type CompletedLoopEvent = z.infer<typeof completedLoopEventSchema>;
+
+/** Whether a posted event CLAIMS to be the completed one, whatever else it got wrong. */
+function isCompletedEventType(raw: unknown): boolean {
+  return completedEventTypeSchema.safeParse(raw).success;
+}
+
+/**
  * Poll mock.requests until a request to /loops/{loopId}/events with
  * type === "completed" is found, or until the timeout elapses.
  */
@@ -460,28 +543,38 @@ export async function waitForCompletedEvent(
   requests: RecordedRequest[],
   loopId: string,
   timeoutMs = 20_000
-): Promise<Record<string, unknown>> {
+): Promise<CompletedLoopEvent> {
   const eventsUrlSubstring = `/loops/${loopId}/events`;
   const deadline = Date.now() + timeoutMs;
+  // A `completed` event that arrived but FAILED the schema would otherwise be
+  // indistinguishable from one that never arrived — both just run the clock out.
+  // Keep the last rejection so the timeout says which it was.
+  let lastRejection: string | null = null;
   while (Date.now() < deadline) {
     for (const req of requests) {
       if (!req.url.includes(eventsUrlSubstring)) {
         continue;
       }
-      let parsed: Record<string, unknown>;
+      let raw: unknown;
       try {
-        parsed = JSON.parse(req.body) as Record<string, unknown>;
+        raw = JSON.parse(req.body);
       } catch {
         continue;
       }
-      if (parsed.type === "completed") {
-        return parsed;
+      const parsed = completedLoopEventSchema.safeParse(raw);
+      if (parsed.success) {
+        return parsed.data;
+      }
+      if (isCompletedEventType(raw)) {
+        lastRejection = JSON.stringify(parsed.error.issues);
       }
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(
-    `Timed out waiting for completed event for loopId=${loopId} after ${timeoutMs}ms`
+    lastRejection
+      ? `A completed event for loopId=${loopId} arrived but did not match the expected shape: ${lastRejection}`
+      : `Timed out waiting for completed event for loopId=${loopId} after ${timeoutMs}ms`
   );
 }
 

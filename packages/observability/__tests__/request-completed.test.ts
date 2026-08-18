@@ -1,10 +1,11 @@
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import { TelemetryEmitMetadataKey } from "@closedloop-ai/telemetry-contract/emit";
 import { TelemetrySchemaName } from "@closedloop-ai/telemetry-contract/schema-name";
+import { SpanTelemetrySchema } from "@closedloop-ai/telemetry-contract/span";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { log } from "../log";
 import {
-  emitRequestCompletedSpan,
+  buildRequestCompletedContractAttributes,
   normalizeRequestCompletedUrlPath,
   REQUEST_COMPLETED_CONTRACT_EVENT_NAME,
 } from "../telemetry/request-completed";
@@ -42,18 +43,16 @@ describe("normalizeRequestCompletedUrlPath", () => {
   });
 });
 
-describe("emitRequestCompletedSpan", () => {
-  it("emits a schema-marked span payload through the log channel", () => {
-    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
-
-    emitRequestCompletedSpan({
-      requestUrl: "https://api.test/api/loops?token=secret",
-      method: "POST",
-      statusCode: 201,
-      durationMs: 34,
-    });
-
-    expect(info).toHaveBeenCalledWith(REQUEST_COMPLETED_CONTRACT_EVENT_NAME, {
+describe("buildRequestCompletedContractAttributes", () => {
+  it("returns the schema-marked span attributes for the caller to merge", () => {
+    expect(
+      buildRequestCompletedContractAttributes({
+        requestUrl: "https://api.test/api/loops?token=secret",
+        method: "POST",
+        statusCode: 201,
+        durationMs: 34,
+      })
+    ).toEqual({
       [TelemetryAttribute.HttpRequestMethod]: "POST",
       [TelemetryAttribute.HttpResponseStatusCode]: 201,
       [TelemetryAttribute.UrlPath]: "/api/loops",
@@ -62,16 +61,51 @@ describe("emitRequestCompletedSpan", () => {
     });
   });
 
-  it("contains contract emitter failures", () => {
-    vi.spyOn(log, "info").mockImplementation((message) => {
-      if (message === REQUEST_COMPLETED_CONTRACT_EVENT_NAME) {
-        throw new Error("sink unavailable");
-      }
+  // ISS-5039: the whole point of returning attributes is that no second log
+  // line is billed. A future refactor that reinstates an emit() here would
+  // silently restore the duplicate event this change removed.
+  it("emits no log line of its own", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
+
+    buildRequestCompletedContractAttributes({
+      requestUrl: "https://api.test/api/loops",
+      method: "GET",
+      statusCode: 200,
+      durationMs: 1,
+    });
+
+    expect(info).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined when the values fail span-schema validation", () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+
+    expect(
+      buildRequestCompletedContractAttributes({
+        requestUrl: "https://api.test/api/loops",
+        method: "GET",
+        statusCode: 99,
+        durationMs: 1,
+      })
+    ).toBeUndefined();
+
+    expect(warn).toHaveBeenCalledWith(
+      `${REQUEST_COMPLETED_CONTRACT_EVENT_NAME} build skipped`,
+      expect.objectContaining({
+        reason: "schema_validation_failed",
+        [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,
+      })
+    );
+  });
+
+  it("contains contract build failures", () => {
+    vi.spyOn(SpanTelemetrySchema, "safeParse").mockImplementation(() => {
+      throw new Error("validator unavailable");
     });
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
 
     expect(() =>
-      emitRequestCompletedSpan({
+      buildRequestCompletedContractAttributes({
         requestUrl: "https://api.test/api/loops",
         method: "GET",
         statusCode: 200,
@@ -80,9 +114,9 @@ describe("emitRequestCompletedSpan", () => {
     ).not.toThrow();
 
     expect(warn).toHaveBeenCalledWith(
-      `${REQUEST_COMPLETED_CONTRACT_EVENT_NAME} emit skipped`,
+      `${REQUEST_COMPLETED_CONTRACT_EVENT_NAME} build skipped`,
       expect.objectContaining({
-        reason: "emit_failed",
+        reason: "build_failed",
         [TelemetryEmitMetadataKey.SchemaName]: TelemetrySchemaName.Span,
       })
     );

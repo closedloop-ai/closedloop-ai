@@ -1,5 +1,5 @@
 /**
- * Unit tests for apps/desktop/src/main/loop-heartbeat.ts
+ * Unit tests for apps/desktop/src/main/loop/loop-heartbeat.ts
  *
  * Covers:
  *   - periodic heartbeat firing at the configured interval
@@ -26,16 +26,16 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, mock, test } from "node:test";
-import type { LocalJob } from "../src/main/job-store.js";
+import type { LocalJob } from "../src/main/jobs/job-store.js";
 import {
   isEndpointDisabled,
   resetAllGates,
-} from "../src/main/loop-404-gate.js";
-import { LoopSchedulerContext } from "../src/main/loop-scheduler-context.js";
+} from "../src/main/loop/loop-404-gate.js";
+import { LoopSchedulerContext } from "../src/main/loop/loop-scheduler-context.js";
 import type {
   TelemetryEmitter,
   TelemetryEventPayload,
-} from "../src/main/telemetry-protocol.js";
+} from "../src/main/telemetry/telemetry-protocol.js";
 import { isJwtUsable } from "../src/server/operations/loop-http.js";
 import { createLocalJob, makeStubJobStore } from "./job-store-test-utils.js";
 import {
@@ -52,7 +52,7 @@ let ctx: LoopSchedulerContext;
 // supply their own jobStore / finalizeFn stubs.
 const noopJobStore = {
   getByLoopId: (_loopId: string) => undefined,
-} as unknown as import("../src/main/job-store.js").JobStore;
+} as unknown as import("../src/main/jobs/job-store.js").JobStore;
 const noopFinalizeFn = async () => {};
 
 // `start` defaults the (now required) jobStore / finalizeFn to no-ops so tests
@@ -571,7 +571,7 @@ describe("loop-heartbeat: 404 gate integration", () => {
 
     // Pre-disable the endpoint.
     const { markEndpointDisabled } = await import(
-      "../src/main/loop-404-gate.js"
+      "../src/main/loop/loop-404-gate.js"
     );
     markEndpointDisabled(
       "https://api.example.com",

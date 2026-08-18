@@ -3,6 +3,7 @@
  *
  * Tests:
  * - createEnumOption defaults, sortOrder assignment, and field ownership check
+ * - updateEnumOption's set-based displayValue re-derivation on rename
  * - reorderEnumOptions sorts each option by its index in the provided array
  *
  * checkOptionLimit limit enforcement is tested in utils.test.ts where the real
@@ -30,14 +31,19 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-// Mock utils so createEnumOption tests are isolated from checkOptionLimit's DB calls.
-vi.mock("../utils", () => ({
+// Mock utils so createEnumOption tests are isolated from checkOptionLimit's DB
+// calls. MULTI_ENUM_DISPLAY_SEPARATOR keeps its real value — the rename SQL
+// binds it as a parameter.
+vi.mock("../utils", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils")>()),
   checkOptionLimit: vi.fn().mockResolvedValue(undefined),
   computeDisplayValue: vi.fn().mockResolvedValue(""),
 }));
 
+import { CustomFieldType } from "@repo/api/src/types/custom-field";
 import { withDb } from "@repo/database";
 import { enumOptionsService } from "../enum-options-service";
+import { MULTI_ENUM_DISPLAY_SEPARATOR } from "../utils";
 
 const mockWithDb = withDb as unknown as Mock;
 
@@ -62,9 +68,56 @@ const MOCK_FIELD = {
   id: TEST_FIELD_ID,
   organizationId: TEST_ORG_ID,
   name: "Priority",
-  fieldType: "ENUM",
+  fieldType: CustomFieldType.Enum,
   enumOptions: [MOCK_ENUM_OPTION],
 };
+
+const MOCK_SECOND_OPTION = {
+  ...MOCK_ENUM_OPTION,
+  id: "opt-2",
+  name: "Low",
+  sortOrder: 1,
+};
+
+const MOCK_MULTI_ENUM_FIELD = {
+  ...MOCK_FIELD,
+  fieldType: CustomFieldType.MultiEnum,
+  enumOptions: [MOCK_ENUM_OPTION, MOCK_SECOND_OPTION],
+};
+
+type MockCustomField = typeof MOCK_FIELD | typeof MOCK_MULTI_ENUM_FIELD;
+
+/**
+ * Wires the `@repo/database` mocks for an updateEnumOption run and returns the
+ * individual delegate spies, so a test can assert both which statements ran and
+ * whether they ran inside the rename transaction.
+ */
+function mockUpdateEnumOptionDb(field: MockCustomField) {
+  const optionUpdate = vi
+    .fn()
+    .mockImplementation(({ data }: { data: { name?: string } }) =>
+      Promise.resolve({ ...MOCK_ENUM_OPTION, ...data })
+    );
+  const txValueDelegate = {
+    findMany: vi.fn().mockResolvedValue([]),
+    update: vi.fn().mockResolvedValue({}),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+  };
+  const executeRaw = vi.fn().mockResolvedValue(0);
+
+  mockWithDb.mockImplementation((callback: any) =>
+    callback({ customField: { findFirst: vi.fn().mockResolvedValue(field) } })
+  );
+  (withDb as any).tx = vi.fn().mockImplementation((callback: any) =>
+    callback({
+      customFieldEnumOption: { update: optionUpdate },
+      customFieldValue: txValueDelegate,
+      $executeRaw: executeRaw,
+    })
+  );
+
+  return { optionUpdate, txValueDelegate, executeRaw };
+}
 
 // ---------------------------------------------------------------------------
 
@@ -172,6 +225,105 @@ describe("enumOptionsService.createEnumOption", () => {
     ).rejects.toThrow(
       "Custom field not found or does not belong to organization"
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("enumOptionsService.updateEnumOption", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("re-derives ENUM display values with one updateMany instead of a write per row", async () => {
+    // Arrange
+    const { txValueDelegate, executeRaw } = mockUpdateEnumOptionDb(MOCK_FIELD);
+
+    // Act
+    const result = await enumOptionsService.updateEnumOption(
+      TEST_OPTION_ID,
+      TEST_FIELD_ID,
+      TEST_ORG_ID,
+      { name: "Urgent" }
+    );
+
+    // Assert — an ENUM row's displayValue is the option name verbatim, so a
+    // single set-based statement covers every affected row.
+    expect(result.name).toBe("Urgent");
+    expect(txValueDelegate.updateMany).toHaveBeenCalledTimes(1);
+    expect(txValueDelegate.updateMany).toHaveBeenCalledWith({
+      where: {
+        customFieldId: TEST_FIELD_ID,
+        organizationId: TEST_ORG_ID,
+        enumValueId: TEST_OPTION_ID,
+      },
+      data: { displayValue: "Urgent" },
+    });
+    // No per-row update, and no unbounded read of the affected rows.
+    expect(txValueDelegate.update).not.toHaveBeenCalled();
+    expect(txValueDelegate.findMany).not.toHaveBeenCalled();
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("leaves value rows untouched when the name is not being changed", async () => {
+    // Arrange
+    const { optionUpdate, txValueDelegate, executeRaw } =
+      mockUpdateEnumOptionDb(MOCK_FIELD);
+
+    // Act
+    await enumOptionsService.updateEnumOption(
+      TEST_OPTION_ID,
+      TEST_FIELD_ID,
+      TEST_ORG_ID,
+      { color: "blue" }
+    );
+
+    // Assert
+    expect(optionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { color: "blue" } })
+    );
+    expect(txValueDelegate.updateMany).not.toHaveBeenCalled();
+    expect(txValueDelegate.update).not.toHaveBeenCalled();
+    expect(executeRaw).not.toHaveBeenCalled();
+  });
+
+  it("re-derives MULTI_ENUM display values in one statement inside the rename transaction", async () => {
+    // Arrange
+    const { txValueDelegate, executeRaw } = mockUpdateEnumOptionDb(
+      MOCK_MULTI_ENUM_FIELD
+    );
+
+    // Act
+    await enumOptionsService.updateEnumOption(
+      TEST_OPTION_ID,
+      TEST_FIELD_ID,
+      TEST_ORG_ID,
+      { name: "Urgent" }
+    );
+
+    // Assert — one statement, scoped to the owning field, the owning org, and
+    // the renamed option, and issued on the transaction client so it commits
+    // or rolls back with the rename itself.
+    expect(executeRaw).toHaveBeenCalledTimes(1);
+    const [separator, updatedAt, fieldId, orgId, optionId] =
+      executeRaw.mock.calls[0][0].values;
+    expect([separator, fieldId, orgId, optionId]).toEqual([
+      MULTI_ENUM_DISPLAY_SEPARATOR,
+      TEST_FIELD_ID,
+      TEST_ORG_ID,
+      TEST_OPTION_ID,
+    ]);
+    // A client-clock timestamp, not `now()` — the transaction's start time can
+    // land behind a row Prisma wrote later in that same transaction.
+    expect(updatedAt).toBeInstanceOf(Date);
+    // The row-at-a-time path is gone.
+    expect(txValueDelegate.update).not.toHaveBeenCalled();
+    expect(txValueDelegate.updateMany).not.toHaveBeenCalled();
+    expect(txValueDelegate.findMany).not.toHaveBeenCalled();
   });
 });
 

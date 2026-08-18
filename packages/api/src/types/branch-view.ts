@@ -5,7 +5,7 @@
 
 import { PrCommentAuthorKind as SharedPrCommentAuthorKind } from "@closedloop-ai/loops-api/branch-view";
 import type { ChecksStatus, ReviewDecision } from "./branch-checks";
-import { ThreadSource, ThreadStatus } from "./comment";
+import { ThreadSource } from "./comment";
 import type { GitHubPRState, StatusCheckRollupFailureReason } from "./github";
 
 // `ChecksStatus`/`ReviewDecision` are defined in `./branch-checks` (see that
@@ -61,12 +61,6 @@ export const GitHubDiffSide = {
 } as const;
 export type GitHubDiffSide =
   (typeof GitHubDiffSide)[keyof typeof GitHubDiffSide];
-
-export const GITHUB_LEGACY_COMMENT_STATE_TO_THREAD_STATUS = {
-  [PRReviewCommentState.Pending]: ThreadStatus.Open,
-  [PRReviewCommentState.Addressed]: ThreadStatus.Resolved,
-  [PRReviewCommentState.Dismissed]: ThreadStatus.Resolved,
-} as const satisfies Record<PRReviewCommentState, ThreadStatus>;
 
 export const BranchViewCommentAction = {
   CreateConversation: "create_conversation",
@@ -607,3 +601,16 @@ export function parseNumericGithubCommentId(
   }
   return parsed;
 }
+
+/**
+ * Error codes on the Branch View file-diff route. `github_access_denied` is
+ * returned with a `details.accessDenial` carrying a `GitHubAccessDenialReason`
+ * (PLN-1525): the file diff exists, but the requesting user's own GitHub
+ * credential cannot reach the repository. Distinct from a 404 so the client can
+ * offer remediation instead of rendering an empty diff.
+ */
+export const BranchViewFileDiffErrorCode = {
+  GithubAccessDenied: "github_access_denied",
+} as const;
+export type BranchViewFileDiffErrorCode =
+  (typeof BranchViewFileDiffErrorCode)[keyof typeof BranchViewFileDiffErrorCode];

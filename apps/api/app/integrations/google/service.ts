@@ -11,13 +11,14 @@ import {
 } from "@repo/google";
 import { parseError } from "@repo/observability/error";
 import { log } from "@repo/observability/log";
-import pLimit from "p-limit";
 import { documentService } from "@/app/documents/document-service";
 import { projectsService } from "@/app/projects/service";
+import { mapWithDbConcurrency } from "@/lib/db-fanout";
 import {
   encryptTokenPair,
   resolveIntegrationToken,
 } from "@/lib/integration-encryption";
+import { truncateToUtf8Bytes } from "@/lib/truncate-utf8";
 
 /**
  * Result types for service operations
@@ -154,6 +155,7 @@ export async function ensureValidAccessToken(
           tokenExpiresAt,
           lastUsedAt: new Date(),
         },
+        select: { id: true },
       })
     );
 
@@ -171,11 +173,27 @@ export async function ensureValidAccessToken(
   }
 }
 
+// Cap on the markdown stored per imported document, in UTF-8 BYTES. Measured
+// in bytes rather than `String.length` so a CJK or emoji-heavy document cannot
+// slip through at several times this size — see `truncateToUtf8Bytes`.
+//
+// Exported for the same reason as `sanitizeErrorForClient` below: the gdrive
+// context-attachment route runs the identical import, so this is ONE product
+// contract. Re-declaring it there would let a change to the cap apply to only
+// one of the two paths. Tests import it too rather than restating the literal.
+export const MAX_CONTENT_BYTES = 1024 * 1024; // 1MB
+
 /**
  * Sanitize Google API errors for client display.
  * Maps detailed Google errors to user-friendly messages.
+ *
+ * Exported because the gdrive context-attachment route runs the identical
+ * failure modes (`getDocName` / `exportDocAsMarkdown` / `documentService.create`)
+ * and must not put raw googleapis text in a response body: those messages quote
+ * the offending credential bare (`ya29.…`), so returning `error.message` ships a
+ * live access token to the browser.
  */
-function sanitizeErrorForClient(error: unknown): string {
+export function sanitizeErrorForClient(error: unknown): string {
   const errorMsg = String(error);
 
   if (errorMsg.includes("Permission denied") || errorMsg.includes("403")) {
@@ -304,6 +322,7 @@ export const googleService = {
             tokenExpiresAt,
             lastUsedAt: new Date(),
           },
+          select: { id: true },
         })
       );
 
@@ -497,8 +516,6 @@ export const googleService = {
       });
     }
 
-    // Import docs with concurrency limit
-    const limit = pLimit(5); // 5 parallel imports
     const artifacts: Array<{
       id: string;
       slug: string;
@@ -507,90 +524,85 @@ export const googleService = {
     const failures: Array<{ docId: string; docTitle: string; error: string }> =
       [];
 
-    const importPromises = docs.map((doc) =>
-      limit(async () => {
+    await mapWithDbConcurrency(docs, async (doc) => {
+      try {
+        // Export doc as markdown
+        let markdown: string;
         try {
-          // Export doc as markdown
-          let markdown: string;
-          try {
-            markdown = await exportDocAsMarkdown(doc.id, accessToken);
-          } catch (error) {
-            const errorMsg = sanitizeErrorForClient(error);
-            log.error("[google/import] Failed to export doc", {
-              organizationId,
-              docId: doc.id,
-              docTitle: doc.name,
-              error: parseError(error),
-            });
-            failures.push({
-              docId: doc.id,
-              docTitle: doc.name,
-              error: errorMsg,
-            });
-            return;
-          }
-
-          // Markdown is stored verbatim; the renderer sanitizes at render
-          // time (markdown → HTML). HTML-sanitizing raw markdown corrupts URL
-          // query strings (`&` → `&amp;`), strips `<https://…>` autolinks, and
-          // mangles code blocks that legitimately contain angle brackets.
-          const MAX_SIZE = 1024 * 1024; // 1MB
-          let content = markdown;
-          if (content.length > MAX_SIZE) {
-            content = content.slice(0, MAX_SIZE);
-            log.warn("[google/import] Truncated doc to 1MB", {
-              organizationId,
-              docId: doc.id,
-              docTitle: doc.name,
-              originalSize: markdown.length,
-              truncatedSize: content.length,
-            });
-          }
-
-          // Create artifact
-          const artifact = await documentService.create(
-            organizationId,
-            userId,
-            {
-              projectId,
-              type: "PRD",
-              status: DocumentStatus.Draft,
-              title: doc.name,
-              content,
-              fileName: `${doc.name}.md`,
-            }
-          );
-
-          if (!artifact) {
-            throw new Error("Failed to create artifact (returned null)");
-          }
-
-          log.info("[google/import] Imported doc", {
-            organizationId,
-            docId: doc.id,
-            docTitle: doc.name,
-            documentId: artifact.id,
-          });
-
-          artifacts.push({
-            id: artifact.id,
-            slug: artifact.slug ?? "",
-            title: artifact.title,
-          });
+          markdown = await exportDocAsMarkdown(doc.id, accessToken);
         } catch (error) {
           const errorMsg = sanitizeErrorForClient(error);
-          log.error("[google/import] Failed to create artifact", {
+          log.error("[google/import] Failed to export doc", {
             organizationId,
             docId: doc.id,
             docTitle: doc.name,
             error: parseError(error),
           });
-          failures.push({ docId: doc.id, docTitle: doc.name, error: errorMsg });
+          failures.push({
+            docId: doc.id,
+            docTitle: doc.name,
+            error: errorMsg,
+          });
+          return;
         }
-      })
-    );
 
-    await Promise.all(importPromises);
+        // Markdown is stored verbatim; the renderer sanitizes at render
+        // time (markdown → HTML). HTML-sanitizing raw markdown corrupts URL
+        // query strings (`&` → `&amp;`), strips `<https://…>` autolinks, and
+        // mangles code blocks that legitimately contain angle brackets.
+        const truncation = truncateToUtf8Bytes(markdown, MAX_CONTENT_BYTES);
+        const content = truncation.text;
+        if (truncation.truncated) {
+          // Message text is a Datadog query key, not prose — the first arg
+          // becomes the `message` attribute monitors match on. Cap goes in
+          // `maxBytes`, so the value stays sourced from the constant.
+          log.warn("[google/import] Truncated doc to 1MB", {
+            organizationId,
+            docId: doc.id,
+            docTitle: doc.name,
+            maxBytes: MAX_CONTENT_BYTES,
+            originalBytes: truncation.originalByteLength,
+            truncatedBytes: truncation.byteLength,
+          });
+        }
+
+        // Create artifact
+        const artifact = await documentService.create(organizationId, userId, {
+          projectId,
+          type: "PRD",
+          status: DocumentStatus.Draft,
+          title: doc.name,
+          content,
+          fileName: `${doc.name}.md`,
+        });
+
+        if (!artifact) {
+          throw new Error("Failed to create artifact (returned null)");
+        }
+
+        log.info("[google/import] Imported doc", {
+          organizationId,
+          docId: doc.id,
+          docTitle: doc.name,
+          documentId: artifact.id,
+        });
+
+        artifacts.push({
+          id: artifact.id,
+          slug: artifact.slug ?? "",
+          title: artifact.title,
+        });
+      } catch (error) {
+        const errorMsg = sanitizeErrorForClient(error);
+        log.error("[google/import] Failed to create artifact", {
+          organizationId,
+          docId: doc.id,
+          docTitle: doc.name,
+          error: parseError(error),
+        });
+        failures.push({ docId: doc.id, docTitle: doc.name, error: errorMsg });
+      }
+    });
 
     log.info("[google/import] Import complete", {
       organizationId,

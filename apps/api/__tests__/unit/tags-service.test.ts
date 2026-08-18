@@ -10,6 +10,19 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
+// ISS-4760: the tag mutations now converge linked PR labels. Mocked here so
+// this stays a unit test of the tag writes; the reconciliation itself has its
+// own suite in `lib/github/__tests__/artifact-tag-label-reconciliation.test.ts`.
+const labelReconciliation = vi.hoisted(() => ({
+  reconcileLinkedPullRequestLabelsForArtifact: vi.fn(),
+  reconcileLinkedPullRequestLabelsForArtifacts: vi.fn(),
+}));
+
+vi.mock(
+  "@/lib/github/artifact-tag-label-reconciliation",
+  () => labelReconciliation
+);
+
 import { TAG_COLORS, TagEntityType } from "@repo/api/src/types/tag";
 import { DuplicateNameError, tagService } from "@/app/tags/service";
 
@@ -354,7 +367,13 @@ describe("tagService", () => {
       });
       expect(mockDb.tagProject.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, projectId: entityId },
+        select: { id: true },
       });
+      // ISS-4760: only ARTIFACT tags can reach a pull request. A project tag
+      // must make no GitHub call at all.
+      expect(
+        labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
+      ).not.toHaveBeenCalled();
     });
 
     it("applies tag to a document artifact", async () => {
@@ -383,6 +402,15 @@ describe("tagService", () => {
 
       expect(mockDb.tagArtifact.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, artifactId: entityId },
+        select: { id: true },
+      });
+      // ISS-4760: adding a tag in Closedloop fires no GitHub linkage webhook,
+      // so the mutation path itself has to converge the artifact's linked PRs.
+      expect(
+        labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
+      ).toHaveBeenCalledWith({
+        organizationId: ORG_ID,
+        artifactId: entityId,
       });
     });
 
@@ -405,6 +433,7 @@ describe("tagService", () => {
 
       expect(mockDb.tagLoop.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, loopId: entityId },
+        select: { id: true },
       });
     });
 
@@ -439,6 +468,7 @@ describe("tagService", () => {
       });
       expect(mockDb.tagArtifact.create).toHaveBeenCalledWith({
         data: { tagId: TAG_ID, artifactId: entityId },
+        select: { id: true },
       });
     });
 
@@ -550,6 +580,15 @@ describe("tagService", () => {
 
       expect(mockDb.tagArtifact.deleteMany).toHaveBeenCalledWith({
         where: { tagId: TAG_ID, artifactId: entityId },
+      });
+      // ISS-4760: a removal reconciles too — additively. It re-applies the
+      // artifact's REMAINING tags rather than stripping the label from GitHub,
+      // so a manually-added label is never clobbered by a Closedloop edit.
+      expect(
+        labelReconciliation.reconcileLinkedPullRequestLabelsForArtifact
+      ).toHaveBeenCalledWith({
+        organizationId: ORG_ID,
+        artifactId: entityId,
       });
     });
 

@@ -1,5 +1,67 @@
 import { describe, expect, it } from "vitest";
-import { baseName, truncateText } from "./parser-utils";
+import {
+  asRecord,
+  baseName,
+  classifyToolKind,
+  HARNESS_TOOL_NAMES,
+  isMeaningfulCwd,
+  truncateText,
+} from "./parser-utils";
+
+describe("isMeaningfulCwd (FEA-3668)", () => {
+  it.each([
+    ["/Users/me/project", true],
+    ["/private/tmp/nrev-fix-fea-3590-47751", true],
+    ["C:\\Users\\me\\project", true],
+    ["/", false],
+    ["//", false],
+    ["  /  ", false],
+    ["", false],
+    ["   ", false],
+    ["C:\\", false],
+    ["C:/", false],
+    ["c:", false],
+  ])("treats %j as meaningful=%s", (cwd, expected) => {
+    expect(isMeaningfulCwd(cwd)).toBe(expected);
+  });
+
+  it.each([null, undefined])("rejects %j", (cwd) => {
+    expect(isMeaningfulCwd(cwd)).toBe(false);
+  });
+});
+
+describe("classifyToolKind (FEA-2642 / TC-038)", () => {
+  it("classifies first-party IO/workspace tools as builtin", () => {
+    for (const name of ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]) {
+      expect(classifyToolKind(name)).toBe("builtin");
+    }
+  });
+
+  it("classifies agent-runtime orchestration/meta tools as harness", () => {
+    for (const name of [
+      "Agent",
+      "Task",
+      "TaskCreate",
+      "ToolSearch",
+      "Monitor",
+      "Workflow",
+      "Skill",
+    ]) {
+      expect(classifyToolKind(name)).toBe("harness");
+    }
+  });
+
+  it("classifies mcp__* tools as mcp (prefix wins over the harness list)", () => {
+    expect(classifyToolKind("mcp__figma__authenticate")).toBe("mcp");
+    expect(classifyToolKind("mcp__x__Agent")).toBe("mcp");
+  });
+
+  it("defaults unknown non-mcp tools to builtin", () => {
+    expect(classifyToolKind("SomeBrandNewTool")).toBe("builtin");
+    expect(HARNESS_TOOL_NAMES.has("Bash")).toBe(false);
+    expect(HARNESS_TOOL_NAMES.has("Agent")).toBe(true);
+  });
+});
 
 // The desktop `test/parser-utils.test.ts` covers the ported pure helpers. These
 // tests pin the two functions this extraction changed/added: the browser-safe
@@ -50,5 +112,29 @@ describe("baseName", () => {
   it("handles Windows-style separators so cross-OS cwds match", () => {
     expect(baseName("C:\\Users\\me\\project")).toBe("project");
     expect(baseName("C:\\Users\\me\\project\\")).toBe("project");
+  });
+});
+
+describe("asRecord (ISS-5292)", () => {
+  it("returns {} for non-object values so field reads no-op instead of throwing", () => {
+    // The tolerant `{}` fallback is the contract that distinguishes this helper
+    // from the null-returning `asRecord` in ./type-guards.
+    expect(asRecord(null)).toEqual({});
+    expect(asRecord(undefined)).toEqual({});
+    expect(asRecord("string")).toEqual({});
+    expect(asRecord(42)).toEqual({});
+  });
+
+  it("returns the same object reference for object values", () => {
+    const source = { x: 1 };
+    expect(asRecord(source)).toBe(source);
+  });
+
+  it("treats an array as an object rather than coercing it away", () => {
+    // `typeof [] === "object"`, so arrays take the pass-through arm. Pinned
+    // because a caller reading named fields off an array gets undefined, not a
+    // throw — the degradation this helper exists to provide.
+    const source = [1, 2];
+    expect(asRecord(source)).toBe(source);
   });
 });

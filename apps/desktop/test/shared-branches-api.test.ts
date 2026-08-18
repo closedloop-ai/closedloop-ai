@@ -9,328 +9,41 @@ import {
   ChecksStatus,
   ReviewDecision,
 } from "@repo/api/src/types/branch-checks.js";
+import { BranchMetricAvailability as MetricAvailability } from "@repo/api/src/types/branch-metrics.js";
 import { GitHubPRState } from "@repo/api/src/types/github.js";
-import { ArtifactRefTargetKind } from "@repo/api/src/types/session-artifact-link.js";
-import type { SyncedAgentSession } from "../src/main/agent-session-sync-contract.js";
+import { getSharedBranchAnalytics } from "../src/main/branch/branch-analytics-read.js";
 import {
   type BranchCloudHydrationSource,
   type BranchSyncSource,
-  getSharedBranchAnalytics,
-  getSharedBranchDetail,
   getSharedBranches,
-  getSharedBranchTrace,
+  getSharedBranchesPageData,
   getSharedBranchUsage,
-} from "../src/main/shared-branches-api.js";
+} from "../src/main/branch/shared-branches-api.js";
+import {
+  ensureOrgDirectory,
+  resetOrgDirectoryCacheForTest,
+} from "../src/main/session/org-directory-cache.js";
 import {
   emptySharedBranchesAnalytics,
   emptySharedBranchesListResponse,
+  emptySharedBranchesPageDataResponse,
   emptySharedBranchesUsageSummary,
   SHARED_BRANCHES_SOURCE_ERROR_CODE,
 } from "../src/shared/shared-branches-contract.js";
+import { estimateTokenCost } from "../src/shared/token-cost.js";
 
-type CannedRows = {
-  links?: Record<string, unknown>[];
-  prs?: Record<string, unknown>[];
-  /** PRD-486: rows for the branch commit read (kind='commit' join). */
-  commits?: Record<string, unknown>[];
-  tokenAgg?: Record<string, unknown>[];
-  usageTokens?: Record<string, unknown>[];
-  usageEvents?: Record<string, unknown>[];
-  /** D1: when present, wires a fake `syncSource.loadSyncedSessions`. */
-  sessions?: SyncedAgentSession[];
-};
-
-const SQL_SECRET = /SELECT|secret/;
-const KIND_BRANCH_RE = /kind = 'branch'/;
-
-/**
- * A `BranchSyncSource` whose `prisma.client` serves canned rows. The B1 branch
- * reads run on the single Prisma client. Two are TYPED delegates
- * (`sessionArtifactLink.findMany`, `artifact.findMany`); token reads and others
- * stay raw on `$queryRawUnsafe` (row array, no `{ rows }` envelope). The canned rows are
- * authored once in snake_case (the DB-column shape) and translated here into the
- * Prisma RESULT shape each typed read maps, so the real read mapping — incl. the
- * `activityAt` COALESCE and the bigint→number token coercion — is exercised.
- * `onQuery` fires for EVERY read (typed + raw) so the count / guard tests still
- * see one signal per read.
- */
-function makeSource(
-  rows: CannedRows,
-  onQuery?: (sql: string) => void
-): BranchSyncSource {
-  // Typed link read: session_artifact_links → branch artifact + session. Serves
-  // both the link read and the usage read's first query (`distinct: ['sessionId']`
-  // selecting `session.billingMode`). The canned `activity_at` is surfaced as
-  // `ended_at` so the read's `endedAt ?? startedAt ?? observedAt` COALESCE
-  // reproduces it; `billing_mode` (a per-session column) is authored on the link
-  // row and feeds the usage read's session→billing scope.
-  const sessionArtifactLink = {
-    findMany: (args?: {
-      distinct?: string[];
-      where?: {
-        artifact?: {
-          kind?: string;
-          branchName?: unknown;
-          repoFullName?: string | null;
-        };
-      };
-    }) => {
-      // PLN-1148 branch-scoped commit read: session_artifact_links joined to a
-      // kind='commit' artifact, selecting the commit columns off `artifact`.
-      if (args?.where?.artifact?.kind === "commit") {
-        onQuery?.("commits");
-        return Promise.resolve(
-          (rows.commits ?? []).map((c) => ({
-            artifact: {
-              sha: c.sha,
-              committedAt: c.committed_at,
-              title: c.message,
-            },
-          }))
-        );
-      }
-      onQuery?.("links");
-      let mapped = (rows.links ?? []).map((r) => ({
-        sessionId: r.session_id,
-        isPrimary: r.is_primary,
-        observedAt: r.observed_at,
-        artifact: {
-          repoFullName: r.repo_full_name,
-          branchName: r.branch_name,
-          linesAdded: r.lines_added ?? null,
-          linesRemoved: r.lines_removed ?? null,
-          filesChanged: r.files_changed ?? null,
-        },
-        session: {
-          endedAt: r.activity_at ?? null,
-          startedAt: null,
-          billingMode: r.billing_mode ?? null,
-        },
-      }));
-      // PLN-1148 branch-scoped link read passes a STRING `branchName` (keyed to
-      // one branch); honor it so the rewired detail's early-exit (empty rows →
-      // null after a single read) and per-branch scoping are exercised. The
-      // list/usage reads pass `branchName: { not: null }` (an object) and must
-      // NOT be filtered — `typeof === "string"` distinguishes the two.
-      const wantBranch = args?.where?.artifact?.branchName;
-      if (typeof wantBranch === "string") {
-        const wantRepo = args?.where?.artifact?.repoFullName ?? null;
-        mapped = mapped.filter(
-          (m) =>
-            m.artifact.branchName === wantBranch &&
-            (m.artifact.repoFullName ?? null) === wantRepo
-        );
-      }
-      if (args?.distinct?.includes("sessionId")) {
-        const seen = new Set<unknown>();
-        return Promise.resolve(
-          mapped.filter((m) => {
-            if (seen.has(m.sessionId)) {
-              return false;
-            }
-            seen.add(m.sessionId);
-            return true;
-          })
-        );
-      }
-      return Promise.resolve(mapped);
-    },
-  };
-  // Typed distinct-key read: branch artifacts deduped by (repo, branch) — the
-  // mock collapses the canned link rows the way the engine's `distinct` would.
-  const artifact = {
-    findMany: () => {
-      onQuery?.("distinctKeys");
-      const seen = new Set<string>();
-      const keys: { repoFullName: unknown; branchName: unknown }[] = [];
-      for (const r of rows.links ?? []) {
-        const dedupeKey = JSON.stringify([r.repo_full_name, r.branch_name]);
-        if (seen.has(dedupeKey)) {
-          continue;
-        }
-        seen.add(dedupeKey);
-        keys.push({
-          repoFullName: r.repo_full_name,
-          branchName: r.branch_name,
-        });
-      }
-      return Promise.resolve(keys);
-    },
-  };
-  // PLN-1148 branch-scoped PR read: pull_requests keyed by (repo, branch). The
-  // canned PR rows are snake_case (DB shape); translate to the Prisma camelCase
-  // result the typed read maps.
-  const pullRequest = {
-    findMany: () => {
-      onQuery?.("prs");
-      return Promise.resolve(
-        (rows.prs ?? []).map((r) => ({
-          repoFullName: r.repo_full_name,
-          branchName: r.branch_name,
-          prNumber: r.pr_number ?? null,
-          prUrl: r.pr_url,
-          title: r.title ?? null,
-          state: r.state ?? null,
-          mergedAt: r.merged_at ?? null,
-          closedAt: r.closed_at ?? null,
-          openedAt: r.opened_at ?? null,
-          observedAt: r.observed_at ?? null,
-        }))
-      );
-    },
-  };
-  const queryRaw = (sql: string) => {
-    onQuery?.(sql);
-    // PRD-486 commit read — most specific first: it also reads
-    // `session_artifact_links` but joins a `kind = 'commit'` artifact.
-    if (sql.includes("kind = 'commit'")) {
-      return Promise.resolve(rows.commits ?? []);
-    }
-    if (sql.includes("FROM pull_requests")) {
-      return Promise.resolve(rows.prs ?? []);
-    }
-    if (sql.includes("GROUP BY l.repo_full_name")) {
-      return Promise.resolve(rows.tokenAgg ?? []);
-    }
-    if (sql.includes("FROM token_events")) {
-      return Promise.resolve(rows.usageEvents ?? []);
-    }
-    // FEA-2260: usage-path token read (JOIN sessions for billing_mode).
-    // billing_mode is a per-session column carried on the link rows in canned
-    // data; the real SQL JOINs sessions s — the mock resolves it by session id.
-    if (
-      sql.includes("FROM token_usage tu") &&
-      sql.includes("JOIN sessions s")
-    ) {
-      onQuery?.("usageTokens");
-      const linkSet = new Set(
-        (rows.links ?? []).map((r) => r.session_id as string)
-      );
-      const billingBySession = new Map<string, string | null>();
-      for (const l of rows.links ?? []) {
-        const sid = l.session_id as string;
-        if (!billingBySession.has(sid)) {
-          billingBySession.set(sid, (l.billing_mode as string) ?? null);
-        }
-      }
-      return Promise.resolve(
-        (rows.usageTokens ?? [])
-          .filter((r) => linkSet.has(r.session_id as string))
-          .map((r) => ({
-            session_id: r.session_id,
-            model: r.model,
-            input_tokens: r.input_tokens,
-            output_tokens: r.output_tokens,
-            cache_read_tokens: r.cache_read_tokens,
-            cache_write_tokens: r.cache_write_tokens,
-            billing_mode: billingBySession.get(r.session_id as string) ?? null,
-            created_at: r.created_at ?? null,
-            cost_usd_estimated: r.cost_usd_estimated ?? null,
-          }))
-      );
-    }
-    // FEA-2260: analytics-path token read (no billing mode JOIN).
-    if (sql.includes("FROM token_usage tu")) {
-      onQuery?.("usageTokens");
-      const linkSet = new Set(
-        (rows.links ?? []).map((r) => r.session_id as string)
-      );
-      return Promise.resolve(
-        (rows.usageTokens ?? [])
-          .filter((r) => linkSet.has(r.session_id as string))
-          .map((r) => ({
-            session_id: r.session_id,
-            model: r.model,
-            input_tokens: r.input_tokens,
-            output_tokens: r.output_tokens,
-            cache_read_tokens: r.cache_read_tokens,
-            cache_write_tokens: r.cache_write_tokens,
-            created_at: r.created_at ?? null,
-            cost_usd_estimated: r.cost_usd_estimated ?? null,
-          }))
-      );
-    }
-    throw new Error(`unexpected SQL in test: ${sql.slice(0, 60)}`);
-  };
-  const sessions = rows.sessions;
-  const syncSource = sessions
-    ? {
-        loadSyncedSessions: (ids: string[]) =>
-          sessions.filter((session) => ids.includes(session.externalSessionId)),
-      }
-    : undefined;
-  return {
-    prisma: {
-      client: {
-        sessionArtifactLink,
-        artifact,
-        pullRequest,
-        $queryRawUnsafe: queryRaw,
-      },
-    },
-    syncSource,
-  } as unknown as BranchSyncSource;
-}
-
-/** Minimal `SyncedAgentSession` for the D1 detail-enrichment tests. */
-const syncedSession = (
-  over: Partial<SyncedAgentSession> & { externalSessionId: string }
-): SyncedAgentSession =>
-  ({
-    externalSessionId: over.externalSessionId,
-    name: null,
-    status: "completed",
-    harness: "claude",
-    model: "claude-sonnet-4-5",
-    startedAt: "2026-06-10T10:00:00.000Z",
-    updatedAt: "2026-06-10T10:00:00.000Z",
-    endedAt: null,
-    metadata: null,
-    agents: [],
-    events: [],
-    tokenUsageByModel: [],
-    ...over,
-  }) as SyncedAgentSession;
-
-// Every read — typed delegate OR raw — throws an SQL-shaped secret, so whichever
-// read a serving op issues first proves the boundary sanitizes it to a code-only
-// error (no SQL leak), independent of which read now runs first.
-const throwSecret = () => {
-  throw new Error("SELECT secret_column FROM secret_table");
-};
-const throwingSource = {
-  prisma: {
-    client: new Proxy(
-      {},
-      {
-        get: (_target, prop) =>
-          prop === "$queryRawUnsafe" ? throwSecret : { findMany: throwSecret },
-      }
-    ),
-  },
-} as unknown as BranchSyncSource;
-
-const link = (over: Record<string, unknown>) => ({
-  repo_full_name: "acme/web",
-  branch_name: "feature/x",
-  session_id: "s1",
-  is_primary: true,
-  observed_at: "2026-06-10T10:00:00.000Z",
-  // Real session last-activity time (COALESCE(ended_at, started_at, observed_at)
-  // in the read). Defaults to the observed time; FEA-2022 cases override it.
-  activity_at: "2026-06-10T10:00:00.000Z",
-  ...over,
-});
-
-// PRD-486: one row of the branch commit read (kind='commit' joined via session).
-const commit = (over: Record<string, unknown>) => ({
-  repo_full_name: "acme/web",
-  branch_name: "feature/x",
-  sha: "abc1234def5678",
-  committed_at: "2026-06-12T08:00:00.000Z",
-  message: "Do the thing",
-  ...over,
-});
+import {
+  type CannedRows,
+  canonicalActivity,
+  commit,
+  eventFromToken,
+  KIND_BRANCH_RE,
+  link,
+  makeSource,
+  rawQueryClientOf,
+  SQL_SECRET,
+  throwingSource,
+} from "./shared-branches-test-helpers.js";
 
 describe("getSharedBranches (B1 list projection)", () => {
   test("missing source → empty canonical response, no read", async () => {
@@ -347,6 +60,10 @@ describe("getSharedBranches (B1 list projection)", () => {
     });
     assert.deepEqual(
       await getSharedBranches(source, { userId: "u1" }),
+      emptySharedBranchesListResponse()
+    );
+    assert.deepEqual(
+      await getSharedBranches(source, { contributorUserId: "u1" }),
       emptySharedBranchesListResponse()
     );
     assert.equal(queried, false);
@@ -384,12 +101,7 @@ describe("getSharedBranches (B1 list projection)", () => {
     assert.deepEqual(row.sessionIds, ["s1"]);
   });
 
-  test("lastActivityAt reflects the session's activity time, not the link scan time (FEA-2022)", async () => {
-    // The importer stamps `observed_at` with wall-clock scan time, so it reads
-    // ~now on every re-import. The branch's last activity must instead reflect
-    // the linked session's real activity (`activity_at`) — here, ~5 weeks earlier.
-    // INTERIM (PLN-1034): the cloud excludes session activity, but the desktop
-    // has no local commit/PR signal until PRD-486, so it still ages by sessions.
+  test("session end and link scan do not fabricate canonical Last active", async () => {
     const source = makeSource({
       links: [
         link({
@@ -399,13 +111,107 @@ describe("getSharedBranches (B1 list projection)", () => {
       ],
     });
     const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.lastActivityAt, "2026-05-15T12:00:00.000Z");
+    assert.equal(row.lastActivityAt, "");
+    assert.equal(
+      row.canonicalLastActiveAt?.state,
+      MetricAvailability.Unavailable
+    );
   });
 
-  test("lastActivityAt takes the latest activity across sessions by instant (FEA-2022)", async () => {
-    // Two sessions on one branch; the newer activity wins even when its
-    // `observed_at` is older and the timestamps differ in zone/precision (so a
-    // raw string max would mis-rank them).
+  test("local rows do not fabricate canonical Owner from Session ownership", async () => {
+    resetOrgDirectoryCacheForTest();
+    const okUsers = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: [
+              {
+                id: "u1",
+                email: "ada@example.com",
+                firstName: "Ada",
+                lastName: "Lovelace",
+                avatarUrl: null,
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      )) as unknown as typeof fetch;
+    await ensureOrgDirectory(
+      {
+        getApiOrigin: () => "https://api.test",
+        getApiKey: () => "sk_live_test",
+        fetchImpl: okUsers,
+      },
+      1000
+    );
+    const source = makeSource({ links: [link({ user_id: "u1" })] });
+    const [row] = (await getSharedBranches(source)).items;
+    assert.equal(row.ownerIdentity?.availability, row.owner ?? "unavailable");
+    resetOrgDirectoryCacheForTest();
+  });
+
+  test("owner is null (unattributed) when no org-directory match", async () => {
+    resetOrgDirectoryCacheForTest();
+    const source = makeSource({ links: [link({ user_id: "ghost" })] });
+    const [row] = (await getSharedBranches(source)).items;
+    assert.equal(row.owner, null);
+  });
+
+  test("duplicate local links cannot manufacture canonical Owner", async () => {
+    // `u1` owns ONE session but two link rows on the branch; `u2` owns TWO
+    // distinct sessions. Per-session attribution → `u2` (2) beats `u1` (1);
+    // folding per-link would wrongly tie or hand it to `u1`.
+    resetOrgDirectoryCacheForTest();
+    const okUsers = (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            success: true,
+            data: [
+              {
+                id: "u1",
+                email: "ada@example.com",
+                firstName: "Ada",
+                lastName: "Lovelace",
+                avatarUrl: null,
+              },
+              {
+                id: "u2",
+                email: "bob@example.com",
+                firstName: "Bob",
+                lastName: "Kahn",
+                avatarUrl: null,
+              },
+            ],
+          }),
+          { status: 200 }
+        )
+      )) as unknown as typeof fetch;
+    await ensureOrgDirectory(
+      {
+        getApiOrigin: () => "https://api.test",
+        getApiKey: () => "sk_live_test",
+        fetchImpl: okUsers,
+      },
+      1000
+    );
+    const source = makeSource({
+      links: [
+        link({ session_id: "s-u1", user_id: "u1" }),
+        // Duplicate link row for the SAME session — must not double-count u1.
+        link({ session_id: "s-u1", user_id: "u1", is_primary: false }),
+        link({ session_id: "s-u2a", user_id: "u2" }),
+        link({ session_id: "s-u2b", user_id: "u2" }),
+      ],
+    });
+    const [row] = (await getSharedBranches(source)).items;
+    assert.equal(row.ownerIdentity?.availability, row.owner ?? "unavailable");
+    resetOrgDirectoryCacheForTest();
+  });
+
+  test("later generic Session activity stays excluded without monitored evidence", async () => {
     const source = makeSource({
       links: [
         link({
@@ -421,7 +227,11 @@ describe("getSharedBranches (B1 list projection)", () => {
       ],
     });
     const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.lastActivityAt, "2026-06-02T05:30:00-04:00");
+    assert.equal(row.lastActivityAt, "");
+    assert.equal(
+      row.canonicalLastActiveAt?.state,
+      MetricAvailability.Unavailable
+    );
     assert.deepEqual([...row.sessionIds].sort(), ["s-new", "s-old"]);
   });
 
@@ -460,104 +270,23 @@ describe("getSharedBranches (B1 list projection)", () => {
     assert.equal(row.lastActivityAt, "2026-06-14T09:00:00.000Z");
   });
 
-  test("lastActivityAt falls back to session activity with no commit/PR signal (PRD-486)", async () => {
+  test("lastActivityAt stays unavailable with only generic Session activity", async () => {
     const source = makeSource({
       links: [link({ activity_at: "2026-05-15T12:00:00.000Z" })],
       commits: [],
     });
     const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.lastActivityAt, "2026-05-15T12:00:00.000Z");
+    assert.equal(row.lastActivityAt, "");
+    assert.equal(
+      row.canonicalLastActiveAt?.state,
+      MetricAvailability.Unavailable
+    );
   });
 
-  test("merged PR → MERGED state maps to Merged status", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/done" })],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/done",
-          pr_number: 7,
-          pr_url: null,
-          title: null,
-          state: "closed",
-          merged_at: "2026-06-11T10:00:00.000Z",
-          closed_at: "2026-06-11T10:00:00.000Z",
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.prState, "MERGED");
-    assert.equal(row.status, BranchStatus.Merged);
-  });
-
-  test("literal 'merged' state without merged_at still maps to MERGED", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/m" })],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/m",
-          pr_number: 9,
-          pr_url: null,
-          title: null,
-          state: "merged",
-          merged_at: null,
-          closed_at: null,
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.prState, "MERGED");
-    assert.equal(row.status, BranchStatus.Merged);
-  });
-
-  test("null PR state (lifecycle not captured) → OPEN", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/n" })],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/n",
-          pr_number: 11,
-          pr_url: null,
-          title: null,
-          state: null,
-          merged_at: null,
-          closed_at: null,
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.prState, "OPEN");
-    assert.equal(row.status, BranchStatus.Open);
-  });
-
-  test("unrecognized PR state is indeterminate → null prState (no fabrication)", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/u" })],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/u",
-          pr_number: 12,
-          pr_url: null,
-          title: null,
-          state: "draft-ish-garbage",
-          merged_at: null,
-          closed_at: null,
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const [row] = (await getSharedBranches(source)).items;
-    assert.equal(row.prState, null);
-    // The PR number is still shown; only the lifecycle is left indeterminate.
-    assert.equal(row.prNumber, 12);
-    assert.equal(row.status, BranchStatus.Draft);
-  });
+  // PR-lifecycle → status projection cases (merged / closed-unmerged / literal
+  // merged / null-state / unrecognized) live in the focused sibling module
+  // shared-branches-prstate.test.ts (AGENTS.md file-size discipline; this file
+  // is a shrink-only grandfathered file).
 
   test("raw branch reads constrain artifacts.kind = 'branch' (no non-branch inflation)", async () => {
     // The typed reads (link/distinct/usage) carry the kind='branch' constraint
@@ -579,7 +308,7 @@ describe("getSharedBranches (B1 list projection)", () => {
     }
   });
 
-  test(">1 distinct linked PR → multiPrWarning true, newest PR displayed", async () => {
+  test(">1 active linked PR → warning true and no fabricated selection", async () => {
     const source = makeSource({
       links: [link({})],
       prs: [
@@ -609,7 +338,7 @@ describe("getSharedBranches (B1 list projection)", () => {
     });
     const [row] = (await getSharedBranches(source)).items;
     assert.equal(row.multiPrWarning, true);
-    assert.equal(row.prNumber, 42);
+    assert.equal(row.prNumber, null);
   });
 
   test("cloud hydration overlays GitHub fields into shared list rows", async () => {
@@ -706,8 +435,8 @@ describe("getSharedBranches (B1 list projection)", () => {
           output_tokens: 500,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
-          // Captured cost_usd_estimated — the per-branch cost mirrors this stored
-          // value (dashboard basis), it is NOT re-derived from the token counts.
+          // Captured cost mirrors stored values, not derived token counts.
+          raw_cost_usd_estimated: 1.23,
           cost_usd_estimated: 1.23,
         },
       ],
@@ -723,7 +452,7 @@ describe("getSharedBranches (B1 list projection)", () => {
     assert.equal(yRow.estimatedCostUsd, null);
   });
 
-  test("O(grouped): issues exactly 4 reads regardless of branch count", async () => {
+  test("O(grouped): issues exactly 6 set-based reads regardless of branch count", async () => {
     let count = 0;
     const source = makeSource(
       {
@@ -738,8 +467,8 @@ describe("getSharedBranches (B1 list projection)", () => {
     );
     const { items } = await getSharedBranches(source);
     assert.equal(items.length, 2);
-    // links + PRs + token aggregate + commits (PRD-486) — no per-branch fan-out.
-    assert.equal(count, 4);
+    // Links + PRs + commits + canonical activity + token aggregate + divisor.
+    assert.equal(count, 6);
   });
 
   test("a read failure rethrows a sanitized, code-only error (no SQL leak)", async () => {
@@ -805,7 +534,7 @@ describe("getSharedBranches (B1 list projection)", () => {
     const page = await getSharedBranches(source, { limit: 1, offset: 1 });
     assert.equal(page.total, 3);
     assert.equal(page.items.length, 1);
-    // Sorted newest-first (a, b, c by observed_at desc) → offset 1 is "b".
+    // All three are unavailable, so encoded Branch identity breaks the tie.
     assert.equal(page.items[0]?.branchName, "b");
   });
 
@@ -906,30 +635,8 @@ describe("getSharedBranchUsage (B1 usage rollup)", () => {
     assert.equal(summary.byActor[0]?.inputTokens, 10);
   });
 
-  test("unsafe persisted token counts fail through the sanitized source boundary", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "a", session_id: "unsafe-s1" })],
-      usageTokens: [
-        {
-          session_id: "unsafe-s1",
-          model: "unknown-model",
-          input_tokens: "9007199254740992",
-          output_tokens: 1,
-          cache_read_tokens: 0,
-          cache_write_tokens: 0,
-          billing_mode: null,
-          created_at: "2026-06-10T10:00:00.000Z",
-        },
-      ],
-    });
-
-    await assert.rejects(
-      () => getSharedBranchUsage(source),
-      (error) =>
-        error instanceof Error &&
-        error.message === SHARED_BRANCHES_SOURCE_ERROR_CODE
-    );
-  });
+  // FEA-4280 out-of-range token degradation cases live in the focused sibling
+  // `shared-branches-usage-degrade.test.ts` (kept out of this grandfathered file).
 
   test("billing split uses the canonical ledger — real modes no longer dropped", async () => {
     const source = makeSource({
@@ -982,105 +689,146 @@ describe("getSharedBranchUsage (B1 usage rollup)", () => {
     );
   });
 
-  test("windows the rollup to branches active on/after startDate (FEA-2155)", async () => {
-    // Two branches: "recent" last-active inside a 7-day window, "stale" outside.
-    // The window must restrict totals + branch count to the in-window branch.
+  test("windows AI spend by each EVENT's created_at, splitting a long session across windows (FEA-4270)", async () => {
+    // ONE branch, active in-window, with ONE long-running session `s-split` that
+    // STARTED before the window but has usage EVENTS both inside AND outside it.
+    // A windowed AI-spend read must count ONLY the in-window events — not the
+    // session's whole lifetime spend, and not the pre-window turn — so a session's
+    // cost splits across windows by turn. This matches the cloud per-event
+    // producer so the shared Branches card reports the same windowed spend on both
+    // adapters (shafty023 P1 rework of chatgpt-codex #3667842014). All-time uses
+    // the aggregate token_usage totals so nothing regresses for legacy sessions.
     const source = makeSource({
       links: [
         link({
-          branch_name: "recent",
-          session_id: "s-recent",
+          branch_name: "active",
+          session_id: "s-split",
           activity_at: "2026-06-20T10:00:00.000Z",
         }),
-        link({
-          branch_name: "stale",
-          session_id: "s-stale",
-          activity_at: "2026-05-01T10:00:00.000Z",
-        }),
       ],
+      // Aggregate lifetime totals — used ONLY by the all-time (no-window) path.
       usageTokens: [
         {
-          session_id: "s-recent",
+          session_id: "s-split",
           model: "unknown-model",
-          input_tokens: 10,
-          output_tokens: 5,
+          input_tokens: 110,
+          output_tokens: 55,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           billing_mode: null,
           created_at: "2026-06-20T10:00:00.000Z",
+          cost_usd_estimated: 11,
+        },
+      ],
+      // Per-event rows (token_events) — used by the WINDOWED path. Two in-window
+      // events (10 in-tokens total, $1) and one pre-window event (100 in-tokens,
+      // $10) that must be excluded under the window.
+      usageEvents: [
+        {
+          session_id: "s-split",
+          model: "unknown-model",
+          input_tokens: 6,
+          output_tokens: 3,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-20T10:00:00.000Z",
+          session_started_at: "2026-06-10T09:00:00.000Z",
+          cost_usd_estimated: 0.5,
         },
         {
-          session_id: "s-stale",
+          session_id: "s-split",
+          model: "unknown-model",
+          input_tokens: 4,
+          output_tokens: 2,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-21T10:00:00.000Z",
+          session_started_at: "2026-06-10T09:00:00.000Z",
+          cost_usd_estimated: 0.5,
+        },
+        {
+          session_id: "s-split",
           model: "unknown-model",
           input_tokens: 100,
           output_tokens: 50,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           billing_mode: null,
-          created_at: "2026-05-01T10:00:00.000Z",
+          // Pre-window turn — must be excluded under the window.
+          created_at: "2026-06-10T10:00:00.000Z",
+          session_started_at: "2026-06-10T09:00:00.000Z",
+          cost_usd_estimated: 10,
         },
       ],
     });
-    // All-time (no window): both branches, both sessions' tokens.
+    // All-time: the aggregate lifetime totals (110 input tokens, $11), one branch.
     const all = await getSharedBranchUsage(source);
-    assert.equal(all.totalBranches, 2);
+    assert.equal(all.totalBranches, 1);
     assert.equal(all.totalInputTokens, 110);
-    // 7-day-style window: only "recent" qualifies.
+    assert.equal(all.totalEstimatedCost, 11);
+    // Windowed [06-17, 06-30]: the branch still qualifies, and only the two
+    // in-window EVENTS count — 6 + 4 = 10 input tokens, $0.50 + $0.50 = $1 — while
+    // the pre-window $10 turn (06-10) and the $11 lifetime aggregate are excluded.
     const windowed = await getSharedBranchUsage(source, {
       startDate: "2026-06-17T00:00:00.000Z",
+      endDate: "2026-06-30T00:00:00.000Z",
     });
     assert.equal(windowed.totalBranches, 1);
     assert.equal(windowed.totalInputTokens, 10);
     assert.equal(windowed.totalOutputTokens, 5);
+    assert.equal(windowed.totalEstimatedCost, 1);
   });
 
-  test("usage endDate excludes branches active after the window (FEA-2155)", async () => {
-    // Mirrors the analytics endDate test: "after-window" (active 06-25) is past
-    // the window's upper bound and must be dropped, leaving only "in-window".
+  test("excludes a token_event with a NULL created_at under an active window (FEA-4270)", async () => {
+    // A per-event row whose `created_at` is null cannot be placed in a bounded
+    // window, so a date-bounded spend read drops it (matching the cloud
+    // `tokenEventInDateWindow` null-exclusion) — the windowed total stays equal to
+    // the sum of the events actually shown.
     const source = makeSource({
       links: [
         link({
-          branch_name: "in-window",
-          session_id: "s-in",
-          activity_at: "2026-06-10T10:00:00.000Z",
-        }),
-        link({
-          branch_name: "after-window",
-          session_id: "s-after",
-          activity_at: "2026-06-25T10:00:00.000Z",
+          branch_name: "active",
+          session_id: "s-null",
+          activity_at: "2026-06-20T10:00:00.000Z",
         }),
       ],
-      usageTokens: [
+      usageEvents: [
         {
-          session_id: "s-in",
+          session_id: "s-null",
           model: "unknown-model",
-          input_tokens: 10,
-          output_tokens: 5,
+          input_tokens: 3,
+          output_tokens: 0,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           billing_mode: null,
-          created_at: "2026-06-10T10:00:00.000Z",
+          created_at: "2026-06-20T10:00:00.000Z",
+          session_started_at: "2026-06-20T09:00:00.000Z",
+          cost_usd_estimated: 1,
         },
         {
-          session_id: "s-after",
+          session_id: "s-null",
           model: "unknown-model",
           input_tokens: 100,
           output_tokens: 50,
           cache_read_tokens: 0,
           cache_write_tokens: 0,
           billing_mode: null,
-          created_at: "2026-06-25T10:00:00.000Z",
+          // Null event time → excluded under a window.
+          created_at: null,
+          session_started_at: "2026-06-20T09:00:00.000Z",
+          cost_usd_estimated: 8,
         },
       ],
     });
     const windowed = await getSharedBranchUsage(source, {
-      startDate: "2026-06-01T00:00:00.000Z",
-      endDate: "2026-06-15T00:00:00.000Z",
+      startDate: "2026-06-17T00:00:00.000Z",
+      endDate: "2026-06-30T00:00:00.000Z",
     });
-    // Only "in-window" (active 06-10) falls within [06-01, 06-15]; the 06-25
-    // branch is excluded by endDate.
-    assert.equal(windowed.totalBranches, 1);
-    assert.equal(windowed.totalInputTokens, 10);
+    // Only the one dated in-window event — the null-timestamp $8 turn is dropped.
+    assert.equal(windowed.totalInputTokens, 3);
+    assert.equal(windowed.totalEstimatedCost, 1);
   });
 
   test("windows on the COMMIT-inclusive lastActivityAt, like the table (PRD-486 / FEA-2155)", async () => {
@@ -1115,6 +863,9 @@ describe("getSharedBranchUsage (B1 usage rollup)", () => {
           created_at: "2026-06-20T10:00:00.000Z",
         },
       ],
+      // The session's spend EVENT is in-window (06-20), so per-event windowing
+      // counts it once the commit places the branch in the window.
+      usageEvents: [eventFromToken("s1", "2026-06-20T10:00:00.000Z", 10, 5)],
     });
     const windowed = await getSharedBranchUsage(source, {
       startDate: "2026-06-18T00:00:00.000Z",
@@ -1173,488 +924,60 @@ describe("getSharedBranchUsage (B1 usage rollup)", () => {
     // Totals still come from the complete aggregate, not the events.
     assert.equal(summary.totalInputTokens, 30);
   });
-});
 
-describe("getSharedBranchDetail (Epic C detail projection)", () => {
-  test("null for a missing source, a non-string id, or an empty id", async () => {
-    assert.equal(await getSharedBranchDetail(null, "x"), null);
-    assert.equal(await getSharedBranchDetail(makeSource({}), "x"), null);
-    assert.equal(
-      await getSharedBranchDetail(makeSource({}), 123 as unknown as string),
-      null
-    );
-    assert.equal(await getSharedBranchDetail(makeSource({}), ""), null);
-  });
-
-  test("null when the id matches no local branch (early-exit after one read)", async () => {
-    const reads: string[] = [];
-    const source = makeSource(
-      { links: [link({ branch_name: "feature/x" })] },
-      (q) => reads.push(q)
-    );
-    const missingId = encodeBranchId({
-      repoFullName: "acme/web",
-      branchName: "does-not-exist",
-    });
-    assert.equal(await getSharedBranchDetail(source, missingId), null);
-    // PLN-1148: the scoped link read returns no rows for an unknown branch, so
-    // the detail 404s WITHOUT issuing the PR / token / commit reads.
-    assert.deepEqual(reads, ["links"]);
-  });
-
-  test("no session loader → graceful spine fallback (null/0 usage, empty trace)", async () => {
-    const source = makeSource({
-      links: [
-        link({ branch_name: "feature/x", session_id: "s1", is_primary: true }),
-        link({
-          branch_name: "feature/x",
-          session_id: "s2",
-          is_primary: false,
-          observed_at: "2026-06-10T09:00:00.000Z",
-        }),
-      ],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/x",
-          pr_number: 42,
-          pr_url: "https://gh/acme/web/pull/42",
-          title: "Add X",
-          state: "closed",
-          merged_at: "2026-06-12T10:00:00.000Z",
-          closed_at: "2026-06-12T10:00:00.000Z",
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const id = encodeBranchId({
-      repoFullName: "acme/web",
-      branchName: "feature/x",
-    });
-    const detail = await getSharedBranchDetail(source, id);
-    assert.ok(detail, "expected a non-null detail");
-    assert.equal(detail.id, id);
-    assert.equal(detail.branchName, "feature/x");
-    assert.equal(detail.prNumber, 42);
-    assert.equal(detail.status, BranchStatus.Merged);
-    // Real PR-derived detail fields.
-    assert.deepEqual(detail.linkedPrNumbers, [42]);
-    assert.equal(detail.mergedAt, "2026-06-12T10:00:00.000Z");
-    assert.equal(detail.closedAt, "2026-06-12T10:00:00.000Z");
-    // Sessions spine: every linked session, primary flag preserved.
-    assert.deepEqual(
-      detail.sessions.map((session) => session.sessionId).sort(),
-      ["s1", "s2"]
-    );
-    assert.equal(
-      detail.sessions.find((session) => session.sessionId === "s1")?.isPrimary,
-      true
-    );
-    // Deferred enrichment degrades to null/[]/0 — never fabricated.
-    assert.equal(detail.prBody, null);
-    assert.equal(detail.headSha, null);
-    assert.equal(detail.mergeCommitSha, null);
-    assert.deepEqual(detail.mergedTrace, []);
-    assert.equal(detail.sessions[0]?.inputTokens, 0);
-    assert.equal(detail.sessions[0]?.estimatedCostUsd, null);
-  });
-
-  test("detail exposes commits[] (oldest-first) + openedAt (PRD-486)", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      // Returned newest-first by the fake; the projection must re-sort ascending.
-      commits: [
-        commit({
-          sha: "newsha9999999",
-          committed_at: "2026-06-12T08:00:00.000Z",
-          message: "Second",
-        }),
-        commit({
-          sha: "oldsha1111111",
-          committed_at: "2026-06-09T08:00:00.000Z",
-          message: "First",
-        }),
-      ],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/x",
-          pr_number: 42,
-          pr_url: null,
-          title: null,
-          state: "open",
-          merged_at: null,
-          closed_at: null,
-          opened_at: "2026-06-10T07:00:00.000Z",
-          observed_at: "2026-06-11T10:00:00.000Z",
-        },
-      ],
-    });
-    const id = encodeBranchId({
-      repoFullName: "acme/web",
-      branchName: "feature/x",
-    });
-    const detail = await getSharedBranchDetail(source, id);
-    assert.ok(detail, "expected a non-null detail");
-    assert.equal(detail.openedAt, "2026-06-10T07:00:00.000Z");
-    assert.deepEqual(detail.commits, [
+  test("hour buckets price each event with its cache-write TTL split", async () => {
+    const timestamp = "2026-06-10T10:15:00.000Z";
+    const events = [
       {
-        sha: "oldsha1111111",
-        committedAt: "2026-06-09T08:00:00.000Z",
-        message: "First",
+        session_id: "s1",
+        model: "claude-opus-4-5",
+        input_tokens: 150_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 1000,
+        cache_write_5m_tokens: 600,
+        cache_write_1h_tokens: 400,
+        billing_mode: "api",
+        created_at: timestamp,
       },
       {
-        sha: "newsha9999999",
-        committedAt: "2026-06-12T08:00:00.000Z",
-        message: "Second",
+        session_id: "s1",
+        model: "claude-opus-4-5",
+        input_tokens: 150_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 500,
+        cache_write_5m_tokens: 300,
+        cache_write_1h_tokens: 200,
+        billing_mode: "api",
+        created_at: timestamp,
       },
-    ]);
-  });
+    ];
+    const source = makeSource({
+      links: [link({ branch_name: "a", session_id: "s1" })],
+      usageTokens: [],
+      usageEvents: events,
+    });
 
-  test("a read failure rethrows a sanitized, code-only error (no SQL leak)", async () => {
-    await assert.rejects(
-      getSharedBranchDetail(throwingSource, "x"),
-      (err: Error) => {
-        assert.equal(err.message, SHARED_BRANCHES_SOURCE_ERROR_CODE);
-        assert.doesNotMatch(err.message, SQL_SECRET);
-        return true;
-      }
+    const summary = await getSharedBranchUsage(source);
+    const expected = events.reduce((sum, event) => {
+      const estimate = estimateTokenCost({
+        model: event.model,
+        inputTokens: event.input_tokens,
+        outputTokens: event.output_tokens,
+        cacheReadTokens: event.cache_read_tokens,
+        cacheWriteTokens: event.cache_write_tokens,
+        cacheWrite1hTokens: event.cache_write_1h_tokens,
+        observedAt: event.created_at,
+      });
+      assert.ok(estimate);
+      return sum + estimate.costUsd;
+    }, 0);
+
+    assert.equal(
+      summary.hourBuckets[0]?.byActor[0]?.estimatedCostUsd,
+      expected
     );
-  });
-});
-
-describe("getSharedBranchDetail (D1 enrichment)", () => {
-  const idFeatureX = encodeBranchId({
-    repoFullName: "acme/web",
-    branchName: "feature/x",
-  });
-
-  test("hydrates per-session token splits + priced cost + name/harness", async () => {
-    const source = makeSource({
-      links: [
-        link({ branch_name: "feature/x", session_id: "s1", is_primary: true }),
-        link({
-          branch_name: "feature/x",
-          session_id: "s2",
-          is_primary: false,
-          observed_at: "2026-06-10T09:00:00.000Z",
-        }),
-      ],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          name: "Build the thing",
-          harness: "claude",
-          tokenUsageByModel: [
-            {
-              model: "claude-sonnet-4-5",
-              inputTokens: 1000,
-              outputTokens: 500,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-            },
-          ],
-        }),
-        syncedSession({
-          externalSessionId: "s2",
-          harness: "codex",
-          tokenUsageByModel: [
-            {
-              model: "claude-sonnet-4-5",
-              inputTokens: 200,
-              outputTokens: 100,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail, "expected a non-null detail");
-    const s1 = detail.sessions.find((session) => session.sessionId === "s1");
-    const s2 = detail.sessions.find((session) => session.sessionId === "s2");
-    assert.equal(s1?.name, "Build the thing");
-    assert.equal(s1?.harness, "claude");
-    assert.equal(s1?.inputTokens, 1000);
-    assert.equal(s1?.outputTokens, 500);
-    assert.ok(
-      (s1?.estimatedCostUsd ?? 0) > 0,
-      "priced model → real per-session cost"
-    );
-    assert.equal(s2?.harness, "codex");
-    assert.equal(s2?.inputTokens, 200);
-    // Single PR across both sessions → one linked PR number, no warning.
-    assert.equal(detail.multiPrWarning, false);
-  });
-
-  test("linkedArtifacts derive from the BRANCH NAME slug, ignoring noisy session prose refs", async () => {
-    const branchName = "fea-1952-branches-epic-f";
-    const id = encodeBranchId({ repoFullName: "acme/web", branchName });
-    const source = makeSource({
-      links: [link({ branch_name: branchName, session_id: "s1" })],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          // A prose/MCP mention of an UNRELATED artifact — must NOT become a link.
-          artifactRefs: [
-            {
-              kind: ArtifactRefTargetKind.ClosedloopArtifact,
-              slug: "PLN-988",
-              isPrimary: false,
-              method: "slug_in_message",
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, id);
-    assert.ok(detail, "expected a non-null detail");
-    // Only the branch's own slug (uppercased), not the prose-mentioned PLN-988.
-    assert.deepEqual(detail.linkedArtifacts, [{ slug: "FEA-1952" }]);
-  });
-
-  test("branch name with no Closedloop slug → empty linkedArtifacts", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          artifactRefs: [
-            {
-              kind: ArtifactRefTargetKind.ClosedloopArtifact,
-              slug: "FEA-1952",
-              isPrimary: false,
-              method: "slug_in_message",
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.deepEqual(detail?.linkedArtifacts, []);
-  });
-
-  test("unpriced model → estimatedCostUsd null but tokens still summed", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          tokenUsageByModel: [
-            {
-              model: "totally-unknown-model",
-              inputTokens: 42,
-              outputTokens: 7,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    const s1 = detail?.sessions.find((session) => session.sessionId === "s1");
-    assert.equal(s1?.estimatedCostUsd, null);
-    assert.equal(s1?.inputTokens, 42);
-    assert.equal(s1?.outputTokens, 7);
-  });
-
-  test(">1 distinct linked PR → multiPrWarning true, linkedPrNumbers length 2", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      prs: [
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/x",
-          pr_number: 42,
-          pr_url: null,
-          title: null,
-          state: "open",
-          merged_at: null,
-          closed_at: null,
-          observed_at: "2026-06-10T12:00:00.000Z",
-        },
-        {
-          repo_full_name: "acme/web",
-          branch_name: "feature/x",
-          pr_number: 43,
-          pr_url: null,
-          title: null,
-          state: "open",
-          merged_at: null,
-          closed_at: null,
-          observed_at: "2026-06-10T11:00:00.000Z",
-        },
-      ],
-      sessions: [syncedSession({ externalSessionId: "s1" })],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.equal(detail?.multiPrWarning, true);
-    assert.equal(detail?.linkedPrNumbers.length, 2);
-    assert.deepEqual([...(detail?.linkedPrNumbers ?? [])].sort(), [42, 43]);
-  });
-
-  test("null enrichment degrades to null, never 0 (LOC + base + GitHub fields)", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      sessions: [syncedSession({ externalSessionId: "s1" })],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail);
-    for (const field of [
-      detail.additions,
-      detail.deletions,
-      detail.filesChanged,
-      detail.baseBranch,
-      detail.headSha,
-      detail.mergeCommitSha,
-      detail.prBody,
-      detail.ahead,
-      detail.behind,
-      detail.checksStatus,
-    ]) {
-      assert.equal(field, null);
-    }
-  });
-
-  // PLN-1148 Phase 2: the merged trace is now produced by the dedicated lazy
-  // `getSharedBranchTrace` endpoint, not the detail (which ships `mergedTrace: []`).
-  test("getSharedBranchTrace: one sessionstart per session + a synthesized idle on a >=120s gap, each tagged", async () => {
-    const source = makeSource({
-      links: [
-        link({ branch_name: "feature/x", session_id: "s1" }),
-        link({ branch_name: "feature/x", session_id: "s2" }),
-      ],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          startedAt: "2026-06-10T10:00:00.000Z",
-        }),
-        // 2h after s1 → a >= 120s gap between the two session-start markers.
-        syncedSession({
-          externalSessionId: "s2",
-          startedAt: "2026-06-10T12:00:00.000Z",
-        }),
-      ],
-    });
-    const trace = await getSharedBranchTrace(source, idFeatureX);
-    // Every item carries its sessionId.
-    for (const item of trace) {
-      assert.equal(typeof item.sessionId, "string");
-    }
-    // Exactly one sessionstart per session.
-    const starts = trace.filter((item) => item.type === "sessionstart");
-    assert.equal(starts.length, 2);
-    assert.deepEqual(starts.map((item) => item.sessionId).sort(), ["s1", "s2"]);
-    // A synthesized idle marker on the >= 120s gap.
-    const idles = trace.filter((item) => item.type === "idle");
-    assert.ok(idles.length >= 1, "expected a synthesized idle marker");
-    const idle = idles[0];
-    assert.ok(idle && idle.type === "idle" && idle.gapMs >= 120_000);
-    // Chronological: s1's start precedes s2's start.
-    const startIndexes = trace
-      .map((item, index) => ({ item, index }))
-      .filter((entry) => entry.item.type === "sessionstart");
-    const s1Index = startIndexes.find((e) => e.item.sessionId === "s1")?.index;
-    const s2Index = startIndexes.find((e) => e.item.sessionId === "s2")?.index;
-    assert.ok(s1Index != null && s2Index != null && s1Index < s2Index);
-  });
-
-  test("PLN-1148 Phase 2: detail defers the trace ([]) and summarizes lead-time from event instants", async () => {
-    const source = makeSource({
-      links: [link({ branch_name: "feature/x", session_id: "s1" })],
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          events: [
-            {
-              externalEventId: "e1",
-              eventType: "user",
-              createdAt: "2026-06-10T10:00:00.000Z",
-            },
-            // 5-minute gap (>= the 120s idle threshold) → one idle span.
-            {
-              externalEventId: "e2",
-              eventType: "assistant",
-              createdAt: "2026-06-10T10:05:00.000Z",
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail);
-    // The events-heavy trace is NOT shipped by the detail anymore.
-    assert.deepEqual(detail.mergedTrace, []);
-    // The lightweight lead-time summary IS — derived from the event instants
-    // (which survive the light `omitEventData` hydration).
-    assert.equal(detail.leadTime.firstActivityT, "2026-06-10T10:00:00.000Z");
-    assert.equal(detail.leadTime.lastActivityT, "2026-06-10T10:05:00.000Z");
-    assert.equal(detail.leadTime.idleSpans.length, 1);
-    assert.ok(detail.leadTime.idleSpans[0].gapMs >= 120_000);
-  });
-
-  test("getSharedBranchTrace: empty for a missing source or an id matching no branch", async () => {
-    assert.deepEqual(await getSharedBranchTrace(null, idFeatureX), []);
-    assert.deepEqual(
-      await getSharedBranchTrace(makeSource({}), idFeatureX),
-      []
-    );
-    const otherBranch = makeSource({ links: [link({ branch_name: "other" })] });
-    assert.deepEqual(await getSharedBranchTrace(otherBranch, idFeatureX), []);
-  });
-
-  test("a session that does not hydrate keeps the honest link-row spine", async () => {
-    const source = makeSource({
-      links: [
-        link({ branch_name: "feature/x", session_id: "s1" }),
-        link({ branch_name: "feature/x", session_id: "s-missing" }),
-      ],
-      // Only s1 hydrates; s-missing is absent from the loader result.
-      sessions: [
-        syncedSession({
-          externalSessionId: "s1",
-          tokenUsageByModel: [
-            {
-              model: "claude-sonnet-4-5",
-              inputTokens: 10,
-              outputTokens: 5,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-            },
-          ],
-        }),
-      ],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    const missing = detail?.sessions.find(
-      (session) => session.sessionId === "s-missing"
-    );
-    assert.ok(missing, "the unhydrated session is still listed");
-    assert.equal(missing.harness, "");
-    assert.equal(missing.inputTokens, 0);
-    assert.equal(missing.estimatedCostUsd, null);
-  });
-
-  test("enriched branch LOC flows through to the detail (FEA-1899)", async () => {
-    const source = makeSource({
-      links: [
-        link({
-          branch_name: "feature/x",
-          session_id: "s1",
-          lines_added: 321,
-          lines_removed: 12,
-          files_changed: 7,
-        }),
-      ],
-      sessions: [syncedSession({ externalSessionId: "s1" })],
-    });
-    const detail = await getSharedBranchDetail(source, idFeatureX);
-    assert.ok(detail, "expected a non-null detail");
-    assert.equal(detail.additions, 321);
-    assert.equal(detail.deletions, 12);
-    assert.equal(detail.filesChanged, 7);
   });
 });
 
@@ -1717,11 +1040,12 @@ describe("getSharedBranchAnalytics (B6)", () => {
     // decided (merged + closed) = 50% (pre-fix: 1 / 3 with-a-PR = 33%).
     assert.equal(analytics.mergeRate.state, "available");
     assert.equal(analytics.mergeRate.value, 50);
-    // Neither the branch artifact nor its PR artifact carries LOC, but the merged
-    // single-PR branch still contributes 0 to the median (dashboard parity: a
-    // missing line total folds in as 0), so median PR size is available at 0.
-    assert.equal(analytics.medianPrSize.state, "available");
-    assert.equal(analytics.medianPrSize.value, 0);
+    // Neither the branch artifact nor its PR artifact carries LOC, so the merged
+    // single-PR branch is un-enriched. FEA-2949: the median EXCLUDES un-enriched
+    // PRs (dashboard parity) rather than folding them in as 0, so with no enriched
+    // merged branch the card is unavailable ("—"), not 0.
+    assert.equal(analytics.medianPrSize.state, "unavailable");
+    assert.equal(analytics.medianPrSize.value, null);
     // Active/merged PR counts are computed locally from the same captured
     // pr_state/branch-status rows the web producer uses (FEA-2950), so the shared
     // card shows a real number on desktop too rather than a connect-GitHub "—".
@@ -1964,9 +1288,83 @@ describe("getSharedBranchAnalytics (B6)", () => {
     // Merged single-PR branch with both LOC fields → median (200 + 50) = 250.
     assert.equal(analytics.medianPrSize.state, "available");
     assert.equal(analytics.medianPrSize.value, 250);
-    // Net LOC (200 − 50 = 150) over captured cost ($0.50) → 300 → available, > 0.
+    // Churn (200 + 50 = 250) over captured cost ($0.50) → 500. Deletions ADD to
+    // the numerator (gross churn); netting them out would report 150/0.5 = 300.
     assert.equal(analytics.locPerDollar.state, "available");
-    assert.equal(analytics.locPerDollar.value, 300);
+    assert.equal(analytics.locPerDollar.value, 500);
+  });
+
+  // ISS-4632 — the ratio numerator (branch churn) is the branch's LIFETIME
+  // file-cache diff, so its denominator must be LIFETIME spend too. Under an
+  // active window `totalSpendUsd` is windowed (FEA-4270), but Value-per-$ must
+  // divide by the session's LIFETIME cost — otherwise narrowing the window
+  // shrinks only the denominator and inflates the ratio.
+  test("LOC-per-$ divides lifetime churn by lifetime spend under a window (ISS-4632)", async () => {
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "big-merge",
+          session_id: "s1",
+          lines_added: 200,
+          lines_removed: 50,
+          files_changed: 5,
+          activity_at: "2026-06-20T10:00:00.000Z",
+        }),
+      ],
+      // Lifetime aggregate: the session's whole $1.00 cost.
+      usageTokens: [
+        {
+          session_id: "s1",
+          model: "claude-sonnet-4-5",
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          created_at: "2026-06-20T10:00:00.000Z",
+          cost_usd_estimated: 1,
+        },
+      ],
+      // Per-event rows: only $0.25 falls inside the window; the $0.75 turn is
+      // pre-window and excluded from the WINDOWED AI-spend headline.
+      usageEvents: [
+        {
+          session_id: "s1",
+          model: "claude-sonnet-4-5",
+          input_tokens: 250,
+          output_tokens: 125,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          created_at: "2026-06-20T10:00:00.000Z",
+          session_started_at: "2026-06-10T09:00:00.000Z",
+          cost_usd_estimated: 0.25,
+        },
+        {
+          session_id: "s1",
+          model: "claude-sonnet-4-5",
+          input_tokens: 750,
+          output_tokens: 375,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          billing_mode: null,
+          // Pre-window turn — excluded under the window.
+          created_at: "2026-06-10T10:00:00.000Z",
+          session_started_at: "2026-06-10T09:00:00.000Z",
+          cost_usd_estimated: 0.75,
+        },
+      ],
+    });
+    const analytics = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-17T00:00:00.000Z",
+      endDate: "2026-06-30T00:00:00.000Z",
+    });
+    // Windowed AI-spend headline: only the in-window $0.25.
+    assert.equal(analytics.totalSpendUsd.state, "available");
+    assert.equal(analytics.totalSpendUsd.value, 0.25);
+    // Churn 250 ÷ LIFETIME $1.00 = 250 — NOT 250 / $0.25 = 1000 (the inflated
+    // windowed-denominator ratio this fix removes). Window-stable.
+    assert.equal(analytics.locPerDollar.state, "available");
+    assert.equal(analytics.locPerDollar.value, 250);
   });
 
   test("median PR size falls back to the merged PR artifact's LOC when the branch artifact is un-enriched (FEA-2159)", async () => {
@@ -2038,7 +1436,7 @@ describe("getSharedBranchAnalytics (B6)", () => {
     assert.equal(analytics.medianPrSize.value, 150);
   });
 
-  test("analytics windows after cloud hydration updates lastActivityAt", async () => {
+  test("analytics ignores cloud legacy Last active when selecting a window", async () => {
     const source = makeSource({
       links: [
         link({
@@ -2081,8 +1479,8 @@ describe("getSharedBranchAnalytics (B6)", () => {
       hydration
     );
 
-    assert.equal(analytics.medianPrSize.state, "available");
-    assert.equal(analytics.medianPrSize.value, 150);
+    assert.equal(analytics.medianPrSize.state, "unavailable");
+    assert.equal(analytics.medianPrSize.value, null);
   });
 
   test("median PR size excludes MERGED multi-PR branches (ambiguous lifecycle) even when LOC-enriched (FEA-2159)", async () => {
@@ -2183,14 +1581,14 @@ describe("getSharedBranchAnalytics (B6)", () => {
   });
 
   test("LOC-per-$ excludes the un-enriched-branch share of a mixed session (even-split)", async () => {
-    // One session PUSHED an ENRICHED branch (net LOC 100) AND an UN-enriched one
+    // One session PUSHED an ENRICHED branch (churn 200) AND an UN-enriched one
     // (unknown LOC). FEA-2531: both are active-write links (the `method` records
     // the push that got them past the branch-reads display gate; `makeSource`
     // serves canned post-read rows, so the divisor here IS the active-write-link
     // count — 2). Its $1.00 is even-split across those 2 branches, so only the
     // enriched half ($0.50) — the spend backed by known LOC — counts in the
     // denominator. Counting the full $1.00 would drag the un-enriched half (no LOC
-    // to offset it) in and HALVE the ratio (100/$1 = 100 vs 100/$0.50 = 200).
+    // to offset it) in and HALVE the ratio (200/$1 = 200 vs 200/$0.50 = 400).
     const source = makeSource({
       links: [
         link({
@@ -2222,10 +1620,10 @@ describe("getSharedBranchAnalytics (B6)", () => {
       ],
     });
     const analytics = await getSharedBranchAnalytics(source);
-    // Numerator = net LOC of the lone enriched branch (150 − 50 = 100); the
+    // Numerator = churn of the lone enriched branch (150 + 50 = 200); the
     // un-enriched branch contributes nothing. Denominator = $1.00 × 1/2 = $0.50.
     assert.equal(analytics.locPerDollar.state, "available");
-    assert.equal(analytics.locPerDollar.value, 200);
+    assert.equal(analytics.locPerDollar.value, 400);
     // Headline AI spend still counts the session's full cost ONCE (it isn't the
     // LOC-per-$ denominator — the apportionment only scopes the ratio).
     assert.equal(analytics.totalSpendUsd.state, "available");
@@ -2233,11 +1631,11 @@ describe("getSharedBranchAnalytics (B6)", () => {
   });
 
   test("LOC-per-$ counts a 0-LOC enriched branch but not an un-enriched one", async () => {
-    // KNOWN-zero LOC (both line counts present, net 0) is included; UNKNOWN LOC
-    // (un-enriched) is excluded. Session sZero works a 0-LOC enriched branch;
-    // session sUnknown works only an un-enriched branch. Only sZero's spend may
-    // enter the denominator — and with net LOC 0 across the enriched set the
-    // ratio is 0, NOT a fabricated value from the un-enriched session's $.
+    // KNOWN-zero LOC (both line counts present, no lines touched) is included;
+    // UNKNOWN LOC (un-enriched) is excluded. Session sZero works a 0-LOC enriched
+    // branch; session sUnknown works only an un-enriched branch. Only sZero's
+    // spend may enter the denominator — and with 0 churn across the enriched set
+    // the ratio is 0, NOT a fabricated value from the un-enriched session's $.
     const source = makeSource({
       links: [
         link({
@@ -2273,7 +1671,7 @@ describe("getSharedBranchAnalytics (B6)", () => {
       ],
     });
     const analytics = await getSharedBranchAnalytics(source);
-    // Enriched set = {zero-loc}, net LOC 0, denominator $0.40 → 0 / 0.40 = 0.
+    // Enriched set = {zero-loc}, churn 0, denominator $0.40 → 0 / 0.40 = 0.
     // The un-enriched session's $0.90 is NOT in the denominator.
     assert.equal(analytics.locPerDollar.state, "available");
     assert.equal(analytics.locPerDollar.value, 0);
@@ -2414,14 +1812,82 @@ describe("getSharedBranchAnalytics (B6)", () => {
           cost_usd_estimated: 0.7,
         },
       ],
+      // FEA-4270: windowed spend sums per-event token_events by created_at.
+      usageEvents: [
+        eventFromToken("s-recent", "2026-06-20T10:00:00.000Z", 100, 50, 0.3),
+        eventFromToken("s-stale", "2026-05-01T10:00:00.000Z", 100, 50, 0.7),
+      ],
+      canonicalActivity: [
+        canonicalActivity({
+          branchName: "recent",
+          sourceEventId: "monitored:recent",
+          occurredAt: "2026-06-20T10:00:00.000Z",
+        }),
+        canonicalActivity({
+          branchName: "stale",
+          sourceEventId: "monitored:stale",
+          occurredAt: "2026-05-01T10:00:00.000Z",
+        }),
+      ],
     });
     // All-time: both Draft branches active, spend 0.3 + 0.7 = 1.0.
     const all = await getSharedBranchAnalytics(source);
     assert.equal(all.activeBranchCount.value, 2);
     assert.equal(all.totalSpendUsd.value, 1.0);
-    // 7-day-style window starting after "stale": only "recent" survives.
+    // 7-day-style window starting after "stale": only "recent" survives (its
+    // event is in-window; "stale"'s 05-01 event is out).
     const windowed = await getSharedBranchAnalytics(source, {
       startDate: "2026-06-17T00:00:00.000Z",
+    });
+    assert.equal(windowed.activeBranchCount.value, 1);
+    assert.equal(windowed.totalSpendUsd.value, 0.3);
+  });
+
+  test("analytics windows AI spend by each EVENT's created_at, splitting a long session (FEA-4270)", async () => {
+    // ONE in-window branch with ONE long-running session `s-split` that started
+    // before the window but has usage EVENTS both inside and outside it. The
+    // windowed AI-spend KPI must count ONLY the in-window events ($0.30), not the
+    // session's whole lifetime cost and not the pre-window turn ($0.70), matching
+    // the cloud per-event producer so the shared analytics card agrees on both
+    // adapters (shafty023 P1 rework of chatgpt-codex #3667842014).
+    const source = makeSource({
+      links: [
+        link({
+          branch_name: "active",
+          session_id: "s-split",
+          activity_at: "2026-06-20T10:00:00.000Z",
+        }),
+      ],
+      // Aggregate lifetime cost — used ONLY by the all-time path ($1.00).
+      usageTokens: [
+        {
+          session_id: "s-split",
+          model: "claude-sonnet-4-5",
+          input_tokens: 200,
+          output_tokens: 100,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          created_at: null,
+          cost_usd_estimated: 1.0,
+        },
+      ],
+      // Per-event rows — used by the windowed path. Two in-window ($0.15 each) and
+      // one pre-window ($0.70) that must be excluded under the window.
+      usageEvents: [
+        eventFromToken("s-split", "2026-06-20T10:00:00.000Z", 60, 30, 0.15),
+        eventFromToken("s-split", "2026-06-21T10:00:00.000Z", 40, 20, 0.15),
+        eventFromToken("s-split", "2026-06-10T10:00:00.000Z", 100, 50, 0.7),
+      ],
+    });
+    // All-time: the aggregate lifetime cost, 1.0.
+    const all = await getSharedBranchAnalytics(source);
+    assert.equal(all.totalSpendUsd.value, 1.0);
+    // Windowed [06-17, 06-30]: the branch qualifies but only the two in-window
+    // events are priced — $0.15 + $0.15 = $0.30 — the pre-window $0.70 turn and
+    // the $1.00 lifetime aggregate are excluded.
+    const windowed = await getSharedBranchAnalytics(source, {
+      startDate: "2026-06-17T00:00:00.000Z",
+      endDate: "2026-06-30T00:00:00.000Z",
     });
     assert.equal(windowed.activeBranchCount.value, 1);
     assert.equal(windowed.totalSpendUsd.value, 0.3);
@@ -2437,6 +1903,13 @@ describe("getSharedBranchAnalytics (B6)", () => {
           branch_name: "recent",
           session_id: "s1",
           activity_at: "2026-06-17 23:59:59",
+        }),
+      ],
+      canonicalActivity: [
+        canonicalActivity({
+          branchName: "recent",
+          sourceEventId: "monitored:recent",
+          occurredAt: "2026-06-17 23:59:59",
         }),
       ],
     });
@@ -2478,11 +1951,20 @@ describe("getSharedBranchAnalytics (B6)", () => {
           cost_usd_estimated: 0.25,
         },
       ],
+      // FEA-4270: spend windows on the EVENT's created_at, so give the
+      // contributing session an in-window event (its work landed with the 06-20
+      // commit). The branch-COUNT still keys on the commit-inclusive
+      // lastActivityAt (PRD-486) — the behavior this test guards — but the spend
+      // it counts is now the in-window event's, matching the cloud producer.
+      usageEvents: [
+        eventFromToken("s1", "2026-06-20T07:00:00.000Z", 100, 50, 0.25),
+      ],
     });
     const windowed = await getSharedBranchAnalytics(source, {
       startDate: "2026-06-18T00:00:00.000Z",
     });
-    // Commit 06-20 places the branch in-window → counted + its spend included.
+    // Commit 06-20 places the branch in-window → counted; the in-window event's
+    // spend is included.
     assert.equal(windowed.activeBranchCount.value, 1);
     assert.equal(windowed.totalSpendUsd.value, 0.25);
   });
@@ -2501,11 +1983,184 @@ describe("getSharedBranchAnalytics (B6)", () => {
           activity_at: "2026-06-25T10:00:00.000Z",
         }),
       ],
+      canonicalActivity: [
+        canonicalActivity({
+          branchName: "in-window",
+          sourceEventId: "monitored:in",
+          occurredAt: "2026-06-10T10:00:00.000Z",
+        }),
+        canonicalActivity({
+          branchName: "after-window",
+          sourceEventId: "monitored:after",
+          occurredAt: "2026-06-25T10:00:00.000Z",
+        }),
+      ],
     });
     const windowed = await getSharedBranchAnalytics(source, {
       startDate: "2026-06-01T00:00:00.000Z",
       endDate: "2026-06-15T00:00:00.000Z",
     });
     assert.equal(windowed.activeBranchCount.value, 1);
+  });
+});
+
+describe("getSharedBranchesPageData (FEA-3056 follow-up: combined list + analytics)", () => {
+  test("returns the empty canonical pair for a missing source", async () => {
+    assert.deepEqual(
+      await getSharedBranchesPageData(null),
+      emptySharedBranchesPageDataResponse()
+    );
+  });
+
+  test("contributor cloud filter returns the empty canonical pair without touching the source", async () => {
+    let queried = false;
+    const source = makeSource({}, () => {
+      queried = true;
+    });
+
+    assert.deepEqual(
+      await getSharedBranchesPageData(source, { contributorUserId: "u1" }),
+      emptySharedBranchesPageDataResponse()
+    );
+    assert.equal(queried, false);
+  });
+
+  test("list + analytics exactly match the standalone reads (no drift from sharing rows)", async () => {
+    const rows: CannedRows = {
+      links: [
+        link({ branch_name: "merged-branch", session_id: "s1" }),
+        link({ branch_name: "open-branch", session_id: "s2" }),
+      ],
+      prs: [
+        {
+          repo_full_name: "acme/web",
+          branch_name: "merged-branch",
+          pr_number: 1,
+          pr_url: null,
+          title: null,
+          state: "closed",
+          merged_at: "2026-06-11T10:00:00.000Z",
+          closed_at: "2026-06-11T10:00:00.000Z",
+          observed_at: "2026-06-11T10:00:00.000Z",
+        },
+        {
+          repo_full_name: "acme/web",
+          branch_name: "open-branch",
+          pr_number: 2,
+          pr_url: null,
+          title: null,
+          state: "open",
+          merged_at: null,
+          closed_at: null,
+          observed_at: "2026-06-10T10:00:00.000Z",
+        },
+      ],
+    };
+    const request = { endDate: "2026-07-01T00:00:00.000Z" };
+    const combined = await getSharedBranchesPageData(makeSource(rows), request);
+    const list = await getSharedBranches(makeSource(rows), request);
+    const analytics = await getSharedBranchAnalytics(makeSource(rows), request);
+    assert.deepEqual(combined.list, list);
+    assert.deepEqual(combined.analytics, analytics);
+  });
+
+  test("a read failure rethrows a sanitized, code-only error (no SQL leak)", async () => {
+    await assert.rejects(
+      getSharedBranchesPageData(throwingSource),
+      (err: Error) => {
+        assert.equal(err.message, SHARED_BRANCHES_SOURCE_ERROR_CODE);
+        assert.doesNotMatch(err.message, SQL_SECRET);
+        return true;
+      }
+    );
+  });
+
+  // FEA-4177 wongk review: the analytics-only per-session usage read
+  // (`readBranchAnalyticsTokenRows`, the no-billing-JOIN token read) must live in
+  // the BEST-EFFORT analytics half. It previously ran in the outer fatal
+  // `Promise.all`, so a failure there rejected the whole read and blanked the
+  // list. Fail ONLY that read and prove the list still resolves with
+  // `analyticsError: true` (and no `sessionCostUsd`, since the cost map derives
+  // from the same failed read), while the shared list reads stay fatal.
+  test("an analytics-token read failure degrades to analyticsError without blanking the list", async () => {
+    const base = makeSource({
+      links: [link({ branch_name: "a", session_id: "s1" })],
+      usageTokens: [
+        {
+          session_id: "s1",
+          model: "claude-sonnet-4-5",
+          input_tokens: 10,
+          output_tokens: 20,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          cost_usd_estimated: 1.23,
+        },
+      ],
+    });
+    const baseClient = rawQueryClientOf(base);
+    const baseQueryRaw = baseClient.$queryRawUnsafe.bind(baseClient);
+    // Reject ONLY the analytics-path token read (no billing-mode JOIN); the
+    // list's own token aggregate + link/PR/commit reads still succeed.
+    const source = {
+      ...base,
+      prisma: {
+        client: new Proxy(baseClient, {
+          get: (target, prop) => {
+            if (prop === "$queryRawUnsafe") {
+              return (sql: string, ...args: unknown[]) => {
+                // Both token reads now JOIN sessions (FEA-4270 added
+                // `s.started_at` to the analytics path too), so the sessions JOIN
+                // no longer distinguishes them. The analytics path is the one that
+                // does NOT select `s.billing_mode` (the usage path's billing
+                // split), so reject on that.
+                if (
+                  sql.includes("FROM token_usage tu") &&
+                  !sql.includes("s.billing_mode")
+                ) {
+                  return Promise.reject(
+                    new Error("analytics token read failed")
+                  );
+                }
+                return baseQueryRaw(sql, ...args);
+              };
+            }
+            return Reflect.get(target, prop);
+          },
+        }),
+      },
+    } as unknown as BranchSyncSource;
+
+    const result = await getSharedBranchesPageData(source);
+
+    assert.ok(result.list, "list should still resolve");
+    assert.equal(result.list.total, 1);
+    assert.equal(result.analytics, undefined);
+    assert.equal(result.analyticsError, true);
+    assert.equal(result.list.sessionCostUsd, undefined);
+  });
+
+  // FEA-3056 follow-up: the page-data read must never block first paint on a
+  // live GitHub round trip, so both the list and analytics projections hydrate
+  // via the non-blocking `peekOrWarm` rather than the blocking `hydrate`.
+  test("hydrates via peekOrWarm, not hydrate, so the read never blocks on a live GitHub call", async () => {
+    const calls: string[] = [];
+    const source = makeSource({
+      links: [link({ branch_name: "a", session_id: "s1" })],
+    });
+    const cloudHydration = {
+      hydrate: () => {
+        calls.push("hydrate");
+        return Promise.resolve({ status: BranchCloudHydrationStatus.Fresh });
+      },
+      peekOrWarm: () => {
+        calls.push("peekOrWarm");
+        return Promise.resolve({ status: BranchCloudHydrationStatus.Stale });
+      },
+    };
+
+    await getSharedBranchesPageData(source, {}, cloudHydration);
+
+    assert.ok(calls.length > 0);
+    assert.ok(calls.every((call) => call === "peekOrWarm"));
   });
 });

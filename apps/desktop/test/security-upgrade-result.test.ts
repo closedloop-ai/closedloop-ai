@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { isSecurityUpgradeProvisioned } from "../src/main/security-upgrade-result.js";
+import { isSecurityUpgradeProvisioned } from "../src/main/cloud/security-upgrade-result.js";
 
 describe("isSecurityUpgradeProvisioned", () => {
   test("accepts a Desktop-managed key even when a replay returns the same token", () => {

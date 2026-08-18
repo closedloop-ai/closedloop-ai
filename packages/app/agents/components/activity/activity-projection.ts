@@ -1,10 +1,31 @@
 import type { AgentSessionListItem } from "@repo/api/src/types/agent-session";
+import {
+  DISPLAYED_SESSION_STATUS,
+  SESSION_STATUS,
+} from "@repo/api/src/types/session-status";
 
+/**
+ * ISS-4654 (review, #4651): the `Abandoned` and `Completed` members are gone
+ * with the session-status vocabulary that produced them. Only a raw `abandoned`
+ * or `completed` row could reach them, and those spellings are retired — the
+ * merged backfill collapsed every stored row to `inactive` and no producer can
+ * write one again. `Abandoned` was also the last amber outcome in this slice:
+ * it toned a terminal-not-failed run `warning` and summarized it "Session
+ * abandoned", which is precisely the claim ISS-4586 removed from the badge.
+ *
+ * ISS-5592 then retired the spellings outright, so neither reaches a terminal
+ * arm here at all: this classifier compares the RAW status and takes the
+ * no-outcome-claimed fallthrough instead (wongk, #5075). Do not "restore" a
+ * terminal arm for them — claiming an outcome for a word this build cannot read
+ * is the thing the fallthrough exists to refuse.
+ */
 export const AgentSessionActivityStatus = {
-  Abandoned: "Abandoned",
   Active: "Active",
   AwaitingInput: "Awaiting Input",
-  Completed: "Completed",
+  // ISS-4586: the terminal-not-failed outcome that supersedes Completed and
+  // Abandoned. Without it an `inactive` row falls through to the "Updated"
+  // catch-all and loses its outcome vocabulary in the Activity feed.
+  Inactive: "Inactive",
   Failed: "Failed",
   Updated: "Updated",
 } as const;
@@ -85,23 +106,27 @@ function classifyActivityStatus(
   const normalizedStatus = rawStatus.toLowerCase();
 
   if (
-    (normalizedStatus === "active" || normalizedStatus === "waiting") &&
+    (normalizedStatus === SESSION_STATUS.ACTIVE ||
+      normalizedStatus === DISPLAYED_SESSION_STATUS.WAITING) &&
     item.awaitingInputSince
   ) {
     return AgentSessionActivityStatus.AwaitingInput;
   }
-  if (normalizedStatus === "active") {
+  if (normalizedStatus === SESSION_STATUS.ACTIVE) {
     return AgentSessionActivityStatus.Active;
   }
-  if (normalizedStatus === "completed") {
-    return AgentSessionActivityStatus.Completed;
+  if (normalizedStatus === SESSION_STATUS.INACTIVE) {
+    return AgentSessionActivityStatus.Inactive;
   }
-  if (normalizedStatus === "failed" || normalizedStatus === "error") {
+  if (
+    normalizedStatus === "failed" ||
+    normalizedStatus === SESSION_STATUS.ERROR
+  ) {
     return AgentSessionActivityStatus.Failed;
   }
-  if (normalizedStatus === "abandoned") {
-    return AgentSessionActivityStatus.Abandoned;
-  }
+  // Deliberately NOT the shared status fold: that one fail-opens an
+  // unrecognized value to `active`, and this feed's honest answer for a status
+  // it cannot read is "Updated" — no outcome claimed.
   return AgentSessionActivityStatus.Updated;
 }
 
@@ -149,14 +174,15 @@ function selectActivitySummary(
   if (status === AgentSessionActivityStatus.AwaitingInput) {
     return "Session is awaiting input";
   }
-  if (status === AgentSessionActivityStatus.Completed) {
-    return "Session completed";
+  if (status === AgentSessionActivityStatus.Inactive) {
+    // ISS-4654 (review, #4651): replaces the "Session completed" / "Session
+    // abandoned" pair. One terminal-not-failed outcome, one neutral sentence —
+    // it states that the run is over without claiming it succeeded or was
+    // given up on, neither of which this projection can know.
+    return "Session ended";
   }
   if (status === AgentSessionActivityStatus.Failed) {
     return "Session failed";
-  }
-  if (status === AgentSessionActivityStatus.Abandoned) {
-    return "Session abandoned";
   }
   if (status === AgentSessionActivityStatus.Active) {
     return "Session is active";

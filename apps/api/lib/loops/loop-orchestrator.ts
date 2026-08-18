@@ -1,3 +1,4 @@
+import type { LoopBranchMaterializationEnvelope } from "@closedloop-ai/loops-api/desktop-request";
 import {
   DEFAULT_PRICING,
   getModelPricing,
@@ -19,7 +20,6 @@ import {
   LoopStatus,
   MAX_ADDITIONAL_REPOS,
 } from "@repo/api/src/types/loop";
-import type { LoopBranchMaterializationEnvelope } from "@repo/api/src/types/loop-body";
 import {
   issueLoopRunnerToken,
   type LoopRunnerTokenIssueOverrides,
@@ -38,6 +38,7 @@ import { documentWhere } from "@/lib/artifact-adapters";
 import { parseJsonObject } from "@/lib/json-schema";
 import { dispatchLoopCompletedNotification } from "@/lib/loop-notifications";
 import { dispatchLoopCompletedSlackNotification } from "@/lib/loop-slack-notifications";
+import { MissingAnthropicApiKeyError } from "./anthropic-api-key-error";
 import type {
   DesktopUserIntentSignature,
   LaunchContext,
@@ -46,8 +47,18 @@ import type {
   TokenMetadata,
 } from "./compute-provider";
 import { resolveProvider } from "./compute-provider-registry";
+import {
+  recordCancellation,
+  shouldIgnoreLateCancellation,
+} from "./late-cancellation";
+import {
+  failLoopAfterLaunchFailure,
+  failLoopWithError,
+} from "./launch-failure-cleanup";
+import { LaunchNotDispatchedError } from "./launch-not-dispatched-error";
 import { buildLoopBranchMaterialization } from "./loop-branch-materialization";
 import { getCommandHandler } from "./loop-commands";
+import { buildCompletedEventData } from "./loop-completed-event-data";
 import { buildContextPackInMemory } from "./loop-context-pack";
 import { buildDesktopLoopExecutionBody } from "./loop-desktop";
 import { getStateKeyPrefix, scrubContextPackSecrets } from "./loop-state";
@@ -90,9 +101,7 @@ async function resolveAnthropicApiKey(
 ): Promise<string> {
   const key = await apiKeyService.resolveApiKey(userId, organizationId);
   if (!key) {
-    throw new Error(
-      "No Anthropic API key configured. Set a key at the user or organization level."
-    );
+    throw new MissingAnthropicApiKeyError();
   }
   return key;
 }
@@ -287,89 +296,6 @@ async function claimOrPersistRunning(
     }
     throw claimError;
   }
-}
-
-async function cancelLoopAfterLaunchFailure(
-  loopId: string,
-  organizationId: string
-): Promise<void> {
-  try {
-    await loopsService.cancel(loopId, organizationId);
-  } catch (cancelError) {
-    if (isInvalidStatusTransitionError(cancelError)) {
-      log.warn("loop.cancel_after_launch_failure_skipped", {
-        loopId,
-        detail: "Loop already in terminal status (cancel-after-complete race)",
-      });
-    } else {
-      log.error("loop.cancel_after_launch_failure_failed", {
-        loopId,
-        cancelError,
-      });
-    }
-  }
-}
-
-/**
- * Transition a loop to FAILED status and append an error event.
- * Silently swallows InvalidStatusTransition errors only when the loop is
- * already in a terminal status (COMPLETED, FAILED, CANCELLED, TIMED_OUT) --
- * indicating a benign race condition where another handler finished first.
- * If the source status is NOT terminal (e.g. PENDING), the transition failure
- * is a real validation issue and is re-thrown so it surfaces to the caller.
- * The event is only persisted after the status transition succeeds.
- */
-async function failLoopWithError(
-  loopId: string,
-  organizationId: string,
-  code: string,
-  message: string,
-  timestamp: string
-): Promise<void> {
-  const terminalStatuses = new Set<string>([
-    LoopStatus.Completed,
-    LoopStatus.Failed,
-    LoopStatus.Cancelled,
-    LoopStatus.TimedOut,
-  ]);
-
-  try {
-    await loopsService.updateStatus(loopId, organizationId, LoopStatus.Failed, {
-      error: { code, message },
-      completedAt: new Date(),
-    });
-  } catch (err) {
-    if (isInvalidStatusTransitionError(err)) {
-      if (terminalStatuses.has(err.from)) {
-        // Race: another handler already drove the loop to a terminal state.
-        // This is a benign race condition -- swallow silently.
-        log.info("loop.fail_already_terminal", {
-          loopId,
-          from: err.from,
-          detail:
-            "failLoopWithError: loop already terminal, skipping transition",
-        });
-        return;
-      }
-      // Non-terminal source status (e.g. PENDING): this indicates a real
-      // transition validation issue, not a race. Re-throw so the caller
-      // sees the failure.
-      log.error("loop.fail_invalid_transition", {
-        loopId,
-        from: err.from,
-        to: LoopStatus.Failed,
-        detail:
-          "failLoopWithError: unexpected invalid transition from non-terminal status",
-      });
-      throw err;
-    }
-    throw err;
-  }
-
-  await loopsService.addEvent(loopId, organizationId, {
-    type: "error",
-    data: { code, message, timestamp },
-  });
 }
 
 async function recordScrubFailureWarning(
@@ -615,7 +541,10 @@ export async function launchLoop(
     parentInfo.kind === "state-unavailable"
   ) {
     const timestamp = new Date().toISOString();
-    log.error("loop.pre_dispatch_guard_failed", {
+    // `warn` for the same reason as `loop.launch_failed` below: this path now
+    // throws `LaunchNotDispatchedError`, and `dispatchAndClassify` owns the one
+    // error-level entry per dropped dispatch.
+    log.warn("loop.pre_dispatch_guard_failed", {
       loopId,
       command: loop.command,
       parentLoopId: loop.parentLoopId,
@@ -626,9 +555,19 @@ export async function launchLoop(
       organizationId,
       LoopErrorCode.PlanStateUnavailable,
       "Parent loop state is unavailable, cannot resume execution",
-      timestamp
+      timestamp,
+      // Nothing dispatched, so the run provably never started.
+      { neverStarted: true }
     );
-    return loopId;
+    // Never a plain resolve: the row is FAILED and nothing was dispatched, so a
+    // resolve here reads as a delivered launch to `dispatchAndClassify` and the
+    // route answers 200 for a loop that will never run. Thrown outside the try
+    // block below on purpose — `failLoopWithError` has already terminalised the
+    // row, so the catch block's cleanup/cancel path must not run.
+    throw new LaunchNotDispatchedError(
+      "parent_state_unavailable",
+      "Parent loop state is unavailable, cannot resume execution"
+    );
   }
 
   log.info("loop.launching", {
@@ -689,16 +628,27 @@ export async function launchLoop(
 
     return result.containerId;
   } catch (error) {
-    log.error("loop.launch_failed", {
+    // `warn`, not `error`, and deliberately so: `launchLoop` always rethrows,
+    // and its only production caller — `dispatchAndClassify` — logs the same
+    // failure at error level with the raw error, the dispatchReason and the
+    // classified code. Logging error here too made one dropped dispatch two
+    // Datadog errors, the exact duplication `dispatchFailureResponse` refuses
+    // to add a third of. This entry survives as the orchestrator-layer trace
+    // event: it mirrors loop.launching / loop.launched so an operator can pivot
+    // from the launch failure back to the triggering desktop user-intent
+    // command (desktop loops only; undefined for ECS) and compute target,
+    // preserving the command→loop→incident trace.
+    log.warn("loop.launch_failed", {
       loopId,
       error,
-      // Mirror loop.launching / loop.launched so an operator seeing a launch
-      // failure can pivot straight back to the triggering desktop user-intent
-      // command (desktop loops only; undefined for ECS) and compute target,
-      // preserving the command→loop→incident trace.
       commandId: options?.desktopUserIntentSignature?.commandId,
       computeTargetId: loop.computeTargetId,
     });
+
+    // BEFORE cleanup, not after: cleanup kills the runner, whose `cancelled`
+    // callback is a legal PENDING -> CANCELLED transition that would beat our
+    // FAILED write. See `failLoopAfterLaunchFailure` (ISS-5711).
+    await failLoopAfterLaunchFailure(loopId, organizationId);
 
     await provider.cleanupOnLaunchFailure(
       loopId,
@@ -707,7 +657,6 @@ export async function launchLoop(
       error,
       loop.computeTargetId
     );
-    await cancelLoopAfterLaunchFailure(loopId, organizationId);
 
     throw error;
   }
@@ -1345,19 +1294,13 @@ async function handleLoopCompleted(
     }
   );
 
-  // Persist the completion event only after transition succeeds
+  // Persist the completion event only after transition succeeds. The payload
+  // (including the re-parsed `usageReconciliation` block) is assembled in
+  // `loop-completed-event-data.ts`.
   await loopsService.addEvent(
     loopId,
     organizationId,
-    {
-      type: event.type,
-      data: {
-        result: event.result,
-        tokensUsed: event.tokensUsed ?? null,
-        timestamp: event.timestamp,
-        ...(event.results ? { results: event.results } : {}),
-      },
-    },
+    { type: event.type, data: buildCompletedEventData(event) },
     runner
   );
 
@@ -1513,39 +1456,16 @@ async function handleLoopError(
       timestamp: event.timestamp,
     };
 
-    await loopsService.addEvent(
-      loopId,
-      organizationId,
-      {
-        type: "cancelled",
-        data: {
-          reason: event.message,
-          timestamp: event.timestamp,
-        },
-      },
-      runner
-    );
-
     const loop = await loopsService.findById(loopId, organizationId);
-    if (loop && loop.status !== LoopStatus.Cancelled) {
-      await loopsService.updateStatus(
-        loopId,
-        organizationId,
-        LoopStatus.Cancelled,
-        {
-          completedAt: new Date(),
-          ...buildErrorCostFields(event),
-          metadata: buildApiKeySourceMetadata(
-            event.apiKeySource,
-            loop?.metadata
-          ),
-        }
-      );
+
+    // Must run BEFORE the first write, not just before the transition (ISS-5711).
+    if (shouldIgnoreLateCancellation(loopId, loop)) {
+      return [];
     }
 
-    log.info("loop.cancelled", {
-      loopId,
-      reason: event.message,
+    await recordCancellation(loopId, organizationId, event, runner, loop, {
+      ...buildErrorCostFields(event),
+      metadata: buildApiKeySourceMetadata(event.apiKeySource, loop?.metadata),
     });
     return [canonicalEvent];
   }

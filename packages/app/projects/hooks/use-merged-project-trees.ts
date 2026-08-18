@@ -2,12 +2,18 @@
 
 import type {
   ExternalParentLink,
+  ProjectTreeQueryFilters,
   ProjectTreeResponse,
   TreeNode,
 } from "@repo/api/src/types/project-tree";
 import { useQueries } from "@tanstack/react-query";
 import { useApiClient } from "../../shared/api/use-api-client";
-import { projectTreeKeys } from "./use-project-tree";
+import { projectTreeKeys, projectTreePath } from "./use-project-tree";
+
+type MergedProjectTreesOptions = {
+  enabled?: boolean;
+  filters?: ProjectTreeQueryFilters;
+};
 
 /**
  * Fetch project trees for each given project ID and merge them into a single
@@ -21,23 +27,36 @@ import { projectTreeKeys } from "./use-project-tree";
  * @param projectIds - Project IDs to fetch trees for.
  * @param options.enabled - When false, no fetches are issued and `data` is null.
  *   Defaults to true. Use this to defer fetching until the consumer panel is
- *   actually visible (per `apps/app/CLAUDE.md` on-mount fetch convention).
+ *   actually visible (per `apps/app/AGENTS.md` on-mount fetch convention).
  */
 export function useMergedProjectTrees(
   projectIds: string[],
-  options?: { enabled?: boolean }
+  options?: MergedProjectTreesOptions
 ): {
   data: ProjectTreeResponse | null;
   isLoading: boolean;
+  /**
+   * True when ANY of the per-project tree reads failed. Surfaced so consumers
+   * (e.g. the My Tasks board, ISS-4466) can reflect a degraded tree stream in
+   * their error/empty state instead of silently omitting the failed project's
+   * branch/session rows from an "honest" total.
+   */
+  isError: boolean;
+  /**
+   * Re-run every per-project read this hook is driving. Exposed so a consumer's
+   * "Try again" can retry the tree stream it actually failed on.
+   */
+  refetch: () => void;
 } {
   const apiClient = useApiClient();
   const enabled = options?.enabled !== false;
+  const filters = options?.filters;
 
   return useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: projectTreeKeys.detail(projectId),
+      queryKey: projectTreeKeys.detail(projectId, filters),
       queryFn: () =>
-        apiClient.get<ProjectTreeResponse>(`/projects/${projectId}/tree`),
+        apiClient.get<ProjectTreeResponse>(projectTreePath(projectId, filters)),
       enabled,
     })),
     combine: (results) => ({
@@ -48,6 +67,15 @@ export function useMergedProjectTrees(
           )
         : null,
       isLoading: enabled && results.some((r) => r.isLoading),
+      isError: enabled && results.some((r) => r.isError),
+      refetch: () => {
+        for (const result of results) {
+          result.refetch().catch(() => {
+            // The retried query records its own error state; this catch only
+            // stops the refetch rejection surfacing as an unhandled rejection.
+          });
+        }
+      },
     }),
   });
 }

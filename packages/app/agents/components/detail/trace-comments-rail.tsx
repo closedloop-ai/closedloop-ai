@@ -1,5 +1,14 @@
 "use client";
 
+import { clamp } from "@repo/api/src/utils/math";
+import { MentionComposer } from "@repo/app/shared/components/mention-composer";
+import {
+  type MentionUser,
+  resolveMentionLabel,
+  seedMentionsFromIds,
+} from "@repo/app/shared/lib/mentions";
+import type { SortDirection } from "@repo/app/shared/lib/table-utils";
+import { useOrganizationUsers } from "@repo/app/users/hooks/use-users";
 import {
   Avatar,
   AvatarFallback,
@@ -12,18 +21,33 @@ import {
 } from "@repo/design-system/components/ui/comment-thread";
 import { cn } from "@repo/design-system/lib/utils";
 import {
-  ArrowUpDownIcon,
-  CheckIcon,
+  ArrowDownWideNarrowIcon,
+  ArrowUpNarrowWideIcon,
+  AtSignIcon,
   CornerUpLeftIcon,
   CrosshairIcon,
   PanelRightCloseIcon,
   PencilIcon,
   Trash2Icon,
-  XIcon,
 } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { sortByCreatedAtThenId } from "./comment-sort";
 import type { TraceCommentItem, TraceTextAnchor } from "./trace-comments";
+
+/** A resolved mention chip: the stable user id plus its display label. */
+type ResolvedMention = { id: string; label: string };
+
+/** Resolves a persisted mention user-ID list to labeled chips. */
+type MentionResolver = (userIds: readonly string[]) => ResolvedMention[];
+
+/**
+ * Render order for the comments rail, reusing the canonical `SortDirection`
+ * union rather than re-declaring the members. `desc` = newest-first (the
+ * default), `asc` = oldest-first. The sort is applied client-side over the
+ * already-fetched list; toggling it never triggers a network round-trip.
+ */
+type CommentSortDir = SortDirection;
 
 /** Shared persisted trace comments rail for session and branch trace surfaces. */
 export function TraceCommentsRail({
@@ -35,6 +59,7 @@ export function TraceCommentsRail({
   onReply,
   onUpdate,
   onWidthChange,
+  traceIdentity,
   width,
 }: Readonly<{
   activeRow?: number | null;
@@ -42,12 +67,71 @@ export function TraceCommentsRail({
   onCollapse?: () => void;
   onDelete?: (commentId: string) => void;
   onJump: (row: number, flash?: boolean, anchor?: TraceTextAnchor) => void;
-  onReply?: (commentId: string, draft: { body: string }) => void;
-  onUpdate?: (commentId: string, update: { body: string }) => void;
+  onReply?: (
+    commentId: string,
+    draft: { body: string; mentions?: string[] }
+  ) => void;
+  onUpdate?: (
+    commentId: string,
+    update: { body: string; mentions?: string[] }
+  ) => void;
   onWidthChange?: (width: number) => void;
+  /**
+   * Stable identity of the trace this rail is showing (the session/branch id).
+   * The rail is reused across same-component session/branch navigation, so the
+   * sort order is reset to the default whenever this changes — per-entity UI
+   * state must not leak across targets (packages/app/AGENTS.md).
+   */
+  traceIdentity?: string;
   width?: number;
 }>) {
   const resizeCleanupRef = useRef<(() => void) | null>(null);
+  // Client-side render order for the rail. Default `desc` = newest-first; the
+  // sort button toggles it and re-orders the already-fetched list in place (no
+  // refetch). Owned here because the rail holds the array it renders.
+  const [sortDir, setSortDir] = useState<CommentSortDir>("desc");
+  // Reset the sort back to newest-first when the rail is pointed at a different
+  // trace (session/branch), so a non-default order chosen for one target does
+  // not carry into the next. Adjusting state during render is the React-endorsed
+  // way to reset on a prop change without an effect round-trip.
+  const [lastTraceIdentity, setLastTraceIdentity] = useState(traceIdentity);
+  if (traceIdentity !== lastTraceIdentity) {
+    setLastTraceIdentity(traceIdentity);
+    setSortDir("desc");
+  }
+  const toggleSortDir = useCallback(
+    () => setSortDir((prev) => (prev === "desc" ? "asc" : "desc")),
+    []
+  );
+  const sortedComments = useMemo(
+    () => sortByCreatedAtThenId(comments, sortDir),
+    [comments, sortDir]
+  );
+  // FEA-3490: resolve persisted mention IDs → display labels for @-chips, and
+  // seed the edit composer so an edit preserves existing mentions.
+  const { data: users } = useOrganizationUsers();
+  const usersById = useMemo(() => {
+    const map = new Map<string, MentionUser>();
+    for (const user of users ?? []) {
+      map.set(user.id, {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        avatarUrl: user.avatarUrl,
+        active: user.active,
+      });
+    }
+    return map;
+  }, [users]);
+  const resolveMentions = useCallback<MentionResolver>(
+    (userIds) =>
+      userIds.map((id) => ({
+        id,
+        label: resolveMentionLabel(id, usersById),
+      })),
+    [usersById]
+  );
   const startResize = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) => {
       if (!(onWidthChange && width != null)) {
@@ -111,17 +195,48 @@ export function TraceCommentsRail({
       ) : null}
       <div className="fp-head">
         <div className="fp-head-row">
-          <span className="fp-title">
+          {/*
+           * ISS-5818 (D5): a real `h2`, matching the prototype's
+           * `session-comments-panel.tsx:70`. The rail is the page's third
+           * section and was its third `span`-as-heading, so leaving it behind
+           * while the Timeline and Trace gained headings would give a screen
+           * reader a document outline that stops two thirds of the way down.
+           *
+           * No `section[aria-labelledby]` here, unlike the other two: this rail
+           * is already an `<aside>`, which IS a landmark — wrapping it in a
+           * region would nest two landmarks around one panel, which is what the
+           * prototype does too. The heading gives the rail a document-outline
+           * entry; it does NOT name the landmark (a `complementary` role takes
+           * its name only from the author), so the aside is still unnamed — the
+           * same as before ISS-5818, and worth an `aria-labelledby` of its own
+           * rather than a claim here that it already has one.
+           *
+           * `fp-title` carries the styling, so the heading does not inherit a
+           * browser `h2`'s default size.
+           */}
+          <h2 className="fp-title">
             Comments <span className="fp-count">{comments.length}</span>
-          </span>
+          </h2>
           <div className="fp-head-actions">
             <button
-              aria-label="Sort comments"
+              aria-label={
+                sortDir === "desc"
+                  ? "Sort comments (newest first)"
+                  : "Sort comments (oldest first)"
+              }
+              aria-pressed={sortDir === "asc"}
               className="fp-icon-btn fp-sort-btn"
-              title="Sort"
+              onClick={toggleSortDir}
+              title={
+                sortDir === "desc" ? "Sort: newest first" : "Sort: oldest first"
+              }
               type="button"
             >
-              <ArrowUpDownIcon aria-hidden className="size-3.5" />
+              {sortDir === "desc" ? (
+                <ArrowDownWideNarrowIcon aria-hidden className="size-3.5" />
+              ) : (
+                <ArrowUpNarrowWideIcon aria-hidden className="size-3.5" />
+              )}
             </button>
             {onCollapse ? (
               <button
@@ -139,10 +254,7 @@ export function TraceCommentsRail({
       </div>
 
       <div className="fp-stream">
-        <div className="fp-daysep">
-          <span>Today</span>
-        </div>
-        {comments.length === 0 ? (
+        {sortedComments.length === 0 ? (
           <div className="px-4 py-8 text-center">
             <p className="font-medium text-sm">No trace comments yet</p>
             <p className="mt-1 text-muted-foreground text-xs">
@@ -150,15 +262,17 @@ export function TraceCommentsRail({
             </p>
           </div>
         ) : (
-          comments.map((comment) => (
+          sortedComments.map((comment) => (
             <TraceCommentCard
               active={comment.anchor.row === activeRow}
               comment={comment}
               key={comment.id}
+              mentionUsersById={usersById}
               onDelete={onDelete}
               onJump={onJump}
               onReply={onReply}
               onUpdate={onUpdate}
+              resolveMentions={resolveMentions}
             />
           ))
         )}
@@ -177,46 +291,61 @@ export function TraceCommentsRail({
 function TraceCommentCard({
   active,
   comment,
+  mentionUsersById,
   onDelete,
   onJump,
   onReply,
   onUpdate,
+  resolveMentions,
 }: Readonly<{
   active: boolean;
   comment: TraceCommentItem;
+  mentionUsersById: ReadonlyMap<string, MentionUser>;
   onDelete?: (commentId: string) => void;
   onJump: (row: number, flash?: boolean, anchor?: TraceTextAnchor) => void;
-  onReply?: (commentId: string, draft: { body: string }) => void;
-  onUpdate?: (commentId: string, update: { body: string }) => void;
+  onReply?: (
+    commentId: string,
+    draft: { body: string; mentions?: string[] }
+  ) => void;
+  onUpdate?: (
+    commentId: string,
+    update: { body: string; mentions?: string[] }
+  ) => void;
+  resolveMentions: MentionResolver;
 }>) {
   const [isEditing, setIsEditing] = useState(false);
-  const [draftBody, setDraftBody] = useState(comment.body);
   const [isReplying, setIsReplying] = useState(false);
-  const [replyBody, setReplyBody] = useState("");
-  const jumpToComment = () => onJump(comment.anchor.row, true, comment.anchor);
+  const jumpToComment = (event: ReactMouseEvent<HTMLDivElement>) => {
+    // A click inside an inline composer (edit/reply) or an action control must
+    // not also jump the trace to this row. The composer and its controls carry
+    // `data-comment-control`, so a click originating within one is ignored here.
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-comment-control]")
+    ) {
+      return;
+    }
+    onJump(comment.anchor.row, true, comment.anchor);
+  };
   const canEdit = comment.canEdit && onUpdate;
   const canDelete = comment.canDelete && onDelete;
   const canReply = Boolean(onReply);
   const hasOwnedActions = Boolean(
     canEdit || canDelete || canReply || isEditing || isReplying
   );
+  // Seed the edit composer with the comment's existing @-mentions so an edit
+  // that leaves the "@Name" tokens intact preserves them (FEA-3490).
+  const editMentionSeed = seedMentionsFromIds(
+    comment.mentions ?? [],
+    mentionUsersById
+  );
   const startEdit = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    setDraftBody(comment.body);
     setIsEditing(true);
   };
-  const cancelEdit = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    setDraftBody(comment.body);
-    setIsEditing(false);
-  };
-  const saveEdit = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    const body = draftBody.trim();
-    if (!body) {
-      return;
-    }
-    onUpdate?.(comment.id, { body });
+  const cancelEdit = () => setIsEditing(false);
+  const saveEdit = (payload: { body: string; mentions: string[] }) => {
+    onUpdate?.(comment.id, { body: payload.body, mentions: payload.mentions });
     setIsEditing(false);
   };
   const deleteComment = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -227,19 +356,9 @@ function TraceCommentCard({
     event.stopPropagation();
     setIsReplying(true);
   };
-  const cancelReply = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    setReplyBody("");
-    setIsReplying(false);
-  };
-  const submitReply = (event: ReactMouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    const body = replyBody.trim();
-    if (!body) {
-      return;
-    }
-    onReply?.(comment.id, { body });
-    setReplyBody("");
+  const cancelReply = () => setIsReplying(false);
+  const submitReply = (payload: { body: string; mentions: string[] }) => {
+    onReply?.(comment.id, { body: payload.body, mentions: payload.mentions });
     setIsReplying(false);
   };
   return (
@@ -260,28 +379,7 @@ function TraceCommentCard({
               hasOwnedActions && "is-visible"
             )}
           >
-            {isEditing ? (
-              <>
-                <button
-                  aria-label="Save trace note"
-                  className="fp-icon-btn"
-                  onClick={saveEdit}
-                  title="Save"
-                  type="button"
-                >
-                  <CheckIcon aria-hidden className="size-3" />
-                </button>
-                <button
-                  aria-label="Cancel trace note edit"
-                  className="fp-icon-btn"
-                  onClick={cancelEdit}
-                  title="Cancel"
-                  type="button"
-                >
-                  <XIcon aria-hidden className="size-3" />
-                </button>
-              </>
-            ) : (
+            {isEditing ? null : (
               <>
                 {canEdit ? (
                   <button
@@ -307,7 +405,7 @@ function TraceCommentCard({
                 ) : null}
               </>
             )}
-            {canReply ? (
+            {canReply && !(isEditing || isReplying) ? (
               <button
                 aria-label="Reply to trace note"
                 className="fp-icon-btn"
@@ -341,15 +439,25 @@ function TraceCommentCard({
               }
             />
             {isEditing ? (
-              <textarea
-                aria-label="Edit trace note"
-                className="mt-2 min-h-20 w-full resize-y rounded-md border bg-background px-2 py-1.5 text-sm"
-                onChange={(event) => setDraftBody(event.target.value)}
-                onClick={(event) => event.stopPropagation()}
-                value={draftBody}
-              />
+              <div className="mt-2">
+                <MentionComposer
+                  autoFocus
+                  cancelLabel="Cancel"
+                  defaultValue={comment.body}
+                  initialMentions={editMentionSeed}
+                  onCancel={cancelEdit}
+                  onSubmit={saveEdit}
+                  placeholder="Edit comment"
+                  submitLabel="Save"
+                />
+              </div>
             ) : (
-              <div className="fp-comment-text">{comment.body}</div>
+              <>
+                <div className="fp-comment-text">{comment.body}</div>
+                <MentionChips
+                  mentions={resolveMentions(comment.mentions ?? [])}
+                />
+              </>
             )}
             {comment.replies.length > 0 ? (
               <div className="fp-replies">
@@ -386,39 +494,23 @@ function TraceCommentCard({
                       }
                     />
                     <div className="fp-reply-text">{reply.body}</div>
+                    <MentionChips
+                      mentions={resolveMentions(reply.mentions ?? [])}
+                    />
                   </div>
                 ))}
               </div>
             ) : null}
             {isReplying ? (
               <div className="fp-reply-composer">
-                <textarea
-                  aria-label="Reply body"
-                  onChange={(event) => setReplyBody(event.target.value)}
-                  onClick={(event) => event.stopPropagation()}
+                <MentionComposer
+                  autoFocus
+                  cancelLabel="Cancel"
+                  onCancel={cancelReply}
+                  onSubmit={submitReply}
                   placeholder="Reply..."
-                  value={replyBody}
+                  submitLabel="Reply"
                 />
-                <div className="fp-reply-composer-actions">
-                  <button
-                    aria-label="Save trace reply"
-                    className="fp-icon-btn"
-                    onClick={submitReply}
-                    title="Save reply"
-                    type="button"
-                  >
-                    <CheckIcon aria-hidden className="size-3" />
-                  </button>
-                  <button
-                    aria-label="Cancel trace reply"
-                    className="fp-icon-btn"
-                    onClick={cancelReply}
-                    title="Cancel reply"
-                    type="button"
-                  >
-                    <XIcon aria-hidden className="size-3" />
-                  </button>
-                </div>
               </div>
             ) : null}
           </>
@@ -428,6 +520,32 @@ function TraceCommentCard({
   );
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+/**
+ * Renders resolved @-mention display labels as chips beneath a trace comment or
+ * reply body (FEA-3490). Renders nothing when there are no mentions, so a
+ * mention-free comment (or the flag-off path, which yields no labels) is
+ * unchanged.
+ */
+function MentionChips({
+  mentions,
+}: Readonly<{ mentions: readonly ResolvedMention[] }>) {
+  if (mentions.length === 0) {
+    return null;
+  }
+  return (
+    <div
+      className="mt-1 flex flex-wrap gap-1"
+      data-testid="trace-mention-chips"
+    >
+      {mentions.map((mention) => (
+        <span
+          className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 font-medium text-[11px] text-primary"
+          key={mention.id}
+        >
+          <AtSignIcon aria-hidden className="size-2.5" />
+          {mention.label}
+        </span>
+      ))}
+    </div>
+  );
 }

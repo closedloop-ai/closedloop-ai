@@ -1,14 +1,7 @@
-/**
- * T-10.3: Sync ingest tests for persistSessionComponentUsage.
- *
- * Tests that upsertSessions with session.components[] writes
- * AgentComponentSessionUsage rows correctly, that a second call is idempotent,
- * that agentComponentId is resolved when a matching AgentComponent row exists,
- * null otherwise, and that no server-side re-parse occurs (no transcript content
- * in test payload).
- *
- * AC-011, AC-013
- */
+import {
+  AgentComponentKind,
+  ComponentResolvedState,
+} from "@repo/api/src/types/agent-component";
 import {
   AGENT_SESSION_SYNC_SCHEMA_VERSION,
   AgentSessionSyncMode,
@@ -23,12 +16,44 @@ const mocks = vi.hoisted(() => ({
   emitTelemetryMetric: vi.fn(),
 }));
 
+function sqlTag(
+  strings: TemplateStringsArray | readonly string[],
+  ...expressions: unknown[]
+): { strings: string[]; values: unknown[] } {
+  return {
+    strings: [...strings],
+    values: expressions.flatMap((expression) =>
+      expression && Array.isArray((expression as { values?: unknown[] }).values)
+        ? (expression as { values: unknown[] }).values
+        : [expression]
+    ),
+  };
+}
+
+function sqlJoin(fragments: readonly unknown[]): { values: unknown[] } {
+  return {
+    values: fragments.flatMap((fragment) =>
+      fragment && Array.isArray((fragment as { values?: unknown[] }).values)
+        ? (fragment as { values: unknown[] }).values
+        : [fragment]
+    ),
+  };
+}
+
 vi.mock("@repo/database", () => ({
+  ArtifactType: {
+    DOCUMENT: "DOCUMENT",
+    BRANCH: "BRANCH",
+    DEPLOYMENT: "DEPLOYMENT",
+    SESSION: "SESSION",
+  },
   GitHubInstallationStatus: {
     ACTIVE: "ACTIVE",
   },
   Prisma: {
     DbNull: mocks.dbNull,
+    sql: sqlTag,
+    join: sqlJoin,
   },
   withDb: mocks.withDb,
 }));
@@ -39,10 +64,6 @@ vi.mock("@repo/observability/telemetry/metrics", () => ({
 
 import { agentSessionsService } from "../service";
 
-// ---------------------------------------------------------------------------
-// Test constants
-// ---------------------------------------------------------------------------
-
 const SESSION_STARTED_AT = new Date("2026-05-01T10:00:00.000Z");
 const SESSION_UPDATED_AT = new Date("2026-05-01T10:30:00.000Z");
 const PERSISTED_SESSION_ID = "persisted-session-uuid-1";
@@ -50,28 +71,20 @@ const COMPUTE_TARGET_ID = "target-sync-1";
 const ORG_ID = "org-sync-1";
 const USER_ID = "user-sync-1";
 
-// ---------------------------------------------------------------------------
-// Mock DB builder
-// ---------------------------------------------------------------------------
-
-/**
- * Installs a mock DB that handles the core upsertSessions flow.
- * Callers can override specific mocks (e.g. agentComponentSessionUsage, agentComponent).
- */
 function installDb(overrides: Record<string, unknown> = {}) {
+  const hasExecuteRawOverride = Object.hasOwn(overrides, "$executeRaw");
   const dbWithDefaults = {
     $executeRaw: vi.fn().mockResolvedValue(undefined),
     $executeRawUnsafe: vi.fn().mockResolvedValue(undefined),
-    // persistSessionChildren recomputes event-derived counts via a single
-    // conditional-aggregation raw query (FEA-2913). Return zeroed counts so
-    // the flow completes; these tests assert on component-usage upserts, not
-    // event counts.
     $queryRawUnsafe: vi
       .fn()
       .mockResolvedValue([{ toolUseCount: 0n, errorCount: 0n }]),
     computeTarget: {
       findFirst: vi.fn().mockResolvedValue({ id: COMPUTE_TARGET_ID }),
-      update: vi.fn().mockResolvedValue({ id: COMPUTE_TARGET_ID }),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
+    organization: {
+      findUnique: vi.fn().mockResolvedValue({ settings: null }),
     },
     slugCounter: {
       upsert: vi.fn().mockResolvedValue({ currentValue: 1 }),
@@ -97,12 +110,9 @@ function installDb(overrides: Record<string, unknown> = {}) {
     sessionTranscript: {
       findMany: vi.fn().mockResolvedValue([]),
     },
-    // Default: no existing AgentComponent rows (so agentComponentId resolves to null)
     agentComponent: {
       findMany: vi.fn().mockResolvedValue([]),
     },
-    // Default: agentComponentSessionUsage upsert + deleteMany succeed. The
-    // deleteMany is the FEA-2990 superseded-branch prune (see service.ts).
     agentComponentSessionUsage: {
       upsert: vi.fn().mockResolvedValue({}),
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -115,9 +125,76 @@ function installDb(overrides: Record<string, unknown> = {}) {
   // dies on an undefined method.
   const usageStore = dbWithDefaults.agentComponentSessionUsage as {
     deleteMany?: unknown;
+    upsert?: (input: unknown) => unknown;
   };
   if (!usageStore.deleteMany) {
     usageStore.deleteMany = vi.fn().mockResolvedValue({ count: 0 });
+  }
+  if (!hasExecuteRawOverride) {
+    dbWithDefaults.$executeRaw = vi.fn(
+      async (
+        _strings: TemplateStringsArray | readonly string[],
+        ...expressions: unknown[]
+      ) => {
+        const values = expressions.flatMap((expression) =>
+          expression &&
+          Array.isArray((expression as { values?: unknown[] }).values)
+            ? (expression as { values: unknown[] }).values
+            : [expression]
+        );
+        for (let index = 0; index < values.length; index += 12) {
+          const [
+            ,
+            agentSessionId,
+            componentKind,
+            componentKey,
+            gitBranch,
+            agentComponentId,
+            harness,
+            invocationCount,
+            errorCount,
+            componentVersionHash,
+            firstInvokedAt,
+            lastInvokedAt,
+          ] = values.slice(index, index + 12);
+          if (componentKind === undefined) {
+            continue;
+          }
+          await usageStore.upsert?.({
+            create: {
+              agentComponentId,
+              agentSessionId,
+              componentKind,
+              componentKey,
+              componentVersionHash,
+              errorCount,
+              firstInvokedAt,
+              gitBranch,
+              harness,
+              invocationCount,
+              lastInvokedAt,
+            },
+            update: {
+              agentComponentId,
+              componentVersionHash,
+              errorCount,
+              firstInvokedAt,
+              harness,
+              invocationCount,
+              lastInvokedAt,
+            },
+            where: {
+              agentSessionId_componentKind_componentKey_gitBranch: {
+                agentSessionId,
+                componentKind,
+                componentKey,
+                gitBranch,
+              },
+            },
+          });
+        }
+      }
+    );
   }
 
   mocks.withDb.mockImplementation((callback: (db: unknown) => unknown) =>
@@ -129,10 +206,6 @@ function installDb(overrides: Record<string, unknown> = {}) {
 
   return dbWithDefaults;
 }
-
-// ---------------------------------------------------------------------------
-// Payload builders
-// ---------------------------------------------------------------------------
 
 function buildSyncedSession(
   overrides: Partial<SyncedAgentSession> = {}
@@ -187,10 +260,6 @@ function buildPayload(sessions: SyncedAgentSession[]) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 describe("upsertSessions — persistSessionComponentUsage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -237,7 +306,6 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
       invocationCount: 7,
       errorCount: 1,
     });
-    // Verify no transcript content in payload (no server-side re-parse)
     expect(db.sessionTranscript.findMany).not.toHaveBeenCalled();
   });
 
@@ -254,11 +322,9 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
     const context = buildUpsertSessionsContext();
     const payload = buildPayload([session]);
 
-    // First call
     await agentSessionsService.upsertSessions(context, payload);
     const firstCallCount = usageUpsert.mock.calls.length;
 
-    // Second call — same data, should upsert (not error/duplicate)
     await agentSessionsService.upsertSessions(context, payload);
     const secondCallCount = usageUpsert.mock.calls.length;
 
@@ -531,9 +597,6 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
     });
 
     // A newer desktop build now reports (tool, Bash) split across feat/a + feat/b.
-    // If an older build previously synced the same (tool, Bash) under the ''
-    // bucket, that stale row must be pruned so detail/token-trend (which sum ALL
-    // rows per component) do not double-count it against the new branch rows.
     const usages: SyncedComponentUsage[] = [
       buildComponentUsage({
         componentKind: "tool",
@@ -557,19 +620,14 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
       buildPayload([session])
     );
 
-    // One prune per distinct (componentKind, componentKey) group in the payload —
-    // here a single group (tool, Bash) — dropping any branch bucket NOT in the
-    // payload's keep-set (i.e. the stale '' row), while feat/a + feat/b survive.
     expect(usageDeleteMany).toHaveBeenCalledTimes(1);
     const deleteArgs = usageDeleteMany.mock.calls[0]?.[0];
     expect(deleteArgs?.where).toMatchObject({
       agentSessionId: PERSISTED_SESSION_ID,
-      componentKind: "tool",
-      componentKey: "Bash",
+      OR: [{ componentKind: "tool", componentKey: "Bash" }],
     });
-    const notIn: string[] = deleteArgs?.where?.gitBranch?.notIn ?? [];
+    const notIn: string[] = deleteArgs?.where?.OR?.[0]?.gitBranch?.notIn ?? [];
     expect(new Set(notIn)).toEqual(new Set(["feat/a", "feat/b"]));
-    // The prune must run before the branch rows are (re)written.
     expect(usageUpsert).toHaveBeenCalledTimes(2);
   });
 
@@ -602,7 +660,8 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
 
     expect(usageDeleteMany).toHaveBeenCalledTimes(1);
     const notIn: string[] =
-      usageDeleteMany.mock.calls[0]?.[0]?.where?.gitBranch?.notIn ?? [];
+      usageDeleteMany.mock.calls[0]?.[0]?.where?.OR?.[0]?.gitBranch?.notIn ??
+      [];
     // '' is in the keep-set → the branchless row survives the prune.
     expect(notIn).toContain("");
     expect(usageUpsert).toHaveBeenCalledTimes(1);
@@ -695,5 +754,246 @@ describe("upsertSessions — persistSessionComponentUsage", () => {
 
     // agentComponent.findMany should only be called ONCE (batched), not per-usage
     expect(agentComponentFindMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISS-4778 (Part 2 of ISS-4775) — skill-shadowed phantom command rollups
+// ---------------------------------------------------------------------------
+
+const SKILL_KEY = "review";
+const PHANTOM_KEY = "/review";
+const GENUINE_KEY = "/deploy";
+const SKILL_COMPONENT_ID = "skill-component-uuid";
+const SKILL_EXTERNAL_ID = "skill::review";
+const EARLIER_AT = "2026-05-01T09:00:00.000Z";
+const LATER_AT = "2026-05-01T11:00:00.000Z";
+
+function resolvedSkillRow() {
+  return {
+    componentKey: SKILL_KEY,
+    componentKind: AgentComponentKind.Skill,
+    externalComponentId: SKILL_EXTERNAL_ID,
+    id: SKILL_COMPONENT_ID,
+  };
+}
+
+function resolvedSkillIdRow() {
+  return {
+    componentKind: AgentComponentKind.Skill,
+    externalComponentId: SKILL_EXTERNAL_ID,
+    id: SKILL_COMPONENT_ID,
+  };
+}
+
+type UsageCreateArgs = {
+  componentKind: string;
+  componentKey: string;
+  gitBranch: string;
+  invocationCount: number;
+  errorCount: number;
+  agentComponentId: string | null;
+  firstInvokedAt: Date | null;
+  lastInvokedAt: Date | null;
+};
+
+function usageUpsertCreates(upsert: ReturnType<typeof vi.fn>) {
+  return (upsert.mock.calls as [{ create: UsageCreateArgs }][]).map(
+    ([args]) => args.create
+  );
+}
+
+describe("upsertSessions — ISS-4778 skill-shadowed command usage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sums a phantom command rollup into the colliding skill rollup", async () => {
+    const usageUpsert = vi.fn().mockResolvedValue({});
+    const agentComponentFindMany = vi
+      .fn()
+      // 1st call: the skill-shadow inventory lookup.
+      .mockResolvedValueOnce([resolvedSkillRow()])
+      // 2nd call: the agentComponentId batch resolution.
+      .mockResolvedValueOnce([resolvedSkillIdRow()]);
+    installDb({
+      agentComponent: { findMany: agentComponentFindMany },
+      agentComponentSessionUsage: { upsert: usageUpsert },
+    });
+
+    const session = buildSyncedSession({
+      components: [
+        buildComponentUsage({
+          componentKey: SKILL_KEY,
+          componentKind: AgentComponentKind.Skill,
+          errorCount: 1,
+          externalComponentId: SKILL_EXTERNAL_ID,
+          firstInvokedAt: SESSION_STARTED_AT.toISOString(),
+          invocations: 5,
+          lastInvokedAt: SESSION_UPDATED_AT.toISOString(),
+        }),
+        buildComponentUsage({
+          componentKey: PHANTOM_KEY,
+          componentKind: AgentComponentKind.Command,
+          errorCount: 2,
+          externalComponentId: "command::/review",
+          firstInvokedAt: EARLIER_AT,
+          invocations: 3,
+          lastInvokedAt: LATER_AT,
+        }),
+      ],
+    });
+
+    await agentSessionsService.upsertSessions(
+      buildUpsertSessionsContext(),
+      buildPayload([session])
+    );
+
+    const created = usageUpsertCreates(usageUpsert);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      agentComponentId: SKILL_COMPONENT_ID,
+      componentKey: SKILL_KEY,
+      componentKind: AgentComponentKind.Skill,
+      errorCount: 3,
+      invocationCount: 8,
+    });
+    // LEAST/GREATEST parity with the backfill migration's step 2a merge.
+    expect(created[0].firstInvokedAt).toEqual(new Date(EARLIER_AT));
+    expect(created[0].lastInvokedAt).toEqual(new Date(LATER_AT));
+  });
+
+  it("re-points a phantom rollup onto the skill identity when nothing collides", async () => {
+    const usageUpsert = vi.fn().mockResolvedValue({});
+    const agentComponentFindMany = vi
+      .fn()
+      .mockResolvedValueOnce([resolvedSkillRow()])
+      .mockResolvedValueOnce([resolvedSkillIdRow()]);
+    installDb({
+      agentComponent: { findMany: agentComponentFindMany },
+      agentComponentSessionUsage: { upsert: usageUpsert },
+    });
+
+    const session = buildSyncedSession({
+      components: [
+        buildComponentUsage({
+          componentKey: PHANTOM_KEY,
+          componentKind: AgentComponentKind.Command,
+          errorCount: 0,
+          externalComponentId: "command::/review",
+          invocations: 4,
+        }),
+      ],
+    });
+
+    await agentSessionsService.upsertSessions(
+      buildUpsertSessionsContext(),
+      buildPayload([session])
+    );
+
+    const created = usageUpsertCreates(usageUpsert);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      agentComponentId: SKILL_COMPONENT_ID,
+      componentKey: SKILL_KEY,
+      componentKind: AgentComponentKind.Skill,
+      invocationCount: 4,
+    });
+  });
+
+  it("removes the phantom's own stored rollup rows", async () => {
+    const usageDeleteMany = vi.fn().mockResolvedValue({ count: 1 });
+    installDb({
+      agentComponent: {
+        findMany: vi
+          .fn()
+          .mockResolvedValueOnce([resolvedSkillRow()])
+          .mockResolvedValueOnce([]),
+      },
+      agentComponentSessionUsage: {
+        deleteMany: usageDeleteMany,
+        upsert: vi.fn().mockResolvedValue({}),
+      },
+    });
+
+    const session = buildSyncedSession({
+      components: [
+        buildComponentUsage({
+          componentKey: PHANTOM_KEY,
+          componentKind: AgentComponentKind.Command,
+        }),
+      ],
+    });
+
+    await agentSessionsService.upsertSessions(
+      buildUpsertSessionsContext(),
+      buildPayload([session])
+    );
+
+    expect(usageDeleteMany).toHaveBeenCalledWith({
+      where: {
+        agentSessionId: PERSISTED_SESSION_ID,
+        componentKey: { in: [PHANTOM_KEY] },
+        componentKind: AgentComponentKind.Command,
+      },
+    });
+  });
+
+  it("keeps a genuine slash command that resolved against its own definition", async () => {
+    const usageUpsert = vi.fn().mockResolvedValue({});
+    installDb({
+      agentComponent: {
+        findMany: vi
+          .fn()
+          // A `deploy` skill AND a resolved `/deploy` command both exist: the
+          // resolved command proves `/deploy` is genuine, so it must survive.
+          .mockResolvedValueOnce([
+            {
+              componentKey: "deploy",
+              componentKind: AgentComponentKind.Skill,
+              externalComponentId: "skill::deploy",
+              id: "skill-deploy-uuid",
+            },
+            {
+              componentKey: GENUINE_KEY,
+              componentKind: AgentComponentKind.Command,
+              // ISS-4923 (wongk review): the inventory read no longer filters
+              // COMMAND rows to `resolved` in SQL — it reads every state and
+              // splits on `resolvedState` / `content` in code, so the fixture
+              // has to carry both columns the split reads.
+              content: null,
+              externalComponentId: "command::/deploy",
+              id: "command-deploy-uuid",
+              resolvedState: ComponentResolvedState.Resolved,
+            },
+          ])
+          .mockResolvedValueOnce([]),
+      },
+      agentComponentSessionUsage: { upsert: usageUpsert },
+    });
+
+    const session = buildSyncedSession({
+      components: [
+        buildComponentUsage({
+          componentKey: GENUINE_KEY,
+          componentKind: AgentComponentKind.Command,
+          externalComponentId: "command::/deploy",
+          invocations: 2,
+        }),
+      ],
+    });
+
+    await agentSessionsService.upsertSessions(
+      buildUpsertSessionsContext(),
+      buildPayload([session])
+    );
+
+    const created = usageUpsertCreates(usageUpsert);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      componentKey: GENUINE_KEY,
+      componentKind: AgentComponentKind.Command,
+      invocationCount: 2,
+    });
   });
 });

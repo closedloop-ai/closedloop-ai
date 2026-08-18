@@ -13,6 +13,8 @@ export { GATEWAY_PATH_PREFIX } from "@repo/shared-platform/gateway-constants";
 export const GATEWAY_RELAY_PATH_PREFIX = "/api/gateway-relay/";
 export const GATEWAY_HEALTH_CHECK_PATH = `${GATEWAY_PATH_PREFIX}health-check`;
 export const GATEWAY_RELAY_HEALTH_CHECK_PATH = `${GATEWAY_RELAY_PATH_PREFIX}health-check`;
+export const GATEWAY_HEALTH_CHECK_REPAIR_PATH = `${GATEWAY_HEALTH_CHECK_PATH}/repair`;
+export const GATEWAY_RELAY_HEALTH_CHECK_REPAIR_PATH = `${GATEWAY_RELAY_HEALTH_CHECK_PATH}/repair`;
 
 /**
  * Gates the /engineer fetch routing UI (ComputeTargetSelector dropdown in
@@ -22,7 +24,24 @@ export const GATEWAY_RELAY_HEALTH_CHECK_PATH = `${GATEWAY_RELAY_PATH_PREFIX}heal
  */
 export const CLOUD_RELAY_ENABLED: boolean = true;
 
+const COMPUTE_TARGETS_POLL_INTERVAL_MS = 30_000;
+
+/**
+ * Stop the 30s compute-targets poll once the query is in an error state
+ * (FEA-3940). A bricked/unauthenticated API (a 401/403 from this poll) must not
+ * be hammered every 30 seconds while the app shows its degraded/re-auth surface;
+ * an explicit `invalidateQueries` (e.g. the auth guard's Retry, or a successful
+ * re-auth) resumes it. Mirrors the polling-hooks rule in apps/app/AGENTS.md.
+ */
+function computeTargetsRefetchInterval(query: {
+  state: { status: string };
+}): number | false {
+  return query.state.status === "error"
+    ? false
+    : COMPUTE_TARGETS_POLL_INTERVAL_MS;
+}
+
 export const COMPUTE_TARGETS_QUERY_OPTIONS = {
-  staleTime: 30_000,
-  refetchInterval: 30_000,
+  staleTime: COMPUTE_TARGETS_POLL_INTERVAL_MS,
+  refetchInterval: computeTargetsRefetchInterval,
 } as const;

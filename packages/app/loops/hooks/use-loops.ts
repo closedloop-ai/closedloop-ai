@@ -8,12 +8,10 @@ import type {
   LoopEventsFilters,
   LoopEventsPaginatedResponse,
   LoopListFilters,
-  LoopSummariesResponse,
   LoopUsageSummary,
   LoopWithUser,
   ResumeLoopRequest,
 } from "@repo/api/src/types/loop";
-import { LOOP_SUMMARIES_MAX_DOCUMENT_IDS } from "@repo/api/src/types/loop";
 import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { loopKeys } from "@repo/app/loops/hooks/loop-keys";
 import { useApiClient } from "@repo/app/shared/api/use-api-client";
@@ -24,7 +22,6 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useMemo } from "react";
 
 // Queries
 export function useLoops(
@@ -195,73 +192,5 @@ export function useResumeLoop() {
       queryClient.invalidateQueries({ queryKey: loopKeys.detail(id) });
       queryClient.invalidateQueries({ queryKey: loopKeys.lists() });
     },
-  });
-}
-
-/**
- * Fetch loop summaries for a set of documents. Returns one summary per requested
- * documentId, aggregating loop activity across the document's PRODUCES descendants.
- * Powers the LoopCell variants in My Tasks and Team View.
- *
- * Chunks requests above the server-side limit so callers passing unbounded
- * document lists (e.g., entire project tables) don't get a blank Loop column.
- *
- * Polls every 10s when any cell currently shows an active loop; otherwise
- * idles to ~60s to avoid thrashing the DB on tabs with no in-flight work.
- */
-const ACTIVE_POLL_MS = 10_000;
-const IDLE_POLL_MS = 60_000;
-
-function chunkIds<T>(items: T[], size: number): T[][] {
-  const result: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    result.push(items.slice(i, i + size));
-  }
-  return result;
-}
-
-function summariesHaveActiveLoop(response: LoopSummariesResponse): boolean {
-  for (const summary of Object.values(response)) {
-    if (summary.activeLoop) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function useLoopSummaries(
-  documentIds: string[],
-  options?: Omit<UseQueryOptions<LoopSummariesResponse>, "queryKey" | "queryFn">
-) {
-  const apiClient = useApiClient();
-  // Sort once so two parents that pass the same set in different orders
-  // share a cache entry. React Query handles structural equality on the array.
-  const sortedIds = useMemo(() => [...documentIds].sort(), [documentIds]);
-  return useQuery({
-    ...options,
-    queryKey: loopKeys.summaries(sortedIds),
-    queryFn: async () => {
-      const batches = chunkIds(sortedIds, LOOP_SUMMARIES_MAX_DOCUMENT_IDS);
-      const responses = await Promise.all(
-        batches.map((ids) =>
-          apiClient.post<LoopSummariesResponse>("/loops/summaries", {
-            documentIds: ids,
-          })
-        )
-      );
-      return Object.assign({}, ...responses) as LoopSummariesResponse;
-    },
-    enabled: sortedIds.length > 0 && options?.enabled !== false,
-    refetchInterval: (query) => {
-      const explicit = options?.refetchInterval;
-      if (explicit !== undefined) {
-        return typeof explicit === "function" ? explicit(query) : explicit;
-      }
-      const data = query.state.data;
-      return data && summariesHaveActiveLoop(data)
-        ? ACTIVE_POLL_MS
-        : IDLE_POLL_MS;
-    },
-    staleTime: options?.staleTime ?? 5000,
   });
 }

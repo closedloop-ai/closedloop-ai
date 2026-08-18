@@ -7,7 +7,7 @@ import {
   DESKTOP_POP_GATEWAY_ID_HEADER,
   DESKTOP_POP_SIGNATURE_HEADER,
   DESKTOP_POP_TIMESTAMP_HEADER,
-} from "../src/main/desktop-pop.js";
+} from "../src/main/auth/desktop-pop.js";
 import { OperationDispatcher } from "../src/server/operation-dispatcher.js";
 import { registerSymphonyPlanLoopRoutes } from "../src/server/operations/symphony-plan-loop.js";
 

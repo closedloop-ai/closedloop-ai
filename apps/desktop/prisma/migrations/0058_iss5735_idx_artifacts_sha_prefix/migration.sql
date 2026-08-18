@@ -1,0 +1,42 @@
+-- ISS-5735: make the boot-time commit-SHA → PR correlation seekable.
+--
+-- `correlateCommitShaPrLinks` runs on every desktop boot and matches every
+-- authored commit artifact against every PR artifact with an anchored prefix
+-- test (`substr(pr_sha, 1, length(commit_sha)) = commit_sha`, which git's own
+-- abbreviation contract forces — the session side may be a 7-hex short SHA
+-- while the PR side is the full 40-hex OID). A `substr(...)` predicate is not
+-- sargable, so SQLite could only walk `idx_artifacts_kind` — the all-rows index
+-- — for every candidate commit, and then walk it AGAIN for the correlated
+-- exactly-one-PR ambiguity subquery. Cost grew with the PRODUCT of the two
+-- corpora, on every launch, with no LIMIT and no time window.
+--
+-- The seam that makes it seekable: if either SHA is a prefix of the other and
+-- both are at least 7 hex (`MIN_ABBREV_SHA_LEN`, which the match expression
+-- already requires), then their first 7 characters are necessarily EQUAL. So
+-- `substr(pr_sha, 1, 7) = substr(commit_sha, 1, 7)` is an exact necessary
+-- condition that IS an equality — indexable — and the full prefix test stays on
+-- as the residual filter that preserves the semantics unchanged.
+--
+-- An EXPRESSION index rather than a generated column: the golden layer-2
+-- contract pins the shape of `SELECT * FROM artifacts`, and a stored/virtual
+-- column would add a column to it. An index over the expression is invisible to
+-- the row contract.
+--
+-- Partial on `kind = 'pull_request' AND <sha> IS NOT NULL`, which is both what
+-- the query asks for and what keeps the index small: PR artifacts are a slice of
+-- the `artifacts` corpus, and only the ones gh enrichment actually filled in
+-- carry an entry. Both terms appear as top-level `AND`s of the join constraint,
+-- which is what lets SQLite prove the query implies the index predicate and
+-- re-plan as `SEARCH pr_art USING INDEX idx_artifacts_head_sha_p7 (<expr>=?)`.
+-- The plan is pinned by test/commit-sha-pr-correlation-scan.test.ts, because a
+-- partial expression index that stops being reachable is a silent return to the
+-- product-sized scan with every behavioural assertion still green.
+--
+-- The prefix length 7 is frozen here, and it is a seek key rather than the match
+-- rule: the residual test still enforces the real `MIN_ABBREV_SHA_LEN`. Lowering
+-- `MIN_ABBREV_SHA_LEN` below 7 would make this equality over-filter and drop
+-- real matches, so that needs a NEW migration re-cutting these indexes.
+-- `SHA_PREFIX_INDEX_LEN` in pr-link-maintenance.ts carries this value, and the
+-- scan test asserts `MIN_ABBREV_SHA_LEN >= SHA_PREFIX_INDEX_LEN` outright.
+CREATE INDEX IF NOT EXISTS "idx_artifacts_head_sha_p7" ON "artifacts"(substr(head_sha, 1, 7)) WHERE kind = 'pull_request' AND head_sha IS NOT NULL;
+CREATE INDEX IF NOT EXISTS "idx_artifacts_merge_commit_sha_p7" ON "artifacts"(substr(merge_commit_sha, 1, 7)) WHERE kind = 'pull_request' AND merge_commit_sha IS NOT NULL;

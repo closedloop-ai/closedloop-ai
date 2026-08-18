@@ -29,14 +29,14 @@ const baseArgs = (claudeWorkDir: string) => ({
   primaryBaseBranch: "main",
   loopId: "loop-1",
   apiBaseUrl: "http://127.0.0.1:0",
-  token: "token",
+  getToken: () => "token",
   webAppOrigin: "",
   getAllowedDirectories: () => [] as string[],
 });
 
 const successFinalization: ExecuteFinalizationResult = {
   status: "success",
-  path: "llm-success",
+  path: "llm",
   prUrl: "https://github.com/owner/primary/pull/1",
   prNumber: 1,
   branchName: "symphony/loop-1",

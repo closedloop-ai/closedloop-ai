@@ -1,8 +1,8 @@
 import { log } from "@repo/observability/log";
-import { waitUntil } from "@vercel/functions";
+import { authContextFailureResponse } from "@/lib/auth/auth-context-failure";
 import { resolveAnyAuthContext } from "@/lib/auth/resolve-any-auth-context";
 import { relayEventBus } from "@/lib/relay-event-bus";
-import { scheduleLogFlush } from "@/lib/route-utils";
+import { scheduleLogFlush, scheduleLogFlushAfter } from "@/lib/route-utils";
 import {
   createSseResponse,
   createSseStream,
@@ -18,12 +18,13 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ): Promise<Response> {
-  const authContext = await resolveAnyAuthContext(request, {
+  const authResult = await resolveAnyAuthContext(request, {
     requiredScopes: ["write"],
   });
-  if (!authContext) {
-    return new Response("Unauthorized", { status: 401 });
+  if (!authResult.ok) {
+    return authContextFailureResponse(authResult.failure);
   }
+  const authContext = authResult.context;
 
   const { id: targetId } = await params;
 
@@ -44,7 +45,13 @@ export async function GET(
   );
 
   const markOffline = () => {
-    waitUntil(
+    // ISS-4659: routed through `scheduleLogFlushAfter` rather than a bare
+    // `waitUntil`. This DB write runs after the stream closes — long after the
+    // earlier `scheduleLogFlush()` above already flushed — and it produces pg
+    // spans of its own, which would freeze with the function. The helper
+    // chains this promise into both the log and span flush, on the success
+    // path as well as the failure one.
+    scheduleLogFlushAfter(
       computeTargetsService
         .setOnlineState(
           targetId,
@@ -57,7 +64,6 @@ export async function GET(
             targetId,
             error,
           });
-          return log.flush().catch(() => {});
         })
     );
   };

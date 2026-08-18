@@ -86,14 +86,16 @@ export default function TeamProjectsPage() {
     updatePriorityMutation.mutate({ projectId, priority });
   };
 
-  const handleCreateProject = (projectData: CreateProjectInput) => {
-    createProjectMutation.mutate(projectData, {
-      onSuccess: (newProject) => {
-        navigation.navigate(
-          `/${orgSlug}/teams/${teamId}/projects/${newProject.id}`
-        );
-      },
-    });
+  const handleCreateProject = async (projectData: CreateProjectInput) => {
+    // mutateAsync (not the preferred mutate) is intentional here: the modal
+    // awaits this promise to only close + reset on success — a rejection keeps
+    // it open with input intact — and we need the resolved project id to
+    // navigate. The global QueryClient onError handler still owns the failure
+    // toast, so we do not add a local catch.
+    const newProject = await createProjectMutation.mutateAsync(projectData);
+    navigation.navigate(
+      `/${orgSlug}/teams/${teamId}/projects/${newProject.id}`
+    );
   };
 
   const handleDeleteProject = async (projectId: string) => {
@@ -154,6 +156,7 @@ export default function TeamProjectsPage() {
           { label: team.name, href: `/${orgSlug}/teams/${teamId}/projects` },
           { label: "Projects" },
         ]}
+        suppressPageHeading
       >
         <CreateProjectModal
           onCreateProject={handleCreateProject}
@@ -163,7 +166,8 @@ export default function TeamProjectsPage() {
           teamName={team.name}
         />
       </Header>
-      <main className="flex flex-1 flex-col overflow-hidden">
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex flex-1 flex-col overflow-hidden">
         {/* Title bar */}
         <div className="flex min-w-fit items-center justify-between border-b px-4 pt-4 pb-2">
           <h1 className="font-semibold text-xl">Projects</h1>
@@ -187,7 +191,7 @@ export default function TeamProjectsPage() {
             visibleColumns={visibleColumns}
           />
         </div>
-      </main>
+      </div>
     </>
   );
 }

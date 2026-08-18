@@ -21,7 +21,7 @@
  * without a database. Sibling-lib pattern, see `migrate-retry.ts`.
  */
 
-import { createSslClient } from "./db-utils";
+import { createSqlClient, endQuietly, type SqlClient } from "./db-utils";
 
 /**
  * Our advisory-lock key. A single database-scoped constant, mirroring Prisma's
@@ -54,22 +54,64 @@ export const MIGRATION_SERIALIZE_LOCK_BUDGET_MS = 300_000;
 /** SQLSTATE emitted when `statement_timeout` cancels the blocking acquire. */
 export const STATEMENT_TIMEOUT_SQLSTATE = "57014";
 
-/** Minimal `pg.Client` surface the gate needs — kept narrow so tests can mock it. */
-export type MigrationLockClient = {
-  connect(): Promise<void>;
-  query(text: string, values?: unknown[]): Promise<unknown>;
-  end(): Promise<void>;
-};
+/**
+ * The gate uses the shared narrow `SqlClient` surface (db-utils). Alias kept for
+ * callers/tests that import `MigrationLockClient` by name.
+ */
+export type MigrationLockClient = SqlClient;
 
 type MigrationLockLogger = { log: (message: string) => void };
 
+/**
+ * What the gate does when it cannot acquire the serialize lock (budget-timeout
+ * cancel, connect/query failure, anything):
+ *  - `"run"` (default): **fail open** — run `fn` WITHOUT the gate. A user deploy
+ *    must never be blocked by the gate; the FEA-3062 retry is the backstop.
+ *  - `"skip"`: **fail closed** — throw `SerializeLockContendedError` instead of
+ *    running `fn` unguarded. Used by the FEA-3071 Slice 2 preview migrator walk:
+ *    a best-effort catch-up is non-urgent, and running unguarded would make the
+ *    walk itself a source of Prisma-lock (72707369) contention. A skipped schema
+ *    is simply left to self-heal on its own next deploy.
+ */
+export type SerializeLockContendedMode = "run" | "skip";
+
+/**
+ * Observed result of the gate acquire, for telemetry (ISS-4392). A plain string
+ * union — NOT the telemetry event type — so this module stays decoupled from
+ * `migrate-telemetry.ts`; the caller maps it.
+ *  - `acquired`: the gate held the lock and ran `fn` guarded.
+ *  - `fail_open`: acquire failed and `fn` ran UNGUARDED (`onContended: "run"`).
+ *  - `fail_closed`: acquire failed and the work was skipped (`onContended: "skip"`).
+ */
+export type SerializeLockOutcome = "acquired" | "fail_open" | "fail_closed";
+
+/**
+ * Thrown by `withMigrationSerializeLock` when `onContended: "skip"` and the lock
+ * could not be acquired. Callers that opt into fail-closed catch this to skip the
+ * unit of work rather than run it unguarded.
+ */
+export class SerializeLockContendedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "SerializeLockContendedError";
+  }
+}
+
 export type MigrationSerializeLockDeps = {
   databaseUrl: string;
-  /** Client factory — defaults to the real `createSslClient`; injected in tests. */
+  /** Client factory — defaults to the shared `createSqlClient`; injected in tests. */
   createClient?: (databaseUrl: string) => MigrationLockClient;
   logger?: MigrationLockLogger;
   budgetMs?: number;
   lockKey?: number;
+  /** Acquire-failure behavior — fail open (`"run"`, default) or fail closed (`"skip"`). */
+  onContended?: SerializeLockContendedMode;
+  /**
+   * Telemetry (ISS-4392): reports the gate outcome and how long the acquire
+   * waited. Best-effort and fully isolated — `notifyGateOutcome` swallows any
+   * throw from this callback, so it can never change gate behavior.
+   */
+  onOutcome?: (outcome: SerializeLockOutcome, waitMs: number) => void;
 };
 
 function describeGateError(error: unknown): string {
@@ -79,36 +121,6 @@ function describeGateError(error: unknown): string {
     return `${error.message}${codeFragment}`;
   }
   return String(error);
-}
-
-/**
- * Adapts the real `pg.Client` (from `createSslClient`) to the narrow
- * `MigrationLockClient` surface — explicit delegation avoids relying on the
- * heavily-overloaded `pg.Client.query` structurally matching our interface.
- */
-function defaultCreateClient(databaseUrl: string): MigrationLockClient {
-  const client = createSslClient(databaseUrl);
-  return {
-    connect: async () => {
-      await client.connect();
-    },
-    query: (text, values) => client.query(text, values),
-    end: async () => {
-      await client.end();
-    },
-  };
-}
-
-async function endQuietly(client: MigrationLockClient | null): Promise<void> {
-  if (!client) {
-    return;
-  }
-  try {
-    await client.end();
-  } catch {
-    // Closing the connection is best-effort; the session (and its advisory
-    // lock) is released by the server when the socket drops regardless.
-  }
 }
 
 /**
@@ -125,8 +137,10 @@ export async function withMigrationSerializeLock<T>(
   const logger = deps.logger ?? console;
   const budgetMs = deps.budgetMs ?? MIGRATION_SERIALIZE_LOCK_BUDGET_MS;
   const lockKey = deps.lockKey ?? MIGRATION_SERIALIZE_LOCK_KEY;
-  const createClient = deps.createClient ?? defaultCreateClient;
+  const createClient = deps.createClient ?? createSqlClient;
+  const onContended = deps.onContended ?? "run";
 
+  const acquireStartedAt = Date.now();
   let client: MigrationLockClient | null = null;
   let acquired = false;
   try {
@@ -141,14 +155,39 @@ export async function withMigrationSerializeLock<T>(
     await client.query("SELECT pg_advisory_lock($1::bigint)", [lockKey]);
     acquired = true;
     logger.log("[migration-lock] acquired serialize lock");
+    notifyGateOutcome(
+      deps.onOutcome,
+      "acquired",
+      Date.now() - acquireStartedAt
+    );
   } catch (error) {
-    // Fail-open on ANY gate error (connect / set_config / acquire, incl. the
-    // 57014 statement-timeout cancel). Run unguarded — the FEA-3062 retry
+    await endQuietly(client);
+    // Fail CLOSED when the caller opted in (`onContended: "skip"`): the work is
+    // non-urgent and running unguarded would reintroduce Prisma-lock contention.
+    if (onContended === "skip") {
+      notifyGateOutcome(
+        deps.onOutcome,
+        "fail_closed",
+        Date.now() - acquireStartedAt
+      );
+      logger.log(
+        `[migration-lock] serialize lock contended — skipping (fail-closed): ${describeGateError(error)}`
+      );
+      throw new SerializeLockContendedError(describeGateError(error), {
+        cause: error,
+      });
+    }
+    // Fail-open (default) on ANY gate error (connect / set_config / acquire, incl.
+    // the 57014 statement-timeout cancel). Run unguarded — the FEA-3062 retry
     // inside `fn` is the backstop, so worst case is exactly today's behavior.
+    notifyGateOutcome(
+      deps.onOutcome,
+      "fail_open",
+      Date.now() - acquireStartedAt
+    );
     logger.log(
       `[migration-lock] proceeding WITHOUT serialize lock: ${describeGateError(error)}`
     );
-    await endQuietly(client);
     return await fn();
   }
 
@@ -164,5 +203,25 @@ export async function withMigrationSerializeLock<T>(
       }
     }
     await endQuietly(client);
+  }
+}
+
+/**
+ * Invoke the ISS-4392 telemetry callback WITHOUT ever letting it affect the gate.
+ * A throwing `onOutcome` called inside the acquire `try` would otherwise be caught
+ * as a lock failure and flip the gate to fail-open/closed — so it is isolated here.
+ */
+function notifyGateOutcome(
+  onOutcome: MigrationSerializeLockDeps["onOutcome"],
+  outcome: SerializeLockOutcome,
+  waitMs: number
+): void {
+  if (!onOutcome) {
+    return;
+  }
+  try {
+    onOutcome(outcome, waitMs);
+  } catch {
+    // Telemetry is best-effort; a throwing callback must never change gate behavior.
   }
 }

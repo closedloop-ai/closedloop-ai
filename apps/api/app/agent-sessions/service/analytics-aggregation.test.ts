@@ -1,11 +1,9 @@
 import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
-import { GitHubPRState } from "@repo/api/src/types/github";
 import {
   SESSION_PR_PURPOSE_LABELS,
   SessionPrPurpose,
 } from "@repo/api/src/types/session-artifact-link";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { agentSessionsService } from "../service";
 import {
   buildAgentSessionDbMock,
   buildAnalyticsJsonRecord,
@@ -18,15 +16,20 @@ import {
   referencedBranch,
   staleBranch,
   trustedBranch,
-} from "../service.test-harness";
+} from "@/__tests__/support/agent-sessions/service.test-harness";
+import { agentSessionsService } from "../service";
 
 vi.mock("@repo/database", async () => {
-  const { databaseModuleMock } = await import("../service.test-mocks");
+  const { databaseModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return databaseModuleMock();
 });
 
 vi.mock("@repo/observability/telemetry/metrics", async () => {
-  const { telemetryModuleMock } = await import("../service.test-mocks");
+  const { telemetryModuleMock } = await import(
+    "@/__tests__/support/agent-sessions/service.test-mocks"
+  );
   return telemetryModuleMock();
 });
 
@@ -100,13 +103,13 @@ describe("agentSessionsService", () => {
               },
             },
           ])
-          // Fourth sessionDetail.groupBy call: cost split grouped by
-          // sourceLoopId and billingMode. Loop-originated rows are classified by
-          // the loop's apiKeySource; DESKTOP_SYNC rows (null sourceLoopId) are
-          // classified by their synced billingMode — a subscription/seat mode
-          // counts toward subscription cost, anything else toward API cost.
-          // Binary-exact values so the subscription/API sums compare equal under
-          // toEqual without floating-point drift.
+          /* Fourth sessionDetail.groupBy call: cost split grouped by
+             sourceLoopId and billingMode. Loop-originated rows are classified by
+             the loop's apiKeySource; DESKTOP_SYNC rows (null sourceLoopId) are
+             classified by their synced billingMode — a subscription/seat mode
+             counts toward subscription cost, anything else toward API cost.
+             Binary-exact values so the subscription/API sums compare equal under
+             toEqual without floating-point drift. */
           .mockResolvedValueOnce([
             {
               sourceLoopId: "loop-subscription",
@@ -141,7 +144,10 @@ describe("agentSessionsService", () => {
               billingMode: null,
               _sum: { estimatedCost: 0.25 },
             },
-          ]),
+          ])
+          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Unused by this test's assertions; empty snapshot.
+          .mockResolvedValueOnce([]),
       }),
       agentSessionTokenUsage: {
         groupBy: vi.fn().mockResolvedValue([
@@ -193,7 +199,14 @@ describe("agentSessionsService", () => {
       })
     ).resolves.toEqual(
       expect.objectContaining({
-        totalEstimatedCost: 1.5,
+        // FEA-3986: the grand total is derived FROM the classified buckets
+        // (subscription + API), NOT from the separate `aggregate` query — which
+        // this fixture deliberately seeds at a DIVERGENT 1.5 to model a
+        // non-transactional drift between the two reads. The old two-read code
+        // published that stale 1.5 headline against a 0.625 + 0.75 = 1.375
+        // breakdown; deriving from the one bucket snapshot yields 1.375, so the
+        // headline and breakdown can no longer disagree.
+        totalEstimatedCost: 1.375,
         subscriptionEstimatedCost: 0.625,
         apiEstimatedCost: 0.75,
         earliestSessionAt: "2026-03-01T10:00:00.000Z",
@@ -210,273 +223,75 @@ describe("agentSessionsService", () => {
       })
     );
   });
-  it("returns delivery metrics for a matched session set with merged PRs", async () => {
-    // A merged PR linked to a matched session, carrying line-diff facts. The
-    // sessionMetricSelect (agent-session-delivery-metrics) reads the branch's
-    // currentPullRequestDetail — prState/mergedAt gate "merged", additions +
-    // deletions are the gross lines the SSOT medians / sums into KLOC.
-    function mergedPrLink(
-      number: number,
-      additions: number,
-      deletions: number
-    ) {
-      return {
-        targetId: `branch-${number}`,
-        target: {
-          branch: {
-            currentPullRequestDetail: {
-              number,
-              prState: GitHubPRState.Merged,
-              mergedAt: new Date("2026-03-10T10:00:00.000Z"),
-              additions,
-              deletions,
-              isCurrent: true,
-              repositoryFullName: "closedloop-ai/symphony-alpha",
-              repository: { fullName: "closedloop-ai/symphony-alpha" },
-            },
-          },
-        },
-      };
-    }
-    function deliverySessionRecord(
-      artifactId: string,
-      estimatedCost: number,
-      links: unknown[]
-    ) {
-      return {
-        artifactId,
-        sessionStartedAt: new Date("2026-03-01T10:00:00.000Z"),
-        estimatedCost,
-        inputTokens: 100,
-        outputTokens: 50,
-        cacheReadTokens: 10,
-        cacheWriteTokens: 5,
-        artifact: { sourceLinks: links },
-      };
-    }
 
+  it("keeps totalEstimatedCost === subscription + api even when the aggregate total drifts", async () => {
+    // FEA-3986 invariant guard. The `aggregate` query is seeded at 9.99 — a value
+    // that AGREES with NEITHER bucket sum — modelling a non-transactional drift
+    // between the grand-total read and the split read. The old code published the
+    // aggregate as `totalEstimatedCost` and this assertion would fail (9.99 !==
+    // 0.625 + 0.75). Deriving the total from the one bucket snapshot makes the
+    // headline the sum of the split BY CONSTRUCTION, so the invariant holds.
     installDb({
       sessionDetail: buildAgentSessionDbMock({
         aggregate: vi.fn().mockResolvedValue({
-          _count: { _all: 2 },
-          _sum: {
-            inputTokens: 200,
-            outputTokens: 100,
-            cacheReadTokens: 20,
-            cacheWriteTokens: 10,
-            // Total cost across the 2 matched sessions = $2. Two merged PRs of
-            // 1000 + 3000 gross lines → KLOC = 4.0; klocPerDollar = 4 / 2 = 2.
-            estimatedCost: 2,
-          },
-          _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-          _max: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-        }),
-        groupBy: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          // Fourth call: cost split. All $2 of matched-session cost is
-          // API-billed (DESKTOP_SYNC, api billingMode), so it is the KLOC/$
-          // denominator in full.
-          .mockResolvedValueOnce([
-            {
-              sourceLoopId: null,
-              billingMode: "api",
-              _sum: { estimatedCost: 2 },
-            },
-          ]),
-        // The delivery-metrics pager reads the matched sessions + their linked
-        // merged PRs. Two sessions: one 1000-line PR, one 3000-line PR.
-        findMany: vi
-          .fn()
-          .mockResolvedValue([
-            deliverySessionRecord("session-1", 1, [mergedPrLink(11, 600, 400)]),
-            deliverySessionRecord("session-2", 1, [
-              mergedPrLink(12, 2000, 1000),
-            ]),
-          ]),
-      }),
-      // The delivery adapter probes for session→PR links before paging merged
-      // PRs (so a broad no-PR-link dashboard never scans rows); this matched set
-      // carries links, so the probe must resolve truthy.
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
-      agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
-      computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
-      user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
-    });
-
-    const summary = await agentSessionsService.getUsageSummary({
-      organizationId: "org-1",
-      filters: {},
-    });
-
-    // Two distinct merged PRs → count 2. Median gross lines over [1000, 3000] =
-    // 2000. KLOC (sum 4000 / 1000) ÷ cost ($2) = 2.
-    expect(summary.mergedPrCount).toBe(2);
-    expect(summary.medianPrSize).toBe(2000);
-    expect(summary.mergedKlocPerDollar).toBe(2);
-  });
-  it("excludes subscription-covered cost from the KLOC-per-$ denominator", async () => {
-    // FEA-3156 (Codex P1): a subscription-billed session must NOT contribute to
-    // the delivery Cost KPI (billing-mode contract). Here ALL $2 of matched
-    // cost is subscription-covered, so the KLOC/$ denominator is $0 → the metric
-    // is unavailable (null) even though a merged PR exists — the raw aggregate
-    // total ($2) must never leak in as spend.
-    installDb({
-      sessionDetail: buildAgentSessionDbMock({
-        aggregate: vi.fn().mockResolvedValue({
-          _count: { _all: 1 },
+          _count: { _all: 4 },
           _sum: {
             inputTokens: 100,
             outputTokens: 50,
             cacheReadTokens: 10,
             cacheWriteTokens: 5,
-            // Raw aggregate cost = $2 (all subscription-covered below).
-            estimatedCost: 2,
+            // Deliberately divergent from the classified buckets below.
+            estimatedCost: 9.99,
           },
           _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-          _max: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
+          _max: { sessionStartedAt: new Date("2026-03-14T10:00:00.000Z") },
         }),
         groupBy: vi
           .fn()
+          // byUser
           .mockResolvedValueOnce([])
+          // byHarness
           .mockResolvedValueOnce([])
+          // byRepository
           .mockResolvedValueOnce([])
-          // Cost split: the whole $2 is DESKTOP_SYNC on a subscription/seat
-          // billingMode → subscription cost, $0 API cost.
+          // cost split by sourceLoopId + billingMode
           .mockResolvedValueOnce([
             {
-              sourceLoopId: null,
-              billingMode: "max_20x",
-              _sum: { estimatedCost: 2 },
+              sourceLoopId: "loop-subscription",
+              billingMode: null,
+              _sum: { estimatedCost: 0.625 },
             },
-          ]),
-        // A merged PR is linked, so mergedPrCount/medianPrSize still resolve —
-        // only KLOC/$ is null because the API-billed denominator is $0.
-        findMany: vi.fn().mockResolvedValue([
-          {
-            artifactId: "session-1",
-            sessionStartedAt: new Date("2026-03-01T10:00:00.000Z"),
-            estimatedCost: 2,
-            inputTokens: 100,
-            outputTokens: 50,
-            cacheReadTokens: 10,
-            cacheWriteTokens: 5,
-            artifact: {
-              sourceLinks: [
-                {
-                  targetId: "branch-1",
-                  target: {
-                    branch: {
-                      currentPullRequestDetail: {
-                        number: 1,
-                        prState: GitHubPRState.Merged,
-                        mergedAt: new Date("2026-03-10T10:00:00.000Z"),
-                        additions: 600,
-                        deletions: 400,
-                        isCurrent: true,
-                        repositoryFullName: "closedloop-ai/symphony-alpha",
-                        repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
+            {
+              sourceLoopId: "loop-api",
+              billingMode: null,
+              _sum: { estimatedCost: 0.75 },
             },
-          },
-        ]),
-      }),
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
-      agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
-      computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
-      user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
-    });
-
-    const summary = await agentSessionsService.getUsageSummary({
-      organizationId: "org-1",
-      filters: {},
-    });
-
-    // The subscription session's $2 is reported as subscription spend, never as
-    // API spend, and the KLOC/$ card is unavailable because the denominator
-    // (API-billed cost) is $0 — the merged PR alone cannot fabricate a ratio.
-    expect(summary.subscriptionEstimatedCost).toBe(2);
-    expect(summary.apiEstimatedCost).toBe(0);
-    expect(summary.mergedPrCount).toBe(1);
-    expect(summary.medianPrSize).toBe(1000);
-    expect(summary.mergedKlocPerDollar).toBeNull();
-  });
-  it("nulls delivery size/efficiency metrics when no merged PRs are linked", async () => {
-    installDb({
-      sessionDetail: buildAgentSessionDbMock({
-        aggregate: vi.fn().mockResolvedValue({
-          _count: { _all: 1 },
-          _sum: {
-            inputTokens: 10,
-            outputTokens: 5,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-            estimatedCost: 1,
-          },
-          _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-          _max: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-        }),
-        groupBy: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
+          ])
+          // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+          // Unused by this test's assertions; empty snapshot.
           .mockResolvedValueOnce([]),
-        // A matched session with an OPEN (not merged) linked PR — no merged PR
-        // to count, so size + efficiency are genuinely unavailable (null) while
-        // the count is a real 0.
+      }),
+      agentSessionTokenUsage: {
+        groupBy: vi.fn().mockResolvedValue([]),
+      },
+      computeTarget: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      user: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      loop: {
         findMany: vi.fn().mockResolvedValue([
           {
-            artifactId: "session-1",
-            sessionStartedAt: new Date("2026-03-01T10:00:00.000Z"),
-            estimatedCost: 1,
-            inputTokens: 10,
-            outputTokens: 5,
-            cacheReadTokens: 0,
-            cacheWriteTokens: 0,
-            artifact: {
-              sourceLinks: [
-                {
-                  targetId: "branch-1",
-                  target: {
-                    branch: {
-                      currentPullRequestDetail: {
-                        number: 1,
-                        prState: GitHubPRState.Open,
-                        mergedAt: null,
-                        additions: 100,
-                        deletions: 50,
-                        isCurrent: true,
-                        repositoryFullName: "closedloop-ai/symphony-alpha",
-                        repository: {
-                          fullName: "closedloop-ai/symphony-alpha",
-                        },
-                      },
-                    },
-                  },
-                },
-              ],
-            },
+            id: "loop-subscription",
+            metadata: { apiKeySource: "none" },
+          },
+          {
+            id: "loop-api",
+            metadata: { apiKeySource: "organization" },
           },
         ]),
-      }),
-      // A session→PR link exists (an OPEN PR), so the delivery adapter's probe
-      // passes and it pages the linked PRs — none of which are merged.
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
-      agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
-      computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
-      user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
+      },
     });
 
     const summary = await agentSessionsService.getUsageSummary({
@@ -484,114 +299,16 @@ describe("agentSessionsService", () => {
       filters: {},
     });
 
-    expect(summary.mergedPrCount).toBe(0);
-    expect(summary.medianPrSize).toBeNull();
-    expect(summary.mergedKlocPerDollar).toBeNull();
+    expect(summary.subscriptionEstimatedCost).toBe(0.625);
+    expect(summary.apiEstimatedCost).toBe(0.75);
+    // The load-bearing invariant: total is the sum of the split, NOT the drifted
+    // aggregate (9.99).
+    expect(summary.totalEstimatedCost).toBe(
+      summary.subscriptionEstimatedCost + summary.apiEstimatedCost
+    );
+    expect(summary.totalEstimatedCost).toBe(1.375);
   });
-  it("counts two null-repo merged PRs sharing #42 as 2, not deduped to 1", async () => {
-    // FEA-3156 dedup-by-nullable guard: two DISTINCT merged PRs on different
-    // branches, both numbered 42, both with an unidentifiable repository (null
-    // repositoryFullName + null repository relation). The old repo#number key
-    // folded them into one `#42` bucket and dropped one from BOTH the count and
-    // the median. Keyed by the branch artifact id, they stay two separate PRs.
-    function nullRepoMergedPrLink(
-      branchId: string,
-      additions: number,
-      deletions: number
-    ) {
-      return {
-        targetId: branchId,
-        target: {
-          branch: {
-            currentPullRequestDetail: {
-              number: 42,
-              prState: GitHubPRState.Merged,
-              mergedAt: new Date("2026-03-10T10:00:00.000Z"),
-              additions,
-              deletions,
-              isCurrent: true,
-              repositoryFullName: null,
-              repository: null,
-            },
-          },
-        },
-      };
-    }
 
-    installDb({
-      sessionDetail: buildAgentSessionDbMock({
-        aggregate: vi.fn().mockResolvedValue({
-          _count: { _all: 2 },
-          _sum: {
-            inputTokens: 200,
-            outputTokens: 100,
-            cacheReadTokens: 20,
-            cacheWriteTokens: 10,
-            // $2 total, all API-billed below → KLOC/$ denominator = $2.
-            estimatedCost: 2,
-          },
-          _min: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-          _max: { sessionStartedAt: new Date("2026-03-01T10:00:00.000Z") },
-        }),
-        groupBy: vi
-          .fn()
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([
-            {
-              sourceLoopId: null,
-              billingMode: "api",
-              _sum: { estimatedCost: 2 },
-            },
-          ]),
-        // Two matched sessions, each linking a distinct null-repo PR #42 on its
-        // own branch: 1000 gross lines and 3000 gross lines.
-        findMany: vi.fn().mockResolvedValue([
-          {
-            artifactId: "session-1",
-            sessionStartedAt: new Date("2026-03-01T10:00:00.000Z"),
-            estimatedCost: 1,
-            inputTokens: 100,
-            outputTokens: 50,
-            cacheReadTokens: 10,
-            cacheWriteTokens: 5,
-            artifact: {
-              sourceLinks: [nullRepoMergedPrLink("branch-a", 600, 400)],
-            },
-          },
-          {
-            artifactId: "session-2",
-            sessionStartedAt: new Date("2026-03-01T10:00:00.000Z"),
-            estimatedCost: 1,
-            inputTokens: 100,
-            outputTokens: 50,
-            cacheReadTokens: 10,
-            cacheWriteTokens: 5,
-            artifact: {
-              sourceLinks: [nullRepoMergedPrLink("branch-b", 2000, 1000)],
-            },
-          },
-        ]),
-      }),
-      artifactLink: { findFirst: vi.fn().mockResolvedValue({ id: "link-1" }) },
-      agentSessionTokenUsage: { groupBy: vi.fn().mockResolvedValue([]) },
-      computeTarget: { findMany: vi.fn().mockResolvedValue([]) },
-      user: { findMany: vi.fn().mockResolvedValue([]) },
-      loop: { findMany: vi.fn().mockResolvedValue([]) },
-    });
-
-    const summary = await agentSessionsService.getUsageSummary({
-      organizationId: "org-1",
-      filters: {},
-    });
-
-    // Both PRs survive: count 2 (not collapsed to 1), median over [1000, 3000] =
-    // 2000, and KLOC (4000 / 1000 = 4) ÷ cost ($2) = 2.
-    expect(summary.mergedPrCount).toBe(2);
-    expect(summary.medianPrSize).toBe(2000);
-    expect(summary.mergedKlocPerDollar).toBe(2);
-  });
   it("summarizes usage across multiple organization members", async () => {
     const aggregate = vi.fn().mockResolvedValue({
       _count: { _all: 3 },
@@ -646,7 +363,10 @@ describe("agentSessionsService", () => {
       ])
       // Third call: repository facet groupBy (empty here).
       .mockResolvedValueOnce([])
-      // Fourth call: cost split by sourceLoopId (empty here).
+      // Fourth call: headline cost split by sourceLoopId (empty here).
+      .mockResolvedValueOnce([])
+      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const computeTargetFindMany = vi.fn().mockResolvedValue([]);
     const sessionFindMany = vi.fn().mockResolvedValue([]);
@@ -702,7 +422,10 @@ describe("agentSessionsService", () => {
     await expect(
       agentSessionsService.getUsageSummary({
         organizationId: "org-1",
-        filters: {},
+        // FEA-3345: hiding idle rows is now opt-in via an explicit `substantive`
+        // (the fail-open default is `all`). Pass it so this test exercises the
+        // substantive aggregation predicate below.
+        filters: { quality: "substantive" },
       })
     ).resolves.toEqual(
       expect.objectContaining({
@@ -722,12 +445,27 @@ describe("agentSessionsService", () => {
       })
     );
 
+    // FEA-3284/FEA-3345: on an explicit `quality:"substantive"`, the usage/summary
+    // aggregations apply the SAME substantive predicate as the list, so headline
+    // counts/tokens never include idle "phantom" rows or diverge from the list.
     const expectedWhere = {
       artifact: {
         is: {
           organizationId: "org-1",
         },
       },
+      AND: [
+        {
+          OR: [
+            { turns: { gt: 0 } },
+            { inputTokens: { gt: 0 } },
+            { outputTokens: { gt: 0 } },
+            { cacheReadTokens: { gt: 0 } },
+            { cacheWriteTokens: { gt: 0 } },
+            { toolUseCount: { gt: 0 } },
+          ],
+        },
+      ],
     };
     expect(aggregate).toHaveBeenCalledWith(
       expect.objectContaining({ where: expectedWhere })
@@ -785,6 +523,9 @@ describe("agentSessionsService", () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const computeTargetFindMany = vi.fn().mockResolvedValue([]);
 
@@ -849,6 +590,9 @@ describe("agentSessionsService", () => {
       ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const findMany = vi.fn().mockResolvedValue([
       buildAttributionLensRecord({
@@ -1002,6 +746,9 @@ describe("agentSessionsService", () => {
       ])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      // Fifth call (FEA-4303): the primary-model facet groupBy (by `model`).
+      // Unused by this test's assertions; empty snapshot.
       .mockResolvedValueOnce([]);
     const findMany = vi.fn().mockResolvedValue([
       buildAttributionLensRecord({

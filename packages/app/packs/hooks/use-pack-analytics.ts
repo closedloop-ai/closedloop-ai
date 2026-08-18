@@ -6,7 +6,7 @@ import { useApiClient } from "../../shared/api/use-api-client";
 
 /**
  * Fetches the canonical org-wide analytics for a pack's linked agent component
- * (`GET /agent-components/{slug}`) — the SSOT for per-pack KLOC/$, usage, and
+ * (`GET /agent-components/{slug}`) — the SSOT for per-pack LOC/$, usage, and
  * adoption. Disabled when the pack has no `agentSlug` linkage.
  *
  * Calls the HTTP endpoint directly via `useApiClient` (mirroring

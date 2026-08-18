@@ -1,10 +1,4 @@
-import {
-  BranchCommentsState,
-  BranchDataState,
-  BranchPrCommentKind,
-  BranchStatus,
-  BranchViewerScope,
-} from "@repo/api/src/types/branch";
+import { BranchViewerScope } from "@repo/api/src/types/branch";
 import {
   ChecksStatus,
   ReviewDecision,
@@ -27,6 +21,10 @@ const listIssueCommentsMock = vi.fn();
 const listReviewCommentsMock = vi.fn();
 const listReviewsMock = vi.fn();
 const queryStatusCheckRollupMock = vi.fn();
+const getInstallationOctokitMock = vi.fn();
+// Marker object the mocked resolver mints; provider read functions receive it
+// as their first argument (PLN-1525: resolve once per operation, thread down).
+const installationOctokit = { kind: "installation-octokit" };
 
 vi.mock("@repo/database", () => ({
   ArtifactType: { BRANCH: "BRANCH", SESSION: "SESSION" },
@@ -99,6 +97,17 @@ vi.mock("@repo/github", () => ({
   listPullRequestReviewsWithProviderResult: listReviewsMock,
   queryBundledPullRequestsWithProviderResult: queryBundledPullRequestsMock,
   queryStatusCheckRollupWithProviderResult: queryStatusCheckRollupMock,
+}));
+
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: getInstallationOctokitMock,
+}));
+
+vi.mock("@/lib/github/github-branch-view-read-client", () => ({
+  resolveBranchViewReadClient: vi.fn(async () => ({
+    ok: true,
+    value: { octokit: installationOctokit, kind: "user_token" },
+  })),
 }));
 
 vi.mock("@/lib/branch-status-checks", () => ({
@@ -239,6 +248,7 @@ describe("GitHub backfill real boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetState();
+    getInstallationOctokitMock.mockResolvedValue(installationOctokit);
     db.gitHubInstallationRepository.findMany.mockResolvedValue([
       {
         id: repositoryId,
@@ -446,9 +456,39 @@ describe("GitHub backfill real boundary", () => {
         return next;
       }
     );
-    db.$executeRaw.mockResolvedValue(1);
+    db.$executeRaw.mockImplementation((query) => {
+      if (!isGitHubReviewInsert(query)) {
+        return 1;
+      }
+      const values = query.values ?? [];
+      const next = {
+        pullRequestId: String(values[1]),
+        githubReviewId: String(values[2]),
+        authorLogin: String(values[3]),
+        authorAvatarUrl:
+          typeof values[4] === "string" ? String(values[4]) : null,
+        state: values[5] as ReviewDecision,
+        body: typeof values[6] === "string" ? String(values[6]) : null,
+        htmlUrl: String(values[7]),
+        submittedAt:
+          values[8] instanceof Date ? values[8] : new Date(String(values[8])),
+      };
+      persistLatestReviewInMemory(next);
+      return 1;
+    });
+    // FEA-4225: the candidate query gates on a valid linked session, so a
+    // backfilled branch with NO session link is not part of the list corpus.
+    // The mocked candidate read returns an empty page, matching what the real
+    // WHERE clause (with the `branchLinkedSessionExistsSql` predicate) would
+    // return for this session-less branch.
+    // FEA-4311: the `/comments` context now shares that same linked-session gate
+    // via `branchHasLinkedSession`, which issues its own `$queryRaw` after the
+    // two `listBranches` reads. This branch DOES have a linked session for the
+    // comments path (its provider projections are exposed through the row
+    // contract below), so the gate returns a matching row.
     db.$queryRaw
-      .mockResolvedValueOnce([{ count: 1n }])
+      .mockResolvedValueOnce([{ count: 0n }])
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ id: branchArtifactId }]);
     db.artifact.count.mockResolvedValue(1);
     db.artifact.findFirst.mockImplementation(async () => branchArtifactRow());
@@ -505,6 +545,10 @@ describe("GitHub backfill real boundary", () => {
       repositoryLimit: 1,
       approvedForVisibleWrites: true,
     });
+    // One mint per repository per backfill run (dry run + write run), before
+    // the read surfaces below execute (PLN-1525: resolve once, thread down).
+    expect(getInstallationOctokitMock).toHaveBeenCalledTimes(2);
+    expect(getInstallationOctokitMock).toHaveBeenCalledWith("123");
     const list = await branchReadService.listBranches(organizationId, {
       limit: 50,
       offset: 0,
@@ -528,39 +572,18 @@ describe("GitHub backfill real boundary", () => {
       reviewProjectionChangeCount: 1,
       statusCheckProjectionChangeCount: 1,
     });
+    // FEA-4225: GitHub backfill enriches the branch's PR/checks/review/comment
+    // projections (asserted above and below), but a backfilled branch with no
+    // linked session is NOT part of the agent Branches surface — the list corpus
+    // excludes it until a session links to it.
     expect(list).toMatchObject({
-      total: 1,
+      total: 0,
       viewerScope: BranchViewerScope.Organization,
-      items: [
-        expect.objectContaining({
-          id: branchArtifactId,
-          dataState: BranchDataState.NoSessions,
-          status: BranchStatus.Open,
-          prNumber: 42,
-          prTitle: "Backfilled PR",
-          checksStatus: ChecksStatus.Passing,
-          checksTotal: 1,
-          reviewDecision: ReviewDecision.Approved,
-        }),
-      ],
+      items: [],
     });
-    expect(comments).toMatchObject({
-      branchId: branchArtifactId,
-      state: BranchCommentsState.StaleMixed,
-      comments: [
-        expect.objectContaining({
-          kind: BranchPrCommentKind.Issue,
-          providerCommentId: "1001",
-          body: "Backfilled issue comment",
-        }),
-        expect.objectContaining({
-          kind: BranchPrCommentKind.Review,
-          providerCommentId: "2001",
-          body: "Backfilled review comment",
-          resolved: true,
-        }),
-      ],
-    });
+    // The same canonical membership boundary protects direct subresource reads:
+    // retained provider projections do not make a session-less Branch visible.
+    expect(comments).toBeNull();
   });
 });
 
@@ -809,6 +832,42 @@ function projectedCommentRows() {
         },
       };
     });
+}
+
+function persistLatestReviewInMemory(next: StoredReview): void {
+  const existingIndex = state.reviews.findIndex(
+    (review) =>
+      review.pullRequestId === next.pullRequestId &&
+      review.authorLogin === next.authorLogin
+  );
+  if (existingIndex === -1) {
+    state.reviews.push(next);
+    return;
+  }
+  const existing = state.reviews[existingIndex];
+  const canUpdate =
+    existing.submittedAt < next.submittedAt ||
+    (existing.submittedAt.getTime() === next.submittedAt.getTime() &&
+      (existing.state !== ReviewDecision.Dismissed ||
+        next.state === ReviewDecision.Dismissed));
+  if (canUpdate) {
+    state.reviews[existingIndex] = next;
+  }
+}
+
+function isGitHubReviewInsert(query: unknown): query is {
+  strings: readonly string[];
+  values?: readonly unknown[];
+} {
+  return Boolean(
+    query &&
+      typeof query === "object" &&
+      "strings" in query &&
+      Array.isArray((query as { strings?: unknown }).strings) &&
+      (query as { strings: readonly string[] }).strings
+        .join("")
+        .includes('INSERT INTO "github_pr_reviews"')
+  );
 }
 
 type StoredComment = {

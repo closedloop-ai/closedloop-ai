@@ -1,12 +1,20 @@
 import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import type {
+  CacheWriteTtl,
+  NormalizedTokenRecord,
+} from "@repo/lib/harness/types";
 import {
+  accumulateCacheWriteTtl,
+  buildUsageTokenRecord,
+  readRawCacheWriteTtl,
   recordUsageLine,
   type UsageDedupEntry,
 } from "../collectors/engine/usage-dedup.js";
 import {
   addStorageTokenCounts,
   readStorageTokenCount,
-} from "../token-counts.js";
+} from "../cost/token-counts.js";
+import { hasTrailingUnrecoveredApiError } from "./trailing-api-error.js";
 
 const TRANSCRIPT_CACHE_MAX = 200;
 const LARGE_FILE_SIZE_BYTES = 200 * 1024 * 1024;
@@ -17,6 +25,8 @@ type CacheEntry = {
   dedupMap: Map<string, UsageDedupEntry>;
   latestModel: string | null;
   compactionCount: number;
+  latestApiErrorTs: string | null;
+  latestAssistantTs: string | null;
 };
 
 /**
@@ -42,17 +52,12 @@ export type TranscriptTokenCounts = {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** FEA-3419: per-model cache-write TTL subdivision; absent = never reported. */
+  cacheWriteTtl?: CacheWriteTtl;
 };
 
 /** FEA-1459: Per-dedup-key record for token_events insertion (Fix 5). */
-export type TranscriptTokenRecord = {
-  timestamp: string;
-  model: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-};
+export type TranscriptTokenRecord = NormalizedTokenRecord;
 
 export type TranscriptExtract = {
   /** model id -> summed token counts across the transcript. */
@@ -63,6 +68,8 @@ export type TranscriptExtract = {
   compactionCount: number;
   /** FEA-1459: Per-dedup-key records for token_events insertion. */
   records: TranscriptTokenRecord[];
+  /** FEA-2930: True when the transcript ends on an unrecovered API error. */
+  hasTrailingApiError: boolean;
 };
 
 type UsageRecord = {
@@ -70,6 +77,8 @@ type UsageRecord = {
   output_tokens?: unknown;
   cache_read_input_tokens?: unknown;
   cache_creation_input_tokens?: unknown;
+  /** FEA-3419: nested ephemeral-TTL breakdown object (when reported). */
+  cache_creation?: unknown;
 };
 
 function asUsage(value: unknown): UsageRecord | null {
@@ -127,125 +136,22 @@ export function extractTranscriptTokens(
   }
 
   const dedupMap = new Map<string, UsageDedupEntry>();
-  let latestModel: string | null = null;
-  let compactionCount = 0;
-
-  for (const line of content.split("\n")) {
-    if (!line.trim()) {
-      continue;
-    }
-    let entry: Record<string, unknown>;
-    try {
-      entry = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      continue;
-    }
-
-    if (entry.isCompactSummary === true) {
-      compactionCount += 1;
-    }
-
-    // The usage block lives on `message` for assistant turns; some shapes carry
-    // it on the entry directly. Mirror the vendor extractor's `message || entry`.
-    const message =
-      (entry.message as Record<string, unknown> | undefined) ?? entry;
-    const model =
-      typeof message.model === "string" && message.model.length > 0
-        ? message.model
-        : undefined;
-    const usage = asUsage(message.usage);
-    if (!model || model === "<synthetic>" || !usage) {
-      continue;
-    }
-
-    latestModel = model;
-
-    const messageId =
-      typeof message.id === "string" && message.id.length > 0
-        ? message.id
-        : null;
-    const requestId =
-      typeof entry.requestId === "string" && entry.requestId.length > 0
-        ? entry.requestId
-        : null;
-    const lineUuid =
-      typeof entry.uuid === "string" && entry.uuid.length > 0
-        ? entry.uuid
-        : null;
-    const ts = normalizeTimestamp(entry.timestamp);
-
-    recordUsageLine(dedupMap, {
-      messageId,
-      lineUuid,
-      requestId,
-      timestamp: ts,
-      model,
-      input: readUsageCount(usage.input_tokens, "input_tokens"),
-      output: readUsageCount(usage.output_tokens, "output_tokens"),
-      cacheRead: readUsageCount(
-        usage.cache_read_input_tokens,
-        "cache_read_input_tokens"
-      ),
-      cacheWrite: readUsageCount(
-        usage.cache_creation_input_tokens,
-        "cache_creation_input_tokens"
-      ),
-    });
-  }
-
-  // Fold dedup map into tokensByModel totals and per-key records.
-  const tokensByModel = new Map<string, TranscriptTokenCounts>();
-  const records: TranscriptTokenRecord[] = [];
-  for (const entry of dedupMap.values()) {
-    const existing = tokensByModel.get(entry.model);
-    if (existing) {
-      existing.input = addStorageTokenCounts(
-        existing.input,
-        entry.input,
-        "input_tokens"
-      );
-      existing.output = addStorageTokenCounts(
-        existing.output,
-        entry.output,
-        "output_tokens"
-      );
-      existing.cacheRead = addStorageTokenCounts(
-        existing.cacheRead,
-        entry.cacheRead,
-        "cache_read_input_tokens"
-      );
-      existing.cacheWrite = addStorageTokenCounts(
-        existing.cacheWrite,
-        entry.cacheWrite,
-        "cache_creation_input_tokens"
-      );
-    } else {
-      tokensByModel.set(entry.model, {
-        input: entry.input,
-        output: entry.output,
-        cacheRead: entry.cacheRead,
-        cacheWrite: entry.cacheWrite,
-      });
-    }
-    if (entry.firstTs) {
-      records.push({
-        timestamp: entry.firstTs,
-        model: entry.model,
-        input: entry.input,
-        output: entry.output,
-        cacheRead: entry.cacheRead,
-        cacheWrite: entry.cacheWrite,
-      });
-    }
-  }
-
-  return { tokensByModel, latestModel, compactionCount, records };
+  const result = processLinesIntoMap(content, dedupMap, null, 0);
+  return buildExtractFromDedupMap(
+    dedupMap,
+    result.latestModel,
+    result.compactionCount,
+    result.latestApiErrorTs,
+    result.latestAssistantTs
+  );
 }
 
 function buildExtractFromDedupMap(
   dedupMap: Map<string, UsageDedupEntry>,
   latestModel: string | null,
-  compactionCount: number
+  compactionCount: number,
+  latestApiErrorTs: string | null = null,
+  latestAssistantTs: string | null = null
 ): TranscriptExtract {
   const tokensByModel = new Map<string, TranscriptTokenCounts>();
   const records: TranscriptTokenRecord[] = [];
@@ -272,26 +178,35 @@ function buildExtractFromDedupMap(
         entry.cacheWrite,
         "cache_creation_input_tokens"
       );
+      if (entry.cacheWriteTtl) {
+        accumulateCacheWriteTtl(existing, entry.cacheWriteTtl);
+      }
     } else {
       tokensByModel.set(entry.model, {
         input: entry.input,
         output: entry.output,
         cacheRead: entry.cacheRead,
         cacheWrite: entry.cacheWrite,
+        ...(entry.cacheWriteTtl
+          ? { cacheWriteTtl: { ...entry.cacheWriteTtl } }
+          : {}),
       });
     }
-    if (entry.firstTs) {
-      records.push({
-        timestamp: entry.firstTs,
-        model: entry.model,
-        input: entry.input,
-        output: entry.output,
-        cacheRead: entry.cacheRead,
-        cacheWrite: entry.cacheWrite,
-      });
+    const record = buildUsageTokenRecord(entry);
+    if (record) {
+      records.push(record);
     }
   }
-  return { tokensByModel, latestModel, compactionCount, records };
+  return {
+    tokensByModel,
+    latestModel,
+    compactionCount,
+    records,
+    hasTrailingApiError: hasTrailingUnrecoveredApiError(
+      latestApiErrorTs,
+      latestAssistantTs
+    ),
+  };
 }
 
 /**
@@ -339,10 +254,19 @@ function processLinesIntoMap(
   content: string,
   dedupMap: Map<string, UsageDedupEntry>,
   initialModel: string | null,
-  initialCompactionCount: number
-): { latestModel: string | null; compactionCount: number } {
+  initialCompactionCount: number,
+  initialApiErrorTs: string | null = null,
+  initialAssistantTs: string | null = null
+): {
+  latestModel: string | null;
+  compactionCount: number;
+  latestApiErrorTs: string | null;
+  latestAssistantTs: string | null;
+} {
   let modelOut = initialModel;
   let compactionOut = initialCompactionCount;
+  let apiErrorTs = initialApiErrorTs;
+  let assistantTs = initialAssistantTs;
   for (const line of content.split("\n")) {
     if (!line.trim()) {
       continue;
@@ -360,6 +284,17 @@ function processLinesIntoMap(
 
     const message =
       (entry.message as Record<string, unknown> | undefined) ?? entry;
+
+    if (
+      entry.isApiErrorMessage === true ||
+      (message.type === "error" && message.error != null)
+    ) {
+      const ts = normalizeTimestamp(entry.timestamp);
+      if (ts && (!apiErrorTs || ts > apiErrorTs)) {
+        apiErrorTs = ts;
+      }
+    }
+
     const model =
       typeof message.model === "string" && message.model.length > 0
         ? message.model
@@ -371,6 +306,11 @@ function processLinesIntoMap(
 
     modelOut = model;
 
+    const ts = normalizeTimestamp(entry.timestamp);
+    if (ts && (!assistantTs || ts > assistantTs)) {
+      assistantTs = ts;
+    }
+
     const messageId =
       typeof message.id === "string" && message.id.length > 0
         ? message.id
@@ -379,15 +319,11 @@ function processLinesIntoMap(
       typeof entry.requestId === "string" && entry.requestId.length > 0
         ? entry.requestId
         : null;
-    const lineUuid =
-      typeof entry.uuid === "string" && entry.uuid.length > 0
-        ? entry.uuid
-        : null;
-    const ts = normalizeTimestamp(entry.timestamp);
 
+    const cacheWriteTtlRaw = readRawCacheWriteTtl(usage.cache_creation);
     recordUsageLine(dedupMap, {
       messageId,
-      lineUuid,
+      lineUuid: entry.uuid,
       requestId,
       timestamp: ts,
       model,
@@ -401,10 +337,16 @@ function processLinesIntoMap(
         usage.cache_creation_input_tokens,
         "cache_creation_input_tokens"
       ),
+      ...(cacheWriteTtlRaw ? { cacheWriteTtlRaw } : {}),
     });
   }
 
-  return { latestModel: modelOut, compactionCount: compactionOut };
+  return {
+    latestModel: modelOut,
+    compactionCount: compactionOut,
+    latestApiErrorTs: apiErrorTs,
+    latestAssistantTs: assistantTs,
+  };
 }
 
 /**
@@ -460,7 +402,9 @@ export function createTranscriptCache(): (
       return buildExtractFromDedupMap(
         cached.dedupMap,
         cached.latestModel,
-        cached.compactionCount
+        cached.compactionCount,
+        cached.latestApiErrorTs,
+        cached.latestAssistantTs
       );
     }
 
@@ -471,17 +415,23 @@ export function createTranscriptCache(): (
           newBytes,
           cached.dedupMap,
           cached.latestModel,
-          cached.compactionCount
+          cached.compactionCount,
+          cached.latestApiErrorTs,
+          cached.latestAssistantTs
         );
         cached.latestModel = result.latestModel;
         cached.compactionCount = result.compactionCount;
+        cached.latestApiErrorTs = result.latestApiErrorTs;
+        cached.latestAssistantTs = result.latestAssistantTs;
       }
       cached.fileSize = st.size;
       promoteLruEntry(cache, path, cached);
       return buildExtractFromDedupMap(
         cached.dedupMap,
         cached.latestModel,
-        cached.compactionCount
+        cached.compactionCount,
+        cached.latestApiErrorTs,
+        cached.latestAssistantTs
       );
     }
 
@@ -505,6 +455,8 @@ export function createTranscriptCache(): (
       dedupMap,
       latestModel: result.latestModel,
       compactionCount: result.compactionCount,
+      latestApiErrorTs: result.latestApiErrorTs,
+      latestAssistantTs: result.latestAssistantTs,
     };
 
     promoteLruEntry(cache, path, entry);
@@ -512,7 +464,9 @@ export function createTranscriptCache(): (
     return buildExtractFromDedupMap(
       dedupMap,
       result.latestModel,
-      result.compactionCount
+      result.compactionCount,
+      result.latestApiErrorTs,
+      result.latestAssistantTs
     );
   };
 }

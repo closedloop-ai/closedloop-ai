@@ -28,6 +28,7 @@
 
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg, { type Pool } from "pg";
+import { settleAll } from "../../../../__tests__/test-helpers/settle-all";
 import { PrismaClient } from "../../../../generated/client";
 import { isLocalhostUrl, resolveSslOption } from "../../../db-utils";
 import {
@@ -150,124 +151,137 @@ export async function teardownEphemeralDb(
 ): Promise<void> {
   const { prisma, organizationId } = ctx;
 
-  try {
-    await prisma.$transaction(async (tx) => {
-      // ------------------------------------------------------------------
-      // Leaf tables first (no children), scoped to the ephemeral org.
-      // ------------------------------------------------------------------
+  // Every step runs even when an earlier one rejects, and every failure is
+  // surfaced. A `finally` here would drop the delete transaction's error in
+  // favor of the close's, and awaiting `$disconnect()` before `pool.end()` in
+  // that block leaked the pool whenever the disconnect rejected.
+  await settleAll(
+    [
+      () => deleteEphemeralRows(prisma, organizationId),
+      () => prisma.$disconnect(),
+      () => ctx._pool.end(),
+    ],
+    "ephemeral database teardown failed"
+  );
+}
 
-      await tx.loopEvent.deleteMany({
-        where: { loop: { organizationId } },
-      });
-      await tx.artifactRating.deleteMany({ where: { organizationId } });
-      await tx.fileAttachment.deleteMany({
-        where: { artifact: { organizationId } },
-      });
-      await tx.prompt.deleteMany({ where: { organizationId } });
+async function deleteEphemeralRows(
+  prisma: PrismaClient,
+  organizationId: string
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    // ------------------------------------------------------------------
+    // Leaf tables first (no children), scoped to the ephemeral org.
+    // ------------------------------------------------------------------
 
-      // CommentReaction → scoped via comment → thread → org
-      await tx.commentReaction.deleteMany({
-        where: { comment: { thread: { organizationId } } },
-      });
-      await tx.commentAttachment.deleteMany({
-        where: { comment: { thread: { organizationId } } },
-      });
-      await tx.comment.deleteMany({
-        where: { thread: { organizationId } },
-      });
-      await tx.commentThread.deleteMany({ where: { organizationId } });
-
-      await tx.customFieldValue.deleteMany({ where: { organizationId } });
-      await tx.customFieldSetting.deleteMany({ where: { organizationId } });
-      await tx.customFieldEnumOption.deleteMany({
-        where: { customField: { organizationId } },
-      });
-      await tx.customField.deleteMany({ where: { organizationId } });
-
-      await tx.judgeHumanScore.deleteMany({ where: { organizationId } });
-      await tx.judgeScore.deleteMany({
-        where: { evaluation: { organizationId } },
-      });
-      await tx.artifactEvaluation.deleteMany({ where: { organizationId } });
-      await tx.artifactLink.deleteMany({ where: { organizationId } });
-
-      await tx.loopEvent.deleteMany({
-        where: { loop: { organizationId } },
-      });
-      await tx.loop.deleteMany({ where: { organizationId } });
-      await tx.slugCounter.deleteMany({ where: { organizationId } });
-
-      // GitHubPRReview: no org column, no Prisma
-      // relation to a scoped parent that supports nested where. Cascade from
-      // PullRequestDetail → Artifact → org deletion below.
-
-      await tx.pullRequestDetail.deleteMany({
-        where: { artifact: { organizationId } },
-      });
-      // DocumentVersion has an FK to DocumentDetail with cascade-on-delete on
-      // the schema side, but Prisma's `deleteMany` doesn't trigger it for
-      // some adapter configurations — delete versions explicitly first so we
-      // don't depend on cascade behavior to keep teardown clean.
-      await tx.documentVersion.deleteMany({
-        where: { documentDetail: { artifact: { organizationId } } },
-      });
-      await tx.documentDetail.deleteMany({
-        where: { artifact: { organizationId } },
-      });
-      await tx.artifact.deleteMany({ where: { organizationId } });
-
-      // Collect ephemeral PR detail IDs for review cleanup.
-      // (By this point pullRequestDetail rows were already deleted above, but
-      // GitHubPRReview/Comment rows cascaded via PullRequestDetail onDelete.)
-
-      await tx.teamMember.deleteMany({
-        where: { team: { organizationId } },
-      });
-      // ProjectTeam: Team has no cascade on this side (Project does, but
-      // teams are deleted first below), so any ProjectTeam row would block
-      // the team delete with a FK violation. The current seed graph doesn't
-      // populate this table, but the future scale-profile / scenario layers
-      // (FEA-1329, FEA-1331) likely will — making teardown defensive now.
-      await tx.projectTeam.deleteMany({
-        where: { team: { organizationId } },
-      });
-      await tx.team.deleteMany({ where: { organizationId } });
-      await tx.project.deleteMany({ where: { organizationId } });
-
-      await tx.gitHubInstallationRepository.deleteMany({
-        where: { installation: { organizationId } },
-      });
-      await tx.gitHubInstallation.deleteMany({ where: { organizationId } });
-      await tx.gitHubUserConnection.deleteMany({ where: { organizationId } });
-      await tx.linearIntegration.deleteMany({ where: { organizationId } });
-      await tx.slackIntegration.deleteMany({ where: { organizationId } });
-
-      // ComputeTarget rows must go before User deletion:
-      // compute_targets.user_id has the default Restrict on delete, and the
-      // seed creates one compute target for the SESSION artifact's
-      // SessionDetail (FEA-1699). The session_detail rows that reference the
-      // compute target (also Restrict) are already gone — they cascaded from
-      // the artifact deletion above.
-      await tx.computeTarget.deleteMany({ where: { organizationId } });
-
-      // Finally remove the prerequisite User and Organization rows that
-      // setupEphemeralDb upserted. Without this, the baseline rows persist
-      // after teardown and leak across test runs that share a database (e.g.
-      // CI's `pnpm test --filter=...` job where api#test runs after
-      // @repo/database#test in the same Postgres container) — a previous
-      // test's leftover Organization with slug "test-org" would block
-      // unrelated tests that create an org with the same slug. User must be
-      // deleted before Organization since User.organizationId has the
-      // default Restrict on delete.
-      await tx.user.deleteMany({
-        where: { id: BASELINE_USER_ID },
-      });
-      await tx.organization.deleteMany({
-        where: { id: BASELINE_ORG_ID },
-      });
+    await tx.loopEvent.deleteMany({
+      where: { loop: { organizationId } },
     });
-  } finally {
-    await prisma.$disconnect();
-    await ctx._pool.end();
-  }
+    await tx.artifactRating.deleteMany({ where: { organizationId } });
+    await tx.fileAttachment.deleteMany({
+      where: { artifact: { organizationId } },
+    });
+    await tx.prompt.deleteMany({ where: { organizationId } });
+
+    // CommentReaction → scoped via comment → thread → org
+    await tx.commentReaction.deleteMany({
+      where: { comment: { thread: { organizationId } } },
+    });
+    await tx.commentAttachment.deleteMany({
+      where: { comment: { thread: { organizationId } } },
+    });
+    await tx.comment.deleteMany({
+      where: { thread: { organizationId } },
+    });
+    await tx.commentThread.deleteMany({ where: { organizationId } });
+
+    await tx.customFieldValue.deleteMany({ where: { organizationId } });
+    await tx.customFieldSetting.deleteMany({ where: { organizationId } });
+    await tx.customFieldEnumOption.deleteMany({
+      where: { customField: { organizationId } },
+    });
+    await tx.customField.deleteMany({ where: { organizationId } });
+
+    await tx.judgeHumanScore.deleteMany({ where: { organizationId } });
+    await tx.judgeScore.deleteMany({
+      where: { evaluation: { organizationId } },
+    });
+    await tx.artifactEvaluation.deleteMany({ where: { organizationId } });
+    await tx.artifactLink.deleteMany({ where: { organizationId } });
+
+    await tx.loopEvent.deleteMany({
+      where: { loop: { organizationId } },
+    });
+    await tx.loop.deleteMany({ where: { organizationId } });
+    await tx.slugCounter.deleteMany({ where: { organizationId } });
+
+    // GitHubPRReview: no org column, no Prisma
+    // relation to a scoped parent that supports nested where. Cascade from
+    // PullRequestDetail → Artifact → org deletion below.
+
+    await tx.pullRequestDetail.deleteMany({
+      where: { artifact: { organizationId } },
+    });
+    // DocumentVersion has an FK to DocumentDetail with cascade-on-delete on
+    // the schema side, but Prisma's `deleteMany` doesn't trigger it for
+    // some adapter configurations — delete versions explicitly first so we
+    // don't depend on cascade behavior to keep teardown clean.
+    await tx.documentVersion.deleteMany({
+      where: { documentDetail: { artifact: { organizationId } } },
+    });
+    await tx.documentDetail.deleteMany({
+      where: { artifact: { organizationId } },
+    });
+    await tx.artifact.deleteMany({ where: { organizationId } });
+
+    // Collect ephemeral PR detail IDs for review cleanup.
+    // (By this point pullRequestDetail rows were already deleted above, but
+    // GitHubPRReview/Comment rows cascaded via PullRequestDetail onDelete.)
+
+    await tx.teamMember.deleteMany({
+      where: { team: { organizationId } },
+    });
+    // ProjectTeam: Team has no cascade on this side (Project does, but
+    // teams are deleted first below), so any ProjectTeam row would block
+    // the team delete with a FK violation. The current seed graph doesn't
+    // populate this table, but the future scale-profile / scenario layers
+    // (FEA-1329, FEA-1331) likely will — making teardown defensive now.
+    await tx.projectTeam.deleteMany({
+      where: { team: { organizationId } },
+    });
+    await tx.team.deleteMany({ where: { organizationId } });
+    await tx.project.deleteMany({ where: { organizationId } });
+
+    await tx.gitHubInstallationRepository.deleteMany({
+      where: { installation: { organizationId } },
+    });
+    await tx.gitHubInstallation.deleteMany({ where: { organizationId } });
+    await tx.gitHubUserConnection.deleteMany({ where: { organizationId } });
+    await tx.linearIntegration.deleteMany({ where: { organizationId } });
+    await tx.slackIntegration.deleteMany({ where: { organizationId } });
+
+    // ComputeTarget rows must go before User deletion:
+    // compute_targets.user_id has the default Restrict on delete, and the
+    // seed creates one compute target for the SESSION artifact's
+    // SessionDetail (FEA-1699). The session_detail rows that reference the
+    // compute target (also Restrict) are already gone — they cascaded from
+    // the artifact deletion above.
+    await tx.computeTarget.deleteMany({ where: { organizationId } });
+
+    // Finally remove the prerequisite User and Organization rows that
+    // setupEphemeralDb upserted. Without this, the baseline rows persist
+    // after teardown and leak across test runs that share a database (e.g.
+    // CI's `pnpm test --filter=...` job where api#test runs after
+    // @repo/database#test in the same Postgres container) — a previous
+    // test's leftover Organization with slug "test-org" would block
+    // unrelated tests that create an org with the same slug. User must be
+    // deleted before Organization since User.organizationId has the
+    // default Restrict on delete.
+    await tx.user.deleteMany({
+      where: { id: BASELINE_USER_ID },
+    });
+    await tx.organization.deleteMany({
+      where: { id: BASELINE_ORG_ID },
+    });
+  });
 }

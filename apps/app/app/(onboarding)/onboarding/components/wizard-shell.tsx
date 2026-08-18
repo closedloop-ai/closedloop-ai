@@ -1,6 +1,6 @@
 "use client";
 
-import { OnboardingStep } from "@repo/api/src/types/onboarding";
+import type { OnboardingStep } from "@repo/api/src/types/onboarding";
 import { Button } from "@repo/design-system/components/ui/button";
 import { Card, CardContent } from "@repo/design-system/components/ui/card";
 import { ArrowLeft } from "lucide-react";
@@ -19,14 +19,18 @@ export function WizardShell({
   children,
 }: WizardShellProps) {
   const currentIndex = ONBOARDING_STEPS.indexOf(currentStep);
-  const showBack =
-    currentStep !== OnboardingStep.Welcome &&
-    currentStep !== OnboardingStep.Complete;
+  const showBack = currentIndex > 0;
 
   return (
     <div className="flex w-full max-w-xl flex-col items-center gap-6">
-      {/* Progress dots */}
-      <div className="flex items-center gap-2">
+      {/*
+        The dots are decoration — shape and colour carrying "how far along am I",
+        and nothing a screen reader can read. They stay hidden and the same fact
+        is stated in words beside them, rather than bolting a role onto a div
+        whose children are meaningless individually.
+      */}
+      <span className="sr-only">{`Step ${currentIndex + 1} of ${ONBOARDING_STEPS.length}`}</span>
+      <div aria-hidden="true" className="flex items-center gap-2">
         {ONBOARDING_STEPS.map((step, index) => (
           <div
             className={`h-2 rounded-full transition-all ${

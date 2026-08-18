@@ -1,12 +1,15 @@
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  abortTranscriptMultipartUpload,
   completeTranscriptMultipartUpload,
   copyTranscriptPart,
   createTranscriptMultipartUpload,
+  deleteTranscriptObjects,
   headTranscriptObject,
   listTranscriptParts,
   presignTranscriptPutObject,
+  presignTranscriptUploadPart,
 } from "./index";
 
 const { s3Send } = vi.hoisted(() => ({ s3Send: vi.fn() }));
@@ -122,6 +125,20 @@ describe("copyTranscriptPart", () => {
       "transcripts-bucket/org/ct/s/subagent/a%20b.jsonl"
     );
   });
+
+  it("rejects a copy response without an ETag", async () => {
+    s3Send.mockResolvedValue({ CopyPartResult: {} });
+
+    await expect(
+      copyTranscriptPart({
+        key: "org/ct/s.jsonl",
+        uploadId: "u",
+        partNumber: 1,
+        sourceKey: "org/ct/s.jsonl",
+        ifMatchEtag: "e0",
+      })
+    ).rejects.toThrow("UploadPartCopy did not return an ETag");
+  });
 });
 
 describe("completeTranscriptMultipartUpload", () => {
@@ -151,6 +168,31 @@ describe("completeTranscriptMultipartUpload", () => {
     expect(input.ChecksumType).toBe("FULL_OBJECT");
     expect(input.IfMatch).toBe("prev");
   });
+
+  it("omits absent object guards and includes per-part checksums", async () => {
+    s3Send.mockResolvedValue({});
+
+    await completeTranscriptMultipartUpload({
+      key: "org/ct/s.jsonl",
+      uploadId: "u",
+      parts: [{ partNumber: 1, etag: "e1", checksumCrc64Nvme: "part-crc" }],
+    });
+
+    expect(lastCommandInput()).toEqual({
+      Bucket: "transcripts-bucket",
+      Key: "org/ct/s.jsonl",
+      MultipartUpload: {
+        Parts: [
+          {
+            PartNumber: 1,
+            ETag: "e1",
+            ChecksumCRC64NVME: "part-crc",
+          },
+        ],
+      },
+      UploadId: "u",
+    });
+  });
 });
 
 describe("listTranscriptParts", () => {
@@ -171,6 +213,68 @@ describe("listTranscriptParts", () => {
       { partNumber: 2, etag: "e2", size: 50, checksumCrc64Nvme: undefined },
     ]);
     expect(s3Send).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores malformed parts and handles an absent parts collection", async () => {
+    s3Send
+      .mockResolvedValueOnce({
+        Parts: [
+          { ETag: "missing-number" },
+          { PartNumber: 2 },
+          { PartNumber: 0, ETag: "zero-is-valid" },
+        ],
+        IsTruncated: true,
+        NextPartNumberMarker: "2",
+      })
+      .mockResolvedValueOnce({});
+
+    await expect(
+      listTranscriptParts({ key: "k", uploadId: "u" })
+    ).resolves.toEqual([
+      {
+        partNumber: 0,
+        etag: "zero-is-valid",
+        size: undefined,
+        checksumCrc64Nvme: undefined,
+      },
+    ]);
+  });
+});
+
+describe("presignTranscriptUploadPart", () => {
+  it("uses the configured bucket and default expiration", async () => {
+    await presignTranscriptUploadPart({
+      key: "org/ct/s.jsonl",
+      uploadId: "u",
+      partNumber: 2,
+    });
+
+    const signCall = vi.mocked(getSignedUrl).mock.calls.at(-1);
+    expect((signCall?.[1] as { input: Record<string, unknown> }).input).toEqual(
+      {
+        Bucket: "transcripts-bucket",
+        Key: "org/ct/s.jsonl",
+        PartNumber: 2,
+        UploadId: "u",
+      }
+    );
+    expect(signCall?.[2]).toEqual({ expiresIn: 3600 });
+  });
+
+  it("honors bucket and expiration overrides", async () => {
+    await presignTranscriptUploadPart({
+      key: "org/ct/s.jsonl",
+      uploadId: "u",
+      partNumber: 3,
+      bucket: "override-bucket",
+      expiresIn: 60,
+    });
+
+    const signCall = vi.mocked(getSignedUrl).mock.calls.at(-1);
+    expect(
+      (signCall?.[1] as { input: Record<string, unknown> }).input.Bucket
+    ).toBe("override-bucket");
+    expect(signCall?.[2]).toEqual({ expiresIn: 60 });
   });
 });
 
@@ -230,5 +334,73 @@ describe("headTranscriptObject", () => {
   it("rethrows non-404 errors", async () => {
     s3Send.mockRejectedValue(new Error("boom"));
     await expect(headTranscriptObject("k")).rejects.toThrow("boom");
+  });
+
+  it("recognizes an HTTP 404 without an AWS error name", async () => {
+    s3Send.mockRejectedValue({ $metadata: { httpStatusCode: 404 } });
+
+    await expect(headTranscriptObject("k")).resolves.toBeNull();
+  });
+});
+
+describe("abortTranscriptMultipartUpload", () => {
+  it("aborts the requested upload", async () => {
+    s3Send.mockResolvedValue({});
+
+    await abortTranscriptMultipartUpload({
+      key: "org/ct/s.jsonl",
+      uploadId: "u",
+      bucket: "override-bucket",
+    });
+
+    expect(lastCommandInput()).toEqual({
+      Bucket: "override-bucket",
+      Key: "org/ct/s.jsonl",
+      UploadId: "u",
+    });
+  });
+});
+
+describe("deleteTranscriptObjects", () => {
+  it("does not call S3 for an empty key list", async () => {
+    await deleteTranscriptObjects([]);
+
+    expect(s3Send).not.toHaveBeenCalled();
+  });
+
+  it("deletes keys from the configured transcripts bucket", async () => {
+    s3Send.mockResolvedValue({});
+
+    await deleteTranscriptObjects(["org/ct/a.jsonl", "org/ct/b.jsonl"]);
+
+    expect(lastCommandInput()).toEqual({
+      Bucket: "transcripts-bucket",
+      Delete: {
+        Objects: [{ Key: "org/ct/a.jsonl" }, { Key: "org/ct/b.jsonl" }],
+        Quiet: true,
+      },
+    });
+  });
+
+  it("reports S3 per-key errors", async () => {
+    s3Send.mockResolvedValue({
+      Errors: [{ Key: "org/ct/a.jsonl" }],
+    });
+
+    await expect(
+      deleteTranscriptObjects(["org/ct/a.jsonl", "org/ct/b.jsonl"])
+    ).rejects.toThrow("1 transcript object(s) out of 2 total");
+  });
+
+  it("continues after a failed batch and reports every key in that batch", async () => {
+    const keys = Array.from({ length: 1001 }, (_, index) => `key-${index}`);
+    s3Send
+      .mockRejectedValueOnce(new Error("network failure"))
+      .mockResolvedValueOnce({});
+
+    await expect(deleteTranscriptObjects(keys)).rejects.toThrow(
+      "1000 transcript object(s) out of 1001 total"
+    );
+    expect(s3Send).toHaveBeenCalledTimes(2);
   });
 });

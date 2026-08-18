@@ -3,6 +3,8 @@ import { LinkType } from "@repo/api/src/types/artifact";
 import type { SyncedArtifactRef } from "@repo/api/src/types/session-artifact-link";
 import {
   ArtifactRefTargetKind,
+  isHigherPrecedenceArtifactRole,
+  roleFromMethod,
   SessionArtifactLinkKind,
 } from "@repo/api/src/types/session-artifact-link";
 import { getPrismaErrorCode } from "@/lib/db-utils";
@@ -56,35 +58,6 @@ export async function resolveArtifactSlugMap(
   return slugMap;
 }
 
-/** Role precedence for merging duplicate artifact refs: input > referenced > workspace. */
-const ROLE_PRECEDENCE: Record<string, number> = {
-  input: 0,
-  referenced: 1,
-  workspace: 2,
-};
-
-/**
- * Derive a semantic role from the extraction method. The sync contract does
- * not carry the extractor's `relation` field, so we reconstruct the best
- * role from the method string which is always present.
- */
-export function roleFromMethod(method: string, isPrimary: boolean): string {
-  if (isPrimary) {
-    return "input";
-  }
-  switch (method) {
-    case "mcp_tool_call":
-    case "launch_metadata":
-      return "input";
-    case "slug_in_branch":
-    case "slug_in_cwd":
-    case "slug_in_session_slug":
-      return "workspace";
-    default:
-      return "referenced";
-  }
-}
-
 /**
  * Merge multiple artifact refs that target the same slug within a single
  * session. The highest-precedence role wins (input > referenced > workspace),
@@ -126,9 +99,7 @@ export function mergeArtifactRefsBySlug(
     // OR-aggregate isPrimary
     existing.isPrimary = existing.isPrimary || ref.isPrimary;
     // Higher precedence role wins
-    if (
-      (ROLE_PRECEDENCE[role] ?? 99) < (ROLE_PRECEDENCE[existing.role] ?? 99)
-    ) {
+    if (isHigherPrecedenceArtifactRole(role, existing.role)) {
       existing.role = role;
       existing.method = ref.method;
     }

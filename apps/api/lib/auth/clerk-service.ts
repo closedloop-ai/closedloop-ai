@@ -94,6 +94,32 @@ export const clerkService = {
   },
 
   /**
+   * Mint a real Clerk organization invitation for a single email (PRD-532
+   * §5.4). On acceptance, Clerk fires `organizationMembership.created`, which
+   * the auth webhook syncs into a durable MEMBER of the existing org — the
+   * invitee joins the caller's org rather than creating a new org-of-one.
+   *
+   * `inviterUserId` is the inviter's Clerk user id so Clerk attributes the
+   * invitation. Returns the Clerk invitation id.
+   */
+  async createOrganizationInvitation(params: {
+    organizationId: string;
+    emailAddress: string;
+    role: string;
+    inviterUserId: string;
+  }): Promise<{ id: string }> {
+    const client = await clerkClient();
+    const invitation = await client.organizations.createOrganizationInvitation({
+      organizationId: params.organizationId,
+      emailAddress: params.emailAddress,
+      role: params.role,
+      inviterUserId: params.inviterUserId,
+    });
+
+    return { id: invitation.id };
+  },
+
+  /**
    * Fetch a user's organization membership role from Clerk.
    */
   async getOrganizationMembershipRole(

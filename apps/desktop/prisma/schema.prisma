@@ -34,7 +34,22 @@ model Session {
   id                 String  @id
   name               String?
   status             String  @default("running")
+  // ISS-4586: whether the run ended on an unrecovered error (the parser's
+  // `endedOnUnrecoveredError`), persisted at import for every row — live rows
+  // included — and refreshed on each re-import. When the session is declared
+  // inactive (by the importer or the orphaned-session sweep) the status is set to
+  // `error` if this is true, else `inactive`; the sweep reads it WITHOUT
+  // re-parsing the transcript. Nullable Int (SQLite boolean): NULL means a legacy
+  // pre-column row not yet re-imported since the migration (the backfill set it
+  // for terminal rows; a NULL row is treated as not-error → `inactive`).
+  endsWithError      Int?    @map("ends_with_error")
   cwd                String?
+  // FEA-3555: durable cache of the last successfully live-resolved repo full
+  // name (org/repo) for this session's worktree. Written back only from a
+  // successful live git remote resolution, read as a fallback when the live
+  // lookup fails (worktree deleted) so old sessions keep repo/diff/lines
+  // attribution. Never authored from anything but a real live resolution.
+  repoFullName       String? @map("repo_full_name")
   model              String?
   startedAt          String? @map("started_at")
   updatedAt          String? @map("updated_at")
@@ -51,6 +66,18 @@ model Session {
   costUsdEstimated   Float?  @map("cost_usd_estimated")
   costCurrency       String? @map("cost_currency")
   costSource         String? @map("cost_source")
+  // FEA-4022 (PLN-1481, follow-on to FEA-3928): raw, UNBOUNDED additive
+  // frustration signal computed locally by the desktop scorer
+  // (src/shared/frustration-score.ts) at sync-source assembly. Stored raw — NOT
+  // a pre-normalized 0–100 score — because the 0..max→0..100 normalization is a
+  // downstream cloud-Insights concern against the org population's observed max.
+  // frustrationScoreVersion stamps the scorer that produced the value so a later
+  // scorer bump can re-derive stale rows. Both nullable, no default: an
+  // unscored/legacy row is NULL ("not computed"). Whether the value is persisted
+  // to the cloud SessionDetail (and surfaced in Insights) is gated by the org's
+  // `calculateSessionFrustration` setting at cloud ingest.
+  frustrationRaw          Int? @map("frustration_raw")
+  frustrationScoreVersion Int? @map("frustration_score_version")
   dataRevision       Int     @default(1) @map("data_revision")
   // Perf: denormalized session "last activity" sort key for the Sessions-list
   // cursor pagination — COALESCE(MAX(events.created_at), started_at floor),
@@ -66,16 +93,47 @@ model Session {
   artifactLinkBackfillSeen ArtifactLinkBackfillSeen?
   activitySegmentBackfillSeen ActivitySegmentBackfillSeen?
   codexTraceSpans         CodexTraceSpan[]
+  componentInvocations    AgentComponentInvocation[]
 
   @@index([startedAt(sort: Desc)], map: "idx_sessions_started_at")
   @@index([status, startedAt(sort: Desc)], map: "idx_sessions_status_started_at")
+  // FEA-4142: covering index for the Agents sidebar activity badge count
+  // (`SELECT COUNT(*) FROM sessions WHERE status=? AND ended_at >= ?`). Partial
+  // on the non-null completion timestamp — a still-running session can never
+  // match the `ended_at >= completedAfter` bound — keeping it small.
+  @@index([status, endedAt], map: "idx_sessions_status_ended_at", where: raw("ended_at IS NOT NULL"))
   @@index([userId], map: "idx_sessions_user_id", where: raw("user_id IS NOT NULL"))
+  // ISS-6168: covering index for the boot-time owner claim's "is there anything
+  // left to claim?" probe. Every other user_id index is partial on the OPPOSITE
+  // predicate, so the probe and its UPDATE full-scanned `sessions` on every
+  // launch. Partial on the claim predicate — BOTH identity columns NULL, the same
+  // UNOWNED_SESSION_PREDICATE session-owner-identity.ts probes and updates with, so
+  // an org-stamped row is neither indexed nor claimable — it drains to EMPTY once a
+  // signed-in install has claimed its corpus and the probe costs O(unowned), not
+  // O(rows), the same shape as idx_sessions_data_revision_pending. Keyed on `id`
+  // alone because both indexed columns are constant across every row it can hold.
+  // See migration 0057.
+  @@index([id], map: "idx_sessions_unowned", where: raw("user_id IS NULL AND organization_id IS NULL"))
   @@index([organizationId], map: "idx_sessions_organization_id", where: raw("organization_id IS NOT NULL"))
   // FEA-2038: index for the dashboard analytics byRepository aggregation, which
   // groups the filtered sessions by cwd. Partial on the non-null cwd predicate.
   @@index([cwd], map: "idx_sessions_cwd", where: raw("cwd IS NOT NULL"))
   // Perf: index backing the Sessions-list last-activity cursor sort + tie-break.
   @@index([lastActivityAt(sort: Desc), id(sort: Desc)], map: "idx_sessions_last_activity")
+  // ISS-5336: covering index for the ISS-5103 import-health probe's 5-minute
+  // sentinel sample (`listImportPendingSessionIds`). Partial on the
+  // DATA_REVISION_IMPORT_PENDING sentinel itself — no real revision is ever
+  // negative — so the index is EMPTY on a healthy install and the probe costs
+  // O(pending) instead of full-scanning the whole session row. Keyed on
+  // `id` alone because `data_revision` is constant across every row it can hold,
+  // so it covers the select and the sort. See migration 0051.
+  @@index([id], map: "idx_sessions_data_revision_pending", where: raw("data_revision = -1"))
+  // ISS-6105: covering index for the two sync-cursor reads, which sort on the
+  // FEA-1962 `updated_at` watermark and had no index at all — so every sync tick
+  // full-scanned `sessions` (metadata overflow pages included) and sorted the
+  // result in a temp B-tree. In the read's own DESC direction so it supplies the
+  // predicate, the tie-break, and both selected columns. See migration 0056.
+  @@index([updatedAt(sort: Desc), id(sort: Desc)], map: "idx_sessions_updated_at")
   @@map("sessions")
 }
 
@@ -96,6 +154,8 @@ model Agent {
   metadata           String?
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  componentInvocations       AgentComponentInvocation[] @relation("InvocationAgent")
+  parentComponentInvocations AgentComponentInvocation[] @relation("InvocationParentAgent")
 
   @@index([sessionId], map: "idx_agents_session_id")
   @@index([status], map: "idx_agents_status")
@@ -137,8 +197,11 @@ model Event {
   // FEA-2038: covering index for the dashboard analytics byTool aggregation,
   // which groups events by tool_name and counts distinct session_id over the
   // tool-bearing rows. Lets SQLite serve the grouped read from a narrow index
-  // instead of full-scanning the wide events table. Partial on the same
-  // tool_name predicate the query applies.
+  // instead of full-scanning the wide events table. The index stays partial on
+  // `tool_name IS NOT NULL` while the readers apply the stricter ISS-5493
+  // `toolInvocationPredicate` (which also excludes ''): SQLite splits the nested
+  // AND into separate terms, so the narrower predicate still matches this index
+  // and the `<> ''` term is applied as a filter on the rows it returns.
   @@index([toolName, sessionId], map: "idx_events_tool_session", where: raw("tool_name IS NOT NULL"))
   @@map("events")
 }
@@ -169,8 +232,63 @@ model SessionAnalytics {
   @@map("session_analytics")
 }
 
+/// FEA-2273 (PRD-488 FR-12, PLN-1205): per-session activity-attribution metrics
+/// rollup — the in-product counterpart of FEA-2266's offline harness. One row per
+/// session, cohort-keyed, computed at ingest (and boot-backfilled) from the
+/// session's `session_activity_segments` + `token_events` via the shared FEA-2266
+/// metric module (telemetry/attribution-metrics.ts). Coverage + the reported-
+/// confidence spend distribution are stored per session so per-cohort metrics are
+/// a cheap GROUP BY (the FEA-2038 metadata-only-aggregate invariant), making weak
+/// cohorts visible as the ongoing iteration target. Cohort keys mirror
+/// `session_analytics` (harness/turns/runtime) + `sessions` identity; `version`
+/// is the segments' ACTIVITY_CLASSIFIER_VERSION so a classifier bump re-derives —
+/// inline on a fresh import, or via the version-aware boot backfill for rows the
+/// separate segment re-tile pathway leaves behind. Purged with the session in the
+/// manual-delete + retention-sweep paths (no-FK derived rollup).
+model SessionActivityMetrics {
+  sessionId           String  @id @map("session_id")
+  // Cohort keys (PLN-1196 §6 minimum set), derived from the materialized
+  // session_analytics row + the session's identity — never re-scanned from events.
+  harness             String?
+  autonomyBand        String  @map("autonomy_band")
+  closedloopUser      Int     @default(0) @map("closedloop_user")
+  lengthBand          String  @map("length_band")
+  startedDay          String? @map("started_day")
+  // Coverage (exact micro-cent ratio from the FEA-2266 module) + its re-aggregation
+  // inputs, so per-cohort coverage is SUM(covered)/SUM(total) at read time.
+  coverage            Float   @default(0)
+  coveredSpendUsd     Float   @default(0) @map("covered_spend_usd")
+  totalSpendUsd       Float   @default(0) @map("total_spend_usd")
+  // Reported-confidence distribution: segmented spend binned by the module's
+  // confidence buckets (the live-observable half of FR-12; true calibration needs
+  // ground truth and stays offline in FEA-2266).
+  spendLowConfUsd     Float   @default(0) @map("spend_low_conf_usd")
+  spendMediumConfUsd  Float   @default(0) @map("spend_medium_conf_usd")
+  spendHighConfUsd    Float   @default(0) @map("spend_high_conf_usd")
+  segmentCount        Int     @default(0) @map("segment_count")
+  coveredSegmentCount Int     @default(0) @map("covered_segment_count")
+  version             Int
+  updatedAt           String? @map("updated_at")
+
+  @@index([harness], map: "idx_session_activity_metrics_harness")
+  @@index([startedDay], map: "idx_session_activity_metrics_started_day")
+  @@map("session_activity_metrics")
+}
+
 /// FEA-2038: per-(session, tool) invocation rollup for the byTool / toolsOverTime
 /// insights — computed at ingest so those reads never scan the events corpus.
+///
+/// ISS-5493: that promise is NOT kept — this table has NO production reader.
+/// It is written on every ingest, backfilled, and purged on retention, while
+/// `byTool` (sync-source.ts) and `toolRunsOverTime` (local-insights.ts) both
+/// still scan `events`. Adopting it needs a freshness mechanism FIRST: the
+/// rollup is refreshed only at import, boot-backfill, and the targeted heals,
+/// and the backfill anti-joins sessions MISSING a row rather than refreshing
+/// stale ones — so a hook-ingested session (Claude runs in "hooks" collection
+/// mode, where FEA-1839 starts no live watcher) is invisible here until the
+/// next boot, and a rollup-sourced read would report 0 for it. Until that is
+/// resolved the choice is to make the rollup fresh or to drop the table; do not
+/// point a display read at it in the meantime.
 model SessionToolAnalytics {
   sessionId   String  @map("session_id")
   toolName    String  @map("tool_name")
@@ -207,6 +325,10 @@ model TokenUsage {
   outputTokens         BigInt  @default(0) @map("output_tokens")
   cacheReadTokens      BigInt  @default(0) @map("cache_read_tokens")
   cacheWriteTokens     BigInt  @default(0) @map("cache_write_tokens")
+  // FEA-3419: cache-write TTL subdivision. NULL = breakdown never reported
+  // (absent provenance); the pair is always set together.
+  cacheWrite5mTokens   BigInt? @map("cache_write_5m_tokens")
+  cacheWrite1hTokens   BigInt? @map("cache_write_1h_tokens")
   rawInput             BigInt  @default(0) @map("raw_input")
   rawOutput            BigInt  @default(0) @map("raw_output")
   rawCacheRead         BigInt  @default(0) @map("raw_cache_read")
@@ -330,12 +452,16 @@ model ClaudeCodeApiRequest {
 // candidate follow-up migration once the runner (Phase 2) lands.
 model TokenEvent {
   sessionId        String @map("session_id")
+  transportId      String? @map("transport_id")
   model            String
   createdAt        String @map("created_at")
   inputTokens      BigInt @default(0) @map("input_tokens")
   outputTokens     BigInt @default(0) @map("output_tokens")
   cacheReadTokens  BigInt @default(0) @map("cache_read_tokens")
   cacheWriteTokens BigInt @default(0) @map("cache_write_tokens")
+  // FEA-3419: per-event cache-write TTL subdivision (NULL = never reported).
+  cacheWrite5mTokens BigInt? @map("cache_write_5m_tokens")
+  cacheWrite1hTokens BigInt? @map("cache_write_1h_tokens")
   costUsdEstimated             Float? @map("cost_usd_estimated")
   inputCostUsdEstimated        Float? @map("input_cost_usd_estimated")
   outputCostUsdEstimated       Float? @map("output_cost_usd_estimated")
@@ -344,10 +470,13 @@ model TokenEvent {
   costCurrency String? @map("cost_currency")
   costSource String? @map("cost_source")
   costObservedAt String? @map("cost_observed_at")
+  sourceIdentity String? @map("source_identity")
+  costSummary String? @map("cost_summary")
 
   @@index([sessionId], map: "idx_token_events_session")
   @@index([createdAt], map: "idx_token_events_created")
   @@index([sessionId, createdAt], map: "idx_token_events_session_created")
+  @@unique([sessionId, transportId], map: "idx_token_events_session_transport", where: raw("transport_id IS NOT NULL"))
   @@map("token_events")
   @@ignore
 }
@@ -384,24 +513,6 @@ model PackCatalog {
   postInstall       Json?   @map("post_install")
 
   @@map("pack_catalog")
-}
-
-model ModelPricing {
-  id                          String @id
-  harness                     String
-  model                       String
-  inputPerMillionUsd          Float  @map("input_per_million_usd")
-  outputPerMillionUsd         Float  @map("output_per_million_usd")
-  cacheReadPerMillionUsd      Float  @default(0) @map("cache_read_per_million_usd")
-  cacheCreationPerMillionUsd  Float  @default(0) @map("cache_creation_per_million_usd")
-  effectiveAt                 String @map("effective_at")
-  source                      String
-  createdAt                   String @map("created_at")
-  dataRevision                Int    @map("data_revision")
-
-  @@unique([harness, model, effectiveAt, source], map: "idx_model_pricing_unique_effective")
-  @@index([harness, model, effectiveAt(sort: Desc)], map: "idx_model_pricing_lookup")
-  @@map("model_pricing")
 }
 
 model PackCatalogHistory {
@@ -491,7 +602,6 @@ model Plan {
   sourceLogPath        String? @map("source_log_path")
   needsConfirmation    Boolean @default(false) @map("needs_confirmation")
   confidence           Float   @default(1.0)
-  syncState            String? @map("sync_state")
   metadata             Json?
   createdAt            String? @map("created_at")
   updatedAt            String? @map("updated_at")
@@ -567,6 +677,33 @@ model CloudGithubBranchOverlay {
   @@map("cloud_github_branch_overlays")
 }
 
+/// Account- and provider-qualified repository-default authority. This is
+/// deliberately separate from Repo.defaultBranch, which is a local Git overlay.
+model RepositoryDefaultAuthority {
+  identityKey          String  @map("identity_key")
+  provider             String
+  providerRepositoryId String  @map("provider_repository_id")
+  repoFullName         String  @map("repo_full_name")
+  defaultBranch        String? @map("default_branch")
+  availability         String
+  completeness         String
+  reason               String?
+  source               String
+  sourceIdentity       String? @map("source_identity")
+  mechanism            String
+  trigger              String
+  credentialType       String  @map("credential_type")
+  credentialOwnerId    String? @map("credential_owner_id")
+  observationKey       String  @map("observation_key")
+  observedAt           String  @map("observed_at")
+  eventAt              String? @map("event_at")
+  updatedAt            String  @map("updated_at")
+
+  @@id([identityKey, provider, providerRepositoryId])
+  @@index([identityKey, repoFullName], map: "idx_repository_default_authorities_identity_repo")
+  @@map("repository_default_authorities")
+}
+
 model PrBackfillSeen {
   sessionId   String  @id @map("session_id")
   filePath    String? @map("file_path")
@@ -599,7 +736,9 @@ model TraceComment {
   syncComputeTargetId String? @map("sync_compute_target_id")
   syncUserId          String? @map("sync_user_id")
   syncOrganizationId  String? @map("sync_organization_id")
+  mentions            Json    @default("[]")
   replies             Json    @default("[]")
+  commentKind         String  @default("comment") @map("comment_kind")
   syncStatus          String  @default("local_pending") @map("sync_status")
   lastSyncAttemptAt   String? @map("last_sync_attempt_at")
   syncError           String? @map("sync_error")
@@ -631,11 +770,6 @@ model Artifact {
   linesAdded         Int?    @map("lines_added")
   linesRemoved       Int?    @map("lines_removed")
   filesChanged       Int?    @map("files_changed")
-  enrichmentState    String? @map("enrichment_state")
-  enrichmentSource   String? @map("enrichment_source")
-  enrichmentAttempts Int     @default(0) @map("enrichment_attempts")
-  leaseAt            String? @map("lease_at")
-  enrichedAt         String? @map("enriched_at")
   prState            String? @map("pr_state")
   mergeCommitSha     String? @map("merge_commit_sha")
   baseRef            String? @map("base_ref")
@@ -649,7 +783,6 @@ model Artifact {
 
   @@index([kind], map: "idx_artifacts_kind")
   @@index([repoFullName, prNumber], map: "idx_artifacts_repo_pr")
-  @@index([enrichmentState], map: "idx_artifacts_sweep")
   @@index([repoFullName, branchName], map: "idx_artifacts_branch", where: raw("kind = 'branch'"))
   @@map("artifacts")
 }
@@ -706,29 +839,6 @@ model PullRequestStatusObservation {
   @@index([nextRefreshAfter], map: "idx_pr_status_next_refresh")
   @@map("pull_request_status_observations")
 }
-// Gap 12: User-editable pricing model rate table. Seeded with known model
-// rates on first boot. Exposed via the dashboard settings surface so users
-// can adjust rates for custom / newly-released models without code changes.
-model PricingRule {
-  id                String  @id
-  modelKey          String  @map("model_key")
-  description       String?
-  inputPricePer1k   Decimal @map("input_price_per_1k")
-  outputPricePer1k  Decimal @map("output_price_per_1k")
-  cacheReadFactor   Decimal @default(0.1) @map("cache_read_factor")
-  cacheWriteFactor  Decimal @default(1.25) @map("cache_write_factor")
-  usSurcharge       Decimal @default(0.1) @map("us_surcharge")
-  batchDiscount     Decimal @default(0.5) @map("batch_discount")
-  webSearchPrice    Decimal @default(10.0) @map("web_search_price")
-  codeExecPrice     Decimal @default(0.05) @map("code_exec_price")
-  codeExecFreeHours Int     @default(1550) @map("code_exec_free_hours")
-  isDefault         Boolean @default(false) @map("is_default")
-  createdAt         String? @default(dbgenerated("(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))")) @map("created_at")
-  updatedAt         String? @map("updated_at")
-
-  @@unique([modelKey], map: "idx_pricing_rules_model")
-  @@map("pricing_rules")
-}
 
 model SessionArtifactLink {
   id               String  @id @map("id")
@@ -769,10 +879,62 @@ model SyncState {
   sourceKey                 String  @id @map("source_key")
   observedTopUpdatedAt      String? @map("observed_top_updated_at")
   observedIdsAtTopUpdatedAt Json    @default("[]") @map("observed_ids_at_top_updated_at")
+  // Sessions intentionally abandoned this run (oversize / validation_failed /
+  // exhausted-retry). Recording them lets the watermark advance past dead rows
+  // so the client stops re-walking the whole local corpus on every restart.
+  // Nullable for backward compat: a cursor written before migration 0024 has
+  // no column value and loads as `[]`.
+  deadLetteredIds           Json?   @map("dead_lettered_ids")
   dataRevision              Int     @default(1) @map("data_revision")
+  // FEA-3781: the autonomy formula this lane last uploaded under. Nullable with
+  // no default: a cursor written before migration 0040 loads as NULL, which is
+  // "unknown / pre-FEA-3781" and correctly triggers the one-time re-walk.
+  autonomyFormulaVersion    Int?    @map("autonomy_formula_version")
+  // ISS-5086: version of the import-watermark invariant last reconciled by this
+  // lane. NULL is a pre-fix cursor and forces one idempotent full re-walk so a
+  // late historical row stranded below that cursor reaches the cloud.
+  syncIntegrityVersion      Int?    @map("sync_integrity_version")
   updatedAt                 String  @map("updated_at")
 
   @@map("sync_state")
+}
+
+// FEA-3473 (PRD-536): durable per-session metadata-sync OUTBOX. One row per
+// session that has been enqueued for the local→cloud metadata lane but not yet
+// acked by the server, keyed by (sourceKey, externalSessionId) — the same
+// target-scoped `sourceKey` space as `SyncState`, so one account never inherits
+// another's outbox. Mirrors `TranscriptSyncState`'s crash-correct discipline
+// (FEA-2714/2715, Kris Wong): a row is advanced/cleared ONLY on a VERIFIED
+// server ack, never on send, so a kill mid-backfill resumes per-item — restart
+// re-uploads only the sessions whose rows survive (un-acked), not the whole
+// corpus. `status` is `pending` (queued, not yet acked) or `dead_lettered`
+// (intentionally abandoned this run: oversize / validation_failed /
+// exhausted-retry / unhydratable-after-enqueue). No FK to `sessions`: the row
+// may outlive a locally-deleted session (that is exactly the AC-2 straggler the
+// outbox records instead of silently dropping), and the store is a pure
+// cache/queue over server-authoritative state — losing it is harmless (worst
+// case: one re-enumeration, which the server idempotently dedupes). `syncClass`
+// records which lane enqueued it (backfill|incremental) for diagnostics.
+// Numeric columns are INTEGER counts; timestamps are TEXT ISO strings, matching
+// the SyncState / TranscriptSyncState conventions.
+model AgentSessionSyncOutbox {
+  sourceKey         String  @map("source_key")
+  externalSessionId String  @map("external_session_id")
+  status            String  @default("pending") @map("status")
+  syncClass         String  @default("backfill") @map("sync_class")
+  attemptCount      Int     @default(0) @map("attempt_count")
+  nextAttemptAt     String? @map("next_attempt_at")
+  lastError         String? @map("last_error")
+  createdAt         String  @map("created_at")
+  updatedAt         String  @map("updated_at")
+
+  @@id([sourceKey, externalSessionId])
+  @@index([sourceKey, status, nextAttemptAt], map: "idx_agent_session_sync_outbox_ready")
+  // ISS-6031: the retention sweep's undelivered-delivery probe binds
+  // `external_session_id` + `status` with NO source key, so neither the PK nor
+  // the ready index above can serve it (both lead with `source_key`).
+  @@index([externalSessionId, status], map: "idx_agent_session_sync_outbox_session_status")
+  @@map("agent_session_sync_outbox")
 }
 
 model ArtifactLinkBackfillSeen {
@@ -807,6 +969,11 @@ model SessionActivitySegment {
   evidenceLayers Json   @default("[]") @map("evidence_layers")
   version        Int
   workItemRef    String? @map("work_item_ref")
+  // FEA-2271: parser-stable local subagent id when this segment's spend was
+  // re-filed to a subagent's own purpose phase; null for main-agent segments.
+  // Additive nullable provenance marker (no phase-column migration); the
+  // ACTIVITY_CLASSIFIER_VERSION bump re-derives it over all history.
+  subagentId     String? @map("subagent_id")
   observedAt     String  @map("observed_at")
 
   @@index([sessionId, startMs], map: "idx_session_activity_segments_session_start")
@@ -862,8 +1029,32 @@ model TranscriptSyncState {
   status                String  @default("idle") @map("status")
   syncClass             String  @default("live") @map("sync_class")
   retryCount            Int     @default(0) @map("retry_count")
+  // FEA-3555: consecutive missing-source observations ONLY, isolated from
+  // `retryCount` (which also counts transient upload failures) so the terminal
+  // `source_gone` threshold cannot be tripped early by an unrelated failure run.
+  missingSourceCount    Int     @default(0) @map("missing_source_count")
   nextAttemptAt         String? @map("next_attempt_at")
   lastError             String? @map("last_error")
+  // ISS-4815: the timestamp of an AUTHORITATIVE cloud `uploaded` acknowledgement
+  // for a row the local lane could not upload itself (the terminal-skip answer
+  // "a verified archive already exists"). It is the DURABLE half of that settle:
+  // the queue `status` stays `idle` (there is genuinely no work to do), while
+  // this column records WHY it is idle, so the stranded-missing-blob recovery
+  // can leave the row settled instead of re-arming it on every launch. NULL on
+  // every pre-migration row and on every non-ack settle, which is exactly the
+  // pre-ISS-4815 behavior (the row stays eligible for recovery).
+  cloudUploadedAt       String? @map("cloud_uploaded_at")
+  // ISS-4815: WHICH compute target's cloud gave that acknowledgement. An `uploaded`
+  // ack is only ever a statement about the archive held by the target it came
+  // from, so the recovery must scope the exclusion to it — otherwise switching
+  // accounts/compute targets leaves the row permanently settled while the NEW
+  // target's cloud holds nothing, and the transcript never reaches it. Same
+  // per-target discipline ISS-4647 applied to the cursor via
+  // `syncedComputeTargetId`, but a separate column: this records the ack's origin,
+  // not the byte-cursor's domain, so it stores the RAW compute target id with no
+  // redacted-archive suffix. NULL when unattributable (acknowledged with no known
+  // target), which keeps the row eligible for recovery.
+  cloudUploadedComputeTargetId String? @map("cloud_uploaded_compute_target_id")
   createdAt             String  @map("created_at")
   updatedAt             String  @map("updated_at")
 
@@ -896,9 +1087,21 @@ model AgentComponent {
   scope         String?                              // "user" | "project" | "local"
   projectPath   String? @map("project_path")         // populated for project-scoped components
   metadata      Json?                                // kind-specific extras (hook event+matcher, mcp transport, config keys)
+  content       String?                              // definition file text (FEA-2923 content pipeline)
+  contentHash   String? @map("content_hash")         // sha256 of `content`; dedup + version key
+  // F1 (FEA-3290 / PRD-527 Slice 4) — honest resolution state (AC-007). One of
+  // "resolved" (exact user definition captured), "unresolved" (name/label-only,
+  // e.g. event-driven label-minted rows), "inaccessible" (permission-denied at
+  // capture, EACCES) or "missing" (deleted/absent, ENOENT). `inaccessible` is
+  // DISTINCT from `missing` (AC-5). Label-minted rows default to "unresolved"
+  // (AC-4/AC-7); the content collector promotes to "resolved" when it captures
+  // exact definition text.
+  resolvedState String @default("unresolved") @map("resolved_state")
   firstSeenAt   String? @map("first_seen_at")        // ISO string; set on first upsert (detectedAt equivalent)
   lastSeenAt    String? @map("last_seen_at")
   uninstalledAt String? @map("uninstalled_at")       // tombstone, like skills/agent_packs
+
+  componentInvocations AgentComponentInvocation[] @relation("InvocationLocalComponent")
 
   @@unique([componentKind, externalId], map: "idx_agent_components_kind_ext")
   @@index([componentKind], map: "idx_agent_components_kind")
@@ -906,6 +1109,234 @@ model AgentComponent {
   @@index([componentKind, componentKey], map: "idx_agent_components_kind_key", where: raw("component_key IS NOT NULL"))
   @@index([lastSeenAt], map: "idx_agent_components_last_seen")
   @@map("agent_components")
+}
+
+// FEA-2923 content-hash version history. One row per distinct definition
+// revision, keyed by (component, source, content_hash) — NOT the invoking owner.
+// The collector appends a row whenever a definition's text hash changes; the
+// current revision is the one whose content_hash matches the live
+// agent_components row.
+model AgentComponentVersion {
+  id            String  @id                          // sha256(kind|key|source|content_hash)
+  componentKind String  @map("component_kind")
+  componentKey  String  @map("component_key")
+  source        String  @default("")
+  contentHash   String  @map("content_hash")
+  content       String
+  format        String?
+  firstSeenAt   String? @map("first_seen_at")        // ISO; first time this hash was observed
+  lastSeenAt    String? @map("last_seen_at")
+
+  componentInvocations AgentComponentInvocation[] @relation("InvocationLocalComponentVersion")
+
+  @@unique([componentKind, componentKey, source, contentHash], map: "idx_agent_component_versions_identity")
+  @@index([componentKind, componentKey], map: "idx_agent_component_versions_component")
+  @@map("agent_component_versions")
+}
+
+// FEA-3294 (PRD-527): one durable Desktop-local row per runtime component
+// invocation. These rows are the local source of truth for exact occurrences,
+// frozen evidence, and transcript anchors; agent_component_session_usage stays
+// the aggregate compatibility projection. Cloud DefinitionVersion and
+// SourceOccurrence IDs deliberately do not exist in the Desktop schema.
+model AgentComponentInvocation {
+  id                        String  @id
+  sessionId                 String  @map("session_id")
+  externalInvocationId      String  @map("external_invocation_id")
+  externalSourceId          String? @map("external_source_id")
+  childSessionId            String? @map("child_session_id")
+  agentId                   String? @map("agent_id")
+  parentAgentId             String? @map("parent_agent_id")
+  componentKind             String  @map("component_kind")
+  componentKey              String  @map("component_key")
+  rawName                   String? @map("raw_name")
+  normalizedName            String? @map("normalized_name")
+  relationship              String
+  invokedAt                 String? @map("invoked_at")
+  sequence                  Int
+  anchorKind                String  @map("anchor_kind")
+  anchorValue               String  @map("anchor_value")
+  providerToolUseId         String? @map("provider_tool_use_id")
+  attributionStatus         String  @map("attribution_status")
+  evidenceClass             String  @map("evidence_class")
+  evidencePointer           Json?   @map("evidence_pointer")
+  definitionHash            String? @map("definition_hash")
+  normalizerContractVersion Int?    @map("normalizer_contract_version")
+  definitionContent         String? @map("definition_content")
+  localComponentId          String? @map("local_component_id")
+  localComponentVersionId   String? @map("local_component_version_id")
+  gitBranch                 String? @map("git_branch")
+  repositoryFullName        String? @map("repository_full_name")
+  // FEA-4093: whether a firing SUCCEEDED. NULL for kinds whose success/failure
+  // is not a first-class transcript fact (every kind but Hook today); a Hook
+  // invocation stores 1/0 from the `attachment` type (hook_success vs
+  // hook_error / hook_non_blocking_error). SQLite has no boolean affinity, so
+  // this is an INTEGER column carrying 1/0/NULL. The usage rollup counts
+  // succeeded = 0 as an error_count for a hook that anchors to a Timestamp.
+  succeeded                 Boolean? @map("succeeded")
+  // FEA-3981 (PLN-1488) per-component telemetry — additive, all nullable with
+  // NO default so legacy rows stay NULL = "not computed". Capture lands in
+  // Slice B; Slice A only adds the columns. SQLite dialect: BigInt→INTEGER for
+  // token counts, Float→REAL for cost, String→TEXT for model. These live at the
+  // per-INVOCATION grain (one row per invocation) so a subagent that runs under
+  // multiple models yields one row per model turn — "mixed-model" is naturally
+  // representable. The component-level rollup (agent_component_session_usage)
+  // DERIVES its totals and its model SET by aggregating these rows.
+  //
+  // (a) REAL per-SUBAGENT token/model/cost: a subagent invocation carries the
+  //     model it ran and that turn's usage; other kinds leave them NULL.
+  model                     String? @map("model")
+  inputTokens               BigInt? @map("input_tokens")
+  outputTokens              BigInt? @map("output_tokens")
+  cacheReadTokens           BigInt? @map("cache_read_tokens")
+  cacheWriteTokens          BigInt? @map("cache_write_tokens")
+  estimatedCost             Float?  @map("estimated_cost")
+  // (b) Per-component result-FOOTPRINT tokens — the deterministic "tokens this
+  //     component injected into context" metric, computed for ALL kinds:
+  //     tool/MCP = tool_result output, skill = SKILL.md body + pulled content,
+  //     command = expanded template, hook = stdout.
+  footprintTokens           BigInt? @map("footprint_tokens")
+  createdAt                 String  @map("created_at")
+  updatedAt                 String  @map("updated_at")
+
+  // SQLite PSL cannot map FK names; migration 0031 pins the corresponding DDL
+  // names while these relations pin the same structural delete/update actions.
+  session               Session                @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  agent                 Agent?                 @relation("InvocationAgent", fields: [agentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  parentAgent           Agent?                 @relation("InvocationParentAgent", fields: [parentAgentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  localComponent        AgentComponent?        @relation("InvocationLocalComponent", fields: [localComponentId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  localComponentVersion AgentComponentVersion? @relation("InvocationLocalComponentVersion", fields: [localComponentVersionId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@unique([sessionId, externalInvocationId], map: "idx_aci_session_external_invocation")
+  @@index([sessionId, sequence], map: "idx_aci_session_sequence")
+  @@index([externalSourceId], map: "idx_aci_external_source", where: raw("external_source_id IS NOT NULL"))
+  @@index([componentKind, componentKey, invokedAt], map: "idx_aci_kind_key_invoked_at")
+  @@index([localComponentId, invokedAt], map: "idx_aci_component_invoked_at", where: raw("local_component_id IS NOT NULL"))
+  @@index([localComponentId, gitBranch, invokedAt], map: "idx_aci_component_branch_invoked_at", where: raw("local_component_id IS NOT NULL"))
+  @@index([localComponentVersionId, invokedAt], map: "idx_aci_component_version_invoked_at", where: raw("local_component_version_id IS NOT NULL"))
+  @@index([attributionStatus, invokedAt], map: "idx_aci_status_invoked_at")
+  @@map("agent_component_invocations")
+}
+
+// Durable exact-part invocation delivery queue. Each row retains the immutable
+// payload bytes represented by payload + partHash until the API acknowledges
+// the same generation, part index, and hash. No session FK: pending parts must
+// survive local session deletion and remain replayable after restart/API skew.
+model AgentComponentInvocationSyncOutbox {
+  sourceKey            String  @map("source_key")
+  externalSessionId    String  @map("external_session_id")
+  externalGenerationId String  @map("external_generation_id")
+  partIndex            Int     @map("part_index")
+  partCount            Int     @map("part_count")
+  partHash             String  @map("part_hash")
+  sourceUpdatedAt      String  @map("source_updated_at")
+  dataRevision         Int     @map("data_revision")
+  sourceSequence       Int     @map("source_sequence")
+  payload              Json
+  status               String  @default("pending")
+  attemptCount         Int     @default(0) @map("attempt_count")
+  nextAttemptAt        String? @map("next_attempt_at")
+  lastError            String? @map("last_error")
+  createdAt            String  @map("created_at")
+  updatedAt            String  @map("updated_at")
+
+  @@id([sourceKey, externalSessionId, externalGenerationId, partIndex])
+  @@index([sourceKey, status, nextAttemptAt], map: "idx_agent_component_invocation_sync_outbox_ready")
+  @@map("agent_component_invocation_sync_outbox")
+}
+
+// Persistent per-session freshness cursor for the invocation sync lane. The
+// outbox deletes acknowledged parts, so the sequence high-water mark must live
+// outside those ephemeral rows to keep later generations strictly newer.
+model AgentComponentInvocationSyncCursor {
+  sourceKey            String @map("source_key")
+  externalSessionId    String @map("external_session_id")
+  externalGenerationId String @map("external_generation_id")
+  sourceSequence       Int    @map("source_sequence")
+  updatedAt            String @map("updated_at")
+
+  @@id([sourceKey, externalSessionId])
+  @@map("agent_component_invocation_sync_cursors")
+}
+
+// FEA-3813 (PRD-553 M1): desktop-local mirror of the crewd (@repo/crewd)
+// scheduler's Zod `ScheduledTask`. Not a new source of truth — the durable copy
+// of what the in-memory `SqliteTaskStore` (StorePort) holds, so the daemon and
+// the read surface (M2) survive a restart. Enum-ish columns (`kind`, `lastStatus`)
+// are free TEXT: the crewd Zod schema (passKindSchema / runStatusSchema) is the
+// validator, so adding a pass kind or run status is a crewd change, never a
+// desktop migration. `harnessCascade` / `meta` are JSON strings (the crewd model
+// serializes them that way). Timestamps are TEXT ISO-8601, matching every other
+// desktop table. No FK to any harness/session table — a scheduled task is its own
+// top-level entity. Runs cascade-delete with their task.
+model ScheduledTask {
+  id             String  @id
+  name           String
+  cron           String
+  prompt         String  @default("")
+  recurring      Boolean @default(true)
+  durable        Boolean @default(true)
+  crew           String  @default("")
+  // crewd passKindSchema value (review | apply | barry | sentinel | custom).
+  kind           String  @default("custom")
+  // crewd taskRouteSchema value (local-cascade | claude-routine) — the capability
+  // broker's per-task route (FEA-3816). local-cascade runs via the daemon cascade;
+  // claude-routine hands the task to a Claude cloud routine.
+  route          String  @default("local-cascade")
+  pass           String?
+  // JSON-encoded HarnessName[] (e.g. ["codex","opencode","claude"]); empty array
+  // "[]" falls back to the daemon's global default cascade.
+  harnessCascade String  @default("[]") @map("harness_cascade")
+  // IANA tz for cron evaluation; empty string = host local time.
+  timezone       String  @default("")
+  enabled        Boolean @default(true)
+  // Run once on next tick when a scheduled fire was missed (laptop asleep).
+  catchUp        Boolean @default(true) @map("catch_up")
+  // JSON-encoded open extension bag; never load-bearing for scheduling.
+  meta           String  @default("{}")
+  nextRunAt      String? @map("next_run_at")
+  lastRunAt      String? @map("last_run_at")
+  lastRunId      String? @map("last_run_id")
+  // crewd runStatusSchema value of the most recent run, or null before first fire.
+  lastStatus     String? @map("last_status")
+  // ISS-4814: durable fire cursor for a one-time (recurring=false) task — the
+  // instant its single fire was STARTED, written in the same statement as the
+  // launch stamp above. Null = not yet fired, so the daemon refuses to re-fire a
+  // one-time task after a crash without conflating that state with the
+  // operator's `enabled` pause. Migration 0047 backfills it from `last_run_at`
+  // for one-time tasks that already fired under an older build, so an upgrade
+  // does not re-launch a crash survivor.
+  firedAt        String? @map("fired_at")
+  createdAt      String  @map("created_at")
+  updatedAt      String  @map("updated_at")
+
+  runs ScheduledTaskRun[]
+
+  @@index([enabled], map: "idx_scheduled_tasks_enabled")
+  @@map("scheduled_tasks")
+}
+
+// FEA-3813 (PRD-553 M1): one completed (or in-flight) run of a ScheduledTask —
+// the run-history the M2 UI lists. Mirrors the crewd `RunRecord`. `status` is a
+// free-TEXT crewd runStatusSchema value; `attempts` is a JSON-encoded
+// CascadeAttempt[] (the visible cascade trail). Cascade-deletes with its task.
+model ScheduledTaskRun {
+  id          String  @id
+  taskId      String  @map("task_id")
+  taskName    String  @default("") @map("task_name")
+  status      String
+  startedAt   String  @map("started_at")
+  finishedAt  String? @map("finished_at")
+  harnessUsed String? @map("harness_used")
+  attempts    String  @default("[]")
+  summary     String  @default("")
+  logPath     String? @map("log_path")
+  error       String?
+
+  task ScheduledTask @relation(fields: [taskId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([taskId, startedAt(sort: Desc)], map: "idx_scheduled_task_runs_task_started")
+  @@map("scheduled_task_runs")
 }
 
 // FEA-2923 (T-8.2): per-(component, session) invocation rows. Materialized at
@@ -929,6 +1360,18 @@ model AgentComponentSessionUsage {
   harness          String?
   invocations      Int     @default(0)
   errorCount       Int     @default(0) @map("error_count")
+  // FEA-2923: the component's content hash when this usage was recorded
+  // (hash-at-invocation). Stamped from agent_components.content_hash at import;
+  // null when the definition content is unknown (event-only components).
+  componentVersionHash String? @map("component_version_hash")
+  // FEA-3981 (PLN-1488) NOTE: per-model/token/cost telemetry lives on the
+  // per-INVOCATION grain (AgentComponentInvocation), NOT here. This table's PK
+  // is (session, kind, key, git_branch), so a subagent that ran under BOTH opus
+  // and sonnet in one session/branch collapses into ONE row — a scalar `model`
+  // here cannot represent "mixed". The component-level rollup (token/cost sum,
+  // model SET) is DERIVED by aggregating the invocation rows (Slice D read), so
+  // mixed-model stays representable. See AgentComponentInvocation above for the
+  // additive telemetry columns.
   firstInvokedAt   String? @map("first_invoked_at")
   lastInvokedAt    String? @map("last_invoked_at")
   startedDay       String? @map("started_day")          // UTC day bucket, mirrors session_tool_analytics
@@ -938,4 +1381,71 @@ model AgentComponentSessionUsage {
   @@index([agentComponentId], map: "idx_acsu_component", where: raw("agent_component_id IS NOT NULL"))
   @@index([startedDay], map: "idx_acsu_day")
   @@map("agent_component_session_usage")
+}
+
+/// ISS-5266: one WITHHELD OpenCode subagent subtree — a root row that could not
+/// be parsed, and the children the fold refused to re-emit at top level.
+///
+/// ISS-5238 (F2) is right to withhold them (a subagent presented as its own root
+/// is a lie about the session graph), but until this table the withhold existed
+/// only as a log line: `markSourceImported` advanced the store fingerprint and
+/// the children's spend left the corpus with nothing to distinguish "this root
+/// had no subagents" from "we withheld N of them".
+///
+/// Reconciled per `sourcePath` on every batch load. OpenCode reads the whole DB
+/// in one pass, so a root absent from the current load's withhold set has started
+/// parsing again and its row is retired — a stale row would keep claiming missing
+/// data that has since arrived.
+model OpencodeWithheldSubagentRoot {
+  /// RAW opencode session id of the root that could not be parsed. NOT unique on
+  /// its own: opencode session ids are only unique WITHIN a store, so two stores
+  /// can legitimately carry the same raw id. Identity is the composite below.
+  rootRawId String @map("root_raw_id")
+  /// Absolute path of the `opencode.db` the withholding load read.
+  sourcePath String @map("source_path")
+  /// How many subagent sessions were withheld under this root. Always >= 1.
+  withheldCount Int @map("withheld_count")
+  /// Why the root row was dropped (OpencodeDroppedSession.reason).
+  reason String
+  /// BILLABLE (input + output) token total across the withheld children, on the
+  /// same basis as the dashboard headline total this shortfall is quoted against.
+  /// NULL means UNAVAILABLE (the aggregate left the JS-safe integer range), never
+  /// zero.
+  withheldTokens Int? @map("withheld_tokens")
+  /// Cache (read + write) token total across the withheld children, kept separate
+  /// so neither figure is reconciled against a basis it was not measured on.
+  /// NULL means UNAVAILABLE, never zero.
+  withheldCacheTokens Int? @map("withheld_cache_tokens")
+  /// Bounds of the affected window. NULL means the window is UNKNOWN (no child
+  /// carried that instant), never a zero-length window.
+  earliestChildStartedAt String? @map("earliest_child_started_at")
+  latestChildEndedAt     String? @map("latest_child_ended_at")
+  /// True when a withheld child carried no instants and was skipped, so the
+  /// bounds above are a LOWER BOUND on the affected window, not its exact extent.
+  windowPartial Boolean @map("window_partial")
+  /// When the withhold was last observed.
+  observedAt String @map("observed_at")
+
+  /// Composite identity. Scoping to `sourcePath` is what lets two stores hold the
+  /// same raw root id without one store's upsert stealing the other's row, and it
+  /// keeps the per-store reconcile able to retain both.
+  @@id([sourcePath, rootRawId])
+  @@map("opencode_withheld_subagent_root")
+}
+
+/// ISS-5266: proof that one OpenCode store was SCANNED end to end.
+///
+/// Without this the absence of withheld rows is ambiguous three ways: nothing
+/// was withheld, the store was never imported, or a reconcile failed. Only the
+/// first is "complete", and the tab was claiming it for all three. A row here is
+/// written in the SAME transaction as the reconcile, so it exists only when a
+/// full-store pass actually landed, and an empty withhold set alongside it is a
+/// positive completeness claim rather than an absence of information.
+model OpencodeWithheldScan {
+  /// Absolute path of the `opencode.db` that was scanned.
+  sourcePath String @id @map("source_path")
+  /// When the scan that produced the current withhold set completed.
+  observedAt String @map("observed_at")
+
+  @@map("opencode_withheld_scan")
 }

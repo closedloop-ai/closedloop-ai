@@ -19,8 +19,6 @@ import {
 } from "./handlers";
 
 export async function POST(request: Request): Promise<Response> {
-  log.info("[webhook/liveblocks] Received webhook request");
-
   const webhookHandler = createWebhookHandler();
   if (!webhookHandler) {
     log.warn("[webhook/liveblocks] Webhook secret not configured, rejecting");
@@ -48,8 +46,6 @@ export async function POST(request: Request): Promise<Response> {
         { status: 401 }
       );
     }
-
-    log.info("[webhook/liveblocks] Processing event", { type: event.type });
 
     switch (event.type) {
       case "threadCreated":
@@ -80,12 +76,13 @@ export async function POST(request: Request): Promise<Response> {
         await handleThreadUnresolved(event);
         break;
       default:
-        log.info("[webhook/liveblocks] Ignoring unsupported event type", {
-          type: event.type,
-        });
+        logLiveblocksTerminalEvent(event.type, "unsupported_event");
         break;
     }
 
+    if (isSupportedLiveblocksEvent(event.type)) {
+      logLiveblocksTerminalEvent(event.type, "processed");
+    }
     scheduleLogFlush();
     return NextResponse.json({ message: "Event processed", ok: true });
   } catch (error) {
@@ -99,4 +96,29 @@ export async function POST(request: Request): Promise<Response> {
       { status: 500 }
     );
   }
+}
+
+function isSupportedLiveblocksEvent(type: string): boolean {
+  return (
+    type === "threadCreated" ||
+    type === "commentCreated" ||
+    type === "commentEdited" ||
+    type === "commentDeleted" ||
+    type === "commentReactionAdded" ||
+    type === "commentReactionRemoved" ||
+    type === "threadDeleted" ||
+    type === "threadMarkedAsResolved" ||
+    type === "threadMarkedAsUnresolved"
+  );
+}
+
+function logLiveblocksTerminalEvent(
+  eventType: string,
+  outcome: "processed" | "unsupported_event"
+): void {
+  log.info("[webhook/liveblocks] Event handled", {
+    eventType,
+    outcome,
+    provider: "liveblocks",
+  });
 }

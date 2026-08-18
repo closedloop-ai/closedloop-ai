@@ -1,18 +1,24 @@
 import assert from "node:assert/strict";
-import { afterEach, test } from "node:test";
+import { afterEach, mock, test } from "node:test";
 import { AppExceptionOrigin } from "@closedloop-ai/telemetry-contract/app-exception-origin";
 import { TelemetryAttribute } from "@closedloop-ai/telemetry-contract/attributes";
 import { TelemetryEmitMetadataKey } from "@closedloop-ai/telemetry-contract/emit";
 import { TelemetrySchemaName } from "@closedloop-ai/telemetry-contract/schema-name";
-import { metrics, trace } from "@opentelemetry/api";
+import {
+  SpanKind,
+  SpanStatusCode,
+} from "@closedloop-ai/telemetry-contract/span";
+import { context, metrics, trace } from "@opentelemetry/api";
 import { logs } from "@opentelemetry/api-logs";
 import {
   createDesktopOtelRuntime,
-  type DesktopOtelBufferedRecord,
+  DESKTOP_ACTIVITY_ROOT_IDLE_TIMEOUT_MS,
+  DESKTOP_ACTIVITY_ROOT_MAX_AGE_MS,
   type DesktopOtelRuntime,
+  DesktopSyncBatchOutcome,
   isOtelSdkDisabled,
   resolveDeploymentEnvironmentName,
-} from "../src/main/app-otel-runtime.js";
+} from "../src/main/telemetry/app-otel-runtime.js";
 import {
   createDesktopAppLifecycleTelemetry,
   DesktopAppLifecycleEvent,
@@ -20,13 +26,25 @@ import {
   DesktopAppOperatingMode,
   shutdownDesktopOtelRuntime,
   startDesktopOtelRuntimeForBoot,
-} from "../src/main/app-otel-runtime-lifecycle.js";
-import { getDesktopAppOperatingModeForTelemetry } from "../src/main/app-telemetry-operating-mode.js";
-import { UNRESOLVED_DESKTOP_SERVICE_VERSION } from "../src/main/desktop-service-version.js";
+} from "../src/main/telemetry/app-otel-runtime-lifecycle.js";
+import { getDesktopAppOperatingModeForTelemetry } from "../src/main/telemetry/app-telemetry-operating-mode.js";
+import { OBSERVABILITY_SHUTDOWN_DEADLINE_MS } from "../src/main/telemetry/shutdown-deadline.js";
+import { UNRESOLVED_DESKTOP_SERVICE_VERSION } from "../src/main/util/desktop-service-version.js";
 import {
   DesktopOtelSignal,
   RendererOtelExportFailureReason,
 } from "../src/shared/renderer-otel-bridge-constants.js";
+import {
+  collectAppLifecycleRecords,
+  collectResourceAttributeMismatches,
+  createLifecycleInputRecordingRuntime,
+  createManualTimers,
+  createRecordingRuntime,
+  createRejectingRuntime,
+  createThrowingTransport,
+  ipcInputAt,
+  rendererTraceRecord,
+} from "./app-otel-runtime-test-helpers.js";
 
 let activeRuntime: DesktopOtelRuntime | null = null;
 
@@ -153,19 +171,37 @@ test("backstop guard passes a usable service.version through unchanged (FEA-2199
 
 test("OTEL_SDK_DISABLED disables startup without creating resource or buffer records", async () => {
   let installationIdRequested = false;
-  let heartbeatCallback: (() => void) | null = null;
+  let deviceIdRequested = false;
+  let organizationIdRequested = false;
+  let operatingModeRequested = false;
+  // Held on an object so TypeScript does not narrow the capture to `null`:
+  // the assignment happens inside the injected `setIntervalFn`, which
+  // control-flow analysis cannot see.
+  const heartbeat: { callback: (() => void) | null } = { callback: null };
   const runtime = createTestRuntime({
     env: { OTEL_SDK_DISABLED: "TrUe" },
     getAppInstallationId: () => {
       installationIdRequested = true;
       return "install_disabled";
     },
+    getDeviceId: () => {
+      deviceIdRequested = true;
+      return "device_disabled";
+    },
+    getOperatingMode: () => {
+      operatingModeRequested = true;
+      return DesktopAppOperatingMode.Multiplayer;
+    },
+    getOrganizationId: () => {
+      organizationIdRequested = true;
+      return "org_disabled";
+    },
   });
   const lifecycle = createDesktopAppLifecycleTelemetry({
     runtime,
     getOperatingMode: () => DesktopAppOperatingMode.SinglePlayer,
     setIntervalFn: (callback) => {
-      heartbeatCallback = callback;
+      heartbeat.callback = callback;
       return {};
     },
     clearIntervalFn: () => {},
@@ -174,12 +210,15 @@ test("OTEL_SDK_DISABLED disables startup without creating resource or buffer rec
 
   await runtime.start();
   lifecycle.start();
-  heartbeatCallback?.();
+  heartbeat.callback?.();
   lifecycle.emitShutdown();
   trace.getTracer("desktop-otel-test").startSpan("disabled").end();
   await runtime.shutdown();
 
   assert.equal(installationIdRequested, false);
+  assert.equal(deviceIdRequested, false);
+  assert.equal(organizationIdRequested, false);
+  assert.equal(operatingModeRequested, false);
   assert.deepEqual(runtime.getBufferedRecords(), []);
   assert.equal(isOtelSdkDisabled({ OTEL_SDK_DISABLED: "1" }), true);
   assert.equal(isOtelSdkDisabled({ OTEL_SDK_DISABLED: "yes" }), true);
@@ -188,7 +227,7 @@ test("OTEL_SDK_DISABLED disables startup without creating resource or buffer rec
   assert.equal(isOtelSdkDisabled({ OTEL_SDK_DISABLED: "" }), false);
 });
 
-test("emits app lifecycle records through the typed app schema channel", async () => {
+test("emits app lifecycle boundaries as spans and keeps heartbeat as a log", async () => {
   const runtime = createTestRuntime({
     appVersion: "1.2.3",
     env: {
@@ -212,42 +251,45 @@ test("emits app lifecycle records through the typed app schema channel", async (
   });
   await runtime.shutdown();
 
-  const lifecycleRecords = runtime
+  const lifecycleSpans = runtime
     .getBufferedRecords()
     .filter(
+      (record) =>
+        record.signal === DesktopOtelSignal.Trace &&
+        record.name === "app.lifecycle"
+    );
+  const heartbeat = runtime
+    .getBufferedRecords()
+    .find(
       (record) =>
         record.signal === DesktopOtelSignal.Log &&
         record.name === "app.lifecycle"
     );
 
   assert.deepEqual(
-    lifecycleRecords.map(
+    lifecycleSpans.map(
       (record) => record.attributes?.[TelemetryAttribute.AppLifecycleEvent]
     ),
-    [
-      DesktopAppLifecycleEvent.Start,
-      DesktopAppLifecycleEvent.Heartbeat,
-      DesktopAppLifecycleEvent.Shutdown,
-    ]
+    [DesktopAppLifecycleEvent.Start, DesktopAppLifecycleEvent.Shutdown]
   );
   assert.deepEqual(
-    lifecycleRecords.map(
+    lifecycleSpans.map(
       (record) => record.attributes?.[TelemetryAttribute.AppOperatingMode]
     ),
-    [
-      DesktopAppOperatingMode.SinglePlayer,
-      DesktopAppOperatingMode.Multiplayer,
-      DesktopAppOperatingMode.SinglePlayer,
-    ]
+    [DesktopAppOperatingMode.SinglePlayer, DesktopAppOperatingMode.SinglePlayer]
+  );
+  assert.equal(
+    heartbeat?.attributes?.[TelemetryAttribute.AppLifecycleEvent],
+    DesktopAppLifecycleEvent.Heartbeat
+  );
+  assert.equal(
+    heartbeat?.attributes?.[TelemetryEmitMetadataKey.SchemaName],
+    TelemetrySchemaName.App
   );
 
-  for (const record of lifecycleRecords) {
-    assert.equal(
-      record.attributes?.[TelemetryEmitMetadataKey.SchemaName],
-      TelemetrySchemaName.App
-    );
+  for (const record of [...lifecycleSpans, heartbeat]) {
     assert.deepEqual(
-      collectResourceAttributeMismatches(record.resourceAttributes),
+      collectResourceAttributeMismatches(record?.resourceAttributes),
       []
     );
   }
@@ -333,6 +375,91 @@ test("emits IPC perf wide-event spans and no-ops before the runtime starts", asy
   assert.equal(detailSpan?.attributes?.[TelemetryAttribute.IpcPayloadBytes], 0);
 });
 
+test("creates cl-desktop activity roots around IPC spans with identity attributes", async () => {
+  const runtime = createTestRuntime({
+    appVersion: "1.2.3",
+    env: {
+      CLOSEDLOOP_DEPLOYMENT_ENVIRONMENT_NAME: "desktop-prod",
+    },
+    getAppInstallationId: () => "install_0123456789abcdef",
+    getDeviceId: () => "device_0123456789abcdef",
+    getOperatingMode: () => DesktopAppOperatingMode.Multiplayer,
+    getOrganizationId: () => "019c24db-a261-738f-8eff-ea275fb27470",
+  });
+  await runtime.start();
+
+  runtime.emitIpcPerfEvent({
+    operation: "list",
+    startTimeUnixMs: 1_700_000_000_000,
+    durationMs: 25,
+    payloadBytes: 32,
+    resultCount: 2,
+    sessionCount: 4,
+  });
+  await runtime.shutdown();
+
+  const root = runtime
+    .getBufferedRecords()
+    .find((record) => record.name === "cl-desktop");
+  assert.equal(root?.attributes?.[TelemetryAttribute.ServiceVersion], "1.2.3");
+  assert.equal(
+    root?.attributes?.[TelemetryAttribute.AppOperatingMode],
+    DesktopAppOperatingMode.Multiplayer
+  );
+  assert.equal(
+    root?.attributes?.[TelemetryAttribute.DeviceId],
+    "device_0123456789abcdef"
+  );
+  assert.equal(
+    root?.attributes?.[TelemetryAttribute.AppOrganizationId],
+    "019c24db-a261-738f-8eff-ea275fb27470"
+  );
+  assert.equal(
+    root?.resourceAttributes[TelemetryAttribute.DeviceId],
+    "device_0123456789abcdef"
+  );
+});
+
+test("rotates cl-desktop roots by max age, idle timeout, and shutdown", async () => {
+  const timers = createManualTimers();
+  let organizationId: string | undefined;
+  const runtime = createTestRuntime({
+    getOperatingMode: () => DesktopAppOperatingMode.Multiplayer,
+    getOrganizationId: () => organizationId,
+    setActivityRootTimeout: timers.set,
+    clearActivityRootTimeout: timers.clear,
+  });
+  await runtime.start();
+
+  runtime.emitIpcPerfEvent(ipcInputAt(1_700_000_000_000));
+  organizationId = "org_after_rotation";
+  runtime.emitIpcPerfEvent(
+    ipcInputAt(1_700_000_000_000 + DESKTOP_ACTIVITY_ROOT_MAX_AGE_MS + 1)
+  );
+  timers.fireLatest();
+  runtime.emitIpcPerfEvent(ipcInputAt(1_700_000_100_000));
+  await runtime.shutdown();
+
+  const roots = runtime
+    .getBufferedRecords()
+    .filter((record) => record.name === "cl-desktop");
+  assert.equal(roots.length, 3);
+  assert.equal(
+    roots[0]?.attributes?.[TelemetryAttribute.AppOrganizationId],
+    undefined
+  );
+  assert.equal(
+    roots[1]?.attributes?.[TelemetryAttribute.AppOrganizationId],
+    "org_after_rotation"
+  );
+  assert.equal(
+    roots[2]?.attributes?.[TelemetryAttribute.AppOrganizationId],
+    "org_after_rotation"
+  );
+  assert.equal(timers.lastDelayMs, DESKTOP_ACTIVITY_ROOT_IDLE_TIMEOUT_MS);
+  assert.equal(timers.activeCount(), 0);
+});
+
 test("attaches the organization id to multiplayer lifecycle records but never to single-player ones (FEA-1996)", async () => {
   const runtime = createTestRuntime({
     appVersion: "1.2.3",
@@ -357,11 +484,7 @@ test("attaches the organization id to multiplayer lifecycle records but never to
 
   const lifecycleRecords = runtime
     .getBufferedRecords()
-    .filter(
-      (record) =>
-        record.signal === DesktopOtelSignal.Log &&
-        record.name === "app.lifecycle"
-    );
+    .filter((record) => record.name === "app.lifecycle");
 
   const [multiplayer, singlePlayer] = lifecycleRecords;
   assert.equal(
@@ -380,19 +503,9 @@ test("attaches the organization id to multiplayer lifecycle records but never to
 
 test("the lifecycle driver threads the resolved organization id into emitted events (FEA-1996)", () => {
   const inputs: Array<{ event: DesktopAppLifecycleEvent; org?: string }> = [];
-  const recordingRuntime: DesktopOtelRuntime = {
-    start: () => Promise.resolve(),
-    emitAppLifecycleEvent: (input) =>
-      inputs.push({ event: input.event, org: input.organizationId }),
-    emitAppExceptionEvent: () => {},
-    shutdown: () => Promise.resolve(),
-    getBufferedRecords: () => [],
-    resetBuffer: () => {},
-    exportExternalRecords: () => ({
-      ok: false,
-      reason: RendererOtelExportFailureReason.Unavailable,
-    }),
-  };
+  const recordingRuntime = createLifecycleInputRecordingRuntime((input) =>
+    inputs.push({ event: input.event, org: input.organizationId })
+  );
 
   let organizationId: string | undefined = "org_multiplayer";
   const lifecycle = createDesktopAppLifecycleTelemetry({
@@ -414,7 +527,7 @@ test("the lifecycle driver threads the resolved organization id into emitted eve
   ]);
 });
 
-test("emits scrubbed app exception records through the typed app schema channel", async () => {
+test("emits scrubbed app exception records as error spans", async () => {
   const runtime = createTestRuntime({
     appVersion: "1.2.3",
     env: {
@@ -439,7 +552,7 @@ test("emits scrubbed app exception records through the typed app schema channel"
     .getBufferedRecords()
     .find(
       (item) =>
-        item.signal === DesktopOtelSignal.Log && item.name === "exception"
+        item.signal === DesktopOtelSignal.Trace && item.name === "exception"
     );
 
   assert.equal(record?.attributes?.[TelemetryAttribute.ExceptionType], "Error");
@@ -455,10 +568,7 @@ test("emits scrubbed app exception records through the typed app schema channel"
     record?.attributes?.[TelemetryAttribute.AppExceptionOrigin],
     AppExceptionOrigin.Main
   );
-  assert.equal(
-    record?.attributes?.[TelemetryEmitMetadataKey.SchemaName],
-    TelemetrySchemaName.App
-  );
+  assert.equal(record?.status?.code, SpanStatusCode.Error);
   assert.deepEqual(
     collectResourceAttributeMismatches(record?.resourceAttributes),
     []
@@ -494,9 +604,12 @@ test("app exception sanitizer redacts unsafe optional fields without dropping th
   );
   assert.equal(
     record?.attributes?.[TelemetryAttribute.ExceptionStacktrace],
-    "[redacted]"
+    "Error: failed at [redacted-path]"
   );
-  assert.equal(Object.values(record?.attributes ?? {}).includes(null), false);
+  // The redactor must OMIT an unsafe attribute, never emit an explicit `null` —
+  // read the values untyped so the runtime check is meaningful.
+  const attributeValues: unknown[] = Object.values(record?.attributes ?? {});
+  assert.equal(attributeValues.includes(null), false);
 });
 
 test("app exception emission no-ops when runtime is unavailable or disabled", async () => {
@@ -518,7 +631,7 @@ test("app exception emission no-ops when runtime is unavailable or disabled", as
   assert.deepEqual(disabledRuntime.getBufferedRecords(), []);
 });
 
-test("emits sync.batch records through the typed sync schema channel", async () => {
+test("emits sync.batch records as child spans", async () => {
   const runtime = createTestRuntime({
     appVersion: "1.2.3",
     env: {
@@ -529,19 +642,21 @@ test("emits sync.batch records through the typed sync schema channel", async () 
   await runtime.start();
 
   runtime.emitSyncBatchEvent({
-    outcome: "success",
+    outcome: DesktopSyncBatchOutcome.Success,
     payloadBytes: 2048,
     latencyMs: 37,
   });
   runtime.emitSyncBatchEvent({
-    outcome: "failure",
+    outcome: DesktopSyncBatchOutcome.Failure,
     payloadBytes: 512,
     latencyMs: 9,
+    reason: "ack_timeout",
   });
   // dead-lettered before any send → no latency to report.
   runtime.emitSyncBatchEvent({
-    outcome: "dead_letter",
+    outcome: DesktopSyncBatchOutcome.DeadLetter,
     payloadBytes: 300_000,
+    reason: "locally_oversized",
   });
   await runtime.shutdown();
 
@@ -549,15 +664,12 @@ test("emits sync.batch records through the typed sync schema channel", async () 
     .getBufferedRecords()
     .filter(
       (record) =>
-        record.signal === DesktopOtelSignal.Log && record.name === "sync.batch"
+        record.signal === DesktopOtelSignal.Trace &&
+        record.name === "sync.batch"
     );
 
   assert.equal(syncRecords.length, 3);
   for (const record of syncRecords) {
-    assert.equal(
-      record.attributes?.[TelemetryEmitMetadataKey.SchemaName],
-      TelemetrySchemaName.Sync
-    );
     assert.equal(record.attributes?.[TelemetryAttribute.SyncEvent], "batch");
     assert.equal(record.instrumentationScope?.name, "closedloop-desktop-sync");
     assert.deepEqual(
@@ -569,7 +681,11 @@ test("emits sync.batch records through the typed sync schema channel", async () 
     syncRecords.map(
       (record) => record.attributes?.[TelemetryAttribute.SyncOutcome]
     ),
-    ["success", "failure", "dead_letter"]
+    [
+      DesktopSyncBatchOutcome.Success,
+      DesktopSyncBatchOutcome.Failure,
+      DesktopSyncBatchOutcome.DeadLetter,
+    ]
   );
   assert.deepEqual(
     syncRecords.map(
@@ -583,12 +699,29 @@ test("emits sync.batch records through the typed sync schema channel", async () 
     ),
     [37, 9, undefined]
   );
+  // FEA-3426: `reason` maps to sync.reason on failure/dead_letter, and is
+  // OMITTED (not null/empty) on success — the guard against a producer that
+  // emits a reason the runtime silently drops.
+  assert.deepEqual(
+    syncRecords.map(
+      (record) => record.attributes?.[TelemetryAttribute.SyncReason]
+    ),
+    [undefined, "ack_timeout", "locally_oversized"]
+  );
+  assert.deepEqual(
+    syncRecords.map((record) => record.status?.code),
+    [SpanStatusCode.Unset, SpanStatusCode.Error, SpanStatusCode.Error]
+  );
+  assert.deepEqual(
+    syncRecords.map((record) => record.status?.message),
+    [undefined, "ack_timeout", "locally_oversized"]
+  );
 });
 
 test("sync batch emission no-ops when runtime is unavailable or disabled", async () => {
   const idleRuntime = createTestRuntime();
   idleRuntime.emitSyncBatchEvent({
-    outcome: "success",
+    outcome: DesktopSyncBatchOutcome.Success,
     payloadBytes: 1,
     latencyMs: 1,
   });
@@ -599,7 +732,7 @@ test("sync batch emission no-ops when runtime is unavailable or disabled", async
   });
   await disabledRuntime.start();
   disabledRuntime.emitSyncBatchEvent({
-    outcome: "dead_letter",
+    outcome: DesktopSyncBatchOutcome.DeadLetter,
     payloadBytes: 999_999,
   });
   assert.deepEqual(disabledRuntime.getBufferedRecords(), []);
@@ -653,14 +786,20 @@ test("app lifecycle derives operating mode from DesktopApplication API-key statu
     });
 
     assert.deepEqual(identityAttributeKeys, []);
-    assert.equal(Object.values(attributes).includes(null), false);
+    // Read the values untyped so the "never an explicit null" check is a real
+    // runtime assertion rather than a type-forbidden comparison.
+    const attributeValues: unknown[] = Object.values(attributes);
+    assert.equal(attributeValues.includes(null), false);
   }
 });
 
 test("app lifecycle controller emits start once and cleans heartbeat timers", () => {
   const emittedEvents: string[] = [];
   const clearedTimers: DesktopAppLifecycleTimerHandle[] = [];
-  let heartbeatCallback: (() => void) | null = null;
+  // Held on an object so TypeScript does not narrow the capture to `null`:
+  // the assignment happens inside the injected `setIntervalFn`, which
+  // control-flow analysis cannot see.
+  const heartbeat: { callback: (() => void) | null } = { callback: null };
   let unrefCalled = false;
   const timerHandle = {
     unref: () => {
@@ -674,7 +813,7 @@ test("app lifecycle controller emits start once and cleans heartbeat timers", ()
     heartbeatIntervalMs: 123,
     setIntervalFn: (callback, intervalMs) => {
       assert.equal(intervalMs, 123);
-      heartbeatCallback = callback;
+      heartbeat.callback = callback;
       return timerHandle;
     },
     clearIntervalFn: (handle) => clearedTimers.push(handle),
@@ -688,14 +827,14 @@ test("app lifecycle controller emits start once and cleans heartbeat timers", ()
   assert.equal(unrefCalled, true);
   assert.equal(clearedTimers.length, 0);
 
-  heartbeatCallback?.();
+  heartbeat.callback?.();
   assert.deepEqual(emittedEvents, [
     DesktopAppLifecycleEvent.Start,
     DesktopAppLifecycleEvent.Heartbeat,
   ]);
 
   lifecycle.stop();
-  heartbeatCallback?.();
+  heartbeat.callback?.();
   lifecycle.stop();
 
   assert.deepEqual(clearedTimers, [timerHandle]);
@@ -730,9 +869,52 @@ test("app lifecycle shutdown emits before runtime shutdown and stays idempotent"
   ]);
 });
 
+test("shutdownDesktopOtelRuntime is bounded: a hung runtime.shutdown() cannot wedge exit (ISS-4585)", async () => {
+  // The keyless OTel / collector_unavailable path can leave runtime.shutdown()
+  // hung on a wedged exporter/keepalive socket. Because this await runs in
+  // app.ts shutdown() BEFORE runShutdownSequence, its per-phase bound does not
+  // cover it — an unbounded hang here force-killed desktop-dev with SIGKILL
+  // (137). The internal deadline must resolve it. Drive the deadline with fake
+  // timers so there is no wall-clock wait.
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    let shutdownStarted = false;
+    const runtime = createRecordingRuntime(
+      () => {},
+      () => {
+        shutdownStarted = true;
+      }
+    );
+    const hungRuntime: DesktopOtelRuntime = {
+      ...runtime,
+      shutdown() {
+        shutdownStarted = true;
+        return new Promise<void>(() => {}); // never resolves
+      },
+    };
+
+    const shutdownPromise = shutdownDesktopOtelRuntime({
+      runtime: hungRuntime,
+      logWarning: () => {},
+    });
+    // Let the hung shutdown start and the deadline timer register, then trip it.
+    await Promise.resolve();
+    mock.timers.tick(OBSERVABILITY_SHUTDOWN_DEADLINE_MS);
+
+    // Resolves via the deadline even though runtime.shutdown() never settled.
+    await shutdownPromise;
+    assert.equal(shutdownStarted, true);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
 test("app lifecycle warnings are sanitized and do not block start heartbeat or shutdown", () => {
   const warnings: Array<{ tag: string; message: string }> = [];
-  let heartbeatCallback: (() => void) | null = null;
+  // Held on an object so TypeScript does not narrow the capture to `null`:
+  // the assignment happens inside the injected `setIntervalFn`, which
+  // control-flow analysis cannot see.
+  const heartbeat: { callback: (() => void) | null } = { callback: null };
   const runtime = createRecordingRuntime(() => {
     throw new Error(
       "app.installation.id=install_0123456789abcdef path=/Users/example stack=secret"
@@ -742,7 +924,7 @@ test("app lifecycle warnings are sanitized and do not block start heartbeat or s
     runtime,
     getOperatingMode: () => DesktopAppOperatingMode.SinglePlayer,
     setIntervalFn: (callback) => {
-      heartbeatCallback = callback;
+      heartbeat.callback = callback;
       return {};
     },
     clearIntervalFn: () => {},
@@ -750,7 +932,7 @@ test("app lifecycle warnings are sanitized and do not block start heartbeat or s
   });
 
   lifecycle.start();
-  heartbeatCallback?.();
+  heartbeat.callback?.();
   lifecycle.emitShutdown();
 
   assert.deepEqual(warnings, [
@@ -827,7 +1009,254 @@ test("external renderer records append with main-owned resource attributes", asy
     collectResourceAttributeMismatches(record?.resourceAttributes),
     []
   );
-  assert.equal(record?.resourceAttributes["device.id"], undefined);
+});
+
+test("external renderer relay failure still appends to local buffer", async () => {
+  const runtime = createTestRuntime({
+    telemetryTransport: createThrowingTransport(),
+  });
+  await runtime.start();
+
+  const result = runtime.exportExternalRecords([
+    {
+      signal: DesktopOtelSignal.Trace,
+      traceId: "11111111111111111111111111111111",
+      spanId: "2222222222222222",
+      kind: SpanKind.Internal,
+      status: { code: SpanStatusCode.Unset },
+      name: "renderer.relay.failure",
+    },
+  ]);
+
+  assert.deepEqual(result, {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  assert.equal(
+    runtime
+      .getBufferedRecords()
+      .some((record) => record.name === "renderer.relay.failure"),
+    true
+  );
+});
+
+test("external renderer records rebase roots under the active main span", async () => {
+  const runtime = createTestRuntime();
+  await runtime.start();
+  const rendererParent = {
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "2222222222222222",
+    kind: SpanKind.Internal,
+    status: { code: SpanStatusCode.Unset },
+    name: "renderer.parent",
+  };
+  const rendererChild = {
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "3333333333333333",
+    parentSpanId: "2222222222222222",
+    kind: SpanKind.Internal,
+    status: { code: SpanStatusCode.Unset },
+    name: "renderer.child",
+  };
+
+  const mainSpan = trace.getTracer("desktop-test").startSpan("main.parent");
+  const result = context.with(trace.setSpan(context.active(), mainSpan), () =>
+    runtime.exportExternalRecords([rendererParent, rendererChild])
+  );
+  mainSpan.end();
+  await runtime.shutdown();
+
+  assert.deepEqual(result, {
+    ok: true,
+    acceptedRecords: 2,
+    droppedRecordsCount: 0,
+  });
+  const records = runtime.getBufferedRecords();
+  const root = records.find((record) => record.name === "cl-desktop");
+  const parent = records.find((record) => record.name === "renderer.parent");
+  const child = records.find((record) => record.name === "renderer.child");
+  assert.equal(parent?.traceId, root?.traceId);
+  assert.equal(parent?.parentSpanId, root?.spanId);
+  assert.equal(child?.traceId, root?.traceId);
+  assert.equal(child?.parentSpanId, rendererParent.spanId);
+});
+
+test("external renderer records keep cached renderer trace under the activity root", async () => {
+  const runtime = createTestRuntime();
+  await runtime.start();
+  const rendererTraceId = "11111111111111111111111111111111";
+
+  assert.deepEqual(
+    runtime.exportExternalRecords([
+      rendererTraceRecord({
+        name: "renderer.fallback.seed",
+        spanId: "2222222222222222",
+        traceId: rendererTraceId,
+      }),
+    ]),
+    {
+      ok: true,
+      acceptedRecords: 1,
+      droppedRecordsCount: 0,
+    }
+  );
+  const fallbackSeed = runtime
+    .getBufferedRecords()
+    .find((record) => record.name === "renderer.fallback.seed");
+  assert.ok(fallbackSeed);
+
+  const mainSpan = trace.getTracer("desktop-test").startSpan("main.parent");
+  const result = context.with(trace.setSpan(context.active(), mainSpan), () =>
+    runtime.exportExternalRecords([
+      rendererTraceRecord({
+        name: "renderer.active.main",
+        spanId: "3333333333333333",
+        traceId: rendererTraceId,
+      }),
+    ])
+  );
+  mainSpan.end();
+  await runtime.shutdown();
+
+  assert.deepEqual(result, {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  const activeMainRecord = runtime
+    .getBufferedRecords()
+    .find((record) => record.name === "renderer.active.main");
+  const root = runtime
+    .getBufferedRecords()
+    .find((record) => record.name === "cl-desktop");
+  assert.equal(activeMainRecord?.traceId, root?.traceId);
+  assert.equal(activeMainRecord?.parentSpanId, root?.spanId);
+  assert.equal(activeMainRecord?.traceId, fallbackSeed.traceId);
+});
+
+test("external renderer records create a main-owned parent when no span is active", async () => {
+  const runtime = createTestRuntime();
+  await runtime.start();
+
+  const result = runtime.exportExternalRecords([
+    {
+      signal: DesktopOtelSignal.Trace,
+      traceId: "11111111111111111111111111111111",
+      spanId: "2222222222222222",
+      kind: SpanKind.Internal,
+      status: { code: SpanStatusCode.Unset },
+      name: "renderer.root",
+    },
+  ]);
+
+  assert.deepEqual(result, {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  await runtime.shutdown();
+  const records = runtime.getBufferedRecords();
+  const root = records.find((record) => record.name === "cl-desktop");
+  const rendererRoot = records.find(
+    (record) => record.name === "renderer.root"
+  );
+  assert.equal(rendererRoot?.traceId, root?.traceId);
+  assert.equal(rendererRoot?.parentSpanId, root?.spanId);
+});
+
+test("external renderer records preserve parentage across split exports", async () => {
+  const runtime = createTestRuntime();
+  await runtime.start();
+  const rendererParent = {
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "2222222222222222",
+    kind: SpanKind.Internal,
+    status: { code: SpanStatusCode.Unset },
+    name: "renderer.parent",
+  };
+  const rendererChild = {
+    signal: DesktopOtelSignal.Trace,
+    traceId: "11111111111111111111111111111111",
+    spanId: "3333333333333333",
+    parentSpanId: "2222222222222222",
+    kind: SpanKind.Internal,
+    status: { code: SpanStatusCode.Unset },
+    name: "renderer.child",
+  };
+
+  assert.deepEqual(runtime.exportExternalRecords([rendererChild]), {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  assert.deepEqual(runtime.exportExternalRecords([rendererParent]), {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  await runtime.shutdown();
+
+  const records = runtime.getBufferedRecords();
+  const parent = records.find((record) => record.name === "renderer.parent");
+  const child = records.find((record) => record.name === "renderer.child");
+  const root = records.find((record) => record.name === "cl-desktop");
+  assert.equal(child?.traceId, root?.traceId);
+  assert.equal(parent?.traceId, root?.traceId);
+  assert.equal(child?.parentSpanId, rendererParent.spanId);
+  assert.equal(parent?.parentSpanId, root?.spanId);
+});
+
+test("external renderer records register every trace id in a mixed batch", async () => {
+  const runtime = createTestRuntime();
+  await runtime.start();
+  const firstTraceRoot = rendererTraceRecord({
+    name: "renderer.first.root",
+    spanId: "2222222222222222",
+    traceId: "11111111111111111111111111111111",
+  });
+  const secondTraceRoot = rendererTraceRecord({
+    name: "renderer.second.root",
+    spanId: "4444444444444444",
+    traceId: "33333333333333333333333333333333",
+  });
+  const secondTraceChild = rendererTraceRecord({
+    name: "renderer.second.child",
+    parentSpanId: secondTraceRoot.spanId,
+    spanId: "5555555555555555",
+    traceId: secondTraceRoot.traceId,
+  });
+
+  assert.deepEqual(runtime.exportExternalRecords([firstTraceRoot]), {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+  assert.deepEqual(
+    runtime.exportExternalRecords([firstTraceRoot, secondTraceRoot]),
+    {
+      ok: true,
+      acceptedRecords: 2,
+      droppedRecordsCount: 0,
+    }
+  );
+  assert.deepEqual(runtime.exportExternalRecords([secondTraceChild]), {
+    ok: true,
+    acceptedRecords: 1,
+    droppedRecordsCount: 0,
+  });
+
+  const records = runtime.getBufferedRecords();
+  const first = records.find((record) => record.name === firstTraceRoot.name);
+  const second = records.find((record) => record.name === secondTraceRoot.name);
+  const child = records.find((record) => record.name === secondTraceChild.name);
+
+  assert.equal(second?.traceId, first?.traceId);
+  assert.equal(child?.traceId, first?.traceId);
+  assert.equal(child?.parentSpanId, secondTraceRoot.spanId);
 });
 
 test("exportExternalRecords reports per-call dropped count, not cumulative", async () => {
@@ -1061,126 +1490,10 @@ function createTestRuntime(
     bufferLimit: 100,
     env: {},
     getAppInstallationId: () => "install_test",
+    getDeviceId: () => "device_0123456789abcdef",
     isPackaged: false,
     metricExportIntervalMs: 60_000,
     ...options,
   });
   return activeRuntime;
-}
-
-function createRejectingRuntime({
-  startError,
-  shutdownError,
-}: {
-  startError?: Error;
-  shutdownError?: Error;
-}): DesktopOtelRuntime {
-  return {
-    start() {
-      if (startError) {
-        return Promise.reject(startError);
-      }
-      return Promise.resolve();
-    },
-    emitAppLifecycleEvent() {},
-    emitAppExceptionEvent() {},
-    emitIpcPerfEvent() {},
-    emitSyncBatchEvent() {},
-    shutdown() {
-      if (shutdownError) {
-        return Promise.reject(shutdownError);
-      }
-      return Promise.resolve();
-    },
-    getBufferedRecords() {
-      return [];
-    },
-    resetBuffer() {},
-    exportExternalRecords() {
-      return {
-        ok: false,
-        reason: RendererOtelExportFailureReason.Unavailable,
-      };
-    },
-  };
-}
-
-function createRecordingRuntime(
-  onEmit: (event: DesktopAppLifecycleEvent) => void,
-  onShutdown: () => void = () => {}
-): DesktopOtelRuntime {
-  return {
-    start() {
-      return Promise.resolve();
-    },
-    emitAppLifecycleEvent(input) {
-      onEmit(input.event);
-    },
-    emitAppExceptionEvent() {},
-    emitIpcPerfEvent() {},
-    emitSyncBatchEvent() {},
-    shutdown() {
-      onShutdown();
-      return Promise.resolve();
-    },
-    getBufferedRecords() {
-      return [];
-    },
-    resetBuffer() {},
-    exportExternalRecords() {
-      return {
-        ok: false,
-        reason: RendererOtelExportFailureReason.Unavailable,
-      };
-    },
-  };
-}
-
-function collectAppLifecycleRecords(
-  runtime: DesktopOtelRuntime
-): DesktopOtelBufferedRecord[] {
-  return runtime
-    .getBufferedRecords()
-    .filter(
-      (record) =>
-        record.signal === DesktopOtelSignal.Log &&
-        record.name === "app.lifecycle"
-    );
-}
-
-function collectResourceAttributeMismatches(
-  resourceAttributes: Record<string, unknown> | undefined
-): string[] {
-  if (!resourceAttributes) {
-    return ["resource missing"];
-  }
-
-  const mismatches: string[] = [];
-  if (
-    resourceAttributes[TelemetryAttribute.ServiceName] !== "closedloop-desktop"
-  ) {
-    mismatches.push(TelemetryAttribute.ServiceName);
-  }
-  if (resourceAttributes[TelemetryAttribute.ServiceVersion] !== "1.2.3") {
-    mismatches.push(TelemetryAttribute.ServiceVersion);
-  }
-  if (
-    resourceAttributes[TelemetryAttribute.AppInstallationId] !==
-    "install_0123456789abcdef"
-  ) {
-    mismatches.push(TelemetryAttribute.AppInstallationId);
-  }
-  if (
-    resourceAttributes[TelemetryAttribute.DeploymentEnvironmentName] !==
-    "desktop-prod"
-  ) {
-    mismatches.push(TelemetryAttribute.DeploymentEnvironmentName);
-  }
-  if (resourceAttributes["telemetry.sdk.name"] !== "opentelemetry") {
-    mismatches.push("telemetry.sdk.name");
-  }
-  if ("device.id" in resourceAttributes) {
-    mismatches.push("device.id");
-  }
-  return mismatches;
 }

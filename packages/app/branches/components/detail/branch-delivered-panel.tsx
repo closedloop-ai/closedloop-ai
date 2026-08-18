@@ -4,14 +4,18 @@ import type {
   BranchPageDetail,
   BranchPrState,
 } from "@repo/api/src/types/branch";
+import { BranchLinkedArtifactCollectionState } from "@repo/api/src/types/branch";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import { getLabelForSlug } from "@repo/app/documents/lib/document-navigation";
 import { Chip } from "@repo/design-system/components/ui/chip";
+import { Link } from "@repo/navigation/link";
 import {
   ExternalLinkIcon,
   FileTextIcon,
   GitPullRequestIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { PrDescriptionMarkdown } from "../pr-comment-markdown";
 
 /**
  * "What was delivered" section of the Branch-details tab (Epic F / FEA-1952).
@@ -24,13 +28,22 @@ import { useState } from "react";
  * (slug only — no title/url is captured locally), derived from the branch-name's
  * embedded slug (e.g. `fea-1952-…` → FEA-1952); session-transcript mentions are
  * deliberately excluded. The PR identity (`prNumber`/`prTitle`/`prUrl`/`prState`)
- * is real; `prBody` has no producer yet (FEA-1899 enrichment), so the description
- * renders its empty state on most branches. The "draft from session" generation
+ * is real. Its selected-PR body is rendered through the shared safe GitHub
+ * Markdown policy on both web and Desktop. The "draft from session" generation
  * CTA from the mock is omitted (no producer; deferred).
  */
 
 export type BranchDeliveredPanelProps = {
   detail: BranchPageDetail;
+  /**
+   * FEA-4292: resolve the in-app href for a recognized Closedloop artifact slug
+   * so "What was delivered" links each artifact to its canonical record — the
+   * same navigation affordance Session Properties uses (`IssueLinkPill`).
+   * Web injects an org-relative route; Desktop injects an absolute web-app URL
+   * because it has no document detail routes. A null return for a given slug
+   * (non-navigable/untyped) renders that row as a plain label.
+   */
+  getArtifactHref?: (slug: string) => string | null;
 };
 
 const PR_STATE_CHIP: Record<
@@ -41,30 +54,117 @@ const PR_STATE_CHIP: Record<
   [GitHubPRState.Merged]: { label: "Merged", variant: "success" },
   [GitHubPRState.Closed]: { label: "Closed", variant: "muted" },
 };
+const ABSOLUTE_HTTP_HREF = /^https?:\/\//;
+
+/** The kind label + slug for one linked artifact, in the row's inner grid. */
+function LinkedArtifactRowBody({
+  slug,
+  kindLabel,
+}: {
+  slug: string;
+  kindLabel: string;
+}) {
+  return (
+    <>
+      <span className="bq-ctx-iss-key font-mono">
+        <FileTextIcon aria-hidden className="mr-1 inline size-3" />
+        {slug}
+      </span>
+      <span className="bq-ctx-iss-title">{kindLabel}</span>
+    </>
+  );
+}
+
+/**
+ * One linked-artifact row. FEA-4292: when the shell supplies an href
+ * (`getArtifactHref`), the ENTIRE row links to the artifact's canonical record.
+ * Root-relative destinations use the in-app navigation port; absolute Desktop
+ * web-app destinations use an external anchor so Electron hands them to the OS
+ * browser instead of hash-prefixing and dropping them. Otherwise the row is an
+ * inert `<div>`. The accessible name leads with the artifact kind, matching
+ * Session Properties; the leading icon stays `aria-hidden`.
+ */
+function LinkedArtifactRow({
+  slug,
+  href,
+}: {
+  slug: string;
+  href: string | null;
+}) {
+  // Name the kind from the slug prefix (Issue/PRD/Plan/Document); a slug we can't
+  // type (e.g. PRO-/WRK-/SES-, which also produce no href) falls back to a plain
+  // "Artifact" instead of the old repeated "Closedloop artifact".
+  const kindLabel = getLabelForSlug(slug) ?? "Artifact";
+  if (!href) {
+    return (
+      <div className="bq-ctx-issue">
+        <LinkedArtifactRowBody kindLabel={kindLabel} slug={slug} />
+      </div>
+    );
+  }
+  if (ABSOLUTE_HTTP_HREF.test(href)) {
+    return (
+      <a
+        aria-label={`${kindLabel} ${slug}`}
+        className="bq-ctx-issue bq-ctx-issue-link"
+        href={href}
+        rel="noreferrer"
+        target="_blank"
+      >
+        <LinkedArtifactRowBody kindLabel={kindLabel} slug={slug} />
+      </a>
+    );
+  }
+  return (
+    <Link
+      aria-label={`${kindLabel} ${slug}`}
+      className="bq-ctx-issue bq-ctx-issue-link"
+      href={href}
+    >
+      <LinkedArtifactRowBody kindLabel={kindLabel} slug={slug} />
+    </Link>
+  );
+}
 
 /**
  * Box 1 — linked Closedloop artifacts the branch implements, derived from the
  * branch-name slug (e.g. "fea-1952-…" → FEA-1952). v1 captures the slug only (no
- * title/url), so each row shows the slug.
+ * title/url), so each row shows the slug plus its derived kind. FEA-4292: a
+ * recognized slug links the whole row to its canonical record when the shell
+ * provides `getArtifactHref`.
  */
-function LinkedArtifacts({ detail }: { detail: BranchPageDetail }) {
+function LinkedArtifacts({
+  detail,
+  getArtifactHref,
+}: {
+  detail: BranchPageDetail;
+  getArtifactHref?: (slug: string) => string | null;
+}) {
   if (detail.linkedArtifacts.length === 0) {
-    return <p className="bq-ctx-empty-hint">No linked artifacts.</p>;
+    return (
+      <div>
+        <p className="bq-ctx-empty-hint">
+          {detail.linkedArtifactsCollection?.state ===
+          BranchLinkedArtifactCollectionState.Complete
+            ? "No linked artifacts."
+            : "Linked artifacts are unavailable."}
+        </p>
+        <ArtifactCoverageNote detail={detail} />
+      </div>
+    );
   }
   return (
-    <div className="bq-ctx-issues">
-      {detail.linkedArtifacts.map((artifact) => (
-        <div className="bq-ctx-issue" key={artifact.slug}>
-          <span className="bq-ctx-iss-key font-mono">
-            <FileTextIcon aria-hidden className="mr-1 inline size-3" />
-            {artifact.slug}
-          </span>
-          <span className="bq-ctx-iss-title text-muted-foreground">
-            Closedloop artifact
-          </span>
-          <span />
-        </div>
-      ))}
+    <div>
+      <div className="bq-ctx-issues">
+        {detail.linkedArtifacts.map((artifact) => (
+          <LinkedArtifactRow
+            href={getArtifactHref?.(artifact.slug) ?? null}
+            key={artifact.slug}
+            slug={artifact.slug}
+          />
+        ))}
+      </div>
+      <ArtifactCoverageNote detail={detail} />
     </div>
   );
 }
@@ -72,10 +172,15 @@ function LinkedArtifacts({ detail }: { detail: BranchPageDetail }) {
 /** Box 2 — the pull request: identity (number/title/state/link) + description. */
 function PullRequest({ detail }: { detail: BranchPageDetail }) {
   const [open, setOpen] = useState(false);
-  const hasPr = detail.prNumber != null;
-  const body = detail.prBody?.trim() ? detail.prBody : null;
-  const stateChip =
-    detail.prState == null ? null : PR_STATE_CHIP[detail.prState];
+  const selected = detail.selectedPullRequest;
+  const prNumber = selected ? selected.number : detail.prNumber;
+  const hasPr = prNumber != null;
+  const bodySource = selected?.body ?? detail.prBody;
+  const body = bodySource?.trim() ? bodySource : null;
+  const prState = selected ? selected.state : detail.prState;
+  const stateChip = prState == null ? null : PR_STATE_CHIP[prState];
+  const prUrl = selected ? selected.url : detail.prUrl;
+  const prTitle = selected ? selected.title : detail.prTitle;
 
   return (
     <div className="bq-ctx-pr">
@@ -83,18 +188,18 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
         <GitPullRequestIcon aria-hidden className="size-3.5" />
         <span className="bq-ctx-prlabel">Pull request</span>
         {hasPr ? (
-          <span className="bq-ctx-prnum font-mono">#{detail.prNumber}</span>
+          <span className="bq-ctx-prnum font-mono">#{prNumber}</span>
         ) : null}
         {stateChip ? (
           <Chip size="sm" variant={stateChip.variant}>
             {stateChip.label}
           </Chip>
         ) : null}
-        {detail.prUrl ? (
+        {prUrl ? (
           <a
-            aria-label={`Open pull request #${detail.prNumber} on GitHub`}
+            aria-label={`Open pull request #${prNumber} on GitHub`}
             className="ml-auto text-muted-foreground hover:text-foreground"
-            href={detail.prUrl}
+            href={prUrl}
             rel="noreferrer"
             target="_blank"
           >
@@ -102,13 +207,16 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
           </a>
         ) : null}
       </div>
-      {hasPr && detail.prTitle ? (
-        <p className="mb-1.5 font-medium text-sm">{detail.prTitle}</p>
+      {hasPr && prTitle ? (
+        <p className="mb-1.5 font-medium text-sm">{prTitle}</p>
       ) : null}
       {body ? (
         <>
-          <div className={open ? "bq-ctx-prbody" : "bq-ctx-prbody clamped"}>
-            {body}
+          <div
+            className={open ? "bq-ctx-prbody" : "bq-ctx-prbody clamped"}
+            inert={!open}
+          >
+            <PrDescriptionMarkdown text={body} />
           </div>
           <button
             aria-expanded={open}
@@ -122,7 +230,7 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
       ) : (
         <p className="bq-ctx-empty-t">
           {hasPr
-            ? `Pull request #${detail.prNumber} has no description captured yet.`
+            ? `Pull request #${prNumber} has no description captured yet.`
             : "No pull request opened yet — a description is captured once a PR is raised."}
         </p>
       )}
@@ -130,13 +238,28 @@ function PullRequest({ detail }: { detail: BranchPageDetail }) {
   );
 }
 
-export function BranchDeliveredPanel({ detail }: BranchDeliveredPanelProps) {
+function ArtifactCoverageNote({ detail }: { detail: BranchPageDetail }) {
+  const state = detail.linkedArtifactsCollection?.state;
+  if (state !== BranchLinkedArtifactCollectionState.Incomplete) {
+    return null;
+  }
+  return (
+    <p className="mt-2 text-muted-foreground text-xs">
+      The linked artifact list includes only the relationships we could verify.
+    </p>
+  );
+}
+
+export function BranchDeliveredPanel({
+  detail,
+  getArtifactHref,
+}: BranchDeliveredPanelProps) {
   return (
     <section className="bq-ctx">
       <div className="bq-sec-head">
         <span className="bq-sec-title">What was delivered</span>
       </div>
-      <LinkedArtifacts detail={detail} />
+      <LinkedArtifacts detail={detail} getArtifactHref={getArtifactHref} />
       <PullRequest detail={detail} />
     </section>
   );

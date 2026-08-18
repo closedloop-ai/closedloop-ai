@@ -1,0 +1,369 @@
+/* Session-detail Properties pane (`.sd3-props`).
+   Split out of `packages/app/styles.css` (ISS-4793) so the aggregate stays on
+   the shrink-only path and each feature-owned stylesheet stays well under the
+   1000-line ceiling. This file owns the properties disclosure header, the
+   collapsed preview row, the generic `.prd-prop` label/value grid, and the
+   Pull-requests / Linked-artifacts property values (pills, status, diff
+   roll-up). It is `@import`-ed first from `styles.css`, ahead of every rule
+   that file still owns, so its position in the cascade is unchanged: nothing
+   remaining in `styles.css` sets a property these rules also set at equal
+   specificity. */
+.sd3-props {
+  /* FEA-4025: Properties now scrolls below the pinned header as normal document
+     content (it is no longer inside `.sd3-head`), so it owns its own top rhythm
+     to sit clear of the header's bottom border. */
+  margin-top: 24px;
+  margin-bottom: 0;
+  padding-right: 0;
+  padding-left: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.sd3-props .prd-props-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sd3-props .prd-props-title {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: normal;
+}
+
+.sd3-props .prd-props-chevron {
+  display: inline-flex;
+  color: var(--muted-foreground);
+  transform: rotate(90deg);
+}
+
+.sd3-props[data-open="false"] .prd-props-chevron {
+  transform: rotate(0deg);
+}
+
+.sd3-props-preview {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sd3-props .sd3-props-preview,
+.sd3-props .prd-props {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.sd3-pp {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 6px;
+  color: var(--foreground);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.sd3-pp svg {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.sd3-pp.mono {
+  font-size: 11.5px;
+}
+
+.sd3-props .prd-props {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  column-gap: 40px;
+  row-gap: 2px;
+}
+
+.sd3-props .prd-prop {
+  display: grid;
+  min-height: 28px;
+  grid-template-columns: 110px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.sd3-props .prd-prop-label {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.sd3-props .prd-prop-value {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -8px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--foreground);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sd3-props .prd-prop-value:hover {
+  background: var(--muted);
+}
+
+.sd3-props .prd-prop-value > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ISS-5565 (code review): the shared `GridEmptyValue` ships `text-sm` — 14px,
+   sized for the grid it was written for — while every value in this pane runs at
+   13px. An unmatched dash therefore landed one point larger than the numbers it
+   stands in for, most catchable on the Tokens row where it sits mid-sentence
+   between mono digits. Scoped to the pane and keyed off the primitive's
+   `data-slot` so all of its dashes here (Owner, Duration, Autonomy, Tokens,
+   Work) re-sink together and a future row cannot reintroduce the mismatch by
+   forgetting a per-call-site override. */
+.sd3-props [data-slot="grid-empty-value"] {
+  font-size: inherit;
+}
+
+/* FEA-4026: the non-copyable value's leading icon is a sibling of the ellipsised
+   `.prd-prop-value-text` span (which inherits the truncation rule above), so it
+   must keep its size instead of collapsing under the flex row. */
+.sd3-props .prd-prop-value > svg {
+  flex-shrink: 0;
+}
+
+@media (max-width: 420px) {
+  .sd3-props .prd-prop {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 2px;
+  }
+
+  .sd3-props .prd-prop-value {
+    width: 100%;
+    margin: 0;
+    padding: 4px 0;
+  }
+}
+
+/* Pull-requests property value. The `.sd3-result-pr`, `.sd3-result-status`, and
+   `.sd3-out-diff` markup shipped from the trace-view mock (FEA-1768) and was
+   never styled, so the row rendered as run-together / overlapping text. Style it
+   here to match the quiet properties-pane aesthetic (cf. `.st-fail-pill`,
+   `.bq-add` / `.bq-del`). The value cell wraps so multiple PR pills plus the
+   lines-changed diff lay out cleanly instead of overflowing on one line. */
+.sd3-props .sd3-prs-value {
+  flex-wrap: wrap;
+}
+
+/* ISS-4793: the base pill is the INERT one, so it reads as a quiet label:
+   `--muted-foreground`, not `--foreground`. The navigable variant below then
+   differs on BOTH hue and weight, which is what makes "link-colored means
+   clickable" legible in dark mode too (a bright-white inert label next to a
+   colored link reads backwards). `min-height` lifts the chip to the 24px
+   minimum pointer-target size (WCAG 2.5.8) now that it is a real click target
+   and these pills sit in a tightly wrapped row. */
+.sd3-props .sd3-result-pr {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+/* ISS-5366: the PENDING pill — the shell cannot say yet whether this artifact is
+   reachable, so the pill must assert neither answer.
+
+   The two settled states are both claims: link-colored means "this navigates",
+   and the muted base above means "this does not". Rendering the muted base while
+   the desktop renderer's org slug and web-app origin were still arriving over
+   IPC made the row state, at full confidence, that reachable artifacts were
+   unreachable — then flip to links a moment later. This is deliberately NEITHER
+   treatment: the placeholder-standard reduced opacity plus a slow pulse reads as
+   "resolving", the same vocabulary skeletons use elsewhere, and `aria-busy` on
+   the span says the same thing to assistive tech.
+
+   Under `prefers-reduced-motion` the pulse is dropped but the reduced opacity is
+   KEPT — the distinction from the settled label is the load-bearing part, and
+   the animation is only its emphasis. */
+.sd3-props .sd3-result-pr-pending {
+  opacity: 0.55;
+  animation: sd3-linked-pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sd3-linked-pending-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sd3-props .sd3-result-pr-pending {
+    animation: none;
+  }
+}
+
+/* A pill that navigates must LOOK navigable at rest, not only on hover.
+   `IssueLinkPill`/`PullRequestPill` render the identical `.sd3-result-pr` chip
+   whether or not a destination resolved, so before this rule a linked ISS-/FEA-
+   pill and an inert one were pixel-identical until the pointer landed on them:
+   a keyboard or touch user got no signal at all, and the reported symptom was
+   "the pills aren't clickable". Adopt the rule FEA-4292 set on the Branch "What
+   was delivered" rows: link-colored means clickable, on both surfaces.
+
+   The color is `--link`, NOT `--primary`. `--primary` is a fill color and
+   measures 1.9:1 as 12px text on this pill in dark mode -- using it here would
+   have made the one pill we want people to click the least readable thing in
+   the pane. `--link` holds 6.6:1 (light) / 5.6:1 (dark). */
+.sd3-props a.sd3-result-pr {
+  color: var(--link);
+}
+
+/* Hover tints toward the design system's own hover surface rather than mixing
+   the link color into the background: a `--link` tint would lighten the pill in
+   dark and darken it in light, in both cases pushing the label back toward the
+   contrast floor, so hovering would make the text HARDER to read. `--accent`
+   moves away from the label in both themes (6.1:1 light / 7.6:1 dark). */
+.sd3-props a.sd3-result-pr:hover {
+  background: var(--accent);
+}
+
+/* WCAG 2.4.7 Focus Visible: the pill is a real link, so keyboard focus has to be
+   visible. The indicator reuses `--link` rather than `--ring`, which is a pale
+   halo here (1.5:1 against the pane, under the 3:1 WCAG 1.4.11 floor for a
+   non-text indicator); `--link` clears it comfortably at 7.1:1 / 9.1:1. */
+.sd3-props a.sd3-result-pr:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+/* ISS-4897: the `+N` overflow chip is a real disclosure BUTTON, so it needs the
+   UA button reset the span never did (a button does not inherit the pane's font
+   family, and ships a border and a default cursor). Only the delta is declared —
+   the base `.sd3-result-pr` rule above still owns the shape, size, and color. */
+.sd3-props button.sd3-result-pr {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Deliberately NOT link-colored. ISS-4793's rule in this row is that link color
+   means "this navigates"; the overflow chip reveals the hidden pills in place
+   and goes nowhere, so it stays the muted base treatment and earns its
+   affordance from hover + focus instead. Same `--accent` hover as the pill
+   links, for the same reason (a `--link` tint would push the label toward the
+   contrast floor in one theme or the other). */
+.sd3-props button.sd3-result-pr:hover {
+  background: var(--accent);
+}
+
+/* WCAG 2.4.7 Focus Visible. Reuses `--link` for the same reason the pill links
+   do: `--ring` is a 1.5:1 halo against this pane, under the 3:1 WCAG 1.4.11
+   floor for a non-text indicator. An outline color is not the "link-colored
+   text" signal, so this does not contradict the rule above. */
+.sd3-props button.sd3-result-pr:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.sd3-props .sd3-result-status {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.sd3-props .sd3-out-diff {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.sd3-props .sd3-out-diff .add {
+  color: var(--success-foreground);
+  font-weight: 600;
+}
+
+.sd3-props .sd3-out-diff .del {
+  color: var(--destructive);
+  font-weight: 600;
+}
+
+/* FEA-4378: the authored-PR roll-up value is a single combined added+removed
+   total, so it renders at plain foreground weight — NOT the green `.add` color,
+   which means "added" everywhere else in this pane and would mis-teach the
+   combined figure. Same 600 weight as the working-tree add/del values so the
+   numbers read consistently across both "Lines changed" shapes. */
+.sd3-props .sd3-out-diff .total {
+  font-weight: 600;
+}
+
+/* FEA-4378: the quiet "in PRs" qualifier on the authored-PR roll-up value in the
+   "Lines changed" row — present ONLY on the roll-up shape, to tell the reader the
+   number is the PRs' delivered code and not the session's local working-tree diff.
+   The working-tree shape carries no qualifier (the row label already says "Lines
+   changed"). Matches `.sd3-result-status`'s muted, small treatment so it reads as
+   a caption, not a value. */
+.sd3-props .sd3-out-diff .sd3-out-label {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+/* ISS-4449: the Linked-artifacts row wraps its pills, so the label must not
+   float to the vertical middle of a multi-line value the way the shared
+   `.sd3-props .prd-prop` `align-items: center` rule would leave it — pin the
+   label to the top so it reads against the first pill row. */
+.sd3-props .sd3-linked-prop {
+  align-items: start;
+}
+
+/* ISS-4449: the `+N` overflow chip that follows the visible Linked-artifacts
+   pills, parallel to `TagChips`' overflow shape. Reuses the shipped
+   `.sd3-result-pr` pill treatment; the muted foreground marks it as an
+   affordance-with-more (its tooltip names the hidden links), not a nav pill. */
+.sd3-props .sd3-linked-overflow {
+  color: var(--muted-foreground);
+  cursor: default;
+}

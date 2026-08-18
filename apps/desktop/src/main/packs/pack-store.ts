@@ -91,6 +91,7 @@ export async function upsertPack(
         ...(sourceUrl === null ? {} : { sourceUrl }),
         ...(version === null ? {} : { version }),
       },
+      select: { packId: true, harness: true, installPath: true },
     })
   );
 }
@@ -146,6 +147,7 @@ export async function upsertSkill(
         ...(description === null ? {} : { description }),
         ...(sourceUrl === null ? {} : { sourceUrl }),
       },
+      select: { skillId: true },
     })
   );
 }
@@ -174,6 +176,7 @@ export async function upsertProjectAssociation(
       },
       // Only last_seen_at is refreshed on conflict; detected_at is preserved.
       update: { lastSeenAt: ts },
+      select: { projectPath: true, packId: true },
     })
   );
 }

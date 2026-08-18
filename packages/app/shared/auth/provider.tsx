@@ -32,3 +32,15 @@ export function useAuthAdapter(): AuthAdapter {
     "Auth hooks require an <AuthAdapterProvider> ancestor. Mount one at the app root with a surface adapter (web: clerkAuthAdapter in apps/app)."
   );
 }
+
+/**
+ * Non-throwing accessor: the injected adapter when a provider is mounted, else
+ * `null`. For shared machinery that can degrade gracefully without an identity
+ * (e.g. namespacing a persisted view by user when signed in, falling back to an
+ * un-namespaced key when no auth context exists — tests, Storybook). Feature
+ * code that genuinely needs auth should keep using `useAuthSnapshot`, which
+ * throws so a missing provider is caught early.
+ */
+export function useOptionalAuthAdapter(): AuthAdapter | null {
+  return useContext(AuthAdapterContext);
+}

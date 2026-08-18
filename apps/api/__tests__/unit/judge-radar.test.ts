@@ -6,6 +6,7 @@
  * deriveCharacteristicLabels, and the insufficient-data gate in getJudgeDetail.
  */
 import { JUDGE_THRESHOLDS } from "@repo/api/src/constants";
+import { clamp } from "@repo/api/src/utils/math";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", async () => {
@@ -14,7 +15,6 @@ vi.mock("@repo/database", async () => {
 });
 
 import {
-  clamp,
   computeBimodalityCoefficient,
   computeCertaintyFraction,
   computeExcessKurtosis,
@@ -23,24 +23,6 @@ import {
   computeStdDev,
   deriveCharacteristicLabels,
 } from "@/app/judges-analytics/service";
-
-// ---------------------------------------------------------------------------
-// clamp
-// ---------------------------------------------------------------------------
-
-describe("clamp", () => {
-  it("clamps above max to max", () => {
-    expect(clamp(1.5, 0, 1)).toBe(1);
-  });
-
-  it("clamps below min to min", () => {
-    expect(clamp(-0.5, 0, 1)).toBe(0);
-  });
-
-  it("returns value when within range", () => {
-    expect(clamp(0.5, 0, 1)).toBe(0.5);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // computeMean

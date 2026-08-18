@@ -4,6 +4,13 @@ import { cva, type VariantProps } from "class-variance-authority";
 
 import { cn } from "@closedloop-ai/design-system/lib/utils";
 
+// The focus treatment every chip-shaped control shares. Exported because a few
+// hand-rolled pills outside this component need to match it exactly (the
+// Insights "No comparison" delta chip is one), and a focus ring copied by hand
+// drifts the first time this one changes. Import it rather than retyping it.
+const CHIP_FOCUS_RING_CLASS =
+  "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+
 const chipVariants = cva(
   "inline-flex max-w-full items-center justify-center gap-1 rounded-full border font-medium whitespace-nowrap shrink-0 transition-[color,box-shadow,background-color] overflow-hidden [&>svg]:shrink-0 [&>svg]:pointer-events-none",
   {
@@ -29,7 +36,7 @@ const chipVariants = cva(
         lg: "h-7 px-3 text-sm [&>svg]:size-4",
       },
       interactive: {
-        true: "focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none [a&]:hover:bg-muted [button&]:hover:bg-muted",
+        true: `${CHIP_FOCUS_RING_CLASS} [a&]:hover:bg-muted [button&]:hover:bg-muted`,
         false: "",
       },
     },
@@ -63,4 +70,4 @@ function Chip({
   );
 }
 
-export { Chip, chipVariants };
+export { Chip, chipVariants, CHIP_FOCUS_RING_CLASS };

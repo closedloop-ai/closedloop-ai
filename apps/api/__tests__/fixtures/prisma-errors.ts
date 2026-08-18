@@ -1,6 +1,29 @@
 import { LOOP_ACTIVE_INDEX_NAME } from "@/app/loops/loop-constants";
 
 /**
+ * Synthesize a Prisma known-request error for any code.
+ *
+ * `getPrismaErrorCode` (`lib/db-utils.ts`) reads `.code` off the caught value,
+ * so that field is what every consumer actually branches on — but `.name` is
+ * set too, because a test that only ever sees an anonymous `Error` cannot catch
+ * a consumer that starts narrowing on the real error class.
+ *
+ * This is the single constructor for the shape: `makeP2002Error` below and the
+ * write-semantics delegate double both route through it, so a future change to
+ * how Prisma surfaces errors lands in one place instead of drifting between
+ * fixtures.
+ */
+export function makePrismaKnownRequestError(
+  code: string,
+  message: string,
+  meta?: Record<string, unknown>
+): Error & { code: string; meta?: Record<string, unknown> } {
+  const err = Object.assign(new Error(message), { code });
+  err.name = "PrismaClientKnownRequestError";
+  return meta === undefined ? err : Object.assign(err, { meta });
+}
+
+/**
  * Synthesize a Prisma `P2002` error.
  *
  * - `target` defaults to the loops active-index name (string).
@@ -22,9 +45,10 @@ export function makeP2002Error(options?: {
     options === undefined || options.target === undefined
       ? LOOP_ACTIVE_INDEX_NAME
       : options.target;
-  const err = Object.assign(new Error("Unique constraint failed"), {
-    code: "P2002" as const,
-  });
+  const err = makePrismaKnownRequestError(
+    "P2002",
+    "Unique constraint failed"
+  ) as Error & { code: "P2002" };
   const meta: Record<string, unknown> = { ...options?.meta };
   if (target !== undefined) {
     // null is set explicitly (pg-adapter shape); non-null values set normally.

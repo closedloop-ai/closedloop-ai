@@ -13,7 +13,7 @@ import {
   createRelayTelemetryTransport,
   type TelemetrySessionContext,
   type TelemetrySocketLike,
-} from "../src/main/relay-telemetry-transport.js";
+} from "../src/main/telemetry/relay-telemetry-transport.js";
 
 const CONTEXT: TelemetrySessionContext = {
   appInstallationId: "install_abc",
@@ -387,7 +387,9 @@ test("stop() drains an in-flight export before disconnecting", async () => {
 
   // stop() must wait on the in-flight export, not disconnect immediately.
   let stopResolved = false;
-  const stopPromise = transport.stop().then(() => {
+  // `stop()` is declared `void | Promise<void>` on the transport seam so a
+  // synchronous stub can satisfy it; normalize before awaiting the drain.
+  const stopPromise = Promise.resolve(transport.stop()).then(() => {
     stopResolved = true;
   });
   await tick();
@@ -400,6 +402,136 @@ test("stop() drains an in-flight export before disconnecting", async () => {
   await stopPromise;
   assert.equal(stopResolved, true);
   assert.equal(socket.disconnectCount, 1);
+});
+
+test("flush() ships a crash export queued before the first relay session", async () => {
+  const { transport, socket } = makeHarness();
+  transport.start(CONTEXT);
+
+  // Crash before the relay socket ever connected: the export parks in the
+  // warm-up queue and its export() chain has already settled false, so nothing
+  // is left in flight for a drain to find.
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Logs, body(16)),
+    false
+  );
+  assert.equal(socket.exportCount, 0);
+  assert.equal(transport.getDiagnostics().warmUpQueueDepth, 1);
+
+  socket.deferExportAck = true;
+  let flushed = false;
+  const flushing = transport.flush().then(() => {
+    flushed = true;
+  });
+  await tick();
+  assert.equal(flushed, false);
+
+  // The relay comes up inside the flush window. No timer is ever fired here, so
+  // flush can only resolve by actually draining the queued export.
+  socket.triggerConnect();
+  await tick();
+  assert.equal(socket.exportCount, 1);
+  // Handed to the socket is not left the process: the ack is still outstanding,
+  // so the drain must still be waiting on that send.
+  assert.equal(flushed, false);
+
+  socket.resolvePendingExports(ACCEPTED_EXPORT);
+  await flushing;
+
+  assert.equal(flushed, true);
+  assert.equal(socket.exportPayloads()[0]?.signal, KeylessTelemetrySignal.Logs);
+  assert.equal(transport.getDiagnostics().sent, 1);
+  transport.stop();
+});
+
+test("flush() ships a crash export queued while the socket is reconnecting", async () => {
+  const { transport, socket } = makeHarness();
+  transport.start(CONTEXT);
+  socket.triggerConnect();
+  await tick();
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Traces, body(8)),
+    true
+  );
+  assert.equal(socket.exportCount, 1);
+
+  // The connection drops, taking the session with it; the crash export parks.
+  socket.triggerDisconnect();
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Logs, body(16)),
+    false
+  );
+  assert.equal(socket.exportCount, 1);
+
+  let flushed = false;
+  const flushing = transport.flush().then(() => {
+    flushed = true;
+  });
+  await tick();
+  assert.equal(flushed, false);
+
+  socket.triggerConnect();
+  await flushing;
+
+  assert.equal(socket.exportCount, 2);
+  assert.equal(socket.exportPayloads()[1]?.signal, KeylessTelemetrySignal.Logs);
+  transport.stop();
+});
+
+test("flush() re-handshakes a connected socket whose session was refused", async () => {
+  const socket = new FakeTelemetrySocket();
+  socket.handshakeAck = {
+    accepted: false,
+    reason: KeylessTelemetryRejectionReason.AtCapacity,
+  };
+  const { transport } = makeHarness(socket);
+  transport.start(CONTEXT);
+  socket.triggerConnect();
+  await tick();
+
+  // Connected but sessionless, so no `connect` event will ever run a handshake
+  // again — the drain has to ask for the session itself.
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Logs, body(16)),
+    false
+  );
+  assert.equal(socket.exportCount, 0);
+
+  socket.handshakeAck = ACCEPTED_HANDSHAKE;
+  await transport.flush();
+
+  assert.equal(socket.exportCount, 1);
+  assert.equal(socket.exportPayloads()[0]?.signal, KeylessTelemetrySignal.Logs);
+  transport.stop();
+});
+
+test("flush() stays bounded when the relay never becomes available", async () => {
+  const { transport, socket, timers } = makeHarness();
+  transport.start(CONTEXT);
+  assert.equal(
+    await transport.export(KeylessTelemetrySignal.Logs, body(16)),
+    false
+  );
+
+  let flushed = false;
+  const flushing = transport.flush().then(() => {
+    flushed = true;
+  });
+  await tick();
+  assert.equal(flushed, false);
+
+  // The relay never comes up: the drain deadline is what releases the crash
+  // handler, and the export stays queued for a later session rather than being
+  // dropped.
+  for (const fire of [...timers]) {
+    fire();
+  }
+  await flushing;
+
+  assert.equal(flushed, true);
+  assert.equal(socket.exportCount, 0);
+  assert.equal(transport.getDiagnostics().warmUpQueueDepth, 1);
+  transport.stop();
 });
 
 test("disabled origin keeps the transport inert", async () => {

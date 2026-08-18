@@ -12,7 +12,8 @@ export const PUT = withAnyAuth<
 >(async ({ user }) => {
   try {
     const status = await onboardingService.dismissChecklist(
-      user.organizationId
+      user.organizationId,
+      user.id
     );
 
     return successResponse(status);

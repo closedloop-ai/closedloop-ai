@@ -1,18 +1,29 @@
 "use client";
 
 import type { KpiStat } from "@repo/api/src/types/insights";
+import { useMetricDeltaTreatment } from "@repo/app/shared/feature-flags/use-metric-delta-treatment";
 import { Button } from "@repo/design-system/components/ui/button";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
+import {
+  DELTA_SENTIMENT_TEXT_CLASS,
+  deltaSentiment,
+  deltaVerdictCaption,
+  isComparableDelta,
+  type MetricDeltaTreatment,
+  type MetricPolarity,
+} from "@repo/design-system/components/ui/primitives/metric-polarity";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   GripVerticalIcon,
+  MinusIcon,
   PencilIcon,
   PinIcon,
   Trash2Icon,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { deltaIsPositive, formatDelta, formatKpiValue } from "../lib/format";
+import { formatDelta, formatKpiTileValue } from "../lib/format";
+import { kpiNoComparisonReason } from "../lib/kpi-no-comparison-copy";
 import { EmptyTile } from "./empty-tile";
 import { InfoTip } from "./info-tip";
 import { KpiDeltaPlaceholder } from "./kpi-delta-placeholder";
@@ -28,6 +39,7 @@ export function KpiMetricTile({
   tileId,
   title,
   kpi,
+  polarity,
   unitLabel,
   pinned,
   onTogglePin,
@@ -40,6 +52,12 @@ export function KpiMetricTile({
   tileId: string;
   title: string;
   kpi: KpiStat | undefined;
+  /**
+   * Which direction is good for this metric, from the tile descriptor's
+   * required `polarity` (ISS-4633). Required here too — the trend chip cannot
+   * colour a delta honestly without it.
+   */
+  polarity: MetricPolarity;
   unitLabel?: ReactNode;
   pinned: boolean;
   onTogglePin?: (id: string) => void;
@@ -49,6 +67,9 @@ export function KpiMetricTile({
   showResizeControls?: boolean;
   bodyOverride?: ReactNode;
 }) {
+  // ISS-5842, default OFF (ISS-4779): the tile's delta family flips together
+  // with the `MetricCard` chip family, so one product never shows both.
+  const deltaTreatment = useMetricDeltaTreatment();
   let body: ReactNode = <EmptyTile />;
   if (bodyOverride) {
     body = (
@@ -60,9 +81,19 @@ export function KpiMetricTile({
         className="h-full"
         info={kpi.sub ? { what: kpi.sub } : undefined}
         label={kpi.label || title}
-        trend={<TrendBadge deltaPct={kpi.deltaPct} />}
+        trend={
+          <TrendBadge
+            deltaPct={kpi.deltaPct}
+            // ISS-4995: same producer-declared basis the dashboard row reads, so
+            // the two KPI surfaces cannot tell one reader two different stories
+            // about why the same metric has no comparison.
+            noComparisonReason={kpiNoComparisonReason(kpi.deltaBasis)}
+            polarity={polarity}
+            treatment={deltaTreatment}
+          />
+        }
         unitLabel={unitLabel}
-        value={formatKpiValue(kpi.value, kpi.format)}
+        value={formatKpiTileValue(kpi.value, kpi.format)}
       />
     );
   }
@@ -70,7 +101,9 @@ export function KpiMetricTile({
   return (
     <div className="relative h-full">
       {body}
-      <div className="absolute top-2 right-2 z-[10000] flex items-center gap-0.5 rounded-md border bg-background/95 p-0.5 opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      {/* Touch pointers have no hover to reveal the overlay, so keep it visible
+          via `touch:opacity-100`; the mouse hover reveal is unchanged. */}
+      <div className="absolute top-2 right-2 z-[10000] flex items-center gap-0.5 rounded-md border bg-background/95 p-0.5 opacity-0 touch:opacity-100 shadow-sm transition-opacity focus-within:opacity-100 group-hover:opacity-100">
         {showDragHandle ? (
           <GripVerticalIcon className="insights-drag-handle size-4 cursor-move text-muted-foreground" />
         ) : null}
@@ -126,27 +159,74 @@ export function KpiMetricTile({
   );
 }
 
-function TrendBadge({ deltaPct }: { deltaPct: number | null }) {
+function TrendBadge({
+  deltaPct,
+  polarity,
+  noComparisonReason,
+  treatment,
+}: {
+  deltaPct: number | null;
+  polarity: MetricPolarity;
+  /** The ISS-5842 delta treatment this surface opted into (default-off gated). */
+  treatment: MetricDeltaTreatment;
+  /**
+   * Why this metric has no comparison, when the producer knows (ISS-4995).
+   * Undefined keeps the placeholder's reason-agnostic default.
+   */
+  noComparisonReason?: string;
+}) {
   const delta = formatDelta(deltaPct);
-  if (!delta) {
-    // Render a dash placeholder instead of hiding the slot so the chip layout
-    // stays stable between ranges, and explain the absence via tooltip + a
-    // screen-reader-only label (rather than silently dropping the field).
-    return <KpiDeltaPlaceholder />;
+  // A non-finite deltaPct (NaN / ±Infinity — e.g. a percent-change over a zero
+  // prior base) is "no comparison", not a real movement: without this guard
+  // `NaN > 0` is false, so a lower-is-better tile would render a bogus down-arrow
+  // + "NaN%" + green "better" (shafty023 review on #4148). Fall to the
+  // no-comparison placeholder instead of grading a non-number.
+  if (deltaPct === null || !delta || !isComparableDelta(deltaPct)) {
+    // Render a placeholder instead of hiding the slot so the chip layout stays
+    // stable between ranges, and explain the absence via tooltip + a
+    // screen-reader-only label (rather than silently dropping the field). The
+    // tile's real delta is bare text + an arrow (no pill), so the absent state
+    // uses the matching bare treatment rather than out-designing the present one.
+    return <KpiDeltaPlaceholder reason={noComparisonReason} variant="bare" />;
   }
-  const positive = deltaIsPositive(deltaPct);
+  // The arrow reports the number's real direction; the colour reports whether
+  // that direction is good for THIS metric (ISS-4633) — a cost tile whose spend
+  // rose keeps its honest up-arrow. Whether a verdict word ALSO appears is the
+  // consumer's ISS-5842 treatment: `Legacy` (default) keeps it visible, because
+  // colour alone must not carry the good/bad reading (WCAG 2.2 SC 1.4.1);
+  // `UnifiedPill` drops it. `deltaVerdictCaption` owns that decision for both
+  // delta families so the tile and `MetricDeltaCaption` cannot drift.
+  //
+  // Layout: the verdict trails the number as a distinct muted token, matching
+  // the MetricCard caption's order. `flex-wrap` + `min-w-0` let it wrap under
+  // the figure at the narrowest 3-column breakpoint instead of clipping (the
+  // `↑ 38% worse` overflow), and are kept under both treatments because a capped
+  // figure (`>999%`) still needs the same freedom.
+  const sentiment = deltaSentiment(deltaPct, polarity);
+  const verdict = deltaVerdictCaption(sentiment, treatment);
   return (
     <span
-      className={`flex items-center gap-0.5 ${
-        positive ? "text-emerald-600" : "text-red-600"
-      }`}
+      className={`flex min-w-0 flex-wrap items-center gap-x-0.5 gap-y-0 ${DELTA_SENTIMENT_TEXT_CLASS[sentiment]}`}
+      data-testid="kpi-trend-chip"
     >
-      {positive ? (
-        <ArrowUpIcon className="size-3" />
-      ) : (
-        <ArrowDownIcon className="size-3" />
-      )}
-      {delta}
+      <span className="inline-flex items-center gap-0.5">
+        <TrendDirectionIcon deltaPct={deltaPct} />
+        <span>{delta}</span>
+      </span>
+      {verdict ? (
+        <span className="font-normal text-muted-foreground">{verdict}</span>
+      ) : null}
     </span>
   );
+}
+
+/** The honest direction mark: up, down, or steady for a flat 0%. */
+function TrendDirectionIcon({ deltaPct }: { deltaPct: number }) {
+  if (deltaPct === 0) {
+    return <MinusIcon className="size-3" />;
+  }
+  if (deltaPct > 0) {
+    return <ArrowUpIcon className="size-3" />;
+  }
+  return <ArrowDownIcon className="size-3" />;
 }

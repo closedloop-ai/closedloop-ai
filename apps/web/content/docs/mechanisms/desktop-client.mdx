@@ -96,7 +96,7 @@ Everything wires together in `src/main/app.ts` — the `DesktopApplication` clas
 
 ## Auto-update
 
-Packaged builds use `electron-updater` against the Desktop-specific `closedloop-ai/symphony-alpha` feed:
+Packaged builds use `electron-updater` against the ClosedLoop update service at `https://api.closedloop.ai/desktop/updates`, configured as a `generic` provider. The service authenticates to GitHub server-side and serves only Desktop updater metadata and assets, so the client never needs repository access:
 
 - `autoDownload = true`, `autoInstallOnAppQuit = true`
 - Initial check on boot, then every 5 minutes
@@ -108,7 +108,12 @@ Dev builds (`!app.isPackaged`) compare `origin/main` commit hashes via `git fetc
 
 ## Packaging
 
-`electron-builder.yml` targets macOS only — universal DMG and zip, hardened runtime, notarized, signed, and updater metadata. The manually invoked release workflow publishes versioned `desktop-v<version>` releases and promotes the `desktop-latest` updater feed in `closedloop-ai/symphony-alpha`. Output goes to `dist-dmg/`.
+`electron-builder.yml` targets macOS only — universal DMG and zip, hardened runtime, notarized, signed, and updater metadata. The manually invoked release workflow publishes versioned `desktop-v<version>` releases, then promotes that same build onto two separate rolling `desktop-latest` releases:
+
+- One in the private build repository, carrying the updater metadata (`latest-mac.yml`) and the mac zip assets that the update service reads on the client's behalf.
+- One in the public `closedloop-ai/closedloop-ai` repository, carrying a single fixed-name universal DMG — the stable, account-free URL behind the public download link.
+
+Output goes to `dist-dmg/`.
 
 ## Breaking change policy
 

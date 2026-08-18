@@ -19,6 +19,17 @@ import { GATEWAY_PATH_PREFIX, GATEWAY_RELAY_PATH_PREFIX } from "./constants";
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 
+/**
+ * Canonical gateway-guard rejection reasons. Exported so the proxy composition
+ * test asserts against the SAME strings production emits — a local copy would
+ * let the suite stay green if these reasons drifted.
+ */
+export const GATEWAY_LOCALHOST_ONLY_ERROR =
+  "Gateway API is only available on localhost";
+export const GATEWAY_UNAUTHORIZED_ERROR = "Unauthorized";
+export const GATEWAY_COMPUTE_TARGET_REQUIRED_ERROR =
+  "Gateway API requires a registered compute target";
+
 function isGatewayLocalPath(pathname: string): boolean {
   return pathname.startsWith(GATEWAY_PATH_PREFIX);
 }
@@ -61,7 +72,7 @@ async function fetchHasComputeTarget(
  * read/write the local filesystem. They must never be accessible in deployed
  * environments — gatewayGuard only blocks the UI, not the HTTP layer.
  *
- * See CLAUDE.md "Engineer Feature — Architectural Exception" for full context.
+ * See AGENTS.md "Engineer Feature — Architectural Exception" for full context.
  */
 export async function gatewayGuard(
   auth: ClerkMiddlewareAuth,
@@ -83,7 +94,7 @@ export async function gatewayGuard(
   // /api/gateway/* routes spawn local CLI processes — always localhost-only.
   if (isLocal) {
     return NextResponse.json(
-      { error: "Gateway API is only available on localhost" },
+      { error: GATEWAY_LOCALHOST_ONLY_ERROR },
       { status: 403 }
     );
   }
@@ -91,7 +102,10 @@ export async function gatewayGuard(
   // /api/gateway-relay/* routes are cloud-safe but require a compute target.
   const authState = await auth();
   if (!authState.userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json(
+      { error: GATEWAY_UNAUTHORIZED_ERROR },
+      { status: 401 }
+    );
   }
 
   const token = await authState.getToken();
@@ -105,7 +119,7 @@ export async function gatewayGuard(
   }
 
   return NextResponse.json(
-    { error: "Gateway API requires a registered compute target" },
+    { error: GATEWAY_COMPUTE_TARGET_REQUIRED_ERROR },
     { status: 403 }
   );
 }

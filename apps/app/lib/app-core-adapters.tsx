@@ -37,6 +37,12 @@ const clerkAuthAdapter: AuthAdapter = {
 
 const posthogFeatureFlagAdapter: FeatureFlagAdapter = {
   useFeatureFlagEnabled: (key: string) => useFeatureFlag(key)?.enabled === true,
+  // PostHog resolves asynchronously, and `useFeatureFlag` returns `undefined`
+  // until it does — indistinguishable from a resolved `false` at the
+  // `useFeatureFlagEnabled` boundary. Surfaces whose DATA REQUEST depends on the
+  // flag need that difference (FEA-1626): without it an enabled user fetches on
+  // the closed default and refetches a beat later.
+  useFeatureFlagResolved: (key: string) => useFeatureFlag(key) !== undefined,
 };
 
 export function AppCoreAdapterProvider({

@@ -28,18 +28,37 @@ import {
 
 const HOME = "/fake/home";
 
-/** Build detection deps with an injected env + a Set of "existing" file paths. */
+/** Fixture sentinel for "the Keychain item belongs to the DEFAULT profile". */
+const DEFAULT_PROFILE = "<default>";
+
+/**
+ * Build detection deps with an injected env + a Set of "existing" file paths.
+ * `keychainProfiles` is only wired when provided, so the default fixture shape
+ * still exercises the pre-ISS-4869 caller contract (dep absent entirely).
+ *
+ * The dep is keyed by PROFILE, not service name: the engine passes `null` for
+ * the default profile and the relocated config dir otherwise, and the real Node
+ * adapter composes the (hash-suffixed) service name from that. Fixtures name
+ * profiles with DEFAULT_PROFILE or the relocated dir.
+ */
 function makeDeps(opts: {
   env?: Record<string, string | undefined>;
   existingFiles?: string[];
   homeDir?: string;
+  keychainProfiles?: string[];
 }): BillingModeDetectionDeps {
   const set = new Set(opts.existingFiles ?? []);
-  return {
+  const deps: BillingModeDetectionDeps = {
     env: opts.env ?? {},
     fileExists: (p: string): boolean => set.has(p),
     homeDir: opts.homeDir ?? HOME,
   };
+  if (opts.keychainProfiles) {
+    const profiles = new Set(opts.keychainProfiles);
+    deps.hasKeychainCredential = (configDir: string | null): boolean =>
+      profiles.has(configDir ?? DEFAULT_PROFILE);
+  }
+  return deps;
 }
 
 const ANTHROPIC_CRED = join(HOME, ".claude", ".credentials.json");
@@ -73,6 +92,10 @@ test("ledger mapping pins the exact reviewed invariant", () => {
       codex_subscription: "subscription",
       cursor_pro: "subscription",
       copilot_seat: "subscription",
+      // ISS-5445: the stored `opencode` value means "an OpenCode session whose
+      // billing we could not determine" — it records the HARNESS, not a payment
+      // method — so it belongs in the unknown ledger. New sessions no longer
+      // receive it: `detectOpencodeBillingMode` classifies from the MODEL.
       opencode: "unknown",
       unknown: "unknown",
     };
@@ -103,6 +126,7 @@ const DETECTION_FIXTURES: Array<{
   harness: string;
   env?: Record<string, string | undefined>;
   existingFiles?: string[];
+  keychainProfiles?: string[];
   expected: BillingMode;
 }> = [
   {
@@ -115,6 +139,198 @@ const DETECTION_FIXTURES: Array<{
     name: "claude + OAuth credentials file → subscription_unknown",
     harness: "claude",
     existingFiles: [ANTHROPIC_CRED],
+    expected: "subscription_unknown",
+  },
+  // ── ISS-4869: macOS keeps the OAuth credential in the login Keychain ───────
+  {
+    name: "claude + macOS Keychain credential (no file, no env) → subscription_unknown",
+    harness: "claude",
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + Keychain probe wired but item absent → unknown",
+    harness: "claude",
+    keychainProfiles: [],
+    expected: "unknown",
+  },
+  {
+    name: "claude + Keychain holds some OTHER profile's item → unknown",
+    harness: "claude",
+    keychainProfiles: ["/some/other/profile"],
+    expected: "unknown",
+  },
+  {
+    name: "claude + API key wins over a Keychain credential",
+    harness: "claude",
+    env: { ANTHROPIC_API_KEY: "sk-ant-x" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "api",
+  },
+  {
+    name: "claude + CLAUDE_CODE_OAUTH_TOKEN → subscription_unknown (headless/CI token)",
+    harness: "claude",
+    env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-secret-should-never-surface" },
+    expected: "subscription_unknown",
+  },
+  // ── Provider / auth overrides outrank subscription credentials ─────────────
+  // Claude Code resolves provider + auth BEFORE subscription credentials, so a
+  // leftover OAuth token / credentials file / Keychain item on a Bedrock,
+  // Vertex, or gateway-authenticated machine must NOT hide separately-billed
+  // spend from the headline ledger.
+  {
+    name: "claude + CLAUDE_CODE_USE_BEDROCK → api (metered on AWS)",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+    expected: "api",
+  },
+  {
+    name: "claude + CLAUDE_CODE_USE_VERTEX → api (metered on GCP)",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_VERTEX: "true" },
+    expected: "api",
+  },
+  {
+    name: "claude + ANTHROPIC_AUTH_TOKEN → api (custom gateway auth)",
+    harness: "claude",
+    env: { ANTHROPIC_AUTH_TOKEN: "gateway-secret-should-never-surface" },
+    expected: "api",
+  },
+  {
+    name: "claude + Bedrock override BEATS a leftover OAuth token",
+    harness: "claude",
+    env: {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_CODE_OAUTH_TOKEN: "stale-oauth-token",
+    },
+    expected: "api",
+  },
+  {
+    name: "claude + Bedrock override BEATS a leftover credentials file",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+    existingFiles: [ANTHROPIC_CRED],
+    expected: "api",
+  },
+  {
+    name: "claude + Bedrock override BEATS a leftover Keychain item",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "api",
+  },
+  {
+    name: "claude + ANTHROPIC_AUTH_TOKEN BEATS a leftover Keychain item",
+    harness: "claude",
+    env: { ANTHROPIC_AUTH_TOKEN: "gateway-token" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "api",
+  },
+  {
+    name: "claude + Vertex override BEATS a relocated-profile Keychain item",
+    harness: "claude",
+    env: {
+      CLAUDE_CODE_USE_VERTEX: "1",
+      CLAUDE_CONFIG_DIR: "/relocated/claude",
+    },
+    keychainProfiles: ["/relocated/claude"],
+    expected: "api",
+  },
+  {
+    name: "claude + CLAUDE_CODE_USE_BEDROCK=0 is OFF, so the subscription still wins",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "0" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + CLAUDE_CODE_USE_BEDROCK=false is OFF, so the subscription still wins",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "false" },
+    existingFiles: [ANTHROPIC_CRED],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + empty/whitespace override flag is not presence",
+    harness: "claude",
+    env: { CLAUDE_CODE_USE_BEDROCK: "  ", ANTHROPIC_AUTH_TOKEN: "  " },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + empty CLAUDE_CODE_OAUTH_TOKEN is not presence",
+    harness: "claude",
+    env: { CLAUDE_CODE_OAUTH_TOKEN: "  " },
+    expected: "unknown",
+  },
+  {
+    name: "claude + CLAUDE_CONFIG_DIR override → checks relocated credentials file",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    existingFiles: ["/relocated/claude/.credentials.json"],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + CLAUDE_CONFIG_DIR set but only default file present → unknown (override respected)",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    existingFiles: [ANTHROPIC_CRED],
+    expected: "unknown",
+  },
+  {
+    name: "claude + CLAUDE_CONFIG_DIR set → default-profile Keychain item is NOT claimed",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "unknown",
+  },
+  {
+    name: "claude + CLAUDE_SECURESTORAGE_CONFIG_DIR set → default-profile Keychain item is NOT claimed",
+    harness: "claude",
+    env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/relocated/secure" },
+    keychainProfiles: [DEFAULT_PROFILE],
+    expected: "unknown",
+  },
+  // A relocated profile still uses the Keychain, under its own hash-suffixed
+  // service. Before ISS-4869's review pass the probe was skipped outright
+  // whenever a config-dir override was set, leaving these sessions "unknown".
+  {
+    name: "claude + relocated CLAUDE_CONFIG_DIR, Keychain-only → subscription_unknown",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    keychainProfiles: ["/relocated/claude"],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + relocated CLAUDE_SECURESTORAGE_CONFIG_DIR, Keychain-only → subscription_unknown",
+    harness: "claude",
+    env: { CLAUDE_SECURESTORAGE_CONFIG_DIR: "/relocated/secure" },
+    keychainProfiles: ["/relocated/secure"],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + securestorage dir wins over config dir when both are set",
+    harness: "claude",
+    env: {
+      CLAUDE_CONFIG_DIR: "/relocated/claude",
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/relocated/secure",
+    },
+    keychainProfiles: ["/relocated/secure"],
+    expected: "subscription_unknown",
+  },
+  {
+    name: "claude + relocated profile does not claim a DIFFERENT relocated profile's item",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    keychainProfiles: ["/relocated/elsewhere"],
+    expected: "unknown",
+  },
+  {
+    name: "claude + relocated config dir WITH its own credentials file → subscription_unknown",
+    harness: "claude",
+    env: { CLAUDE_CONFIG_DIR: "/relocated/claude" },
+    existingFiles: ["/relocated/claude/.credentials.json"],
+    keychainProfiles: [DEFAULT_PROFILE],
     expected: "subscription_unknown",
   },
   {
@@ -183,9 +399,14 @@ const DETECTION_FIXTURES: Array<{
     expected: "copilot_seat",
   },
   {
-    name: "opencode → opencode (BYOK, ledger unknown)",
+    // ISS-5445 — OpenCode is bring-your-own-key, so the harness alone proves
+    // nothing about payment. With no model evidence the honest answer is
+    // "unknown"; it must NOT fall back to the old harness-shaped constant.
+    // The model-driven branches are covered in
+    // test/billing-mode-model-classification.test.ts.
+    name: "opencode + no model → unknown (no evidence, never a guess)",
     harness: "opencode",
-    expected: "opencode",
+    expected: "unknown",
   },
   {
     name: "unrecognized harness → unknown",
@@ -196,9 +417,79 @@ const DETECTION_FIXTURES: Array<{
 
 test("detection matches the expected mode across the fixture matrix", () => {
   for (const fx of DETECTION_FIXTURES) {
-    const deps = makeDeps({ env: fx.env, existingFiles: fx.existingFiles });
+    const deps = makeDeps({
+      env: fx.env,
+      existingFiles: fx.existingFiles,
+      keychainProfiles: fx.keychainProfiles,
+    });
     assert.equal(detect(fx.harness, deps), fx.expected, fx.name);
   }
+});
+
+test("ISS-4869: the Keychain dep is additive — omitting it preserves the old contract", () => {
+  // Old callers construct deps WITHOUT hasKeychainCredential. That must still
+  // typecheck and behave exactly as before: file present → subscription,
+  // nothing present → unknown. Asserted against the real detection entry point.
+  const withoutDep: BillingModeDetectionDeps = {
+    env: {},
+    fileExists: (p: string): boolean => p === ANTHROPIC_CRED,
+    homeDir: HOME,
+  };
+  assert.equal(detect("claude", withoutDep), "subscription_unknown");
+
+  const bare: BillingModeDetectionDeps = {
+    env: {},
+    fileExists: (): boolean => false,
+    homeDir: HOME,
+  };
+  assert.equal(detect("claude", bare), "unknown");
+  assert.equal(bare.hasKeychainCredential, undefined);
+});
+
+test("ISS-4869: a non-boolean-true Keychain result is treated as no signal, not as a subscription", () => {
+  // A probe that throws, or returns a truthy non-`true` value, must never be
+  // read as "subscription covered" — that would move real spend off the
+  // headline ledger on a machine we could not actually verify.
+  const truthyNonBoolean: BillingModeDetectionDeps = {
+    env: {},
+    fileExists: (): boolean => false,
+    homeDir: HOME,
+    hasKeychainCredential: (): boolean => "yes" as unknown as boolean,
+  };
+  assert.equal(detect("claude", truthyNonBoolean), "unknown");
+});
+
+test("ISS-4869: a Keychain-detected subscription lands in the subscription ledger, off the headline", () => {
+  // The whole point of the fix: these sessions must stop inflating headline
+  // "real spend". Drive the production detection path, then assert the ledger.
+  const mode = detect(
+    "claude",
+    makeDeps({ keychainProfiles: [DEFAULT_PROFILE] })
+  );
+  assert.equal(billingLedger(mode), "subscription");
+  const totals = emptyLedgerTotals();
+  addLedgerCost(totals, mode, 17_915.67);
+  assert.equal(headlineCost(totals), 0);
+  assert.equal(totals.subscription, 17_915.67);
+});
+
+test("a provider override keeps separately-billed spend ON the headline ledger", () => {
+  // The mirror of the Keychain test above. A Bedrock machine that also carries a
+  // stale Keychain credential must still report real spend: classifying it as
+  // subscription would silently zero out a live AWS bill.
+  const mode = detect(
+    "claude",
+    makeDeps({
+      env: { CLAUDE_CODE_USE_BEDROCK: "1" },
+      keychainProfiles: [DEFAULT_PROFILE],
+    })
+  );
+  assert.equal(mode, "api");
+  assert.equal(billingLedger(mode), "metered");
+  const totals = emptyLedgerTotals();
+  addLedgerCost(totals, mode, 4213.5);
+  assert.equal(headlineCost(totals), 4213.5);
+  assert.equal(totals.subscription, 0);
 });
 
 test("detection never surfaces a secret value (existence-only)", () => {
@@ -273,7 +564,8 @@ test("addLedgerCost accumulates across many rows and returns the same object", (
   addLedgerCost(totals, "api", 0.25);
   addLedgerCost(totals, "pro", 10);
   addLedgerCost(totals, "opencode", 0.5);
-  assert.deepEqual(totals, { metered: 1.25, subscription: 10, unknown: 0.5 });
+  addLedgerCost(totals, "unknown", 0.5);
+  assert.deepEqual(totals, { metered: 1.25, subscription: 10, unknown: 1 });
 });
 
 test("headlineCost = metered + unknown and EXCLUDES subscription (the safety invariant)", () => {

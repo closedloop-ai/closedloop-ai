@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { OrganizationCommandPublicKey } from "../src/main/authorized-public-keys-client.js";
+import type { OrganizationCommandPublicKey } from "../src/main/command-signing/authorized-public-keys-client.js";
 import {
   type PendingCommandKeyNotification,
   type PendingCommandKeyNotificationOptions,
   PendingCommandKeyNotifier,
-} from "../src/main/pending-command-key-notifier.js";
+} from "../src/main/command-signing/pending-command-key-notifier.js";
 
 test("PendingCommandKeyNotifier dedupes notified fingerprints per session", async () => {
   const notifications: FakeNotification[] = [];

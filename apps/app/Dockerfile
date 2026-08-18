@@ -15,7 +15,7 @@
 # `getApiBaseUrl()` (e2e/helpers/api-url.ts) already agrees with.
 #
 # Workspace closure derived mechanically with `turbo prune app --docker`.
-# Validate BOTH `--target builder` and the full image (CLAUDE.md mandate).
+# Validate BOTH `--target builder` and the full image (AGENTS.md mandate).
 # ---------------------------------------------------------------------------
 
 FROM node:24-slim AS base

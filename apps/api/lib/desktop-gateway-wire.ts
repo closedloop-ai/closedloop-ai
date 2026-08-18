@@ -5,6 +5,14 @@ import {
   BranchViewLocalOperationId,
 } from "@repo/api/src/types/branch-view-local";
 import type { JsonValue } from "@repo/api/src/types/common";
+import {
+  HEALTH_CHECK_REPAIR_OPERATION_ID,
+  HEALTH_CHECK_REPAIR_PATH,
+} from "@repo/api/src/types/compute-target";
+import {
+  MEMBER_PACK_INSTALL_OPERATION_ID,
+  MEMBER_PACK_INSTALL_PATH,
+} from "@repo/api/src/types/member-pack-install";
 import type { Socket } from "socket.io";
 import { z } from "zod";
 import {
@@ -278,6 +286,7 @@ export const EXACT_OPERATION_IDS: Record<string, string> = {
   "/api/gateway/ticket-chat": "ticket_chat",
   "/api/gateway/run-viewer-chat": "run_viewer_chat",
   "/api/gateway/health-check": "health_check",
+  [HEALTH_CHECK_REPAIR_PATH]: HEALTH_CHECK_REPAIR_OPERATION_ID,
   "/api/gateway/version": "health_check",
   "/api/gateway/repos": "repos_config",
   "/api/gateway/learnings": "learnings",
@@ -289,6 +298,7 @@ export const EXACT_OPERATION_IDS: Record<string, string> = {
   [BranchViewLocalGatewayPath.Diff]: BranchViewLocalOperationId.Read,
   [BranchViewLocalGatewayPath.CommitPush]:
     BranchViewLocalOperationId.CommitPush,
+  [MEMBER_PACK_INSTALL_PATH]: MEMBER_PACK_INSTALL_OPERATION_ID,
 };
 
 /**

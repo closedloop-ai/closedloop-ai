@@ -4,6 +4,7 @@ import {
   MIGRATION_SERIALIZE_LOCK_KEY,
   type MigrationLockClient,
   PRISMA_MIGRATE_ADVISORY_LOCK_KEY,
+  SerializeLockContendedError,
   STATEMENT_TIMEOUT_SQLSTATE,
   withMigrationSerializeLock,
 } from "../scripts/migration-lock";
@@ -235,5 +236,80 @@ describe("withMigrationSerializeLock — fn throws", () => {
 
     expect(calls.some((c) => c.includes("pg_advisory_unlock("))).toBe(true);
     expect(end).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fail-closed path (FEA-3071 Slice 2 migrator walk: onContended: "skip")
+// ---------------------------------------------------------------------------
+
+describe("withMigrationSerializeLock — fail-closed (onContended: skip)", () => {
+  it("statement_timeout cancel → throws SerializeLockContendedError, does NOT run fn unguarded, closes", async () => {
+    const { client, calls, end } = makeMockClient({
+      acquireError: timeoutError(),
+    });
+    const { logger, logs } = makeLogger();
+    const fn = vi.fn().mockResolvedValue("migrated");
+
+    await expect(
+      withMigrationSerializeLock(
+        {
+          databaseUrl: DATABASE_URL,
+          createClient: () => client,
+          logger,
+          onContended: "skip",
+        },
+        fn
+      )
+    ).rejects.toBeInstanceOf(SerializeLockContendedError);
+
+    // The whole point: the migrate NEVER ran unguarded.
+    expect(fn).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.includes("pg_advisory_unlock("))).toBe(false);
+    expect(end).toHaveBeenCalledTimes(1);
+    expect(logs.some((l) => l.includes("fail-closed"))).toBe(true);
+  });
+
+  it("connect() throws → throws SerializeLockContendedError without running fn", async () => {
+    const { client } = makeMockClient({
+      connectError: Object.assign(new Error("ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+      }),
+    });
+    const { logger } = makeLogger();
+    const fn = vi.fn().mockResolvedValue("migrated");
+
+    await expect(
+      withMigrationSerializeLock(
+        {
+          databaseUrl: DATABASE_URL,
+          createClient: () => client,
+          logger,
+          onContended: "skip",
+        },
+        fn
+      )
+    ).rejects.toBeInstanceOf(SerializeLockContendedError);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("still runs fn normally when the lock IS acquired (skip only affects the failure path)", async () => {
+    const { client, calls } = makeMockClient();
+    const { logger } = makeLogger();
+    const fn = vi.fn().mockResolvedValue("migrated");
+
+    const result = await withMigrationSerializeLock(
+      {
+        databaseUrl: DATABASE_URL,
+        createClient: () => client,
+        logger,
+        onContended: "skip",
+      },
+      fn
+    );
+
+    expect(result).toBe("migrated");
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(calls.some((c) => c.includes("pg_advisory_unlock("))).toBe(true);
   });
 });

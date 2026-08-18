@@ -6,6 +6,7 @@ import {
   readSessionsPageIndex,
   useSessionsHistoryScroll,
   useSessionsPageReset,
+  useSessionsUrlPageIndex,
   writeSessionsPageParam,
 } from "../sessions-route-state";
 
@@ -50,6 +51,29 @@ describe("sessions route page state", () => {
     expect(readSessionsPageIndex(new URLSearchParams())).toBe(3);
   });
 
+  // FEA-3664: an absent `page` param means page 1. Post-mount the reactive
+  // snapshot is authoritative, so the browser URL must NOT be consulted —
+  // otherwise returning to page 1 sticks on the previous page.
+  it("resolves an absent page param to page 1 when the browser fallback is off, ignoring a stale browser URL", () => {
+    globalThis.history.replaceState(null, "", "/sessions?page=4");
+
+    expect(
+      readSessionsPageIndex(new URLSearchParams(), {
+        allowBrowserFallback: false,
+      })
+    ).toBe(0);
+  });
+
+  it("useSessionsUrlPageIndex resolves an absent page param to page 1 after mount, ignoring a stale browser URL (FEA-3664)", () => {
+    globalThis.history.replaceState(null, "", "/sessions?page=4");
+
+    const { result } = renderHook(() =>
+      useSessionsUrlPageIndex(new URLSearchParams())
+    );
+
+    expect(result.current).toBe(0);
+  });
+
   it("forces effective page 1 while reset search params are reconciling", () => {
     const { result, rerender } = renderHook(
       ({ urlPageIndex }) => useSessionsPageReset({ urlPageIndex }),
@@ -87,6 +111,45 @@ describe("sessions route page state", () => {
     rerender({ urlPageIndex: 5 });
     expect(result.current.effectivePageIndex).toBe(2);
 
+    rerender({ urlPageIndex: 2 });
+    expect(result.current.effectivePageIndex).toBe(2);
+    expect(result.current.pendingReset).toBe(false);
+  });
+
+  // FEA-3655: the Owner-filter pagination bug. A stale-page clamp seeds an
+  // override, then the user clicks Next/a page before the clamp's URL round-trip
+  // settles — the URL lands on a value OTHER than the pending target. The
+  // override must be dropped so the effective page follows the new navigation;
+  // previously it stayed pinned and every subsequent click was a no-op.
+  it("drops a page override when a newer navigation supersedes it", () => {
+    const { result, rerender } = renderHook(
+      ({ urlPageIndex }) => useSessionsPageReset({ urlPageIndex }),
+      { initialProps: { urlPageIndex: 5 } }
+    );
+
+    act(() => {
+      result.current.markPageOverride(1);
+    });
+    expect(result.current.effectivePageIndex).toBe(1);
+
+    // User navigates to page index 3 before the URL reaches the clamp target (1).
+    rerender({ urlPageIndex: 3 });
+    expect(result.current.effectivePageIndex).toBe(3);
+    expect(result.current.pendingReset).toBe(false);
+  });
+
+  it("drops a page reset when the user paginates before the reset settles", () => {
+    const { result, rerender } = renderHook(
+      ({ urlPageIndex }) => useSessionsPageReset({ urlPageIndex }),
+      { initialProps: { urlPageIndex: 5 } }
+    );
+
+    act(() => {
+      result.current.markPageReset();
+    });
+    expect(result.current.effectivePageIndex).toBe(0);
+
+    // User clicks to page index 2 before the URL reaches the reset target (0).
     rerender({ urlPageIndex: 2 });
     expect(result.current.effectivePageIndex).toBe(2);
     expect(result.current.pendingReset).toBe(false);

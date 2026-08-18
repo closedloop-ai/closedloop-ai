@@ -23,6 +23,11 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const {
+  extractTrayPaths,
+  makeSquareTray,
+} = require("./generate-icons-lib.cjs");
+
 let sharp;
 try {
   sharp = require("sharp");
@@ -44,17 +49,7 @@ const traySvg = fs.readFileSync(
   "utf8"
 );
 
-const trayPaths = traySvg.match(/<path[\s\S]*?\/>/g).join("\n    ");
-function makeSquareTray(size) {
-  const s = size / 121;
-  const tw = 112 * s;
-  const tx = (size - tw) / 2;
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-  <g transform="translate(${tx}, 0) scale(${s})">
-    ${trayPaths}
-  </g>
-</svg>`;
-}
+const trayPaths = extractTrayPaths(traySvg);
 
 async function main() {
   const resDir = path.join(desktopDir, "resources");
@@ -65,13 +60,13 @@ async function main() {
     .toFile(path.join(resDir, "icon-1024.png"));
   console.log("  icon-1024.png");
 
-  await sharp(Buffer.from(makeSquareTray(72)))
+  await sharp(Buffer.from(makeSquareTray(72, trayPaths)))
     .resize(18, 18)
     .png()
     .toFile(path.join(resDir, "trayIconTemplate.png"));
   console.log("  trayIconTemplate.png (18x18)");
 
-  await sharp(Buffer.from(makeSquareTray(144)))
+  await sharp(Buffer.from(makeSquareTray(144, trayPaths)))
     .resize(36, 36)
     .png()
     .toFile(path.join(resDir, "trayIconTemplate@2x.png"));

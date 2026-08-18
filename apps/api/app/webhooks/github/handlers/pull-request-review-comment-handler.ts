@@ -22,8 +22,13 @@ import {
   softDeleteGitHubCommentByRemoteId,
   upsertGitHubReviewCommentThread,
 } from "@/app/comments/github-projection";
+import type { GitHubWebhookObservationContext } from "@/lib/github/github-webhook-observation";
 import { githubAppWebhookFetchProvenance } from "@/lib/github-fetch-provenance";
 import { resolveGitHubCommentOwner } from "../comment-owner-resolver";
+import {
+  GitHubBranchActivityEventName,
+  persistGitHubBranchActivity,
+} from "./branch-activity-producer";
 import {
   type GitHubDirtyScopePublicationInput,
   publishGitHubDirtyScopes,
@@ -36,7 +41,9 @@ import {
 /**
  * Actions this handler processes. All other actions are ignored with an early return.
  */
-const HANDLED_ACTIONS = new Set(["created", "edited", "deleted"]);
+const HANDLED_ACTIONS = new Set<HandledPullRequestReviewCommentEvent["action"]>(
+  ["created", "edited", "deleted"]
+);
 
 /**
  * Union type for pull request review comment events we handle.
@@ -56,14 +63,15 @@ export type HandledPullRequestReviewCommentEvent =
  * - deleted: Soft-deletes the unified GitHub comment projection by githubCommentId
  */
 export async function handlePullRequestReviewComment(
-  event: HandledPullRequestReviewCommentEvent
+  event: HandledPullRequestReviewCommentEvent,
+  observationContext?: GitHubWebhookObservationContext
 ): Promise<Response> {
   const { action, comment, pull_request, repository } = event;
   const installationId = event.installation?.id;
 
   // Early exit for unhandled actions
   if (!HANDLED_ACTIONS.has(action)) {
-    log.info("[handlePullRequestReviewComment] Skipping unhandled action", {
+    log.debug("[handlePullRequestReviewComment] Skipping unhandled action", {
       action,
       commentId: comment.id,
       prNumber: pull_request.number,
@@ -87,13 +95,12 @@ export async function handlePullRequestReviewComment(
     );
   }
 
-  log.info(
+  log.debug(
     "[handlePullRequestReviewComment] Processing pull_request_review_comment event",
     {
       action,
       commentId: comment.id,
       prNumber: pull_request.number,
-      prTitle: pull_request.title,
       repositoryId: repository.id,
       installationId,
     }
@@ -130,78 +137,42 @@ export async function handlePullRequestReviewComment(
       return null;
     }
 
-    // Step 3: Handle comment action
-    switch (action) {
-      case "created": {
-        const wroteProjection = await handleCreatedComment(
-          tx,
-          existingPr,
-          comment,
-          pull_request,
-          ownerResolution.organizationId
-        );
-        return wroteProjection
-          ? buildReviewCommentDirtyScopePublication({
-              comment,
-              pullRequest: pull_request,
-              organizationId: ownerResolution.organizationId,
-              repositoryId: ownerResolution.repositoryRecordId,
-              repositoryFullName: repository.full_name,
-            })
-          : null;
-      }
-
-      case "edited": {
-        const wroteProjection = await handleEditedComment(
-          tx,
-          existingPr,
-          comment,
-          pull_request,
-          ownerResolution.organizationId
-        );
-        return wroteProjection
-          ? buildReviewCommentDirtyScopePublication({
-              comment,
-              pullRequest: pull_request,
-              organizationId: ownerResolution.organizationId,
-              repositoryId: ownerResolution.repositoryRecordId,
-              repositoryFullName: repository.full_name,
-            })
-          : null;
-      }
-
-      case "deleted": {
-        const wroteProjection = await handleDeletedComment(
-          tx,
-          existingPr,
-          comment,
-          pull_request,
-          ownerResolution.organizationId
-        );
-        return wroteProjection
-          ? buildReviewCommentDirtyScopePublication({
-              comment,
-              pullRequest: pull_request,
-              organizationId: ownerResolution.organizationId,
-              repositoryId: ownerResolution.repositoryRecordId,
-              repositoryFullName: repository.full_name,
-            })
-          : null;
-      }
-
-      default: {
-        log.warn("[handlePullRequestReviewComment] Unhandled action type", {
-          action: action as string,
-        });
-        return null;
-      }
+    if (!existingPr.isCurrentPullRequest) {
+      await persistReviewCommentActivity(
+        event,
+        existingPr,
+        ownerResolution.organizationId,
+        observationContext
+      );
+      return null;
     }
+
+    const wroteProjection = await dispatchReviewCommentAction(tx, event, {
+      existingPr,
+      organizationId: ownerResolution.organizationId,
+    });
+    if (!wroteProjection) {
+      return null;
+    }
+    await persistReviewCommentActivity(
+      event,
+      existingPr,
+      ownerResolution.organizationId,
+      observationContext
+    );
+    return buildReviewCommentDirtyScopePublication({
+      comment,
+      pullRequest: pull_request,
+      organizationId: ownerResolution.organizationId,
+      repositoryId: ownerResolution.repositoryRecordId,
+      repositoryFullName: repository.full_name,
+    });
   });
   if (publication) {
     await publishGitHubDirtyScopes(publication);
   }
 
-  log.info(
+  log.debug(
     "[handlePullRequestReviewComment] Successfully processed pull_request_review_comment event",
     {
       action,
@@ -279,7 +250,7 @@ async function handleCreatedComment(
     return false;
   }
 
-  log.info("[handlePullRequestReviewComment] Review comment created", {
+  log.debug("[handlePullRequestReviewComment] Review comment created", {
     commentId: comment.id,
     prNumber: pull_request.number,
     path: comment.path,
@@ -350,7 +321,7 @@ async function handleEditedComment(
     return false;
   }
 
-  log.info("[handlePullRequestReviewComment] Review comment edited", {
+  log.debug("[handlePullRequestReviewComment] Review comment edited", {
     commentId: comment.id,
     prNumber: pull_request.number,
   });
@@ -385,7 +356,7 @@ async function handleDeletedComment(
     );
     return false;
   }
-  log.info("[handlePullRequestReviewComment] Review comment deleted", {
+  log.debug("[handlePullRequestReviewComment] Review comment deleted", {
     commentId: comment.id,
     prNumber: pull_request.number,
   });
@@ -457,4 +428,62 @@ function buildReviewCommentDirtyScopePublication({
     scopes: [scope],
     triggers: [GitHubDirtyTrigger.ReviewComment],
   };
+}
+
+/** Persist authoritative review-comment activity in the caller's transaction. */
+function persistReviewCommentActivity(
+  event: HandledPullRequestReviewCommentEvent,
+  existingPr: CommentWebhookPrContext,
+  organizationId: string,
+  observationContext?: GitHubWebhookObservationContext
+) {
+  return persistGitHubBranchActivity({
+    eventName: GitHubBranchActivityEventName.PullRequestReviewComment,
+    deliveryId: observationContext?.deliveryId,
+    payload: event,
+    attribution: {
+      organizationId,
+      branchArtifactId: existingPr.branchArtifactId,
+      pullRequestDetailId: existingPr.id,
+    },
+  });
+}
+
+/** Apply the event-specific comment projection before activity persistence. */
+async function dispatchReviewCommentAction(
+  tx: TransactionClient,
+  event: HandledPullRequestReviewCommentEvent,
+  context: {
+    existingPr: CommentWebhookPrContext;
+    organizationId: string;
+  }
+): Promise<boolean> {
+  if (event.action === "created") {
+    return await handleCreatedComment(
+      tx,
+      context.existingPr,
+      event.comment,
+      event.pull_request,
+      context.organizationId
+    );
+  }
+  if (event.action === "edited") {
+    return await handleEditedComment(
+      tx,
+      context.existingPr,
+      event.comment,
+      event.pull_request,
+      context.organizationId
+    );
+  }
+  if (event.action === "deleted") {
+    return await handleDeletedComment(
+      tx,
+      context.existingPr,
+      event.comment,
+      event.pull_request,
+      context.organizationId
+    );
+  }
+  return false;
 }

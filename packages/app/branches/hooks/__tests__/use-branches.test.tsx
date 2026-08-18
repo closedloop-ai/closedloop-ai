@@ -9,7 +9,10 @@ import {
   BranchCommentsState,
   type BranchPrCommentsResponse,
 } from "@repo/api/src/types/branch";
+import { unavailableBranchTraceResult } from "@repo/api/src/types/branch-trace";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
 import type {
@@ -20,9 +23,11 @@ import { BranchesDataSourceProvider } from "../../data-source/provider";
 import {
   branchesKeys,
   useBranchAnalytics,
+  useBranchCohortAnalytics,
   useBranchComments,
   useBranchDetail,
-  useBranches,
+  useBranchesPageData,
+  useBranchList,
   useBranchTrace,
   useBranchUsage,
 } from "../use-branches";
@@ -117,6 +122,8 @@ type SpyingSource = BranchesDataSource & {
   traceSpy: ReturnType<typeof vi.fn>;
   usageSpy: ReturnType<typeof vi.fn>;
   analyticsSpy: ReturnType<typeof vi.fn>;
+  cohortAnalyticsSpy: ReturnType<typeof vi.fn>;
+  pageDataSpy: ReturnType<typeof vi.fn>;
 };
 
 function spyingSource(scope = "local"): SpyingSource {
@@ -127,12 +134,21 @@ function spyingSource(scope = "local"): SpyingSource {
   const commentsSpy = vi.fn((id: string) =>
     Promise.resolve(makeCommentsResponse(id))
   );
-  const traceSpy = vi.fn((_id: string) => Promise.resolve([] as const));
+  const traceSpy = vi.fn((_id: string, _options?: { signal?: AbortSignal }) =>
+    Promise.resolve(unavailableBranchTraceResult())
+  );
   const usageSpy = vi.fn((_filters: BranchQueryFilters) =>
     Promise.resolve(USAGE_FIXTURE)
   );
   const analyticsSpy = vi.fn((_filters: BranchQueryFilters) =>
     Promise.resolve(ANALYTICS_FIXTURE)
+  );
+  const cohortAnalyticsSpy = vi.fn(() => Promise.resolve(null));
+  const pageDataSpy = vi.fn((_filters: BranchQueryFilters) =>
+    Promise.resolve({
+      list: { items: [], total: 0, viewerScope: "self" as const },
+      analytics: ANALYTICS_FIXTURE,
+    })
   );
   return {
     scope,
@@ -142,12 +158,16 @@ function spyingSource(scope = "local"): SpyingSource {
     trace: traceSpy,
     usage: usageSpy,
     analytics: analyticsSpy,
+    cohortAnalytics: cohortAnalyticsSpy,
+    pageData: pageDataSpy,
     listSpy,
     detailSpy,
     commentsSpy,
     traceSpy,
     usageSpy,
     analyticsSpy,
+    cohortAnalyticsSpy,
+    pageDataSpy,
   };
 }
 
@@ -176,6 +196,13 @@ function makeCommentsResponse(branchId: string): BranchPrCommentsResponse {
 
 describe("branchesKeys", () => {
   it("places scope between the read-type prefix and the filters/id", () => {
+    expect(branchesKeys.pageData("local", { owner: "alice" })).toEqual([
+      "branches",
+      "page-data",
+      "local",
+      "default",
+      { owner: "alice" },
+    ]);
     expect(branchesKeys.list("local", { owner: "alice" })).toEqual([
       "branches",
       "list",
@@ -189,6 +216,7 @@ describe("branchesKeys", () => {
       "local",
       "default",
       "b1",
+      null,
     ]);
     expect(branchesKeys.comments("local", "b1")).toEqual([
       "branches",
@@ -196,6 +224,7 @@ describe("branchesKeys", () => {
       "local",
       "default",
       "b1",
+      null,
     ]);
     expect(branchesKeys.trace("local", "b1")).toEqual([
       "branches",
@@ -218,13 +247,22 @@ describe("branchesKeys", () => {
       "default",
       {},
     ]);
+    expect(
+      branchesKeys.cohortAnalytics("local", { branchIds: ["b1"] })
+    ).toEqual([
+      "branches",
+      "cohort-analytics",
+      "local",
+      "default",
+      { branchIds: ["b1"] },
+    ]);
   });
 
   it("accepts caller-owned cache identity for org-scoped HTTP reads", () => {
     const identity = { cacheScope: "org:acme" };
-    expect(branchesKeys.list("http", {}, identity)).toEqual([
+    expect(branchesKeys.pageData("http", {}, identity)).toEqual([
       "branches",
-      "list",
+      "page-data",
       "http",
       "org:acme",
       {},
@@ -235,6 +273,7 @@ describe("branchesKeys", () => {
       "http",
       "org:acme",
       "b1",
+      null,
     ]);
     expect(branchesKeys.comments("http", "b1", identity)).toEqual([
       "branches",
@@ -242,6 +281,7 @@ describe("branchesKeys", () => {
       "http",
       "org:acme",
       "b1",
+      null,
     ]);
     expect(branchesKeys.trace("http", "b1", identity)).toEqual([
       "branches",
@@ -266,24 +306,56 @@ describe("branchesKeys", () => {
     ]);
   });
 
+  it("separates selected pull requests by exact repository-qualified identity", () => {
+    const selection = {
+      repositoryFullName: "closedloop-ai/symphony-alpha",
+      pullRequestNumber: 4473,
+    };
+    expect(branchesKeys.detail("http", "b1", undefined, selection)).toEqual([
+      "branches",
+      "detail",
+      "http",
+      "default",
+      "b1",
+      selection,
+    ]);
+    expect(branchesKeys.comments("http", "b1", undefined, selection)).toEqual([
+      "branches",
+      "comments",
+      "http",
+      "default",
+      "b1",
+      selection,
+    ]);
+  });
+
   it("keeps the unscoped prefixes matching every scope for batch invalidation", () => {
-    expect(branchesKeys.lists()).toEqual(["branches", "list"]);
+    expect(branchesKeys.pageDataRoot()).toEqual(["branches", "page-data"]);
     expect(branchesKeys.details()).toEqual(["branches", "detail"]);
     expect(branchesKeys.commentsRoot()).toEqual(["branches", "comments"]);
     expect(branchesKeys.traces()).toEqual(["branches", "trace"]);
     expect(branchesKeys.usages()).toEqual(["branches", "usage"]);
     expect(branchesKeys.analyticsRoot()).toEqual(["branches", "analytics"]);
+    expect(branchesKeys.cohortAnalyticsRoot()).toEqual([
+      "branches",
+      "cohort-analytics",
+    ]);
   });
 });
 
 function ReadProbe({ source }: { source: BranchesDataSource }) {
-  const list = useBranches({ owner: "alice" });
+  const list = useBranchList({ owner: "alice" });
+  const pageData = useBranchesPageData({ owner: "alice" });
   const usage = useBranchUsage({ owner: "alice" });
   const analytics = useBranchAnalytics({ owner: "alice" });
+  const cohortAnalytics = useBranchCohortAnalytics({ branchIds: ["b1"] });
   return (
     <div>
+      <span data-testid="pageData">
+        {pageData.isSuccess ? `pageData:${source.scope}` : "pageData:loading"}
+      </span>
       <span data-testid="list">
-        {list.isSuccess ? `list:${source.scope}` : "list:loading"}
+        {list.isSuccess ? "list:ok" : "list:loading"}
       </span>
       <span data-testid="usage">
         {usage.isSuccess ? "usage:ok" : "usage:loading"}
@@ -291,12 +363,15 @@ function ReadProbe({ source }: { source: BranchesDataSource }) {
       <span data-testid="analytics">
         {analytics.isSuccess ? "analytics:ok" : "analytics:loading"}
       </span>
+      <span data-testid="cohortAnalytics">
+        {cohortAnalytics.isSuccess ? "cohort:ok" : "cohort:loading"}
+      </span>
     </div>
   );
 }
 
 describe("branch read hooks", () => {
-  it("delegate list/usage/analytics to the injected source with the given filters", async () => {
+  it("delegate pageData/usage/analytics to the injected source with the given filters", async () => {
     const source = spyingSource("local");
     render(
       <AppCoreStoryProviders>
@@ -307,14 +382,46 @@ describe("branch read hooks", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("list")).toHaveTextContent("list:local");
+      expect(screen.getByTestId("pageData")).toHaveTextContent(
+        "pageData:local"
+      );
+      expect(screen.getByTestId("list")).toHaveTextContent("list:ok");
       expect(screen.getByTestId("usage")).toHaveTextContent("usage:ok");
       expect(screen.getByTestId("analytics")).toHaveTextContent("analytics:ok");
+      expect(screen.getByTestId("cohortAnalytics")).toHaveTextContent(
+        "cohort:ok"
+      );
     });
 
     expect(source.listSpy).toHaveBeenCalledWith({ owner: "alice" });
+    expect(source.pageDataSpy).toHaveBeenCalledWith({ owner: "alice" });
     expect(source.usageSpy).toHaveBeenCalledWith({ owner: "alice" });
     expect(source.analyticsSpy).toHaveBeenCalledWith({ owner: "alice" });
+    expect(source.cohortAnalyticsSpy).toHaveBeenCalledWith({
+      branchIds: ["b1"],
+    });
+  });
+
+  it("does not read cohort analytics when the filtered cohort request is absent", () => {
+    const source = spyingSource("local");
+
+    function DisabledCohortProbe() {
+      const cohortAnalytics = useBranchCohortAnalytics(null);
+      return (
+        <span data-testid="disabledCohort">{cohortAnalytics.fetchStatus}</span>
+      );
+    }
+
+    render(
+      <AppCoreStoryProviders>
+        <BranchesDataSourceProvider dataSource={source}>
+          <DisabledCohortProbe />
+        </BranchesDataSourceProvider>
+      </AppCoreStoryProviders>
+    );
+
+    expect(screen.getByTestId("disabledCohort")).toHaveTextContent("idle");
+    expect(source.cohortAnalyticsSpy).not.toHaveBeenCalled();
   });
 
   it("disables the detail query for an empty id and delegates for a present id", async () => {
@@ -363,7 +470,7 @@ describe("branch read hooks", () => {
       const trace = useBranchTrace(id);
       return (
         <span data-testid="trace">
-          {trace.isSuccess ? `trace:${trace.data.length}` : "trace:none"}
+          {trace.isSuccess ? `trace:${trace.data.items.length}` : "trace:none"}
         </span>
       );
     }
@@ -390,7 +497,11 @@ describe("branch read hooks", () => {
     await waitFor(() =>
       expect(screen.getByTestId("trace")).toHaveTextContent("trace:0")
     );
-    expect(source.traceSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+    expect(source.traceSpy).toHaveBeenCalledWith(
+      "repo%2Fowner::main",
+      expect.objectContaining({ signal: expect.any(Object) })
+    );
+    expect(source.traceSpy.mock.calls[0]?.[1]?.signal?.aborted).toBe(false);
   });
 
   it("disables the comments query for an empty id and delegates for a present id", async () => {
@@ -432,6 +543,87 @@ describe("branch read hooks", () => {
       )
     );
     expect(source.commentsSpy).toHaveBeenCalledWith("repo%2Fowner::main");
+  });
+
+  /**
+   * PLN-1535 M3.3 — the pull half of the freshness model (D8). Whether a hidden
+   * tab actually pauses a poll is React Query's own focus-manager behavior and
+   * is not reliably drivable from jsdom, so the contract is asserted where this
+   * change makes it: the options on the resulting query observer.
+   */
+  describe("interval refetch (PLN-1535 M3.3)", () => {
+    async function captureQueryOptions(
+      probe: ReactNode,
+      queryKey: readonly unknown[]
+    ) {
+      const source = spyingSource("http");
+      let client: QueryClient | undefined;
+      function ClientProbe() {
+        client = useQueryClient();
+        return null;
+      }
+      render(
+        <AppCoreStoryProviders>
+          <BranchesDataSourceProvider dataSource={source}>
+            <ClientProbe />
+            {probe}
+          </BranchesDataSourceProvider>
+        </AppCoreStoryProviders>
+      );
+      await waitFor(() =>
+        expect(client?.getQueryCache().find({ queryKey })).toBeDefined()
+      );
+      return client?.getQueryCache().find({ queryKey })?.observers[0]?.options;
+    }
+
+    function PageDataProbe() {
+      useBranchesPageData({ owner: "alice" });
+      return null;
+    }
+
+    function DetailProbe({ intervalMs }: { intervalMs?: number }) {
+      useBranchDetail(
+        "branch-1",
+        intervalMs === undefined ? undefined : { refetchInterval: intervalMs }
+      );
+      return null;
+    }
+
+    it("polls the branches list clear of the 90s hydration TTL", async () => {
+      // 120s, not 90s: `LIST_TTL_MS` is also 90s and TanStack restarts the
+      // interval on settle, so an equal interval cleared expiry only by the
+      // previous fetch's round-trip. Losing that race re-rendered the identical
+      // cached overlay — a refresh cycle where nothing changed.
+      const options = await captureQueryOptions(
+        <PageDataProbe />,
+        branchesKeys.pageData("http", { owner: "alice" })
+      );
+
+      expect(options?.refetchInterval).toBe(120_000);
+      // The whole point is VISIBLE-tab: a hidden window must not poll the cloud
+      // on a timer. Opposite of the desktop Sessions poll, where background
+      // polling is load-bearing.
+      expect(options?.refetchIntervalInBackground).not.toBe(true);
+    });
+
+    it("polls an open branch detail on the 60s visible-tab cadence", async () => {
+      const options = await captureQueryOptions(
+        <DetailProbe />,
+        branchesKeys.detail("http", "branch-1")
+      );
+
+      expect(options?.refetchInterval).toBe(60_000);
+      expect(options?.refetchIntervalInBackground).not.toBe(true);
+    });
+
+    it("lets a caller override the default cadence", async () => {
+      const options = await captureQueryOptions(
+        <DetailProbe intervalMs={5000} />,
+        branchesKeys.detail("http", "branch-1")
+      );
+
+      expect(options?.refetchInterval).toBe(5000);
+    });
   });
 
   it("isolates lazy trace reads by caller-owned cache identity", async () => {

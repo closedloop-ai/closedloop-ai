@@ -7,13 +7,33 @@ The desktop client is the execution surface for Closedloop.ai. It runs a localho
 
 ## Download
 
-- **macOS:** download the latest signed, notarized universal DMG from the Desktop release channel under `closedloop-ai/symphony-alpha`. Drag the `Closedloop.app` bundle into `/Applications`.
-- **Linux:** run the app from source with `just desktop-dev` (see below). Linux is supported for development but not yet packaged.
+- **macOS:** [download the latest signed, notarized universal DMG](https://github.com/closedloop-ai/closedloop-ai/releases/download/desktop-latest/Closedloop-universal.dmg) — no GitHub account required. Drag the `Closedloop.app` bundle into `/Applications`.
+- **Linux:** run the app from source (see below). Linux is supported for development but not yet packaged.
 - **Windows:** not supported.
 
-Packaged macOS builds auto-update via the Desktop-specific `symphony-alpha` feed. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+The installer is built and signed by ClosedLoop's release pipeline and published to the public `closedloop-ai/closedloop-ai` repository so you can download it without a GitHub account. It is not built from that repository's source at the release tag — the tag names the version, so identify the build you are running by its version number rather than by the tagged commit.
 
-Older builds installed from `closedloop-ai/closedloop-electron` do not auto-upgrade across repositories. Install the latest `closedloop-ai/symphony-alpha` Desktop DMG manually once; subsequent updates follow the new Desktop feed.
+### Verify the signature
+
+The signature and notarization are on the app, not the `.dmg` — the disk image itself is not code-signed, so verify the installed app. After dragging `Closedloop.app` into `/Applications`, confirm it was signed by ClosedLoop's Developer ID (Developer ID Application: **ClosedLoop.ai, Inc.**, Apple Team ID `S3789XCTMA`):
+
+```bash
+# Signature intact AND signed by ClosedLoop's Team ID. Exit 0 with
+# "explicit requirement satisfied" passes; a build signed by anyone
+# else — even another notarized Developer ID — fails this check.
+codesign --verify --strict --verbose=2 \
+  -R '=anchor apple generic and identifier "ai.closedloop.desktop" and certificate leaf[subject.OU] = "S3789XCTMA"' \
+  /Applications/Closedloop.app
+
+# Gatekeeper's own verdict and the signer it resolved
+spctl --assess --type exec --verbose=4 /Applications/Closedloop.app
+```
+
+`spctl` prints `accepted`, `source=Notarized Developer ID`, and `origin=Developer ID Application: ClosedLoop.ai, Inc. (S3789XCTMA)`.
+
+Packaged macOS builds auto-update through the ClosedLoop update service. The client checks on boot and every five minutes after that, downloading updates in the background and installing them on the next quit.
+
+Older builds installed from `closedloop-ai/closedloop-electron` do not auto-upgrade across repositories. Install the latest Desktop DMG manually once using the download link above; subsequent updates follow the current update service.
 
 ## First launch
 
@@ -76,22 +96,18 @@ If the default port is in use, the client will fall back through `19433 → 1943
 
 ## Run from source (Linux or contributors)
 
+The desktop source is published in the public community-edition repository, [`closedloop-ai/closedloop-ai`](https://github.com/closedloop-ai/closedloop-ai):
+
 ```bash
-git clone git@github.com:closedloop-ai/symphony-alpha.git
-cd symphony-alpha
+git clone https://github.com/closedloop-ai/closedloop-ai.git
+cd closedloop-ai
 pnpm install
 pnpm -C apps/desktop dev
 ```
 
-Useful `just` recipes:
+Prerequisites, environment setup, and the pull request workflow live in that repository's [`CONTRIBUTING.md`](https://github.com/closedloop-ai/closedloop-ai/blob/main/CONTRIBUTING.md), which is the authoritative contributor guide.
 
-| Command | What it does |
-|---|---|
-| `just desktop-build` | Build the Electron app. |
-| `just desktop-stage` | Materialize the packaged production dependency closure. |
-| `just desktop-lint` | Run ESLint for desktop sources. |
-| `just desktop-typecheck` | Run `tsc --noEmit`. |
-| `just desktop-test` | Run the desktop test suite. |
+That tree is re-synced from our internal repository periodically rather than continuously, so it lags the packaged build offered above. As with the release tags described earlier, identify the build you are running by its version number rather than by this source.
 
 ## Next step
 

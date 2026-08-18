@@ -25,6 +25,9 @@ const LOCAL_TRACE_COMMENT_ID_RE = /^local-/;
 const SESSIONS_TOTAL_UNAVAILABLE_RE = /TOTAL SESSIONS\s+Unavailable/;
 const TOKENS_TOTAL_UNAVAILABLE_RE = /TOTAL TOKENS\s+Unavailable/;
 const SESSIONS_TOTAL_VALUE_RE = /TOTAL SESSIONS\s+\d/;
+// Any trace-comment cloud request path (GET/POST/PATCH/DELETE) — used by the
+// key-only no-escape assertion.
+const CLOUD_TRACE_COMMENTS_PATH_RE = /\/trace-comments(\/|$|\?)/;
 
 type TraceCommentTarget = {
   type: "session" | "branch";
@@ -245,7 +248,18 @@ test.describe("Trace comments IPC", () => {
     }
   });
 
-  test("syncs desktop trace comments through the configured cloud API", async () => {
+  // DEFERRED (ISS-5718, expires 2026-12-11): cloud trace comments are now
+  // session-only and the sk_live_* fallback was removed (FEA-3425 Phase 4a,
+  // since DONE), so these specs need a live first-party session the Electron
+  // harness cannot mint: the only path from an API key to a session is the
+  // interactive browser sign-in, and the session/key stores are safeStorage-
+  // encrypted so they can't be seeded from beforeLaunch. The cloud
+  // POST/PATCH/DELETE/parent-sync behavior stays covered by the session-only
+  // unit tests (trace-comment-parent-session-cloud-post.test.ts + the
+  // trace-comments cloud client), and the key-only no-escape spec below proves
+  // the fallback is gone. ISS-5718 owns re-enabling these.
+  // biome-ignore lint/suspicious/noSkippedTests: cloud path is session-only post-Phase-4a; harness cannot mint a session (see comment above). Behavior is unit-covered.
+  test.skip("syncs desktop trace comments through the configured cloud API", async () => {
     const target: TraceCommentTarget = {
       type: "session",
       id: "trace-comments-cloud-session",
@@ -450,7 +464,10 @@ test.describe("Trace comments IPC", () => {
     }
   });
 
-  test("syncs the parent cloud session before retrying a desktop comment after 404", async () => {
+  // DEFERRED (ISS-5718, expires 2026-12-11): see the reason on the first cloud spec
+  // above (session-only; harness cannot mint a first-party session).
+  // biome-ignore lint/suspicious/noSkippedTests: cloud path is session-only post-Phase-4a; harness cannot mint a session (see comment above). Behavior is unit-covered.
+  test.skip("syncs the parent cloud session before retrying a desktop comment after 404", async () => {
     const target: TraceCommentTarget = {
       type: "session",
       id: "trace-comments-missing-cloud-session",
@@ -602,7 +619,10 @@ test.describe("Trace comments IPC", () => {
     }
   });
 
-  test("retries failed desktop uploads in the background without relisting the target", async () => {
+  // DEFERRED (ISS-5718, expires 2026-12-11): see the reason on the first cloud spec
+  // above (session-only; harness cannot mint a first-party session).
+  // biome-ignore lint/suspicious/noSkippedTests: cloud path is session-only post-Phase-4a; harness cannot mint a session (see comment above). Behavior is unit-covered.
+  test.skip("retries failed desktop uploads in the background without relisting the target", async () => {
     const target: TraceCommentTarget = {
       type: "session",
       id: "trace-comments-background-retry-session",
@@ -690,6 +710,100 @@ test.describe("Trace comments IPC", () => {
             })
         )
       ).toHaveLength(2);
+      expect(pageErrors).toEqual([]);
+    } finally {
+      await cleanup();
+      await server.close();
+    }
+  });
+
+  test("a key-only install without a first-party session never escapes a cloud trace-comment request", async () => {
+    const target: TraceCommentTarget = {
+      type: "session",
+      id: "trace-comments-key-only-session",
+    };
+    const requests: { method: string; url: string; body: unknown }[] = [];
+    const computeTargetId = "44444444-4444-4444-8444-444444444444";
+    // A legacy key-only install: an API key + cloud origin are configured, but no
+    // first-party session exists (first-party auth is off, so no mint is
+    // attempted). FEA-3425 (Phase 4a) made cloud trace comments session-only and
+    // removed the sk_live_* fallback, so nothing must escape to the cloud. onCreate
+    // returns a cloud comment the desktop must never request.
+    const server = await startTraceCommentsApiServer({
+      onRequest: (request) => requests.push(request),
+      onCreate: (draft) =>
+        makeTraceComment(target, {
+          id: "cloud-should-never-be-created",
+          threadId: "cloud-thread-should-never",
+          body: draft.body,
+          anchor: draft.anchor,
+        }),
+      list: () => [],
+    });
+
+    const { page, pageErrors, cleanup } = await launchDesktopApp({
+      userDataPrefix: "desktop-trace-comments-key-only-e2e-",
+      env: {
+        CLOSEDLOOP_API_KEY: "sk_live_trace_comments_e2e",
+        CL_AUTH_API_ORIGIN: server.origin,
+      },
+      beforeLaunch: (userDataDir) =>
+        seedActiveProfileComputeTarget(userDataDir, {
+          apiOrigin: server.origin,
+          computeTargetId,
+        }),
+    });
+
+    try {
+      const draft: TraceCommentDraft = {
+        anchor: {
+          traceId: "trace-comments-key-only-trace",
+          turnId: "trace-comments-key-only-turn",
+          row: 3,
+          selectedText: "key-only selected text",
+          sourceText: "key-only selected text in a trace row",
+          startOffset: 0,
+          endOffset: 22,
+          sessionId: target.id,
+          actor: { name: "Codex", human: null },
+        },
+        body: "Key-only local comment that must never reach the cloud",
+      };
+
+      await gotoNav(page, "sessions");
+      await expectSessionsViewHealthy(page);
+      await waitForTraceCommentsApi(page, target);
+
+      const created = await page.evaluate(
+        ({ target, draft }) => {
+          const desktopApi = (window as DesktopWindow).desktopApi;
+          if (!desktopApi?.traceCommentsApi) {
+            throw new Error("traceCommentsApi unavailable");
+          }
+          return desktopApi.traceCommentsApi.create(target, draft);
+        },
+        { target, draft }
+      );
+      // A local id (not the server's "cloud-should-never-be-created") proves the
+      // create took the local branch with no cloud round-trip.
+      expect(created.id).toMatch(LOCAL_TRACE_COMMENT_ID_RE);
+
+      const listed = await page.evaluate((target) => {
+        const desktopApi = (window as DesktopWindow).desktopApi;
+        if (!desktopApi?.traceCommentsApi) {
+          throw new Error("traceCommentsApi unavailable");
+        }
+        return desktopApi.traceCommentsApi.list(target);
+      }, target);
+      expect(listed.map((comment) => comment.id)).toContain(created.id);
+
+      // No cloud trace-comment request (GET/POST/PATCH/DELETE) ever escaped — the
+      // session-only gate blocks a key-only install with no fallback.
+      expect(
+        requests.filter((request) =>
+          CLOUD_TRACE_COMMENTS_PATH_RE.test(request.url)
+        )
+      ).toHaveLength(0);
       expect(pageErrors).toEqual([]);
     } finally {
       await cleanup();
@@ -831,7 +945,8 @@ async function expectSessionsViewHealthy(page: Page): Promise<void> {
           return "degraded";
         }
         if (
-          bodyText.includes("No sessions found") ||
+          bodyText.includes("No sessions yet") ||
+          bodyText.includes("No matching sessions") ||
           SESSIONS_TOTAL_VALUE_RE.test(bodyText)
         ) {
           return "healthy";

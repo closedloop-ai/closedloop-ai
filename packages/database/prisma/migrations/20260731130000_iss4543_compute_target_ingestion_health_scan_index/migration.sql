@@ -1,0 +1,75 @@
+-- ISS-4543 Session-ingestion health scan indexes.
+--
+-- WHAT THESE INDEXES ARE FOR. The `/cron/sample-session-ingestion-health` cron
+-- (every 15 min) runs two aggregate scans over `compute_targets`, both filtered
+-- on `is_cloud_sentinel` and `last_agent_session_sync_at` (see
+-- apps/api/app/cron/sample-session-ingestion-health/service.ts#loadIngestSignals):
+--
+--   • groupBy(organization_id) _max(last_agent_session_sync_at)
+--       WHERE is_cloud_sentinel = false AND last_agent_session_sync_at IS NOT NULL
+--   • count(*) WHERE is_cloud_sentinel = false AND last_agent_session_sync_at IS NULL
+--
+-- Before these indexes neither predicate was covered — `compute_targets` carried
+-- only the `(organization_id, user_id …)` / `(user_id, is_online)` shapes — so
+-- both scans were sequential (wongk + Codex, #4127; apps/api/AGENTS.md: an
+-- unindexed WHERE filter on a growing table means a sequential scan, add the
+-- index in the same PR). PARTIAL indexes, so each is scoped to exactly the rows
+-- its scan reads and stays small:
+--
+--   • *_ingest_group_idx keys (organization_id, last_agent_session_sync_at) over
+--     the synced non-sentinel rows, so the grouped `_max` is an index-ordered
+--     scan per org rather than a table scan + sort.
+--   • *_never_ingested_idx keys (organization_id) over the never-synced
+--     non-sentinel rows, so the NULL-count is an index-only count over a partition
+--     that only ever holds freshly-registered / never-synced devices.
+--
+-- WHY THE WRITE-PATH COST IS BOUNDED (the concern raised on #4127). Yes,
+-- `last_agent_session_sync_at` is stamped on every accepted session batch
+-- (agent-sessions/service.ts). But these are PARTIAL: a normal, actively-syncing
+-- device row satisfies `last_agent_session_sync_at IS NOT NULL`, so its stamp
+-- updates only *_ingest_group_idx (one small partial index), and never touches
+-- *_never_ingested_idx — a synced row is not in that partition. The additional
+-- per-batch maintenance is a single partial-index entry move, negligible against
+-- the sequential-scan cost these replace on a growing fleet.
+--
+-- CONCURRENTLY, NON-TRANSACTIONAL BY DESIGN — WHY THIS FILE IS BARE STATEMENTS.
+-- `compute_targets` is a hot ingest table (every session batch updates a row), so
+-- a plain `CREATE INDEX` would hold a write-blocking ACCESS EXCLUSIVE lock for the
+-- whole build and stall ingest at production size — the exact PRD-547 failure mode
+-- that made 20260730180000_iss4565 re-land as CONCURRENTLY. `CREATE INDEX
+-- CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE, so concurrent INSERT/UPDATE/
+-- DELETE proceed while it builds. It cannot run inside a transaction block
+-- (Postgres SQLSTATE 25001); `prisma migrate deploy` splits a migration file into
+-- per-statement simple queries so bare top-level statements each run outside a
+-- transaction, but that split is best-effort and a `DO $$ … $$` block, embedded
+-- semicolons, or a `DROP INDEX CONCURRENTLY` push the whole file onto the
+-- single-transaction fallback path where every CONCURRENTLY statement fails 25001.
+-- So keep this file to bare `CREATE INDEX CONCURRENTLY` statements — do NOT add a
+-- BEGIN/COMMIT, a `DO` block, or a `DROP INDEX CONCURRENTLY` here.
+-- (See 20260730180000_iss4565_session_detail_model_index_concurrent for the full
+-- invalid-remnant recovery runbook; it applies identically to these indexes.)
+--
+-- NO `IF NOT EXISTS` (fail-closed retry): the concurrent-index lint (#4088,
+-- scripts/lint/destructive-migrations/index-ddl.ts) requires CREATE INDEX
+-- CONCURRENTLY to OMIT `IF NOT EXISTS`, so a retry after a cancelled/crashed build
+-- fails closed on the same-named INVALID index remnant instead of silently marking
+-- the migration applied over a broken index. Follow the invalid-remnant recovery
+-- runbook (drop the INVALID index, then re-run) rather than relying on `IF NOT
+-- EXISTS` to paper over it. Purely additive — index-only, no data mutation, no
+-- result change (an index alters plan choice only). These partial indexes are
+-- maintained via raw SQL because Prisma's `@@index` cannot
+-- express a partial (`WHERE`) index — the same reason the `compute_targets`
+-- `gateway_id` partial unique index lives in a raw migration and is documented in
+-- schema.prisma rather than declared as `@@index`. No `@@index` line is added for
+-- these, so the Prisma drift check stays green.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations.ts) — pure non-unique
+-- perf-only indexes an ephemeral preview schema does not need. CI-enforced by the
+-- drift guard in packages/database/__tests__/preview-heavy-migrations.test.ts.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "compute_targets_ingest_group_idx" ON "compute_targets"("organization_id", "last_agent_session_sync_at") WHERE "is_cloud_sentinel" = false AND "last_agent_session_sync_at" IS NOT NULL;
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "compute_targets_never_ingested_idx" ON "compute_targets"("organization_id") WHERE "is_cloud_sentinel" = false AND "last_agent_session_sync_at" IS NULL;

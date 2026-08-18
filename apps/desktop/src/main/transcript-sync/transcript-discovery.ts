@@ -22,10 +22,12 @@ import {
   mapCodexRolloutsById,
   walkCodexRootLinkage,
 } from "../collectors/codex/codex-subagent-rollouts.js";
+import type { OpencodeMaterializedFile } from "./opencode-materialized-discovery.js";
 import {
   subagentFileKey,
   TRANSCRIPT_MAIN_FILE_KEY,
   type TranscriptFileRef,
+  TranscriptSourceHarness,
 } from "./transcript-sync-types.js";
 
 /** Map Claude main + subagent listings to transcript refs (pure). */
@@ -71,9 +73,11 @@ export function codexRefsFromRollouts(
 ): TranscriptFileRef[] {
   const refs: TranscriptFileRef[] = [];
   for (const linkage of byId.values()) {
-    if (linkage.parentThreadId) {
+    const rootId = codexRootRolloutId(linkage, byId);
+    const isDescendant = rootId !== linkage.rolloutId;
+    if (isDescendant) {
       refs.push({
-        externalSessionId: codexRootRolloutId(linkage, byId),
+        externalSessionId: rootId,
         fileKey: subagentFileKey(linkage.rolloutId),
         sourceHarness: "codex",
         sourcePath: linkage.sourcePath,
@@ -90,6 +94,29 @@ export function codexRefsFromRollouts(
   return refs;
 }
 
+/**
+ * Map the materialized OpenCode files (already `(externalSessionId, fileKey)`
+ * addressed by the on-disk layout `<root>/<externalSessionId>/<fileKey>.jsonl`)
+ * to transcript refs (pure). The materializer writes `main.jsonl` for a root
+ * session and `subagent:<id>.jsonl` for each nested chain, so the file key IS
+ * the transcript file key and no further parent walking is needed here
+ * (FEA-3932).
+ */
+export function opencodeRefsFromSessions(
+  files: readonly OpencodeMaterializedFile[]
+): TranscriptFileRef[] {
+  const refs: TranscriptFileRef[] = [];
+  for (const file of files) {
+    refs.push({
+      externalSessionId: file.externalSessionId,
+      fileKey: file.fileKey,
+      sourceHarness: TranscriptSourceHarness.OpenCode,
+      sourcePath: file.sourcePath,
+    });
+  }
+  return refs;
+}
+
 /** Injectable collector seams (defaults call the real filesystem collectors). */
 export type TranscriptDiscoveryDeps = {
   listClaudeMainFiles: () => string[];
@@ -98,6 +125,12 @@ export type TranscriptDiscoveryDeps = {
   mapCodexById: (
     sources: readonly string[]
   ) => Map<string, CodexRolloutLinkage>;
+  /**
+   * Enumerate the already-materialized OpenCode projection files under the
+   * materialized root. Defaults to the real filesystem walk; the materializer
+   * (run before discovery in the sweep) regenerates these from `opencode.db`.
+   */
+  listOpencodeMaterializedFiles: () => OpencodeMaterializedFile[];
 };
 
 const defaultDeps: TranscriptDiscoveryDeps = {
@@ -105,16 +138,21 @@ const defaultDeps: TranscriptDiscoveryDeps = {
   listClaudeSubagentFiles: listClaudeSubagentTranscriptFiles,
   listCodexRolloutFiles: listAllRolloutFiles,
   mapCodexById: mapCodexRolloutsById,
+  listOpencodeMaterializedFiles: () => [],
 };
 
 /**
- * Full discovery sweep: every Claude + Codex transcript file (main + subagent)
- * as `TranscriptFileRef`s. Error-tolerance lives in the collectors; this just
- * composes them.
+ * Full discovery sweep: every Claude + Codex transcript file plus the
+ * materialized OpenCode projection files (main + subagent) as
+ * `TranscriptFileRef`s. Error-tolerance lives in the collectors/enumerators;
+ * this just composes them. Accepts a PARTIAL deps override merged over the real
+ * filesystem defaults so a caller can inject only the state-dir-bound OpenCode
+ * enumerator (FEA-3932) without re-supplying every collector seam.
  */
 export function discoverTranscriptFiles(
-  deps: TranscriptDiscoveryDeps = defaultDeps
+  overrides: Partial<TranscriptDiscoveryDeps> = {}
 ): TranscriptFileRef[] {
+  const deps: TranscriptDiscoveryDeps = { ...defaultDeps, ...overrides };
   const claudeRefs = claudeRefsFromListings(
     deps.listClaudeMainFiles(),
     deps.listClaudeSubagentFiles()
@@ -122,5 +160,8 @@ export function discoverTranscriptFiles(
   const codexRefs = codexRefsFromRollouts(
     deps.mapCodexById(deps.listCodexRolloutFiles())
   );
-  return [...claudeRefs, ...codexRefs];
+  const opencodeRefs = opencodeRefsFromSessions(
+    deps.listOpencodeMaterializedFiles()
+  );
+  return [...claudeRefs, ...codexRefs, ...opencodeRefs];
 }

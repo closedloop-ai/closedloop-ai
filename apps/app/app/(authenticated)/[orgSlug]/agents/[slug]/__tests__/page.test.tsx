@@ -1,21 +1,9 @@
-import { AGENTS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AgentDetailPage from "../page";
 
 const { headerMock } = vi.hoisted(() => ({
   headerMock: vi.fn(),
-}));
-
-vi.mock("@repo/analytics/components/feature-flagged", () => ({
-  FeatureFlagged: ({
-    children,
-    flag,
-  }: {
-    children: ReactNode;
-    flag: string;
-  }) => <div data-feature-flag={flag}>{children}</div>,
 }));
 
 vi.mock("@repo/app/agents/components/workspace/agent-detail", () => ({
@@ -24,17 +12,24 @@ vi.mock("@repo/app/agents/components/workspace/agent-detail", () => ({
   ),
 }));
 
-vi.mock("@/app/(authenticated)/components/header", () => ({
-  Header: headerMock,
+// ISS-5518: the crumb moved behind this client boundary (the resolved component
+// name only exists after the detail read). The page's own contract is that it
+// hands BOTH children the same normalized slug; what the crumb then renders is
+// pinned by `agent-detail-header.test.tsx`.
+vi.mock("../agent-detail-header", () => ({
+  AgentDetailHeader: (props: { orgSlug: string; slug: string }) =>
+    headerMock(props),
 }));
 
 describe("AgentDetailPage (detail route)", () => {
   beforeEach(() => {
     headerMock.mockReset();
-    headerMock.mockImplementation(() => <div data-testid="header" />);
+    headerMock.mockImplementation(({ slug }: { slug: string }) => (
+      <div data-slug={slug} data-testid="header" />
+    ));
   });
 
-  it("wraps AgentDetail in FeatureFlagged keyed on AGENTS_FEATURE_FLAG_KEY", async () => {
+  it("renders AgentDetail unconditionally (always-on, FEA-3994)", async () => {
     render(
       await AgentDetailPage({
         params: Promise.resolve({
@@ -44,12 +39,14 @@ describe("AgentDetailPage (detail route)", () => {
       })
     );
 
+    // AgentDetail renders directly, no longer behind a feature-flag gate.
     expect(
       screen.getByTestId("agent-detail").closest("[data-feature-flag]")
-    ).toHaveAttribute("data-feature-flag", AGENTS_FEATURE_FLAG_KEY);
+    ).toBeNull();
+    expect(screen.getByTestId("agent-detail")).toBeInTheDocument();
   });
 
-  it("breadcrumb 'Agents' link targets /<orgSlug>/agents", async () => {
+  it("passes the org slug to the header so the Agents crumb stays org-scoped", async () => {
     render(
       await AgentDetailPage({
         params: Promise.resolve({
@@ -60,12 +57,7 @@ describe("AgentDetailPage (detail route)", () => {
     );
 
     expect(headerMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        breadcrumbs: expect.arrayContaining([
-          { label: "Agents", href: "/test-org/agents" },
-        ]),
-      }),
-      undefined
+      expect.objectContaining({ orgSlug: "test-org" })
     );
   });
 
@@ -79,6 +71,32 @@ describe("AgentDetailPage (detail route)", () => {
     expect(screen.getByTestId("agent-detail")).toHaveAttribute(
       "data-slug",
       "my-agent-uuid"
+    );
+  });
+
+  // ISS-4776: the fix must land on the IDENTITY the page resolves, not just the
+  // crumb label. The normalized slug must reach BOTH children — the header
+  // (which decodes it for the crumb) and AgentDetail (which fetches
+  // `/agent-components/{slug}` and the token-trend endpoint) — so the crumb and
+  // the body key off the SAME literal `::`-bearing value. Otherwise the crumb
+  // decodes to `//cl-ci-babysit` while the still-encoded slug misses the API
+  // lookup and the body renders "not found" under it.
+  it("passes the decoded (normalized) slug to both the header and AgentDetail", async () => {
+    render(
+      await AgentDetailPage({
+        params: Promise.resolve({
+          orgSlug: "test-org",
+          slug: "command%3A%3A%2F%2Fcl-ci-babysit",
+        }),
+      })
+    );
+
+    expect(screen.getByTestId("agent-detail")).toHaveAttribute(
+      "data-slug",
+      "command:://cl-ci-babysit"
+    );
+    expect(headerMock).toHaveBeenCalledWith(
+      expect.objectContaining({ slug: "command:://cl-ci-babysit" })
     );
   });
 });

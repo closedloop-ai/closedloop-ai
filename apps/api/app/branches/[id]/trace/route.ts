@@ -23,7 +23,8 @@ export const GET = withAnyAuth<BranchTraceResponse, "/branches/[id]/trace">(
       const response = await branchReadService.getBranchTrace(
         user.organizationId,
         id,
-        query
+        query,
+        request.signal
       );
       if (!response) {
         return notFoundResponse("Branch");

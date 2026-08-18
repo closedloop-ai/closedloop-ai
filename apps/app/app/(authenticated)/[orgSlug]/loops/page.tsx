@@ -1,50 +1,37 @@
-import { FeatureFlagged } from "@repo/analytics/components/feature-flagged";
-import { LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
-import { Button } from "@repo/design-system/components/ui/button";
-import { Link } from "@repo/navigation/link";
-import type { Metadata } from "next";
-import { Header } from "../../components/header";
-import { LoopsTable } from "./components/loops-table";
+import { isPathSafeSlug } from "@repo/api/src/types/reserved-slugs";
+import { notFound, redirect } from "next/navigation";
 
-export const metadata: Metadata = {
-  title: "Loops",
-  description: "View all AI agent execution loops",
-};
-
-export default async function LoopsPage({
+/**
+ * ISS-4477: The "Loops" concept is retired from nav & UI. The primary-nav
+ * destination (sidebar Labs entry + command-palette command) and the Loops
+ * landing list are removed. This route is kept only as a temporary redirect so
+ * bookmarks and old breadcrumb/inbox links to the Loops list keep working.
+ *
+ * Destination is Sessions, the actual successor: someone who bookmarked the
+ * Loops list wanted a list of runs across the org, which is exactly what
+ * Sessions now is. (My Tasks is a personal queue and would read as a bug.) This
+ * matches the sibling Monitoring redirect, which also forwards to Sessions.
+ *
+ * The underlying loops service / data plumbing is intentionally untouched — this
+ * is a nav+UI removal only. Per-execution detail (`loops/[id]`) still exists and
+ * is reached functionally from plans and document-run flows.
+ *
+ * Temporary (307), not permanent (308): a 308 is aggressively cached by browsers
+ * and would be near-impossible to repoint later. `orgSlug` is checked for path
+ * safety before it is interpolated so an attacker-controlled encoded slug (e.g.
+ * `%2Fevil.example`) cannot forge an open redirect to an off-site host. The
+ * looser `isPathSafeSlug` check (vs `orgSlugSchema`) is deliberate: legacy orgs
+ * whose stored slug is the raw Clerk-id fallback (`org_...`, underscores + mixed
+ * case) would fail the kebab-only schema and 404 an otherwise-valid bookmark.
+ */
+export default async function LoopsListRedirect({
   params,
 }: {
   params: Promise<{ orgSlug: string }>;
 }) {
   const { orgSlug } = await params;
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <Header breadcrumbs={[{ label: "Loops" }]} />
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-auto p-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="font-bold text-2xl">Loops</h1>
-            <p className="text-muted-foreground">
-              Track AI agent executions across your organization
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <FeatureFlagged flag={LOOPS_USAGE_PAGE_FEATURE_FLAG_KEY}>
-              <Button asChild variant="outline">
-                <Link href={`/${orgSlug}/loops/usage`}>Usage</Link>
-              </Button>
-            </FeatureFlagged>
-            <FeatureFlagged flag="desktop-agent-session-sync">
-              <Button asChild variant="outline">
-                <Link href={`/${orgSlug}/loops/monitoring`}>
-                  Agent Monitoring
-                </Link>
-              </Button>
-            </FeatureFlagged>
-          </div>
-        </div>
-        <LoopsTable />
-      </div>
-    </div>
-  );
+  if (!isPathSafeSlug(orgSlug)) {
+    notFound();
+  }
+  redirect(`/${orgSlug}/sessions`);
 }

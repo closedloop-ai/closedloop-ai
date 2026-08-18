@@ -10,6 +10,10 @@ import { useMemo } from "react";
 import { useCatalogItem } from "../../agents/hooks/use-catalog";
 import { agentComponentToPackAnalytics } from "../lib/agent-component-to-analytics";
 import { catalogItemToPackView } from "../lib/catalog-item-to-pack-view";
+import {
+  type MemberComputeTarget,
+  memberInstallMatrix,
+} from "../lib/member-targets";
 import type { PackView } from "../lib/pack-view";
 import { usePackAnalytics } from "./use-pack-analytics";
 
@@ -37,6 +41,14 @@ type UsePackDashboardSelectionOptions = {
    * enables it. Defaults to `true`.
    */
   analyticsEnabled?: boolean;
+  /**
+   * The member's own registered compute targets (FEA-4077). When supplied (the
+   * web member surface), the selected pack's per-machine `installMatrix` is
+   * built from these nodes so the member per-machine block reflects a READ of
+   * the member's registered nodes. Omitted (admin / desktop) → no member matrix
+   * is layered here (admin folds distribution; desktop uses local state).
+   */
+  memberTargets?: readonly MemberComputeTarget[];
 };
 
 type UsePackDashboardSelection = {
@@ -71,6 +83,7 @@ export function usePackDashboardSelection({
   selectedId,
   distribution = null,
   analyticsEnabled = true,
+  memberTargets,
 }: UsePackDashboardSelectionOptions): UsePackDashboardSelection {
   const listItem = useMemo(
     () => items?.find((item) => item.id === selectedId) ?? null,
@@ -93,14 +106,30 @@ export function usePackDashboardSelection({
       return null;
     }
     const base = catalogItemToPackView(selectedItem, distribution);
+    // Member per-machine block (FEA-4077): on the member surface (which passes a
+    // `memberTargets` array — even empty) always build the per-machine matrix
+    // from a READ of the member's registered nodes and any distribution status
+    // rows keyed on them. A member with zero nodes yields an empty matrix (the
+    // block's honest "no machines" state), distinct from `undefined` (admin /
+    // desktop), which preserves the admin matrix built by `catalogItemToPackView`.
+    const withMatrix = memberTargets
+      ? {
+          ...base,
+          installMatrix: memberInstallMatrix(
+            selectedItem,
+            memberTargets,
+            distribution?.targetStatuses ?? []
+          ),
+        }
+      : base;
     if (!analytics.data) {
-      return base;
+      return withMatrix;
     }
     const { teamUsage, performance } = agentComponentToPackAnalytics(
       analytics.data
     );
-    return { ...base, teamUsage, performance };
-  }, [selectedItem, distribution, analytics.data]);
+    return { ...withMatrix, teamUsage, performance };
+  }, [selectedItem, distribution, analytics.data, memberTargets]);
 
   return { selectedItem, detailPack };
 }

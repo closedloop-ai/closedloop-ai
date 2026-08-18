@@ -1,0 +1,71 @@
+-- ISS-4832: index the per-org presence/attempt aggregate scan.
+--
+-- WHAT THIS INDEX IS FOR. ISS-4678 added a third aggregate scan to the
+-- `/cron/sample-session-ingestion-health` cron (every 15 min), and ISS-4827
+-- widened it to carry the attempt watermark alongside the heartbeat — see
+-- apps/api/app/cron/sample-session-ingestion-health/service.ts#loadPresenceByOrg:
+--
+--   • groupBy(organization_id)
+--       _max(last_seen_at), _max(last_agent_session_sync_attempt_at)
+--       WHERE is_cloud_sentinel = false AND organization_id IN (...)
+--
+-- `compute_targets` had NO index on `last_seen_at` at all. The scan is org-scoped
+-- so it is not a full-table scan — `(organization_id, user_id)` can drive the
+-- grouping — but neither grouped `max()` was index-covered, so every run had to
+-- visit the heap row of every registered target in every org and the sampler's
+-- cost grew with fleet size (wongk, service.ts:285).
+--
+-- SHAPE. `(organization_id, last_seen_at)` gives the planner an index-ordered
+-- scan per org, so `max(last_seen_at)` is the last entry of each group's range
+-- rather than a heap scan plus sort. `INCLUDE (last_agent_session_sync_attempt_at)`
+-- carries the second aggregate as a non-key payload column so the same pass can
+-- satisfy BOTH maxes index-only, instead of falling back to a heap fetch per row
+-- for the attempt watermark. PARTIAL on `is_cloud_sentinel = false` for the same
+-- reason as the ISS-4543 pair — synthetic per-org cloud-sentinel rows have no
+-- device behind them and are excluded by the query — which also keeps the index
+-- scoped to exactly the rows the scan reads. Mirrors
+-- `compute_targets_ingest_group_idx` deliberately.
+--
+-- WRITE-PATH COST. `last_seen_at` is a hot column (every heartbeat/online
+-- check-in writes it), so this index IS maintained on that path. It is one small
+-- partial index entry move per check-in — the same trade the ISS-4543 ingest
+-- index already makes on the batch path — against a repeating aggregate scan
+-- whose cost otherwise grows linearly with registered targets. The attempt
+-- watermark rides as an INCLUDE column, so a batch stamp updates the payload in
+-- place without re-keying the entry.
+--
+-- CONCURRENTLY, NON-TRANSACTIONAL BY DESIGN — WHY THIS FILE IS BARE STATEMENTS.
+-- `compute_targets` is a hot table (every heartbeat and every session batch
+-- updates a row), so a plain `CREATE INDEX` would hold a write-blocking ACCESS
+-- EXCLUSIVE lock for the whole build and stall both heartbeats and ingest at
+-- production size. `CREATE INDEX CONCURRENTLY` takes only SHARE UPDATE EXCLUSIVE.
+-- It cannot run inside a transaction block (Postgres SQLSTATE 25001); `prisma
+-- migrate deploy` splits a migration file into per-statement simple queries so
+-- bare top-level statements each run outside a transaction, but that split is
+-- best-effort and a `DO $$ … $$` block, embedded semicolons, or a `DROP INDEX
+-- CONCURRENTLY` push the whole file onto the single-transaction fallback path
+-- where every CONCURRENTLY statement fails 25001. So keep this file to bare
+-- `CREATE INDEX CONCURRENTLY` statements — do NOT add a BEGIN/COMMIT, a `DO`
+-- block, or a `DROP INDEX CONCURRENTLY` here. (See
+-- 20260730180000_iss4565_session_detail_model_index_concurrent for the full
+-- invalid-remnant recovery runbook; it applies identically here.)
+--
+-- NO `IF NOT EXISTS` (fail-closed retry): the concurrent-index lint (#4088,
+-- scripts/lint/destructive-migrations/index-ddl.ts) requires CREATE INDEX
+-- CONCURRENTLY to OMIT `IF NOT EXISTS`, so a retry after a cancelled/crashed
+-- build fails closed on the same-named INVALID index remnant instead of silently
+-- marking the migration applied over a broken index. Purely additive —
+-- index-only, no data mutation, no result change (an index alters plan choice
+-- only). Maintained via raw SQL because Prisma's `@@index` cannot express a
+-- partial (`WHERE`) or `INCLUDE` index, the same reason the ISS-4543 pair and the
+-- `gateway_id` partial unique index live in raw migrations and are documented in
+-- schema.prisma rather than declared as `@@index`. No `@@index` line is added, so
+-- the Prisma drift check stays green.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations.ts) — a pure non-unique
+-- perf-only index an ephemeral preview schema does not need. CI-enforced by the
+-- drift guard in packages/database/__tests__/preview-heavy-migrations.test.ts.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "compute_targets_presence_group_idx" ON "compute_targets"("organization_id", "last_seen_at") INCLUDE ("last_agent_session_sync_attempt_at") WHERE "is_cloud_sentinel" = false;

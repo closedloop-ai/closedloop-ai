@@ -14,7 +14,6 @@ import {
   DialogTitle,
 } from "@closedloop-ai/design-system/components/ui/dialog";
 import { Input } from "@closedloop-ai/design-system/components/ui/input";
-import { Label } from "@closedloop-ai/design-system/components/ui/label";
 import { Section } from "@closedloop-ai/design-system/components/ui/layout/section";
 import { Switch } from "@closedloop-ai/design-system/components/ui/switch";
 import {
@@ -23,53 +22,39 @@ import {
   TabsList,
   TabsTrigger,
 } from "@closedloop-ai/design-system/components/ui/tabs";
-import { Pencil, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  type KeyboardEvent,
-  useCallback,
-  useEffect,
-  useId,
-  useRef,
-  useState,
-} from "react";
-import { z } from "zod";
-import { CLI_BINARY_TOOLS } from "../../../shared/cli-binary-tools";
-import { ConnectionSecurityMode } from "../../../shared/connection-security";
-import { FEATURE_FLAGS } from "../../../shared/feature-flags";
+  type BinaryResolveSource,
+  CLI_BINARY_TOOLS,
+} from "../../../shared/cli-binary-tools";
+import { cleanIpcError, readBooleanField } from "../../clean-ipc-error";
 import {
-  type CloudSyncStatusTone,
-  describeCloudSyncStatus,
-  parseCloudSync,
+  useCloudStatus,
+  useCloudSyncBacklog,
+  useCloudSyncProgress,
 } from "../../hooks/use-ingest-progress";
+import { pageTitleForNav } from "../../navigation/nav-config";
+import { NavId } from "../../navigation/route-table";
+import { useLabsSettingsTabEnabled } from "../../navigation/use-nav-gates";
+import { PageShell } from "../layout/page-shell";
+import { ConnectionStatusSection } from "./connection-status-section";
+import { DataCollectionCard } from "./data-collection-card";
+import { DataSyncTab } from "./data-sync-tab";
 import { DesktopAccountTab } from "./desktop-account-tab";
-
-// FEA-2733: map a cloud-sync status tone to the Connection Status cell color,
-// reusing the same CSS custom properties as the sibling status cells.
-const CLOUD_SYNC_TONE_CLASS: Record<CloudSyncStatusTone, string> = {
-  pending: "text-[var(--warning)]",
-  success: "text-[var(--success)]",
-  warning: "text-[var(--warning)]",
-  muted: "text-[var(--muted-foreground)]",
-};
-
-type SettingsTab =
-  | "account"
-  | "relay-gateway"
-  | "security"
-  | "binary-paths"
-  | "labs";
-
-const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
-  { id: "account", label: "Account" },
-  { id: "relay-gateway", label: "Relay / Gateway" },
-  { id: "security", label: "Security" },
-  { id: "binary-paths", label: "CLI Tools" },
-  { id: "labs", label: "Labs" },
-];
-
-function isSettingsTab(value: string): value is SettingsTab {
-  return SETTINGS_TABS.some((item) => item.id === value);
-}
+import { ProfileConnectionFields } from "./gateway-profile-connection-fields";
+import { GatewayProfileRow } from "./gateway-profile-row";
+import { GlobalSandboxSection } from "./global-sandbox-card";
+import { LabsTab } from "./labs-tab";
+import { SecurityFlagsSection } from "./security-flags-section";
+import { ConfigRow } from "./settings-config-row";
+import {
+  DEFAULT_SETTINGS_TAB,
+  isVisibleSettingsTab,
+  LABS_SETTINGS_TAB,
+  resolveVisibleSettingsTab,
+  type SettingsTab,
+  visibleSettingsTabs,
+} from "./settings-tabs";
 
 /** Renderer view of ApiKeyStore.getStatus() (src/main/api-key-store.ts). */
 type ApiKeyStatusView = {
@@ -87,14 +72,21 @@ type GatewayProfile = {
   webAppOrigin: string;
   hasCloudApiKey?: boolean;
   apiKeySource?: string;
+  /**
+   * FEA-4005: per-profile sandbox scope root. Absent on profiles saved before
+   * this field existed — those fall back to the global sandbox on apply.
+   */
+  sandboxBaseDirectory?: string;
 };
 
-type GatewayProfileFormState = {
+export type GatewayProfileFormState = {
   name: string;
   relayOrigin: string;
   apiOrigin: string;
   webAppOrigin: string;
   apiKey: string;
+  /** FEA-4005: editable sandbox scope root for this profile. */
+  sandboxBaseDirectory: string;
 };
 
 function getProfileFormState(
@@ -109,10 +101,18 @@ function getProfileFormState(
     webAppOrigin:
       profile?.webAppOrigin ?? ((settings?.webAppOrigin as string) || ""),
     apiKey: "",
+    // FEA-4005: seed the field only from the profile's OWN sandbox. Leaving it
+    // empty means "inherit the global sandbox" — we no longer default it to the
+    // current global value, which would silently pin a legacy profile to today's
+    // global path on any unrelated Save (and then restore that stale snapshot on
+    // a later Apply). The global sandbox is shown as a placeholder hint instead.
+    sandboxBaseDirectory: profile?.sandboxBaseDirectory ?? "",
   };
 }
 
 function isProfileFormComplete(form: GatewayProfileFormState): boolean {
+  // The sandbox is optional (empty = inherit the global sandbox), so it does not
+  // gate completeness; a bad non-empty value is rejected in the main process.
   return (
     form.name.trim().length > 0 &&
     form.relayOrigin.trim().length > 0 &&
@@ -121,7 +121,17 @@ function isProfileFormComplete(form: GatewayProfileFormState): boolean {
   );
 }
 
-export function SettingsPanel() {
+/**
+ * @param deepLinkTab - ISS-5310 (stage cid 3726701529): the tab an in-renderer
+ * link asked for, read off `?tab=` by the SHELL and passed down. It is a prop
+ * rather than a `useSearchParamsValue()` call here on purpose: this component
+ * has eleven unit-test mount sites that supply no `NavigationProvider`, and a
+ * newly unconditional provider-requiring hook would take every one of them down.
+ * The shell already sits inside the provider, so reading it there costs nothing.
+ */
+export function SettingsPanel({
+  deepLinkTab = null,
+}: Readonly<{ deepLinkTab?: string | null }> = {}) {
   const [tab, setTab] = useState<SettingsTab>("relay-gateway");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(
     null
@@ -129,6 +139,39 @@ export function SettingsPanel() {
   // Once the user (or a deep-link) picks a tab, stop auto-selecting a default so
   // settings finishing loading never yanks them off their choice.
   const tabChosenRef = useRef(false);
+  // ISS-5309: the same `labsNav` container flag that hides the sidebar Labs
+  // section, arriving over the same `desktop:flags-changed` broadcast — so the
+  // tab appears and disappears live, with no relaunch.
+  const labsTabOn = useLabsSettingsTabEnabled();
+  const tabs = visibleSettingsTabs(labsTabOn);
+  // The tab actually shown. Derived, not synced through an effect, so a user
+  // sitting on Labs when the toggle flips off never renders a
+  // selected-but-empty tab — see `resolveVisibleSettingsTab`.
+  const activeTab = resolveVisibleSettingsTab(tab, labsTabOn);
+  const tabsRef = useRef<HTMLDivElement | null>(null);
+
+  // ISS-5309 (visual-QA review): Radix Tabs uses a roving tabindex, so when the
+  // selected Labs trigger UNMOUNTS under a keyboard user — the toggle flipped
+  // while they were sitting on it — the focus target unmounts with it and focus
+  // silently falls back to <body>, dumping them at the top of the document.
+  //
+  // Only orphaned focus is recovered: if the user was not on the withdrawn tab,
+  // `document.activeElement` is still something real and we leave it alone,
+  // because moving focus nobody asked to move is its own bug. Moving it to the
+  // now-selected trigger also gives screen readers something to announce, which
+  // the silent content swap otherwise had nothing of.
+  useEffect(() => {
+    if (activeTab === tab) {
+      return;
+    }
+    const focused = document.activeElement;
+    if (focused && focused !== document.body) {
+      return;
+    }
+    tabsRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][data-state="active"]')
+      ?.focus();
+  }, [activeTab, tab]);
 
   useEffect(() => {
     window.desktopApi
@@ -136,22 +179,39 @@ export function SettingsPanel() {
       .then((s) => {
         const record = s as Record<string, unknown>;
         setSettings(record);
-        // Default to the first visible tab. Account (when its flag is enabled) is
-        // first, but its flag lives in the settings we just loaded — so it can
-        // only be selected here, not in the initial useState.
-        if (
-          !tabChosenRef.current &&
-          record.desktopFirstPartyAuthEnabled === true
-        ) {
-          setTab("account");
+        // Account is the first tab; default to it unless the user (or a
+        // deep-link) has already chosen one.
+        if (!tabChosenRef.current) {
+          setTab(DEFAULT_SETTINGS_TAB);
         }
       })
       .catch(() => {});
   }, []);
 
+  // ISS-5310 (stage cid 3726701529): the IN-RENDERER deep link, e.g. the Agents
+  // "turned off" panel's "Open settings" button, which promised Settings → Labs
+  // and delivered Account. It cannot use the `desktop:navigate-settings-tab`
+  // event below — `Link` navigates AFTER a click handler would have fired, so a
+  // dispatch at the call site races this component's own mount and is dropped.
+  // The query param is state, so there is no race to lose.
+  //
+  // Depends on `labsTabOn`: the flag snapshot lands asynchronously, so a
+  // `?tab=labs` link opened before it arrives is re-resolved once it does,
+  // instead of being rejected on the first render and silently forgotten.
+  useEffect(() => {
+    if (deepLinkTab === null || !isVisibleSettingsTab(deepLinkTab, labsTabOn)) {
+      return;
+    }
+    tabChosenRef.current = true;
+    setTab(deepLinkTab);
+  }, [deepLinkTab, labsTabOn]);
+
   useEffect(() => {
     const handler = (e: CustomEvent<string>) => {
-      if (isSettingsTab(e.detail)) {
+      // A deep link to a HIDDEN tab is ignored outright rather than accepted and
+      // then resolved away: accepting it would also latch `tabChosenRef`, which
+      // would strand the panel on its pre-load tab once settings resolve.
+      if (isVisibleSettingsTab(e.detail, labsTabOn)) {
         tabChosenRef.current = true;
         setTab(e.detail);
       }
@@ -165,193 +225,189 @@ export function SettingsPanel() {
         "desktop:navigate-settings-tab",
         handler as EventListener
       );
-  }, []);
-
-  // First-party desktop sign-in (FEA-2219) ships dark behind a desktop flag;
-  // read it off the settings record the panel already loads (same pattern as
-  // LabsTab), so the Account tab stays hidden until the flag is enabled.
-  const accountEnabled = settings?.desktopFirstPartyAuthEnabled === true;
-  const visibleTabs = accountEnabled
-    ? SETTINGS_TABS
-    : SETTINGS_TABS.filter((t) => t.id !== "account");
+  }, [labsTabOn]);
 
   return (
-    <div className="space-y-4 p-6">
-      <h2 className="font-semibold text-[var(--foreground)] text-lg">
-        Settings
-      </h2>
-
+    <PageShell
+      description="Desktop preferences, gateway connection and cloud sync."
+      title={pageTitleForNav(NavId.Settings)}
+    >
       <Tabs
         onValueChange={(value) => {
-          if (isSettingsTab(value)) {
+          if (isVisibleSettingsTab(value, labsTabOn)) {
             tabChosenRef.current = true;
             setTab(value);
           }
         }}
-        value={tab}
+        ref={tabsRef}
+        value={activeTab}
       >
         <TabsList>
-          {visibleTabs.map((t) => (
+          {tabs.map((t) => (
             <TabsTrigger key={t.id} value={t.id}>
               {t.label}
             </TabsTrigger>
           ))}
         </TabsList>
 
-        {accountEnabled && (
-          <TabsContent value="account">
-            <DesktopAccountTab />
-          </TabsContent>
-        )}
+        <TabsContent value="account">
+          <DesktopAccountTab />
+        </TabsContent>
         <TabsContent value="relay-gateway">
-          <RelayGatewayTab onSettingsChange={setSettings} settings={settings} />
-        </TabsContent>
-        <TabsContent value="security">
-          <SecurityTab settings={settings} />
-        </TabsContent>
-        <TabsContent value="binary-paths">
-          <BinaryPathsTab />
-        </TabsContent>
-        <TabsContent value="labs">
-          <LabsTab
-            active={tab === "labs"}
+          <RelayGatewayTab
+            active={activeTab === "relay-gateway"}
             onSettingsChange={setSettings}
             settings={settings}
           />
         </TabsContent>
+        <TabsContent value="data-sync">
+          <DataSyncTab />
+        </TabsContent>
+        <TabsContent value="security">
+          <SecurityTab onSettingsChange={setSettings} settings={settings} />
+        </TabsContent>
+        <TabsContent value="binary-paths">
+          <BinaryPathsTab />
+        </TabsContent>
+        {labsTabOn && (
+          <TabsContent value={LABS_SETTINGS_TAB}>
+            <LabsTab onSettingsChange={setSettings} settings={settings} />
+          </TabsContent>
+        )}
       </Tabs>
-    </div>
+    </PageShell>
   );
 }
 
 function RelayGatewayTab({
+  active,
   settings,
   onSettingsChange,
 }: {
+  active: boolean;
   settings: Record<string, unknown> | null;
   onSettingsChange?: (s: Record<string, unknown>) => void;
 }) {
   const [runtime, setRuntime] = useState<Record<string, unknown> | null>(null);
   const [paused, setPaused] = useState(false);
-  const [connected, setConnected] = useState(true);
+  const [connectionEnabled, setConnectionEnabled] = useState<boolean | null>(
+    null
+  );
   const [hooksEnabled, setHooksEnabled] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [hooksError, setHooksError] = useState<string | null>(null);
-  // FEA-2733: local→cloud sync progress for the History Sync cell, derived from
-  // the same `runtime` snapshot this tab already fetches for the other
-  // Connection Status cells — no extra getRuntimeStatus poll.
-  const cloudSyncStatus = describeCloudSyncStatus(parseCloudSync(runtime));
+  // The mount-time getters are async, so a user could toggle a switch before
+  // the initial read resolves; a late getter must not clobber the value the
+  // user just applied. `initialized` disables the toggles until the reads
+  // settle, and `userToggled` makes any getter that resolves afterward a no-op.
+  const [initialized, setInitialized] = useState(false);
+  const userToggled = useRef(false);
+  // FEA-3256: cloud-sync progress is inherently dynamic — a first-connect
+  // backfill drains over minutes/hours — so the History Sync cell must track
+  // the shared 1s runtime-status poll while this tab is open rather than the
+  // one-shot `runtime` snapshot below, which froze the cell (FEA-2733) at the
+  // value captured on mount.
+  const cloudSyncProgress = useCloudSyncProgress(active);
+  // ISS-5768: the whole-app backlog behind the History Sync cell's completeness
+  // claim. Same shared 1s poller as `cloudSyncProgress` — no extra IPC.
+  const cloudSyncBacklog = useCloudSyncBacklog(active);
+  // FEA-3067: the enable switch is desired configuration; the polled socket
+  // state is the actual connection. Keep the two distinct so an enabled but
+  // degraded socket cannot be mislabeled as connected.
+  const cloudStatus = useCloudStatus(active);
 
   useEffect(() => {
     window.desktopApi
       .getRuntimeStatus()
       .then((r) => setRuntime(r as Record<string, unknown>))
       .catch(() => {});
-    window.desktopApi
-      .getCloudCommandsPaused()
-      .then((p) => setPaused(p as boolean))
-      .catch(() => {});
-    window.desktopApi
-      .getCloudConnectionEnabled()
-      .then((c) => setConnected(c as boolean))
-      .catch(() => {});
-    window.desktopApi
-      .getAgentMonitorHooksEnabled()
-      .then((h) => setHooksEnabled(h as boolean))
-      .catch(() => {});
+    // A getter that resolves after the user has already toggled must not
+    // overwrite the value they just applied, so every apply is guarded on
+    // `userToggled`.
+    const applyPaused = (p: unknown) => {
+      if (!userToggled.current) {
+        setPaused(Boolean(p));
+      }
+    };
+    const applyConnection = (enabled: unknown) => {
+      if (!userToggled.current) {
+        setConnectionEnabled(Boolean(enabled));
+      }
+    };
+    const applyHooks = (h: unknown) => {
+      if (!userToggled.current) {
+        setHooksEnabled(Boolean(h));
+      }
+    };
+    Promise.allSettled([
+      window.desktopApi.getCloudCommandsPaused().then(applyPaused),
+      window.desktopApi.getCloudConnectionEnabled().then(applyConnection),
+      window.desktopApi.getAgentMonitorHooksEnabled().then(applyHooks),
+    ])
+      .then(() => setInitialized(true))
+      .catch(() => setInitialized(true));
   }, []);
 
   const handlePauseToggle = async (next: boolean) => {
+    userToggled.current = true;
     setPauseError(null);
     try {
-      await window.desktopApi.setCloudCommandsPaused(next);
-      setPaused(next);
+      const result = await window.desktopApi.setCloudCommandsPaused(next);
+      // The setter reads back the post-set field from the source of truth
+      // (`{ paused }`); trust it over the requested value so a requested/actual
+      // mismatch (e.g. golden mode) is reflected, not the request. Older
+      // desktop builds resolve without the readback — fall back to `next`.
+      setPaused(readBooleanField(result, "paused", next));
     } catch (err) {
-      setPauseError(
-        err instanceof Error ? err.message : "Failed to update pause setting"
-      );
+      setPauseError(cleanIpcError(err, "Failed to update pause setting"));
     }
   };
 
   const handleConnectionToggle = async (next: boolean) => {
+    userToggled.current = true;
     setConnectionError(null);
     try {
-      await window.desktopApi.setCloudConnectionEnabled(next);
-      setConnected(next);
+      const result = await window.desktopApi.setCloudConnectionEnabled(next);
+      setConnectionEnabled(readBooleanField(result, "enabled", next));
     } catch (err) {
       setConnectionError(
-        err instanceof Error ? err.message : "Failed to update cloud connection"
+        cleanIpcError(err, "Failed to update cloud connection")
       );
     }
   };
 
   const handleHooksToggle = async (next: boolean) => {
+    userToggled.current = true;
     setHooksError(null);
     try {
       const result = await window.desktopApi.setAgentMonitorHooksEnabled(next);
-      setHooksEnabled(result.enabled);
+      // The IPC resolves with the actual post-apply state. `ok: false` is a
+      // resolved failure (not a reject), so surface its error; either way the
+      // switch follows `result.enabled`, which may differ from the request
+      // (e.g. the master hook toggle inert => enable resolves `enabled: false`).
+      if (result.ok === false) {
+        setHooksError(result.error ?? "Failed to update session tracking");
+      }
+      setHooksEnabled(Boolean(result.enabled));
     } catch (err) {
-      setHooksError(
-        err instanceof Error ? err.message : "Failed to update session tracking"
-      );
+      setHooksError(cleanIpcError(err, "Failed to update session tracking"));
     }
   };
 
   return (
     <div className="mt-4 space-y-4">
-      <Section
-        description="A live snapshot of the gateway port, cloud link, remote-command state, and security mode. Check here to confirm the desktop is reachable when remote sessions won't connect."
-        title="Connection Status"
-      >
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <div>
-            <p className="text-[var(--muted-foreground)] text-xs">
-              Gateway Port
-            </p>
-            <p className="font-semibold text-sm">
-              {(runtime?.port as string) ?? "..."}
-            </p>
-          </div>
-          <div>
-            <p className="text-[var(--muted-foreground)] text-xs">
-              Cloud Connection
-            </p>
-            <p
-              className={`font-semibold text-sm ${connected ? "text-[var(--success)]" : "text-[var(--destructive)]"}`}
-            >
-              {connected ? "Connected" : "Disconnected"}
-            </p>
-          </div>
-          <div>
-            <p className="text-[var(--muted-foreground)] text-xs">
-              Remote Commands
-            </p>
-            <p
-              className={`font-semibold text-sm ${paused ? "text-[var(--warning)]" : "text-[var(--success)]"}`}
-            >
-              {paused ? "Paused" : "Active"}
-            </p>
-          </div>
-          <div>
-            <p className="text-[var(--muted-foreground)] text-xs">Security</p>
-            <p className="font-semibold text-sm">
-              {(runtime?.security as string) ?? "..."}
-            </p>
-          </div>
-          <div>
-            <p className="text-[var(--muted-foreground)] text-xs">
-              History Sync
-            </p>
-            <p
-              className={`font-semibold text-sm ${CLOUD_SYNC_TONE_CLASS[cloudSyncStatus.tone]}`}
-              title={cloudSyncStatus.detail}
-            >
-              {cloudSyncStatus.label}
-            </p>
-          </div>
-        </div>
-      </Section>
+      <ConnectionStatusSection
+        cloudConnectionEnabled={connectionEnabled}
+        cloudStatus={cloudStatus}
+        cloudSyncBacklog={cloudSyncBacklog}
+        cloudSyncProgress={cloudSyncProgress}
+        gatewayHealthy={runtime?.gatewayHealthy}
+        gatewayPort={runtime?.port}
+        remoteCommandsPaused={paused}
+        security={runtime?.connectionSecurity}
+        serverAlive={runtime?.serverAlive}
+      />
 
       <Section
         contentClassName="space-y-3"
@@ -392,6 +448,7 @@ function RelayGatewayTab({
             <Switch
               aria-label="Pause Incoming Commands"
               checked={paused}
+              disabled={!initialized}
               onCheckedChange={handlePauseToggle}
             />
           </div>
@@ -412,7 +469,8 @@ function RelayGatewayTab({
             </div>
             <Switch
               aria-label="Cloud Connection"
-              checked={connected}
+              checked={connectionEnabled === true}
+              disabled={!initialized}
               onCheckedChange={handleConnectionToggle}
             />
           </div>
@@ -436,6 +494,7 @@ function RelayGatewayTab({
             <Switch
               aria-label="Claude Code Session Tracking"
               checked={hooksEnabled}
+              disabled={!initialized}
               onCheckedChange={handleHooksToggle}
             />
           </div>
@@ -452,8 +511,10 @@ function RelayGatewayTab({
 
 function SecurityTab({
   settings,
+  onSettingsChange,
 }: {
   settings: Record<string, unknown> | null;
+  onSettingsChange: (s: Record<string, unknown>) => void;
 }) {
   const [dangerousAutoApprove, setDangerousAutoApprove] = useState(false);
   const [apiKeyStatus, setApiKeyStatus] = useState<ApiKeyStatusView | null>(
@@ -484,9 +545,7 @@ function SecurityTab({
       setDangerousAutoApprove(next);
     } catch (err) {
       setDangerousError(
-        err instanceof Error
-          ? err.message
-          : "Failed to update auto-approve setting"
+        cleanIpcError(err, "Failed to update auto-approve setting")
       );
     }
   };
@@ -503,9 +562,7 @@ function SecurityTab({
       setApiKeyInput("");
       await refreshApiKeyStatus();
     } catch (err) {
-      setApiKeyError(
-        err instanceof Error ? err.message : "Failed to set API key"
-      );
+      setApiKeyError(cleanIpcError(err, "Failed to set API key"));
     } finally {
       setApiKeyBusy(false);
     }
@@ -519,9 +576,7 @@ function SecurityTab({
       setApiKeyInput("");
       await refreshApiKeyStatus();
     } catch (err) {
-      setApiKeyError(
-        err instanceof Error ? err.message : "Failed to clear API key"
-      );
+      setApiKeyError(cleanIpcError(err, "Failed to clear API key"));
     } finally {
       setApiKeyBusy(false);
     }
@@ -546,6 +601,11 @@ function SecurityTab({
           <ConfigRow
             label="Auth Mode"
             value={(settings?.authMode as string) ?? "standard"}
+          />
+
+          <GlobalSandboxSection
+            onSettingsChange={onSettingsChange}
+            settings={settings}
           />
 
           <div className="space-y-2 border-t pt-2">
@@ -616,29 +676,109 @@ function SecurityTab({
               </p>
             )}
           </div>
+
+          <SecurityFlagsSection
+            onSettingsChange={onSettingsChange}
+            settings={settings}
+          />
         </CardContent>
       </Card>
     </div>
   );
 }
 
+// FEA-3741 (slice 1): the per-tool collector enable toggles live in their own
+// "Data Collection" category so they render beside the CLI tools they collect
+// from (not in the generic Labs list — they are `hiddenFromLabs`). Default ON.
+// One tool's resolved state, as returned by `detectCliTools()`. `source`
+// mirrors the resolver's BinaryResolveResult.source: a real path was found via
+// an override, the login-shell PATH, or a known install location — or nothing
+// was found ("fallback").
+type BinaryDetectEntry = {
+  name: string;
+  override: string | null;
+  source: BinaryResolveSource;
+  resolvedPath: string | null;
+};
+
+function coerceDetectMap(raw: unknown): Record<string, BinaryDetectEntry> {
+  if (!raw || typeof raw !== "object") {
+    return {};
+  }
+  const out: Record<string, BinaryDetectEntry> = {};
+  for (const [tool, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value && typeof value === "object" && "source" in value) {
+      out[tool] = value as BinaryDetectEntry;
+    }
+  }
+  return out;
+}
+
+// Single edge for the CLI-tool text column: both the resolved mono path line
+// and the not-found guidance cap at this width so they share one column edge
+// (rather than two hand-picked pixel widths). `max-w-xs` is the on-scale
+// Tailwind token (20rem), not an arbitrary value. FEA-3742.
+const CLI_TEXT_COLUMN = "max-w-xs";
+
+// Actionable "why we couldn't resolve this CLI" status shown in place of a
+// resolved path. Distinguishes a bad manual override from a genuine
+// not-found-anywhere state, and points the user at the self-serve remedies
+// (Detect Tools / Edit override / `which`). FEA-3742.
+function BinaryNotFoundStatus({
+  tool,
+  overrideInvalid,
+}: {
+  tool: string;
+  overrideInvalid: boolean;
+}) {
+  return (
+    <div className="mt-0.5 space-y-0.5">
+      <p className="font-medium text-[var(--destructive)] text-xs">
+        {overrideInvalid ? "Override path is invalid" : "Not found"}
+      </p>
+      <p
+        className={`${CLI_TEXT_COLUMN} text-[var(--muted-foreground)] text-xs leading-snug`}
+      >
+        {overrideInvalid ? (
+          <>
+            The path you set doesn&apos;t exist or isn&apos;t executable. Click{" "}
+            <span className="font-medium">Edit</span> to correct it, or clear it
+            to auto-detect again.
+          </>
+        ) : (
+          <>
+            Couldn&apos;t find {tool}. If it&apos;s installed, try{" "}
+            <span className="font-medium">Detect Tools</span>, or{" "}
+            <span className="font-medium">Edit</span> to set its full path (run{" "}
+            <code className="font-mono">which {tool}</code> to find it).
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function BinaryPathsTab() {
-  const [binaries, setBinaries] = useState<Record<string, string>>({});
+  const [detected, setDetected] = useState<Record<string, BinaryDetectEntry>>(
+    {}
+  );
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
 
+  // Run detection (login-shell PATH + known-location probe) so the tab shows
+  // the actual resolved binary, not just manually-set overrides. FEA-3742.
   useEffect(() => {
     window.desktopApi
-      .getBinaryPaths()
-      .then((b) => {
-        setBinaries(b as Record<string, string>);
+      .detectCliTools()
+      .then((result) => {
+        setDetected(coerceDetectMap(result));
         setLoading(false);
       })
       .catch(() => {
-        // IPC rejected: leave binaries empty but stop showing the loading
-        // placeholder so the tab does not hang on "Detecting tools...".
+        // IPC rejected: stop showing the loading placeholder so the tab does
+        // not hang on "Detecting tools...".
         setLoading(false);
       });
   }, []);
@@ -646,12 +786,10 @@ function BinaryPathsTab() {
   const handleDetect = async () => {
     setLoading(true);
     try {
-      await window.desktopApi.detectCliTools();
-      const b = await window.desktopApi.getBinaryPaths();
-      setBinaries(b as Record<string, string>);
+      const result = await window.desktopApi.detectCliTools();
+      setDetected(coerceDetectMap(result));
     } catch {
-      // IPC rejected: leave binaries as-is but stop showing the loading
-      // placeholder so the tab does not hang on "Detecting tools...".
+      // IPC rejected: leave state as-is but stop the loading placeholder.
     } finally {
       setLoading(false);
     }
@@ -659,7 +797,9 @@ function BinaryPathsTab() {
 
   const startEdit = (tool: string) => {
     setEditing(tool);
-    setEditValue(binaries[tool] ?? "");
+    setEditValue(
+      detected[tool]?.override ?? detected[tool]?.resolvedPath ?? ""
+    );
     setEditError(null);
   };
 
@@ -669,17 +809,18 @@ function BinaryPathsTab() {
   };
 
   const handleSave = async (tool: string) => {
-    if (editValue) {
-      try {
-        await window.desktopApi.patchBinaryPaths({ [tool]: editValue });
-        const b = await window.desktopApi.getBinaryPaths();
-        setBinaries(b as Record<string, string>);
-      } catch (err) {
-        setEditError(
-          err instanceof Error ? err.message : "Failed to save binary path"
-        );
-        return;
-      }
+    try {
+      // Empty input clears the override (null), which re-enables auto-detection
+      // — this is the "clear it to auto-detect again" remedy the not-found copy
+      // points users at. A non-empty value sets the override. FEA-3742.
+      await window.desktopApi.patchBinaryPaths({
+        [tool]: editValue ? editValue : null,
+      });
+      const result = await window.desktopApi.detectCliTools();
+      setDetected(coerceDetectMap(result));
+    } catch (err) {
+      setEditError(cleanIpcError(err, "Failed to save binary path"));
+      return;
     }
     setEditing(null);
     setEditError(null);
@@ -687,6 +828,7 @@ function BinaryPathsTab() {
 
   return (
     <div className="mt-4 space-y-4">
+      <DataCollectionCard />
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -707,215 +849,89 @@ function BinaryPathsTab() {
               Detecting tools...
             </p>
           ) : (
-            CLI_BINARY_TOOLS.map((tool) => (
-              <div
-                className="flex items-center justify-between rounded border p-3"
-                key={tool}
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium text-sm">{tool}</p>
-                  {editing === tool ? (
-                    <>
-                      <Input
-                        aria-label={tool}
-                        autoFocus
-                        className="mt-1 w-full font-mono text-xs"
-                        onChange={(e) => setEditValue(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            handleSave(tool).catch(() => {});
-                          }
-                          if (e.key === "Escape") {
-                            cancelEdit();
-                          }
-                        }}
-                        placeholder={`/usr/bin/${tool}`}
-                        type="text"
-                        value={editValue}
+            CLI_BINARY_TOOLS.map((tool) => {
+              const entry = detected[tool];
+              const found =
+                entry != null &&
+                entry.source !== "fallback" &&
+                entry.source !== "override_invalid" &&
+                entry.resolvedPath != null;
+              return (
+                <div
+                  className="flex items-start justify-between rounded border p-3"
+                  key={tool}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-sm">{tool}</p>
+                    {editing === tool ? (
+                      <>
+                        <Input
+                          aria-label={tool}
+                          autoFocus
+                          className="mt-1 w-full font-mono text-xs"
+                          onChange={(e) => setEditValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleSave(tool).catch(() => {});
+                            }
+                            if (e.key === "Escape") {
+                              cancelEdit();
+                            }
+                          }}
+                          placeholder={`/usr/bin/${tool}`}
+                          type="text"
+                          value={editValue}
+                        />
+                        {editError && (
+                          <p className="mt-1 text-[var(--destructive)] text-xs">
+                            {editError}
+                          </p>
+                        )}
+                      </>
+                    ) : found ? (
+                      <p
+                        className={`${CLI_TEXT_COLUMN} truncate font-mono text-[var(--muted-foreground)] text-xs`}
+                      >
+                        {entry.resolvedPath}
+                      </p>
+                    ) : (
+                      <BinaryNotFoundStatus
+                        overrideInvalid={entry?.source === "override_invalid"}
+                        tool={tool}
                       />
-                      {editError && (
-                        <p className="mt-1 text-[var(--destructive)] text-xs">
-                          {editError}
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p className="max-w-[300px] truncate font-mono text-[var(--muted-foreground)] text-xs">
-                      {binaries[tool] ?? "Not found"}
-                    </p>
-                  )}
-                </div>
-                <div className="ml-2 flex shrink-0 gap-2">
-                  {editing === tool ? (
-                    <>
+                    )}
+                  </div>
+                  <div className="ml-2 flex shrink-0 gap-2">
+                    {editing === tool ? (
+                      <>
+                        <Button
+                          onClick={() => handleSave(tool)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          Save
+                        </Button>
+                        <Button onClick={cancelEdit} size="sm" variant="ghost">
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
                       <Button
-                        onClick={() => handleSave(tool)}
+                        onClick={() => startEdit(tool)}
                         size="sm"
                         variant="outline"
                       >
-                        Save
+                        Edit
                       </Button>
-                      <Button onClick={cancelEdit} size="sm" variant="ghost">
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button
-                      onClick={() => startEdit(tool)}
-                      size="sm"
-                      variant="outline"
-                    >
-                      Edit
-                    </Button>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </CardContent>
       </Card>
     </div>
-  );
-}
-
-// The Labs panel is driven directly by the shared feature-flag registry
-// (single source of truth). `hiddenFromLabs` flags — e.g. shared kebab-case UI
-// flags that are not user-set — are excluded so only user-facing toggles render.
-const LAB_FLAGS = FEATURE_FLAGS.filter((flag) => !flag.hiddenFromLabs);
-
-function LabsTab({
-  active,
-  settings,
-  onSettingsChange,
-}: {
-  active: boolean;
-  settings: Record<string, unknown> | null;
-  onSettingsChange: (s: Record<string, unknown>) => void;
-}) {
-  const [saving, setSaving] = useState<string | null>(null);
-
-  const handleToggle = async (key: string, currentValue: boolean) => {
-    setSaving(key);
-    try {
-      await window.desktopApi.updateSettings({ [key]: !currentValue });
-      const updated = await window.desktopApi.getSettings();
-      onSettingsChange(updated as Record<string, unknown>);
-    } catch {
-      /* ignore */
-    }
-    setSaving(null);
-  };
-
-  return (
-    <div className="mt-4 space-y-4">
-      <GatewayHealthCard active={active} />
-      <Card>
-        <CardHeader>
-          <CardTitle>Labs</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-4 text-[var(--muted-foreground)] text-sm">
-            Early access to experimental features and advanced controls.
-          </p>
-          <div className="space-y-3">
-            {LAB_FLAGS.map((flag) => {
-              const value = settings?.[flag.key] === true;
-              return (
-                <div
-                  className="flex items-center justify-between rounded border p-3"
-                  key={flag.key}
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-sm">{flag.label}</p>
-                      <Badge className="text-[10px]" variant="outline">
-                        {flag.category}
-                      </Badge>
-                    </div>
-                    <p className="mt-0.5 text-[var(--muted-foreground)] text-xs">
-                      {flag.description}
-                    </p>
-                    {flag.requiresRestart && (
-                      <p className="mt-0.5 text-[10px] text-[var(--warning-foreground)]">
-                        Requires restart
-                      </p>
-                    )}
-                  </div>
-                  <Switch
-                    aria-label={`Toggle ${flag.label}`}
-                    checked={value}
-                    className="ml-3 shrink-0"
-                    disabled={saving === flag.key}
-                    onCheckedChange={() => handleToggle(flag.key, value)}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-function GatewayHealthCard({ active }: { active: boolean }) {
-  const [runtimeStatus, setRuntimeStatus] =
-    useState<GatewayRuntimeStatus | null>(null);
-
-  useEffect(() => {
-    if (!active) {
-      return;
-    }
-    let canceled = false;
-    window.desktopApi
-      .getRuntimeStatus()
-      .then((status) => {
-        if (!canceled) {
-          setRuntimeStatus(parseGatewayRuntimeStatus(status));
-        }
-      })
-      .catch(() => {
-        if (!canceled) {
-          setRuntimeStatus(null);
-        }
-      });
-    return () => {
-      canceled = true;
-    };
-  }, [active]);
-
-  const health = getGatewayHealthStatus(runtimeStatus);
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Gateway Health</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-2">
-          <span
-            aria-hidden="true"
-            className={`size-2 shrink-0 rounded-full ${health.dotClassName}`}
-          />
-          <span className={`font-semibold text-sm ${health.textClassName}`}>
-            {health.label}
-          </span>
-        </div>
-        <div className="space-y-2">
-          <ConfigRow
-            label="Gateway Port"
-            mono
-            value={formatRuntimeStatusValue(runtimeStatus?.port)}
-          />
-          <ConfigRow
-            label="Security"
-            value={formatConnectionSecurityValue(
-              runtimeStatus?.connectionSecurity
-            )}
-          />
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -928,6 +944,7 @@ function GatewayProfilesCard({
 }) {
   const savedConfigs = (settings?.savedConfigs as GatewayProfile[]) ?? [];
   const activeConfigId = settings?.activeConfigId as string | null | undefined;
+  const globalSandbox = (settings?.sandboxBaseDirectory as string) || "";
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(
     activeConfigId ?? null
   );
@@ -941,6 +958,15 @@ function GatewayProfilesCard({
   const [selectedForm, setSelectedForm] = useState<GatewayProfileFormState>(
     () => getProfileFormState(selectedProfile, settings)
   );
+  // ISS-4577 (wongk review): the per-profile sandbox field reports whether its
+  // current value is a KNOWN-invalid path (settled risky root / missing dir).
+  // The New-profile dialog and the selected-profile editor each gate their Save
+  // on it so an invalid sandbox can no longer be persisted despite the inline
+  // warning. Blank (inherit the global sandbox) is never invalid.
+  const [newProfileSandboxInvalid, setNewProfileSandboxInvalid] =
+    useState(false);
+  const [selectedProfileSandboxInvalid, setSelectedProfileSandboxInvalid] =
+    useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
@@ -989,7 +1015,7 @@ function GatewayProfilesCard({
     } catch (err) {
       setApplyError({
         id,
-        message: err instanceof Error ? err.message : "Failed to apply profile",
+        message: cleanIpcError(err, "Failed to apply profile"),
       });
     } finally {
       setApplying(null);
@@ -1028,9 +1054,7 @@ function GatewayProfilesCard({
       setRenaming(null);
       setRenameValue("");
     } catch (err) {
-      setRenameError(
-        err instanceof Error ? err.message : "Failed to rename profile"
-      );
+      setRenameError(cleanIpcError(err, "Failed to rename profile"));
     } finally {
       setRenameBusy(false);
     }
@@ -1046,8 +1070,7 @@ function GatewayProfilesCard({
     } catch (err) {
       setDeleteError({
         id,
-        message:
-          err instanceof Error ? err.message : "Failed to delete profile",
+        message: cleanIpcError(err, "Failed to delete profile"),
       });
     } finally {
       setDeleting(false);
@@ -1067,6 +1090,7 @@ function GatewayProfilesCard({
         apiOrigin: string;
         webAppOrigin: string;
         apiKey?: string;
+        sandboxBaseDirectory?: string;
       } = {
         name: newProfileForm.name,
         relayOrigin: newProfileForm.relayOrigin,
@@ -1077,6 +1101,10 @@ function GatewayProfilesCard({
       if (apiKey) {
         payload.apiKey = apiKey;
       }
+      const sandbox = newProfileForm.sandboxBaseDirectory.trim();
+      if (sandbox) {
+        payload.sandboxBaseDirectory = sandbox;
+      }
       const saved = (await window.desktopApi.saveConfig(payload)) as {
         id?: string;
       };
@@ -1086,9 +1114,7 @@ function GatewayProfilesCard({
       }
       setDialogOpen(false);
     } catch (err) {
-      setSaveError(
-        err instanceof Error ? err.message : "Failed to save profile"
-      );
+      setSaveError(cleanIpcError(err, "Failed to save profile"));
     } finally {
       setSaving(false);
     }
@@ -1108,6 +1134,7 @@ function GatewayProfilesCard({
         apiOrigin: string;
         webAppOrigin: string;
         apiKey?: string;
+        sandboxBaseDirectory?: string;
       } = {
         id: selectedProfile.id,
         name: selectedForm.name,
@@ -1119,13 +1146,15 @@ function GatewayProfilesCard({
       if (apiKey) {
         payload.apiKey = apiKey;
       }
+      const sandbox = selectedForm.sandboxBaseDirectory.trim();
+      if (sandbox) {
+        payload.sandboxBaseDirectory = sandbox;
+      }
       await window.desktopApi.saveConfig(payload);
       await refreshSettings();
       setSelectedForm((current) => ({ ...current, apiKey: "" }));
     } catch (err) {
-      setProfileSaveError(
-        err instanceof Error ? err.message : "Failed to save profile"
-      );
+      setProfileSaveError(cleanIpcError(err, "Failed to save profile"));
     } finally {
       setProfileSaving(false);
     }
@@ -1159,6 +1188,7 @@ function GatewayProfilesCard({
                   deleteError?.id === config.id ? deleteError.message : null
                 }
                 deleting={deleting}
+                globalSandbox={globalSandbox}
                 isActive={config.id === activeConfigId}
                 isRenaming={renaming === config.id}
                 isSelected={config.id === selectedProfileId}
@@ -1221,10 +1251,23 @@ function GatewayProfilesCard({
             </div>
             <ProfileConnectionFields
               form={selectedForm}
+              globalSandbox={globalSandbox}
               onChange={(patch) => {
                 setSelectedForm((current) => ({ ...current, ...patch }));
                 setProfileSaveError(null);
               }}
+              onEnter={() => {
+                if (
+                  !(
+                    profileSaving ||
+                    !isProfileFormComplete(selectedForm) ||
+                    selectedProfileSandboxInvalid
+                  )
+                ) {
+                  handleSaveSelectedProfile().catch(() => {});
+                }
+              }}
+              onSandboxValidityChange={setSelectedProfileSandboxInvalid}
               tokenPlaceholder={
                 selectedProfile.hasCloudApiKey
                   ? "Leave blank to keep saved token"
@@ -1238,7 +1281,11 @@ function GatewayProfilesCard({
             )}
             <div className="flex justify-end">
               <Button
-                disabled={profileSaving || !isProfileFormComplete(selectedForm)}
+                disabled={
+                  profileSaving ||
+                  !isProfileFormComplete(selectedForm) ||
+                  selectedProfileSandboxInvalid
+                }
                 onClick={() => {
                   handleSaveSelectedProfile().catch(() => {});
                 }}
@@ -1264,15 +1311,23 @@ function GatewayProfilesCard({
             <ProfileConnectionFields
               autoFocusName
               form={newProfileForm}
+              globalSandbox={globalSandbox}
               onChange={(patch) => {
                 setNewProfileForm((current) => ({ ...current, ...patch }));
                 setSaveError(null);
               }}
               onEnter={() => {
-                if (!saving) {
+                if (
+                  !(
+                    saving ||
+                    !isProfileFormComplete(newProfileForm) ||
+                    newProfileSandboxInvalid
+                  )
+                ) {
                   handleSaveProfile().catch(() => {});
                 }
               }}
+              onSandboxValidityChange={setNewProfileSandboxInvalid}
               tokenPlaceholder="sk_live_..."
             />
             {saveError && (
@@ -1288,7 +1343,11 @@ function GatewayProfilesCard({
               Cancel
             </Button>
             <Button
-              disabled={saving || !isProfileFormComplete(newProfileForm)}
+              disabled={
+                saving ||
+                !isProfileFormComplete(newProfileForm) ||
+                newProfileSandboxInvalid
+              }
               onClick={() => {
                 handleSaveProfile().catch(() => {});
               }}
@@ -1303,407 +1362,4 @@ function GatewayProfilesCard({
   );
 }
 
-function ProfileConnectionFields({
-  form,
-  onChange,
-  onEnter,
-  tokenPlaceholder,
-  autoFocusName,
-}: {
-  form: GatewayProfileFormState;
-  onChange: (patch: Partial<GatewayProfileFormState>) => void;
-  onEnter?: () => void;
-  tokenPlaceholder: string;
-  autoFocusName?: boolean;
-}) {
-  const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      onEnter?.();
-    }
-  };
-  const fieldIdPrefix = useId();
-  const profileNameId = `${fieldIdPrefix}-name`;
-  const authenticationTokenId = `${fieldIdPrefix}-authentication-token`;
-  const relayUriId = `${fieldIdPrefix}-relay-uri`;
-  const apiUriId = `${fieldIdPrefix}-api-uri`;
-  const appUriId = `${fieldIdPrefix}-app-uri`;
-
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor={profileNameId}>
-          Profile Name
-        </Label>
-        <Input
-          autoFocus={autoFocusName}
-          id={profileNameId}
-          onChange={(e) => onChange({ name: e.target.value })}
-          onKeyDown={handleKeyDown}
-          placeholder="e.g. Production"
-          type="text"
-          value={form.name}
-        />
-      </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor={authenticationTokenId}>
-          Authentication Token
-        </Label>
-        <Input
-          autoComplete="off"
-          className="font-mono text-xs"
-          id={authenticationTokenId}
-          onChange={(e) => onChange({ apiKey: e.target.value })}
-          onKeyDown={handleKeyDown}
-          placeholder={tokenPlaceholder}
-          type="password"
-          value={form.apiKey}
-        />
-      </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor={relayUriId}>
-          Relay URI
-        </Label>
-        <Input
-          className="font-mono text-xs"
-          id={relayUriId}
-          onChange={(e) => onChange({ relayOrigin: e.target.value })}
-          onKeyDown={handleKeyDown}
-          placeholder="https://relay.closedloop.ai"
-          type="text"
-          value={form.relayOrigin}
-        />
-      </div>
-      <div className="space-y-1">
-        <Label className="text-xs" htmlFor={apiUriId}>
-          API URI
-        </Label>
-        <Input
-          className="font-mono text-xs"
-          id={apiUriId}
-          onChange={(e) => onChange({ apiOrigin: e.target.value })}
-          onKeyDown={handleKeyDown}
-          placeholder="https://api.closedloop.ai"
-          type="text"
-          value={form.apiOrigin}
-        />
-      </div>
-      <div className="space-y-1 sm:col-span-2">
-        <Label className="text-xs" htmlFor={appUriId}>
-          App URI
-        </Label>
-        <Input
-          className="font-mono text-xs"
-          id={appUriId}
-          onChange={(e) => onChange({ webAppOrigin: e.target.value })}
-          onKeyDown={handleKeyDown}
-          placeholder="https://app.closedloop.ai"
-          type="text"
-          value={form.webAppOrigin}
-        />
-      </div>
-    </div>
-  );
-}
-
 type ProfileActionError = { id: string; message: string } | null;
-
-type GatewayProfileRowProps = {
-  profile: GatewayProfile;
-  isActive: boolean;
-  isSelected: boolean;
-  isRenaming: boolean;
-  renameValue: string;
-  renameError: string | null;
-  renameBusy: boolean;
-  applying: boolean;
-  applyError: string | null;
-  confirmingDelete: boolean;
-  deleting: boolean;
-  deleteError: string | null;
-  onStartRename: () => void;
-  onRenameValueChange: (value: string) => void;
-  onRename: () => void;
-  onCancelRename: () => void;
-  onSelect: () => void;
-  onApply: () => void;
-  onStartDelete: () => void;
-  onConfirmDelete: () => void;
-  onCancelDelete: () => void;
-};
-
-function GatewayProfileRow({
-  profile,
-  isActive,
-  isSelected,
-  isRenaming,
-  renameValue,
-  renameError,
-  renameBusy,
-  applying,
-  applyError,
-  confirmingDelete,
-  deleting,
-  deleteError,
-  onStartRename,
-  onRenameValueChange,
-  onRename,
-  onCancelRename,
-  onSelect,
-  onApply,
-  onStartDelete,
-  onConfirmDelete,
-  onCancelDelete,
-}: GatewayProfileRowProps) {
-  return (
-    <div
-      className={`rounded border p-3 text-sm ${isSelected ? "border-[var(--primary)] bg-[var(--primary)]/5" : ""}`}
-    >
-      <div className="flex items-center justify-between">
-        <div className="min-w-0 flex-1">
-          {isRenaming ? (
-            <Input
-              aria-label="Rename profile"
-              autoFocus
-              className="h-7 w-full text-sm"
-              disabled={renameBusy}
-              onChange={(e) => onRenameValueChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  onRename();
-                }
-                if (e.key === "Escape") {
-                  onCancelRename();
-                }
-              }}
-              type="text"
-              value={renameValue}
-            />
-          ) : (
-            <div className="flex items-center gap-2">
-              <p className="truncate font-medium">{profile.name}</p>
-              {isActive && (
-                <Badge className="shrink-0 text-[10px]" variant="default">
-                  Active
-                </Badge>
-              )}
-            </div>
-          )}
-          <p className="mt-0.5 truncate font-mono text-[var(--muted-foreground)] text-xs">
-            {profile.relayOrigin}
-          </p>
-          <p className="mt-0.5 truncate font-mono text-[var(--muted-foreground)] text-xs">
-            {profile.apiOrigin} - {profile.webAppOrigin}
-          </p>
-        </div>
-        <div className="ml-2 flex shrink-0 gap-2">
-          {isRenaming ? (
-            <>
-              <Button
-                disabled={renameBusy}
-                onClick={onRename}
-                size="sm"
-                variant="outline"
-              >
-                {renameBusy ? "Saving..." : "Save"}
-              </Button>
-              <Button
-                disabled={renameBusy}
-                onClick={onCancelRename}
-                size="sm"
-                variant="ghost"
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                aria-label="Rename profile"
-                onClick={onStartRename}
-                size="sm"
-                title="Rename profile"
-                variant="ghost"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-              <Button
-                aria-label="Delete profile"
-                onClick={onStartDelete}
-                size="sm"
-                title="Delete profile"
-                variant="ghost"
-              >
-                <Trash2 className="h-3.5 w-3.5 text-[var(--destructive)]" />
-              </Button>
-              {!isSelected && (
-                <Button onClick={onSelect} size="sm" variant="ghost">
-                  Select
-                </Button>
-              )}
-              {!isActive && (
-                <Button
-                  disabled={applying}
-                  onClick={onApply}
-                  size="sm"
-                  variant="outline"
-                >
-                  {applying ? "Applying..." : "Apply"}
-                </Button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-      {isRenaming && renameError && (
-        <p className="mt-1 text-[var(--destructive)] text-xs">{renameError}</p>
-      )}
-      {applyError && (
-        <p className="mt-1 text-[var(--destructive)] text-xs">{applyError}</p>
-      )}
-      {confirmingDelete && (
-        <div className="mt-2 rounded border border-[var(--destructive)] bg-[var(--destructive)]/5 px-3 py-2">
-          <div className="flex items-center gap-2">
-            <p className="flex-1 text-[var(--destructive)] text-xs">
-              Delete "{profile.name}"? This cannot be undone.
-            </p>
-            <Button
-              disabled={deleting}
-              onClick={onConfirmDelete}
-              size="sm"
-              variant="destructive"
-            >
-              {deleting ? "Deleting..." : "Delete"}
-            </Button>
-            <Button
-              disabled={deleting}
-              onClick={onCancelDelete}
-              size="sm"
-              variant="ghost"
-            >
-              Cancel
-            </Button>
-          </div>
-          {deleteError && (
-            <p className="mt-2 text-[var(--destructive)] text-xs">
-              {deleteError}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ConfigRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-3 text-sm">
-      <span className="w-24 shrink-0 text-[var(--muted-foreground)]">
-        {label}
-      </span>
-      <span className={`truncate ${mono ? "font-mono" : ""}`}>
-        {value || "—"}
-      </span>
-    </div>
-  );
-}
-
-const gatewayPortSchema = z.number().int().min(1).max(65_535);
-
-const gatewayConnectionSecuritySchema = z
-  .object({
-    detail: z.string().optional(),
-    mode: z
-      .union([
-        z.literal(ConnectionSecurityMode.Enhanced),
-        z.literal(ConnectionSecurityMode.SigningUnavailable),
-        z.literal(ConnectionSecurityMode.Standard),
-        z.literal(ConnectionSecurityMode.Unconfigured),
-      ])
-      .optional()
-      .catch(undefined),
-  })
-  .passthrough();
-
-const gatewayRuntimeStatusSchema = z
-  .object({
-    connectionSecurity: gatewayConnectionSecuritySchema
-      .optional()
-      .catch(undefined),
-    gatewayHealthy: z.boolean().optional().catch(undefined),
-    port: gatewayPortSchema.optional().catch(undefined),
-    serverAlive: z.boolean().optional().catch(undefined),
-  })
-  .passthrough();
-
-type GatewayRuntimeStatus = z.infer<typeof gatewayRuntimeStatusSchema>;
-
-function parseGatewayRuntimeStatus(
-  status: unknown
-): GatewayRuntimeStatus | null {
-  const result = gatewayRuntimeStatusSchema.safeParse(status);
-  return result.success ? result.data : null;
-}
-
-const OFFLINE_GATEWAY_STATUS = {
-  dotClassName: "bg-[var(--destructive)]",
-  label: "Offline",
-  textClassName: "text-foreground",
-} as const;
-
-function getGatewayHealthStatus(status: GatewayRuntimeStatus | null): {
-  dotClassName: string;
-  label: string;
-  textClassName: string;
-} {
-  // Map the gateway runtime signals into three at-a-glance buckets. `serverAlive`
-  // is the reachability signal (is the local gateway server listening) and
-  // `gatewayHealthy` is the health signal (has recovery/liveness confirmed it):
-  //   - Offline: the server is confirmed down, or we have no status at all
-  //     (unreachable / gateway down).
-  //   - Connected: reachable and healthy.
-  //   - Needs Attention: reachable but not healthy (e.g. recovering, liveness
-  //     probe failing) — degraded rather than fully offline.
-  if (status?.serverAlive === false) {
-    return OFFLINE_GATEWAY_STATUS;
-  }
-  if (status?.gatewayHealthy === true) {
-    return {
-      dotClassName: "bg-[var(--success)]",
-      label: "Connected",
-      textClassName: "text-foreground",
-    };
-  }
-  if (status?.gatewayHealthy === false) {
-    return {
-      dotClassName: "bg-[var(--warning)]",
-      label: "Needs Attention",
-      textClassName: "text-foreground",
-    };
-  }
-  return OFFLINE_GATEWAY_STATUS;
-}
-
-function formatRuntimeStatusValue(value: unknown): string {
-  const result = gatewayPortSchema.safeParse(value);
-  return result.success ? result.data.toString() : "";
-}
-
-function formatConnectionSecurityValue(
-  value: GatewayRuntimeStatus["connectionSecurity"]
-): string {
-  if (value?.detail && value.detail.trim().length > 0) {
-    return value.detail;
-  }
-  if (value?.mode) {
-    return value.mode.replaceAll("_", " ");
-  }
-  return "";
-}

@@ -9,6 +9,7 @@
 
 import { createReadStream, readFileSync, statSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { isReplayedTranscriptEntry } from "@repo/lib/harness/claude/replayed-entry";
 import { asRecord } from "../../../shared/type-guards.js";
 
 export type SubagentToolUseRecord = {
@@ -44,6 +45,10 @@ function normalizeTimestamp(raw: unknown): string {
  * The subagent transcript path convention follows Claude Code's output
  * directory layout: <parentTranscriptDir>/<sessionId>/subagents/agent-*.jsonl.
  * The caller resolves the native `agent-*` id from persisted agent metadata.
+ *
+ * ISS-5426 (wongk review, PR #4715): resume/compaction-REPLAYED entries are
+ * dropped by `uuid` before extraction — see {@link scanSubagentTranscriptStream}
+ * for why this scanner needs its own copy of the FEA-3453 filter.
  */
 export function scanSubagentTranscript(
   filePath: string,
@@ -64,6 +69,7 @@ export function scanSubagentTranscript(
     return { toolUses: [] };
   }
 
+  const seenEntryUuids = new Set<string>();
   for (const line of content.split("\n")) {
     if (!line.trim()) {
       continue;
@@ -74,6 +80,9 @@ export function scanSubagentTranscript(
     } catch {
       return { toolUses: [] };
     }
+    if (isReplayedTranscriptEntry(seenEntryUuids, entry)) {
+      continue;
+    }
     toolUses.push(...extractToolUses(entry, sessionId, subagentId));
   }
 
@@ -83,6 +92,22 @@ export function scanSubagentTranscript(
 /**
  * Async streaming version of the subagent scanner. Prefer this for production
  * use on large files; the sync version above is kept for simpler callers.
+ *
+ * ISS-5426 (wongk review, PR #4715): resume/compaction REPLAYS are dropped by
+ * `uuid` (FEA-3453) before extraction. A caller-side `tool_use.id` dedup cannot
+ * stand in for that filter — `tool_use.id` is raw transcript JSON and may be
+ * absent, so an IDLESS replayed tool use would be merged twice and ride on into
+ * every downstream projection (the skills derivation, the per-subagent tool
+ * events, the tool heatmaps). The filter lives here rather than at the call site
+ * so BOTH scanner entry points read a replayed transcript identically, and so
+ * the guard cannot be forgotten by a future caller. Scoped per CALL, matching
+ * the per-file scoping of the parser's set.
+ *
+ * ISS-5542: the boot importer no longer calls this. `claude-parser.ts` already
+ * streams every sidecar once through `collectEntriesFromFile`, and now folds
+ * {@link extractToolUses} into that pass rather than re-opening and re-parsing
+ * the same file here. The live-hook path (`database/live-hook.ts`), which has no
+ * such pass of its own, is this function's remaining caller.
  */
 export async function scanSubagentTranscriptStream(
   filePath: string,
@@ -101,6 +126,7 @@ export async function scanSubagentTranscriptStream(
     crlfDelay: Number.POSITIVE_INFINITY,
   });
 
+  const seenEntryUuids = new Set<string>();
   try {
     for await (const line of rl) {
       if (!line.trim()) {
@@ -112,6 +138,9 @@ export async function scanSubagentTranscriptStream(
       } catch {
         return { toolUses: [] };
       }
+      if (isReplayedTranscriptEntry(seenEntryUuids, entry)) {
+        continue;
+      }
       toolUses.push(...extractToolUses(entry, sessionId, subagentId));
     }
   } finally {
@@ -121,7 +150,17 @@ export async function scanSubagentTranscriptStream(
   return { toolUses };
 }
 
-function extractToolUses(
+/**
+ * Extract the tool-use records carried by ONE already-parsed transcript entry.
+ *
+ * ISS-5542: exported so a caller that already streams the sidecar for its own
+ * reasons — `claude-parser.ts`'s `collectEntriesFromFile` — can fold this
+ * extraction into that pass instead of paying a second whole-file read and
+ * `JSON.parse` through {@link scanSubagentTranscriptStream}. Such a caller owns
+ * the two guards the scanners apply around this function: the FEA-3453 replayed
+ * `uuid` filter, and the whole-file bail on a malformed line.
+ */
+export function extractToolUses(
   entry: Record<string, unknown>,
   sessionId: string,
   subagentId: string
@@ -185,12 +224,44 @@ function extractFlatToolUse(
   };
 }
 
-function stringifyBounded(value: unknown): string | null {
+/** Character ceiling for a serialized tool-use `input`/`output` preview. */
+export const MAX_STRINGIFIED_CHARS = 1000;
+
+/**
+ * Serialize `value` down to at most {@link MAX_STRINGIFIED_CHARS} characters,
+ * bounding the WORK rather than only the RESULT (ISS-5543).
+ *
+ * A `Write`/`Edit` tool_use carries a whole source file in its input, so the
+ * previous `JSON.stringify(value).slice(0, 1000)` allocated the entire multi-KB
+ * document per tool use just to keep 1 KB of it — once per tool_use on the
+ * boot-import path and again per `SubagentStop` on the live-hook path. The
+ * replacer here spends a budget shared across the whole value's string content,
+ * so no oversized string is ever copied into a result that is about to be thrown
+ * away. A payload whose full serialization would exceed V8's maximum string
+ * length now yields its bounded prefix instead of throwing.
+ *
+ * The output is byte-identical to the old form, which is deliberate: these
+ * records reach `session.subagents[].toolUses`, and the artifact-ref extractor
+ * reads them. The budget can only run out at an output offset at or past the
+ * `slice` cut (escaping only ever lengthens a string), so nothing inside the
+ * kept prefix shifts — no re-derivation constant needs to move.
+ */
+export function stringifyBounded(value: unknown): string | null {
   if (value === undefined) {
     return null;
   }
+  let remaining = MAX_STRINGIFIED_CHARS;
+  const boundStrings = (_key: string, raw: unknown): unknown => {
+    if (typeof raw !== "string") {
+      return raw;
+    }
+    const kept = raw.length > remaining ? raw.slice(0, remaining) : raw;
+    remaining -= kept.length;
+    return kept;
+  };
   try {
-    return JSON.stringify(value).slice(0, 1000);
+    const json = JSON.stringify(value, boundStrings);
+    return json === undefined ? null : json.slice(0, MAX_STRINGIFIED_CHARS);
   } catch {
     return null;
   }

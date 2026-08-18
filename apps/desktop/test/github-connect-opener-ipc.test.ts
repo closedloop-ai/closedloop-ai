@@ -4,7 +4,7 @@ import {
   GitHubConnectIpcChannel,
   GitHubConnectOpenFailureReason,
   registerGitHubConnectOpenerIpcHandlers,
-} from "../src/main/github-connect-opener-ipc.js";
+} from "../src/main/ipc/github-connect-opener-ipc.js";
 
 type IpcHandlerWithRequest = (
   event: unknown,

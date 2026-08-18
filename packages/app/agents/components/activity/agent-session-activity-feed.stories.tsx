@@ -1,29 +1,23 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../../shared/storybook/decorators";
+import type { FixtureRoute } from "../../../shared/storybook/fixture-fetch";
 import { populatedAgentSessionListFixtures } from "../sessions/session-list-fixtures";
 import { AgentSessionActivityFeed } from "./agent-session-activity-feed";
 
+const storyApiRoutes: FixtureRoute[] = [
+  {
+    method: "GET",
+    path: "/agent-sessions",
+    respond: () => ({
+      items: populatedAgentSessionListFixtures,
+      total: populatedAgentSessionListFixtures.length,
+      viewerScope: "self",
+    }),
+  },
+];
+
 const meta: Meta<typeof AgentSessionActivityFeed> = {
   component: AgentSessionActivityFeed,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders
-        apiRoutes={[
-          {
-            method: "GET",
-            path: "/agent-sessions",
-            respond: () => ({
-              items: populatedAgentSessionListFixtures,
-              total: populatedAgentSessionListFixtures.length,
-              viewerScope: "self",
-            }),
-          },
-        ]}
-      >
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
+  parameters: { appCore: { apiRoutes: storyApiRoutes } },
   title: "App Core/Agents/Session Activity Feed",
 };
 

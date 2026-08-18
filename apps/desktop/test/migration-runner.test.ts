@@ -15,16 +15,17 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { openMigrationDatabase } from "../src/main/database/migration-executor.js";
+import { openMigrationDatabase } from "../src/main/database/migration/migration-executor.js";
 import {
   type EmbeddedMigration,
   type MigrationDb,
   runDesktopMigrations,
-} from "../src/main/database/migration-runner.js";
+} from "../src/main/database/migration/migration-runner.js";
 import {
   DesktopMigrationError,
+  isDbAheadOfAppError,
   MigrationRefusalKind,
-} from "../src/main/migration-refusal.js";
+} from "../src/main/lifecycle/migration-refusal.js";
 
 function migration(name: string, sql: string): EmbeddedMigration {
   return {
@@ -298,6 +299,157 @@ test("refuses on downgrade (DB has a migration the bundle lacks)", async () => {
   );
 });
 
+// ISS-6169. The tracking-table read is an unordered SCAN, so `applied` arrives
+// in physical rowid order; the guard used to throw on the FIRST unknown row and
+// therefore named a different migration depending on insertion order. Seeding
+// the SAME two unknown migrations in both orders is what makes this fail under
+// the first-match code: each order reported its own first row. A single-unknown
+// fixture would pass identically before and after the fix and prove nothing.
+const FUTURE_A = {
+  name: "0019_agent_component_content",
+  checksum: "a".repeat(64),
+};
+const FUTURE_B = {
+  name: "0053_drop_artifact_enrichment_columns",
+  checksum: "b".repeat(64),
+};
+
+/** Runs the guard over a seeded history and returns whatever it threw. */
+async function refusalFrom(
+  seeded: readonly { name: string; checksum: string }[]
+): Promise<unknown> {
+  const db = await freshDb();
+  await seedTracking(db, [...seeded]);
+  try {
+    await runDesktopMigrations(db, {
+      migrations: [M1],
+      baselineStatements: BASELINE_STATEMENTS,
+      baselineMigrations: BASELINE_NAMES,
+      legacySentinelTable: "widgets",
+    });
+  } catch (error) {
+    return error;
+  }
+  return null;
+}
+
+test("downgrade verdict names every unknown migration, stably ordered", async () => {
+  const base = { name: M1.name, checksum: M1.checksum };
+  const forwardError = await refusalFrom([base, FUTURE_A, FUTURE_B]);
+  const reversedError = await refusalFrom([base, FUTURE_B, FUTURE_A]);
+
+  assert.ok(forwardError instanceof DesktopMigrationError);
+  assert.ok(reversedError instanceof DesktopMigrationError);
+  assert.equal(forwardError.kind, MigrationRefusalKind.Downgrade);
+  assert.equal(reversedError.kind, MigrationRefusalKind.Downgrade);
+
+  const forward = forwardError.message;
+  // Complete: BOTH unknown migrations are named, not just the first row read.
+  assert.ok(forward.includes(FUTURE_A.name));
+  assert.ok(forward.includes(FUTURE_B.name));
+  // Stably ordered: ascending by name regardless of physical row order.
+  assert.ok(
+    forward.indexOf(FUTURE_A.name) < forward.indexOf(FUTURE_B.name),
+    `expected ${FUTURE_A.name} before ${FUTURE_B.name} in: ${forward}`
+  );
+  // Deterministic: the verdict is a function of the history, not of row order.
+  assert.equal(reversedError.message, forward);
+});
+
+test("checksum-drift verdict names every drifted migration, stably ordered", async () => {
+  // Both bundled migrations are recorded with checksums that are not theirs, so
+  // BOTH drift and neither is unknown. Same both-orders shape as the downgrade
+  // twin: with a first-match guard each order named only its own first row.
+  const driftA = { name: M1.name, checksum: "c".repeat(64) };
+  const driftB = { name: M2.name, checksum: "d".repeat(64) };
+  const run = async (seeded: readonly { name: string; checksum: string }[]) => {
+    const db = await freshDb();
+    await seedTracking(db, [...seeded]);
+    try {
+      await runDesktopMigrations(db, {
+        migrations: [M1, M2],
+        baselineStatements: BASELINE_STATEMENTS,
+        baselineMigrations: BASELINE_NAMES,
+        legacySentinelTable: "widgets",
+      });
+    } catch (error) {
+      return error;
+    }
+    return null;
+  };
+
+  const forwardError = await run([driftA, driftB]);
+  const reversedError = await run([driftB, driftA]);
+
+  assert.ok(forwardError instanceof DesktopMigrationError);
+  assert.ok(reversedError instanceof DesktopMigrationError);
+  assert.equal(forwardError.kind, MigrationRefusalKind.ChecksumDrift);
+
+  const forward = forwardError.message;
+  // Complete: both drifted migrations named, ascending, order-independent.
+  assert.ok(forward.includes(M1.name));
+  assert.ok(forward.includes(M2.name));
+  assert.ok(forward.indexOf(M1.name) < forward.indexOf(M2.name), forward);
+  assert.equal(reversedError.message, forward);
+  // The checksum pair belongs to the FIRST drifted migration specifically —
+  // recorded is what the DB had, bundled is what this build ships.
+  assert.ok(forward.includes(driftA.checksum.slice(0, 12)));
+  assert.ok(forward.includes(M1.checksum.slice(0, 12)));
+});
+
+// ISS-6169. The bundle's application order is NOT its name order: the manifest
+// generator sorts through `scripts/migration-order.mjs`, which maps the one
+// timestamp-prefixed migration onto its legacy `0004` slot, and
+// `migrations-manifest-lib.test.ts` asserts a plain lexicographic sort is wrong.
+// This fixture is that real shape — the timestamp migration ran BEFORE the
+// `0005_` one — so sorting drift by name would report them backwards and hand
+// the checksum detail to the later migration instead of the earliest divergence.
+const TS_SLOT_0004 = migration(
+  "20260619220000_add_genai_prices_pricing_source",
+  "ALTER TABLE widgets ADD COLUMN pricing_source TEXT;"
+);
+const AFTER_TS_SLOT = migration(
+  "0005_add_widget_size",
+  "ALTER TABLE widgets ADD COLUMN size TEXT;"
+);
+
+test("drift verdict follows bundle order, not name order", async () => {
+  const db = await freshDb();
+  // Both migrations after the genesis drift; the genesis itself is intact.
+  const recordedTs = "e".repeat(64);
+  await seedTracking(db, [
+    { name: M1.name, checksum: M1.checksum },
+    { name: TS_SLOT_0004.name, checksum: recordedTs },
+    { name: AFTER_TS_SLOT.name, checksum: "f".repeat(64) },
+  ]);
+
+  let caught: unknown = null;
+  try {
+    await runDesktopMigrations(db, {
+      migrations: [M1, TS_SLOT_0004, AFTER_TS_SLOT],
+      baselineStatements: BASELINE_STATEMENTS,
+      baselineMigrations: BASELINE_NAMES,
+      legacySentinelTable: "widgets",
+    });
+  } catch (error) {
+    caught = error;
+  }
+
+  assert.ok(caught instanceof DesktopMigrationError);
+  assert.equal(caught.kind, MigrationRefusalKind.ChecksumDrift);
+  const message = caught.message;
+  // The timestamp migration ran FIRST, so it is named first — a name sort would
+  // put "0005_add_widget_size" ahead of "20260619220000_…".
+  assert.ok(
+    message.indexOf(TS_SLOT_0004.name) < message.indexOf(AFTER_TS_SLOT.name),
+    `expected ${TS_SLOT_0004.name} before ${AFTER_TS_SLOT.name} in: ${message}`
+  );
+  // And the checksum pair — shown for the first drifted migration only — belongs
+  // to that earliest divergence, not to the one that merely sorts first.
+  assert.ok(message.includes(recordedTs.slice(0, 12)));
+  assert.ok(message.includes(TS_SLOT_0004.checksum.slice(0, 12)));
+});
+
 test("refuses on baseline_missing (baseline migration absent from manifest)", async () => {
   const db = await freshDb();
   // Sentinel present → baseline path entered; but a BASELINE_NAMES entry (M1)
@@ -390,19 +542,80 @@ test("does not rebaseline a partial pre-collapse history; refuses safely", async
       ],
       legacySentinelTable: "widgets",
     }),
-    // It must REFUSE rather than silently rebaseline. Which guard fires depends
-    // on iteration order (the genesis checksum mismatch trips ChecksumDrift; the
-    // orphaned superseded row would otherwise trip Downgrade) — either is a safe
-    // stop. What matters is no partial rebaseline occurred.
+    // It must REFUSE rather than silently rebaseline. ISS-6169 made WHICH guard
+    // fires deterministic: this fixture trips both (the genesis checksum
+    // mismatch is drift; the orphaned superseded row is unknown to the bundle),
+    // and drift now wins. That matters beyond determinism here — this store is
+    // BEHIND, and Downgrade is the one refusal the renderer turns into "created
+    // by a newer version, please update". Previously either kind could surface
+    // depending on physical row order, so this assertion had to accept both.
     (error: unknown) =>
       error instanceof DesktopMigrationError &&
-      (error.kind === MigrationRefusalKind.ChecksumDrift ||
-        error.kind === MigrationRefusalKind.Downgrade)
+      error.kind === MigrationRefusalKind.ChecksumDrift
   );
 
   // Tracking is left untouched — no partial rebaseline happened.
   assert.deepEqual(await listApplied(db), [G_OLD.name, S_COLOR.name]);
   assert.equal(await genesisChecksum(db), G_OLD.checksum);
+});
+
+// ISS-6169. The MIRROR of the fixture above, and the case the drift-first
+// precedence got wrong. Here the store is provably AHEAD — it carries two
+// migrations this bundle never shipped — and its genesis checksum was advanced
+// by a collapse declared only in the NEWER build that created it. This bundle
+// predates that collapse, so it ships the old genesis, still ships the migration
+// the newer build folded away, and declares no squash at all. The store
+// therefore trips drift AND downgrade at once, exactly like its behind-store
+// mirror, and only the ORIGIN of the unknown names tells them apart.
+async function refusalFromBundle(
+  seeded: readonly { name: string; checksum: string }[],
+  migrations: readonly EmbeddedMigration[]
+): Promise<unknown> {
+  const db = await freshDb();
+  await seedTracking(db, [...seeded]);
+  try {
+    await runDesktopMigrations(db, {
+      migrations,
+      baselineStatements: BASELINE_STATEMENTS,
+      baselineMigrations: [],
+      legacySentinelTable: "widgets",
+    });
+  } catch (error) {
+    return error;
+  }
+  return null;
+}
+
+test("an ahead store whose genesis a newer build collapsed still reports downgrade", async () => {
+  const ahead = [FUTURE_A, FUTURE_B];
+  const preCollapseBundle = [G_OLD, S_COLOR];
+
+  const collapsedGenesis = await refusalFromBundle(
+    [{ name: G_NEW.name, checksum: G_NEW.checksum }, ...ahead],
+    preCollapseBundle
+  );
+  assert.ok(collapsedGenesis instanceof DesktopMigrationError);
+  // The store is ahead, so the renderer must show "please update" — NOT the
+  // generic "inconsistent migration history" the drift kind maps to.
+  assert.equal(collapsedGenesis.kind, MigrationRefusalKind.Downgrade);
+  assert.equal(isDbAheadOfAppError(collapsedGenesis), true);
+  assert.ok(collapsedGenesis.message.includes(FUTURE_A.name));
+  assert.ok(collapsedGenesis.message.includes(FUTURE_B.name));
+  // The drift signal is carried, not discarded — the reader still learns the
+  // genesis diverged, which is what points at the squash.
+  assert.ok(collapsedGenesis.message.includes(G_OLD.name));
+
+  // Control: the SAME ahead store with an intact genesis. It reached the right
+  // verdict before this change too, so it is what proves the collapsed-genesis
+  // case above is the discriminator rather than a blanket "unknown always wins".
+  const intactGenesis = await refusalFromBundle(
+    [{ name: G_OLD.name, checksum: G_OLD.checksum }, ...ahead],
+    preCollapseBundle
+  );
+  assert.ok(intactGenesis instanceof DesktopMigrationError);
+  assert.equal(intactGenesis.kind, MigrationRefusalKind.Downgrade);
+  // No drift to carry, so the also-drifted clause is absent rather than empty.
+  assert.ok(!intactGenesis.message.includes("no longer match"));
 });
 
 test("collapsed-migration reconcile is a no-op on a clean genesis-only install", async () => {

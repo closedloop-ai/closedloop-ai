@@ -1,6 +1,7 @@
 "use client";
 
 import type { CatalogItemDto } from "@repo/api/src/types/distribution";
+import { PackContentBody } from "@repo/app/packs/components/pack-content-body";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -100,32 +101,33 @@ export function PackComponentsPanel({
           {components.map((component) => {
             const canEdit = canEditComponent(component);
             return (
-              <li
-                className="flex items-center justify-between gap-3 px-4 py-2.5"
-                key={component.id}
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-medium text-sm">
-                    {component.name}
-                  </span>
-                  <Badge className="shrink-0 text-xs" variant="secondary">
-                    {component.targetKind}
-                  </Badge>
-                  <span className="shrink-0 text-muted-foreground text-xs">
-                    v{component.version}
-                  </span>
+              <li className="px-4 py-2.5" key={component.id}>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-medium text-sm">
+                      {component.name}
+                    </span>
+                    <Badge className="shrink-0 text-xs" variant="secondary">
+                      {component.targetKind}
+                    </Badge>
+                    <span className="shrink-0 text-muted-foreground text-xs">
+                      v{component.version}
+                    </span>
+                  </div>
+                  {canEdit ? (
+                    <Button
+                      aria-label={`Edit ${component.name}`}
+                      className="gap-1.5"
+                      onClick={() => onEdit(component)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <PencilIcon className="size-3.5" />
+                      Edit
+                    </Button>
+                  ) : null}
                 </div>
-                {canEdit ? (
-                  <Button
-                    className="gap-1.5"
-                    onClick={() => onEdit(component)}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    <PencilIcon className="size-3.5" />
-                    Edit
-                  </Button>
-                ) : null}
+                <PackContentBody className="mt-2" content={component.content} />
               </li>
             );
           })}

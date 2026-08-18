@@ -1,9 +1,6 @@
 "use client";
 
-import type {
-  CustomField,
-  CustomFieldWithOptions,
-} from "@repo/api/src/types/custom-field";
+import type { CustomFieldWithOptions } from "@repo/api/src/types/custom-field";
 import type { User } from "@repo/api/src/types/user";
 import {
   useCustomFields,
@@ -33,7 +30,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@repo/design-system/components/ui/dropdown-menu";
-import { MoreHorizontalIcon, PlusIcon } from "lucide-react";
+import { EmptyState } from "@repo/design-system/components/ui/empty-state";
+import { Skeleton } from "@repo/design-system/components/ui/skeleton";
+import {
+  ListPlusIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { useState } from "react";
 import { ENTITY_TYPE_LABELS, FIELD_TYPE_LABELS } from "./constants";
 import { CreateCustomFieldDialog } from "./create-custom-field-dialog";
@@ -68,9 +72,9 @@ function CreatedByCell({
 }
 
 type ActionsMenuProps = {
-  field: CustomField;
-  onEdit: (field: CustomField) => void;
-  onDelete: (field: CustomField) => void;
+  field: CustomFieldWithOptions;
+  onEdit: (field: CustomFieldWithOptions) => void;
+  onDelete: (field: CustomFieldWithOptions) => void;
 };
 
 function ActionsMenu({ field, onEdit, onDelete }: Readonly<ActionsMenuProps>) {
@@ -97,17 +101,25 @@ function ActionsMenu({ field, onEdit, onDelete }: Readonly<ActionsMenuProps>) {
 }
 
 export function CustomFieldsSettingsTab() {
-  const { data: fields = [], isLoading } = useCustomFields();
+  const {
+    data: fields = [],
+    isLoading,
+    isLoadingError,
+    refetch,
+  } = useCustomFields();
   const { data: users = [] } = useOrganizationUsers();
   const deleteCustomField = useDeleteCustomField();
 
   const userMap = new Map(users.map((u) => [u.id, u]));
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editField, setEditField] = useState<CustomField | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<CustomField | null>(null);
+  const [editField, setEditField] = useState<CustomFieldWithOptions | null>(
+    null
+  );
+  const [deleteTarget, setDeleteTarget] =
+    useState<CustomFieldWithOptions | null>(null);
 
-  const handleEdit = (field: CustomField) => {
+  const handleEdit = (field: CustomFieldWithOptions) => {
     setEditField(field);
     setDialogOpen(true);
   };
@@ -127,7 +139,7 @@ export function CustomFieldsSettingsTab() {
     setDeleteTarget(null);
   };
 
-  const columns: Column<CustomField>[] = [
+  const columns: Column<CustomFieldWithOptions>[] = [
     {
       key: "name",
       header: "Name",
@@ -142,7 +154,7 @@ export function CustomFieldsSettingsTab() {
     },
     {
       key: "entityTypes",
-      header: "Used In",
+      header: "Used in",
       render: (field) => {
         if (!field.entityTypes || field.entityTypes.length === 0) {
           return <span className="text-muted-foreground text-sm">—</span>;
@@ -160,7 +172,7 @@ export function CustomFieldsSettingsTab() {
     },
     {
       key: "createdById",
-      header: "Created By",
+      header: "Created by",
       render: (field) => (
         <CreatedByCell
           createdById={field.createdById}
@@ -179,12 +191,43 @@ export function CustomFieldsSettingsTab() {
     },
   ];
 
+  // Only block the whole tab on an initial-load failure. When fields are
+  // already cached, a background refetch error keeps the editable rows visible
+  // (TanStack retains `data` and sets `isError`), so gate on `isLoadingError`.
+  if (isLoadingError) {
+    return (
+      <div role="alert">
+        <EmptyState
+          action={
+            <Button onClick={() => refetch()} size="sm" variant="outline">
+              Try again
+            </Button>
+          }
+          description="Something went wrong loading your custom fields."
+          icon={TriangleAlertIcon}
+          size="compact"
+          title="Couldn't load custom fields"
+        />
+      </div>
+    );
+  }
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center py-12">
-        <span className="text-muted-foreground text-sm">
-          Loading custom fields...
-        </span>
+      <div aria-busy="true" aria-live="polite" className="flex flex-col gap-4">
+        <span className="sr-only">Loading custom fields</span>
+        <div className="flex items-center justify-between">
+          <Skeleton className="h-9 w-64" />
+          <Skeleton className="h-9 w-32" />
+        </div>
+        <div className="overflow-hidden rounded-md border">
+          {["a", "b", "c", "d"].map((key) => (
+            <Skeleton
+              className="h-12 w-full rounded-none border-border border-b last:border-b-0"
+              key={key}
+            />
+          ))}
+        </div>
       </div>
     );
   }
@@ -192,15 +235,18 @@ export function CustomFieldsSettingsTab() {
   if (fields.length === 0) {
     return (
       <>
-        <div className="rounded-lg border border-dashed p-12 text-center">
-          <p className="mb-4 text-muted-foreground text-sm">
-            No custom fields yet
-          </p>
-          <Button onClick={() => setDialogOpen(true)} size="sm">
-            <PlusIcon className="h-4 w-4" />
-            Create Field
-          </Button>
-        </div>
+        <EmptyState
+          action={
+            <Button onClick={() => setDialogOpen(true)} size="sm">
+              <PlusIcon className="h-4 w-4" />
+              Create field
+            </Button>
+          }
+          description="Custom fields let you track extra information on projects and documents."
+          icon={ListPlusIcon}
+          size="compact"
+          title="No custom fields yet"
+        />
 
         <CreateCustomFieldDialog
           field={undefined}
@@ -211,18 +257,12 @@ export function CustomFieldsSettingsTab() {
     );
   }
 
-  // useCustomFields returns CustomFieldWithOptions (includes enumOptions).
-  // Cast is safe since list endpoint includes enumOptions.
-  const editFieldWithOptions = editField
-    ? (editField as CustomFieldWithOptions)
-    : undefined;
-
   return (
     <>
       <div className="flex items-center justify-end pb-4">
         <Button onClick={() => setDialogOpen(true)} size="sm">
           <PlusIcon className="h-4 w-4" />
-          Create Field
+          Create field
         </Button>
       </div>
 
@@ -242,7 +282,7 @@ export function CustomFieldsSettingsTab() {
       />
 
       <CreateCustomFieldDialog
-        field={editFieldWithOptions}
+        field={editField ?? undefined}
         onOpenChange={handleDialogOpenChange}
         open={dialogOpen}
       />
@@ -258,7 +298,7 @@ export function CustomFieldsSettingsTab() {
           }
         }}
         open={deleteTarget !== null}
-        title="Delete Custom Field"
+        title="Delete custom field"
         variant="destructive"
       />
     </>

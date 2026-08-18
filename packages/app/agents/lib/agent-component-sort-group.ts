@@ -8,6 +8,7 @@ import {
 } from "@repo/api/src/types/agent-component";
 import { labelize } from "@repo/api/src/utils/string";
 import type { TableFilterOption } from "@repo/design-system/components/ui/table-filters";
+import { AGENT_COMPONENT_NO_AUTHORS_LABEL } from "./agent-component-authors";
 
 // ---------------------------------------------------------------------------
 // Group label lookup — mirrors the plural labels in component-meta.tsx
@@ -21,11 +22,58 @@ const KIND_PLURAL: Record<AgentComponentKind, string> = {
   [AgentComponentKind.Skill]: "Skills",
   [AgentComponentKind.Workflow]: "Workflows",
   [AgentComponentKind.Plugin]: "Plugins",
-  [AgentComponentKind.Mcp]: "MCP tools",
+  [AgentComponentKind.Mcp]: "MCPs",
   [AgentComponentKind.Tool]: "Tools",
+  [AgentComponentKind.Orchestration]: "Orchestration",
   [AgentComponentKind.Hook]: "Hooks",
   [AgentComponentKind.Config]: "Memory & config",
 };
+
+// Display label for each `Harness` value. Hoisted to module scope so the
+// group-by-harness branch and the harness-facet-options builder share one
+// canonical map instead of re-declaring identical copies inline.
+const HARNESS_LABEL: Record<Harness, string> = {
+  // "Multiple harnesses", not "Claude + Codex": `resolveComponentHarness`
+  // collapses ANY multi-harness usage to `Both`, now including Claude+OpenCode,
+  // so naming Codex would assert a harness the component never touched (T9).
+  // Kept in sync with HARNESS_META in component-meta.tsx.
+  [Harness.Both]: "Multiple harnesses",
+  [Harness.Claude]: "Claude",
+  [Harness.Codex]: "Codex",
+  [Harness.Opencode]: "OpenCode",
+};
+
+/**
+ * The individual harnesses offered as selectable Harness filter options
+ * (FEA-4336) — every real `Harness` value EXCEPT the synthetic `Both`
+ * ("Multiple harnesses") combined value, which is not a distinct harness a user
+ * would filter on. Derived from the full `Harness` value set so a newly added
+ * individual harness automatically becomes a filter option, while the combined
+ * `Both` sentinel stays excluded from the menu. Its counterpart on the count
+ * side is `facetsForHarness`, which folds a `Both` row into EVERY individual
+ * harness count.
+ */
+const HARNESS_FILTER_OPTION_ORDER: readonly Harness[] = Object.values(
+  Harness
+).filter((h) => h !== Harness.Both);
+
+/**
+ * FEA-4086 / ISS-4386: the harness facets a row's DISPLAYED harness belongs to.
+ * A single harness belongs to its own facet; a `Both` row (used across MORE THAN
+ * ONE harness — Claude+Codex, Claude+OpenCode, Codex+OpenCode, …) belongs to
+ * EVERY individual harness facet plus `Both`, so facet counts stay in step with
+ * `harnessMatchesFacet`. Hardcoding {Claude, Codex} here (the pre-OpenCode
+ * shape) dropped a Claude+OpenCode component out of the OpenCode facet — the
+ * empty state then read "No plugins installed for OpenCode" while the component
+ * sat under Claude (T2/T10). The individual facets are exactly
+ * `HARNESS_FILTER_OPTION_ORDER`.
+ */
+function facetsForHarness(harness: Harness): Harness[] {
+  if (harness === Harness.Both) {
+    return [Harness.Both, ...HARNESS_FILTER_OPTION_ORDER];
+  }
+  return [harness];
+}
 
 /**
  * Plural group/sort label for a component `kind`, total over arbitrary kind
@@ -60,6 +108,7 @@ const KIND_ORDER: readonly AgentComponentKind[] = [
   AgentComponentKind.Plugin,
   AgentComponentKind.Mcp,
   AgentComponentKind.Tool,
+  AgentComponentKind.Orchestration,
   AgentComponentKind.Hook,
   AgentComponentKind.Config,
 ];
@@ -76,7 +125,6 @@ function isStringKey(key: AgentComponentSortKey): boolean {
   return (
     key === AgentComponentSortKey.Name ||
     key === AgentComponentSortKey.Type ||
-    key === AgentComponentSortKey.Owner ||
     key === AgentComponentSortKey.Source ||
     key === AgentComponentSortKey.Harness
   );
@@ -102,10 +150,7 @@ function sortValueOf(
     case AgentComponentSortKey.Type:
       return kindPlural(row.kind);
     case AgentComponentSortKey.Metric:
-      return row.klocPerDollar ?? Number.NEGATIVE_INFINITY;
-    case AgentComponentSortKey.Owner:
-      // Null owners sort last when ascending (fall behind alphabetic entries).
-      return row.owner ?? "￿";
+      return row.locPerDollar ?? Number.NEGATIVE_INFINITY;
     case AgentComponentSortKey.Source:
       return row.source;
     case AgentComponentSortKey.Harness:
@@ -173,8 +218,9 @@ export type AgentComponentGroup = {
  * - `Type` — one group per `AgentComponentKind` in canonical `KIND_ORDER`;
  *   labels come from `KIND_PLURAL` (mirrors `KIND_META[kind].plural`).
  *   Groups with zero items are included so the UI can show an empty state.
- * - `Owner` — one group per distinct owner, sorted alphabetically; rows with
- *   `owner === null` are placed in an "Unattributed" group at the end.
+ * - `Collaborators` — one group per distinct author (discoverer + editors),
+ *   sorted alphabetically; a component with several authors appears under each,
+ *   and a component with none is placed in an "No authors" group at the end.
  * - `Harness` — one group per `Harness` value in definition order; groups with
  *   zero items are included.
  */
@@ -213,37 +259,52 @@ export function groupAgentComponentRows(
       }));
     }
 
-    case AgentComponentGroupBy.Owner: {
-      // Collect rows by owner name; null owner → "Unattributed" at the end.
-      const byOwner = new Map<string, AgentComponent[]>();
-      const unattributed: AgentComponent[] = [];
+    case AgentComponentGroupBy.Collaborators: {
+      // Collect rows by author (collaborator) name; a component with several
+      // authors lands in each of their buckets, and one with none goes to a
+      // trailing "No authors" group. FEA-4098 (Slice 3).
+      const byCollaborator = new Map<string, AgentComponent[]>();
+      const noAuthors: AgentComponent[] = [];
       for (const row of rows) {
-        if (row.owner === null) {
-          unattributed.push(row);
-        } else {
-          const bucket = byOwner.get(row.owner);
+        if (row.collaborators.length === 0) {
+          noAuthors.push(row);
+          continue;
+        }
+        for (const collaborator of row.collaborators) {
+          const bucket = byCollaborator.get(collaborator);
           if (bucket) {
             bucket.push(row);
           } else {
-            byOwner.set(row.owner, [row]);
+            byCollaborator.set(collaborator, [row]);
           }
         }
       }
-      const groups: AgentComponentGroup[] = [...byOwner.keys()]
+      const groups: AgentComponentGroup[] = [...byCollaborator.keys()]
         .sort((a, b) => a.localeCompare(b))
-        .map((owner) => ({ label: owner, items: byOwner.get(owner) ?? [] }));
-      if (unattributed.length > 0) {
-        groups.push({ label: "Unattributed", items: unattributed });
+        .map((collaborator) => ({
+          label: collaborator,
+          items: byCollaborator.get(collaborator) ?? [],
+        }));
+      if (noAuthors.length > 0) {
+        groups.push({
+          label: AGENT_COMPONENT_NO_AUTHORS_LABEL,
+          items: noAuthors,
+        });
       }
       return groups;
     }
 
     case AgentComponentGroupBy.Harness: {
-      // One group per Harness value in definition order; include empty groups.
+      // One group per Harness value in definition order, EMPTY GROUPS DROPPED
+      // (T11): with OpenCode added, always rendering all four headers left a
+      // typical org staring at an empty OpenCode bucket next to an empty Codex
+      // one — mostly chrome with no rows under it. Only harnesses that actually
+      // have components get a header.
       const HARNESS_ORDER: readonly Harness[] = [
         Harness.Both,
         Harness.Claude,
         Harness.Codex,
+        Harness.Opencode,
       ];
       const byHarness = new Map<Harness, AgentComponent[]>(
         HARNESS_ORDER.map((h) => [h, []])
@@ -251,13 +312,10 @@ export function groupAgentComponentRows(
       for (const row of rows) {
         byHarness.get(row.harness)?.push(row);
       }
-      const harnessLabel: Record<Harness, string> = {
-        [Harness.Both]: "Claude + Codex",
-        [Harness.Claude]: "Claude",
-        [Harness.Codex]: "Codex",
-      };
-      return HARNESS_ORDER.map((h) => ({
-        label: harnessLabel[h],
+      return HARNESS_ORDER.filter(
+        (h) => (byHarness.get(h)?.length ?? 0) > 0
+      ).map((h) => ({
+        label: HARNESS_LABEL[h],
         items: byHarness.get(h) ?? [],
       }));
     }
@@ -279,7 +337,9 @@ export function groupAgentComponentRows(
  */
 export type AgentComponentActiveFilters = {
   kinds: AgentComponentKind[];
-  owners: string[];
+  // FEA-4098 (Slice 3): filter by author (collaborator) display name, replacing
+  // the single-owner facet.
+  collaborators: string[];
   sources: string[];
   harnesses: Harness[];
   search: string;
@@ -290,13 +350,14 @@ export type AgentComponentActiveFilters = {
  * `FilterFacetGroup` in the `FilterPopover`.
  */
 export type AgentComponentFacetCounts = {
-  owners: TableFilterOption[];
+  collaborators: TableFilterOption[];
   sources: TableFilterOption[];
   harnesses: TableFilterOption[];
 };
 
 /**
- * Compute per-option counts for the Owner, Source, and Harness filter facets.
+ * Compute per-option counts for the Collaborators, Source, and Harness filter
+ * facets.
  *
  * **Counting strategy**: counts are derived from `rows` (already narrowed by
  * the active type-tab and other active facets) so they reflect how many items
@@ -308,49 +369,110 @@ export type AgentComponentFacetCounts = {
  * when its count drops to zero under the active narrowing. The UI renders
  * zero-count options grayed rather than hiding them.
  *
+ * **Harness self-exclusion**: unlike Collaborators/Source, the Harness facet
+ * counts from `harnessCountRows` — the corpus filtered by every OTHER active
+ * facet but with the harness filter itself CLEARED — instead of from `rows`.
+ * Since the individual harness options are the only union path (checking the
+ * relevant boxes = the old combined "Multiple harnesses"), counting the harness
+ * options off the already-harness-narrowed `rows` would zero-out an un-checked
+ * harness:
+ * e.g. once Claude is checked, `rows` has dropped every Codex-only component, so
+ * Codex would read 0 even though checking it adds those rows back through the OR
+ * predicate (wongk, FEA-4336). Counting off the harness-cleared set makes each
+ * option honestly preview how many rows toggling it would surface. When the
+ * caller does not supply `harnessCountRows` (harness filter inactive), the two
+ * sets are identical and `rows` is used.
+ *
  * @param rows     Already-filtered rows (type-tab + other active facets applied).
  * @param allRows  Full inventory corpus — used to discover the complete value
  *                 universe for zero-count inclusion.
  * @param _activeFilters  Current filter state (reserved for future per-dimension
- *                 "hypothetical" counting; not used in the current implementation
- *                 because `rows` is already filtered at call-site).
+ *                 "hypothetical" counting; not used for the collaborator/source
+ *                 dimensions because `rows` is already filtered at call-site).
+ * @param harnessCountRows  Rows filtered by every active facet EXCEPT harness,
+ *                 used only for the harness option counts so an active harness
+ *                 filter does not zero-out the other harness's union preview.
+ *                 Defaults to `rows` when the caller omits it.
+ * @param honestSourceEnabled  ISS-5009. When true, the Source options and counts
+ *                 key on {@link sourceFacetValue} instead of the raw
+ *                 `row.source`, and a row with no real provenance leaves the
+ *                 Source facet entirely rather than contributing its own
+ *                 identity key as a filterable "source". MUST be the same value
+ *                 the membership predicate (`filterAgentComponentRows`) is given
+ *                 — an option counted under one projection and matched under the
+ *                 other selects zero rows. Defaults to `false` (today's
+ *                 behavior) so a caller that has not adopted the flag is
+ *                 unchanged.
  */
 export function countFacetValues(
   rows: AgentComponent[],
   allRows: AgentComponent[],
-  _activeFilters: AgentComponentActiveFilters
+  _activeFilters: AgentComponentActiveFilters,
+  harnessCountRows: AgentComponent[] = rows,
+  honestSourceEnabled = false
 ): AgentComponentFacetCounts {
   // --- Build count maps from the already-filtered `rows` ---
-  const ownerCounts = new Map<string, number>();
+  // FEA-4098 (Slice 3): a component has a SET of authors, so each distinct
+  // collaborator on a row increments once (deduped within the row).
+  const collaboratorCounts = new Map<string, number>();
   const sourceCounts = new Map<string, number>();
   const harnessCounts = new Map<Harness, number>();
 
   for (const row of rows) {
-    if (row.owner !== null) {
-      ownerCounts.set(row.owner, (ownerCounts.get(row.owner) ?? 0) + 1);
+    for (const collaborator of new Set(row.collaborators)) {
+      collaboratorCounts.set(
+        collaborator,
+        (collaboratorCounts.get(collaborator) ?? 0) + 1
+      );
     }
-    sourceCounts.set(row.source, (sourceCounts.get(row.source) ?? 0) + 1);
-    harnessCounts.set(row.harness, (harnessCounts.get(row.harness) ?? 0) + 1);
+    // ISS-5009: count under the row's honest facet value. A `null` means the row
+    // has no source worth filtering on, so it contributes to no option — the
+    // count must describe the same population the membership predicate returns.
+    const source = sourceFacetValue(row, honestSourceEnabled);
+    if (source !== null) {
+      sourceCounts.set(source, (sourceCounts.get(source) ?? 0) + 1);
+    }
+  }
+
+  // Harness counts come from `harnessCountRows` (harness filter cleared) — see
+  // the "Harness self-exclusion" note in the docstring — so an active harness
+  // selection does not zero-out the un-checked harness's union preview.
+  for (const row of harnessCountRows) {
+    // FEA-4086 / ISS-4386: a `Harness.Both` row (used across MORE THAN ONE
+    // harness) is a member of EVERY individual harness facet as well as `Both`,
+    // mirroring the membership predicate `harnessMatchesFacet` in the filter
+    // hook. Counting it only under `Both` would leave the individual options
+    // showing 0 while the row would still surface when those facets are toggled
+    // — a menu that lies about how many items its option covers.
+    for (const facet of facetsForHarness(row.harness)) {
+      harnessCounts.set(facet, (harnessCounts.get(facet) ?? 0) + 1);
+    }
   }
 
   // --- Collect the complete value universe from `allRows` ---
-  const allOwners = new Set<string>();
+  const allCollaborators = new Set<string>();
   const allSources = new Set<string>();
 
   for (const row of allRows) {
-    if (row.owner !== null) {
-      allOwners.add(row.owner);
+    for (const collaborator of row.collaborators) {
+      allCollaborators.add(collaborator);
     }
-    allSources.add(row.source);
+    // ISS-5009: the option UNIVERSE is keyed on the same honest projection as
+    // the counts, so a provenance-less row's identity-key echo never becomes a
+    // selectable "source" the user can pick.
+    const source = sourceFacetValue(row, honestSourceEnabled);
+    if (source !== null) {
+      allSources.add(source);
+    }
   }
 
-  // Owner options — sorted alphabetically; zero-count values included.
-  const ownerOptions: TableFilterOption[] = [...allOwners]
+  // Collaborator options — sorted alphabetically; zero-count values included.
+  const collaboratorOptions: TableFilterOption[] = [...allCollaborators]
     .sort((a, b) => a.localeCompare(b))
-    .map((owner) => ({
-      id: owner,
-      label: owner,
-      count: ownerCounts.get(owner) ?? 0,
+    .map((collaborator) => ({
+      id: collaborator,
+      label: collaborator,
+      count: collaboratorCounts.get(collaborator) ?? 0,
     }));
 
   // Source options — sorted alphabetically; zero-count values included.
@@ -362,26 +484,64 @@ export function countFacetValues(
       count: sourceCounts.get(source) ?? 0,
     }));
 
-  // Harness options — canonical order; all three values always included.
-  const HARNESS_ORDER: readonly Harness[] = [
-    Harness.Both,
-    Harness.Claude,
-    Harness.Codex,
-  ];
-  const harnessLabel: Record<Harness, string> = {
-    [Harness.Both]: "Claude + Codex",
-    [Harness.Claude]: "Claude",
-    [Harness.Codex]: "Codex",
-  };
-  const harnessOptions: TableFilterOption[] = HARNESS_ORDER.map((h) => ({
-    id: h,
-    label: harnessLabel[h],
-    count: harnessCounts.get(h) ?? 0,
-  }));
+  // Harness filter options — only the individual harnesses are selectable
+  // (FEA-4336). The synthetic `Both` ("Multiple harnesses") combined row is NOT
+  // offered as a filter option: it is redundant with checking the individual
+  // boxes, and it confusingly showed a 0 count while the individual harnesses
+  // had rows. A component whose rolled-up harness is `Both` (used across more
+  // than one harness) is still counted under EVERY individual option — via
+  // `facetsForHarness` in the count loop above — and `harnessMatchesFacet`
+  // surfaces those combined rows under any individual facet, so the union of the
+  // individual harnesses covers them without a dedicated combined option.
+  const harnessOptions: TableFilterOption[] = HARNESS_FILTER_OPTION_ORDER.map(
+    (h) => ({
+      id: h,
+      label: HARNESS_LABEL[h],
+      count: harnessCounts.get(h) ?? 0,
+    })
+  );
 
   return {
-    owners: ownerOptions,
+    collaborators: collaboratorOptions,
     sources: sourceOptions,
     harnesses: harnessOptions,
   };
+}
+
+/**
+ * ISS-5009: the Source value a row participates in the Source FACET as — its
+ * option id, its count key, AND the value the membership predicate compares
+ * against. `null` means the row has no source worth filtering on and is excluded
+ * from all three.
+ *
+ * One helper for all three on purpose. The honest projection and the legacy
+ * `source` diverge for every row whose provenance chain wins on a branch the
+ * legacy chain cannot reach, so gating only the option universe would leave the
+ * flag-ON menu offering a value (`"user"`) that the membership predicate tests
+ * against the legacy identity-key echo — an option with a positive count that
+ * selects ZERO rows and empties the catalog. Strictly worse than the echo it
+ * replaces.
+ *
+ * `honestEnabled` is a PARAMETER, never a hook read: this is a pure data/logic
+ * module with no React dependency (mirroring `kindPlural` / `facetsForHarness`
+ * above), so the React layer resolves the flag ONCE and threads the same value
+ * into every consumer. With the flag off — or against a server that predates
+ * `honestSource` and therefore omits it — this returns the legacy
+ * `component.source` and every facet behaves byte-identically to today.
+ *
+ * Deliberately NOT used by `sortValueOf`: sort ordering by Source still compares
+ * the legacy value. A column of em dashes ordered by a hidden key is
+ * deterministic and contradicts nothing on screen, unlike a filter menu that
+ * offers values no row can match, so the comparator is left alone to bound scope
+ * (documented accepted risk, ISS-5009 plan rev 3).
+ */
+export function sourceFacetValue(
+  component: AgentComponent,
+  honestEnabled: boolean
+): string | null {
+  const honest = component.honestSource;
+  if (honestEnabled && honest) {
+    return honest.hasProvenance ? honest.source : null;
+  }
+  return component.source;
 }

@@ -15,7 +15,7 @@
  * libSQL handle rather than the Postgres `information_schema`/`pg_*` catalogs
  * SQLite exposed.
  */
-import type { SqliteExecutor } from "../../src/main/database/migration-executor.js";
+import type { SqliteExecutor } from "../../src/main/database/migration/migration-executor.js";
 
 export type SchemaSnapshot = {
   tables: string[];
@@ -24,12 +24,18 @@ export type SchemaSnapshot = {
   foreignKeys: Record<string, unknown>[];
 };
 
-// PSL cannot express partial / expression indexes; the prior Postgres guard
-// excluded them from the schema↔migrations comparison. SQLite's collapsed
-// 0001_init no longer carries the Postgres-only CHECK constraints or the
-// COALESCE expression index, so this set is currently empty but is retained as
-// the exclusion seam for any future hand-carried index.
-const PSL_INEXPRESSIBLE_INDEXES = new Set<string>([]);
+// PSL cannot express EXPRESSION indexes (partial ones it can, via the
+// `partialIndexes` preview feature), so those stay hand-carried in migration SQL
+// and are excluded from the schema↔migrations comparison. Fidelity of each entry
+// is covered by a focused test instead — named beside it below.
+const PSL_INEXPRESSIBLE_INDEXES = new Set<string>([
+  // ISS-5735, migration 0058. Both index `substr(<sha column>, 1, 7)` so the
+  // boot-time commit-SHA → PR correlation can seek instead of walking every PR
+  // artifact per commit. Covered by test/commit-sha-pr-correlation-scan.test.ts,
+  // which asserts the correlation's real statement plans onto them.
+  "idx_artifacts_head_sha_p7",
+  "idx_artifacts_merge_commit_sha_p7",
+]);
 
 export async function snapshotSchema(
   db: SqliteExecutor

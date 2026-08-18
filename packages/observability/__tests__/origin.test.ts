@@ -36,6 +36,13 @@ describe("ORIGIN — known DD_SERVICE values", () => {
     const mod = await import("../telemetry/origin");
     expect(mod.ORIGIN).toBe(Origin.Relay);
   });
+
+  it("resolves to Origin.Mcp when DD_SERVICE=mcp", async () => {
+    vi.resetModules();
+    vi.stubEnv("DD_SERVICE", "mcp");
+    const mod = await import("../telemetry/origin");
+    expect(mod.ORIGIN).toBe(Origin.Mcp);
+  });
 });
 
 describe("ORIGIN — fallback to Unknown with console.warn", () => {
@@ -47,8 +54,9 @@ describe("ORIGIN — fallback to Unknown with console.warn", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 
   it("resolves to Origin.Unknown and warns when DD_SERVICE is an off-whitelist value", async () => {
@@ -59,8 +67,9 @@ describe("ORIGIN — fallback to Unknown with console.warn", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 });
 
@@ -69,6 +78,7 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE happy paths", () => {
     ["cl-api", Origin.Api],
     ["cl-relay", Origin.Relay],
     ["cl-desktop", Origin.Desktop],
+    ["cl-mcp", Origin.Mcp],
   ] as [
     string,
     Origin,
@@ -92,8 +102,9 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 
   it("resolves cl- (empty suffix) to Origin.Unknown and warns", async () => {
@@ -104,8 +115,9 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 
   it("resolves cl-cl-api to Origin.Unknown and warns", async () => {
@@ -116,8 +128,9 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 
   // Cross-PR composition guard: PLN-384's "cl-unknown" sentinel must NOT
@@ -131,8 +144,9 @@ describe("ORIGIN — cl-* prefixed DD_SERVICE fallback/edge cases", () => {
 
     expect(mod.ORIGIN).toBe(Origin.Unknown);
     expect(warnSpy).toHaveBeenCalledTimes(1);
-    const firstArg: unknown = warnSpy.mock.calls[0][0];
-    expect(String(firstArg)).toContain("telemetry.origin_fallback");
+    expect(parseWarnLine(warnSpy.mock.calls[0][0])).toMatchObject(
+      ORIGIN_FALLBACK_LINE
+    );
   });
 });
 
@@ -151,3 +165,25 @@ describe("ORIGIN — immutability after module load", () => {
     expect(mod.ORIGIN).toBe(Origin.Api);
   });
 });
+
+/**
+ * The platform drain JSON-parses this line into attributes, so the fields are
+ * asserted on the parsed object rather than by scanning the raw string:
+ * `status` is Datadog's reserved severity attribute and `level` is not, and
+ * only a parse proves the line carries both at the same severity (ISS-6341).
+ *
+ * Severity is a literal here because origin.ts cannot import `LogLevel` from
+ * ../log — that import cycle is why it writes to console.warn at all.
+ */
+const ORIGIN_FALLBACK_LINE = {
+  event: "telemetry.origin_fallback",
+  level: "warn",
+  status: "warn",
+} as const;
+
+function parseWarnLine(line: unknown): Record<string, unknown> {
+  if (typeof line !== "string") {
+    throw new Error(`expected a single JSON string arg, got ${typeof line}`);
+  }
+  return JSON.parse(line) as Record<string, unknown>;
+}

@@ -50,3 +50,29 @@ describe("queryKeys.branchWorktree (U4 routing identity)", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("queryKeys.closedloopChatHistory", () => {
+  test("includes the given provider as the fourth key segment", () => {
+    const key = queryKeys.closedloopChatHistory(
+      "ISS-1",
+      "/repo/path",
+      "claude"
+    );
+    expect(key).toEqual([
+      "closedloop-chat-history",
+      "ISS-1",
+      "/repo/path",
+      "claude",
+    ]);
+  });
+
+  test("falls back to null for the fourth key segment when no provider is given", () => {
+    const key = queryKeys.closedloopChatHistory("ISS-1", "/repo/path");
+    expect(key).toEqual([
+      "closedloop-chat-history",
+      "ISS-1",
+      "/repo/path",
+      null,
+    ]);
+  });
+});

@@ -3,7 +3,7 @@
  *
  * 1. Unsupported commands (CHAT, EXPLORE) are rejected
  * 2. validateCommandInputs enforces per-command input requirements
- * 3. validateResultBundle logs warnings for missing required artifacts
+ * 3. a missing required artifact terminalizes the loop as an error (ISS-5872)
  * 4. malformed EXECUTE results fall back to an authoritative no-changes result
  * 5. uploaded execution result is a V2 envelope with baseBranch on the primary entry
  * 6. sessionId is included in PROCESS_FAILED error events
@@ -15,6 +15,9 @@ import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "node:test";
+import { LoopArtifactFile } from "@closedloop-ai/loops-api/artifacts";
+import { LoopCommand } from "@closedloop-ai/loops-api/commands";
+import { LoopErrorCode } from "@closedloop-ai/loops-api/error-codes";
 import { DesktopGatewayServer } from "../src/server/server.js";
 import {
   resetShellPathCache,
@@ -44,6 +47,8 @@ const serversToClose: DesktopGatewayServer[] = [];
 const mockServersToClose: http.Server[] = [];
 const tempPathsToClean: string[] = [];
 const savedEnv = saveEnv();
+/** Model the PLAN missing-artifact fixture reports usage against. */
+const PLAN_FIXTURE_MODEL = "claude-opus-4-20250514";
 
 afterEach(async () => {
   restoreEnv(savedEnv);
@@ -248,16 +253,21 @@ test("validateCommandInputs: REQUEST_CHANGES with no prompt returns 400", async 
 });
 
 // ---------------------------------------------------------------------------
-// Test 3: validateResultBundle warns when required artifacts are missing
+// Test 3: a missing required artifact terminalizes as an error, not a completion
 //
-// PLAN that exits 0 without writing plan.json should log a warning but still
-// post a completed event (not an error). We verify the completed event is
-// posted — the warning is logged to gatewayLog which we can't capture in an
-// integration test, but the fact that the loop completes (rather than hanging
-// or erroring) proves the warning path doesn't block completion.
+// DELIBERATE INVERSION (ISS-5872). This test previously asserted the opposite —
+// "PLAN: completes even when plan.json is missing (validateResultBundle warning
+// path)" — and passed, because the harness computed the missing-artifact list,
+// logged it as a warning, and discarded it. That made the defect the documented
+// contract: a PLAN that produced no plan at all reached the cloud as COMPLETED
+// with `error: null`, and the implementation-plan artifact presented as
+// done-and-empty (observed live on loop 019fee5a against PLN-1688).
+//
+// "Completed" must mean "produced". A PLAN that exits 0 without writing
+// plan.json now posts an error event naming the file it owed.
 // ---------------------------------------------------------------------------
 
-test("PLAN: completes even when plan.json is missing (validateResultBundle warning path)", async () => {
+test("PLAN: missing plan.json terminalizes as MISSING_REQUIRED_ARTIFACTS, not completed", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contract-bundle-"));
   tempPathsToClean.push(tmpDir);
 
@@ -271,9 +281,23 @@ test("PLAN: completes even when plan.json is missing (validateResultBundle warni
   process.env.CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE = "1";
   process.env.SYMPHONY_WORKTREE_PARENT_DIR = worktreeParent;
 
-  // run-loop.sh exits 0 but does NOT write plan.json — triggers the
-  // validateResultBundle warning for missing required artifact.
-  await createFakeRunLoopScript(tmpDir, "#!/bin/sh\nexit 0\n");
+  // run-loop.sh exits 0 but writes NO plan.json. `skipArtifacts` suppresses the
+  // helper's default deliverable so this fixture reproduces the real defect.
+  // `skipTokens` replaces the helper's model-less usage record with one naming
+  // a model, so the terminal event can be checked for per-model attribution.
+  await createFakeRunLoopScript(
+    tmpDir,
+    `#!/bin/sh\nmkdir -p "$CLOSEDLOOP_WORKDIR" 2>/dev/null\nprintf '%s\\n' '${JSON.stringify(
+      {
+        type: "assistant",
+        message: {
+          model: PLAN_FIXTURE_MODEL,
+          usage: { input_tokens: 900, output_tokens: 400 },
+        },
+      }
+    )}' >> "$CLOSEDLOOP_WORKDIR/claude-output.jsonl"\nexit 0\n`,
+    { skipArtifacts: true, skipTokens: true }
+  );
 
   const fakeBin = path.join(tmpDir, "fake-bin");
   await fs.mkdir(fakeBin, { recursive: true });
@@ -309,13 +333,23 @@ test("PLAN: completes even when plan.json is missing (validateResultBundle warni
 
   assert.equal(response.status, 200);
 
-  // The loop should still complete (not hang or error) even though plan.json
-  // is missing. This exercises the validateResultBundle warning-only path.
-  const completedEvent = await waitForCompletedEvent(mock.requests, loopId);
-  assert.equal(completedEvent.type, "completed");
-  assert.ok(completedEvent.loopId === loopId);
+  // The loop terminalizes — it must not hang — but as an ERROR carrying the
+  // specific code and naming the missing file, not as a clean completion.
+  const terminalEvent = await waitForTerminalEvent(mock.requests, loopId);
+  assert.equal(
+    terminalEvent.type,
+    "error",
+    "a PLAN that wrote no plan.json must not report a clean completion"
+  );
+  assert.equal(terminalEvent.code, LoopErrorCode.MissingRequiredArtifacts);
+  assert.ok(
+    typeof terminalEvent.message === "string" &&
+      terminalEvent.message.includes(LoopArtifactFile.Plan),
+    `error message must name the missing artifact, got: ${String(terminalEvent.message)}`
+  );
 
-  // Verify the upload was attempted — plan artifact should be absent
+  // Partial artifacts are still uploaded so the operator keeps whatever the run
+  // did write; the plan itself is absent because it was never produced.
   const uploadReq = await mock.waitForRequest("upload-artifacts");
   const uploadBody = JSON.parse(uploadReq.body) as {
     artifacts: Record<string, unknown>;
@@ -324,6 +358,98 @@ test("PLAN: completes even when plan.json is missing (validateResultBundle warni
     uploadBody.artifacts.plan,
     undefined,
     "plan artifact should be absent when plan.json was not written"
+  );
+
+  // The legacy terminal event reports what the run actually spent, per model.
+  // Totals alone make the cloud price the whole run against a synthetic default
+  // model, so a real Opus run keeps the right counts and gets the wrong cost.
+  assert.deepEqual(terminalEvent.tokenUsage, {
+    inputTokens: 900,
+    outputTokens: 400,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+  });
+  assert.deepEqual(terminalEvent.tokensByModel, {
+    [PLAN_FIXTURE_MODEL]: {
+      input: 900,
+      output: 400,
+      cacheCreation: 0,
+      cacheRead: 0,
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 3b: the guard is driven by the shared ResultBundle manifest, so it is
+// not PLAN-specific. GENERATE_PRD owes prd.md and gets the same treatment —
+// proving the sibling commands are covered by construction rather than by a
+// second hand-written check that could drift.
+// ---------------------------------------------------------------------------
+
+test("GENERATE_PRD: missing prd.md terminalizes as MISSING_REQUIRED_ARTIFACTS", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contract-prd-"));
+  tempPathsToClean.push(tmpDir);
+
+  const repoPath = path.join(tmpDir, "repo-prd");
+  await fs.mkdir(repoPath, { recursive: true });
+
+  const worktreeParent = path.join(tmpDir, "worktrees");
+  await fs.mkdir(worktreeParent, { recursive: true });
+
+  process.env.HOME = tmpDir;
+  process.env.CLOSEDLOOP_SYMPHONY_TEST_RAW_CLAUDE_PIPELINE = "1";
+  process.env.SYMPHONY_WORKTREE_PARENT_DIR = worktreeParent;
+
+  await createFakeRunLoopScript(tmpDir, "#!/bin/sh\nexit 0\n", {
+    skipArtifacts: true,
+  });
+
+  const fakeBin = path.join(tmpDir, "fake-bin");
+  await fs.mkdir(fakeBin, { recursive: true });
+  await fs.writeFile(path.join(fakeBin, "claude"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+
+  process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
+  setShellPathForTest();
+
+  const mock = await startMockApiServer();
+  mockServersToClose.push(mock.server);
+  const server = await createTestGateway(tmpDir, mock.port);
+
+  const loopId = "00000000-0000-0000-0000-000000002021";
+  const response = await fetch(
+    `http://127.0.0.1:${server.getActivePort()}/api/gateway/symphony/loop`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        loopId,
+        command: LoopCommand.GeneratePrd,
+        closedLoopAuthToken: "tok",
+        prompt: "Write a PRD",
+        artifacts: [],
+        repo: {
+          fullName: `bundle-test/${path.basename(repoPath)}`,
+          branch: "main",
+        },
+      }),
+    }
+  );
+
+  assert.equal(response.status, 200);
+
+  const terminalEvent = await waitForTerminalEvent(mock.requests, loopId);
+  assert.equal(
+    terminalEvent.type,
+    "error",
+    "a GENERATE_PRD that wrote no prd.md must not report a clean completion"
+  );
+  assert.equal(terminalEvent.code, LoopErrorCode.MissingRequiredArtifacts);
+  assert.ok(
+    typeof terminalEvent.message === "string" &&
+      terminalEvent.message.includes(LoopArtifactFile.Prd),
+    `error message must name the missing artifact, got: ${String(terminalEvent.message)}`
   );
 });
 

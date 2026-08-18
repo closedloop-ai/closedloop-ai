@@ -1,5 +1,4 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { AppCoreStoryProviders } from "../../shared/storybook/decorators";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import { EditableProjectTitle } from "./editable-project-title";
 
@@ -24,13 +23,7 @@ const projectRoutes: FixtureRoute[] = [
 const meta: Meta<typeof EditableProjectTitle> = {
   title: "App Core/Projects/Editable Project Title",
   component: EditableProjectTitle,
-  decorators: [
-    (Story) => (
-      <AppCoreStoryProviders apiRoutes={projectRoutes}>
-        <Story />
-      </AppCoreStoryProviders>
-    ),
-  ],
+  parameters: { appCore: { apiRoutes: projectRoutes } },
   args: {
     projectId: PROJECT_ID,
     initialTitle: "Q3 Roadmap",

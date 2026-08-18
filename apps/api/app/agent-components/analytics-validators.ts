@@ -33,6 +33,22 @@ export const tokenTrendQuerySchema = z.object({
 
 export type TokenTrendQueryParams = z.infer<typeof tokenTrendQuerySchema>;
 
+// FEA-3590: `since`/`until` stay optional on the wire (the shipped clients send
+// neither), but a param-less request must not fan the whole usage corpus into
+// the API heap. When no lower bound is supplied the service defaults `since` to
+// this many days before the window's upper bound (or now), so a param-less read
+// over a hot component (e.g. the `general-purpose` subagent) fetches a bounded
+// recent window instead of the component's entire history + nested token arrays.
+export const DEFAULT_TOKEN_TREND_LOOKBACK_DAYS = 90;
+
+// Hard cap on the number of `agentComponentSessionUsage` rows the token-trend
+// read materializes, mirroring `MAX_ORG_ORPHAN_USAGE_ROWS` in `./service` so
+// every org-scoped usage read shares one bound. A backstop below the defaulted
+// date window: an org hot enough to exceed this within the window keeps the most
+// recent sessions (the read orders `sessionStartedAt desc`) and drops the older
+// tail deterministically rather than OOMing the request.
+export const MAX_TOKEN_TREND_USAGE_ROWS = 20_000;
+
 // ---------------------------------------------------------------------------
 // Ranking / compliance leaderboard limit
 // ---------------------------------------------------------------------------

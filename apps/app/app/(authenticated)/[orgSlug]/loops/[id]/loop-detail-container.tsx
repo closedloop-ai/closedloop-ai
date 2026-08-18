@@ -30,11 +30,17 @@ import {
   CANCELLABLE_LOOP_STATUSES,
   RESTARTABLE_LOOP_STATUSES,
 } from "@repo/app/loops/lib/loop-constants";
+import {
+  getLoopBreadcrumbLabel,
+  shortLoopId,
+} from "@repo/app/loops/lib/loop-display";
+import { loopLinkClassName } from "@repo/app/loops/lib/loop-link";
 import { ApiError, getErrorMessage } from "@repo/app/shared/api/api-error";
 import { FriendlyErrorAlert } from "@repo/app/shared/components/friendly-error-alert";
 import { LoopCommandBadge } from "@repo/app/shared/components/status-badge";
 import { UserLink } from "@repo/app/shared/components/user-link";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
+import { useDocumentTitle } from "@repo/app/shared/hooks/use-document-title";
 import { formatDateTime } from "@repo/app/shared/lib/date-utils";
 import {
   formatDuration,
@@ -65,7 +71,6 @@ import { Link } from "@repo/navigation/link";
 import { useNavigation } from "@repo/navigation/use-navigation";
 import {
   AlertCircleIcon,
-  ArrowLeftIcon,
   ClockIcon,
   CloudIcon,
   CoinsIcon,
@@ -81,9 +86,14 @@ import {
   TerminalIcon,
   UserIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type BreadcrumbEntry,
+  Header,
+} from "@/app/(authenticated)/components/header";
 import { useCancelLoop } from "@/hooks/queries/use-loops";
 import { useOrgSlug } from "@/hooks/use-org-slug";
+import { buildLoopBreadcrumbs } from "./loop-breadcrumbs";
 
 function toFriendlyErrorInput(error: unknown): FriendlyErrorInput {
   if (error instanceof ApiError) {
@@ -193,7 +203,7 @@ function renderPrLink(
   if (branchPrEnabled && pr.externalLinkId) {
     return (
       <Link
-        className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+        className={loopLinkClassName("mt-1")}
         href={`/${orgSlug}/build/${pr.externalLinkId}`}
       >
         <GitPullRequestIcon className="h-3.5 w-3.5" />
@@ -203,7 +213,7 @@ function renderPrLink(
   }
   return (
     <a
-      className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+      className={loopLinkClassName("mt-1")}
       href={pr.htmlUrl}
       rel="noopener noreferrer"
       target="_blank"
@@ -228,7 +238,7 @@ function renderBranchLink(
   if (branch.externalLinkId) {
     return (
       <Link
-        className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+        className={loopLinkClassName("mt-1")}
         href={`/${orgSlug}/build/${branch.externalLinkId}`}
       >
         {content}
@@ -238,7 +248,7 @@ function renderBranchLink(
   if (branch.htmlUrl) {
     return (
       <a
-        className="mt-1 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+        className={loopLinkClassName("mt-1")}
         href={branch.htmlUrl}
         rel="noopener noreferrer"
         target="_blank"
@@ -261,7 +271,7 @@ function renderLegacyLoopPrLink(loop: NonNullable<MetadataCardsProps["loop"]>) {
   }
   return (
     <a
-      className="mt-2 inline-flex items-center gap-1.5 text-blue-600 text-xs hover:underline dark:text-blue-400"
+      className={loopLinkClassName("mt-2")}
       href={loop.prUrl}
       rel="noopener noreferrer"
       target="_blank"
@@ -323,7 +333,12 @@ function MetadataCards({ loop }: MetadataCardsProps) {
           <ClockIcon className="h-4 w-4 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          <LoopStatusBadge status={loop.status} />
+          {/*
+            Pass the persisted error code, not just the status: for a launch
+            failure (ISS-5711) this badge is the first place a user learns the
+            run never started, and status alone renders a generic "Failed".
+          */}
+          <LoopStatusBadge errorCode={loop.error?.code} status={loop.status} />
           {loop.startedAt && (
             <p className="mt-2 text-muted-foreground text-xs">
               Duration: {formatDuration(loop.startedAt, loop.completedAt)}
@@ -493,11 +508,17 @@ type LoopDetailContainerProps = {
 };
 
 export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
+  const orgSlug = useOrgSlug();
   const { data: loop, isLoading, error } = useLoop(id);
   const resumeLoop = useResumeLoop();
   const cancelLoop = useCancelLoop();
   const navigation = useNavigation();
-  const orgSlug = useOrgSlug();
+  // Resolve the loop's artifact title for the breadcrumb. React Query dedupes
+  // this against the same `useDocument` call inside `ArtifactLink` below (same
+  // query key), so lifting it here does not add a request. Gated on
+  // `loop?.documentId` — document-less loops fall back to the command noun.
+  const { data: breadcrumbArtifact, isFetched: breadcrumbArtifactFetched } =
+    useDocument(loop?.documentId ?? null);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [restartError, setRestartError] = useState<FriendlyErrorInput | null>(
     null
@@ -533,7 +554,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
       return;
     }
     // Enrich the celebration with the already-loaded loop context: the shipped
-    // PR as a deep link and a one-line duration summary. KLOC is not part of the
+    // PR as a deep link and a one-line duration summary. LOC/$ is not part of the
     // loaded LoopDetail, so we only surface data we actually have.
     //
     // Prefer the document-projected `primaryPullRequest`, but fall back to the
@@ -583,8 +604,45 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     shipCelebrationEnabled,
   ]);
 
+  // Breadcrumb/tab identity for the loop (see `resolveLoopBreadcrumbLabel`).
+  const breadcrumbLabel = resolveLoopBreadcrumbLabel({
+    loop,
+    artifactTitle: breadcrumbArtifact?.title,
+    artifactFetched: breadcrumbArtifactFetched,
+    routeId: id,
+  });
+
+  // ISS-4477: with the Loops list retired, the loop's producing document/plan is
+  // the only real parent — and how the user actually reached this run. Crumb it
+  // as the parent (the Header treats the second-to-last crumb as the back path)
+  // and keep the loop label as the leaf. Falls back to a single leaf crumb for
+  // document-less/legacy loops, which have no parent to point at.
+  const breadcrumbs = buildLoopBreadcrumbs({
+    orgSlug,
+    breadcrumbArtifact,
+    breadcrumbLabel,
+  });
+
+  // Name the browser tab the same as the crumb so several open loop tabs are
+  // distinguishable — the static route `metadata` only carries a generic title.
+  // It degrades to the route placeholder while the loop/artifact load.
+  //
+  // ISS-5574 (review on #4661): through the shared hook, not a bare effect with
+  // its own `"Closedloop.ai"` literal. Two copies of the product name is how a
+  // rename splits, and more than that: this was the one writer in the repo that
+  // never restored, so a soft navigation off a loop left "<loop> | Closedloop.ai"
+  // to be captured and later handed back by any page that DOES restore. The
+  // hook's unmount cleanup closes that.
+  useDocumentTitle(breadcrumbLabel);
+
+  const renderShell = (children: ReactNode, headerActions?: ReactNode) => (
+    <LoopDetailShell breadcrumbs={breadcrumbs} headerActions={headerActions}>
+      {children}
+    </LoopDetailShell>
+  );
+
   if (isLoading) {
-    return (
+    return renderShell(
       <div className="flex items-center justify-center py-12">
         <Loader2Icon className="h-6 w-6 animate-spin text-muted-foreground" />
       </div>
@@ -592,7 +650,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   }
 
   if (error) {
-    return (
+    return renderShell(
       <Alert variant="error">
         <AlertDescription>
           {error.message ?? "Failed to load loop"}
@@ -602,7 +660,7 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
   }
 
   if (!loop) {
-    return (
+    return renderShell(
       <div className="flex flex-col items-center justify-center py-12 text-center">
         <AlertCircleIcon className="mb-2 h-8 w-8 text-muted-foreground/50" />
         <p className="text-muted-foreground">Loop not found</p>
@@ -644,48 +702,47 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
     );
   };
 
-  return (
-    <div className="space-y-6">
-      {/* Back navigation */}
-      <div className="flex items-center gap-2">
-        <Button asChild size="sm" variant="ghost">
-          <Link href={`/${orgSlug}/loops`}>
-            <ArrowLeftIcon className="h-4 w-4" />
-            Back to Loops
-          </Link>
+  // Primary actions live in the Header's right slot (as branch detail's Refresh
+  // and session detail's actions do). This detail is reached from the plan and
+  // document-run flows that spawn the execution, so there is no separate
+  // "Back to Loops" button.
+  const headerActions = (
+    <>
+      {isActive && (
+        <Button
+          disabled={cancelLoop.isPending}
+          onClick={() => setShowCancelConfirm(true)}
+          size="sm"
+          variant="outline"
+        >
+          {cancelLoop.isPending ? (
+            <Loader2Icon className="h-4 w-4 animate-spin" />
+          ) : (
+            <SquareIcon className="h-4 w-4" />
+          )}
+          Cancel
         </Button>
-        {isActive && (
-          <Button
-            disabled={cancelLoop.isPending}
-            onClick={() => setShowCancelConfirm(true)}
-            size="sm"
-            variant="outline"
-          >
-            {cancelLoop.isPending ? (
-              <Loader2Icon className="h-4 w-4 animate-spin" />
-            ) : (
-              <SquareIcon className="h-4 w-4" />
-            )}
-            Cancel
-          </Button>
-        )}
-        {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
-          <Button
-            disabled={resumeLoop.isPending}
-            onClick={handleRestart}
-            size="sm"
-            variant="outline"
-          >
-            {resumeLoop.isPending ? (
-              <Loader2Icon className="h-4 w-4 animate-spin" />
-            ) : (
-              <RotateCcwIcon className="h-4 w-4" />
-            )}
-            Restart
-          </Button>
-        )}
-      </div>
+      )}
+      {RESTARTABLE_LOOP_STATUSES.has(loop.status) && (
+        <Button
+          disabled={resumeLoop.isPending}
+          onClick={handleRestart}
+          size="sm"
+          variant="outline"
+        >
+          {resumeLoop.isPending ? (
+            <Loader2Icon className="h-4 w-4 animate-spin" />
+          ) : (
+            <RotateCcwIcon className="h-4 w-4" />
+          )}
+          Restart
+        </Button>
+      )}
+    </>
+  );
 
+  return renderShell(
+    <div className="space-y-6">
       <MetadataCards loop={loop} />
 
       {/* Detail row */}
@@ -788,7 +845,8 @@ export function LoopDetailContainer({ id }: LoopDetailContainerProps) {
         onOpenChange={setShowCancelConfirm}
         open={showCancelConfirm}
       />
-    </div>
+    </div>,
+    headerActions
   );
 }
 
@@ -885,4 +943,67 @@ function SupportArtifacts({ artifacts }: { artifacts: LoopSupportArtifact[] }) {
       </div>
     </section>
   );
+}
+
+/**
+ * Page chrome for the loop-detail route: the breadcrumb header plus the
+ * scrollable main region. Owned here (not in the server `page.tsx`) so the
+ * breadcrumb can name the loop from the client-loaded loop record, matching
+ * how branch/artifact detail render their header inside the client component.
+ */
+function LoopDetailShell({
+  breadcrumbs,
+  headerActions,
+  children,
+}: {
+  breadcrumbs: BreadcrumbEntry[];
+  headerActions?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <>
+      {/* ISS-4477: the "Loops" list concept is retired from nav & UI, so the
+          former "Loops" list crumb (which linked to the removed landing page) is
+          gone. The crumb chain is built by `buildLoopBreadcrumbs`: the loop's
+          producing document/plan as the parent (the back path) when known, with
+          the loop's own label as the leaf — matching how branch/artifact detail
+          crumb their parent. */}
+      <Header breadcrumbs={breadcrumbs}>{headerActions}</Header>
+      {/* plain <div>, not <main>: the shell's SidebarInset owns the page's single main landmark (no-nested-main-landmark gate). */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
+        {children}
+      </div>
+    </>
+  );
+}
+
+/**
+ * Resolves the loop's breadcrumb/tab label. `getLoopBreadcrumbLabel` names it
+ * by the command noun plus the artifact it implements (FEA/PRD title), else a
+ * short id — mirroring how branch/artifact detail name their record.
+ *
+ * The label must never flash: (1) while the loop record loads, or (2) once the
+ * loop has a `documentId` but its title query has not settled — in either case
+ * fall through to a short-id placeholder derived from the route id (`Loop
+ * 3f2a91b4`) rather than the generic "Loop Detail" or a bare noun that would
+ * immediately swap to the titled label. This same short-id placeholder also
+ * names the terminal error and not-found shells, which never resolve a loop, so
+ * those pages stay distinguishable instead of reading a generic "Loop" forever.
+ */
+function resolveLoopBreadcrumbLabel({
+  loop,
+  artifactTitle,
+  artifactFetched,
+  routeId,
+}: {
+  loop: LoopDetail | undefined;
+  artifactTitle: string | undefined;
+  artifactFetched: boolean;
+  routeId: string;
+}): string {
+  const artifactTitleSettled = !loop?.documentId || artifactFetched;
+  if (loop && artifactTitleSettled) {
+    return getLoopBreadcrumbLabel(loop, artifactTitle);
+  }
+  return `Loop ${shortLoopId(routeId)}`;
 }

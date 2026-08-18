@@ -29,6 +29,12 @@ import {
 } from "@repo/observability/telemetry/schema";
 import { BoundedCache } from "@/lib/bounded-cache";
 import { getPrismaErrorCode } from "@/lib/db-utils";
+import {
+  clearOperationCommandCache,
+  getCachedOperationCommandId,
+  rememberOperationCommand,
+} from "@/lib/desktop-command-operation-cache";
+import { resolveCommandUpdate } from "@/lib/desktop-command-transitions";
 import { safeEmit } from "@/lib/telemetry-utils";
 import { isRecord } from "@/lib/type-guards";
 
@@ -132,7 +138,6 @@ type EventSubscriber = (event: DesktopCommandEvent) => void;
 const eventSubscribers = new Map<string, Set<EventSubscriber>>();
 
 const CACHE_MAX_SIZE = 10_000;
-const operationIdCache = new BoundedCache<string, string>(CACHE_MAX_SIZE);
 const idempotencyCache = new BoundedCache<string, IdempotencyEntry>(
   CACHE_MAX_SIZE
 );
@@ -302,61 +307,6 @@ function toDispatchableCommand(command: StoredCommand): DispatchableCommand {
   };
 }
 
-function resolveCommandUpdate(
-  command: StoredCommand,
-  eventType: DesktopCommandEventType,
-  data: JsonValue
-): {
-  status?: DesktopCommandStatus;
-  startedAt?: Date;
-  finishedAt?: Date;
-  error?: string | null;
-} {
-  if (isTerminalStatus(command.status)) {
-    return {};
-  }
-
-  if (eventType === "done") {
-    const cancelled = isRecord(data) && data.cancelled === true;
-    return {
-      status: cancelled
-        ? DesktopCommandStatus.Cancelled
-        : DesktopCommandStatus.Done,
-      finishedAt: new Date(),
-    };
-  }
-
-  if (eventType === "error" && isRecord(data) && data.terminal === true) {
-    return {
-      status: DesktopCommandStatus.Failed,
-      finishedAt: new Date(),
-      error: typeof data.error === "string" ? data.error : "Command failed",
-    };
-  }
-
-  if (eventType === "result" && isRecord(data) && data.terminal === true) {
-    const cancelled = data.cancelled === true;
-    return {
-      status: cancelled
-        ? DesktopCommandStatus.Cancelled
-        : DesktopCommandStatus.Done,
-      finishedAt: new Date(),
-    };
-  }
-
-  if (
-    command.status === DesktopCommandStatus.Queued ||
-    command.status === DesktopCommandStatus.Accepted
-  ) {
-    return {
-      status: DesktopCommandStatus.Running,
-      startedAt: command.startedAt ?? new Date(),
-    };
-  }
-
-  return {};
-}
-
 async function findCommandById(
   commandId: string
 ): Promise<StoredCommand | null> {
@@ -494,7 +444,11 @@ async function resolveIdempotentCommand(
     commandId: existingCommand.commandId,
     fingerprint,
   });
-  operationIdCache.set(existingCommand.operationId, existingCommand.commandId);
+  rememberOperationCommand(
+    existingCommand.operationId,
+    existingCommand.commandId,
+    existingCommand.computeTargetId
+  );
   return { command: existingCommand, deduped: true };
 }
 
@@ -513,13 +467,13 @@ function emitCommandLifecycleEventForStatus(
     computeTargetId,
   };
 
-  if (status === "done") {
+  if (status === DesktopCommandStatus.Done) {
     emitCommandLifecycleEvent(TelemetryCategory.CommandCompleted, trace);
-  } else if (status === "failed") {
+  } else if (status === DesktopCommandStatus.Failed) {
     emitCommandLifecycleEvent(TelemetryCategory.CommandFailed, trace, {
       severity: TelemetrySeverity.Error,
     });
-  } else if (status === "expired") {
+  } else if (status === DesktopCommandStatus.Expired) {
     emitCommandLifecycleEvent(TelemetryCategory.CommandTimedOut, trace, {
       severity: TelemetrySeverity.Warn,
     });
@@ -601,7 +555,11 @@ export const desktopCommandStore = {
     }
 
     const command = toStoredCommand(created);
-    operationIdCache.set(command.operationId, command.commandId);
+    rememberOperationCommand(
+      command.operationId,
+      command.commandId,
+      command.computeTargetId
+    );
     if (idempotencyKey) {
       idempotencyCache.set(`${computeTargetId}:${idempotencyKey}`, {
         commandId: command.commandId,
@@ -899,7 +857,7 @@ export const desktopCommandStore = {
   async getCommandByOperationId(
     operationId: string
   ): Promise<DesktopCommandSummary | null> {
-    const cachedId = operationIdCache.get(operationId);
+    const cachedId = getCachedOperationCommandId(operationId);
     if (cachedId) {
       const cached = await findCommandById(cachedId);
       if (cached) {
@@ -917,7 +875,11 @@ export const desktopCommandStore = {
       return null;
     }
     const stored = toStoredCommand(command as StoredCommandRow);
-    operationIdCache.set(stored.operationId, stored.commandId);
+    rememberOperationCommand(
+      stored.operationId,
+      stored.commandId,
+      stored.computeTargetId
+    );
     return toSummary(stored);
   },
 
@@ -1002,18 +964,26 @@ export const desktopCommandStore = {
     };
 
     if (replayNeeded) {
-      const replay =
-        (await this.getCommandEvents(computeTargetId, commandId, {
-          afterSequence: options?.afterSequence,
-        })) ?? [];
-      for (const event of replay) {
-        if (
-          typeof event.sequence === "number" &&
-          liveSequences.has(event.sequence)
-        ) {
-          continue;
+      try {
+        const replay =
+          (await this.getCommandEvents(computeTargetId, commandId, {
+            afterSequence: options?.afterSequence,
+          })) ?? [];
+        for (const event of replay) {
+          if (
+            typeof event.sequence === "number" &&
+            liveSequences.has(event.sequence)
+          ) {
+            continue;
+          }
+          listener(event);
         }
-        listener(event);
+      } catch (error) {
+        // The listener is already registered. Without this the caller never
+        // receives the cleanup handle, yet the callback stays in
+        // eventSubscribers and every later publish still invokes it.
+        unsubscribe();
+        throw error;
       }
     }
 
@@ -1024,7 +994,7 @@ export const desktopCommandStore = {
     operationId: string,
     computeTargetId?: string
   ): Promise<string | null> {
-    const cachedId = operationIdCache.get(operationId);
+    const cachedId = getCachedOperationCommandId(operationId, computeTargetId);
     if (cachedId) {
       return cachedId;
     }
@@ -1039,7 +1009,7 @@ export const desktopCommandStore = {
     const command = await withDb((db) =>
       db.desktopCommand.findFirst({
         where,
-        select: { id: true },
+        select: { id: true, computeTargetId: true },
         orderBy: { createdAt: "desc" },
       })
     );
@@ -1047,7 +1017,7 @@ export const desktopCommandStore = {
       return null;
     }
 
-    operationIdCache.set(operationId, command.id);
+    rememberOperationCommand(operationId, command.id, command.computeTargetId);
     return command.id;
   },
 
@@ -1073,7 +1043,12 @@ export const desktopCommandStore = {
         where: {
           computeTargetId,
           status: {
-            notIn: ["done", "failed", "cancelled", "expired"],
+            notIn: [
+              DesktopCommandStatus.Done,
+              DesktopCommandStatus.Failed,
+              DesktopCommandStatus.Cancelled,
+              DesktopCommandStatus.Expired,
+            ],
           },
         },
         orderBy: { createdAt: "asc" },
@@ -1148,7 +1123,7 @@ export const desktopCommandStore = {
 
   __resetForTests(): void {
     eventSubscribers.clear();
-    operationIdCache.clear();
+    clearOperationCommandCache();
     idempotencyCache.clear();
   },
 

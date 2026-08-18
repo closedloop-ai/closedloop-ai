@@ -33,11 +33,6 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import pg from "pg";
 import type { PrismaClient } from "../generated/client";
-import {
-  formatSearchPath,
-  normalizeExplicitSchemaName,
-  resolveSchemaName,
-} from "../schema-utils";
 import { isLocalhostUrl, resolveSslOption } from "./db-utils";
 import {
   applyBootstrapTarget,
@@ -45,11 +40,12 @@ import {
   ensureBootstrapUser,
 } from "./seed/bootstrap";
 import { evaluateSeedGuards, parseSeedCliArgs } from "./seed/cli";
+import { resolveSeedConnectionTarget } from "./seed/connection-target";
 import {
   detectOrgConflicts,
   SeedOrgPreflightStatus,
 } from "./seed/non-empty-org-guard";
-import { resolveSeedRunPlan, SeedAuditMode } from "./seed/profiles";
+import { resolveSeedRunPlan } from "./seed/profiles";
 import {
   collectResetVerificationSnapshot,
   countResettableOrgRows,
@@ -60,6 +56,7 @@ import {
 } from "./seed/reset";
 import { confirmResetIfNeeded } from "./seed/reset-confirmation";
 import { assertEffectiveSchema } from "./seed/schema-guard";
+import { resolveAuditMode, resolveSeedTarget } from "./seed/target-resolution";
 
 /**
  * Replaces the local-part of an email and any host-shaped string with a
@@ -308,147 +305,6 @@ main().catch((error) => {
   process.exit(1);
 });
 
-type ResolvedSeedTarget = {
-  organizationId: string;
-  userId: string;
-  userEmail: string;
-  source: "legacy-default" | "explicit-flags" | "inferred";
-};
-
-async function resolveSeedTarget(
-  prisma: PrismaClient,
-  options: {
-    resetRequested: boolean;
-    organizationId?: string;
-    userId?: string;
-  }
-): Promise<ResolvedSeedTarget> {
-  const hasExplicitTarget = Boolean(options.organizationId || options.userId);
-  if (!(options.resetRequested || hasExplicitTarget)) {
-    return resolveLegacySeedTarget(prisma);
-  }
-
-  const organization = options.organizationId
-    ? await prisma.organization.findUnique({
-        where: { id: options.organizationId },
-        select: { id: true },
-      })
-    : await resolveOnlyOrganization(prisma);
-  if (!organization) {
-    throw new Error(
-      `${SeedResetFailureReason.ResetTargetNotFound}: target organization was not found.`
-    );
-  }
-
-  const user = options.userId
-    ? await prisma.user.findFirst({
-        where: { id: options.userId, organizationId: organization.id },
-        select: { id: true, organizationId: true, email: true },
-      })
-    : await resolveOnlyUser(prisma, organization.id);
-  if (!user) {
-    throw new Error(
-      `${SeedResetFailureReason.ResetUserNotInOrg}: target user was not found in the target organization.`
-    );
-  }
-
-  return {
-    organizationId: organization.id,
-    userId: user.id,
-    userEmail: user.email,
-    source: hasExplicitTarget ? "explicit-flags" : "inferred",
-  };
-}
-
-async function resolveLegacySeedTarget(
-  prisma: PrismaClient
-): Promise<ResolvedSeedTarget> {
-  const user = await prisma.user.findFirst({
-    select: {
-      id: true,
-      organizationId: true,
-      email: true,
-    },
-    orderBy: { createdAt: "asc" },
-  });
-
-  if (!user) {
-    throw new Error(
-      "No users found in the database. Ensure at least one user exists before seeding."
-    );
-  }
-
-  const organization = await prisma.organization.findUnique({
-    where: { id: user.organizationId },
-    select: { id: true },
-  });
-
-  if (!organization) {
-    throw new Error(
-      `Organization not found for resolved user (organizationId=${user.organizationId})`
-    );
-  }
-
-  return {
-    organizationId: organization.id,
-    userId: user.id,
-    userEmail: user.email,
-    source: "legacy-default",
-  };
-}
-
-async function resolveOnlyOrganization(
-  prisma: PrismaClient
-): Promise<{ id: string } | null> {
-  const organizations = await prisma.organization.findMany({
-    select: { id: true },
-    orderBy: { createdAt: "asc" },
-    take: 2,
-  });
-  if (organizations.length > 1) {
-    throw new Error(
-      `${SeedResetFailureReason.ResetTargetAmbiguous}: multiple organizations exist; pass --organization-id.`
-    );
-  }
-  return organizations[0] ?? null;
-}
-
-function resolveAuditMode({
-  conflicts,
-  status,
-  forceOverwrite,
-}: {
-  conflicts: readonly string[];
-  status: SeedOrgPreflightStatus;
-  forceOverwrite: boolean;
-}): SeedAuditMode {
-  if (conflicts.length > 0 && forceOverwrite) {
-    return SeedAuditMode.ForceOverwriteNonEmpty;
-  }
-  if (status === SeedOrgPreflightStatus.SeedOwned) {
-    return SeedAuditMode.IdempotentSeedOrg;
-  }
-  return SeedAuditMode.CleanOrg;
-}
-
-async function resolveOnlyUser(
-  prisma: PrismaClient,
-  organizationId: string
-): Promise<{ id: string; email: string } | null> {
-  const users = await prisma.user.findMany({
-    where: { organizationId },
-    select: { id: true, email: true },
-    orderBy: { createdAt: "asc" },
-    take: 2,
-  });
-  if (users.length > 1) {
-    throw new Error(
-      `${SeedResetFailureReason.ResetUserAmbiguous}: multiple users exist in the target organization; pass --user-id.`
-    );
-  }
-  return users[0] ?? null;
-}
-
 /**
  * Builds the seed's PrismaClient with explicit schema targeting and returns the
  * pool so the caller can close it.
@@ -474,31 +330,17 @@ async function createSeedPrisma(
 }> {
   const { PrismaClient } = await import("../generated/client");
 
-  // Honor the caller's `sslmode` before stripping it off the URL (explicit ssl
-  // config is provided to the Pool instead).
-  const sslmode = url.searchParams.get("sslmode");
-  url.searchParams.delete("sslmode");
-
-  const rawUrlSchema = url.searchParams.get("schema");
-  const targetSchema =
-    // Normalize the DSN `?schema=` the same way PGSCHEMA is (via
-    // resolveSchemaName → normalizeExplicitSchemaName), so a mixed-case or
-    // special-char value can't produce a quoted search_path identifier that
-    // mismatches the lowercased schema (a false-positive guard abort).
-    // `||` (not `??`): an explicit empty/blank `?schema=` normalizes to "" and
-    // falls through to env resolution — otherwise targetSchema="" would disable
-    // both the search_path and the schema guard, routing writes to `public`.
-    (rawUrlSchema ? normalizeExplicitSchemaName(rawUrlSchema) : "") ||
-    resolveSchemaName({
+  // Reads sslmode/schema and strips them from the URL; see
+  // scripts/seed/connection-target.ts for the resolution order and why the
+  // empty-schema fall-through is `||` and not `??`.
+  const { sslmode, targetSchema, searchPath } = resolveSeedConnectionTarget(
+    url,
+    {
       pgSchema: process.env.PGSCHEMA,
       vercelEnv: process.env.VERCEL_ENV,
       vercelGitCommitRef: process.env.VERCEL_GIT_COMMIT_REF,
-    });
-  url.searchParams.delete("schema");
-  const searchPath =
-    targetSchema && targetSchema.length > 0
-      ? formatSearchPath(targetSchema)
-      : null;
+    }
+  );
 
   const ssl = resolveSslOption({
     isLocalhost,

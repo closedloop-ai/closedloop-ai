@@ -4,9 +4,11 @@ import path from "node:path";
 import type { OperationDispatcher } from "../operation-dispatcher.js";
 import type { ProcessManager } from "../process-manager.js";
 import { assertPathAllowed, DirectoryNotAllowedError } from "../security.js";
+import { GIT_GATEWAY_EXEC_TIMEOUT_MS } from "./git-gateway-constants.js";
 import { parseBody } from "./parse-body.js";
 import { loadReposConfig } from "./repos-config-utils.js";
 import { json } from "./response-utils.js";
+import { getResolvedGitPath } from "./symphony-loop.js";
 import { expandHome, SymphonyDirNotConfiguredError } from "./symphony-utils.js";
 
 export function registerGitWorktreeRoutes(
@@ -58,9 +60,10 @@ export function registerGitWorktreeRoutes(
       }
 
       const removeResult = await processManager.exec(
-        "git",
+        getResolvedGitPath(),
         ["worktree", "remove", ...(force ? ["--force"] : []), expandedPath],
-        expandedPath
+        expandedPath,
+        { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
       );
       if (removeResult.exitCode === 0) {
         json(context, 200, {
@@ -84,6 +87,21 @@ export function registerGitWorktreeRoutes(
       }
 
       if (force) {
+        // The forced `git worktree remove` failed. Before falling back to a
+        // recursive `fs.rm`, confirm the target is actually a registered
+        // worktree of this repo — otherwise a plain directory (or an ordinary
+        // repo) that merely lives under the sandbox would be recursively
+        // deleted by the fallback.
+        const isWorktree = await isRegisteredWorktree(
+          processManager,
+          expandedPath
+        );
+        if (!isWorktree) {
+          json(context, 500, {
+            error: `Failed to remove worktree: ${errorText}`,
+          });
+          return;
+        }
         await fs.rm(expandedPath, { recursive: true, force: true });
         json(context, 200, {
           success: true,
@@ -122,38 +140,47 @@ export function registerGitWorktreeRoutes(
           continue;
         }
 
-        const branchResult = await processManager.exec("git", [
-          "-C",
+        // Run with `cwd: prDir` rather than `git -C prDir`: `ProcessManager`
+        // reapplies the sandbox gate at exec time only to `cwd`, so `-C` with an
+        // undefined cwd would skip that execution-time revalidation and let a
+        // dir swapped after the route check escape the allowed roots.
+        const branchResult = await processManager.exec(
+          getResolvedGitPath(),
+          ["rev-parse", "--abbrev-ref", "HEAD"],
           prDir,
-          "rev-parse",
-          "--abbrev-ref",
-          "HEAD",
-        ]);
+          { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
+        );
         if (branchResult.exitCode !== 0) {
-          kept.push(prDir);
+          // A rev-parse failure is a cleanup error, not a healthy live worktree:
+          // record it in `errors` so callers can distinguish it from a kept
+          // worktree whose branch still exists on origin.
+          errors.push(prDir);
           continue;
         }
 
         const branch = branchResult.stdout.trim();
-        const remoteResult = await processManager.exec("git", [
-          "-C",
+        const remoteResult = await processManager.exec(
+          getResolvedGitPath(),
+          ["ls-remote", "--heads", "origin", branch],
           prDir,
-          "ls-remote",
-          "--heads",
-          "origin",
-          branch,
-        ]);
+          { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
+        );
+        if (remoteResult.exitCode !== 0) {
+          errors.push(prDir);
+          continue;
+        }
 
-        if (remoteResult.exitCode === 0 && remoteResult.stdout.trim() === "") {
+        if (remoteResult.stdout.trim() === "") {
           const removeResult = await processManager.exec(
-            "git",
+            getResolvedGitPath(),
             ["worktree", "remove", prDir],
-            prDir
+            prDir,
+            { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
           );
           if (removeResult.exitCode === 0) {
             removed.push(prDir);
           } else {
-            kept.push(prDir);
+            errors.push(prDir);
           }
         } else {
           kept.push(prDir);
@@ -169,6 +196,48 @@ export function registerGitWorktreeRoutes(
       json(context, 500, { error: `Worktree cleanup failed: ${message}` });
     }
   });
+}
+
+/**
+ * Whether `targetPath` is a worktree registered with git (i.e. it appears as a
+ * `worktree <path>` entry in `git worktree list --porcelain` run from inside
+ * it). Guards the forced-delete fallback so it never recursively removes a plain
+ * directory or an ordinary repository that merely lives under the sandbox.
+ */
+async function isRegisteredWorktree(
+  processManager: ProcessManager,
+  targetPath: string
+): Promise<boolean> {
+  const listResult = await processManager.exec(
+    getResolvedGitPath(),
+    ["worktree", "list", "--porcelain"],
+    targetPath,
+    { timeoutMs: GIT_GATEWAY_EXEC_TIMEOUT_MS }
+  );
+  if (listResult.exitCode !== 0) {
+    return false;
+  }
+  const canonicalTarget = await canonicalizePath(targetPath);
+  for (const line of listResult.stdout.split("\n")) {
+    if (!line.startsWith("worktree ")) {
+      continue;
+    }
+    const registeredPath = await canonicalizePath(
+      line.slice("worktree ".length)
+    );
+    if (registeredPath === canonicalTarget) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function canonicalizePath(rawPath: string): Promise<string> {
+  try {
+    return await fs.realpath(rawPath);
+  } catch {
+    return path.resolve(rawPath);
+  }
 }
 
 async function resolveWorktreeParentDir(

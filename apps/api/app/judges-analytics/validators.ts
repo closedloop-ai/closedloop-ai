@@ -1,7 +1,18 @@
 import { DATE_ONLY_REGEX } from "@repo/api/src/constants";
-import { EVALUATION_REPORT_TYPE_OPTIONS } from "@repo/api/src/types/evaluation";
+import {
+  EVALUATION_REPORT_TYPE_INPUT_OPTIONS,
+  normalizeEvaluationReportType,
+} from "@repo/api/src/types/evaluation";
 import { DOCUMENT_COUNTS_GROUP_BY_OPTIONS } from "@repo/api/src/types/judges-analytics";
 import { z } from "zod";
+
+// FEA-3956: accept the canonical `ISSUE` report-type alias from a skewed newer
+// client and normalize it to the persisted `FEATURE` discriminator before it
+// reaches the service's raw `::"EvaluationReportType"` query, so `ISSUE` targets
+// stored `FEATURE` evaluations instead of 400ing or returning an empty set.
+const reportTypeInputSchema = z
+  .enum(EVALUATION_REPORT_TYPE_INPUT_OPTIONS)
+  .transform(normalizeEvaluationReportType);
 
 const dateRangeQueryValidator = z
   .object({
@@ -17,7 +28,7 @@ const dateRangeQueryValidator = z
   });
 
 export const judgesAnalyticsQueryValidator = dateRangeQueryValidator.extend({
-  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+  reportType: reportTypeInputSchema,
 });
 
 export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
@@ -25,7 +36,7 @@ export const artifactCountsQueryValidator = dateRangeQueryValidator.extend({
 });
 
 export const scoreComparisonQueryValidator = z.object({
-  reportType: z.enum(EVALUATION_REPORT_TYPE_OPTIONS),
+  reportType: reportTypeInputSchema,
   page: z.string().default("1").transform(Number).pipe(z.number().int().min(1)),
   pageSize: z
     .string()

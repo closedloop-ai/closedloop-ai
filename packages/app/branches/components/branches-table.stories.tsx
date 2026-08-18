@@ -1,3 +1,7 @@
+import {
+  BranchDataState,
+  BranchTagAvailability,
+} from "@repo/api/src/types/branch";
 import { BranchesTable } from "@repo/app/branches/components/branches-table";
 import { BranchesToolbar } from "@repo/app/branches/components/branches-toolbar";
 import { useBranchFilterState } from "@repo/app/branches/hooks/use-branch-filter-state";
@@ -43,6 +47,82 @@ export const Default: Story = {
       <BranchesTable {...args} />
     </main>
   ),
+};
+
+const APPROVED_ROW: BranchRow = {
+  ...BRANCH_SAMPLE_ROWS[0]!,
+  id: "approved-default",
+  branchName: "codex/branches-list-ui",
+  repo: "closedloop-ai/symphony-alpha",
+  owner: "Daniel Ochoa",
+  ownerKey: "github:daniel",
+  collaborators: [
+    { key: "github:kris", name: "Kris Wong" },
+    { key: "github:alex", name: "Alex Morgan" },
+  ],
+  tags: [{ id: "tag-ui", name: "UI", color: "blue" }],
+  tagAvailability: BranchTagAvailability.Available,
+};
+
+export const ApprovedDefault: Story = {
+  args: { approved: true, items: [APPROVED_ROW] },
+};
+
+export const ApprovedAwaitingSync: Story = {
+  args: {
+    approved: true,
+    items: [
+      {
+        ...APPROVED_ROW,
+        id: "approved-awaiting-sync",
+        branchName: "agent/embeddings-store-reindex",
+        dataState: BranchDataState.AwaitingSync,
+      },
+      {
+        ...APPROVED_ROW,
+        id: "approved-ready",
+        branchName: "fix/branch-table-accessibility",
+        dataState: BranchDataState.Ready,
+      },
+    ],
+  },
+};
+
+export const ApprovedUnenriched: Story = {
+  args: {
+    approved: true,
+    items: [
+      {
+        ...APPROVED_ROW,
+        id: "approved-unenriched",
+        repo: RENDER_MISSING,
+        owner: RENDER_UNATTRIBUTED,
+        additions: null,
+        deletions: null,
+        lastActivityAt: undefined,
+        tags: [],
+        tagAvailability: BranchTagAvailability.Unavailable,
+      },
+    ],
+  },
+};
+
+export const ApprovedManyCollaborators: Story = {
+  args: {
+    approved: true,
+    items: [
+      {
+        ...APPROVED_ROW,
+        collaborators: ["Kris", "Alex", "Sam", "Taylor", "Jordan"].map(
+          (name) => ({ key: `github:${name.toLowerCase()}`, name })
+        ),
+      },
+    ],
+  },
+};
+
+export const ApprovedTagsReadOnly: Story = {
+  args: { approved: true, items: [APPROVED_ROW], tagsReadOnly: true },
 };
 
 // A net-new local branch with no GitHub enrichment: repo identity, PR, checks,

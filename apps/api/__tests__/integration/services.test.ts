@@ -76,7 +76,7 @@ describe.skipIf(!hasDatabase)("Users Service Integration", () => {
         lastName: "Name",
       });
 
-      const updated = await usersService.update(user.id, {
+      const updated = await usersService.update(user.id, testOrgId, {
         firstName: "New",
         lastName: "Name",
       });

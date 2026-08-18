@@ -1,18 +1,29 @@
 import "server-only";
 
 import {
-  decodeComponentSlug,
+  decodeComponentHashKey,
   type TokenTrendPoint,
   type TokenTrendResponse,
 } from "@repo/api/src/types/agent-component-analytics";
 import { withDb } from "@repo/database";
 import { toNumber } from "@/lib/prisma-number";
 import {
+  DEFAULT_TOKEN_TREND_LOOKBACK_DAYS,
+  MAX_TOKEN_TREND_USAGE_ROWS,
+} from "./analytics-validators";
+import {
+  resolveContentHashIdentity,
+  type UsageContentScope,
+  usageContentScopeWhere,
+} from "./content-hash-identity";
+import {
   componentKeyRollsUpToGeneralPurpose,
   isRolledUpSubagentIdentity,
   isRolledUpSubagentKey,
   ROLLED_UP_SUBAGENT_KEY,
 } from "./subagent-identity";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Token-trend
@@ -34,22 +45,45 @@ export type TokenTrendQuery = {
 
 type UsageRow = Awaited<ReturnType<typeof fetchTokenTrendUsageRows>>[number];
 
+/** The resolved `sessionStartedAt` window for a token-trend read. */
+type TokenTrendWindow = { since: Date; until?: Date };
+
+/**
+ * Resolve the effective `sessionStartedAt` window, always producing a lower
+ * bound (FEA-3590). `since`/`until` are optional on the wire and the shipped
+ * clients send neither, so an absent `since` is defaulted to
+ * {@link DEFAULT_TOKEN_TREND_LOOKBACK_DAYS} before the window's upper bound
+ * (`until` when present, else now). This forces a bounded date window so a
+ * param-less request over a hot component can't materialize the component's
+ * entire usage history + nested token arrays into the API heap. An explicit
+ * `since` is honored verbatim — a caller that opts into a wide window is bounded
+ * by {@link MAX_TOKEN_TREND_USAGE_ROWS} instead.
+ */
+function resolveTokenTrendWindow(query: TokenTrendQuery): TokenTrendWindow {
+  const until = query.until ? new Date(query.until) : undefined;
+  if (query.since) {
+    return { since: new Date(query.since), until };
+  }
+  const anchorMs = until ? until.getTime() : Date.now();
+  return {
+    since: new Date(anchorMs - DEFAULT_TOKEN_TREND_LOOKBACK_DAYS * MS_PER_DAY),
+    until,
+  };
+}
+
 /** Build the Prisma where clause for token-trend session scoping. */
 function tokenTrendSessionWhere(
   organizationId: string,
-  query: TokenTrendQuery
+  query: TokenTrendQuery,
+  window: TokenTrendWindow
 ) {
   return {
     artifact: { organizationId },
     ...(query.userId ? { userId: query.userId } : {}),
-    ...(query.since || query.until
-      ? {
-          sessionStartedAt: {
-            ...(query.since ? { gte: new Date(query.since) } : {}),
-            ...(query.until ? { lte: new Date(query.until) } : {}),
-          },
-        }
-      : {}),
+    sessionStartedAt: {
+      gte: window.since,
+      ...(window.until ? { lte: window.until } : {}),
+    },
   };
 }
 
@@ -63,11 +97,35 @@ function tokenTrendSessionWhere(
  * under-reports (FEA-3052). Prisma has no regex operator, so we over-match with
  * a `startsWith` prefix here and tighten to the exact instance pattern in JS via
  * {@link componentKeyRollsUpToGeneralPurpose}. Every other identity matches its
- * `componentKey` verbatim, exactly as before.
+ * `componentKey` case-insensitively (see below).
+ *
+ * FEA-3757: the plain match MUST be case-insensitive. The component slug key is
+ * lowercased (`normalizeComponentKey`), but the stored
+ * `AgentComponentSessionUsage.componentKey` preserves the raw subagent type from
+ * the transcript (e.g. `Explore`), which the desktop only lowercases at read
+ * time. An exact `{ componentKey: key }` match therefore found ZERO usage rows
+ * for a mixed-case subagent type — so the token trend read empty and the agent
+ * page showed zero token usage despite constant use. The listing/detail reads
+ * already match `componentKey` case-insensitively; this brings the token-trend
+ * read into parity.
+ *
+ * FEA-4335: when a content-hash key resolves to the SAME content installed under
+ * several names, `keys` carries every name, so match `componentKey` against all
+ * of them (case-insensitively) — otherwise usage attached under an alternate
+ * name is dropped from the trend even though the content scope covers it.
  */
-function tokenTrendComponentKeyWhere(kind: string, key: string) {
+function tokenTrendComponentKeyWhere(
+  kind: string,
+  key: string,
+  keys: string[]
+) {
   if (!isRolledUpSubagentIdentity(kind, key)) {
-    return { componentKey: key };
+    const nameKeys = keys.length > 0 ? keys : [key];
+    return {
+      OR: nameKeys.map((k) => ({
+        componentKey: { equals: k, mode: "insensitive" as const },
+      })),
+    };
   }
   return {
     OR: [
@@ -87,15 +145,32 @@ function fetchTokenTrendUsageRows(
   db: Parameters<Parameters<typeof withDb>[0]>[0],
   kind: string,
   key: string,
+  keys: string[],
   organizationId: string,
-  query: TokenTrendQuery
+  query: TokenTrendQuery,
+  window: TokenTrendWindow,
+  contentScope: UsageContentScope | null
 ) {
   return db.agentComponentSessionUsage.findMany({
     where: {
       componentKind: kind,
-      ...tokenTrendComponentKeyWhere(kind, key),
-      session: tokenTrendSessionWhere(organizationId, query),
+      ...tokenTrendComponentKeyWhere(kind, key, keys),
+      // FEA-4335: for a content-hash key, narrow to exactly the requested content
+      // version — shared with the detail read so the chart and the detail totals
+      // scope identically (`usageContentScopeWhere`).
+      ...usageContentScopeWhere(contentScope),
+      session: tokenTrendSessionWhere(organizationId, query, window),
     },
+    // FEA-3590: keep the most recent sessions when a hot component exceeds the
+    // cap within the defaulted window, mirroring the `sessionStartedAt desc`
+    // intent of the other org-scoped usage reads. `id asc` is a stable tiebreak
+    // so the retained slice never flickers between requests.
+    orderBy: [{ session: { sessionStartedAt: "desc" } }, { id: "asc" }],
+    // Bound the fan-out to match the sibling org-scoped usage reads
+    // (`fetchDetailOrphanUsage`, `loadChildUsageByPackId`, …, all capped by
+    // `MAX_ORG_ORPHAN_USAGE_ROWS`) so a param-less read over a hot component
+    // can't materialize the whole usage corpus + nested token arrays.
+    take: MAX_TOKEN_TREND_USAGE_ROWS,
     select: {
       agentSessionId: true,
       componentKey: true,
@@ -253,6 +328,12 @@ function buildTrendPoints(
  * by `sessionStartedAt`. An empty `points` array is returned when the
  * component slug is valid but has no matching usage rows.
  *
+ * FEA-3590: when the caller supplies no `since`, the read is bounded to a
+ * default {@link DEFAULT_TOKEN_TREND_LOOKBACK_DAYS}-day lookback window (see
+ * {@link resolveTokenTrendWindow}) and, as a backstop, capped at
+ * {@link MAX_TOKEN_TREND_USAGE_ROWS} rows, so a param-less request over a hot
+ * component never materializes the whole usage corpus into the API heap.
+ *
  * Returns `null` when the slug cannot be parsed (invalid format).
  */
 function fetchTokenTrend(
@@ -260,19 +341,54 @@ function fetchTokenTrend(
   slug: string,
   query: TokenTrendQuery
 ): Promise<TokenTrendResponse | null> {
-  const decoded = decodeComponentSlug(slug);
+  // FEA-4335: the slug is the content-hash routable key (`${kind}::${fingerprint}`)
+  // for a new link, or the legacy name-level `${kind}::${key}` for old links.
+  const decoded = decodeComponentHashKey(slug);
   if (!decoded) {
     return Promise.resolve(null);
   }
-  const { kind, key } = decoded;
+  const { kind, fingerprint } = decoded;
+
+  const window = resolveTokenTrendWindow(query);
 
   return withDb(async (db) => {
+    // For a content-hash key, resolve the fingerprint to its name-level key +
+    // the content-hash set so the usage read scopes to exactly the content
+    // version the detail page shows (two same-named-different-bytes components
+    // get distinct trends). A fingerprint that resolves to nothing yields an
+    // empty trend, never a wrong component's rows.
+    let key = decoded.key ?? "";
+    // FEA-4335: every name under which this content is installed. For a content-
+    // hash key the same bytes can live under different names, so the usage read
+    // must match `componentKey` against ALL of them (not just the primary),
+    // mirroring the detail read — otherwise usage attached under an alternate
+    // name is dropped from the trend even though the content scope covers it.
+    let keys: string[] = key ? [key] : [];
+    let contentScope: UsageContentScope | null = null;
+    if (fingerprint) {
+      const identity = await resolveContentHashIdentity(
+        db,
+        organizationId,
+        kind,
+        fingerprint
+      );
+      if (!identity) {
+        return { slug, points: [], models: [] };
+      }
+      key = identity.key;
+      keys = identity.keys;
+      contentScope = { fingerprint, contentHashes: identity.contentHashes };
+    }
+
     const rawRows = await fetchTokenTrendUsageRows(
       db,
       kind,
       key,
+      keys,
       organizationId,
-      query
+      query,
+      window,
+      contentScope
     );
     // For the rolled-up general-purpose subagent identity the query over-matches
     // with a `startsWith` prefix (Prisma has no regex); tighten here to the exact

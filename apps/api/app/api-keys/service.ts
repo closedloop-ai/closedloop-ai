@@ -6,10 +6,19 @@ import type {
   CreateApiKeyResponse,
   VerifiedApiKeyContext,
 } from "@repo/api/src/types/api-key";
-import { API_KEY_SCOPES } from "@repo/api/src/types/api-key";
+import {
+  API_KEY_SCOPES_UNRESOLVABLE_EVENT,
+  ApiKeyScopeResolutionStatus,
+  resolveApiKeyScopes,
+  sanitizeApiKeyScopes,
+} from "@repo/api/src/utils/api-key-scope-resolution";
 import { ApiKeySource, withDb } from "@repo/database";
 import { log } from "@repo/observability/log";
 import type { VerifiedApiKeyContextWithMetadata } from "@/lib/auth/api-key-context";
+import {
+  type ApiKeyVerificationOutcome,
+  ApiKeyVerificationStatus,
+} from "@/lib/auth/api-key-verification";
 import { hashToken } from "@/lib/auth/token-hash";
 import { getPrismaErrorCode } from "@/lib/db-utils";
 
@@ -87,10 +96,7 @@ function updateLastUsedAt(apiKeyId: string, lastUsedAt: Date): Promise<void> {
  * Map a Prisma ApiKey record to the ApiKey API type (excludes keyHash).
  */
 function toApiKey(record: StoredApiKeyRecord): ApiKey {
-  const scopes = normalizeStoredScopes(
-    sanitizeScopes(record.scopes),
-    record.scopes.length
-  );
+  const scopes = sanitizeApiKeyScopes(record.scopes);
   return {
     id: record.id,
     organizationId: record.organizationId,
@@ -247,11 +253,38 @@ export const apiKeysService = {
    * Verify a plaintext API key and return internal provenance metadata used by
    * desktop-managed PoP policy. By default this updates lastUsedAt on success;
    * PoP-enabled callers can defer that side effect until after enforcement.
+   *
+   * The `| null` return collapses "no such key" and "the key's stored scopes
+   * are unresolvable" into one answer. Callers that must tell those apart —
+   * the internal verification endpoint, whose response is the only thing the
+   * MCP server can see — use `verifyKeyOutcome` instead (ISS-4905).
    */
   async verifyKeyWithMetadata(
     plaintextKey: string,
     options: VerifyApiKeyOptions = {}
   ): Promise<VerifiedApiKeyContextWithMetadata | null> {
+    const outcome = await apiKeysService.verifyKeyOutcome(
+      plaintextKey,
+      options
+    );
+    return outcome.status === ApiKeyVerificationStatus.Ok
+      ? outcome.context
+      : null;
+  },
+
+  /**
+   * Verify a plaintext API key, preserving WHY a refusal happened.
+   *
+   * ISS-4905 made an empty, absent, or all-unrecognized stored scope set a
+   * refusal. That is a corrupt-credential-row problem whose remedy is
+   * reissuing the key, not "your key is wrong" — so the reason has to survive
+   * as far as the response, or every consumer downstream of the internal
+   * verification endpoint reports the wrong fix.
+   */
+  async verifyKeyOutcome(
+    plaintextKey: string,
+    options: VerifyApiKeyOptions = {}
+  ): Promise<ApiKeyVerificationOutcome> {
     const hash = hashToken(plaintextKey);
     const now = new Date();
 
@@ -266,17 +299,34 @@ export const apiKeysService = {
     );
 
     if (!record) {
-      return null;
+      return { status: ApiKeyVerificationStatus.Invalid };
+    }
+
+    // ISS-4905: a stored scope set that is empty, absent, or entirely
+    // unrecognized is missing data, not a grant. Refuse the credential rather
+    // than degrade it silently, and report it on the shared monitor so the
+    // corrupt row surfaces. Resolved BEFORE the `lastUsedAt` write so a key
+    // that is about to be rejected does not take a DB write or show a fresh
+    // "last used" in the keys list. The list/display path (`toApiKey`)
+    // deliberately keeps rendering such a key so it can be found and revoked.
+    const resolution = resolveApiKeyScopes(record.scopes);
+    if (resolution.status === ApiKeyScopeResolutionStatus.Unresolvable) {
+      log.error(API_KEY_SCOPES_UNRESOLVABLE_EVENT, {
+        surface: "api_key_verification",
+        reason: resolution.reason,
+        rawScopeCount: resolution.rawScopeCount,
+        apiKeyId: record.id,
+        userId: record.userId,
+        organizationId: record.organizationId,
+      });
+      return { status: ApiKeyVerificationStatus.UnresolvableScopes };
     }
 
     if (options.updateLastUsedAt !== false) {
       await updateLastUsedAt(record.id, now);
     }
 
-    const scopes = normalizeStoredScopes(
-      sanitizeScopes(record.scopes),
-      record.scopes.length
-    );
+    const scopes = resolution.scopes;
     if (scopes.length === 1 && scopes[0] === "read") {
       log.warn("legacy_read_only_api_key_used", {
         apiKeyId: record.id,
@@ -285,13 +335,16 @@ export const apiKeysService = {
       });
     }
     return {
-      apiKeyId: record.id,
-      userId: record.userId,
-      organizationId: record.organizationId,
-      scopes,
-      source: record.source,
-      gatewayId: record.gatewayId,
-      boundPublicKey: record.boundPublicKey,
+      status: ApiKeyVerificationStatus.Ok,
+      context: {
+        apiKeyId: record.id,
+        userId: record.userId,
+        organizationId: record.organizationId,
+        scopes,
+        source: record.source,
+        gatewayId: record.gatewayId,
+        boundPublicKey: record.boundPublicKey,
+      },
     };
   },
 
@@ -322,24 +375,3 @@ export const apiKeysService = {
     return updateLastUsedAt(apiKeyId, new Date());
   },
 };
-
-const API_KEY_SCOPE_SET = new Set<ApiKeyScope>(API_KEY_SCOPES);
-
-function sanitizeScopes(scopes: string[] | undefined): ApiKeyScope[] {
-  if (!Array.isArray(scopes)) {
-    return [];
-  }
-  return scopes.filter((scope): scope is ApiKeyScope =>
-    API_KEY_SCOPE_SET.has(scope as ApiKeyScope)
-  );
-}
-
-function normalizeStoredScopes(
-  scopes: ApiKeyScope[] | undefined,
-  _sourceLength?: number
-): ApiKeyScope[] {
-  if (!(scopes && scopes.length > 0)) {
-    return [];
-  }
-  return [...new Set(scopes)];
-}

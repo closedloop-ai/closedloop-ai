@@ -1,4 +1,5 @@
 import { JUDGE_RADAR_METRICS } from "@repo/api/src/constants";
+import { format } from "date-fns";
 
 export const JUDGES_ANALYTICS_QUERY_STALE_TIME_MS = 5 * 60 * 1000;
 
@@ -47,3 +48,42 @@ export const JUDGES_ANALYTICS_AXIS_HELP_ITEMS = [
       "Higher means the judge more often gives decisive extreme scores rather than middle scores.",
   },
 ] as const;
+
+export const JudgesAnalyticsDateRangePreset = {
+  Day: "day",
+  Week: "week",
+  Month: "month",
+  Year: "year",
+  All: "all",
+  Custom: "custom",
+} as const;
+export type JudgesAnalyticsDateRangePreset =
+  (typeof JudgesAnalyticsDateRangePreset)[keyof typeof JudgesAnalyticsDateRangePreset];
+
+/**
+ * The date-range preset the Judges surface opens on. Typed as a key of
+ * {@link JUDGES_ANALYTICS_DATE_RANGE_DAYS} so the page can derive the opening
+ * window (`subDays(today, DATE_RANGE_DAYS[DEFAULT_PRESET])`) from the same
+ * source that drives the pill, keeping the selected pill and the dates aligned.
+ */
+export const JUDGES_ANALYTICS_DEFAULT_PRESET: keyof typeof JUDGES_ANALYTICS_DATE_RANGE_DAYS =
+  JudgesAnalyticsDateRangePreset.Month;
+
+type JudgesAnalyticsRange = {
+  start: string;
+  end: string;
+  preset: JudgesAnalyticsDateRangePreset;
+};
+
+/**
+ * The all-time range: a fixed lower bound up to today. Shared by the filter's
+ * "All time" preset and the empty-state widen affordance so both construct the
+ * identical range instead of duplicating the literal.
+ */
+export function judgesAnalyticsAllTimeRange(): JudgesAnalyticsRange {
+  return {
+    start: JUDGES_ANALYTICS_ALL_TIME_START_DATE,
+    end: format(new Date(), "yyyy-MM-dd"),
+    preset: JudgesAnalyticsDateRangePreset.All,
+  };
+}

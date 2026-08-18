@@ -6,9 +6,10 @@
  * desktop-parsed LOC so the cloud CommitDetail SSOT can render branch commit
  * history with no GitHub App installed.
  *
- * It also proves commit refs are the LOWEST priority under the shared per-session
- * `MAX_SYNCED_ARTIFACT_REFS` cap: a commit-heavy session must never push a
- * load-bearing branch ref (which drives FR12 org visibility) out of the payload.
+ * It also proves commit refs are the LOWEST priority under the per-session
+ * producer cap `MAX_SYNCED_ARTIFACT_REFS_PRODUCER`: a commit-heavy session must
+ * never push a load-bearing branch ref (which drives FR12 org visibility) out of
+ * the payload.
  *
  * Drives the real SQLite → `loadSyncedSessions` boundary, mirroring
  * sync-source-ref-caps.test.ts.
@@ -19,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
-  MAX_SYNCED_ARTIFACT_REFS,
+  MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
   PR_INT_MAX,
 } from "@repo/api/src/types/session-artifact-link";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
@@ -308,8 +309,8 @@ test("FEA-2731: commit refs never crowd a load-bearing branch ref out of the cap
       assert.ok(session, "session hydrated");
       assert.equal(
         session.artifactRefs?.length,
-        MAX_SYNCED_ARTIFACT_REFS,
-        "artifactRefs sliced to the shared cap"
+        MAX_SYNCED_ARTIFACT_REFS_PRODUCER,
+        "artifactRefs sliced to the desktop producer cap"
       );
       const branchRef = session.artifactRefs?.find((r) => r.kind === "branch");
       assert.ok(
@@ -321,7 +322,7 @@ test("FEA-2731: commit refs never crowd a load-bearing branch ref out of the cap
       ).length;
       assert.equal(
         commitCount,
-        MAX_SYNCED_ARTIFACT_REFS - 1,
+        MAX_SYNCED_ARTIFACT_REFS_PRODUCER - 1,
         "commits fill only the remaining budget after the branch ref"
       );
     } finally {

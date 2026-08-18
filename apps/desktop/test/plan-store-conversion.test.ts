@@ -19,9 +19,11 @@ import {
   makeCapture,
   rejectPlan,
   upsertPlan,
+  upsertPlans,
   upsertPlanVersion,
 } from "../src/main/plans/plan-store.js";
-import { openTestPrisma } from "./prisma-test-utils.js";
+import { recordDesktopWrites } from "./discarded-write-narrowing-utils.js";
+import { makeRecordingQueue, openTestPrisma } from "./prisma-test-utils.js";
 
 /** Build a PlanCapture with sane defaults; override per-test. */
 function capture(overrides: {
@@ -317,6 +319,68 @@ test("upsertPlanVersion: dedups identical content, increments version on new", a
   }
 });
 
+test("upsertPlans: batches multiple captures into one write-queue entry, one result per capture", async () => {
+  const queue = makeRecordingQueue();
+  const { prisma, close } = await openTestPrisma(queue);
+  try {
+    const runsBefore = queue.runs;
+    const results = await upsertPlans(prisma, [
+      capture({ content: "batch a", sessionId: "s1", filePath: "/tmp/ba.md" }),
+      capture({ content: "batch b", sessionId: "s2", filePath: "/tmp/bb.md" }),
+      capture({ content: "batch c", sessionId: "s3", filePath: "/tmp/bc.md" }),
+    ]);
+    assert.equal(results.length, 3);
+    assert.ok(results.every((r) => r.created && r.version === 1));
+
+    // Pins FEA-4154: all three captures share ONE write-queue entry (a single
+    // bounded chunk), NOT three per-capture prisma.write calls. Regressing to a
+    // per-file upsertPlan loop would bump `runs` to 3 and fail here.
+    assert.equal(queue.runs - runsBefore, 1);
+
+    const plans = await listPlans(prisma);
+    assert.deepEqual(plans.map((p) => p.filePath).sort(), [
+      "/tmp/ba.md",
+      "/tmp/bb.md",
+      "/tmp/bc.md",
+    ]);
+  } finally {
+    await close();
+  }
+});
+
+test("upsertPlans: dedups a repeated capture within the same batch", async () => {
+  const { prisma, close } = await openTestPrisma();
+  try {
+    const cap = capture({
+      content: "same batch body",
+      sessionId: "s1",
+      filePath: "/tmp/dup.md",
+    });
+    const [first, second] = await upsertPlans(prisma, [cap, cap]);
+    assert.equal(first?.created, true);
+    assert.equal(first?.deduped, false);
+    assert.equal(second?.deduped, true);
+    assert.equal(second?.planId, first?.planId);
+    assert.equal((await getPlan(prisma, first!.planId))?.versionCount, 1);
+  } finally {
+    await close();
+  }
+});
+
+test("upsertPlans: empty batch is a no-op", async () => {
+  const queue = makeRecordingQueue();
+  const { prisma, close } = await openTestPrisma(queue);
+  try {
+    const runsBefore = queue.runs;
+    assert.deepEqual(await upsertPlans(prisma, []), []);
+    assert.deepEqual(await listPlans(prisma), []);
+    // No write-queue entry for an empty batch.
+    assert.equal(queue.runs, runsBefore);
+  } finally {
+    await close();
+  }
+});
+
 test("confirmPlan / rejectPlan update status and return whether a row matched", async () => {
   const { prisma, close } = await openTestPrisma();
   try {
@@ -341,3 +405,53 @@ test("confirmPlan / rejectPlan update status and return whether a row matched", 
     await close();
   }
 });
+
+/**
+ * ISS-6321 (batch 5/6): `findExistingPlan`'s two reads used `SELECT *`, hydrating
+ * all 16 `plans` columns when the only consumer is `existingPlan.id`. Both now
+ * select the primary key.
+ *
+ * Asserted on the SQL the production path actually issues, not on the source:
+ * the dedup case above already proves the behaviour survives, and this proves
+ * the read stopped being wide. Both `findExistingPlan` branches are exercised —
+ * with a `file_path` (the first query) and without (the fallback).
+ */
+for (const filePath of ["/tmp/narrow.md", undefined]) {
+  test(`upsertPlan: the existing-plan lookup selects only id (filePath=${filePath ?? "none"})`, async () => {
+    const { prisma, close } = await openTestPrisma();
+    try {
+      const recorded = recordDesktopWrites(prisma);
+      const cap = capture({
+        content: "narrowing body",
+        sessionId: "s-narrow",
+        ...(filePath === undefined ? {} : { filePath }),
+      });
+      const first = await upsertPlan(recorded.prisma, cap);
+      recorded.reset();
+      const second = await upsertPlan(recorded.prisma, cap);
+
+      // The dedup path only resolves when the lookup actually found the row.
+      assert.equal(second.deduped, true);
+      assert.equal(second.planId, first.planId);
+
+      const planLookups = recorded.rawQueries.filter((q) =>
+        q.includes("FROM plans")
+      );
+      assert.equal(
+        planLookups.length,
+        1,
+        `expected one plans lookup, saw ${planLookups.length}`
+      );
+      assert.ok(
+        !planLookups[0].includes("SELECT *"),
+        "the existing-plan lookup must not hydrate every column"
+      );
+      assert.ok(
+        planLookups[0].includes("SELECT id FROM plans"),
+        `expected a primary-key projection, got: ${planLookups[0]}`
+      );
+    } finally {
+      await close();
+    }
+  });
+}

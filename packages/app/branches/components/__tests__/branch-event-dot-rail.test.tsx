@@ -1,11 +1,11 @@
-import type { MergedTraceItem } from "@repo/api/src/types/branch";
+import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
+import { GitHubPRState } from "@repo/api/src/types/github-status";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { BranchEventDotRail } from "../branch-event-dot-rail";
 
-const CONNECT_RE = /connect github/i;
-const COMMENTS_RE = /3 PR comments/;
+const CONNECT_GITHUB_RE = /connect github/i;
 
 function ev(dot: "g" | "b" | "r", text: string, t: string): MergedTraceItem {
   return { type: "event", sessionId: "s1", t, dot, text };
@@ -22,41 +22,44 @@ function dots(container: HTMLElement): HTMLElement[] {
 }
 
 describe("BranchEventDotRail (E3)", () => {
-  it("renders only green/red dots and a connect hint when GitHub is disconnected", () => {
+  it("maps typed steering, GitHub, and failure events to exact blue, green, and red dots", () => {
     const { container } = render(
       <BranchEventDotRail githubConnected={false} traceItems={traceItems} />
     );
-    // Blue (autonomy) dropped → exactly two outcome dots.
-    expect(dots(container)).toHaveLength(2);
-    expect(
-      container.querySelectorAll(".bq-dot.d-green, .bq-dot.d-red")
-    ).toHaveLength(2);
+    expect(dots(container)).toHaveLength(3);
+    expect(container.querySelectorAll(".bq-dot.d-blue")).toHaveLength(1);
+    expect(container.querySelectorAll(".bq-dot.d-green")).toHaveLength(1);
+    expect(container.querySelectorAll(".bq-dot.d-red")).toHaveLength(1);
     expect(container.querySelector(".bq-dot.d-orange")).toBeNull();
-    expect(screen.getByText(CONNECT_RE)).toBeInTheDocument();
+    expect(screen.queryByText(CONNECT_GITHUB_RE)).not.toBeInTheDocument();
   });
 
-  it("shows neither the connect hint nor orange when the connection state is unknown", () => {
-    // No `githubConnected` prop → unknown. We still render the outcome dots but
-    // make no claim about GitHub connectivity (the v1 default, no producer yet).
-    const { container } = render(
-      <BranchEventDotRail traceItems={traceItems} />
-    );
-    expect(dots(container).length).toBeGreaterThan(0);
-    expect(screen.queryByText(CONNECT_RE)).not.toBeInTheDocument();
-    expect(container.querySelector(".bq-dot.d-orange")).toBeNull();
-  });
-
-  it("shows an orange dot with the comment count when connected", () => {
+  it("keeps typed blue authoritative even when steering copy mentions a PR", () => {
     const { container } = render(
       <BranchEventDotRail
-        githubConnected
-        prCommentCount={3}
-        traceItems={traceItems}
+        traceItems={[
+          ev("b", "Steer the PR review", "2026-06-10T10:00:00.000Z"),
+        ]}
       />
     );
-    expect(container.querySelector(".bq-dot.d-orange")).not.toBeNull();
-    expect(screen.getByText(COMMENTS_RE)).toBeInTheDocument();
-    expect(screen.queryByText(CONNECT_RE)).not.toBeInTheDocument();
+    expect(container.querySelector(".bq-dot.d-blue")).not.toBeNull();
+    expect(container.querySelector(".bq-dot.d-green")).toBeNull();
+  });
+
+  it("filters events to active bars and stacks events in the same hour", () => {
+    const { container } = render(
+      <BranchEventDotRail
+        activeHourStarts={["2026-06-10T10:00:00.000Z"]}
+        traceItems={[
+          ev("b", "Steering", "2026-06-10T10:05:00.000Z"),
+          ev("g", "Push", "2026-06-10T10:15:00.000Z"),
+          ev("r", "Limit", "2026-06-10T11:00:00.000Z"),
+        ]}
+      />
+    );
+    const renderedDots = dots(container);
+    expect(renderedDots).toHaveLength(2);
+    expect(renderedDots.map((dot) => dot.style.top)).toEqual(["3px", "37px"]);
   });
 
   it("scrubs to a dot's timestamp on click and highlights the active row", async () => {
@@ -77,18 +80,28 @@ describe("BranchEventDotRail (E3)", () => {
     expect(onScrub).toHaveBeenCalledWith("2026-06-10T10:00:00.000Z");
   });
 
-  it("never renders a blue/autonomy dot", () => {
-    const { container } = render(
-      <BranchEventDotRail githubConnected traceItems={traceItems} />
+  it("uses the exact stored row when stacked events share a timestamp", async () => {
+    const onScrubRow = vi.fn();
+    render(
+      <BranchEventDotRail
+        onScrub={vi.fn()}
+        onScrubRow={onScrubRow}
+        traceItems={[
+          ev("b", "First", "2026-06-10T10:00:00.000Z"),
+          ev("r", "Second", "2026-06-10T10:00:00.000Z"),
+        ]}
+      />
     );
-    for (const dot of dots(container)) {
-      expect(dot.className).not.toContain("d-b");
-    }
+    const second = screen.getByRole("button", { name: "Second" });
+    expect(second.className).toContain("size-8");
+    expect(second.className).toContain("focus-visible:ring-2");
+    await userEvent.click(second);
+    expect(onScrubRow).toHaveBeenCalledWith(1);
   });
 
   it("renders a green merge lifecycle dot from mergedAt and scrubs to its time on click", async () => {
     const onScrub = vi.fn();
-    const { container } = render(
+    render(
       <BranchEventDotRail
         githubConnected
         mergedAt="2026-06-10T12:00:00.000Z"
@@ -98,10 +111,51 @@ describe("BranchEventDotRail (E3)", () => {
       />
     );
     // No trace events, just the lifecycle merge dot — clickable via its timestamp.
-    const merge = container.querySelector<HTMLElement>(".bq-dot.d-green");
-    expect(merge).not.toBeNull();
-    expect(merge?.getAttribute("aria-label")).toBe("Merged #42");
-    await userEvent.click(merge as HTMLElement);
+    const merge = screen.getByRole("button", { name: "Merged #42" });
+    await userEvent.click(merge);
     expect(onScrub).toHaveBeenCalledWith("2026-06-10T12:00:00.000Z");
+  });
+
+  it("renders lifecycle events for every associated PR including closed-unmerged outcomes", () => {
+    render(
+      <BranchEventDotRail
+        activeHourStarts={["2026-06-12T10:00:00.000Z"]}
+        onScrub={vi.fn()}
+        pullRequests={[
+          {
+            closedAt: null,
+            id: "repo#1",
+            isDraft: false,
+            mergedAt: "2026-06-10T12:00:00.000Z",
+            number: 1,
+            openedAt: "2026-06-10T09:00:00.000Z",
+            repositoryFullName: "acme/repo",
+            reviewDecision: null,
+            state: GitHubPRState.Merged,
+            title: "Merged",
+            url: null,
+          },
+          {
+            closedAt: "2026-06-11T12:00:00.000Z",
+            id: "repo#2",
+            isDraft: false,
+            mergedAt: null,
+            number: 2,
+            openedAt: "2026-06-11T09:00:00.000Z",
+            repositoryFullName: "acme/repo",
+            reviewDecision: null,
+            state: GitHubPRState.Closed,
+            title: "Closed",
+            url: null,
+          },
+        ]}
+        traceItems={[]}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Opened #1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Merged #1" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Opened #2" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Closed #2" })).toBeVisible();
   });
 });

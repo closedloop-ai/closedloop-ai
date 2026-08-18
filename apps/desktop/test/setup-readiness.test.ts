@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { isDesktopSetupCompleteFromState } from "../src/main/setup-readiness.js";
+import { isDesktopSetupCompleteFromState } from "../src/main/onboarding/setup-readiness.js";
 
 describe("Desktop setup readiness", () => {
   test("honors the persisted onboarding completion flag", () => {

@@ -27,8 +27,16 @@ vi.mock("@repo/app/shared/feature-flags/use-feature-flag-enabled", () => ({
   useFeatureFlagEnabled: (key: string) => mockUseFeatureFlagEnabled(key),
 }));
 
+// Mutable so a test can simulate no authenticated user (user: null) and
+// exercise the `user?.id ?? ""` fallback without a second mock module.
+const mockUserState = vi.hoisted(
+  () =>
+    ({ user: { id: "clerk-user-1" } as { id: string } | null }) as {
+      user: { id: string } | null;
+    }
+);
 vi.mock("@repo/auth/client", () => ({
-  useUser: () => ({ user: { id: "clerk-user-1" } }),
+  useUser: () => ({ user: mockUserState.user }),
 }));
 
 const mockSignDesktopCommand = vi.fn(async () => ({

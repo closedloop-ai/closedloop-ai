@@ -9,25 +9,36 @@ import {
   useArchiveCatalogItem,
   useCatalogItems,
 } from "@repo/app/agents/hooks/use-catalog";
-import { useDistribution } from "@repo/app/agents/hooks/use-distributions";
+import {
+  distributionKeys,
+  useDistribution,
+} from "@repo/app/agents/hooks/use-distributions";
+import { PacksLoadFailed } from "@repo/app/packs/components/packs-load-failed";
 import { PacksWorkspace } from "@repo/app/packs/components/packs-workspace";
+import { PacksWorkspaceSkeleton } from "@repo/app/packs/components/packs-workspace-skeleton";
 import { useAdminPackViews } from "@repo/app/packs/hooks/use-admin-pack-views";
+import { useMemberTargetsInstall } from "@repo/app/packs/hooks/use-member-targets-install";
 import { usePackDashboardSelection } from "@repo/app/packs/hooks/use-pack-dashboard-selection";
+import { usePackDistributionWithdrawal } from "@repo/app/packs/hooks/use-pack-distribution-withdrawal";
 import {
   createPacksContext,
   PacksMode,
 } from "@repo/app/packs/lib/packs-context";
 import { useFeatureFlagEnabled } from "@repo/app/shared/feature-flags/use-feature-flag-enabled";
-import { PACK_EXTENDED_CONTENT_KINDS_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
-import { useCurrentUser } from "@repo/app/users/hooks/use-users";
+import {
+  MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY,
+  PACK_UNDISTRIBUTE_FEATURE_FLAG_KEY,
+} from "@repo/app/shared/lib/feature-flags";
 import { Button } from "@repo/design-system/components/ui/button";
 import { useQueryClient } from "@tanstack/react-query";
 import { PencilIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
+import { useMemberPackTargets } from "@/hooks/queries/use-member-pack-targets";
 import { ComponentEditorDialog } from "./component-editor-dialog";
 import { CreateDistributionModal } from "./create-distribution-modal";
 import { CreatePackDialog } from "./create-pack-dialog";
 import { PackComponentsPanel } from "./pack-components-panel";
+import { WithdrawDistributionDialog } from "./withdraw-distribution-dialog";
 
 /**
  * Admin Packs dashboard (unified Packs UX). Renders the shared, prototype-styled
@@ -45,23 +56,43 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
   const { packViews, distributionByCatalogId, isLoading, error } =
     useAdminPackViews({ includeDistributions: isAdmin });
   const { data: items } = useCatalogItems();
-  const { data: currentUser } = useCurrentUser({ enabled: !isAdmin });
   const archiveItem = useArchiveCatalogItem();
 
-  const showExtended = useFeatureFlagEnabled(
-    PACK_EXTENDED_CONTENT_KINDS_FEATURE_FLAG_KEY
-  );
   const context = useMemo(
     () =>
       createPacksContext(PacksMode.WebAdmin, {
         showTeamUsage: isAdmin,
         showActivity: false,
         showPerformance: isAdmin,
-        showExtendedContentKinds: showExtended,
         manageCatalog: isAdmin,
         manageDistribution: isAdmin,
+        // Member surface: show the per-machine block (FEA-4077), a READ of the
+        // member's registered nodes. Admins manage roll-out through the
+        // Distribution tab, so their per-machine block stays off.
+        showMemberTargets: !isAdmin,
       }),
-    [isAdmin, showExtended]
+    [isAdmin]
+  );
+
+  // The member per-machine block reflects the member's OWN registered nodes
+  // (FEA-4077) — scoped to this member so it never shows another member's
+  // machines, and left `undefined` for an admin so the selection hook keeps the
+  // admin distribution matrix instead of overwriting it with an empty member
+  // matrix. The composition of those two reads lives in its own hook.
+  const memberPackTargets = useMemberPackTargets(isAdmin);
+
+  // ISS-5125: the member per-machine block's ACT half. Enabled only on the
+  // MEMBER surface (an admin manages roll-out through Distribution, and their
+  // block is not rendered at all) and only behind the closed-by-default
+  // `member-self-service-install` flag. Off, `useMemberTargetsInstall` returns
+  // null and the block stays the FEA-4077 read-only status list.
+  //
+  // No client-side permission check rides here: the org role model already
+  // grants every member `InstallToOwnMachines`, and the API authorizes node
+  // ownership itself (`findOwnedById`, owner-only and org-scoped). Adding a
+  // second, weaker gate in the browser would only be able to disagree with it.
+  const memberInstallEnabled = useFeatureFlagEnabled(
+    MEMBER_SELF_SERVICE_INSTALL_FEATURE_FLAG_KEY
   );
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -72,7 +103,6 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
   const [distributeItem, setDistributeItem] = useState<CatalogItemDto | null>(
     null
   );
-
   // Admin surface folds the selected Pack's distribution into the detail view.
   const selectedDist = selectedId
     ? distributionByCatalogId.get(selectedId)
@@ -87,6 +117,26 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
     selectedId,
     distribution: distDetail.data ?? selectedDist ?? null,
     analyticsEnabled: isAdmin,
+    memberTargets: memberPackTargets.targets,
+  });
+
+  const memberTargetsInstall = useMemberTargetsInstall({
+    packId: selectedItem?.id ?? null,
+    enabled: !isAdmin && memberInstallEnabled,
+  });
+
+  // ISS-5123 (ISS-4779 closed-by-default): the admin "stop distributing" flow.
+  // Web-only by construction — the Distribution tab that hosts the control
+  // renders only under `PacksMode.WebAdmin`, so there is no desktop surface for
+  // a Labs toggle to keep in parity. The hook owns the confirmation state and
+  // the mutation; off, `requestWithdraw` is null and no control is rendered.
+  const undistributeEnabled = useFeatureFlagEnabled(
+    PACK_UNDISTRIBUTE_FEATURE_FLAG_KEY
+  );
+  const withdrawal = usePackDistributionWithdrawal({
+    flagEnabled: undistributeEnabled,
+    isAdmin,
+    packName: selectedItem?.name,
   });
 
   const handleManageDistribution = useCallback(
@@ -114,6 +164,14 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
     [archiveItem]
   );
 
+  // ISS-5002: give the failure state a real way forward. Refetching both
+  // families is what the failed view was waiting on (`useAdminPackViews` reads
+  // the catalog list and, for admins, the distributions list).
+  const handleRetryPacks = useCallback(() => {
+    queryClient.refetchQueries({ queryKey: catalogKeys.all });
+    queryClient.refetchQueries({ queryKey: distributionKeys.all });
+  }, [queryClient]);
+
   const handleComponentSaved = useCallback(() => {
     if (selectedId) {
       queryClient.invalidateQueries({
@@ -134,20 +192,36 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
       if (isAdmin) {
         return true;
       }
-      return Boolean(item.createdById && item.createdById === currentUser?.id);
+      return Boolean(
+        item.createdById && item.createdById === memberPackTargets.currentUserId
+      );
     },
-    [currentUser?.id, isAdmin]
+    [memberPackTargets.currentUserId, isAdmin]
   );
 
+  // ISS-5002: the purpose-built skeleton, not a bare unstyled paragraph. It
+  // reserves the loaded workspace's real geometry (filter bar, card grid, and
+  // the admin surface's 20rem team rail) so nothing reflows when the catalog
+  // lands, and it carries the accessible loading status the paragraph never had.
   if (isLoading) {
-    return <p className="text-muted-foreground text-sm">Loading Packs…</p>;
+    return (
+      <PacksWorkspaceSkeleton
+        header={<CatalogHeading />}
+        showTeamLayout={isAdmin}
+      />
+    );
   }
 
   if (error) {
+    // Keep the page's identity above the failure. The skeleton branch above
+    // already proves the heading does not depend on the fetch, so dropping it
+    // here would swap the whole page for one centered card immediately after
+    // showing a headed skeleton.
     return (
-      <p className="text-destructive text-sm">
-        Failed to load Packs: {error.message}
-      </p>
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
+        <CatalogHeading />
+        <PacksLoadFailed error={error} onRetry={handleRetryPacks} />
+      </div>
     );
   }
 
@@ -208,8 +282,13 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
         detailContentsSlot={detailContentsSlot}
         detailHeaderActions={detailHeaderActions}
         detailPack={detailPack}
+        memberTargetsDescription="Where this pack stands on the machines registered to your account."
+        memberTargetsError={memberPackTargets.hasErrored}
+        memberTargetsInstall={memberTargetsInstall}
+        memberTargetsLoading={memberPackTargets.isLoading}
         onManageDistribution={isAdmin ? handleManageDistribution : undefined}
         onSelectPack={setSelectedId}
+        onWithdrawDistribution={withdrawal.requestWithdraw}
         packs={packViews}
         toolbarSlot={
           <CatalogToolbar
@@ -217,6 +296,7 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
             onCreate={() => setCreateOpen(true)}
           />
         }
+        withdrawDistributionPending={withdrawal.isPending}
       />
 
       <CreatePackDialog
@@ -247,6 +327,12 @@ export function CatalogDashboard({ isAdmin }: CatalogDashboardProps) {
           open={Boolean(distributeItem)}
         />
       ) : null}
+
+      {/*
+        The withdraw confirmation. The control lives inside the selected pack's
+        detail, so `selectedItem` is the pack being withdrawn.
+      */}
+      <WithdrawDistributionDialog pack={selectedItem} withdrawal={withdrawal} />
     </>
   );
 }
@@ -259,12 +345,7 @@ type CatalogToolbarProps = {
 function CatalogToolbar({ isAdmin, onCreate }: CatalogToolbarProps) {
   return (
     <>
-      <div>
-        <h2 className="font-semibold text-lg">Packs</h2>
-        <p className="text-muted-foreground text-sm">
-          Org-custom and curated Packs available to distribute.
-        </p>
-      </div>
+      <CatalogHeading />
       {isAdmin ? (
         <Button onClick={onCreate}>
           <PlusIcon className="mr-1 size-4" />
@@ -314,6 +395,23 @@ function CatalogDetailActions({
           Archive
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The surface's known-ahead-of-fetch heading. Split out of {@link CatalogToolbar}
+ * so the loading skeleton can render the real heading (which never depends on
+ * the fetch) in the same slot the loaded workspace puts it, without also
+ * rendering the "New Pack" action whose dialog is not mounted yet (ISS-5002).
+ */
+function CatalogHeading() {
+  return (
+    <div>
+      <h2 className="font-semibold text-lg">Packs</h2>
+      <p className="text-muted-foreground text-sm">
+        Org-custom and curated Packs available to distribute.
+      </p>
     </div>
   );
 }

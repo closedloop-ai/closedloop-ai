@@ -1,5 +1,6 @@
 "use client";
 
+import { clamp } from "@repo/api/src/utils/math";
 import { cn } from "@repo/design-system/lib/utils";
 import {
   type CSSProperties,
@@ -30,10 +31,6 @@ export function tipAnchorFromElement(element: HTMLElement): BranchTipAnchor {
     left: rect.left,
     width: rect.width,
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 /**

@@ -1,5 +1,5 @@
 import { FriendlyErrorAlert } from "@repo/app/shared/components/friendly-error-alert";
-import { mockFriendlyError } from "@repo/design-system/storybook/mock-data";
+import { mockFriendlyError } from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {

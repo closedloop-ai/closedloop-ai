@@ -12,6 +12,10 @@ import {
   StatusCheckRollupFailureReason as SharedStatusCheckRollupFailureReason,
   type StatusCheckRollupState as SharedStatusCheckRollupState,
 } from "./github-status.js";
+import type {
+  RepositoryDefaultAuthority,
+  RepositoryDefaultUnavailableObservation,
+} from "./repository-default-identity.js";
 
 /**
  * GitHub integration types for API contract.
@@ -166,7 +170,10 @@ export type GitHubBackfillResponse = {
   summary: GitHubBackfillSummary;
 };
 
-export type GitHubRepository = SharedGitHubRepository;
+export type GitHubRepository = SharedGitHubRepository & {
+  /** Additive provider authority; omitted for legacy or incomplete rows. */
+  repositoryDefaultAuthority?: RepositoryDefaultAuthority;
+};
 
 export type GetRepositoriesResponse = GitHubRepository[];
 
@@ -210,6 +217,10 @@ export type GitHubPullRequestSummary = {
   author: string;
   checksStatus?: ChecksStatus | null;
   reviewDecision?: ReviewDecision | null;
+  /** Additive fork-head authority, independent from the selected/base repository. */
+  headRepository?: RepositoryDefaultAuthority;
+  /** Typed fork-head absence when the provider cannot expose its identity. */
+  headRepositoryUnavailable?: RepositoryDefaultUnavailableObservation;
 };
 
 export type TrackedGitHubBranch = {
@@ -272,6 +283,16 @@ export type StatusCheckRollupState = SharedStatusCheckRollupState;
 export const PUBLIC_GITHUB_REPOS_FEATURE_FLAG_KEY =
   "public-github-repos" as const;
 
+/**
+ * PLN-1535 M3.1 PostHog rollout key. When enabled, the repository branch and
+ * pull-request read routes serve from the cloud projection (Postgres) instead of
+ * a live GitHub GraphQL call, eliminating that read cost. Default off: the live
+ * path stays authoritative until a repo's projection is proven complete (post-M4
+ * bootstrap), so the closed-by-default data-source cutover can roll out per org.
+ */
+export const GITHUB_PROJECTION_READS_FEATURE_FLAG_KEY =
+  "github-projection-reads" as const;
+
 export type PublicRepository = {
   id: string;
   url: string;
@@ -291,3 +312,77 @@ export type PublicRepositoryResponse = PublicRepository;
 export type DeletePublicRepositoryResponse = {
   deleted: true;
 };
+
+/**
+ * Which credential a resolved GitHub client is authenticated with (PLN-1525).
+ * Exposed on the client deliberately: a fallback from the OAuth App token to
+ * the GitHub App user token can return less data for the same request, and
+ * callers/logs need to be able to say so.
+ *
+ * `OauthUser` (the Clerk-sourced OAuth App token) is the planned primary for
+ * user-attributed reads and becomes resolvable once the Clerk GitHub
+ * connection carries `repo read:org` (gated on the PRD-562 rule-5 amendment);
+ * until then resolution lands on `GithubAppUser` or `Installation`.
+ */
+export const GitHubCredentialKind = {
+  OauthUser: "oauth_user",
+  GithubAppUser: "github_app_user",
+  Installation: "installation",
+  None: "none",
+} as const;
+export type GitHubCredentialKind =
+  (typeof GitHubCredentialKind)[keyof typeof GitHubCredentialKind];
+
+/**
+ * Typed denial taxonomy for GitHub credential resolution (PLN-1525).
+ *
+ * The reason code carries the CAUSE. For every reason but one it also implies a
+ * single remediation, and the surface can render it straight from this map:
+ *
+ * - `not_connected` — no GitHub connection: "Connect GitHub".
+ * - `insufficient_scope` — scopes lack `repo`/`read:org`: "Reconnect to grant
+ *   repository access".
+ * - `revoked` — 401 observed (or token expired): "Reconnect GitHub".
+ * - `org_restricted` — member of the org, but an OAuth App access restriction
+ *   blocks us: "Ask an owner to approve ClosedLoop". Only reachable on the
+ *   OAuth App token path (GitHub App user tokens are immune), so it is a
+ *   forward contract until the Clerk-primary credential source lands.
+ * - `rate_limited` — 429/403 with retry-after: back off, surface the ETA.
+ * - `budget_deferred` — `sync-read` only: every qualifying pool token is
+ *   below its reserve floor or in backoff. Surfaces as the `deferred: budget`
+ *   coverage marker (PLN-1535), never a user-facing error.
+ * - `unavailable` — GitHub 5xx: retry.
+ *
+ * `no_installation` is the exception, and callers must treat it as such:
+ *
+ * - `no_installation` — **this credential cannot reach this target.** The
+ *   remediation is NOT determined by the reason alone, because GitHub cloaks a
+ *   repository the caller cannot read as a 404, making "the App is not
+ *   installed here" and "your account cannot see this" indistinguishable from
+ *   the response. Which one it is depends on the lane that produced it:
+ *     - Resolver `manage` lane: we checked our OWN installation records, so it
+ *       genuinely means no active installation → "Install ClosedLoop".
+ *     - Any read lane mapping a provider 403/404 (`mapGitHubReadFailureToDenial`):
+ *       the installation is usually present already — a Branch View diff, for
+ *       instance, only exists because an installation synced it — so the live
+ *       cause is the reader's own repository access → "ask an admin for access".
+ *       Offering an install there is a dead end most members cannot complete.
+ *
+ *   Renderers therefore pick `no_installation` copy from the surface, not from
+ *   this map. Splitting it into two reasons was considered and rejected: the
+ *   value is persisted in `GitHubAccessCapability.denialReason`, so a split
+ *   costs a migration and a backfill while the underlying ambiguity — which is
+ *   GitHub's, not ours — would remain in the read lanes regardless.
+ */
+export const GitHubAccessDenialReason = {
+  NotConnected: "not_connected",
+  InsufficientScope: "insufficient_scope",
+  Revoked: "revoked",
+  OrgRestricted: "org_restricted",
+  NoInstallation: "no_installation",
+  RateLimited: "rate_limited",
+  BudgetDeferred: "budget_deferred",
+  Unavailable: "unavailable",
+} as const;
+export type GitHubAccessDenialReason =
+  (typeof GitHubAccessDenialReason)[keyof typeof GitHubAccessDenialReason];

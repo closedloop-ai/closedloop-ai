@@ -20,11 +20,13 @@ import {
   type CodexOtelFileSystem,
   installCodexOtelConfig,
   uninstallCodexOtelConfig,
-} from "../src/main/codex-otel-config-core.js";
+} from "../src/main/telemetry/codex-otel-config-core.js";
 import {
   DEFAULT_OTLP_RECEIVER_HOST,
+  makeOtlpReceiverUnavailableState,
   type OtlpReceiverState,
-} from "../src/main/otlp-receiver-state.js";
+  OtlpReceiverUnavailableReason,
+} from "../src/main/telemetry/otlp-receiver-state.js";
 import { AgentMonitorHooksWarningCode } from "../src/shared/contracts.js";
 
 let tempRoot = "";
@@ -67,7 +69,10 @@ test("install fails closed when receiver state is unavailable", () => {
   const file = configPath();
   const result = installCodexOtelConfig({
     file,
-    receiverState: { ...receiver, available: false },
+    receiverState: makeOtlpReceiverUnavailableState(
+      OtlpReceiverUnavailableReason.BindFailed,
+      receiver.port
+    ),
   });
 
   assert.equal(result.status, "warning");

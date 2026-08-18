@@ -11,20 +11,27 @@ import path from "node:path";
 import {
   BASELINE_MIGRATIONS,
   LEGACY_SCHEMA_REASSERT_SEQUENCE,
-} from "../src/main/database/baseline-schema.js";
+} from "../src/main/database/migration/baseline-schema.js";
 import {
   openMigrationDatabase,
   type SqliteClient,
-} from "../src/main/database/migration-executor.js";
-import { runDesktopMigrations } from "../src/main/database/migration-runner.js";
-import { MIGRATIONS } from "../src/main/database/migrations-manifest.js";
+} from "../src/main/database/migration/migration-executor.js";
+import { runDesktopMigrations } from "../src/main/database/migration/migration-runner.js";
+import { MIGRATIONS } from "../src/main/database/migration/migrations-manifest.js";
 import {
   type CreateDesktopPrismaOptions,
   createDesktopPrisma,
   type DesktopPrisma,
   type WriteSerializer,
 } from "../src/main/database/prisma-client.js";
-import { createWriteQueue } from "../src/main/database/write-queue.js";
+import {
+  createWriteQueue,
+  type WriteQueueRunOptions,
+} from "../src/main/database/write-queue.js";
+import type {
+  ReadRunner,
+  WriteRunner,
+} from "../src/main/scheduler/sqlite-task-store.js";
 
 /**
  * The production write queue wrapped with a `runs` counter so tests can assert
@@ -34,9 +41,15 @@ export function makeRecordingQueue(): WriteSerializer & { runs: number } {
   const inner = createWriteQueue();
   const queue = {
     runs: 0,
-    run<T>(fn: () => Promise<T>): Promise<T> {
+    run<T>(
+      fn: () => Promise<T>,
+      token?: string,
+      opts?: WriteQueueRunOptions
+    ): Promise<T> {
       queue.runs += 1;
-      return inner.run(fn);
+      // Forward the ISS-4572 owner token + ISS-4710 fairness class so the wrapped
+      // queue behaves exactly like the production one.
+      return inner.run(fn, token, opts);
     },
   };
   return queue;
@@ -85,5 +98,35 @@ export async function openTestPrisma(
       await db.close();
       await rm(dir, { recursive: true, force: true });
     },
+  };
+}
+
+/**
+ * Fixed clock shared by the scheduler store/service tests so cron/next-run math
+ * and the "due now" window are deterministic. 10s past the minute boundary: for a
+ * 1-minute cron the jitter cap is 6s (period*0.1), so `now` is safely past
+ * `slot + jitter` and an every-minute task is unambiguously due on the tick.
+ */
+export const SCHEDULER_TEST_NOW = new Date("2026-07-22T12:00:10.000Z");
+
+/** The write/read/clock seams a `SqliteTaskStore` needs, over a test Prisma. */
+export type SchedulerStoreTestDeps = {
+  write: WriteRunner;
+  read: ReadRunner;
+  now: () => Date;
+};
+
+/**
+ * Build the `SqliteTaskStore` dependency bundle over a test Prisma with the fixed
+ * {@link SCHEDULER_TEST_NOW} clock. Shared by the scheduler store/service and the
+ * native-scheduler test suites so the store wiring cannot drift between them.
+ */
+export function schedulerStoreDeps(
+  prisma: DesktopPrisma
+): SchedulerStoreTestDeps {
+  return {
+    write: (fn) => prisma.write(fn),
+    read: (fn) => prisma.read(fn),
+    now: () => SCHEDULER_TEST_NOW,
   };
 }

@@ -1,0 +1,126 @@
+---
+title: Routines and scheduled tasks
+description: What a routine is, how cron and one-time runs work, and the difference between the local daemon, Claude Code's native scheduler file, and the cloud Routines surface.
+---
+
+A **routine** is an agent prompt on a schedule — a nightly review, a morning triage, a periodic bootstrap refresh — that runs without you kicking off every loop by hand.
+
+The feature is a **desktop Labs feature**, gated behind the `routines` Labs toggle and **off by default**. The toggle requires a restart, because the scheduler daemon is snapshotted at boot.
+
+The flag used to be called `scheduledTasks`. It was renamed, and the old key is retained purely for compatibility: a boot migration carries an existing opt-in across, so an install that had already enabled it — and the task data behind it — is never stranded. The two are **dual-written through the rollback window** rather than migrated once, so downgrading to an older build and changing the setting there does not get silently overwritten on the way back up: `routines` is authoritative on new builds, but a legacy value that is demonstrably the newer intent wins. The legacy key renders no toggle of its own, and it stays until every install has migrated.
+
+## What a routine carries
+
+A routine is one record holding everything the scheduler needs to fire it and everything the run needs to execute:
+
+| Field | Meaning |
+|---|---|
+| `name`, `prompt` | What it is called, and the agent instructions it runs with. |
+| `cron` | A 5-field cron expression setting the cadence. |
+| `timezone` | IANA zone for evaluating the cron. Empty means host local time. |
+| `enabled` | The toggle. A disabled routine never fires. |
+| `recurring` | Whether it repeats or runs once. |
+| `durable` | Whether the entry survives restarts. |
+| `catchUp` | Whether a missed slot fires on the next tick. |
+| `harnessCascade` | An ordered (harness, model) fallback trail. Empty falls back to the global default cascade. |
+| `route` | Which of the three schedulers owns its timing (below). |
+| `kind`, `pass`, `crew` | The orchestration kind — review, apply, custom, and so on — and, for review passes, which pass. |
+| `nextRunAt`, `lastRunAt`, `lastRunId`, `lastStatus` | Bookkeeping, recomputed as the scheduler ticks. |
+
+The canonical harness identity is the same three-value vocabulary used everywhere else: `claude`, `codex`, `opencode`. See [OpenCode](./opencode) for how that stays a real per-harness value rather than a Claude alias.
+
+## Cron, catch-up, and one-time runs
+
+Cron expressions are parsed and evaluated by a standard cron parser, in the routine's IANA timezone when one is set and in host local time when it is not.
+
+**A one-time run is not a separate concept.** It is a routine with `recurring` set to false. On the native Claude Code route (`claude-scheduled-tasks`), that flag is materialized into the native schedule file and Claude Code honors it — the entry fires once and does not repeat. The default local daemon does **not** currently read `recurring`: it re-evaluates a routine's cron every tick, so a one-time routine on `local-cascade` fires again at each future matching slot until it is disabled. Treat `recurring: false` as native-route-only today.
+
+**Catch-up governs a missed slot.** With `catchUp` on, a routine whose scheduled moment passed while the machine was asleep or the app was closed fires on the next tick. With it off, a missed slot is honored only while it is still fresh — a grace window that defaults to 90 seconds — and is otherwise skipped rather than fired late.
+
+## Three schedulers, and which one owns a routine
+
+This is the part that is easy to conflate. A routine carries a **route** that decides who owns its timing and execution. There are three, and only two of them execute anything today.
+
+| Route | Who owns timing | Status |
+|---|---|---|
+| `local-cascade` | The desktop client's own scheduler daemon. | **The default, and the one that actually runs routines today.** |
+| `claude-scheduled-tasks` | Claude Code's own local scheduler, via `~/.claude/scheduled_tasks.json`. | Shipped, but additive and opt-in — inert unless a routine is explicitly opted in. |
+| `claude-routine` | A cloud routine service. | **A registration seam only.** See below. |
+
+A persisted route value the current build does not recognize — a row written by a newer build — normalizes back to `local-cascade` rather than throwing, so a version skew degrades to the daemon instead of stranding the routine.
+
+### 1. The local daemon
+
+By default a routine runs on the desktop client's own scheduler daemon: the same environment your interactive loops use, with your local tools and credentials, no external scheduler involved.
+
+The daemon ticks on an interval that defaults to 30 seconds, and a tick is non-blocking, so one long pass does not stall the loop. It holds a single-instance file lock, so two daemons cannot both fire the same routine.
+
+### 2. Claude Code's native scheduler file
+
+The `claude-scheduled-tasks` route hands timing to Claude Code's own local scheduler rather than to our daemon. The desktop client materializes the routine into Claude Code's `~/.claude/scheduled_tasks.json`, which Claude Code and Claude Desktop natively watch and run on cron.
+
+Whether a routine lands here by default depends on where it was created. From the **Desktop editor** the route is opt-in: a new routine initializes to `local-cascade` and stays daemon-owned unless it is explicitly moved. From the **CLI**, though, when `--route` is omitted a Claude-native-capable task defaults to `claude-scheduled-tasks` (an explicit `--route` still wins). Either way the choice only sets the persisted *intent* — the local daemon keeps running the task until a native owner is confirmed. Only routines actually on this route depend on Claude Desktop; `local-cascade` does not.
+
+For a routine on the native route, **Claude Desktop must be installed and running** on the same machine for it to fire. There is no cloud executor for this route; if Claude Desktop is not installed and running, the native schedule file is never executed. Closing Claude Desktop only pauses routines opted into the native route.
+
+**How a native entry is materialized.** The desktop client projects the routine down to the Claude-Code-compatible core and writes it to the native file:
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable identifier for the schedule entry. |
+| `cron` | 5-field cron expression that sets the cadence. |
+| `prompt` | The agent prompt to run each time it fires. |
+| `createdAt` | Millisecond-epoch timestamp of when the entry was written. |
+| `recurring` | Whether it repeats or runs once. |
+| `permanent` | Whether the entry survives across restarts — Claude Code's native durability flag, carrying the routine's own `durable`. |
+
+The entry is written inside Claude Code's `{ "tasks": [ … ] }` envelope, the shape its scheduler reads. Writes are atomic (temp file plus rename) and preserve the target file's mode; a freshly created file is written private to the owner (`0600`), since a schedule file holds prompts and cadence. The path honors the `CLAUDE_HOME` override, so a relocated Claude install materializes into the file Claude actually reads.
+
+A missing `scheduled_tasks.json` is treated as "no entries yet" and starts fresh. A legacy bare-array file is normalized into the current envelope on the next write, preserving its existing entries, and any sibling top-level keys the envelope carried are re-emitted rather than dropped. A file that cannot be parsed as JSON at all, or whose shape is unrecognized — including an envelope whose `tasks` is absent or not an array — is **left untouched and the registration fails**, rather than silently overwriting unrelated Claude schedules the file may still hold.
+
+Native registration is **best-effort and confirmed asynchronously**. Until the registrar confirms ownership, the routine is not yet owned by Claude Desktop — so if registration has not confirmed, or fails, the desktop daemon still runs it locally on its cascade rather than dropping it. Once ownership is confirmed, the daemon stops dispatching it locally.
+
+### 3. The cloud-routine route is a seam, not an executor
+
+The `claude-routine` route is where a routine's timing *would* be handed to a cloud routine service. Be precise about what ships today: this is a boundary, not a working path.
+
+There is no in-repo cloud-routine registration API. The platform's REST client has no routine endpoint, and no cloud-routine capability ships in this repository. What exists is an injectable registration port the store calls when a routine's route flips, and the implementation the desktop injects today is a logging stub that reports the registration as not wired.
+
+The persisted `route` is still the source of truth for the operator's choice regardless of whether any remote registration round-trips, and the registrar is best-effort by contract — it resolves rather than rejects, so a routine-service outage can never wedge a store mutation.
+
+## The cloud Routines surface
+
+Separately from the desktop routes above, the platform has a cloud-side Routines data model — `Routine` and `RoutineRun` — with org and team scoping, an owner, a provider and model, a schedule kind, cron and timezone, a notification mode, per-provider capability config, and a lossless carry-through of the desktop routine's execution semantics so a routine can round-trip through the cloud without dropping its cascade or fallback trail.
+
+A routine also records its **origin**: `CREATED` when built by hand, or `DISCOVERED` when it was found already configured on a teammate's machine and reported up. Run history is bounded per routine — the service caps retention at 100 runs and sweeps the oldest rows, so a hot routine's history cannot grow without limit.
+
+**What is not shipped is the cloud execution.** `GET /routines` currently returns an empty list. Routines are authored and run desktop-locally today, cloud-side persistence is a follow-up, and there is no desktop-to-cloud routine sync endpoint. The route is authenticated and ships without a feature-flag gate, but there is no cloud executor behind it. Treat the model as the contract the surface will use, not as a description of a running cloud scheduler.
+
+## What Cowork is not
+
+"Cowork" comes up next to this topic and is unrelated. Claude Code Cowork is an external Anthropic surface, not a Closedloop panel and not a scheduler. The only place it appears in the product is the API-keys quick start, which explains how to add the Closedloop [MCP server](../mcp/introduction) to it as a custom connector. It neither schedules nor executes routines.
+
+## Turning the Lab off
+
+The `routines` Labs toggle only governs the desktop client: turning it off hides the routines UI and stops the daemon on the next launch. It does **not** deregister entries already written to `~/.claude/scheduled_tasks.json`, so a routine opted into the native route can keep firing through Claude Desktop even after you can no longer see it in Closedloop. Delete or disable any native-route routines before switching the Lab off if you want them to stop.
+
+## Codex
+
+Codex has no native scheduled-tasks primitive, so the capability-derived default route for a Codex routine is the local daemon. That is a statement about the built-in capability and the route it derives, not a routing veto — an explicit operator route still wins. An operator who wants Codex on a schedule uses the daemon, or the OS scheduler driving `codex exec` directly.
+
+## Related reading
+
+<Cards>
+  <Card title="Desktop client" href="./desktop-client">
+    The Electron process that hosts the scheduler daemon and materializes native-route entries.
+  </Card>
+  <Card title="Process management" href="./process-management">
+    How the desktop gateway spawns and monitors the subprocesses a routine runs.
+  </Card>
+  <Card title="OpenCode" href="./opencode">
+    The harness identity vocabulary routines share with the collectors.
+  </Card>
+  <Card title="Prerequisites" href="../getting-started/prerequisites">
+    The base toolchain to install before running Closedloop.
+  </Card>
+</Cards>

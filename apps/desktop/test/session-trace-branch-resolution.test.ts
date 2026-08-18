@@ -5,8 +5,8 @@ import {
   buildSessionTraceSyncFields,
   buildTraceTimelineRows,
   resolveArtifactLinkBranch,
-  type SessionTraceSyncInput,
 } from "../src/main/database/session-trace.js";
+import { baseSessionTraceInput as baseInput } from "./session-trace-test-utils.js";
 
 // FEA-2531: the session's derived branch follows WRITE evidence only
 // (git_commit/git_push/gh_pr_create). Read-only start/checkout/worktree links no
@@ -36,24 +36,8 @@ function link(
     artifact_committed_at: null,
     artifact_observed_at: null,
     artifact_last_seen_at: null,
-    ...overrides,
-  };
-}
-
-function baseInput(
-  overrides: Partial<SessionTraceSyncInput>
-): SessionTraceSyncInput {
-  return {
-    startedAt: "2026-06-07T12:00:00.000Z",
-    updatedAt: "2026-06-07T12:05:00.000Z",
-    endedAt: "2026-06-07T12:05:00.000Z",
-    metadata: null,
-    attribution: null,
-    artifactLinkBranch: null,
-    events: [],
-    timelineRows: [],
-    tokenEvents: [],
-    localPullRequests: [],
+    pr_state: null,
+    pr_opened_at: null,
     ...overrides,
   };
 }

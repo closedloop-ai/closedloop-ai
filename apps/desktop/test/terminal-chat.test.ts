@@ -58,7 +58,7 @@ describe("terminal chat Claude subprocess env", () => {
     await writeFakeClaude(fakeBin);
     await writeFile(path.join(worktreeDir, ".keep"), "", { flag: "w" });
 
-    let capturedEnv: Record<string, string> | undefined;
+    let capturedEnv: NodeJS.ProcessEnv | undefined;
     const processManager = {
       spawnStreaming: (
         options: StreamingSpawnOptions

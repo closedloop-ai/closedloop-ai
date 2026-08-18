@@ -25,19 +25,29 @@ import {
   ReviewDecision,
 } from "@repo/api/src/types/branch-checks";
 import { GitHubPRState } from "@repo/api/src/types/github";
+import type * as GitHubModule from "@repo/github";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getMockWithDb,
+  mockWithDbAll,
   mockWithDbCall,
   mockWithDbTx,
 } from "../../../__tests__/utils/db-helpers";
 
 vi.mock("@repo/database", () => ({
   withDb: Object.assign(vi.fn(), { tx: vi.fn() }),
+  // Minimal `Prisma.sql`/`Prisma.join` so the set-based bulk-upsert path in
+  // `addRepositories` builds its statement without pulling in the real client.
+  Prisma: {
+    sql: (strings: TemplateStringsArray, ...values: unknown[]) => ({
+      strings,
+      values,
+    }),
+    join: (parts: unknown[]) => ({ strings: [], values: parts }),
+  },
   ArtifactType: {
     DOCUMENT: "DOCUMENT",
     BRANCH: "BRANCH",
-
     DEPLOYMENT: "DEPLOYMENT",
   },
   GitHubInstallationStatus: {
@@ -48,12 +58,22 @@ vi.mock("@repo/database", () => ({
   },
 }));
 
-vi.mock("@repo/github", () => ({
-  deleteInstallation: vi.fn(),
-  getRepositoryBranches: vi.fn(),
-  getRepositoryContributors: vi.fn(),
-  getRepositoryPullRequests: vi.fn(),
-  getRepositoryPullRequestsWithMetadata: vi.fn(),
+// The reads are stubbed, but the provider-result status contract and the
+// failure classifier are the real ones: `acquireInstallationClient` folds a
+// rejected mint into those statuses and the callers branch on them.
+vi.mock("@repo/github", async (importOriginal) => {
+  const actual = await importOriginal<typeof GitHubModule>();
+  return {
+    deleteInstallation: vi.fn(),
+    getRepositoryBranches: vi.fn(),
+    getRepositoryContributors: vi.fn(),
+    getRepositoryPullRequestsWithMetadata: vi.fn(),
+    GitHubProviderResultStatus: actual.GitHubProviderResultStatus,
+  };
+});
+
+vi.mock("@repo/github/installation-auth", () => ({
+  getInstallationOctokit: vi.fn(),
 }));
 
 vi.mock("@repo/github/keys", () => ({
@@ -104,34 +124,30 @@ import { GitHubInstallationStatus } from "@repo/database";
 import {
   deleteInstallation,
   getRepositoryBranches,
-  getRepositoryContributors,
-  getRepositoryPullRequests,
   getRepositoryPullRequestsWithMetadata,
 } from "@repo/github";
+import { getInstallationOctokit } from "@repo/github/installation-auth";
 import { emitTelemetryMetric } from "@repo/observability/telemetry/metrics";
 import { publicRepositoryService } from "@/app/integrations/github/public-repositories/service";
+import { githubService } from "@/app/integrations/github/service";
 import {
-  githubService,
   RepositoryArtifactRelinkFailureReason,
   RepositoryArtifactRelinkFailureStage,
   RepositoryArtifactRelinkMetricName,
-  RepositoryArtifactRelinkReason,
   RepositoryArtifactRelinkStatus,
-} from "@/app/integrations/github/service";
+} from "@/app/integrations/github/service/repository-relink-telemetry";
+import { REPO_UPSERT_CHUNK_SIZE } from "@/app/integrations/github/service/repository-sync";
 import { encryptTokenPair } from "@/lib/integration-encryption";
 
 const mockDeleteInstallation = deleteInstallation as ReturnType<typeof vi.fn>;
 const mockGetRepositoryBranches = getRepositoryBranches as ReturnType<
   typeof vi.fn
 >;
-const mockGetRepositoryContributors = getRepositoryContributors as ReturnType<
-  typeof vi.fn
->;
-const mockGetRepositoryPullRequests = getRepositoryPullRequests as ReturnType<
-  typeof vi.fn
->;
 const mockGetRepositoryPullRequestsWithMetadata =
   getRepositoryPullRequestsWithMetadata as ReturnType<typeof vi.fn>;
+const mockGetInstallationOctokit = getInstallationOctokit as ReturnType<
+  typeof vi.fn
+>;
 const mockGetPublicRepositoryBranches =
   publicRepositoryService.getBranches as ReturnType<typeof vi.fn>;
 const mockEncryptTokenPair = encryptTokenPair as ReturnType<typeof vi.fn>;
@@ -141,6 +157,16 @@ const ORG_ID = "org-1";
 const STATUS_USER_ID = "status-user-1";
 const INSTALLATION_ID = "install-1";
 const GITHUB_INSTALLATION_ID = "gh-install-100";
+// Marker object the mocked resolver mints; read functions must receive it
+// as their first argument (PLN-1525: resolve once, thread down). It carries
+// the one octokit method the OAuth-callback repo seeding calls directly.
+const mockListReposAccessible = vi.fn();
+const INSTALLATION_OCTOKIT = {
+  kind: "installation-octokit",
+  rest: {
+    apps: { listReposAccessibleToInstallation: mockListReposAccessible },
+  },
+};
 
 function makeRepoWithInstallation(overrides?: {
   orgId?: string;
@@ -208,6 +234,7 @@ function mockRepoLookup(
 describe("githubService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetInstallationOctokit.mockResolvedValue(INSTALLATION_OCTOKIT);
   });
 
   afterEach(() => {
@@ -436,6 +463,12 @@ describe("githubService", () => {
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi
             .fn()
+            // 1. tombstone diff read: r-1 stays, stale-1 disappears.
+            .mockResolvedValueOnce([
+              { githubRepoId: "r-1" },
+              { githubRepoId: "stale-1" },
+            ])
+            // 2. post-upsert syncedRepositories read.
             .mockResolvedValueOnce([
               {
                 id: "repo-rec-1",
@@ -443,8 +476,10 @@ describe("githubService", () => {
                 fullName: "org/repo1",
               },
             ])
+            // 3. relink candidate read.
             .mockResolvedValueOnce([]),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       mockWithDbTx(mockTx);
 
@@ -453,36 +488,27 @@ describe("githubService", () => {
         repos
       );
 
+      // ISS-4618: the tombstone no longer binds a per-repo `notIn` list (which
+      // overflows Postgres's 65,535 bind-parameter ceiling on a large grant).
+      // It diffs the installation's non-removed ids in memory and tombstones
+      // only the ones absent from the incoming set, via a chunked `in` update.
       expect(
         mockTx.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
           installationId: INSTALLATION_ID,
-          githubRepoId: { notIn: ["r-1"] },
+          githubRepoId: { in: ["stale-1"] },
           removedAt: null,
         },
         data: {
           removedAt: expect.any(Date),
         },
       });
-      expect(mockTx.gitHubInstallationRepository.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            installationId_githubRepoId: {
-              installationId: INSTALLATION_ID,
-              githubRepoId: "r-1",
-            },
-          },
-          create: expect.objectContaining({
-            installationId: INSTALLATION_ID,
-            githubRepoId: "r-1",
-            fullName: "org/repo1",
-            name: "repo1",
-            owner: "org",
-            private: false,
-          }),
-        })
-      );
+      // ISS-4618: syncRepositories now upserts via one set-based $executeRaw
+      // (chunked), not a per-row upsert. The stored-value assertions live in the
+      // real-Postgres integration test (template-seed-race sibling).
+      expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(mockTx.gitHubInstallationRepository.upsert).not.toHaveBeenCalled();
       expect(result).toEqual([
         { id: "repo-rec-1", githubRepoId: "r-1", fullName: "org/repo1" },
       ]);
@@ -522,21 +548,26 @@ describe("githubService", () => {
     it("returns empty array and skips upsert when repository list is empty", async () => {
       const mockTx = {
         gitHubInstallationRepository: {
-          updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
           upsert: vi.fn(),
-          findMany: vi.fn(),
+          // Tombstone diff read: one active repo, absent from the empty
+          // incoming set, so it is tombstoned.
+          findMany: vi.fn().mockResolvedValue([{ githubRepoId: "old-1" }]),
         },
       };
       mockWithDbTx(mockTx);
 
       const result = await githubService.syncRepositories(INSTALLATION_ID, []);
 
+      // ISS-4618: empty incoming set tombstones every active repo (the old
+      // `notIn: []` matched all rows too) — via a chunked `in` update over the
+      // diffed ids, never a per-repo `notIn` list.
       expect(
         mockTx.gitHubInstallationRepository.updateMany
       ).toHaveBeenCalledWith({
         where: {
           installationId: INSTALLATION_ID,
-          githubRepoId: { notIn: [] },
+          githubRepoId: { in: ["old-1"] },
           removedAt: null,
         },
         data: {
@@ -561,6 +592,7 @@ describe("githubService", () => {
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi.fn().mockResolvedValue(syncedRepositories),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       getMockWithDb().tx = vi
         .fn()
@@ -578,7 +610,7 @@ describe("githubService", () => {
       ]);
 
       expect(result).toBe(syncedRepositories);
-      expect(syncTx.gitHubInstallationRepository.upsert).toHaveBeenCalled();
+      expect(syncTx.$executeRaw).toHaveBeenCalled();
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
         count: 1,
@@ -607,6 +639,9 @@ describe("githubService", () => {
           upsert: vi.fn().mockResolvedValue({ id: "repo-rec-1" }),
           findMany: vi
             .fn()
+            // tombstone diff read (all incoming, nothing to tombstone), then
+            // syncedRepositories read, then the relink candidate read.
+            .mockResolvedValueOnce(syncedRepositories)
             .mockResolvedValueOnce(syncedRepositories)
             .mockResolvedValueOnce([]),
         },
@@ -657,7 +692,6 @@ describe("githubService", () => {
           }),
         },
         gitHubInstallationRepository: {
-          upsert: vi.fn().mockResolvedValue({ id: "repo-rec-2" }),
           findMany: vi
             .fn()
             .mockResolvedValueOnce([
@@ -669,6 +703,7 @@ describe("githubService", () => {
             ])
             .mockResolvedValueOnce([]),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       mockWithDbTx(mockTx);
 
@@ -677,24 +712,8 @@ describe("githubService", () => {
         repos
       );
 
-      expect(mockTx.gitHubInstallationRepository.upsert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            installationId_githubRepoId: {
-              installationId: INSTALLATION_ID,
-              githubRepoId: "r-2",
-            },
-          },
-          create: expect.objectContaining({
-            installationId: INSTALLATION_ID,
-            githubRepoId: "r-2",
-            fullName: "org/repo2",
-            name: "repo2",
-            owner: "org",
-            private: true,
-          }),
-        })
-      );
+      // One set-based bulk upsert, not a per-row `upsert` fan-out (ISS-4618).
+      expect(mockTx.$executeRaw).toHaveBeenCalledTimes(1);
       expect(result).toEqual([
         { id: "repo-rec-2", githubRepoId: "r-2", fullName: "org/repo2" },
       ]);
@@ -711,15 +730,15 @@ describe("githubService", () => {
     it("returns empty array without hitting DB when input is empty", async () => {
       const mockTx = {
         gitHubInstallationRepository: {
-          upsert: vi.fn(),
           findMany: vi.fn(),
         },
+        $executeRaw: vi.fn(),
       };
       mockWithDbTx(mockTx);
 
       const result = await githubService.addRepositories(INSTALLATION_ID, []);
 
-      expect(mockTx.gitHubInstallationRepository.upsert).not.toHaveBeenCalled();
+      expect(mockTx.$executeRaw).not.toHaveBeenCalled();
       expect(result).toEqual([]);
     });
 
@@ -733,9 +752,9 @@ describe("githubService", () => {
       ];
       const addTx = {
         gitHubInstallationRepository: {
-          upsert: vi.fn().mockResolvedValue({ id: "repo-rec-2" }),
           findMany: vi.fn().mockResolvedValue(addedRepositories),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       getMockWithDb().tx = vi
         .fn()
@@ -752,8 +771,10 @@ describe("githubService", () => {
         },
       ]);
 
-      expect(result).toBe(addedRepositories);
-      expect(addTx.gitHubInstallationRepository.upsert).toHaveBeenCalled();
+      // ISS-4618: the lookup is now a chunked `in` union, so it returns a fresh
+      // array with the same rows (not the mock's reference).
+      expect(result).toEqual(addedRepositories);
+      expect(addTx.$executeRaw).toHaveBeenCalledTimes(1);
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
         count: 1,
@@ -778,12 +799,12 @@ describe("githubService", () => {
           }),
         },
         gitHubInstallationRepository: {
-          upsert: vi.fn().mockResolvedValue({ id: "repo-rec-2" }),
           findMany: vi
             .fn()
             .mockResolvedValueOnce(addedRepositories)
             .mockResolvedValueOnce([]),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       mockWithDbTx(mockTx);
       mockEmitTelemetryMetric
@@ -802,291 +823,14 @@ describe("githubService", () => {
         },
       ]);
 
-      expect(result).toBe(addedRepositories);
+      // ISS-4618: chunked `in` lookup returns a fresh array (same rows).
+      expect(result).toEqual(addedRepositories);
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
         count: 1,
         stage: RepositoryArtifactRelinkFailureStage.AddRepositories,
         reason: RepositoryArtifactRelinkFailureReason.TelemetryEmitFailed,
       });
-    });
-  });
-
-  describe("relinkBranchViewRepositoryCredential", () => {
-    it("returns no-active-repository taxonomy when the active row is unavailable", async () => {
-      const mockDb = {
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await githubService.relinkBranchViewRepositoryCredential({
-        organizationId: ORG_ID,
-        activeRepositoryId: "missing-active-repo",
-      });
-
-      expect(result).toMatchObject({
-        status: RepositoryArtifactRelinkStatus.Skipped,
-        reasons: [RepositoryArtifactRelinkReason.NoActiveRepositories],
-      });
-      expect(getMockWithDb().tx).not.toHaveBeenCalled();
-    });
-
-    it("returns completed counts for eligible stale branch and PR rows", async () => {
-      const activeRepository = {
-        id: "active-repo-1",
-        githubRepoId: "r-1",
-        fullName: "org/repo",
-        installationId: INSTALLATION_ID,
-      };
-      mockWithDbCall({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(activeRepository),
-        },
-      });
-      const relinkTx = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            organizationId: ORG_ID,
-            status: GitHubInstallationStatus.ACTIVE,
-          }),
-        },
-        gitHubInstallationRepository: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              id: "stale-repo-1",
-              githubRepoId: "r-1",
-              fullName: "org/old-repo",
-            },
-          ]),
-        },
-        branchDetail: {
-          findMany: vi.fn().mockImplementation(({ where }) =>
-            where.repositoryId === activeRepository.id
-              ? Promise.resolve([])
-              : Promise.resolve([
-                  {
-                    artifactId: "branch-artifact-1",
-                    branchName: "feature/relink",
-                    currentPullRequestDetailId: "pr-1",
-                  },
-                ])
-          ),
-          update: vi.fn().mockResolvedValue({}),
-        },
-        pullRequestDetail: {
-          findFirst: vi.fn().mockResolvedValue({ id: "pr-1" }),
-          findMany: vi
-            .fn()
-            .mockImplementation(({ where }) =>
-              where.repositoryId === activeRepository.id
-                ? Promise.resolve([])
-                : Promise.resolve([{ id: "pr-1", isCurrent: true, number: 42 }])
-            ),
-          update: vi.fn().mockResolvedValue({}),
-          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-        },
-      };
-      mockWithDbTx(relinkTx);
-
-      const result = await githubService.relinkBranchViewRepositoryCredential({
-        organizationId: ORG_ID,
-        activeRepositoryId: activeRepository.id,
-      });
-
-      expect(result).toMatchObject({
-        status: RepositoryArtifactRelinkStatus.Completed,
-        branchRelinkedCount: 1,
-        pullRequestRelinkedCount: 1,
-      });
-      expect(relinkTx.branchDetail.update).toHaveBeenCalledWith({
-        where: { artifactId: "branch-artifact-1" },
-        data: {
-          currentPullRequestDetailId: "pr-1",
-          repositoryId: "active-repo-1",
-        },
-      });
-      // Lock in the batch-scope invariant: collision lookups are a single
-      // number-/name-filtered read against the active repository, not a
-      // per-row findFirst/findUnique.
-      expect(relinkTx.pullRequestDetail.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            repositoryId: activeRepository.id,
-            number: { in: [42] },
-          }),
-        })
-      );
-      expect(relinkTx.branchDetail.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: expect.objectContaining({
-            repositoryId: activeRepository.id,
-            branchName: { in: ["feature/relink"] },
-          }),
-        })
-      );
-      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith(
-        expect.objectContaining({
-          metric: RepositoryArtifactRelinkMetricName.Completed,
-          status: RepositoryArtifactRelinkStatus.Completed,
-          branchRelinkedCount: 1,
-          pullRequestRelinkedCount: 1,
-        })
-      );
-    });
-
-    it("returns skipped on an idempotent second sweep with no stale rows", async () => {
-      const activeRepository = {
-        id: "active-repo-1",
-        githubRepoId: "r-1",
-        fullName: "org/repo",
-        installationId: INSTALLATION_ID,
-      };
-      mockWithDbCall({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(activeRepository),
-        },
-      });
-      mockWithDbTx({
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            organizationId: ORG_ID,
-            status: GitHubInstallationStatus.ACTIVE,
-          }),
-        },
-        gitHubInstallationRepository: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      });
-
-      const result = await githubService.relinkBranchViewRepositoryCredential({
-        organizationId: ORG_ID,
-        activeRepositoryId: activeRepository.id,
-      });
-
-      expect(result).toMatchObject({
-        status: RepositoryArtifactRelinkStatus.Skipped,
-        reasons: [RepositoryArtifactRelinkReason.None],
-        branchRelinkedCount: 0,
-        pullRequestRelinkedCount: 0,
-      });
-    });
-
-    it("returns relink result when sync-preflight metric emission throws", async () => {
-      const activeRepository = {
-        id: "active-repo-1",
-        githubRepoId: "r-1",
-        fullName: "org/repo",
-        installationId: INSTALLATION_ID,
-      };
-      mockWithDbCall({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(activeRepository),
-        },
-      });
-      mockWithDbTx({
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            organizationId: ORG_ID,
-            status: GitHubInstallationStatus.ACTIVE,
-          }),
-        },
-        gitHubInstallationRepository: {
-          findMany: vi.fn().mockResolvedValue([]),
-        },
-      });
-      mockEmitTelemetryMetric
-        .mockImplementationOnce(() => {
-          throw new Error("telemetry unavailable");
-        })
-        .mockImplementationOnce(() => undefined);
-
-      const result = await githubService.relinkBranchViewRepositoryCredential({
-        organizationId: ORG_ID,
-        activeRepositoryId: activeRepository.id,
-      });
-
-      expect(result).toMatchObject({
-        status: RepositoryArtifactRelinkStatus.Skipped,
-        reasons: [RepositoryArtifactRelinkReason.None],
-      });
-      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
-        metric: RepositoryArtifactRelinkMetricName.Failed,
-        count: 1,
-        stage: RepositoryArtifactRelinkFailureStage.SyncPreflightRelink,
-        reason: RepositoryArtifactRelinkFailureReason.TelemetryEmitFailed,
-      });
-    });
-
-    it("returns branch collision taxonomy without unsafe overwrite", async () => {
-      const activeRepository = {
-        id: "active-repo-1",
-        githubRepoId: "r-1",
-        fullName: "org/repo",
-        installationId: INSTALLATION_ID,
-      };
-      mockWithDbCall({
-        gitHubInstallationRepository: {
-          findFirst: vi.fn().mockResolvedValue(activeRepository),
-        },
-      });
-      const relinkTx = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            organizationId: ORG_ID,
-            status: GitHubInstallationStatus.ACTIVE,
-          }),
-        },
-        gitHubInstallationRepository: {
-          findMany: vi.fn().mockResolvedValue([
-            {
-              id: "stale-repo-1",
-              githubRepoId: "r-1",
-              fullName: "org/old-repo",
-            },
-          ]),
-        },
-        branchDetail: {
-          findMany: vi.fn().mockImplementation(({ where }) =>
-            where.repositoryId === activeRepository.id
-              ? Promise.resolve([
-                  {
-                    artifactId: "existing-branch-artifact",
-                    branchName: "feature/relink",
-                  },
-                ])
-              : Promise.resolve([
-                  {
-                    artifactId: "branch-artifact-1",
-                    branchName: "feature/relink",
-                    currentPullRequestDetailId: "pr-1",
-                  },
-                ])
-          ),
-          update: vi.fn(),
-        },
-        pullRequestDetail: {
-          findFirst: vi.fn(),
-          findMany: vi.fn(),
-          update: vi.fn(),
-          updateMany: vi.fn(),
-        },
-      };
-      mockWithDbTx(relinkTx);
-
-      const result = await githubService.relinkBranchViewRepositoryCredential({
-        organizationId: ORG_ID,
-        activeRepositoryId: activeRepository.id,
-      });
-
-      expect(result).toMatchObject({
-        status: RepositoryArtifactRelinkStatus.Partial,
-        reasons: [RepositoryArtifactRelinkReason.BranchNameCollision],
-        branchCollisionSkippedCount: 1,
-      });
-      expect(relinkTx.branchDetail.update).not.toHaveBeenCalled();
-      expect(relinkTx.pullRequestDetail.update).not.toHaveBeenCalled();
     });
   });
 
@@ -1419,8 +1163,11 @@ describe("githubService", () => {
 
       const result = await githubService.getBranches("repo-1", ORG_ID);
 
+      expect(mockGetInstallationOctokit).toHaveBeenCalledWith(
+        GITHUB_INSTALLATION_ID
+      );
       expect(mockGetRepositoryBranches).toHaveBeenCalledWith(
-        GITHUB_INSTALLATION_ID,
+        INSTALLATION_OCTOKIT,
         "org",
         "repo",
         20
@@ -1436,6 +1183,7 @@ describe("githubService", () => {
         "Repository not found"
       );
 
+      expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
       expect(mockGetRepositoryBranches).not.toHaveBeenCalled();
       expect(mockGetPublicRepositoryBranches).not.toHaveBeenCalled();
     });
@@ -1580,7 +1328,7 @@ describe("githubService", () => {
         githubService.getPullRequests("repo-1", ORG_ID, null)
       ).rejects.toThrow("Repository not found");
 
-      expect(mockGetRepositoryPullRequests).not.toHaveBeenCalled();
+      expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
       expect(mockGetRepositoryPullRequestsWithMetadata).not.toHaveBeenCalled();
     });
 
@@ -1629,21 +1377,22 @@ describe("githubService", () => {
       );
 
       expect(result.pullRequests).toBe(prs);
+      expect(mockGetInstallationOctokit).toHaveBeenCalledWith(
+        GITHUB_INSTALLATION_ID
+      );
       expect(mockGetRepositoryPullRequestsWithMetadata).toHaveBeenCalledWith(
-        GITHUB_INSTALLATION_ID,
+        INSTALLATION_OCTOKIT,
         "org",
         "repo",
         expect.objectContaining({
           maxItems: 500,
           maxPages: 5,
           targetNumbers: [42],
-        })
+        }),
+        undefined,
+        expect.anything()
       );
       expect(result.trackedPrUrls).toContain(prUrl);
-      expect(result.trackedBranchKeys).toEqual([
-        "org/repo:feature-42",
-        "org/repo:branch-only",
-      ]);
       expect(result.trackedBranches).toContainEqual({
         branchName: "branch-only",
         branchKey: "org/repo:branch-only",
@@ -1652,7 +1401,7 @@ describe("githubService", () => {
       });
     });
 
-    it("throws when getRepositoryPullRequests rejects", async () => {
+    it("throws when getRepositoryPullRequestsWithMetadata rejects", async () => {
       mockRepoLookup(makeRepoWithInstallation());
       mockGetRepositoryPullRequestsWithMetadata.mockRejectedValue(
         new Error("GitHub API error")
@@ -1742,6 +1491,8 @@ describe("githubService", () => {
       });
     }
 
+    // The repo seeding reads the installation's own credential
+    // (GET /installation/repositories via octokit), not the user token.
     function mockReposResponse(
       repos: {
         id: number;
@@ -1751,27 +1502,29 @@ describe("githubService", () => {
         private: boolean;
       }[]
     ) {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        headers: { get: vi.fn().mockReturnValue(null) },
-        json: () => Promise.resolve({ repositories: repos }),
+      mockListReposAccessible.mockResolvedValueOnce({
+        data: { repositories: repos },
       });
     }
 
-    function mockReposResponseWithLink(
-      repos: {
-        id: number;
-        full_name: string;
-        name: string;
-        owner: { login: string };
-        private: boolean;
-      }[],
-      link: string | null
+    function makeRepoPage(count: number, startId = 1) {
+      return Array.from({ length: count }, (_, index) => ({
+        id: startId + index,
+        full_name: `org/repo${startId + index}`,
+        name: `repo${startId + index}`,
+        owner: { login: "org" },
+        private: false,
+      }));
+    }
+
+    // GitHub reports the grant's own repository count alongside each page;
+    // the walk reads it from the first page to detect a truncated result set.
+    function mockReposResponseWithTotal(
+      repos: ReturnType<typeof makeRepoPage>,
+      totalCount: number
     ) {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        headers: { get: vi.fn().mockReturnValue(link) },
-        json: () => Promise.resolve({ repositories: repos }),
+      mockListReposAccessible.mockResolvedValueOnce({
+        data: { total_count: totalCount, repositories: repos },
       });
     }
 
@@ -1808,6 +1561,12 @@ describe("githubService", () => {
         gitHubUserConnection: {
           upsert: vi.fn().mockResolvedValue({ id: "github-connection-1" }),
         },
+        gitHubAccessCapability: {
+          deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        },
+        // ISS-4618: syncRepositories/addRepositories bulk-upsert through
+        // tx.$executeRaw (set-based) instead of per-row upsert.
+        $executeRaw: vi.fn().mockResolvedValue(1),
       };
       if (!includeRepoSync) {
         return base;
@@ -1926,8 +1685,7 @@ describe("githubService", () => {
           create: vi.fn().mockResolvedValue(newInstallation),
         },
       };
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
       mockReposResponse([]);
 
       const result = await callOAuth();
@@ -1980,7 +1738,21 @@ describe("githubService", () => {
           accessTokenEncrypted: "encrypted-access-token",
           refreshTokenEncrypted: "encrypted-refresh-token",
           revokedAt: null,
+          // PLN-1525: a fresh grant resets sync-pool credential state.
+          healthState: "healthy",
+          backoffUntil: null,
+          windowSpend: 0,
+          observedLimit: null,
+          observedRemaining: null,
+          observedResetAt: null,
         }),
+        select: { id: true },
+      });
+      expect(mockDb.gitHubAccessCapability.deleteMany).toHaveBeenCalledWith({
+        where: {
+          githubUserConnectionId: "github-connection-1",
+          organizationId: ORG_ID,
+        },
       });
       expect(result).toEqual({ status: "connected" });
     });
@@ -2007,8 +1779,7 @@ describe("githubService", () => {
           updateMany: vi.fn(),
         },
       };
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await callOAuth();
 
@@ -2025,8 +1796,7 @@ describe("githubService", () => {
       mockOAuthThroughInstallationResolve();
 
       const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
       mockReposResponse([
         {
           id: 1,
@@ -2059,32 +1829,43 @@ describe("githubService", () => {
       mockOAuthThroughInstallationResolve();
 
       const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
-      mockReposResponseWithLink(
-        [
-          {
-            id: 1,
-            full_name: "org/repo1",
-            name: "repo1",
-            owner: { login: "org" },
-            private: false,
-          },
-        ],
-        '<https://api.github.com/user/installations/100/repositories?page=2&per_page=100>; rel="next"'
-      );
-      mockReposResponseWithLink(
-        [
-          {
-            id: 2,
-            full_name: "org/repo2",
-            name: "repo2",
-            owner: { login: "org" },
-            private: true,
-          },
-        ],
-        null
-      );
+      mockWithDbAll(mockDb);
+      // A full first page signals another page; the short second page ends
+      // the walk.
+      mockReposResponse(makeRepoPage(100));
+      mockReposResponse(makeRepoPage(1, 101));
+      const repoSyncMock = mockDb.gitHubInstallationRepository as {
+        findMany: ReturnType<typeof vi.fn>;
+        upsert: ReturnType<typeof vi.fn>;
+      };
+
+      const result = await callOAuth();
+
+      expect(result).toEqual({ status: "connected" });
+      // The seeding read uses the installation's own credential, never the
+      // user token (PLN-1525 step 4 — /user/installations retirement).
+      expect(mockGetInstallationOctokit).toHaveBeenCalledWith("100");
+      // ISS-4618: syncRepositories bulk-upserts via one set-based $executeRaw.
+      expect(
+        (mockDb as unknown as { $executeRaw: ReturnType<typeof vi.fn> })
+          .$executeRaw
+      ).toHaveBeenCalled();
+      // ISS-4618: the tombstone reads the installation's non-removed ids
+      // (bound only to installation_id) and diffs in memory, instead of binding
+      // a per-repo `notIn` list that overflows the 65,535 bind-parameter limit.
+      expect(repoSyncMock.findMany).toHaveBeenCalledWith({
+        where: { installationId: INSTALLATION_ID, removedAt: null },
+        select: { githubRepoId: true },
+      });
+    });
+
+    it("skips repository sync and emits partial metric when the walk ends short of total_count", async () => {
+      mockOAuthThroughInstallationResolve();
+
+      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
+      mockWithDbAll(mockDb);
+      // A short page ends the walk, but the grant reports five repositories.
+      mockReposResponseWithTotal(makeRepoPage(2), 5);
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
         updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
@@ -2093,22 +1874,87 @@ describe("githubService", () => {
       const result = await callOAuth();
 
       expect(result).toEqual({ status: "connected" });
-      expect(mockFetch.mock.calls[3]?.[0]).toBe(
-        "https://api.github.com/user/installations/100/repositories?per_page=100"
+      expect(repoSyncMock.upsert).not.toHaveBeenCalled();
+      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
+      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
+        metric: RepositoryArtifactRelinkMetricName.Failed,
+        count: 1,
+        stage: RepositoryArtifactRelinkFailureStage.OAuthClaim,
+        reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+      });
+    });
+
+    it("syncs repositories when the collected count matches total_count", async () => {
+      mockOAuthThroughInstallationResolve();
+
+      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
+      mockWithDbAll(mockDb);
+      mockReposResponseWithTotal(makeRepoPage(2), 2);
+
+      const result = await callOAuth();
+
+      expect(result).toEqual({ status: "connected" });
+      // ISS-4618: a complete walk reaches the bulk-upsert persistence.
+      expect(
+        (mockDb as unknown as { $executeRaw: ReturnType<typeof vi.fn> })
+          .$executeRaw
+      ).toHaveBeenCalled();
+      expect(mockEmitTelemetryMetric).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+        })
       );
-      expect(mockFetch.mock.calls[4]?.[0]).toBe(
-        "https://api.github.com/user/installations/100/repositories?page=2&per_page=100"
+    });
+
+    it("syncs repositories when the response carries no usable total_count", async () => {
+      mockOAuthThroughInstallationResolve();
+
+      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
+      mockWithDbAll(mockDb);
+      // Older/stubbed responses omit total_count; the short page still ends
+      // the walk and the result stays complete.
+      mockReposResponse(makeRepoPage(2));
+
+      const result = await callOAuth();
+
+      expect(result).toEqual({ status: "connected" });
+      // ISS-4618: a complete walk reaches the bulk-upsert persistence.
+      expect(
+        (mockDb as unknown as { $executeRaw: ReturnType<typeof vi.fn> })
+          .$executeRaw
+      ).toHaveBeenCalled();
+      expect(mockEmitTelemetryMetric).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+        })
       );
-      expect(repoSyncMock.upsert).toHaveBeenCalledTimes(2);
-      expect(repoSyncMock.updateMany).toHaveBeenCalledWith({
-        where: {
-          installationId: INSTALLATION_ID,
-          githubRepoId: { notIn: ["1", "2"] },
-          removedAt: null,
-        },
-        data: {
-          removedAt: expect.any(Date),
-        },
+    });
+
+    it("stops at the page cap and emits the partial metric when pages never run short", async () => {
+      mockOAuthThroughInstallationResolve();
+
+      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
+      mockWithDbAll(mockDb);
+      const maxPages = 20;
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+        mockReposResponse(makeRepoPage(100, pageIndex * 100 + 1));
+      }
+      const repoSyncMock = mockDb.gitHubInstallationRepository as {
+        updateMany: ReturnType<typeof vi.fn>;
+        upsert: ReturnType<typeof vi.fn>;
+      };
+
+      const result = await callOAuth();
+
+      expect(result).toEqual({ status: "connected" });
+      expect(mockListReposAccessible).toHaveBeenCalledTimes(maxPages);
+      expect(repoSyncMock.upsert).not.toHaveBeenCalled();
+      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
+      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
+        metric: RepositoryArtifactRelinkMetricName.Failed,
+        count: 1,
+        stage: RepositoryArtifactRelinkFailureStage.OAuthClaim,
+        reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
       });
     });
 
@@ -2117,8 +1963,7 @@ describe("githubService", () => {
       mockEncryptTokenPair.mockRejectedValueOnce(new Error("kms unavailable"));
 
       const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await callOAuth();
 
@@ -2137,8 +1982,7 @@ describe("githubService", () => {
       mockDb.gitHubUserConnection.upsert.mockRejectedValueOnce(
         new Error("upsert failed")
       );
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await callOAuth();
 
@@ -2159,8 +2003,7 @@ describe("githubService", () => {
         organizationId: null,
       });
       mockDb.gitHubInstallation.updateMany.mockResolvedValueOnce({ count: 0 });
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
+      mockWithDbAll(mockDb);
 
       const result = await callOAuth();
 
@@ -2180,16 +2023,26 @@ describe("githubService", () => {
       mockOAuthThroughInstallationResolve();
 
       const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION, false);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 500 });
+      mockWithDbAll(mockDb);
+      mockListReposAccessible.mockRejectedValueOnce(
+        Object.assign(new Error("Server error"), { status: 500 })
+      );
 
       const result = await callOAuth();
 
       expect(result).toEqual({ status: "connected" });
-      expect(
-        mockDb.gitHubInstallationRepository.findMany
-      ).not.toHaveBeenCalled();
+      expect(mockDb.gitHubInstallationRepository.findMany).toHaveBeenCalledWith(
+        {
+          where: { installationId: INSTALLATION_ID, removedAt: null },
+          select: {
+            githubRepoId: true,
+            fullName: true,
+            name: true,
+            owner: true,
+            private: true,
+          },
+        }
+      );
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
         metric: RepositoryArtifactRelinkMetricName.Failed,
         count: 1,
@@ -2202,21 +2055,12 @@ describe("githubService", () => {
       mockOAuthThroughInstallationResolve();
 
       const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
-      mockReposResponseWithLink(
-        [
-          {
-            id: 1,
-            full_name: "org/repo1",
-            name: "repo1",
-            owner: { login: "org" },
-            private: false,
-          },
-        ],
-        '<https://api.github.com/user/installations/100/repositories?page=2&per_page=100>; rel="next"'
+      mockWithDbAll(mockDb);
+      // Full first page, then the second page read throws mid-walk.
+      mockReposResponse(makeRepoPage(100));
+      mockListReposAccessible.mockRejectedValueOnce(
+        Object.assign(new Error("Bad gateway"), { status: 502 })
       );
-      mockFetch.mockResolvedValueOnce({ ok: false, status: 502 });
       const repoSyncMock = mockDb.gitHubInstallationRepository as {
         updateMany: ReturnType<typeof vi.fn>;
         upsert: ReturnType<typeof vi.fn>;
@@ -2225,92 +2069,6 @@ describe("githubService", () => {
       const result = await callOAuth();
 
       expect(result).toEqual({ status: "connected" });
-      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
-      expect(repoSyncMock.upsert).not.toHaveBeenCalled();
-      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
-        metric: RepositoryArtifactRelinkMetricName.Failed,
-        count: 1,
-        stage: RepositoryArtifactRelinkFailureStage.OAuthClaim,
-        reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
-      });
-    });
-
-    it("does not fetch non-GitHub repository pagination links with the OAuth token", async () => {
-      mockOAuthThroughInstallationResolve();
-
-      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
-      mockReposResponseWithLink(
-        [
-          {
-            id: 1,
-            full_name: "org/repo1",
-            name: "repo1",
-            owner: { login: "org" },
-            private: false,
-          },
-        ],
-        '<https://attacker.example/steal>; rel="next"'
-      );
-      const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        updateMany: ReturnType<typeof vi.fn>;
-        upsert: ReturnType<typeof vi.fn>;
-      };
-
-      const result = await callOAuth();
-      const fetchedUrls = mockFetch.mock.calls.map(([url]) => String(url));
-
-      expect(result).toEqual({ status: "connected" });
-      expect(fetchedUrls).toContain(
-        "https://api.github.com/user/installations/100/repositories?per_page=100"
-      );
-      expect(fetchedUrls.some((url) => url.includes("attacker.example"))).toBe(
-        false
-      );
-      expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
-      expect(repoSyncMock.upsert).not.toHaveBeenCalled();
-      expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
-        metric: RepositoryArtifactRelinkMetricName.Failed,
-        count: 1,
-        stage: RepositoryArtifactRelinkFailureStage.OAuthClaim,
-        reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
-      });
-    });
-
-    it("treats malformed next repository pagination links as partial fetches", async () => {
-      mockOAuthThroughInstallationResolve();
-
-      const mockDb = makeClaimMockDb(UNCLAIMED_INSTALLATION);
-      mockWithDbCall(mockDb);
-      mockWithDbTx(mockDb);
-      mockReposResponseWithLink(
-        [
-          {
-            id: 1,
-            full_name: "org/repo1",
-            name: "repo1",
-            owner: { login: "org" },
-            private: false,
-          },
-        ],
-        'https://attacker.example/steal; rel="next"'
-      );
-      const repoSyncMock = mockDb.gitHubInstallationRepository as {
-        updateMany: ReturnType<typeof vi.fn>;
-        upsert: ReturnType<typeof vi.fn>;
-      };
-
-      const result = await callOAuth();
-      const fetchedUrls = mockFetch.mock.calls.map(([url]) => String(url));
-
-      expect(result).toEqual({ status: "connected" });
-      expect(fetchedUrls).toContain(
-        "https://api.github.com/user/installations/100/repositories?per_page=100"
-      );
-      expect(fetchedUrls.some((url) => url.includes("attacker.example"))).toBe(
-        false
-      );
       expect(repoSyncMock.updateMany).not.toHaveBeenCalled();
       expect(repoSyncMock.upsert).not.toHaveBeenCalled();
       expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
@@ -2341,27 +2099,30 @@ describe("githubService", () => {
 
     // PLN-634: reconnect detection and reuse-in-place reconciliation.
     describe("reconnect detection (PLN-634)", () => {
-      it("reuses prior UNINSTALLED row in place on same-account reconnect", async () => {
-        mockOAuthThroughInstallationResolve();
-        mockReposResponse([
-          {
-            id: 1,
-            full_name: "org/repo-1",
-            name: "repo-1",
-            owner: { login: "org" },
-            private: false,
-          },
-        ]);
-
-        const priorRow = {
+      /** The disconnected installation row a same-account reconnect reuses. */
+      function makeReconnectPriorRow() {
+        return {
           id: "prior-uuid",
-          installationId: "OLD-99",
-          accountId: "1", // matches DEFAULT_GH_INSTALLATION.account.id
+          // accountId matches DEFAULT_GH_INSTALLATION.account.id, which is what
+          // makes this the SAME-account path rather than the reset path.
+          accountId: "1",
           accountLogin: "org",
+          installationId: "OLD-99",
           organizationId: ORG_ID,
           status: GitHubInstallationStatus.UNINSTALLED,
         };
-        const mockDb = {
+      }
+
+      /**
+       * Every reconnect test drives the same graph: a prior UNINSTALLED row
+       * that must be reused in place, plus whatever repositories currently
+       * hang off it. Only that repository set varies, so it is the parameter.
+       */
+      function makeReconnectMockDb(
+        priorRow: Record<string, unknown>,
+        existingRepositories: { id: string; githubRepoId: string }[]
+      ) {
+        return {
           gitHubInstallation: {
             findFirst: vi
               .fn()
@@ -2376,16 +2137,34 @@ describe("githubService", () => {
             update: vi.fn().mockResolvedValue(priorRow),
           },
           gitHubInstallationRepository: {
-            upsert: vi.fn().mockResolvedValue({}),
-            findMany: vi.fn().mockResolvedValue([]),
+            findMany: vi.fn().mockResolvedValue(existingRepositories),
             updateMany: vi.fn().mockResolvedValue({ count: 0 }),
           },
           gitHubUserConnection: {
             upsert: vi.fn().mockResolvedValue({ id: "github-connection-1" }),
           },
+          gitHubAccessCapability: {
+            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+          },
+          $executeRaw: vi.fn().mockResolvedValue(1),
         };
-        mockWithDbCall(mockDb);
-        mockWithDbTx(mockDb);
+      }
+
+      it("reuses prior UNINSTALLED row in place on same-account reconnect", async () => {
+        mockOAuthThroughInstallationResolve();
+        mockReposResponse([
+          {
+            id: 1,
+            full_name: "org/repo-1",
+            name: "repo-1",
+            owner: { login: "org" },
+            private: false,
+          },
+        ]);
+
+        const priorRow = makeReconnectPriorRow();
+        const mockDb = makeReconnectMockDb(priorRow, []);
+        mockWithDbAll(mockDb);
 
         const result = await callOAuth();
 
@@ -2400,8 +2179,63 @@ describe("githubService", () => {
             }),
           })
         );
-        expect(mockDb.gitHubInstallationRepository.upsert).toHaveBeenCalled();
+        // Repos reconciled via a single set-based bulk upsert (one statement,
+        // not one round-trip per repo) so a large org's reconnect stays inside
+        // the interactive-transaction timeout (ISS-4619).
+        expect(mockDb.$executeRaw).toHaveBeenCalledTimes(1);
         expect(mockDb.gitHubUserConnection.upsert).toHaveBeenCalled();
+      });
+
+      it("reconciles a large repo list with batched set-based statements (ISS-4619)", async () => {
+        mockOAuthThroughInstallationResolve();
+        // A large org grant. The old per-repo upsert loop issued one serialized
+        // round-trip each and blew past Prisma's default 5s interactive-
+        // transaction timeout, rolling the whole reconnect back (P2028). The
+        // reconnect now routes through the shared bulkUpsertInstallationRepositories
+        // helper (service/repository-sync.ts), which reconciles the whole list in
+        // batched INSERT ... ON CONFLICT statements chunked at
+        // REPO_UPSERT_CHUNK_SIZE rows — not one round-trip per repo.
+        //
+        // Deliberately exceed the chunk boundary with 17,000 unique repos so the
+        // helper's chunk loop iterates across three chunks. This asserts
+        // the loop writes EVERY chunk: a broken loop that only emitted the first
+        // chunk (or otherwise did not iterate) would issue 1 statement and fail.
+        const REPO_COUNT = 2 * REPO_UPSERT_CHUNK_SIZE + 1000;
+        const expectedChunkCount = Math.ceil(
+          REPO_COUNT / REPO_UPSERT_CHUNK_SIZE
+        );
+        const largeRepoList = Array.from(
+          { length: REPO_COUNT },
+          (_, index) => ({
+            id: index + 1,
+            full_name: `org/repo-${index + 1}`,
+            name: `repo-${index + 1}`,
+            owner: { login: "org" },
+            private: false,
+          })
+        );
+        mockReposResponse(largeRepoList);
+
+        // The standard reconnect graph with no pre-existing repositories; only
+        // the size of the incoming grant is what this test varies.
+        const mockDb = makeReconnectMockDb(makeReconnectPriorRow(), []);
+        mockWithDbAll(mockDb);
+
+        const result = await callOAuth();
+
+        expect(result).toEqual({ status: "connected" });
+        // Exactly ceil(REPO_COUNT / REPO_UPSERT_CHUNK_SIZE) batched statements —
+        // one set-based upsert per chunk. Asserting the precise count (3 here, > 1)
+        // proves the helper's chunk loop wrote ALL chunks, not just the first: a
+        // first-chunk-only loop bug would emit 1 statement and fail this.
+        expect(expectedChunkCount).toBeGreaterThan(1);
+        expect(mockDb.$executeRaw).toHaveBeenCalledTimes(expectedChunkCount);
+        // Still dramatically sub-linear in repo count — nowhere near one call per
+        // repo, which would signal the per-row serialization regression that trips
+        // the 5s interactive-transaction timeout is back.
+        expect(mockDb.$executeRaw.mock.calls.length).toBeLessThan(
+          largeRepoList.length
+        );
       });
 
       it("returns requires_confirmation status and pins pendingNewInstallationId on different-account reconnect", async () => {
@@ -2427,8 +2261,7 @@ describe("githubService", () => {
             findMany: vi.fn(),
           },
         };
-        mockWithDbCall(mockDb);
-        mockWithDbTx(mockDb);
+        mockWithDbAll(mockDb);
 
         const result = await callOAuth();
 
@@ -2443,6 +2276,7 @@ describe("githubService", () => {
         expect(mockDb.gitHubInstallation.update).toHaveBeenCalledWith({
           where: { id: "prior-uuid" },
           data: { pendingNewInstallationId: "100" },
+          select: { id: true },
         });
       });
 
@@ -2459,43 +2293,13 @@ describe("githubService", () => {
           },
         ]);
 
-        const priorRow = {
-          id: "prior-uuid",
-          installationId: "OLD-99",
-          accountId: "1",
-          accountLogin: "org",
-          organizationId: ORG_ID,
-          status: GitHubInstallationStatus.UNINSTALLED,
-        };
+        const priorRow = makeReconnectPriorRow();
         const existingRepos = [
           { id: "row-1", githubRepoId: "1" }, // still present
           { id: "row-2", githubRepoId: "2" }, // disappeared
         ];
-        const mockDb = {
-          gitHubInstallation: {
-            findFirst: vi
-              .fn()
-              .mockResolvedValueOnce(priorRow)
-              .mockResolvedValue({
-                organizationId: ORG_ID,
-                status: GitHubInstallationStatus.ACTIVE,
-              }),
-            findUnique: vi.fn(),
-            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-            deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
-            update: vi.fn().mockResolvedValue(priorRow),
-          },
-          gitHubInstallationRepository: {
-            upsert: vi.fn().mockResolvedValue({}),
-            findMany: vi.fn().mockResolvedValue(existingRepos),
-            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-          },
-          gitHubUserConnection: {
-            upsert: vi.fn().mockResolvedValue({ id: "github-connection-1" }),
-          },
-        };
-        mockWithDbCall(mockDb);
-        mockWithDbTx(mockDb);
+        const mockDb = makeReconnectMockDb(priorRow, existingRepos);
+        mockWithDbAll(mockDb);
 
         const result = await callOAuth();
 
@@ -2505,6 +2309,56 @@ describe("githubService", () => {
         ).toHaveBeenCalledWith({
           where: { id: { in: ["row-2"] } },
           data: { removedAt: expect.any(Date) },
+        });
+      });
+
+      // Reconnect must fail closed because full reconciliation tombstones rows
+      // absent from the provider grant; the claim path can retain partial state.
+      it.each([
+        {
+          arrangeRepos: () => mockReposResponseWithTotal(makeRepoPage(1), 5),
+          error:
+            "GitHub returned an incomplete repository list. Please try reconnecting.",
+          label: "a partial walk",
+          reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchPartial,
+        },
+        {
+          arrangeRepos: () =>
+            mockListReposAccessible.mockRejectedValueOnce(
+              Object.assign(new Error("Server error"), { status: 500 })
+            ),
+          error: "Failed to fetch repositories from GitHub",
+          label: "an outright read failure",
+          reason: RepositoryArtifactRelinkFailureReason.RepositoryFetchFailed,
+        },
+      ])("refuses the reconnect on $label instead of tombstoning unseen repos", async ({
+        arrangeRepos,
+        error,
+        reason,
+      }) => {
+        mockOAuthThroughInstallationResolve();
+        arrangeRepos();
+
+        const mockDb = makeReconnectMockDb(makeReconnectPriorRow(), [
+          { id: "row-2", githubRepoId: "2" },
+        ]);
+        mockWithDbAll(mockDb);
+
+        const result = await callOAuth();
+
+        expect(result).toEqual({ status: "error", error });
+        // The incomplete grant is never tombstoned. Its known repositories do
+        // receive typed poorer evidence for this acquisition attempt.
+        expect(
+          mockDb.gitHubInstallationRepository.updateMany
+        ).not.toHaveBeenCalled();
+        expect(mockDb.$executeRaw).toHaveBeenCalledTimes(1);
+        // Reconnect failures were previously invisible to the relink metric.
+        expect(mockEmitTelemetryMetric).toHaveBeenCalledWith({
+          metric: RepositoryArtifactRelinkMetricName.Failed,
+          count: 1,
+          stage: RepositoryArtifactRelinkFailureStage.OAuthReconnect,
+          reason,
         });
       });
     });
@@ -2608,6 +2462,7 @@ describe("githubService", () => {
       expect(mockDb.gitHubInstallation.update).toHaveBeenCalledWith({
         where: { id: PRIOR_INSTALLATION_ID },
         data: { organizationId: null, pendingNewInstallationId: null },
+        select: { id: true },
       });
       // New row claimed for the org
       expect(mockDb.gitHubInstallation.update).toHaveBeenCalledWith({
@@ -2617,6 +2472,7 @@ describe("githubService", () => {
           status: GitHubInstallationStatus.ACTIVE,
           claimedByUserId: USER_ID,
         }),
+        select: { id: true },
       });
       // p1 + p3 had repository fields, p2 did not
       expect(mockDb.project.update).toHaveBeenCalledTimes(2);
@@ -2707,222 +2563,6 @@ describe("githubService", () => {
 
       expect(result).toEqual({ ok: false, error: 403 });
       expect(mockDb.teamRepository.deleteMany).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("getContributorsAcrossRepos", () => {
-    function mockInstallationWithRepos(
-      repos: { owner: string; name: string }[]
-    ) {
-      const mockDb = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue({
-            id: INSTALLATION_ID,
-            installationId: GITHUB_INSTALLATION_ID,
-            repositories: repos,
-          }),
-        },
-      };
-      mockWithDbCall(mockDb);
-      return mockDb;
-    }
-
-    it("returns empty contributors when no active installation exists", async () => {
-      const mockDb = {
-        gitHubInstallation: {
-          findFirst: vi.fn().mockResolvedValue(null),
-        },
-      };
-      mockWithDbCall(mockDb);
-
-      const result = await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(result).toEqual({ contributors: [] });
-      expect(mockGetRepositoryContributors).not.toHaveBeenCalled();
-    });
-
-    it("returns empty contributors when installation has no repositories", async () => {
-      mockInstallationWithRepos([]);
-
-      const result = await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(result).toEqual({ contributors: [] });
-      expect(mockGetRepositoryContributors).not.toHaveBeenCalled();
-    });
-
-    it("aggregates contributors across repos, summing contributions and deduplicating by login", async () => {
-      mockInstallationWithRepos([
-        { owner: "org", name: "repo1" },
-        { owner: "org", name: "repo2" },
-      ]);
-      mockGetRepositoryContributors
-        .mockResolvedValueOnce([
-          {
-            login: "alice",
-            avatarUrl: "https://example.com/alice.png",
-            contributions: 10,
-            htmlUrl: "https://github.com/alice",
-          },
-          {
-            login: "bob",
-            avatarUrl: "https://example.com/bob.png",
-            contributions: 5,
-            htmlUrl: "https://github.com/bob",
-          },
-        ])
-        .mockResolvedValueOnce([
-          {
-            login: "alice",
-            avatarUrl: "https://example.com/alice.png",
-            contributions: 3,
-            htmlUrl: "https://github.com/alice",
-          },
-          {
-            login: "carol",
-            avatarUrl: "https://example.com/carol.png",
-            contributions: 8,
-            htmlUrl: "https://github.com/carol",
-          },
-        ]);
-
-      const result = await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(result.contributors).toEqual([
-        {
-          login: "alice",
-          avatarUrl: "https://example.com/alice.png",
-          contributions: 13,
-          htmlUrl: "https://github.com/alice",
-        },
-        {
-          login: "carol",
-          avatarUrl: "https://example.com/carol.png",
-          contributions: 8,
-          htmlUrl: "https://github.com/carol",
-        },
-        {
-          login: "bob",
-          avatarUrl: "https://example.com/bob.png",
-          contributions: 5,
-          htmlUrl: "https://github.com/bob",
-        },
-      ]);
-    });
-
-    it("sorts contributors by contribution count in descending order", async () => {
-      mockInstallationWithRepos([{ owner: "org", name: "repo1" }]);
-      mockGetRepositoryContributors.mockResolvedValueOnce([
-        {
-          login: "low",
-          avatarUrl: "",
-          contributions: 1,
-          htmlUrl: "",
-        },
-        {
-          login: "high",
-          avatarUrl: "",
-          contributions: 100,
-          htmlUrl: "",
-        },
-        {
-          login: "mid",
-          avatarUrl: "",
-          contributions: 50,
-          htmlUrl: "",
-        },
-      ]);
-
-      const result = await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(result.contributors.map((c) => c.login)).toEqual([
-        "high",
-        "mid",
-        "low",
-      ]);
-    });
-
-    it("passes perRepoLimit option to getRepositoryContributors and respects maxRepos", async () => {
-      const mockDb = mockInstallationWithRepos([
-        { owner: "org", name: "repo1" },
-      ]);
-      mockGetRepositoryContributors.mockResolvedValue([]);
-
-      await githubService.getContributorsAcrossRepos(ORG_ID, {
-        maxRepos: 5,
-        perRepoLimit: 50,
-      });
-
-      expect(mockDb.gitHubInstallation.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          include: expect.objectContaining({
-            repositories: expect.objectContaining({ take: 5 }),
-          }),
-        })
-      );
-      expect(mockGetRepositoryContributors).toHaveBeenCalledWith(
-        GITHUB_INSTALLATION_ID,
-        "org",
-        "repo1",
-        { perPage: 50 }
-      );
-    });
-
-    it("uses default maxRepos=10 and perRepoLimit=30 when no options provided", async () => {
-      const mockDb = mockInstallationWithRepos([
-        { owner: "org", name: "repo1" },
-      ]);
-      mockGetRepositoryContributors.mockResolvedValue([]);
-
-      await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(mockDb.gitHubInstallation.findFirst).toHaveBeenCalledWith(
-        expect.objectContaining({
-          include: expect.objectContaining({
-            repositories: expect.objectContaining({ take: 10 }),
-          }),
-        })
-      );
-      expect(mockGetRepositoryContributors).toHaveBeenCalledWith(
-        GITHUB_INSTALLATION_ID,
-        "org",
-        "repo1",
-        { perPage: 30 }
-      );
-    });
-
-    it("falls back to a non-empty avatarUrl or htmlUrl from a later repo when the existing value is empty", async () => {
-      mockInstallationWithRepos([
-        { owner: "org", name: "repo1" },
-        { owner: "org", name: "repo2" },
-      ]);
-      mockGetRepositoryContributors
-        .mockResolvedValueOnce([
-          {
-            login: "alice",
-            avatarUrl: "",
-            contributions: 1,
-            htmlUrl: "",
-          },
-        ])
-        .mockResolvedValueOnce([
-          {
-            login: "alice",
-            avatarUrl: "https://example.com/alice.png",
-            contributions: 2,
-            htmlUrl: "https://github.com/alice",
-          },
-        ]);
-
-      const result = await githubService.getContributorsAcrossRepos(ORG_ID);
-
-      expect(result.contributors).toEqual([
-        {
-          login: "alice",
-          avatarUrl: "https://example.com/alice.png",
-          contributions: 3,
-          htmlUrl: "https://github.com/alice",
-        },
-      ]);
     });
   });
 });

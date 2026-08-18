@@ -3,6 +3,7 @@ import {
   DistributionMode,
   DistributionTargetingType,
 } from "@repo/api/src/types/distribution";
+import { Status } from "@repo/api/src/types/result";
 import { z } from "zod";
 import { withAnyAuth } from "@/lib/auth/with-any-auth";
 import {
@@ -98,6 +99,47 @@ export const PATCH = withAnyAuth<DistributionDto, "/distributions/[id]">(
       return successResponse(result.value);
     } catch (error) {
       return errorResponse("Failed to update distribution", error);
+    }
+  },
+  { requiredScopes: ["write"] }
+);
+
+/**
+ * DELETE /distributions/{id}
+ *
+ * Withdraw a distribution — stop offering this pack to the organization
+ * (ISS-5123). Admin-only; the admin gate lives in the service alongside
+ * `create`/`update`, which is this route file's existing convention.
+ *
+ * Soft withdrawal, not a row delete: already-installed copies on members'
+ * machines are left in place and keep working, and the per-device install
+ * history is preserved. Idempotent — withdrawing an already-withdrawn
+ * distribution succeeds as a no-op and returns the same record.
+ */
+export const DELETE = withAnyAuth<DistributionDto, "/distributions/[id]">(
+  async ({ user, clerkOrgId, clerkUserId }, _request, params) => {
+    const { id } = await params;
+
+    try {
+      const result = await distributionsService.withdraw(
+        user.organizationId,
+        id,
+        user.id,
+        clerkOrgId,
+        clerkUserId
+      );
+      if (!result.ok) {
+        if (result.error === Status.Forbidden) {
+          return forbiddenResponse();
+        }
+        if (result.error === Status.NotFound) {
+          return notFoundResponse("Distribution");
+        }
+        return errorResponse("Failed to withdraw distribution", result.error);
+      }
+      return successResponse(result.value);
+    } catch (error) {
+      return errorResponse("Failed to withdraw distribution", error);
     }
   },
   { requiredScopes: ["write"] }

@@ -32,9 +32,9 @@ export class RootErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    console.error("Desktop renderer error boundary caught an error", error, {
-      componentStack: errorInfo.componentStack ?? undefined,
-    });
+    // No console line: React already prints a caught render error to devtools,
+    // and a second copy would never reach the aggregator. `reportException` is
+    // the path that does.
     this.props.reportException?.(error, errorInfo.componentStack ?? undefined);
   }
 

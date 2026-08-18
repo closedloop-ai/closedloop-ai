@@ -12,6 +12,7 @@ import {
   type SyncedAgentSession,
 } from "@repo/api/src/types/agent-session";
 import { ArtifactType, LinkType } from "@repo/api/src/types/artifact";
+import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import { SlugPrefix } from "@repo/api/src/types/slug-prefix";
 import { ArtifactType as PrismaArtifactType, withDb } from "@repo/database";
 import { keys } from "@repo/database/keys";
@@ -142,7 +143,10 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
 
       const list = await agentSessionsService.findSessions({
         organizationId,
-        filters: {},
+        // quality:"all" — a freshly-synced session with no turns/tokens/tools is
+        // idle, which the default `substantive` view hides (FEA-3284). This test
+        // asserts the sync→artifact→list plumbing, not the substantive filter.
+        filters: { quality: "all" },
       });
       expect(list.items.map((item) => item.id)).toContain(detail?.artifactId);
       const item = list.items.find((i) => i.id === detail?.artifactId);
@@ -186,7 +190,10 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
       await agentSessionsService.upsertSessions(
         { organizationId, userId: user.id, computeTargetId: computeTarget.id },
         buildPayload([
-          buildSyncedSession({ name: "Second", status: "completed" }),
+          buildSyncedSession({
+            name: "Second",
+            status: SESSION_STATUS.INACTIVE,
+          }),
         ])
       );
       const second = await findSessionArtifact(
@@ -198,7 +205,11 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
       expect(second?.artifactId).toBe(first?.artifactId);
       expect(second?.artifact.slug).toBe(first?.artifact.slug);
       expect(second?.artifact.name).toBe("Second");
-      expect(second?.artifact.status).toBe("completed");
+      // ISS-5648: the payload's retired `completed` spelling is still ACCEPTED
+      // (a version-skewed producer may send it) but is folded to the canonical
+      // `inactive` before it reaches the column, so the one-shot ISS-4654
+      // backfill cannot be regrown by a straggler build.
+      expect(second?.artifact.status).toBe(SESSION_STATUS.INACTIVE);
 
       const sessionArtifactCount = await withDb((db) =>
         db.artifact.count({
@@ -251,7 +262,9 @@ describeIfDb("agent session artifact migration (FEA-1699)", () => {
 
       const scoped = await agentSessionsService.findSessions({
         organizationId,
-        filters: { projectId },
+        // quality:"all" so the idle synced session isn't hidden by the default
+        // substantive view (FEA-3284); this asserts project-scoping, not quality.
+        filters: { projectId, quality: "all" },
       });
       const scopedIds = scoped.items.map((item) => item.id);
       expect(scopedIds).toContain(attributed?.artifactId);

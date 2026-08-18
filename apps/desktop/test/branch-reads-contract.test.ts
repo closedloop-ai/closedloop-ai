@@ -3,14 +3,45 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { BranchLifecycleBoundaryKind } from "@repo/api/src/types/branch";
 import {
+  aggregateBranchCostCompleteness,
+  BranchCostCompleteness,
+} from "@repo/api/src/types/branch-usage";
+import {
+  ArtifactRefMethod,
+  ArtifactRefRelation,
+} from "@repo/api/src/types/session-artifact-link";
+import {
+  TokenCostBasis,
+  TokenCostCompleteness,
+  TokenSourceIdentityAvailability,
+} from "@repo/api/src/types/token-cost-provenance";
+import { buildDesktopBranchCostEvidence } from "../src/main/branch/branch-cost-evidence.js";
+import {
+  readBranchLifecycleEventRowsForBranch,
+  readBranchSessionTokenRowsForBranch,
   readBranchTokenAggregateRows,
+  readBranchUsageEventRows,
   readBranchUsageTokenRows,
   readDistinctBranchKeyRows,
   readLocalBranchLinkRows,
+  readLocalBranchLinkRowsForBranch,
   readLocalBranchPrRows,
 } from "../src/main/database/branch-reads.js";
+import { readBoundedBranchUsageCostEvidence } from "../src/main/database/branch-usage-cost-evidence-read.js";
 import { openSqliteAgentDatabase } from "../src/main/database/sqlite.js";
+import {
+  AC_T0,
+  AC_T1,
+  branchNames,
+  insertCommitArtifact,
+  insertPullRequestArtifact,
+  insertPullRequestRow,
+  linkPullRequestArtifact,
+  seeder,
+  withAcDb,
+} from "./branch-reads-ac-test-helpers.js";
 
 /**
  * Contract test for the branch-reads layer on the single `DesktopPrisma` client.
@@ -38,7 +69,7 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
   const dir = await mkdtemp(path.join(os.tmpdir(), "branch-reads-contract-"));
   const db = await openSqliteAgentDatabase({
     dataDir: path.join(dir, "agent-dashboard.pgdata"),
-    detectBillingMode: () => "metered_api",
+    detectBillingMode: () => "api",
     emit: () => undefined,
     now: () => "2026-06-22T00:00:00.000Z",
   });
@@ -49,7 +80,7 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
       "completed",
       "2026-06-01T00:00:00.000Z",
       "2026-06-01T01:00:00.000Z",
-      "metered_api"
+      "api"
     );
     // A branch is an artifacts row (kind='branch') carrying the FEA-1899 LOC
     // enrichment columns.
@@ -104,8 +135,9 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
     );
     await db.run(
       `INSERT INTO token_usage
-         (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-       VALUES ('bs1', $1, 300, 100, 10, 5)`,
+         (session_id, model, input_tokens, output_tokens, cache_read_tokens,
+          cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens)
+       VALUES ('bs1', $1, 300, 100, 10, 5, 3, 2)`,
       "claude-sonnet-4-5"
     );
 
@@ -129,7 +161,11 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
     // Distinct (repo, branch) key read (typed) — the commit artifact is excluded.
     const keys = await readDistinctBranchKeyRows(db.prisma);
     assert.deepEqual(keys, [
-      { repoFullName: "acme/web", branchName: "feature/x" },
+      {
+        repoFullName: "acme/web",
+        branchName: "feature/x",
+        hasLocalPublication: true,
+      },
     ]);
 
     // Usage-token read (typed, via the TokenUsage.session relation): bs1 is in
@@ -145,7 +181,14 @@ test("FEA-1791: branch reads run on the single Prisma client against real libSQL
     assert.equal(usageRow.outputTokens, 100);
     assert.equal(usageRow.cacheReadTokens, 10);
     assert.equal(usageRow.cacheWriteTokens, 5);
-    assert.equal(usageRow.billingMode, "metered_api");
+    assert.equal(usageRow.cacheWrite5mTokens, 3);
+    assert.equal(usageRow.cacheWrite1hTokens, 2);
+    // A stored, DEFINITE mode is preserved as-is by the resolver.
+    assert.equal(usageRow.billingMode, "api");
+    // FEA-4270: the sessions JOIN surfaces the owning session's start instant so
+    // branch AI spend can be windowed by when the session ran (not by its
+    // branch's lastActivityAt). Proves the `s.started_at` column reaches the row.
+    assert.equal(usageRow.sessionStartedAt, "2026-06-01T00:00:00.000Z");
 
     // SUM(...) GROUP BY (branch, model) token aggregate (raw) — totals as JS
     // numbers. Single-branch session: 100% attribution (FEA-2032 fractional
@@ -223,6 +266,38 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
       "feature/pr-enriched",
       "2026-06-11T10:00:00.000Z"
     );
+    await db.run(
+      `INSERT INTO pull_request_status_observations
+         (id, repo_full_name, pr_number, state, is_draft, source,
+          observed_at, last_checked_at)
+       VALUES ($1, $2, $3, 'closed', 0, 'persisted-test', $4, $4)`,
+      "pr-observation-1",
+      "acme/web",
+      7,
+      "2026-06-11T10:01:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO pull_requests
+         (id, pr_url, pr_number, repo_full_name, branch_name, state,
+          opened_at, observed_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', $6, $6, $6)`,
+      "pr-2",
+      "https://github.com/acme/web/pull/8",
+      8,
+      "acme/web",
+      "feature/pr-enriched",
+      "2026-06-12T10:00:00.000Z"
+    );
+    await db.run(
+      `INSERT INTO pull_request_status_observations
+         (id, repo_full_name, pr_number, state, is_draft, source,
+          observed_at, last_checked_at)
+       VALUES ($1, $2, $3, 'open', 0, 'persisted-test', $4, $4)`,
+      "pr-observation-2",
+      "acme/web",
+      8,
+      "2026-06-12T10:01:00.000Z"
+    );
     // PR artifact (kind='pull_request') — ENRICHED with LOC, matched by
     // (repo_full_name, pr_number) to the lifecycle row above.
     await db.run(
@@ -241,10 +316,23 @@ test("FEA-2159: readLocalBranchPrRows joins the PR artifact's LOC for an un-enri
     );
 
     const prs = await readLocalBranchPrRows(db.prisma);
-    assert.equal(prs.length, 1);
-    const pr = prs[0];
+    // `prNumber` is nullable on `BranchPrRow` (the read does not filter
+    // unenriched rows out). Order a null LAST rather than coercing it to 0, so
+    // an unexpected null stays visible in the deepEqual instead of sorting into
+    // the 7/8 window and reading as a real PR number.
+    const prNumbers = prs
+      .map(({ prNumber }) => prNumber)
+      .sort(
+        (left, right) =>
+          (left ?? Number.POSITIVE_INFINITY) -
+          (right ?? Number.POSITIVE_INFINITY)
+      );
+    assert.deepEqual(prNumbers, [7, 8]);
+    const pr = prs.find(({ prNumber }) => prNumber === 7);
+    assert.ok(pr);
     assert.equal(pr.branchName, "feature/pr-enriched");
     assert.equal(pr.prNumber, 7);
+    assert.equal(pr.isDraft, false);
     // LOC comes from the joined PR artifact, coerced to JS number.
     assert.equal(pr.linesAdded, 600);
     assert.equal(typeof pr.linesAdded, "number");
@@ -348,130 +436,369 @@ test("FEA-2032: multi-branch session splits tokens evenly across branches", asyn
   }
 });
 
-// ---------------------------------------------------------------------------
-// FEA-2531 acceptance criteria — the two-level display/attribution predicate.
-//
-// Every seed below uses `relation: "workspace"` on EVERY link (the pre-reparse
-// shape) unless a test overrides it, proving AC9: the read predicates are
-// method-based and behave identically on pre- and post-reparse rows (no
-// relation-based branch in any read). Method values drive the gate:
-//   - write methods (git_push / gh_pr_create / git_commit) → row-level rows;
-//   - push methods  (git_push / gh_pr_create) OR `first_pushed_at` → display +
-//     active-write eligibility.
-// ---------------------------------------------------------------------------
+test("FEA-3805: branch detail lifecycle read orders write, PR, review, and rework evidence", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const branch = await s.branch({ branch: "feature/phase" });
+    await s.session("s1");
+    await s.link({
+      session: "s1",
+      artifactId: branch,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+      observedAt: "2026-06-01T00:05:00.000Z",
+    });
+    await insertPullRequestArtifact(db, {
+      id: "pr-phase",
+      branch: "feature/phase",
+    });
+    await linkPullRequestArtifact(db, {
+      id: "lnk-pr-created",
+      session: "s1",
+      artifactId: "pr-phase",
+      relation: ArtifactRefRelation.Created,
+      method: "gh_pr_create",
+      observedAt: "2026-06-01T00:20:00.000Z",
+    });
+    await linkPullRequestArtifact(db, {
+      id: "lnk-pr-feedback",
+      session: "s1",
+      artifactId: "pr-phase",
+      relation: ArtifactRefRelation.Reviewed,
+      method: ArtifactRefMethod.PrReviewFeedbackCommand,
+      observedAt: "2026-06-01T00:40:00.000Z",
+    });
+    await insertCommitArtifact(db, {
+      id: "commit-post-pr",
+      session: "s1",
+      branch: "feature/phase",
+      committedAt: "2026-06-01T00:50:00.000Z",
+      linkId: "lnk-commit-post-pr",
+    });
+    await db.run(
+      `INSERT INTO token_usage
+         (session_id, model, input_tokens, output_tokens, cache_read_tokens,
+          cache_write_tokens, cost_usd_estimated)
+       VALUES ('s1', 'm1', 600, 300, 60, 30, 0.9)`
+    );
 
-const AC_T0 = "2026-06-01T00:00:00.000Z";
-const AC_T1 = "2026-06-01T01:00:00.000Z";
+    const key = { repoFullName: "acme/web", branchName: "feature/phase" };
+    const events = await readBranchLifecycleEventRowsForBranch(db.prisma, key);
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      [
+        BranchLifecycleBoundaryKind.BranchWrite,
+        BranchLifecycleBoundaryKind.PrRaised,
+        BranchLifecycleBoundaryKind.ReviewFeedback,
+        BranchLifecycleBoundaryKind.BranchWrite,
+      ]
+    );
+    assert.deepEqual(
+      events.map((event) => event.observedAt),
+      [
+        "2026-06-01T00:05:00.000Z",
+        "2026-06-01T00:20:00.000Z",
+        "2026-06-01T00:40:00.000Z",
+        "2026-06-01T00:50:00.000Z",
+      ]
+    );
+    assert.equal(events[0]?.sessionStartedAt, AC_T0);
+    assert.equal(events[0]?.sessionEndedAt, AC_T1);
+    assert.equal(
+      events[3]?.evidenceId,
+      "desktop-artifact-link:lnk-commit-post-pr"
+    );
 
-type AcDb = Awaited<ReturnType<typeof openSqliteAgentDatabase>>;
-
-/** Per-db factory of terse, unique-id seed helpers for the FEA-2531 AC tests. */
-function seeder(db: AcDb) {
-  let n = 0;
-  const uid = (prefix: string) => `${prefix}-${++n}`;
-  return {
-    async session(id: string): Promise<void> {
-      await db.run(
-        "INSERT INTO sessions (id, status, started_at, ended_at, billing_mode) VALUES ($1, 'completed', $2, $3, 'metered_api')",
-        id,
-        AC_T0,
-        AC_T1
-      );
-    },
-    /** A `kind='branch'` artifact; `firstPushedAt` seeds the push marker arm. */
-    async branch(opts: {
-      branch: string;
-      repo?: string | null;
-      firstPushedAt?: string | null;
-    }): Promise<string> {
-      const id = uid("art");
-      const pushedAt = opts.firstPushedAt ?? null;
-      await db.run(
-        `INSERT INTO artifacts
-           (id, identity_key, kind, repo_full_name, branch_name,
-            first_pushed_at, push_source, created_at, last_seen_at)
-         VALUES ($1, $2, 'branch', $3, $4, $5, $6, $7, $7)`,
-        id,
-        `ik-${id}`,
-        opts.repo ?? "acme/web",
-        opts.branch,
-        pushedAt,
-        pushedAt ? "session" : null,
-        AC_T0
-      );
-      return id;
-    },
-    /** One session→branch link; `relation` defaults to the pre-reparse value. */
-    async link(opts: {
-      session: string;
-      artifactId: string;
-      method: string;
-      relation?: string;
-      isPrimary?: number;
-    }): Promise<void> {
-      const id = uid("lnk");
-      await db.run(
-        `INSERT INTO session_artifact_links
-           (id, session_id, artifact_id, relation, method, evidence,
-            is_primary, extractor_version, observed_at, created_at)
-         VALUES ($1, $2, $3, $4, $5, 'e', $6, 7, $7, $7)`,
-        id,
-        opts.session,
-        opts.artifactId,
-        opts.relation ?? "workspace",
-        opts.method,
-        opts.isPrimary ?? 0,
-        AC_T0
-      );
-    },
-    async tokens(session: string, input: number): Promise<void> {
-      await db.run(
-        `INSERT INTO token_usage
-           (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-         VALUES ($1, 'm1', $2, 0, 0, 0)`,
-        session,
-        input
-      );
-    },
-    /** Set the push marker on an existing branch artifact (AC5 marker arm). */
-    async markPushed(artifactId: string, at: string): Promise<void> {
-      await db.run(
-        "UPDATE artifacts SET first_pushed_at = $2, push_source = 'session' WHERE id = $1",
-        artifactId,
-        at
-      );
-    },
-    async countLinks(session: string): Promise<number> {
-      const rows = await db.prisma.client.$queryRawUnsafe<
-        { c: number | bigint }[]
-      >(
-        "SELECT COUNT(*) AS c FROM session_artifact_links WHERE session_id = ?",
-        session
-      );
-      return Number(rows[0]?.c ?? 0);
-    },
-  };
-}
-
-async function withAcDb(run: (db: AcDb) => Promise<void>): Promise<void> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "branch-reads-ac-"));
-  const db = await openSqliteAgentDatabase({
-    dataDir: path.join(dir, "agent-dashboard.pgdata"),
-    detectBillingMode: () => "metered_api",
-    emit: () => undefined,
-    now: () => "2026-06-22T00:00:00.000Z",
+    const sessionTokens = await readBranchSessionTokenRowsForBranch(
+      db.prisma,
+      key
+    );
+    assert.equal(sessionTokens.length, 1);
+    assert.equal(sessionTokens[0]?.branchCount, 1);
+    assert.equal(sessionTokens[0]?.inputTokens, 600);
+    assert.equal(sessionTokens[0]?.outputTokens, 300);
+    assert.equal(sessionTokens[0]?.cacheReadTokens, 60);
+    assert.equal(sessionTokens[0]?.cacheWriteTokens, 30);
+    assert.equal(sessionTokens[0]?.costUsdEstimated, 0.9);
+    assert.equal(sessionTokens[0]?.evenSplitCostUsd, 0.9);
   });
-  try {
-    await run(db);
-  } finally {
-    await db.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-}
+});
 
-function branchNames(rows: { branchName: string }[]): string[] {
-  return rows.map((r) => r.branchName).sort();
-}
+test("FEA-3805: tied PR-create lifecycle events use cloud-compatible semantic ordering", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const branch = await s.branch({ branch: "feature/tie" });
+    await s.session("s1");
+    await db.run(
+      `INSERT INTO session_artifact_links
+         (id, session_id, artifact_id, relation, method, evidence,
+          is_primary, extractor_version, observed_at, created_at)
+       VALUES ('zzz-branch-write', 's1', $1, $2, 'gh_pr_create', 'e', 0, 7, $3, $3)`,
+      branch,
+      ArtifactRefRelation.Created,
+      "2026-06-01T00:20:00.000Z"
+    );
+    await insertPullRequestArtifact(db, {
+      id: "pr-tie",
+      branch: "feature/tie",
+    });
+    await linkPullRequestArtifact(db, {
+      id: "aaa-pr-created",
+      session: "s1",
+      artifactId: "pr-tie",
+      relation: ArtifactRefRelation.Created,
+      method: "gh_pr_create",
+      observedAt: "2026-06-01T00:20:00.000Z",
+    });
+
+    const events = await readBranchLifecycleEventRowsForBranch(db.prisma, {
+      repoFullName: "acme/web",
+      branchName: "feature/tie",
+    });
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      [
+        BranchLifecycleBoundaryKind.BranchWrite,
+        BranchLifecycleBoundaryKind.PrRaised,
+      ]
+    );
+  });
+});
+
+test("FEA-3805: PR lifecycle read falls back to pull_requests branch name", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const branch = await s.branch({ branch: "feature/pr-fallback" });
+    await s.session("s1");
+    await s.link({
+      session: "s1",
+      artifactId: branch,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+      observedAt: "2026-06-01T00:05:00.000Z",
+    });
+    await insertPullRequestRow(db, {
+      id: "pr-row-fallback",
+      branch: "feature/pr-fallback",
+      prNumber: 77,
+    });
+    await insertPullRequestArtifact(db, {
+      id: "pr-artifact-fallback",
+      branch: null,
+      prNumber: 77,
+    });
+    await linkPullRequestArtifact(db, {
+      id: "lnk-pr-fallback-created",
+      session: "s1",
+      artifactId: "pr-artifact-fallback",
+      relation: ArtifactRefRelation.Created,
+      method: "gh_pr_create",
+      observedAt: "2026-06-01T00:20:00.000Z",
+    });
+    await linkPullRequestArtifact(db, {
+      id: "lnk-pr-fallback-feedback",
+      session: "s1",
+      artifactId: "pr-artifact-fallback",
+      relation: ArtifactRefRelation.Reviewed,
+      method: ArtifactRefMethod.PrReviewFeedbackCommand,
+      observedAt: "2026-06-01T00:40:00.000Z",
+    });
+
+    const events = await readBranchLifecycleEventRowsForBranch(db.prisma, {
+      repoFullName: "acme/web",
+      branchName: "feature/pr-fallback",
+    });
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      [
+        BranchLifecycleBoundaryKind.BranchWrite,
+        BranchLifecycleBoundaryKind.PrRaised,
+        BranchLifecycleBoundaryKind.ReviewFeedback,
+      ]
+    );
+  });
+});
+
+test("FEA-3805: read-only branch and PR refs do not create review or rework evidence", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const branch = await s.branch({ branch: "feature/read-only-phase" });
+    await s.session("s1");
+    await s.link({
+      session: "s1",
+      artifactId: branch,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+      observedAt: "2026-06-01T00:05:00.000Z",
+    });
+    await s.link({
+      session: "s1",
+      artifactId: branch,
+      method: "git_checkout",
+      relation: ArtifactRefRelation.Workspace,
+      observedAt: "2026-06-01T00:30:00.000Z",
+    });
+    await insertPullRequestArtifact(db, {
+      id: "pr-read-only",
+      branch: "feature/read-only-phase",
+    });
+    await linkPullRequestArtifact(db, {
+      id: "lnk-pr-view",
+      session: "s1",
+      artifactId: "pr-read-only",
+      relation: ArtifactRefRelation.Reviewed,
+      method: ArtifactRefMethod.PrReviewCommand,
+      observedAt: "2026-06-01T00:40:00.000Z",
+    });
+
+    const events = await readBranchLifecycleEventRowsForBranch(db.prisma, {
+      repoFullName: "acme/web",
+      branchName: "feature/read-only-phase",
+    });
+    assert.deepEqual(
+      events.map((event) => event.kind),
+      [
+        BranchLifecycleBoundaryKind.BranchWrite,
+        BranchLifecycleBoundaryKind.ReadOnlyReference,
+        BranchLifecycleBoundaryKind.ReadOnlyReference,
+      ]
+    );
+    assert.equal(
+      events.some(
+        (event) => event.kind === BranchLifecycleBoundaryKind.ReviewFeedback
+      ),
+      false
+    );
+  });
+});
+
+test("FEA-3805: session token read uses the global active-write branch denominator", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const x = await s.branch({ branch: "feature/x" });
+    const y = await s.branch({ branch: "feature/y" });
+    await s.session("s1");
+    await s.link({
+      session: "s1",
+      artifactId: x,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+    });
+    await s.link({
+      session: "s1",
+      artifactId: y,
+      method: "gh_pr_create",
+      relation: ArtifactRefRelation.Created,
+    });
+    await db.run(
+      `INSERT INTO token_usage
+         (session_id, model, input_tokens, output_tokens, cache_read_tokens,
+          cache_write_tokens, cost_usd_estimated)
+       VALUES ('s1', 'm1', 400, 200, 20, 10, 1.0)`
+    );
+
+    const sessionTokens = await readBranchSessionTokenRowsForBranch(db.prisma, {
+      repoFullName: "acme/web",
+      branchName: "feature/x",
+    });
+    assert.equal(sessionTokens.length, 1);
+    assert.equal(sessionTokens[0]?.branchCount, 2);
+    assert.equal(sessionTokens[0]?.costUsdEstimated, 1);
+    assert.equal(sessionTokens[0]?.evenSplitCostUsd, 0.5);
+  });
+});
+
+test("FEA-4270: readBranchUsageEventRows surfaces per-event created_at + captured cost", async () => {
+  // The per-event read must carry each token_events row's own created_at AND its
+  // cost_usd_estimated so the windowed branch-spend path can sum only in-window
+  // events by their real timestamps (not the session-level aggregate instant).
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const x = await s.branch({ branch: "feature/x" });
+    await s.session("s1");
+    await s.link({
+      session: "s1",
+      artifactId: x,
+      method: "git_push",
+      relation: ArtifactRefRelation.Created,
+    });
+    // Two per-event turns at DIFFERENT instants — one costed, one un-priced.
+    const sourceIdentity = {
+      availability: TokenSourceIdentityAvailability.Available,
+      scheme: "claude-jsonl",
+      sourceRecordIds: ["record-1"],
+    };
+    const costSummary = {
+      completeness: TokenCostCompleteness.Complete,
+      subtotalUsd: 0.4,
+      lanes: [{ basis: TokenCostBasis.ApiEstimated, subtotalUsd: 0.4 }],
+    };
+    await db.run(
+      `INSERT INTO token_events
+         (session_id, model, created_at, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens, cost_usd_estimated,
+          source_identity, cost_summary)
+       VALUES ('s1', 'm1', '2026-06-20T10:00:00.000Z', 5, 2, 0, 0, 0.4, $1, $2)`,
+      JSON.stringify(sourceIdentity),
+      JSON.stringify(costSummary)
+    );
+    await db.run(
+      `INSERT INTO token_events
+         (session_id, model, created_at, input_tokens, output_tokens,
+          cache_read_tokens, cache_write_tokens, cost_usd_estimated)
+       VALUES ('s1', 'm1', '2026-06-21T11:00:00.000Z', 3, 1, 0, 0, NULL)`
+    );
+
+    const events = await readBranchUsageEventRows(db.prisma);
+    assert.equal(events.length, 2);
+    const byTime = new Map(events.map((event) => [event.createdAt, event]));
+    // First turn carries its real per-event created_at + captured cost.
+    const first = byTime.get("2026-06-20T10:00:00.000Z");
+    assert.ok(first);
+    assert.equal(first?.inputTokens, 5);
+    assert.equal(first?.costUsdEstimated, 0.4);
+    assert.equal(Object.hasOwn(first, "sourceIdentity"), false);
+    assert.equal(Object.hasOwn(first, "costSummary"), false);
+    const evidenceRead = await readBoundedBranchUsageCostEvidence(
+      db.prisma,
+      first?.eventRowId && first.eventFingerprint
+        ? [
+            {
+              eventRowId: first.eventRowId,
+              eventFingerprint: first.eventFingerprint,
+            },
+          ]
+        : []
+    );
+    assert.equal(evidenceRead.exceeded, false);
+    const evidencePayload = evidenceRead.rows[0];
+    assert.deepEqual(evidencePayload?.sourceIdentity, sourceIdentity);
+    assert.deepEqual(evidencePayload?.costSummary, costSummary);
+    const firstEvidence = { ...first, ...evidencePayload };
+    assert.deepEqual(
+      aggregateBranchCostCompleteness(
+        buildDesktopBranchCostEvidence({
+          tokenRows: [],
+          evidenceRows: [firstEvidence],
+          allEventRows: events,
+          subtotalRows: [first],
+          windowActive: true,
+          evidenceExceeded: false,
+        })
+      ),
+      {
+        completeness: BranchCostCompleteness.Complete,
+        subtotalUsd: 0.4,
+        lanes: { subscriptionEquivalentCost: 0, apiEstimatedCost: 0.4 },
+      }
+    );
+    // Second turn is un-priced → null cost (never re-derived list price), but its
+    // own created_at is preserved so it buckets/windows at its real instant.
+    const second = byTime.get("2026-06-21T11:00:00.000Z");
+    assert.equal(second?.inputTokens, 3);
+    assert.equal(second?.costUsdEstimated, null);
+  });
+});
 
 test("FEA-2531 AC1: start-on-main read link + pushed feat/x → 100% feat/x, main absent (legacy + new read methods)", async () => {
   await withAcDb(async (db) => {
@@ -577,7 +904,7 @@ test("FEA-2531 AC4: read-only session → no branch row, zero tokens, link still
   });
 });
 
-test("FEA-2531 AC5: commit-only branch hidden until the push marker (first_pushed_at) arrives", async () => {
+test("FEA-4311: a commit-only (session-only, unpushed) branch is visible BEFORE any push", async () => {
   await withAcDb(async (db) => {
     const s = seeder(db);
     const x = await s.branch({ branch: "push/x" });
@@ -587,59 +914,57 @@ test("FEA-2531 AC5: commit-only branch hidden until the push marker (first_pushe
     await s.link({ session: "s1", artifactId: y, method: "git_commit" });
     await s.tokens("s1", 200);
 
-    // Commit-only Y has a write link but NO push evidence → hidden; all 200 to X.
+    // FEA-4311 flips FEA-2531 AC5: a write-linked branch is a corpus member the
+    // moment a session touches it — remote/push evidence no longer gates. So the
+    // commit-only Y surfaces immediately, and s1's divisor is 2 from the start
+    // (X + Y), splitting 200 → 100/100 with no push required. (Pre-FEA-4311, Y
+    // was hidden and X carried the full 200 until Y was pushed.)
     const before = await readBranchTokenAggregateRows(db.prisma);
-    assert.deepEqual(branchNames(before), ["push/x"]);
-    assert.equal(before[0].inputTokens, 200);
-    assert.deepEqual(branchNames(await readLocalBranchLinkRows(db.prisma)), [
-      "push/x",
-    ]);
-
-    // Push evidence arrives on Y (marker arm) → Y activates retroactively: X's
-    // divisor becomes 2, so the split flips from 100% X to 50/50.
-    await s.markPushed(y, "2026-06-01T02:00:00.000Z");
-    const after = await readBranchTokenAggregateRows(db.prisma);
-    assert.deepEqual(branchNames(after), ["commit/y", "push/x"]);
-    const byBranch = new Map(after.map((r) => [r.branchName, r]));
-    assert.equal(byBranch.get("push/x")?.inputTokens, 100);
-    assert.equal(byBranch.get("commit/y")?.inputTokens, 100);
+    assert.deepEqual(branchNames(before), ["commit/y", "push/x"]);
+    const byBranchBefore = new Map(before.map((r) => [r.branchName, r]));
+    assert.equal(byBranchBefore.get("push/x")?.inputTokens, 100);
+    assert.equal(byBranchBefore.get("commit/y")?.inputTokens, 100);
     assert.deepEqual(branchNames(await readLocalBranchLinkRows(db.prisma)), [
       "commit/y",
       "push/x",
     ]);
-  });
-});
+    assert.deepEqual(branchNames(await readDistinctBranchKeyRows(db.prisma)), [
+      "commit/y",
+      "push/x",
+    ]);
 
-test("FEA-2531 AC5: commit-only branch hidden until a push link arrives from ANOTHER session", async () => {
-  await withAcDb(async (db) => {
-    const s = seeder(db);
-    const x = await s.branch({ branch: "push/x" });
-    const y = await s.branch({ branch: "commit/y" });
-    await s.session("s1");
-    await s.link({ session: "s1", artifactId: x, method: "git_push" });
-    await s.link({ session: "s1", artifactId: y, method: "git_commit" });
-    await s.tokens("s1", 200);
-
-    const before = await readBranchTokenAggregateRows(db.prisma);
-    assert.deepEqual(branchNames(before), ["push/x"]);
-    assert.equal(before[0].inputTokens, 200);
-
-    // A DIFFERENT session pushes Y (push-method link on the same branch artifact)
-    // → Y gains push evidence, activating s1's commit-only link retroactively.
-    await s.session("s2");
-    await s.link({ session: "s2", artifactId: y, method: "git_push" });
-    await s.tokens("s2", 0);
-
+    // A later push on Y is pure enrichment — it does NOT change membership or the
+    // split (Y was already visible and already counted in the divisor). No
+    // double-count: Y stays a single divisor slot before and after the push.
+    await s.markPushed(y, "2026-06-01T02:00:00.000Z");
     const after = await readBranchTokenAggregateRows(db.prisma);
     assert.deepEqual(branchNames(after), ["commit/y", "push/x"]);
-    const byBranch = new Map(after.map((r) => [r.branchName, r]));
-    // s1's 200 now splits across X and Y (divisor 2); s2 has no tokens.
-    assert.equal(byBranch.get("push/x")?.inputTokens, 100);
-    assert.equal(byBranch.get("commit/y")?.inputTokens, 100);
+    const byBranchAfter = new Map(after.map((r) => [r.branchName, r]));
+    assert.equal(byBranchAfter.get("push/x")?.inputTokens, 100);
+    assert.equal(byBranchAfter.get("commit/y")?.inputTokens, 100);
   });
 });
 
-test("FEA-2531 AC7: pushed default branch never lists but still counts in the divisor", async () => {
+test("FEA-4311: scoped detail read surfaces a commit-only branch before any push", async () => {
+  await withAcDb(async (db) => {
+    const s = seeder(db);
+    const y = await s.branch({ branch: "commit/y" });
+    await s.session("s1");
+    await s.link({ session: "s1", artifactId: y, method: "git_commit" });
+    await s.tokens("s1", 100);
+
+    // The single-branch detail reader (`readLocalBranchLinkRowsForBranch`) must
+    // apply the SAME widened membership as the list — a URL straight to an
+    // unpushed, session-only branch resolves rather than reading empty.
+    const detailRows = await readLocalBranchLinkRowsForBranch(db.prisma, {
+      repoFullName: "acme/web",
+      branchName: "commit/y",
+    });
+    assert.deepEqual(branchNames(detailRows), ["commit/y"]);
+  });
+});
+
+test("ISS-5828: raw default evidence survives while the eligible divisor excludes it", async () => {
   await withAcDb(async (db) => {
     const s = seeder(db);
     const main = await s.branch({ branch: "main" });
@@ -649,22 +974,26 @@ test("FEA-2531 AC7: pushed default branch never lists but still counts in the di
     await s.link({ session: "s1", artifactId: feat, method: "git_push" });
     await s.tokens("s1", 200);
 
-    // Display exclusion: main never lists even though it was pushed.
+    // Raw evidence retains both branches for diagnostics and default changes.
     assert.deepEqual(branchNames(await readLocalBranchLinkRows(db.prisma)), [
       "feature/x",
+      "main",
     ]);
     assert.deepEqual(branchNames(await readDistinctBranchKeyRows(db.prisma)), [
       "feature/x",
+      "main",
     ]);
 
-    // Attribution still counts main in the divisor: feature/x gets 200/2 = 100,
-    // NOT 200. (If the default exclusion leaked into the denominator, it'd be 200.)
-    const agg = await readBranchTokenAggregateRows(db.prisma);
+    // Product aggregation receives the authoritative eligible corpus before
+    // computing its divisor, so the feature receives the full session total.
+    const agg = await readBranchTokenAggregateRows(db.prisma, [
+      { repoFullName: "acme/web", branchName: "feature/x" },
+    ]);
     const feature = agg.find((r) => r.branchName === "feature/x");
+    assert.equal(feature?.inputTokens, 200);
     assert.equal(
-      feature?.inputTokens,
-      100,
-      "share reflects the main-inclusive split"
+      agg.some((row) => row.branchName === "main"),
+      false
     );
   });
 });

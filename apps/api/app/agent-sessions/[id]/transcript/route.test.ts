@@ -17,15 +17,10 @@ vi.mock("@/lib/auth/with-any-auth", () => ({
     handler(mockAuthContext, request, context.params),
 }));
 
-vi.mock("../../route-helpers", () => ({
-  getAgentSessionViewerScope: vi.fn(),
-}));
-
 vi.mock("../../transcript-read-service", () => ({
   transcriptReadService: { findTranscriptAccess: vi.fn() },
 }));
 
-import { getAgentSessionViewerScope } from "../../route-helpers";
 import { transcriptReadService } from "../../transcript-read-service";
 import { GET } from "./route";
 
@@ -43,6 +38,7 @@ function accessResponse(): TranscriptAccessResponse {
         rawSha256: "a".repeat(64),
         uploadedAt: "2026-07-08T12:00:00.000Z",
         lastObservedAt: "2026-07-08T12:00:00.000Z",
+        permanentFailureReason: null,
       },
     ],
   };
@@ -52,9 +48,6 @@ describe("GET /agent-sessions/[id]/transcript", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAuthContext = createTestAuthContext();
-    vi.mocked(getAgentSessionViewerScope).mockResolvedValue({
-      monitoringEnabled: true,
-    });
     vi.mocked(transcriptReadService.findTranscriptAccess).mockResolvedValue(
       accessResponse()
     );
@@ -79,11 +72,12 @@ describe("GET /agent-sessions/[id]/transcript", () => {
     });
   });
 
-  it("blocks when monitoring is disabled", async () => {
-    vi.mocked(getAgentSessionViewerScope).mockResolvedValue({
-      monitoringEnabled: false,
-    });
-
+  // FEA-4155 (wongk review #3789): the transcript read dropped the winding-down
+  // `DESKTOP_AGENT_SESSION_SYNC` monitoring gate in lockstep with the detail
+  // route, so a transcript for an in-org session resolves for any caller and
+  // never 403s as the flag winds down. Org-scoping still gates cross-org access
+  // (the next case proves the 404-no-leak path, AC10).
+  it("returns descriptors without a monitoring-flag gate (FEA-4155)", async () => {
     const response = await GET(
       createMockRequest({
         url: `http://localhost:3002/agent-sessions/${SESSION_ID}/transcript`,
@@ -91,8 +85,11 @@ describe("GET /agent-sessions/[id]/transcript", () => {
       createMockRouteContext({ id: SESSION_ID })
     );
 
-    expect(response.status).toBe(403);
-    expect(transcriptReadService.findTranscriptAccess).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(transcriptReadService.findTranscriptAccess).toHaveBeenCalledWith({
+      id: SESSION_ID,
+      organizationId: "test-org-id",
+    });
   });
 
   it("maps a session outside org scope to 404 (no content leak, AC10)", async () => {

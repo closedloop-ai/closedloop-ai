@@ -1,0 +1,91 @@
+-- ISS-6104: index the plugin child-inventory join's `pack_id` lookup.
+--
+-- WHAT THIS INDEX IS FOR. `loadChildInventoryJoin`
+-- (apps/api/app/agent-components/plugin-child-usage.ts) resolves which inventory
+-- children belong to the plugins on screen, and its predicate is:
+--
+--   WHERE organization_id = $1
+--     AND pack_id IN (…)                                  -- the plugins on screen
+--     AND component_kind IN ('skill','command','subagent','mcp')
+--     AND component_key IS NOT NULL
+--
+-- `agent_components` carried NO index touching `pack_id` — only
+-- (compute_target_id, component_kind, external_component_id) UNIQUE,
+-- (organization_id, component_kind), (organization_id) and
+-- (organization_id, component_kind, content_hash). So the planner's best path
+-- was the bare org index, which walks EVERY component row in the organization
+-- and filters `pack_id` in memory. Today every child row's `pack_id` is NULL
+-- (the linkage gap ISS-6094 owns), so that whole walk returns zero rows —
+-- Mike, 2026-08-12: "getting zero records that match should be instant; not a
+-- long-winded query."
+--
+-- A SECOND, SMALLER BENEFICIARY. `getPackAnalytics`
+-- (apps/api/app/agent-components/pack-analytics-service.ts, behind
+-- `GET /agent-components/pack/{packId}`) reads the same table with the scalar
+-- form of this predicate — `organization_id = $1 AND pack_id = $2`, no kind
+-- filter — and was walking the same org partition for the same reason. A
+-- non-null scalar equality proves the partial predicate too, so that read is
+-- served by this index as well. It is not what the shape was tuned against
+-- (that is the four-predicate join below) but it is not harmed by it either:
+-- the query already carries a deterministic `orderBy` and a `take` cap.
+--
+-- MEASURED (EXPLAIN ANALYZE, seeded at the reference org's live shape — 2,388
+-- components in the org, 28,656 across 12 orgs):
+--   before  Index Scan using agent_components_organization_id_idx
+--             Rows Removed by Filter: 2388        <- the whole org partition
+--   after   Index Scan using agent_components_org_pack_id_idx
+--             Index Cond: (organization_id = … AND pack_id = ANY(…))
+--             Rows Removed by Filter: 32          <- only the plugins' own rows
+-- The work becomes O(packs requested) instead of O(org's component rows), so
+-- the cost stops scaling with tenant size — it is worst on the largest orgs.
+--
+-- SHAPE: PARTIAL, and only two key columns. Both decisions were measured, not
+-- assumed:
+--   • `WHERE pack_id IS NOT NULL` — a strict operator clause (`pack_id = ANY(…)`)
+--     proves the predicate, so the planner still uses the index (verified: the
+--     Index Cond above is from the partial index). Every child row's `pack_id`
+--     is NULL today, so the index stays near-empty: 40 kB vs 240 kB for the
+--     non-partial equivalent on identical data, with identical plans and buffer
+--     counts. That is 6x less to build and 6x less write amplification on the
+--     hot component-sync upsert path, and it converges on the non-partial index
+--     exactly as children start carrying `pack_id`.
+--   • NOT (organization_id, pack_id, component_kind). Adding `component_kind`
+--     removes the remaining 32-row filter but makes both `pack_id` and
+--     `component_kind` scalar-array conditions, so the scan does 32x4 index
+--     descents instead of 32: 256 buffers vs 65 on the same data. Strictly
+--     worse. `component_kind` and `component_key` stay heap filters.
+--
+-- UNMANAGED BY PRISMA. Prisma's DSL cannot declare a partial index, so this
+-- index exists only in this migration and is documented on the `AgentComponent`
+-- model in schema.prisma so its absence from the schema reads as intentional
+-- rather than drift. Same treatment as `search_document_org_lower_slug_idx`
+-- (migration 20260724010000) and `search_document_tsv_gin_idx`.
+--
+-- CONCURRENTLY, AND THEREFORE ALONE AND BARE IN THIS FILE. `agent_components`
+-- is written continuously by desktop component sync, so a plain `CREATE INDEX`
+-- would hold ACCESS EXCLUSIVE for the whole build and stall that ingest at
+-- production size. `CREATE INDEX CONCURRENTLY` takes only SHARE UPDATE
+-- EXCLUSIVE. It cannot run inside a transaction block (SQLSTATE 25001), and
+-- `prisma migrate deploy` only splits a file into per-statement simple queries
+-- when it can do so confidently — a `DO $$ … $$` block, embedded semicolons or a
+-- `DROP INDEX CONCURRENTLY` push the whole file onto the single-transaction
+-- fallback where every CONCURRENTLY statement fails 25001. So this file is ONE
+-- bare statement: do not add BEGIN/COMMIT, a DO block, or any other DDL here.
+--
+-- NO `IF NOT EXISTS`: required by the concurrent-index lint
+-- (scripts/lint/destructive-migrations/index-ddl.ts) so a retry after a
+-- cancelled or crashed build fails closed on SQLSTATE 42P07 against the
+-- same-named INVALID remnant instead of recording the migration APPLIED over a
+-- permanently-unusable index. Recovery is operator-driven: `DROP INDEX
+-- CONCURRENTLY` the remnant in psql autocommit, then re-run migrate deploy.
+--
+-- PREVIEW SCHEMAS: registered in PREVIEW_SKIPPABLE_CONCURRENT_INDEX_MIGRATIONS
+-- (packages/database/scripts/preview-heavy-migrations-core.mjs) — a pure
+-- non-unique perf-only index, and CONCURRENTLY's instance-wide transaction wait
+-- is the ISS-4437 P1002 advisory-lock amplifier on ephemeral `preview_*`
+-- schemas. CI-enforced by packages/database/__tests__/preview-heavy-migrations.test.ts.
+--
+-- Purely additive: a non-unique index changes plan choice only, never results.
+
+-- CreateIndex
+CREATE INDEX CONCURRENTLY "agent_components_org_pack_id_idx" ON "agent_components"("organization_id", "pack_id") WHERE "pack_id" IS NOT NULL;

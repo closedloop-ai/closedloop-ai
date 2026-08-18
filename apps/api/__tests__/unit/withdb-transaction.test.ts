@@ -9,7 +9,7 @@
  */
 
 import type { PrismaClient } from "@repo/database";
-import { withDb } from "@repo/database";
+import { Prisma, withDb } from "@repo/database";
 import {
   afterEach,
   beforeEach,
@@ -19,6 +19,9 @@ import {
   type Mock,
   vi,
 } from "vitest";
+
+// The fail-closed message ISS-4669's ambient-isolation guard throws.
+const ISOLATION_GUARD_MESSAGE = /cannot honor isolationLevel/;
 
 // Build a mock transaction client — a plain object that satisfies the
 // TransactionClient interface for test purposes.
@@ -117,6 +120,47 @@ describe("withDb AsyncLocalStorage propagation", () => {
         });
       })
     ).rejects.toThrow("test-transaction-error");
+  });
+
+  it("(f) requesting an isolationLevel inside an ambient transaction fails closed instead of silently joining a weaker snapshot (ISS-4669, wongk)", async () => {
+    let innerRan = false;
+
+    // The outer tx opens with NO isolation option — the ambient transaction is
+    // therefore the default READ COMMITTED, which cannot satisfy an inner
+    // RepeatableRead request. The inner call must throw, not silently join.
+    await expect(
+      withDb.tx(async () => {
+        await withDb.tx(
+          () => {
+            innerRan = true;
+            return Promise.resolve(undefined);
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+          }
+        );
+      })
+    ).rejects.toThrow(ISOLATION_GUARD_MESSAGE);
+
+    // The guard rejects BEFORE running the callback body.
+    expect(innerRan).toBe(false);
+    // Only the outer $transaction was opened; the inner never started one.
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("(f2) a top-level isolationLevel is forwarded to $transaction (outermost snapshot honored)", async () => {
+    await withDb.tx(() => Promise.resolve(undefined), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    // The options object (2nd arg) carries the requested isolation level through
+    // to Prisma when this is the outermost transaction.
+    expect(
+      vi.mocked(mockPrisma.$transaction as Mock).mock.calls[0]?.[1]
+    ).toMatchObject({
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
   });
 
   it("(g) plain withDb() called two async levels deep within a withDb.tx() chain receives the transaction client", async () => {

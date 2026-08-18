@@ -1,10 +1,13 @@
 import {
   type TranscriptCompleteRequest,
   type TranscriptCompleteResponse,
+  type TranscriptSkipRequest,
+  type TranscriptSkipResponse,
   type TranscriptSyncPlanRequest,
   type TranscriptSyncPlanResponse,
   type TranscriptUploadPart,
   TranscriptUploadStatus,
+  toKnownTranscriptSkipReason,
 } from "@repo/api/src/types/desktop-transcripts";
 import { Result, type StatusCode } from "@repo/api/src/types/result";
 import {
@@ -18,12 +21,15 @@ import {
   presignTranscriptUploadPart,
 } from "@repo/aws";
 import {
+  Prisma,
   type SessionTranscript,
   type TransactionClient,
   withDb,
 } from "@repo/database";
 import { log } from "@repo/observability/log";
 import { computeTargetsService } from "@/app/compute-targets/service";
+import { isOrgSessionSyncPolicyEnabled } from "@/lib/org-session-sync-policy";
+import { resolveSkipReasonPrecedence } from "./skip-reason-precedence";
 import {
   decideSyncPlan,
   resolveTranscriptObjectKey,
@@ -51,6 +57,13 @@ const PLAN_TX_TIMEOUT_MS = 30_000;
 /** Backend-only outcomes the routes map to HTTP responses. */
 export const TranscriptSyncErrorReason = {
   Forbidden: "forbidden",
+  /**
+   * FEA-4169: the org's server-owned session-sync policy is OFF, so no
+   * transcript bytes may be ingested for this organization. Mapped to a 403 by
+   * the route (a denial the client backs off on), distinct from `Forbidden`
+   * (compute-target ownership) so the desktop can taxonomize it if needed.
+   */
+  PolicyDisabled: "policy_disabled",
   RateLimited: "rate_limited",
   InvalidRequest: "invalid_request",
   /** ETag moved / checksum mismatch / unknown upload — client re-plans. */
@@ -66,6 +79,10 @@ type PlanResult = Result<
 >;
 type CompleteResult = Result<
   TranscriptCompleteResponse,
+  TranscriptSyncErrorReason | StatusCode
+>;
+type SkipResult = Result<
+  TranscriptSkipResponse,
   TranscriptSyncErrorReason | StatusCode
 >;
 
@@ -96,6 +113,11 @@ export type TranscriptServiceDeps = {
   s3?: TranscriptS3Port;
   now?: () => number;
   rateLimiter?: TranscriptRateLimiter;
+  /**
+   * FEA-4169: server-side ORG POLICY gate. Defaults to the DB-backed
+   * {@link isOrgSessionSyncPolicyEnabled}. Overridable in tests.
+   */
+  isOrgPolicyEnabled?: (organizationId: string) => Promise<boolean>;
 };
 
 type AuthContext = {
@@ -114,10 +136,16 @@ type CompleteInput = AuthContext & {
   deps?: TranscriptServiceDeps;
 };
 
+type SkipInput = AuthContext & {
+  request: TranscriptSkipRequest;
+  deps?: TranscriptServiceDeps;
+};
+
 type ResolvedDeps = {
   s3: TranscriptS3Port;
   now: () => number;
   rateLimiter: TranscriptRateLimiter;
+  isOrgPolicyEnabled: (organizationId: string) => Promise<boolean>;
 };
 
 /** Per-plan context derived from the stored row + request. */
@@ -133,6 +161,8 @@ function resolveDeps(deps?: TranscriptServiceDeps): ResolvedDeps {
     s3: deps?.s3 ?? defaultS3Port,
     now: deps?.now ?? Date.now,
     rateLimiter: deps?.rateLimiter ?? transcriptRateLimiter,
+    isOrgPolicyEnabled:
+      deps?.isOrgPolicyEnabled ?? isOrgSessionSyncPolicyEnabled,
   };
 }
 
@@ -146,6 +176,29 @@ function lockKey(identity: FileIdentity): string {
   return `transcript:${identity.computeTargetId}:${identity.externalSessionId}:${identity.fileKey}`;
 }
 
+// Advisory-lock key (PRD-536 D12): all per-file transcript lock sites derive
+// the same key via lockKey() and route through this ONE helper so they stay
+// consistent. The 64-bit hashtextextended widens the 32-bit hashtext space so
+// unrelated files no longer share a slot and serialize under load. Matches the
+// two-arg idiom in dirty-scope-service.ts.
+//
+// DEPLOY-TRANSITION (transitional): we take BOTH the legacy 32-bit hashtext()
+// lock AND the new 64-bit hashtextextended() lock, in a fixed order (old then
+// new) within the same transaction. During a rolling API deploy, in-flight
+// handlers from the PREVIOUS release still hold the 32-bit-keyed lock while
+// new-release handlers take the 64-bit key; different keys would give NO mutual
+// exclusion during the mixed-version window, re-opening the TOCTOU race for the
+// same file. Holding both keys excludes both other new-release handlers (new
+// key) and still-running old-release handlers (old key). The fixed old→new
+// ordering (identical here and in agent-sessions/service.ts) avoids any
+// deadlock between mixed handlers.
+//
+// FOLLOW-UP: once the pre-D12 release is fully drained in every environment,
+// drop the legacy hashtext() acquisition here and at the session site and keep
+// only the 64-bit lock. Tracked as a follow-up FEAT (noted in the PR body).
+const advisoryLockKeySql = (key: string) =>
+  Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${key})), pg_advisory_xact_lock(hashtextextended(${key}, 0::bigint))`;
+
 function identityWhere(identity: FileIdentity) {
   return {
     computeTargetId_externalSessionId_fileKey: {
@@ -154,6 +207,35 @@ function identityWhere(identity: FileIdentity) {
       fileKey: identity.fileKey,
     },
   };
+}
+
+/**
+ * Run the advisory-locked write transaction shared by `planSync`, `complete`,
+ * and `markPermanentlySkipped`, with the one `PLAN_TX_TIMEOUT_MS` bound and the
+ * identical fail-safe tail: on any thrown error, log it (keyed by file identity
+ * + a per-caller `label`) and degrade to a `StaleUpload` result rather than
+ * surfacing a raw exception. The caller keeps its own pre-tx work (auth,
+ * idempotency, S3) outside this wrapper.
+ */
+async function runTranscriptTx<
+  T,
+  E extends TranscriptSyncErrorReason | StatusCode,
+>(
+  identity: FileIdentity,
+  label: string,
+  fn: (tx: TransactionClient) => Promise<Result<T, E>>
+): Promise<Result<T, E | TranscriptSyncErrorReason>> {
+  try {
+    return await withDb.tx(fn, { timeout: PLAN_TX_TIMEOUT_MS });
+  } catch (error) {
+    log.warn(label, {
+      computeTargetId: identity.computeTargetId,
+      externalSessionId: identity.externalSessionId,
+      fileKey: identity.fileKey,
+      error,
+    });
+    return Result.err(TranscriptSyncErrorReason.StaleUpload);
+  }
 }
 
 /**
@@ -175,6 +257,15 @@ async function authorizeTranscriptRequest(
   );
   if (!target) {
     return { error: TranscriptSyncErrorReason.Forbidden };
+  }
+  // FEA-4169: server-owned ORG POLICY gate. When the org's session-sync policy
+  // is OFF, no transcript bytes may be ingested — the server denies here so an
+  // older/compromised Desktop that ignores the policy cannot request presigned
+  // upload URLs (planSync), complete a multipart upload, or mark-skip a file for
+  // a policy-off org. Enforced BEFORE rate-limit/S3 work; fail-closed
+  // (unresolved org → deny) and independent of any client-sent field.
+  if (!(await deps.isOrgPolicyEnabled(input.organizationId))) {
+    return { error: TranscriptSyncErrorReason.PolicyDisabled };
   }
   if (!deps.rateLimiter.attempt(request.computeTargetId, deps.now())) {
     return { error: TranscriptSyncErrorReason.RateLimited };
@@ -597,6 +688,12 @@ async function verifyAndPersist(params: {
       uploadedAt: new Date(now()),
       pendingUploadId: null,
       pendingUploadStartedAt: null,
+      // FEA-3489 (review): a completed upload is `available`, so it must never
+      // retain a `permanentFailureReason`. `upsertPlanRow` already clears it on
+      // re-open; clearing it here too guarantees the terminal reason is gone at
+      // the point availability flips, even if the row reached `complete` without
+      // a fresh plan step.
+      permanentFailureReason: null,
       sessionDetailId,
     },
   });
@@ -636,57 +733,48 @@ export const transcriptSyncService = {
       return noopResult(existing);
     }
 
-    try {
-      return await withDb.tx(
-        async (tx): Promise<PlanResult> => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey(request)}))`;
+    return runTranscriptTx(
+      request,
+      "transcript sync-plan failed",
+      async (tx): Promise<PlanResult> => {
+        await tx.$executeRaw(advisoryLockKeySql(lockKey(request)));
 
-          const row = await tx.sessionTranscript.findUnique({
-            where: identityWhere(request),
-          });
-          if (row && isUploadedMatch(row, request.sha256)) {
-            return noopResult(row);
-          }
+        const row = await tx.sessionTranscript.findUnique({
+          where: identityWhere(request),
+        });
+        if (row && isUploadedMatch(row, request.sha256)) {
+          return noopResult(row);
+        }
 
-          const ctx = await loadPlanContext(tx, request, row);
+        const ctx = await loadPlanContext(tx, request, row);
 
-          if (row?.pendingUploadId) {
-            const resumed = await attemptResume({
-              tx,
-              s3,
-              now,
-              request,
-              row,
-              pendingUploadId: row.pendingUploadId,
-              objectKey,
-              ctx,
-            });
-            if (resumed) {
-              return resumed;
-            }
-          }
-
-          return buildFreshPlan({
+        if (row?.pendingUploadId) {
+          const resumed = await attemptResume({
             tx,
             s3,
             now,
-            organizationId: input.organizationId,
             request,
+            row,
+            pendingUploadId: row.pendingUploadId,
             objectKey,
             ctx,
           });
-        },
-        { timeout: PLAN_TX_TIMEOUT_MS }
-      );
-    } catch (error) {
-      log.warn("transcript sync-plan failed", {
-        computeTargetId: request.computeTargetId,
-        externalSessionId: request.externalSessionId,
-        fileKey: request.fileKey,
-        error,
-      });
-      return Result.err(TranscriptSyncErrorReason.StaleUpload);
-    }
+          if (resumed) {
+            return resumed;
+          }
+        }
+
+        return buildFreshPlan({
+          tx,
+          s3,
+          now,
+          organizationId: input.organizationId,
+          request,
+          objectKey,
+          ctx,
+        });
+      }
+    );
   },
 
   /**
@@ -705,53 +793,158 @@ export const transcriptSyncService = {
     }
     const { objectKey } = authz;
 
-    try {
-      return await withDb.tx(
-        async (tx): Promise<CompleteResult> => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey(request)}))`;
+    return runTranscriptTx(
+      request,
+      "transcript complete failed",
+      async (tx): Promise<CompleteResult> => {
+        await tx.$executeRaw(advisoryLockKeySql(lockKey(request)));
 
-          const row = await tx.sessionTranscript.findUnique({
-            where: identityWhere(request),
+        const row = await tx.sessionTranscript.findUnique({
+          where: identityWhere(request),
+        });
+        if (!row) {
+          return Result.err(TranscriptSyncErrorReason.StaleUpload);
+        }
+        // Idempotent completion (client retried a verified upload).
+        if (isUploadedMatch(row, request.sha256)) {
+          return Result.ok({
+            status: "uploaded",
+            syncedByteOffset: Number(row.syncedByteOffset),
+            storedEtag: row.storedEtag,
+            sessionDetailId: row.sessionDetailId,
           });
-          if (!row) {
-            return Result.err(TranscriptSyncErrorReason.StaleUpload);
-          }
-          // Idempotent completion (client retried a verified upload).
-          if (isUploadedMatch(row, request.sha256)) {
-            return Result.ok({
-              status: "uploaded",
-              syncedByteOffset: Number(row.syncedByteOffset),
-              storedEtag: row.storedEtag,
-              sessionDetailId: row.sessionDetailId,
-            });
-          }
+        }
 
-          if (request.mode === "multipart") {
-            const failure = await completeMultipartStep({
-              tx,
-              s3,
-              row,
-              request,
-              objectKey,
-            });
-            if (failure) {
-              return failure;
-            }
+        if (request.mode === "multipart") {
+          const failure = await completeMultipartStep({
+            tx,
+            s3,
+            row,
+            request,
+            objectKey,
+          });
+          if (failure) {
+            return failure;
           }
+        }
 
-          return verifyAndPersist({ tx, s3, now, row, request, objectKey });
-        },
-        { timeout: PLAN_TX_TIMEOUT_MS }
-      );
-    } catch (error) {
-      log.warn("transcript complete failed", {
-        computeTargetId: request.computeTargetId,
-        externalSessionId: request.externalSessionId,
-        fileKey: request.fileKey,
-        error,
-      });
-      return Result.err(TranscriptSyncErrorReason.StaleUpload);
+        return verifyAndPersist({ tx, s3, now, row, request, objectKey });
+      }
+    );
+  },
+
+  /**
+   * Record a terminal, non-retryable skip (FEA-3476 / PRD-536 D7). The desktop
+   * calls this once when a file transitions to a permanent dead state (e.g. it
+   * exceeds the local size cap) so the cloud stops representing it as "syncing"
+   * and the read path derives `failedPermanent`. No bytes/checksums — this only
+   * writes the terminal `skipped` status + reason.
+   *
+   * Ordering-safe: if a verified upload already exists for this file
+   * (`uploadStatus = uploaded`), the skip is a NO-OP — a good archive must never
+   * be masked by a late skip signal for a since-grown/replaced file. Idempotent
+   * on an already-`skipped` row (re-sends just refresh the reason/timestamp).
+   */
+  async markPermanentlySkipped(input: SkipInput): Promise<SkipResult> {
+    const { request } = input;
+    const deps = resolveDeps(input.deps);
+    const { now } = deps;
+
+    const authz = await authorizeTranscriptRequest(input, deps);
+    if ("error" in authz) {
+      return Result.err(authz.error);
     }
+    const { objectKey } = authz;
+
+    return runTranscriptTx(
+      request,
+      "transcript skip failed",
+      async (tx): Promise<SkipResult> => {
+        await tx.$executeRaw(advisoryLockKeySql(lockKey(request)));
+
+        const existing = await tx.sessionTranscript.findUnique({
+          where: identityWhere(request),
+        });
+
+        // A verified archive wins: never let a late skip hide readable bytes.
+        if (
+          existing &&
+          existing.uploadStatus === TranscriptUploadStatus.Uploaded
+        ) {
+          return Result.ok({
+            status: TranscriptUploadStatus.Uploaded,
+            permanentFailureReason: request.reason,
+            sessionDetailId: existing.sessionDetailId,
+          });
+        }
+
+        const sessionDetailId =
+          existing?.sessionDetailId ??
+          (await resolveSessionDetailId(
+            tx,
+            request.computeTargetId,
+            request.externalSessionId
+          ));
+        const nowDate = new Date(now());
+        // ISS-4820 item 2: a RECOVERABLE reason must not overwrite an existing
+        // HARD terminal reason. The desktop releases its per-file lock after a
+        // 30s abort, so a changed projection can requeue and settle a NEWER hard
+        // reason here while a stale in-flight recoverable request is still
+        // finishing. That late write used to clobber the hard reason and
+        // resurrect a dead row into "syncing forever". Precedence, not
+        // last-writer-wins.
+        const effectiveReason = resolveSkipReasonPrecedence(
+          existing?.uploadStatus,
+          existing?.permanentFailureReason,
+          request.reason
+        );
+
+        await tx.sessionTranscript.upsert({
+          where: identityWhere(request),
+          create: {
+            organizationId: input.organizationId,
+            computeTargetId: request.computeTargetId,
+            externalSessionId: request.externalSessionId,
+            fileKey: request.fileKey,
+            sourceHarness: request.sourceHarness,
+            objectStorageKey: objectKey,
+            uploadStatus: TranscriptUploadStatus.Skipped,
+            permanentFailureReason: request.reason,
+            lastObservedAt: nowDate,
+            sessionDetailId,
+            // No in-flight upload to abort — this file is deterministically
+            // skipped, so clear any planning cursor state.
+            pendingUploadId: null,
+            pendingUploadStartedAt: null,
+          },
+          update: {
+            uploadStatus: TranscriptUploadStatus.Skipped,
+            permanentFailureReason: effectiveReason,
+            lastObservedAt: nowDate,
+            pendingUploadId: null,
+            pendingUploadStartedAt: null,
+            ...(sessionDetailId ? { sessionDetailId } : {}),
+          },
+        });
+
+        return Result.ok({
+          // Report what was PERSISTED, not what was requested: when precedence
+          // preserved the existing hard reason, echoing `request.reason` would
+          // tell the desktop the row is recoverable when it is not.
+          //
+          // ISS-4820 (codex review): precedence can preserve a reason this build
+          // does not recognize (an API rolled back behind a desktop that wrote a
+          // newer label). The row keeps that label verbatim, but the WIRE echo is
+          // narrowed to the shared enum — an unnameable reason degrades to `null`,
+          // which every read path already classifies as the conservative HARD
+          // `failedPermanent`. Never widened to a free string: a client older than
+          // the label would reject the whole response and re-drive the skip.
+          status: TranscriptUploadStatus.Skipped,
+          permanentFailureReason: toKnownTranscriptSkipReason(effectiveReason),
+          sessionDetailId,
+        });
+      }
+    );
   },
 };
 
@@ -816,6 +1009,14 @@ function upsertPlanRow(
       lastObservedAt: data.lastObservedAt,
       pendingUploadId: data.pendingUploadId,
       pendingUploadStartedAt: data.pendingUploadStartedAt,
+      // FEA-3489 (review): a `plan` request re-opens a previously `skipped` row
+      // for upload (the desktop force-archive override reuses this same lane).
+      // Clear any prior `permanentFailureReason` (`too_large`) here so a row
+      // moving back into `uploading` can never carry a stale terminal reason —
+      // otherwise a subsequent `complete` would leave the descriptor
+      // `available` WITH `permanentFailureReason: too_large`, violating the
+      // availability contract. Idempotent: null-to-null for a fresh row.
+      permanentFailureReason: null,
       ...(data.sessionDetailId
         ? { sessionDetailId: data.sessionDetailId }
         : {}),

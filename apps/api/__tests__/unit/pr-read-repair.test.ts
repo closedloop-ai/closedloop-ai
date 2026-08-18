@@ -1,27 +1,37 @@
 /**
- * Unit tests for pr-read-repair module (post-artifact-cutover).
+ * The PR read-repair pass itself, driven through the captured waitUntil
+ * promise: repository/installation resolution, the client it resolves, the
+ * FEA-2732 relink, lifecycle stamping, and the backfill of a missing detail
+ * row.
  *
- * schedulePrReadRepair — eligibility filtering over `PrReadRepairInput[]`:
- * - Returns early when inputs array is empty
- * - Skips inputs already in MERGED state (when verified)
- * - Skips inputs verified within the 24h staleness threshold
- * - Skips inputs with a refresh attempt within the 1h debounce window
- * - Schedules via waitUntil for merged-but-never-verified PRs
- * - Schedules via waitUntil for stale open PRs
- *
- * repairSinglePrLink (invoked via captured waitUntil promise):
- * - Stamps lastRefreshAttemptAt on the current PullRequestDetail
- * - Skips when PR URL cannot be parsed
- * - Skips when installationId cannot be resolved
- * - Skips when getSinglePullRequest returns null
+ * Which rows earn a repair in the first place is covered by
+ * pr-read-repair-eligibility.test.ts.
  */
 
+import {
+  GitHubFetchCredentialType,
+  GitHubFetchTrigger,
+} from "@repo/api/src/types/github-read-model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // --- Module-level mocks ---
 
+const { mockGetInstallationOctokit, mockOctokit } = vi.hoisted(() => ({
+  mockGetInstallationOctokit: vi.fn(),
+  mockOctokit: { marker: "installation-octokit" },
+}));
+
 vi.mock("@vercel/functions", () => ({
   waitUntil: vi.fn(),
+}));
+
+vi.mock("@repo/github/installation-auth", () => ({
+  // Spy wrapper (not a bare vi.fn implementation) so restore/reset passes can
+  // never strip the marker client the SUT threads into @repo/github reads.
+  // Mint-failure tests inject a one-shot rejection through the spy; any
+  // non-undefined spy result wins over the resolved marker client fallback.
+  getInstallationOctokit: (installationId: string) =>
+    mockGetInstallationOctokit(installationId) ?? Promise.resolve(mockOctokit),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -60,6 +70,8 @@ vi.mock("@repo/github", () => {
         : { status: GitHubProviderResultStatus.ProviderUnavailable };
     },
     GitHubProviderResultStatus,
+    // Real classifier so the mint-failure test pins the production
+    // rate-limit-vs-unavailable classification.
   };
 });
 
@@ -71,17 +83,19 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { BranchViewPrLifecycleRepairStatus } from "@repo/api/src/types/branch-view";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { GitHubInstallationStatus, withDb } from "@repo/database";
 import { getSinglePullRequest } from "@repo/github";
 import { log } from "@repo/observability/log";
 import { waitUntil } from "@vercel/functions";
 import {
-  getPrReadRepairStatus,
   type PrReadRepairInput,
   schedulePrReadRepair,
 } from "@/lib/pr-read-repair";
+import {
+  makePrReadRepairInput as makeInput,
+  PR_READ_REPAIR_ORG_ID as ORG_ID,
+} from "../utils/pr-read-repair-fixtures";
 
 const mockWaitUntil = vi.mocked(waitUntil);
 const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
@@ -89,177 +103,6 @@ const mockWithDb = vi.mocked(withDb) as unknown as ReturnType<typeof vi.fn> & {
 };
 const mockGetSinglePullRequest = vi.mocked(getSinglePullRequest);
 const mockLog = vi.mocked(log);
-
-const ORG_ID = "org-uuid-test";
-
-/** 24 hours + 1ms — past the staleness threshold */
-const STALE_MS = 24 * 60 * 60 * 1000 + 1;
-
-function msAgo(ms: number): Date {
-  return new Date(Date.now() - ms);
-}
-
-function makeInput(
-  overrides: Partial<PrReadRepairInput> = {}
-): PrReadRepairInput {
-  return {
-    id: "link-uuid-1",
-    externalUrl: "https://github.com/acme/my-repo/pull/42",
-    projectId: "proj-uuid-1",
-    organizationId: ORG_ID,
-    prState: GitHubPRState.Open,
-    lastVerifiedAt: null,
-    lastRefreshAttemptAt: null,
-    ...overrides,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// schedulePrReadRepair — eligibility filtering
-// ---------------------------------------------------------------------------
-
-describe("schedulePrReadRepair — eligibility filtering", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns early and does not call waitUntil when inputs is empty", () => {
-    schedulePrReadRepair([], ORG_ID);
-    expect(mockWaitUntil).not.toHaveBeenCalled();
-  });
-
-  it("does not call waitUntil when the PR is merged and has been verified", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).not.toHaveBeenCalled();
-  });
-
-  it("calls waitUntil for a merged PR that was never verified", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
-  });
-
-  it("does not call waitUntil when verified within the 24h staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-      lastRefreshAttemptAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).not.toHaveBeenCalled();
-  });
-
-  it("does not call waitUntil when a refresh attempt was made within the 1h debounce window", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-      lastRefreshAttemptAt: msAgo(30 * 60 * 1000),
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).not.toHaveBeenCalled();
-  });
-
-  it("calls waitUntil for an open PR never verified before", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-      lastRefreshAttemptAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
-  });
-
-  it("calls waitUntil for an open PR whose lastVerifiedAt is past the 24h staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(STALE_MS),
-      lastRefreshAttemptAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
-  });
-
-  it("calls waitUntil for a closed (non-merged) PR past the staleness threshold", () => {
-    const input = makeInput({
-      prState: GitHubPRState.Closed,
-      lastVerifiedAt: msAgo(STALE_MS),
-      lastRefreshAttemptAt: null,
-    });
-    schedulePrReadRepair([input], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
-  });
-
-  it("calls waitUntil only for eligible inputs when list is mixed", () => {
-    const mergedVerified = makeInput({
-      id: "input-merged",
-      prState: GitHubPRState.Merged,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-    });
-    const fresh = makeInput({
-      id: "input-fresh",
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: msAgo(60 * 60 * 1000),
-    });
-    const eligible = makeInput({
-      id: "input-stale",
-      prState: GitHubPRState.Open,
-      lastVerifiedAt: null,
-    });
-    schedulePrReadRepair([mergedVerified, fresh, eligible], ORG_ID);
-    expect(mockWaitUntil).toHaveBeenCalledOnce();
-  });
-
-  it("keeps client status pending during a short in-flight repair attempt", () => {
-    const nowMs = Date.now();
-    expect(
-      getPrReadRepairStatus(
-        makeInput({
-          prState: GitHubPRState.Open,
-          lastVerifiedAt: null,
-          lastRefreshAttemptAt: null,
-        }),
-        nowMs
-      )
-    ).toBe(BranchViewPrLifecycleRepairStatus.Pending);
-    expect(
-      getPrReadRepairStatus(
-        makeInput({
-          prState: GitHubPRState.Open,
-          lastVerifiedAt: new Date(nowMs - 60 * 60 * 1000),
-          lastRefreshAttemptAt: null,
-        }),
-        nowMs
-      )
-    ).toBe(BranchViewPrLifecycleRepairStatus.Idle);
-    expect(
-      getPrReadRepairStatus(
-        makeInput({
-          prState: GitHubPRState.Open,
-          lastVerifiedAt: null,
-          lastRefreshAttemptAt: new Date(nowMs - 10 * 1000),
-        }),
-        nowMs
-      )
-    ).toBe(BranchViewPrLifecycleRepairStatus.Pending);
-    expect(
-      getPrReadRepairStatus(
-        makeInput({
-          prState: GitHubPRState.Open,
-          lastVerifiedAt: null,
-          lastRefreshAttemptAt: new Date(nowMs - 30 * 60 * 1000),
-        }),
-        nowMs
-      )
-    ).toBe(BranchViewPrLifecycleRepairStatus.Idle);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // repairSinglePrLink — repair logic (invoked via captured waitUntil promise)
@@ -282,6 +125,7 @@ function makeFreshPr(
     number: number;
     title: string;
     state: GitHubPRState;
+    createdAt: string | null;
     mergedAt: string | null;
     closedAt: string | null;
     authorLogin: string | null;
@@ -299,6 +143,7 @@ function makeFreshPr(
     headBranch: "feature-x",
     baseBranch: "main",
     state: GitHubPRState.Open,
+    createdAt: null,
     mergedAt: null,
     closedAt: null,
     authorLogin: null,
@@ -443,6 +288,7 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       },
       select: { repositoryId: true },
     });
+    expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
     expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
   });
 
@@ -611,11 +457,18 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
       },
     });
     expect(mockExistingDetailFindFirst).toHaveBeenCalled();
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("install-active");
     expect(mockGetSinglePullRequest).toHaveBeenCalledWith(
-      "install-active",
+      mockOctokit,
       "acme",
       "restored-repo",
-      42
+      42,
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
     );
   });
 
@@ -705,12 +558,92 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
         }),
       })
     );
+    // One shared client per repaired link: minted once, then threaded through
+    // the lifecycle-refresh fetch below.
+    expect(mockGetInstallationOctokit).toHaveBeenCalledTimes(1);
+    expect(mockGetInstallationOctokit).toHaveBeenCalledWith("install-active");
     expect(mockGetSinglePullRequest).toHaveBeenCalledWith(
-      "install-active",
+      mockOctokit,
       "acme",
       "restored-repo",
-      42
+      42,
+      expect.objectContaining({
+        credentialType: GitHubFetchCredentialType.GitHubApp,
+        observationKey: expect.any(String),
+        trigger: GitHubFetchTrigger.Backfill,
+      })
     );
+  });
+
+  it("relinks and stamps the refresh attempt when the installation client mint fails", async () => {
+    const input = makeInput({
+      externalUrl: "https://github.com/acme/restored-repo/pull/42",
+    });
+    const mockRepoFindFirst = vi.fn((query: { where?: { removedAt?: null } }) =>
+      Promise.resolve(
+        query.where?.removedAt === null
+          ? {
+              id: "repo-uuid-active",
+              installation: { installationId: "install-active" },
+            }
+          : { id: "repo-uuid-tombstoned" }
+      )
+    );
+    const mockExistingDetailFindFirst = vi.fn().mockResolvedValue({
+      id: "detail-1",
+      repositoryId: "repo-uuid-tombstoned",
+    });
+    const relinkTx = {
+      branchDetail: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      pullRequestDetail: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const stampUpdate = vi.fn().mockResolvedValue({ count: 1 });
+
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({
+        gitHubInstallationRepository: { findFirst: mockRepoFindFirst },
+      })
+    );
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { findFirst: mockExistingDetailFindFirst } })
+    );
+    mockWithDb.mockImplementationOnce((cb: (db: unknown) => unknown) =>
+      cb({ pullRequestDetail: { updateMany: stampUpdate } })
+    );
+    mockWithDb.tx.mockImplementationOnce((cb: (tx: unknown) => unknown) =>
+      cb(relinkTx)
+    );
+    mockGetInstallationOctokit.mockReturnValueOnce(
+      Promise.reject(new Error("token exchange failed"))
+    );
+
+    await runRepair([input]);
+
+    // The relink needs no GitHub call, so it still lands.
+    expect(relinkTx.branchDetail.updateMany).toHaveBeenCalledWith({
+      where: {
+        artifactId: input.id,
+        repositoryId: "repo-uuid-tombstoned",
+        artifact: { organizationId: input.organizationId },
+      },
+      data: { repositoryId: "repo-uuid-active" },
+    });
+    // The attempt is stamped so the 1h debounce engages; without it every
+    // later read would reschedule this same repair.
+    expect(stampUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "detail-1",
+          repositoryId: "repo-uuid-active",
+        }),
+        data: expect.objectContaining({
+          lastRefreshAttemptAt: expect.any(Date),
+        }),
+      })
+    );
+    expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
   });
 
   it("does not use the single-installation fallback for a tombstoned stored PR repository", async () => {
@@ -744,6 +677,7 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
     await runRepair([input]);
 
     expect(mockWithDb).toHaveBeenCalledTimes(3);
+    expect(mockGetInstallationOctokit).not.toHaveBeenCalled();
     expect(mockGetSinglePullRequest).not.toHaveBeenCalled();
     expect(mockWithDb.tx).not.toHaveBeenCalled();
   });
@@ -777,7 +711,7 @@ describe("repairSinglePrLink — stamp + parse guards", () => {
 
     expect(mockWithDb.tx).not.toHaveBeenCalled();
     expect(mockLog.warn).toHaveBeenCalledWith(
-      expect.stringContaining("getSinglePullRequest returned null"),
+      expect.stringContaining("PR provider read failed"),
       expect.any(Object)
     );
   });

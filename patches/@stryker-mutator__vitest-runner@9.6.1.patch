@@ -1,0 +1,45 @@
+diff --git a/dist/src/vitest-test-runner.js b/dist/src/vitest-test-runner.js
+index 29b77daf30e604887406485c70d930ebbe2db229..460c5b264700bfe84f0e3ffa2b7e1161ab19b08b 100644
+--- a/dist/src/vitest-test-runner.js
++++ b/dist/src/vitest-test-runner.js
+@@ -31,11 +31,27 @@ export class VitestTestRunner {
+     async init() {
+         this.setEnv();
+         await fs.promises.copyFile(STRYKER_SETUP, this.localSetupFile);
++        // PATCHED (symphony-alpha). Upstream forces `pool: 'threads'` here as a
++        // CLI-level override, which beats the vitest config file and cannot be
++        // turned off — the runner exposes only configFile/dir/related. A suite
++        // that REQUIRES `pool: "forks"` therefore silently runs under threads:
++        // apps/desktop's main-process lane loads native addons (better-sqlite3,
++        // the Prisma engine) and spawns child processes, and worker_threads
++        // shares a process-wide addon registry, so its golden aggregates come
++        // out different from a standalone run of the same green suite.
++        //
++        // Opt-in by design: STRYKER_VITEST_POOL unset keeps upstream behaviour
++        // exactly, so every package that works today is untouched. Coverage does
++        // not depend on the pool — stryker-setup.js reports through per-file
++        // `suite.meta` and reads config via `inject()`, both pool-agnostic — so
++        // the only thing that must be preserved is SERIAL execution, which is
++        // why the pinned poolOptions are set for whichever pool is selected.
++        const strykerPool = process.env.STRYKER_VITEST_POOL || 'threads';
+         this.ctx = await vitestWrapper.createVitest('test', {
+             config: this.options.vitest?.configFile,
+             // @ts-expect-error threads got renamed to "pool: threads" in vitest 1.0.0
+-            threads: true,
+-            pool: 'threads',
++            threads: strykerPool === 'threads',
++            pool: strykerPool,
+             coverage: { enabled: false },
+             poolOptions: {
+                 // Since vitest 1.0.0
+@@ -43,6 +59,10 @@ export class VitestTestRunner {
+                     maxThreads: 1,
+                     minThreads: 1,
+                 },
++                forks: {
++                    maxForks: 1,
++                    minForks: 1,
++                },
+             },
+             maxWorkers: 1,
+             singleThread: false,

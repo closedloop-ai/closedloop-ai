@@ -6,9 +6,12 @@ import {
   MovePosition,
 } from "@repo/api/src/types/project-artifact-move";
 import {
+  PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM,
   PROJECT_TREE_INCLUDE_PARAM,
+  PROJECT_TREE_LIMIT_PARAM,
   type ProjectTreeDetailsResponse,
   ProjectTreeInclude,
+  type ProjectTreeQueryFilters,
   type ProjectTreeResponse,
 } from "@repo/api/src/types/project-tree";
 import {
@@ -22,28 +25,39 @@ import { useApiClient } from "../../shared/api/use-api-client";
 
 export const projectTreeKeys = {
   all: ["project-tree"] as const,
-  detail: (projectId: string) => [...projectTreeKeys.all, projectId] as const,
+  detail: (projectId: string, filters?: ProjectTreeQueryFilters) =>
+    hasProjectTreeFilters(filters)
+      ? ([...projectTreeKeys.all, projectId, "filters", filters] as const)
+      : ([...projectTreeKeys.all, projectId] as const),
   /**
    * Detailed-tree variant (`?include=details`, PLN-874). Nested under
    * `detail` so every existing detail-prefix invalidation (and the
    * optimistic stack-rank update) covers it automatically.
    */
-  withDetails: (projectId: string) =>
-    [...projectTreeKeys.detail(projectId), "with-details"] as const,
+  withDetails: (projectId: string, filters?: ProjectTreeQueryFilters) =>
+    [...projectTreeKeys.detail(projectId, filters), "with-details"] as const,
+};
+
+type ProjectTreeHookOptions = Omit<
+  UseQueryOptions<ProjectTreeResponse>,
+  "queryKey" | "queryFn"
+> & {
+  filters?: ProjectTreeQueryFilters;
 };
 
 export function useProjectTree(
   projectId: string,
-  options?: Omit<UseQueryOptions<ProjectTreeResponse>, "queryKey" | "queryFn">
+  options?: ProjectTreeHookOptions
 ) {
   const apiClient = useApiClient();
+  const { filters, ...queryOptions } = options ?? {};
 
   return useQuery({
-    queryKey: projectTreeKeys.detail(projectId),
+    queryKey: projectTreeKeys.detail(projectId, filters),
     queryFn: () =>
-      apiClient.get<ProjectTreeResponse>(`/projects/${projectId}/tree`),
+      apiClient.get<ProjectTreeResponse>(projectTreePath(projectId, filters)),
     enabled: !!projectId,
-    ...options,
+    ...queryOptions,
   });
 }
 
@@ -158,17 +172,51 @@ export function useProjectTreeWithDetails(
   options?: Omit<
     UseQueryOptions<ProjectTreeDetailsResponse>,
     "queryKey" | "queryFn"
-  >
+  > & {
+    filters?: ProjectTreeQueryFilters;
+  }
 ) {
   const apiClient = useApiClient();
+  const { filters, ...queryOptions } = options ?? {};
 
   return useQuery({
-    queryKey: projectTreeKeys.withDetails(projectId),
+    queryKey: projectTreeKeys.withDetails(projectId, filters),
     queryFn: () =>
       apiClient.get<ProjectTreeDetailsResponse>(
-        `/projects/${projectId}/tree?${PROJECT_TREE_INCLUDE_PARAM}=${ProjectTreeInclude.Details}`
+        projectTreePath(projectId, filters, ProjectTreeInclude.Details)
       ),
     enabled: !!projectId,
-    ...options,
+    ...queryOptions,
   });
+}
+
+export function projectTreePath(
+  projectId: string,
+  filters?: ProjectTreeQueryFilters,
+  include?: ProjectTreeInclude
+): string {
+  const params = new URLSearchParams();
+  if (include) {
+    params.set(PROJECT_TREE_INCLUDE_PARAM, include);
+  }
+  if (filters?.contributorUserId) {
+    params.set(
+      PROJECT_TREE_CONTRIBUTOR_USER_ID_PARAM,
+      filters.contributorUserId
+    );
+  }
+  if (filters?.limit !== undefined) {
+    params.set(PROJECT_TREE_LIMIT_PARAM, String(filters.limit));
+  }
+  const query = params.toString();
+  return query
+    ? `/projects/${projectId}/tree?${query}`
+    : `/projects/${projectId}/tree`;
+}
+
+function hasProjectTreeFilters(filters?: ProjectTreeQueryFilters): boolean {
+  // `limit` counts as a filter for cache purposes: two reads of the same
+  // project under different bounds return different node sets, so they must not
+  // collide on one cache key (ISS-5307).
+  return Boolean(filters?.contributorUserId) || filters?.limit !== undefined;
 }

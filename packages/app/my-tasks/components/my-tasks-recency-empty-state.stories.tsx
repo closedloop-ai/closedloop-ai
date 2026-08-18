@@ -1,0 +1,47 @@
+import type { Meta, StoryObj } from "@storybook/react";
+import { MyTasksRecencyEmptyState } from "./my-tasks-recency-empty-state";
+
+/**
+ * FEA-1626 — the "your work aged out of the window" state.
+ *
+ * Reaching this in the running app needs the recency flag on, an actually-empty
+ * windowed result, and the chip still in force, so the copy and the escape hatch
+ * are effectively unreviewable in situ. The story is where a regression in
+ * either becomes visible: a user back from leave must read that their work is
+ * still there, and must be able to get to it.
+ */
+const meta = {
+  title: "App Core/My Tasks/Recency Empty State",
+  component: MyTasksRecencyEmptyState,
+  tags: ["autodocs"],
+  parameters: {
+    layout: "padded",
+  },
+  args: {
+    onShowAll: () => undefined,
+  },
+} satisfies Meta<typeof MyTasksRecencyEmptyState>;
+
+export default meta;
+
+type Story = StoryObj<typeof meta>;
+
+/**
+ * The whole state: the bound named in the title, BOTH exclusions named in the
+ * body (older work AND archived projects), and one control back to full history.
+ * Compare against the board's default empty state, "Your queue is clear" with
+ * the two create buttons, which is the message this one exists to keep off the
+ * screen. Both are the catalog `EmptyState`, so swapping between them moves
+ * nothing but the copy, the icon, and the action.
+ */
+export const Default: Story = {};
+
+/**
+ * Narrow viewport: the body is the longest string here, so this is where the
+ * design-system header measure and the button's spacing get checked.
+ */
+export const Narrow: Story = {
+  parameters: {
+    viewport: { defaultViewport: "mobile1" },
+  },
+};

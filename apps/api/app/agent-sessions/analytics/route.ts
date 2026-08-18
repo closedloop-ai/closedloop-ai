@@ -7,11 +7,15 @@ import {
 } from "@/lib/route-utils";
 import {
   authorizeAgentSessionTeamScope,
-  getAgentSessionViewerScope,
+  resolveDisplayedStatusParity,
 } from "../route-helpers";
 import { agentSessionsService } from "../service";
 import { baseAgentSessionQuerySchema } from "../validators";
 
+// FEA-4155: no `monitoringEnabled` flag gate (see the sibling list route). The
+// Sessions surface is always-on now, so this analytics read must not 403 as the
+// winding-down `DESKTOP_AGENT_SESSION_SYNC` flag resolves false. Org/team RBAC
+// stays via `authorizeAgentSessionTeamScope`.
 export const GET = withAnyAuth<
   AgentSessionAnalytics,
   "/agent-sessions/analytics"
@@ -22,14 +26,6 @@ export const GET = withAnyAuth<
   );
   if (errorResponse) {
     return errorResponse;
-  }
-
-  const viewerScope = await getAgentSessionViewerScope({
-    userId: user.id,
-    clerkUserId,
-  });
-  if (!viewerScope.monitoringEnabled) {
-    return forbiddenResponse();
   }
 
   const teamScopeAllowed = await authorizeAgentSessionTeamScope({
@@ -45,6 +41,14 @@ export const GET = withAnyAuth<
 
   const analytics = await agentSessionsService.getAnalytics({
     organizationId: user.organizationId,
+    // FEA-3534: enforce `viewerScope=self` for Me-scoped analytics reads.
+    viewerId: user.id,
+    // ISS-4556 / ISS-4559: same cohort as the list and usage reads — resolve the
+    // same gate so the analytics fold cannot count a different population.
+    displayedStatusParity: await resolveDisplayedStatusParity({
+      userId: user.id,
+      clerkUserId,
+    }),
     filters: params,
   });
 

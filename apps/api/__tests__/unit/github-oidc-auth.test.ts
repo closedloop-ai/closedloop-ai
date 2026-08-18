@@ -28,7 +28,10 @@ vi.mock("@repo/observability/log", () => ({
   },
 }));
 
-import { validateGitHubOidcToken } from "@/lib/auth/github-oidc-auth";
+import {
+  GitHubOidcCaller,
+  validateGitHubOidcToken,
+} from "@/lib/auth/github-oidc-auth";
 
 // ---------------------------------------------------------------------------
 // Constants mirroring the implementation
@@ -214,5 +217,77 @@ describe("validateGitHubOidcToken", () => {
 
     expect(result).toBeInstanceOf(Response);
     expect((result as Response).status).toBe(401);
+  });
+
+  /**
+   * ISS-5984 added a second caller. The property that matters is that the two
+   * do not become interchangeable: a token minted by, and for, one workflow must
+   * not authenticate the other. Without the per-caller audience AND workflow-ref
+   * pinning, the cleanup sweep's token would drive a stage `public` migrate.
+   */
+  describe("per-caller claim isolation", () => {
+    // Derived from the const under test rather than re-typed: the cleanup
+    // caller's mirrored literals above are what would catch an unintended value
+    // change, and these cases exist to prove the two callers do not accept each
+    // other's tokens — which holds however the values are spelled.
+    const ENSURE_AUDIENCE = GitHubOidcCaller.PreviewSchemaEnsure.audience;
+    const ENSURE_WORKFLOW_REF = `${GitHubOidcCaller.PreviewSchemaEnsure.workflowRefPrefix}refs/heads/main`;
+
+    it("accepts the ensure caller's own token", async () => {
+      const token = await signToken(
+        { repository: REPOSITORY, job_workflow_ref: ENSURE_WORKFLOW_REF },
+        { audience: ENSURE_AUDIENCE }
+      );
+
+      const result = await validateGitHubOidcToken(
+        createRequest(`Bearer ${token}`),
+        { jwks: localJwks, caller: GitHubOidcCaller.PreviewSchemaEnsure }
+      );
+
+      expect(result).toBeNull();
+    });
+
+    it("rejects a cleanup token presented to the ensure caller", async () => {
+      const token = await signToken(validClaims());
+
+      const result = await validateGitHubOidcToken(
+        createRequest(`Bearer ${token}`),
+        { jwks: localJwks, caller: GitHubOidcCaller.PreviewSchemaEnsure }
+      );
+
+      expect((result as Response).status).toBe(403);
+    });
+
+    it("rejects an ensure token presented to the cleanup caller", async () => {
+      const token = await signToken(
+        { repository: REPOSITORY, job_workflow_ref: ENSURE_WORKFLOW_REF },
+        { audience: ENSURE_AUDIENCE }
+      );
+
+      const result = await validateGitHubOidcToken(
+        createRequest(`Bearer ${token}`),
+        { jwks: localJwks, caller: GitHubOidcCaller.PreviewSchemaCleanup }
+      );
+
+      expect((result as Response).status).toBe(403);
+    });
+
+    it("rejects the ensure audience minted by a third workflow", async () => {
+      const token = await signToken(
+        {
+          repository: REPOSITORY,
+          job_workflow_ref:
+            "closedloop-ai/symphony-alpha/.github/workflows/pr-test.yml@refs/heads/main",
+        },
+        { audience: ENSURE_AUDIENCE }
+      );
+
+      const result = await validateGitHubOidcToken(
+        createRequest(`Bearer ${token}`),
+        { jwks: localJwks, caller: GitHubOidcCaller.PreviewSchemaEnsure }
+      );
+
+      expect((result as Response).status).toBe(403);
+    });
   });
 });

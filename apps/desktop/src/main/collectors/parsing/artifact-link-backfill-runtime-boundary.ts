@@ -11,15 +11,18 @@ export type ArtifactLinkBackfillRuntimeBoundaryOptions = {
   invokeStoreOp: (name: string, args?: unknown[]) => Promise<unknown>;
   shouldContinue: () => boolean;
   getWindow: () => DbChangedWindow | null;
-  triggerEnrichmentSweep: () => Promise<unknown>;
-  onEnrichmentSweepFailure: (error: unknown) => void;
 };
 
 /**
  * Runs the runtime-facing DB-host backfill op and applies the renderer
- * invalidation/enrichment decisions from its summary. Marker-touch-only repairs
- * invalidate session projections, while captured artifacts also request the
- * existing enrichment sweep.
+ * invalidation decision from its summary: a marker-touch-only repair still
+ * invalidates session projections.
+ *
+ * PLN-1535 M5: this also used to request an enrichment sweep when the backfill
+ * captured artifacts. Its only production caller passed a `() =>
+ * Promise.resolve()` stub, so the request reached nothing; D6 deleted the sweep
+ * and this hook with it. GitHub fields on captured artifacts are filled by the
+ * cloud projection.
  */
 export async function runArtifactLinkBackfillRuntimeBoundary(
   options: ArtifactLinkBackfillRuntimeBoundaryOptions
@@ -32,9 +35,6 @@ export async function runArtifactLinkBackfillRuntimeBoundary(
   }
   if (backfillChangedSessionProjection(backfillSummary)) {
     notifyDbChanged(options.getWindow());
-  }
-  if (backfillSummary.captured > 0) {
-    options.triggerEnrichmentSweep().catch(options.onEnrichmentSweepFailure);
   }
   return backfillSummary;
 }
