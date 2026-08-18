@@ -73,7 +73,7 @@
     "dotenv": "^17.4.2",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript6": "npm:@typescript/typescript6@6.0.2",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "vitest": "^4.1.9",
     "yaml": ">=2.8.3"
   }

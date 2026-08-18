@@ -17,7 +17,7 @@
     "@closedloop-ai/loops-api": "workspace:*",
     "@repo/crewd": "workspace:*",
     "@repo/shared-platform": "workspace:@closedloop-ai/shared-platform@*",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {
