@@ -30,7 +30,7 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "postcss": "^8.5.10",
     "tailwindcss": "^4.1.18",
     "typescript": "npm:@typescript/typescript6@6.0.2",
