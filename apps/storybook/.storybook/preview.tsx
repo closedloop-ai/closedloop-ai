@@ -58,6 +58,7 @@ const preview: Preview = {
           "App Core",
           "Desktop",
           "Screens",
+          ["Login", "Dashboard", "Settings"],
         ],
       },
     },
