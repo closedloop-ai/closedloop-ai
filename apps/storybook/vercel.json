@@ -1,4 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "ignoreCommand": "node scripts/skip-ci.js"
+  "ignoreCommand": "node scripts/skip-ci.js",
+  "framework": null,
+  "installCommand": "cd ../.. && DATABASE_URL=postgresql://localhost:5432/placeholder pnpm install --frozen-lockfile",
+  "buildCommand": "cd ../.. && DATABASE_URL=postgresql://localhost:5432/placeholder pnpm turbo build --filter=@closedloop-ai/design-system && pnpm --filter storybook build",
+  "outputDirectory": "storybook-static"
 }
