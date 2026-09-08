@@ -19,9 +19,10 @@ Open this. Nothing to install.
 
 **https://storybook.preview.closedloop-stage.ai**
 
-It asks for a username and password. The username is `closedloop`; Matt has the
-password. Deliberately not written down here, because this file lives in the
-repo and passwords should not.
+It asks for a username and password:
+
+- Username: `closedloop`
+- Password: `kickback-preview-2026`
 
 That covers everything below except making changes. If you only need to review
 components, stop here.
