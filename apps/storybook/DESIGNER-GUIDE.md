@@ -13,16 +13,45 @@ Think of it as the design file, except it is showing you the real thing the
 engineers ship, not a picture of it. If it looks a certain way here, that is how
 it actually looks in the product.
 
-## Opening it
+## Getting set up
 
-Ask whoever set it up for the link, or run this in a terminal from the project
-folder:
+This work lives on its own branch, not on `main`. Everything below is
+copy-paste; you only do the first block once.
+
+Get the code:
+
+```
+git clone https://github.com/closedloop-ai/closedloop-ai.git
+cd closedloop-ai
+git checkout storybook/foundations-catalog-controls
+pnpm install
+```
+
+Start it up:
 
 ```
 pnpm -C apps/storybook dev
 ```
 
 Then open the address it prints, usually `http://localhost:6007`.
+
+Every time you come back to it, run these two:
+
+```
+git pull
+pnpm -C apps/storybook dev
+```
+
+If you are already working in the repo and just need to switch onto this
+branch:
+
+```
+git fetch origin
+git checkout storybook/foundations-catalog-controls
+```
+
+Stay on that branch while you work. If you are ever unsure which one you are
+on, `git branch --show-current` prints it.
 
 ## How it is organized
 
