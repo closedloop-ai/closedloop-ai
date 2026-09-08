@@ -13,10 +13,24 @@ Think of it as the design file, except it is showing you the real thing the
 engineers ship, not a picture of it. If it looks a certain way here, that is how
 it actually looks in the product.
 
-## Getting set up
+## Just want to look at it?
 
-This work lives on its own branch, not on `main`. Everything below is
-copy-paste; you only do the first block once.
+Open this. Nothing to install.
+
+**https://storybook.preview.closedloop-stage.ai**
+
+It asks for a username and password. The username is `closedloop`; Matt has the
+password. Deliberately not written down here, because this file lives in the
+repo and passwords should not.
+
+That covers everything below except making changes. If you only need to review
+components, stop here.
+
+## Getting set up to make changes
+
+Only needed if you are going to edit something. This work lives on its own
+branch, not on `main`. Everything below is copy-paste; you only do the first
+block once.
 
 Get the code:
 
@@ -67,6 +81,9 @@ The left sidebar goes from smallest to largest, top to bottom.
 4. **App Core** — bigger pieces built from those blocks, grouped by product
    area. Branches, Sessions, Agents, Insights.
 5. **Desktop** — pieces that only appear in the desktop app.
+6. **Screens** — whole assembled pages. Login, Dashboard, Settings. This is
+   where you go to see how the parts add up, rather than judging a button on
+   its own.
 
 ## The three things worth knowing
 
