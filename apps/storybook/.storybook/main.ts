@@ -14,6 +14,10 @@ const getAbsolutePath = (value: string) =>
   dirname(require.resolve(join(value, "package.json")));
 
 const zodPath = getAbsolutePath("zod");
+
+// Hoisted per biome's useTopLevelRegex: propFilter runs once per prop per
+// component, so re-compiling this literal inside it is measurable.
+const NODE_MODULES_PATTERN = /node_modules/;
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 
 const config: StorybookConfig = {
@@ -37,6 +41,22 @@ const config: StorybookConfig = {
     options: {},
   },
   staticDirs: ["../public"],
+  typescript: {
+    // The default `react-docgen` parser silently bails on several of this
+    // repo's component files (tabs, badge, tooltip, toggle-group, textarea,
+    // theme-submenu, ...), logging "Failed to parse ... with react-docgen" at
+    // boot. A component with no docgen output gets no inferred argTypes, which
+    // is why the Controls panel renders empty for those stories. The
+    // TypeScript-backed parser reads the real prop types instead.
+    reactDocgen: "react-docgen-typescript",
+    reactDocgenTypescriptOptions: {
+      shouldExtractLiteralValuesFromEnum: true,
+      shouldRemoveUndefinedFromOptional: true,
+      // Without this every story inherits hundreds of DOM/React props.
+      propFilter: (prop) =>
+        prop.parent ? !NODE_MODULES_PATTERN.test(prop.parent.fileName) : true,
+    },
+  },
   webpackFinal: (config) => {
     config.resolve ??= {};
     // @hookform/resolvers/zod imports zod/v4/core, but pnpm can hoist a

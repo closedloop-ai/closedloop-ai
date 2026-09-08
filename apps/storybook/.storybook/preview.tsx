@@ -44,8 +44,21 @@ type AppCoreStoryParameters = Pick<
 const preview: Preview = {
   parameters: {
     options: {
+      // Atomic-design reading order, top to bottom: tokens first, then the
+      // primitives built from them, then the feature slices built from those,
+      // then the desktop shell, and finally whole assembled screens. Catalog
+      // sits above everything as the browsable index into the rest.
       storySort: {
-        order: ["Catalog", ["Inventory"], "Design System", "App Core"],
+        order: [
+          "Catalog",
+          ["Inventory"],
+          "Foundations",
+          ["Colors", "Typography", "Spacing", "Radius & Elevation"],
+          "Design System",
+          "App Core",
+          "Desktop",
+          "Screens",
+        ],
       },
     },
     controls: {

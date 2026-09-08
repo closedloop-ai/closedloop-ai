@@ -736,6 +736,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/User Select Popover"
   },
   {
+    "id": "workflow-stat-tile",
+    "label": "Workflow Stat Tile",
+    "sourcePath": "packages/design-system/components/ui/primitives/workflow-stat-tile.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Primitives"
+    ],
+    "storyStatus": "catalog-only",
+    "storyTitle": "Design System/Primitives/Workflow Stat Tile"
+  },
+  {
     "id": "card",
     "label": "Card",
     "sourcePath": "packages/design-system/components/ui/card.tsx",
