@@ -50,9 +50,24 @@ const NAV_PATHS = PRIMARY_NAV_DESTINATIONS.map(
   (destination) => destination.path
 );
 
+const SETTINGS_COPY = {
+  heading: "Settings",
+  description: "Manage your organization, members, and integrations.",
+} as const;
+
 type SettingsScreenProps = {
   /** Org-relative path the sidebar should mark as current. */
   activePath?: string;
+  /** Page heading. */
+  heading?: string;
+  /** Supporting line under the heading. */
+  description?: string;
+  /** Show the Organization card. */
+  showOrganization?: boolean;
+  /** Show the Members card. */
+  showMembers?: boolean;
+  /** Show the Preferences card. */
+  showPreferences?: boolean;
   /** Which tab reads as selected. */
   activeTab?: (typeof SETTINGS_TABS)[number]["value"];
   /** How many of the fixture members to list. */
@@ -62,15 +77,18 @@ type SettingsScreenProps = {
 const SettingsScreen = ({
   activePath = "/settings",
   activeTab = "general",
+  description = SETTINGS_COPY.description,
+  heading = SETTINGS_COPY.heading,
   memberCount = MEMBERS.length,
+  showMembers = true,
+  showOrganization = true,
+  showPreferences = true,
 }: SettingsScreenProps) => (
   <AppScreenShell activePath={activePath} breadcrumbs={["Settings"]}>
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
-        <p className="text-muted-foreground">
-          Manage your organization, members, and integrations.
-        </p>
+        <h1 className="font-semibold text-2xl tracking-tight">{heading}</h1>
+        <p className="text-muted-foreground">{description}</p>
       </div>
 
       {/* `key` remounts on control change so the new default takes effect,
@@ -86,100 +104,106 @@ const SettingsScreen = ({
         </TabsList>
       </Tabs>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Organization</CardTitle>
-          <CardDescription>
-            How your organization appears across the product.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-2 sm:max-w-sm">
-            <Label htmlFor="org-name">Name</Label>
-            <Input defaultValue="ClosedLoop" id="org-name" />
-          </div>
-          <div className="grid gap-2 sm:max-w-sm">
-            <Label htmlFor="org-slug">URL slug</Label>
-            <Input defaultValue="closedloop" id="org-slug" />
-            <p className="text-muted-foreground text-xs">
-              app.closedloop.ai/closedloop
-            </p>
-          </div>
-          <Separator />
-          <div className="flex justify-end">
-            <Button>Save changes</Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Members</CardTitle>
-          <CardDescription>People with access to this org.</CardDescription>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table className="text-sm">
-            <TableBody>
-              {MEMBERS.slice(0, memberCount).map((member) => (
-                <TableRow className="last:border-0" key={member.email}>
-                  <TableCell className="px-6 py-3">
-                    <p className="font-medium">{member.name}</p>
-                    <p className="text-muted-foreground text-xs">
-                      {member.email}
-                    </p>
-                  </TableCell>
-                  <TableCell className="px-6 py-3 text-right">
-                    <Badge variant="secondary">{member.role}</Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Preferences</CardTitle>
-          <CardDescription>
-            Defaults applied to everyone in this organization.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {[
-            {
-              description:
-                "Email a digest of agent activity every weekday morning.",
-              label: "Daily activity digest",
-              on: true,
-            },
-            {
-              description:
-                "Require a human review before an agent branch can merge.",
-              label: "Mandatory review",
-              on: true,
-            },
-            {
-              description: "Show experimental surfaces under a Labs section.",
-              label: "Labs features",
-              on: false,
-            },
-          ].map((pref) => (
-            <div
-              className="flex items-start justify-between gap-6"
-              key={pref.label}
-            >
-              <div className="space-y-0.5">
-                <p className="font-medium text-sm">{pref.label}</p>
-                <p className="text-muted-foreground text-xs">
-                  {pref.description}
-                </p>
-              </div>
-              <Switch defaultChecked={pref.on} />
+      {showOrganization ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Organization</CardTitle>
+            <CardDescription>
+              How your organization appears across the product.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-2 sm:max-w-sm">
+              <Label htmlFor="org-name">Name</Label>
+              <Input defaultValue="ClosedLoop" id="org-name" />
             </div>
-          ))}
-        </CardContent>
-      </Card>
+            <div className="grid gap-2 sm:max-w-sm">
+              <Label htmlFor="org-slug">URL slug</Label>
+              <Input defaultValue="closedloop" id="org-slug" />
+              <p className="text-muted-foreground text-xs">
+                app.closedloop.ai/closedloop
+              </p>
+            </div>
+            <Separator />
+            <div className="flex justify-end">
+              <Button>Save changes</Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {showMembers ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Members</CardTitle>
+            <CardDescription>People with access to this org.</CardDescription>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Table className="text-sm">
+              <TableBody>
+                {MEMBERS.slice(0, memberCount).map((member) => (
+                  <TableRow className="last:border-0" key={member.email}>
+                    <TableCell className="px-6 py-3">
+                      <p className="font-medium">{member.name}</p>
+                      <p className="text-muted-foreground text-xs">
+                        {member.email}
+                      </p>
+                    </TableCell>
+                    <TableCell className="px-6 py-3 text-right">
+                      <Badge variant="secondary">{member.role}</Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {showPreferences ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Preferences</CardTitle>
+            <CardDescription>
+              Defaults applied to everyone in this organization.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {[
+              {
+                description:
+                  "Email a digest of agent activity every weekday morning.",
+                label: "Daily activity digest",
+                on: true,
+              },
+              {
+                description:
+                  "Require a human review before an agent branch can merge.",
+                label: "Mandatory review",
+                on: true,
+              },
+              {
+                description: "Show experimental surfaces under a Labs section.",
+                label: "Labs features",
+                on: false,
+              },
+            ].map((pref) => (
+              <div
+                className="flex items-start justify-between gap-6"
+                key={pref.label}
+              >
+                <div className="space-y-0.5">
+                  <p className="font-medium text-sm">{pref.label}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {pref.description}
+                  </p>
+                </div>
+                <Switch defaultChecked={pref.on} />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   </AppScreenShell>
 );
@@ -207,11 +231,33 @@ const meta = {
       description: "Rows listed in the members table.",
       table: { category: "Content" },
     },
+    heading: { control: "text", table: { category: "Content" } },
+    description: { control: "text", table: { category: "Content" } },
+    showOrganization: {
+      control: "boolean",
+      description: "The Organization card.",
+      table: { category: "Composition" },
+    },
+    showMembers: {
+      control: "boolean",
+      description: "The Members card.",
+      table: { category: "Composition" },
+    },
+    showPreferences: {
+      control: "boolean",
+      description: "The Preferences card.",
+      table: { category: "Composition" },
+    },
   },
   args: {
     activePath: "/settings",
     activeTab: "general",
+    description: SETTINGS_COPY.description,
+    heading: SETTINGS_COPY.heading,
     memberCount: MEMBERS.length,
+    showMembers: true,
+    showOrganization: true,
+    showPreferences: true,
   },
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof SettingsScreen>;
@@ -221,3 +267,19 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+/** A brand new org, before anyone else has been invited. */
+export const NoMembers: Story = {
+  name: "No members",
+  args: { memberCount: 0 },
+};
+
+/** The Members tab in isolation. */
+export const MembersOnly: Story = {
+  name: "Members only",
+  args: {
+    activeTab: "members",
+    showOrganization: false,
+    showPreferences: false,
+  },
+};
