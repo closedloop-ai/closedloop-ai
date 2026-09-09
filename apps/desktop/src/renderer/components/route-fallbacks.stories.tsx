@@ -23,7 +23,7 @@ import {
  * "Loading..." on an otherwise blank body that a cold detail open used to show.
  */
 const meta = {
-  title: "Desktop App/Shell/Route Fallbacks",
+  title: "Desktop App/App Shell/Route Fallbacks",
   component: DetailRouteFallback,
   tags: ["autodocs"],
   argTypes: {
