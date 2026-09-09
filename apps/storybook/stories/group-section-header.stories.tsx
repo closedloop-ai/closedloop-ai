@@ -42,7 +42,7 @@ function GroupSectionHeaderDemo({
 }
 
 const meta = {
-  title: "Design System/Primitives/Group Section Header",
+  title: "Design System/Layout/Group Section Header",
   component: GroupSectionHeaderDemo,
   tags: ["autodocs"],
   argTypes: {

@@ -2,7 +2,7 @@ import { CodeBlock } from "@repo/design-system/components/ui/primitives/code-blo
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/Code Block",
+  title: "Design System/Documents & Conversation/Code Block",
   component: CodeBlock,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

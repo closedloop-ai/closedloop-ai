@@ -15,7 +15,7 @@ import { fn } from "storybook/test";
  * A drawer component for React.
  */
 const meta: Meta<typeof Drawer> = {
-  title: "Design System/Primitives/Drawer",
+  title: "Design System/Overlays/Drawer",
   component: Drawer,
   tags: ["autodocs"],
   argTypes: {

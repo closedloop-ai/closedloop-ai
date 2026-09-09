@@ -16,7 +16,7 @@ import { fn } from "storybook/test";
  * content of the screen.
  */
 const meta: Meta<typeof SheetContent> = {
-  title: "Design System/Primitives/Sheet",
+  title: "Design System/Overlays/Sheet",
   component: Sheet,
   tags: ["autodocs"],
   argTypes: {

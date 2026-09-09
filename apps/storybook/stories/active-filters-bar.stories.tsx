@@ -246,7 +246,7 @@ function SurfaceChip({ label }: { label: string }) {
 }
 
 const meta = {
-  title: "Design System/Primitives/Active Filters Bar",
+  title: "Design System/Data Display/Tables/Active Filters Bar",
   component: ActiveFiltersBarDemo,
   tags: ["autodocs"],
   argTypes: {

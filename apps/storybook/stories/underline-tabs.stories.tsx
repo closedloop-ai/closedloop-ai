@@ -32,7 +32,7 @@ const UnderlineTabsCanvas = () => {
 };
 
 const meta = {
-  title: "Design System/Primitives/Underline Tabs",
+  title: "Design System/Navigation & Shell/Underline Tabs",
   component: UnderlineTabsCanvas,
   tags: ["autodocs"],
 } satisfies Meta<typeof UnderlineTabsCanvas>;

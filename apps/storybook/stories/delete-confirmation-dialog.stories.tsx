@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Primitives/Delete Confirmation Dialog",
+  title: "Design System/Overlays/Delete Confirmation Dialog",
   component: DeleteConfirmationDialog,
   tags: ["autodocs"],
   argTypes: {

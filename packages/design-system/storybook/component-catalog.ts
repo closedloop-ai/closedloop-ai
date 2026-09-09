@@ -21,39 +21,6 @@ export type StorybookCatalogEntry = {
 export const designSystemComponentCatalog =
   [
   {
-    "id": "active-filters-bar",
-    "label": "Active Filters Bar",
-    "sourcePath": "packages/design-system/components/ui/active-filters-bar.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "active-filters-bar",
-    "storyTitle": "Design System/Primitives/Active Filters Bar"
-  },
-  {
-    "id": "alert",
-    "label": "Alert",
-    "sourcePath": "packages/design-system/components/ui/alert.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "alert",
-    "storyTitle": "Design System/Primitives/Alert"
-  },
-  {
-    "id": "alert-dialog",
-    "label": "Alert Dialog",
-    "sourcePath": "packages/design-system/components/ui/alert-dialog.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "alert-dialog",
-    "storyTitle": "Design System/Primitives/Alert Dialog"
-  },
-  {
     "id": "brand-icons",
     "label": "Brand Icons",
     "sourcePath": "packages/design-system/components/ui/brand-icons.tsx",
@@ -87,17 +54,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Calendar"
   },
   {
-    "id": "category-bar-chart",
-    "label": "Category Bar Chart",
-    "sourcePath": "packages/design-system/components/ui/category-bar-chart.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "category-bar-chart",
-    "storyTitle": "Design System/Primitives/Category Bar Chart"
-  },
-  {
     "id": "checkbox",
     "label": "Checkbox",
     "sourcePath": "packages/design-system/components/ui/checkbox.tsx",
@@ -120,61 +76,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Chip"
   },
   {
-    "id": "code-block",
-    "label": "Code Block",
-    "sourcePath": "packages/design-system/components/ui/primitives/code-block.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "code-block",
-    "storyTitle": "Design System/Primitives/Code Block"
-  },
-  {
-    "id": "collapsible",
-    "label": "Collapsible",
-    "sourcePath": "packages/design-system/components/ui/collapsible.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "collapsible",
-    "storyTitle": "Design System/Primitives/Collapsible"
-  },
-  {
-    "id": "collapsible-section",
-    "label": "Collapsible Section",
-    "sourcePath": "packages/design-system/components/ui/collapsible-section.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "collapsible-section",
-    "storyTitle": "Design System/Primitives/Collapsible Section"
-  },
-  {
-    "id": "command",
-    "label": "Command",
-    "sourcePath": "packages/design-system/components/ui/command.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "command",
-    "storyTitle": "Design System/Primitives/Command"
-  },
-  {
-    "id": "conversation-message",
-    "label": "Conversation Message",
-    "sourcePath": "packages/design-system/components/ui/conversation-message.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "conversation-message",
-    "storyTitle": "Design System/Primitives/Conversation Message"
-  },
-  {
     "id": "copy-button",
     "label": "Copy Button",
     "sourcePath": "packages/design-system/components/ui/primitives/copy-button.tsx",
@@ -184,28 +85,6 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "copy-button",
     "storyTitle": "Design System/Primitives/Copy Button"
-  },
-  {
-    "id": "date-picker-popover",
-    "label": "Date Picker Popover",
-    "sourcePath": "packages/design-system/components/ui/date-picker-popover.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "date-picker-popover",
-    "storyTitle": "Design System/Primitives/Date Picker Popover"
-  },
-  {
-    "id": "dialog",
-    "label": "Dialog",
-    "sourcePath": "packages/design-system/components/ui/dialog.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "dialog",
-    "storyTitle": "Design System/Primitives/Dialog"
   },
   {
     "id": "donut-slice-textures",
@@ -219,39 +98,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Donut Slice Textures"
   },
   {
-    "id": "drawer",
-    "label": "Drawer",
-    "sourcePath": "packages/design-system/components/ui/drawer.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "drawer",
-    "storyTitle": "Design System/Primitives/Drawer"
-  },
-  {
-    "id": "dropdown-menu",
-    "label": "Dropdown Menu",
-    "sourcePath": "packages/design-system/components/ui/dropdown-menu.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "dropdown-menu",
-    "storyTitle": "Design System/Primitives/Dropdown Menu"
-  },
-  {
-    "id": "empty-state",
-    "label": "Empty State",
-    "sourcePath": "packages/design-system/components/ui/empty-state.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "empty-state",
-    "storyTitle": "Design System/Primitives/Empty State"
-  },
-  {
     "id": "favorite-button",
     "label": "Favorite Button",
     "sourcePath": "packages/design-system/components/ui/favorite-button.tsx",
@@ -261,39 +107,6 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "favorite-button",
     "storyTitle": "Design System/Primitives/Favorite Button"
-  },
-  {
-    "id": "file-list",
-    "label": "File List",
-    "sourcePath": "packages/design-system/components/ui/primitives/file-list.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "file-list",
-    "storyTitle": "Design System/Primitives/File List"
-  },
-  {
-    "id": "filter-chip",
-    "label": "Filter Chip",
-    "sourcePath": "packages/design-system/components/ui/filter-chip.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "filter-chip",
-    "storyTitle": "Design System/Primitives/Filter Chip"
-  },
-  {
-    "id": "filter-popover",
-    "label": "Filter Popover",
-    "sourcePath": "packages/design-system/components/ui/filter-popover.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "filter-popover",
-    "storyTitle": "Design System/Primitives/Filter Popover"
   },
   {
     "id": "filter-range-submenu",
@@ -333,28 +146,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Grid Table Card"
   },
   {
-    "id": "group-section-header",
-    "label": "Group Section Header",
-    "sourcePath": "packages/design-system/components/ui/group-section-header.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "group-section-header",
-    "storyTitle": "Design System/Primitives/Group Section Header"
-  },
-  {
-    "id": "info-hint",
-    "label": "Info Hint",
-    "sourcePath": "packages/design-system/components/ui/primitives/info-hint.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "info-hint",
-    "storyTitle": "Design System/Primitives/Info Hint"
-  },
-  {
     "id": "input",
     "label": "Input",
     "sourcePath": "packages/design-system/components/ui/input.tsx",
@@ -366,17 +157,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Input"
   },
   {
-    "id": "key-value-grid",
-    "label": "Key Value Grid",
-    "sourcePath": "packages/design-system/components/ui/primitives/key-value-grid.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "key-value-grid",
-    "storyTitle": "Design System/Primitives/Key Value Grid"
-  },
-  {
     "id": "label",
     "label": "Label",
     "sourcePath": "packages/design-system/components/ui/label.tsx",
@@ -386,61 +166,6 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "label",
     "storyTitle": "Design System/Primitives/Label"
-  },
-  {
-    "id": "markdown-content",
-    "label": "Markdown Content",
-    "sourcePath": "packages/design-system/components/ui/primitives/markdown-content.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "markdown-content",
-    "storyTitle": "Design System/Primitives/Markdown Content"
-  },
-  {
-    "id": "match-list",
-    "label": "Match List",
-    "sourcePath": "packages/design-system/components/ui/primitives/match-list.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "match-list",
-    "storyTitle": "Design System/Primitives/Match List"
-  },
-  {
-    "id": "metadata-panel",
-    "label": "Metadata Panel",
-    "sourcePath": "packages/design-system/components/ui/metadata-panel.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "metadata-panel",
-    "storyTitle": "Design System/Primitives/Metadata Panel"
-  },
-  {
-    "id": "metric-card",
-    "label": "Metric Card",
-    "sourcePath": "packages/design-system/components/ui/primitives/metric-card.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "metric-card",
-    "storyTitle": "Design System/Primitives/Metric Card"
-  },
-  {
-    "id": "popover",
-    "label": "Popover",
-    "sourcePath": "packages/design-system/components/ui/popover.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "popover",
-    "storyTitle": "Design System/Primitives/Popover"
   },
   {
     "id": "progress",
@@ -476,28 +201,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Select"
   },
   {
-    "id": "sheet",
-    "label": "Sheet",
-    "sourcePath": "packages/design-system/components/ui/sheet.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "sheet",
-    "storyTitle": "Design System/Primitives/Sheet"
-  },
-  {
-    "id": "sidebar-count-badge",
-    "label": "Sidebar Count Badge",
-    "sourcePath": "packages/design-system/components/ui/sidebar-count-badge.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "sidebar-count-badge",
-    "storyTitle": "Design System/Primitives/Sidebar Count Badge"
-  },
-  {
     "id": "skeleton",
     "label": "Skeleton",
     "sourcePath": "packages/design-system/components/ui/skeleton.tsx",
@@ -507,28 +210,6 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "skeleton",
     "storyTitle": "Design System/Primitives/Skeleton"
-  },
-  {
-    "id": "sonner",
-    "label": "Sonner",
-    "sourcePath": "packages/design-system/components/ui/sonner.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "sonner",
-    "storyTitle": "Design System/Primitives/Sonner"
-  },
-  {
-    "id": "sortable-column-header",
-    "label": "Sortable Column Header",
-    "sourcePath": "packages/design-system/components/ui/sortable-column-header.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "sortable-column-header",
-    "storyTitle": "Design System/Primitives/Sortable Column Header"
   },
   {
     "id": "star-rating",
@@ -542,28 +223,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Star Rating"
   },
   {
-    "id": "status-badge",
-    "label": "Status Badge",
-    "sourcePath": "packages/design-system/components/ui/primitives/status-badge.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "status-badge",
-    "storyTitle": "Design System/Primitives/Status Badge"
-  },
-  {
-    "id": "status-icon-primitives",
-    "label": "Status Icon Primitives",
-    "sourcePath": "packages/design-system/components/ui/status-icon-primitives.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "status-icon-primitives",
-    "storyTitle": "Design System/Primitives/Status Icon Primitives"
-  },
-  {
     "id": "switch",
     "label": "Switch",
     "sourcePath": "packages/design-system/components/ui/switch.tsx",
@@ -575,83 +234,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Switch"
   },
   {
-    "id": "table-grid-column-menu",
-    "label": "Table Grid Column Menu",
-    "sourcePath": "packages/design-system/components/ui/table-grid-column-menu.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-grid-column-menu",
-    "storyTitle": "Design System/Primitives/Table Grid Column Menu"
-  },
-  {
-    "id": "table-grid-header",
-    "label": "Table Grid Header",
-    "sourcePath": "packages/design-system/components/ui/table-grid-header.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-grid-header",
-    "storyTitle": "Design System/Primitives/Table Grid Header"
-  },
-  {
-    "id": "table-grid-header-handles",
-    "label": "Table Grid Header Handles",
-    "sourcePath": "packages/design-system/components/ui/table-grid-header-handles.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-grid-header-handles",
-    "storyTitle": "Design System/Primitives/Table Grid Header Handles"
-  },
-  {
-    "id": "table-page-size-select",
-    "label": "Table Page Size Select",
-    "sourcePath": "packages/design-system/components/ui/table-page-size-select.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-page-size-select",
-    "storyTitle": "Design System/Primitives/Table Page Size Select"
-  },
-  {
-    "id": "table-saved-views-switcher",
-    "label": "Table Saved Views Switcher",
-    "sourcePath": "packages/design-system/components/ui/table-saved-views-switcher.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-saved-views-switcher",
-    "storyTitle": "Design System/Primitives/Table Saved Views Switcher"
-  },
-  {
-    "id": "table-view-menu",
-    "label": "Table View Menu",
-    "sourcePath": "packages/design-system/components/ui/table-view-menu.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "table-view-menu",
-    "storyTitle": "Design System/Primitives/Table View Menu"
-  },
-  {
-    "id": "terminal-block",
-    "label": "Terminal Block",
-    "sourcePath": "packages/design-system/components/ui/primitives/terminal-block.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "terminal-block",
-    "storyTitle": "Design System/Primitives/Terminal Block"
-  },
-  {
     "id": "textarea",
     "label": "Textarea",
     "sourcePath": "packages/design-system/components/ui/textarea.tsx",
@@ -661,17 +243,6 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "textarea",
     "storyTitle": "Design System/Primitives/Textarea"
-  },
-  {
-    "id": "time-series-area-chart",
-    "label": "Time Series Area Chart",
-    "sourcePath": "packages/design-system/components/ui/time-series-area-chart.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "time-series-area-chart",
-    "storyTitle": "Design System/Primitives/Time Series Area Chart"
   },
   {
     "id": "toggle",
@@ -696,50 +267,6 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Toggle Group"
   },
   {
-    "id": "tooltip",
-    "label": "Tooltip",
-    "sourcePath": "packages/design-system/components/ui/tooltip.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "tooltip",
-    "storyTitle": "Design System/Primitives/Tooltip"
-  },
-  {
-    "id": "underline-tabs",
-    "label": "Underline Tabs",
-    "sourcePath": "packages/design-system/components/ui/primitives/underline-tabs.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "underline-tabs",
-    "storyTitle": "Design System/Primitives/Underline Tabs"
-  },
-  {
-    "id": "unified-diff",
-    "label": "Unified Diff",
-    "sourcePath": "packages/design-system/components/ui/primitives/unified-diff.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "unified-diff",
-    "storyTitle": "Design System/Primitives/Unified Diff"
-  },
-  {
-    "id": "user-select-popover",
-    "label": "User Select Popover",
-    "sourcePath": "packages/design-system/components/ui/user-select-popover.tsx",
-    "section": "Design System",
-    "pathSegments": [
-      "Primitives"
-    ],
-    "storyId": "user-select-popover",
-    "storyTitle": "Design System/Primitives/User Select Popover"
-  },
-  {
     "id": "workflow-stat-tile",
     "label": "Workflow Stat Tile",
     "sourcePath": "packages/design-system/components/ui/primitives/workflow-stat-tile.tsx",
@@ -751,6 +278,193 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Primitives/Workflow Stat Tile"
   },
   {
+    "id": "alert-dialog",
+    "label": "Alert Dialog",
+    "sourcePath": "packages/design-system/components/ui/alert-dialog.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "alert-dialog",
+    "storyTitle": "Design System/Overlays/Alert Dialog"
+  },
+  {
+    "id": "command",
+    "label": "Command",
+    "sourcePath": "packages/design-system/components/ui/command.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "command",
+    "storyTitle": "Design System/Overlays/Command"
+  },
+  {
+    "id": "date-picker-popover",
+    "label": "Date Picker Popover",
+    "sourcePath": "packages/design-system/components/ui/date-picker-popover.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "date-picker-popover",
+    "storyTitle": "Design System/Overlays/Date Picker Popover"
+  },
+  {
+    "id": "dialog",
+    "label": "Dialog",
+    "sourcePath": "packages/design-system/components/ui/dialog.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "dialog",
+    "storyTitle": "Design System/Overlays/Dialog"
+  },
+  {
+    "id": "drawer",
+    "label": "Drawer",
+    "sourcePath": "packages/design-system/components/ui/drawer.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "drawer",
+    "storyTitle": "Design System/Overlays/Drawer"
+  },
+  {
+    "id": "dropdown-menu",
+    "label": "Dropdown Menu",
+    "sourcePath": "packages/design-system/components/ui/dropdown-menu.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "dropdown-menu",
+    "storyTitle": "Design System/Overlays/Dropdown Menu"
+  },
+  {
+    "id": "filter-popover",
+    "label": "Filter Popover",
+    "sourcePath": "packages/design-system/components/ui/filter-popover.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "filter-popover",
+    "storyTitle": "Design System/Overlays/Filter Popover"
+  },
+  {
+    "id": "popover",
+    "label": "Popover",
+    "sourcePath": "packages/design-system/components/ui/popover.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "popover",
+    "storyTitle": "Design System/Overlays/Popover"
+  },
+  {
+    "id": "sheet",
+    "label": "Sheet",
+    "sourcePath": "packages/design-system/components/ui/sheet.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "sheet",
+    "storyTitle": "Design System/Overlays/Sheet"
+  },
+  {
+    "id": "sonner",
+    "label": "Sonner",
+    "sourcePath": "packages/design-system/components/ui/sonner.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "sonner",
+    "storyTitle": "Design System/Overlays/Sonner"
+  },
+  {
+    "id": "tooltip",
+    "label": "Tooltip",
+    "sourcePath": "packages/design-system/components/ui/tooltip.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "tooltip",
+    "storyTitle": "Design System/Overlays/Tooltip"
+  },
+  {
+    "id": "user-select-popover",
+    "label": "User Select Popover",
+    "sourcePath": "packages/design-system/components/ui/user-select-popover.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Overlays"
+    ],
+    "storyId": "user-select-popover",
+    "storyTitle": "Design System/Overlays/User Select Popover"
+  },
+  {
+    "id": "alert",
+    "label": "Alert",
+    "sourcePath": "packages/design-system/components/ui/alert.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Feedback & Status"
+    ],
+    "storyId": "alert",
+    "storyTitle": "Design System/Feedback & Status/Alert"
+  },
+  {
+    "id": "empty-state",
+    "label": "Empty State",
+    "sourcePath": "packages/design-system/components/ui/empty-state.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Feedback & Status"
+    ],
+    "storyId": "empty-state",
+    "storyTitle": "Design System/Feedback & Status/Empty State"
+  },
+  {
+    "id": "info-hint",
+    "label": "Info Hint",
+    "sourcePath": "packages/design-system/components/ui/primitives/info-hint.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Feedback & Status"
+    ],
+    "storyId": "info-hint",
+    "storyTitle": "Design System/Feedback & Status/Info Hint"
+  },
+  {
+    "id": "status-badge",
+    "label": "Status Badge",
+    "sourcePath": "packages/design-system/components/ui/primitives/status-badge.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Feedback & Status"
+    ],
+    "storyId": "status-badge",
+    "storyTitle": "Design System/Feedback & Status/Status Badge"
+  },
+  {
+    "id": "status-icon-primitives",
+    "label": "Status Icon Primitives",
+    "sourcePath": "packages/design-system/components/ui/status-icon-primitives.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Feedback & Status"
+    ],
+    "storyId": "status-icon-primitives",
+    "storyTitle": "Design System/Feedback & Status/Status Icon Primitives"
+  },
+  {
     "id": "card",
     "label": "Card",
     "sourcePath": "packages/design-system/components/ui/card.tsx",
@@ -760,6 +474,39 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "card",
     "storyTitle": "Design System/Layout/Card"
+  },
+  {
+    "id": "collapsible",
+    "label": "Collapsible",
+    "sourcePath": "packages/design-system/components/ui/collapsible.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Layout"
+    ],
+    "storyId": "collapsible",
+    "storyTitle": "Design System/Layout/Collapsible"
+  },
+  {
+    "id": "collapsible-section",
+    "label": "Collapsible Section",
+    "sourcePath": "packages/design-system/components/ui/collapsible-section.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Layout"
+    ],
+    "storyId": "collapsible-section",
+    "storyTitle": "Design System/Layout/Collapsible Section"
+  },
+  {
+    "id": "group-section-header",
+    "label": "Group Section Header",
+    "sourcePath": "packages/design-system/components/ui/group-section-header.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Layout"
+    ],
+    "storyId": "group-section-header",
+    "storyTitle": "Design System/Layout/Group Section Header"
   },
   {
     "id": "kanban-board",
@@ -872,6 +619,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Navigation & Shell/Sidebar Collapsible Section"
   },
   {
+    "id": "sidebar-count-badge",
+    "label": "Sidebar Count Badge",
+    "sourcePath": "packages/design-system/components/ui/sidebar-count-badge.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Navigation & Shell"
+    ],
+    "storyId": "sidebar-count-badge",
+    "storyTitle": "Design System/Navigation & Shell/Sidebar Count Badge"
+  },
+  {
     "id": "tabs",
     "label": "Tabs",
     "sourcePath": "packages/design-system/components/ui/tabs.tsx",
@@ -892,6 +650,29 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "theme-submenu",
     "storyTitle": "Design System/Navigation & Shell/Theme Submenu"
+  },
+  {
+    "id": "underline-tabs",
+    "label": "Underline Tabs",
+    "sourcePath": "packages/design-system/components/ui/primitives/underline-tabs.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Navigation & Shell"
+    ],
+    "storyId": "underline-tabs",
+    "storyTitle": "Design System/Navigation & Shell/Underline Tabs"
+  },
+  {
+    "id": "active-filters-bar",
+    "label": "Active Filters Bar",
+    "sourcePath": "packages/design-system/components/ui/active-filters-bar.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "active-filters-bar",
+    "storyTitle": "Design System/Data Display/Tables/Active Filters Bar"
   },
   {
     "id": "activity-heatmap",
@@ -939,6 +720,18 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Badge"
   },
   {
+    "id": "category-bar-chart",
+    "label": "Category Bar Chart",
+    "sourcePath": "packages/design-system/components/ui/category-bar-chart.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Data Visualization"
+    ],
+    "storyId": "category-bar-chart",
+    "storyTitle": "Design System/Data Display/Data Visualization/Category Bar Chart"
+  },
+  {
     "id": "chart",
     "label": "Chart",
     "sourcePath": "packages/design-system/components/ui/chart.tsx",
@@ -973,6 +766,29 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Data Visualization/Donut Chart"
   },
   {
+    "id": "file-list",
+    "label": "File List",
+    "sourcePath": "packages/design-system/components/ui/primitives/file-list.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display"
+    ],
+    "storyId": "file-list",
+    "storyTitle": "Design System/Data Display/File List"
+  },
+  {
+    "id": "filter-chip",
+    "label": "Filter Chip",
+    "sourcePath": "packages/design-system/components/ui/filter-chip.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "filter-chip",
+    "storyTitle": "Design System/Data Display/Tables/Filter Chip"
+  },
+  {
     "id": "graph",
     "label": "Graph",
     "sourcePath": "packages/design-system/components/ui/primitives/graph.tsx",
@@ -996,6 +812,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Grid Table"
   },
   {
+    "id": "key-value-grid",
+    "label": "Key Value Grid",
+    "sourcePath": "packages/design-system/components/ui/primitives/key-value-grid.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display"
+    ],
+    "storyId": "key-value-grid",
+    "storyTitle": "Design System/Data Display/Key Value Grid"
+  },
+  {
     "id": "line-chart",
     "label": "Line Chart",
     "sourcePath": "packages/design-system/components/ui/primitives/line-chart.tsx",
@@ -1006,6 +833,39 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "line-chart",
     "storyTitle": "Design System/Data Display/Data Visualization/Line Chart"
+  },
+  {
+    "id": "match-list",
+    "label": "Match List",
+    "sourcePath": "packages/design-system/components/ui/primitives/match-list.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display"
+    ],
+    "storyId": "match-list",
+    "storyTitle": "Design System/Data Display/Match List"
+  },
+  {
+    "id": "metadata-panel",
+    "label": "Metadata Panel",
+    "sourcePath": "packages/design-system/components/ui/metadata-panel.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display"
+    ],
+    "storyId": "metadata-panel",
+    "storyTitle": "Design System/Data Display/Metadata Panel"
+  },
+  {
+    "id": "metric-card",
+    "label": "Metric Card",
+    "sourcePath": "packages/design-system/components/ui/primitives/metric-card.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display"
+    ],
+    "storyId": "metric-card",
+    "storyTitle": "Design System/Data Display/Metric Card"
   },
   {
     "id": "priority-badge",
@@ -1066,6 +926,18 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Data Visualization/Segmented Bar"
   },
   {
+    "id": "sortable-column-header",
+    "label": "Sortable Column Header",
+    "sourcePath": "packages/design-system/components/ui/sortable-column-header.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "sortable-column-header",
+    "storyTitle": "Design System/Data Display/Tables/Sortable Column Header"
+  },
+  {
     "id": "sparkline",
     "label": "Sparkline",
     "sourcePath": "packages/design-system/components/ui/primitives/sparkline.tsx",
@@ -1122,6 +994,54 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Table Filter Menu"
   },
   {
+    "id": "table-grid-column-menu",
+    "label": "Table Grid Column Menu",
+    "sourcePath": "packages/design-system/components/ui/table-grid-column-menu.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-grid-column-menu",
+    "storyTitle": "Design System/Data Display/Tables/Table Grid Column Menu"
+  },
+  {
+    "id": "table-grid-header",
+    "label": "Table Grid Header",
+    "sourcePath": "packages/design-system/components/ui/table-grid-header.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-grid-header",
+    "storyTitle": "Design System/Data Display/Tables/Table Grid Header"
+  },
+  {
+    "id": "table-grid-header-handles",
+    "label": "Table Grid Header Handles",
+    "sourcePath": "packages/design-system/components/ui/table-grid-header-handles.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-grid-header-handles",
+    "storyTitle": "Design System/Data Display/Tables/Table Grid Header Handles"
+  },
+  {
+    "id": "table-page-size-select",
+    "label": "Table Page Size Select",
+    "sourcePath": "packages/design-system/components/ui/table-page-size-select.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-page-size-select",
+    "storyTitle": "Design System/Data Display/Tables/Table Page Size Select"
+  },
+  {
     "id": "table-pagination",
     "label": "Table Pagination",
     "sourcePath": "packages/design-system/components/ui/table-pagination.tsx",
@@ -1155,6 +1075,42 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Data Display/Table Placeholder Actions"
   },
   {
+    "id": "table-saved-views-switcher",
+    "label": "Table Saved Views Switcher",
+    "sourcePath": "packages/design-system/components/ui/table-saved-views-switcher.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-saved-views-switcher",
+    "storyTitle": "Design System/Data Display/Tables/Table Saved Views Switcher"
+  },
+  {
+    "id": "table-view-menu",
+    "label": "Table View Menu",
+    "sourcePath": "packages/design-system/components/ui/table-view-menu.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Tables"
+    ],
+    "storyId": "table-view-menu",
+    "storyTitle": "Design System/Data Display/Tables/Table View Menu"
+  },
+  {
+    "id": "time-series-area-chart",
+    "label": "Time Series Area Chart",
+    "sourcePath": "packages/design-system/components/ui/time-series-area-chart.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Data Display",
+      "Data Visualization"
+    ],
+    "storyId": "time-series-area-chart",
+    "storyTitle": "Design System/Data Display/Data Visualization/Time Series Area Chart"
+  },
+  {
     "id": "tone-label",
     "label": "Tone Label",
     "sourcePath": "packages/design-system/components/ui/tone-label.tsx",
@@ -1164,6 +1120,17 @@ export const designSystemComponentCatalog =
     ],
     "storyId": "tone-label",
     "storyTitle": "Design System/Data Display/Tone Label"
+  },
+  {
+    "id": "code-block",
+    "label": "Code Block",
+    "sourcePath": "packages/design-system/components/ui/primitives/code-block.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Documents & Conversation"
+    ],
+    "storyId": "code-block",
+    "storyTitle": "Design System/Documents & Conversation/Code Block"
   },
   {
     "id": "collapsed-comment-row",
@@ -1221,6 +1188,17 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Documents & Conversation/Comment Thread Action Footer"
   },
   {
+    "id": "conversation-message",
+    "label": "Conversation Message",
+    "sourcePath": "packages/design-system/components/ui/conversation-message.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Documents & Conversation"
+    ],
+    "storyId": "conversation-message",
+    "storyTitle": "Design System/Documents & Conversation/Conversation Message"
+  },
+  {
     "id": "conversation-transcript",
     "label": "Conversation Transcript",
     "sourcePath": "packages/design-system/components/ui/conversation-transcript.tsx",
@@ -1254,6 +1232,39 @@ export const designSystemComponentCatalog =
     "storyTitle": "Design System/Documents & Conversation/Inline Edit Editor Shell"
   },
   {
+    "id": "markdown-content",
+    "label": "Markdown Content",
+    "sourcePath": "packages/design-system/components/ui/primitives/markdown-content.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Documents & Conversation"
+    ],
+    "storyId": "markdown-content",
+    "storyTitle": "Design System/Documents & Conversation/Markdown Content"
+  },
+  {
+    "id": "terminal-block",
+    "label": "Terminal Block",
+    "sourcePath": "packages/design-system/components/ui/primitives/terminal-block.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Documents & Conversation"
+    ],
+    "storyId": "terminal-block",
+    "storyTitle": "Design System/Documents & Conversation/Terminal Block"
+  },
+  {
+    "id": "unified-diff",
+    "label": "Unified Diff",
+    "sourcePath": "packages/design-system/components/ui/primitives/unified-diff.tsx",
+    "section": "Design System",
+    "pathSegments": [
+      "Documents & Conversation"
+    ],
+    "storyId": "unified-diff",
+    "storyTitle": "Design System/Documents & Conversation/Unified Diff"
+  },
+  {
     "id": "status-metadata-section",
     "label": "Status Metadata Section",
     "sourcePath": "packages/design-system/components/ui/status-metadata-section.tsx",
@@ -1274,10 +1285,10 @@ export const appComponentCatalog =
     "sourcePath": "packages/app/compute/components/backend-mismatch-modal.tsx",
     "section": "Design System",
     "pathSegments": [
-      "Primitives"
+      "Overlays"
     ],
     "storyId": "backend-mismatch-modal",
-    "storyTitle": "Design System/Primitives/Backend Mismatch Modal"
+    "storyTitle": "Design System/Overlays/Backend Mismatch Modal"
   },
   {
     "id": "confirmation-dialog",
@@ -1285,10 +1296,10 @@ export const appComponentCatalog =
     "sourcePath": "packages/app/shared/components/confirmation-dialog.tsx",
     "section": "Design System",
     "pathSegments": [
-      "Primitives"
+      "Overlays"
     ],
     "storyId": "confirmation-dialog",
-    "storyTitle": "Design System/Primitives/Confirmation Dialog"
+    "storyTitle": "Design System/Overlays/Confirmation Dialog"
   },
   {
     "id": "delete-confirmation-dialog",
@@ -1296,10 +1307,10 @@ export const appComponentCatalog =
     "sourcePath": "packages/app/shared/components/delete-confirmation-dialog.tsx",
     "section": "Design System",
     "pathSegments": [
-      "Primitives"
+      "Overlays"
     ],
     "storyId": "delete-confirmation-dialog",
-    "storyTitle": "Design System/Primitives/Delete Confirmation Dialog"
+    "storyTitle": "Design System/Overlays/Delete Confirmation Dialog"
   },
   {
     "id": "friendly-error-alert",
@@ -1307,10 +1318,10 @@ export const appComponentCatalog =
     "sourcePath": "packages/app/shared/components/friendly-error-alert.tsx",
     "section": "Design System",
     "pathSegments": [
-      "Primitives"
+      "Feedback & Status"
     ],
     "storyId": "friendly-error-alert",
-    "storyTitle": "Design System/Primitives/Friendly Error Alert"
+    "storyTitle": "Design System/Feedback & Status/Friendly Error Alert"
   },
   {
     "id": "page-loading-spinner",
@@ -1318,10 +1329,10 @@ export const appComponentCatalog =
     "sourcePath": "packages/app/shared/components/page-loading-spinner.tsx",
     "section": "Design System",
     "pathSegments": [
-      "Primitives"
+      "Feedback & Status"
     ],
     "storyId": "page-loading-spinner",
-    "storyTitle": "Design System/Primitives/Page Loading Spinner"
+    "storyTitle": "Design System/Feedback & Status/Page Loading Spinner"
   }
 ] as const satisfies readonly StorybookCatalogEntry[];
 

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Primitives/Date Picker Popover",
+  title: "Design System/Overlays/Date Picker Popover",
   component: DatePickerPopover,
   tags: ["autodocs"],
   argTypes: {
