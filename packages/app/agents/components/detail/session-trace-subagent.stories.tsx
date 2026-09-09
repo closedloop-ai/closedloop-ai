@@ -140,7 +140,7 @@ function TraceFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Trace Subagent",
+  title: "App Core/Agents/Timeline/Session Trace Subagent",
   component: SessionTraceSubagent,
   tags: ["autodocs"],
   argTypes: {

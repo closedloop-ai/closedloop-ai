@@ -41,7 +41,7 @@ const meta: Meta<typeof SessionTimelineControls> = {
   component: SessionTimelineControls,
   parameters: { layout: "padded" },
   tags: ["autodocs"],
-  title: "App Core/Agents/Session Timeline Controls",
+  title: "App Core/Agents/Timeline/Session Timeline Controls",
 };
 
 export default meta;

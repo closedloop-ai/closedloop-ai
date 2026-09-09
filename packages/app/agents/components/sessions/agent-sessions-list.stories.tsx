@@ -32,7 +32,7 @@ import {
  * private one (see `apps/storybook/__tests__/app-core-harness-single-mount.test.ts`).
  */
 const meta = {
-  title: "App Core/Agents/Agent Sessions List",
+  title: "App Core/Agents/Sessions/Agent Sessions List",
   component: AgentSessionsListContent,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },

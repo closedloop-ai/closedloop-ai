@@ -80,7 +80,7 @@ const NO_USERS_PARAMETERS = {
 };
 
 const meta = {
-  title: "App Core/Agents/Trace Comments Rail",
+  title: "App Core/Agents/Timeline/Trace Comments Rail",
   component: TraceCommentsRail,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

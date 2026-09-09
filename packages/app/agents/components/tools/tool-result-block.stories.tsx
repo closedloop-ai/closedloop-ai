@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ToolResultBlock } from "./tool-result-block";
 
 const meta = {
-  title: "App Core/Agents/Tool Result Block",
+  title: "App Core/Agents/Tools/Tool Result Block",
   component: ToolResultBlock,
   tags: ["autodocs"],
   argTypes: {

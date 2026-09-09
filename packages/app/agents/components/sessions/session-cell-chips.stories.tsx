@@ -18,7 +18,7 @@ import {
  * while its neighbours keep the treatment.
  */
 const meta: Meta = {
-  title: "App Core/Agents/Session Cell Chips",
+  title: "App Core/Agents/Sessions/Session Cell Chips",
 };
 
 export default meta;

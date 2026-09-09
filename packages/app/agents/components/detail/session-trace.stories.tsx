@@ -60,7 +60,7 @@ const staffDecorator: Decorator = (Story) => (
  * list to an empty set.
  */
 const meta = {
-  title: "App Core/Agents/Session Trace",
+  title: "App Core/Agents/Timeline/Session Trace",
   component: SessionTrace,
   tags: ["autodocs"],
   argTypes: {

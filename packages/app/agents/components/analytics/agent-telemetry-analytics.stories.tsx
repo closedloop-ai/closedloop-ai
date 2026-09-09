@@ -127,7 +127,7 @@ const meta: Meta<typeof AgentTelemetryAnalytics> = {
     organizationFiltersEnabled: false,
   },
   parameters: { appCore: { apiRoutes: storyApiRoutes } },
-  title: "App Core/Agents/Telemetry Analytics",
+  title: "App Core/Agents/Overview/Telemetry Analytics",
 };
 
 export default meta;

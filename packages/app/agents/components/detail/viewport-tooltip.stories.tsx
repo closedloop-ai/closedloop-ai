@@ -186,7 +186,7 @@ function ViewportTooltipDemo({
 }
 
 const meta = {
-  title: "App Core/Agents/Viewport Tooltip",
+  title: "App Core/Agents/Detail/Viewport Tooltip",
   component: ViewportTooltipDemo,
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof ViewportTooltipDemo>;

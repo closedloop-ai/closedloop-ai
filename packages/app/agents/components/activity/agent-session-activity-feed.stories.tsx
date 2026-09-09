@@ -26,7 +26,7 @@ const meta: Meta<typeof AgentSessionActivityFeed> = {
     },
   },
   parameters: { appCore: { apiRoutes: storyApiRoutes } },
-  title: "App Core/Agents/Session Activity Feed",
+  title: "App Core/Agents/Overview/Session Activity Feed",
 };
 
 export default meta;

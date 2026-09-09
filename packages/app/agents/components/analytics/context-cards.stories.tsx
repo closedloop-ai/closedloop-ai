@@ -71,7 +71,7 @@ const neverSyncedTarget: AgentSessionLastSyncTarget = {
 };
 
 const meta = {
-  title: "App Core/Agents/Context Cards",
+  title: "App Core/Agents/Overview/Context Cards",
   component: ContextCards,
   tags: ["autodocs"],
   argTypes: {

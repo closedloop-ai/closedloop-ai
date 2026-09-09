@@ -39,7 +39,7 @@ const STAGE_DETAIL_WIDTH_PX = 936;
 const JUMP_TO_DOT_NAME = /^Jump to /;
 
 const meta = {
-  title: "App Core/Agents/Session Timeline Dot Rail",
+  title: "App Core/Agents/Timeline/Session Timeline Dot Rail",
   component: SessionTimelineDotRail,
   tags: ["autodocs"],
   argTypes: {

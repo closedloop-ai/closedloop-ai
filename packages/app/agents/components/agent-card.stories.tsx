@@ -33,7 +33,7 @@ const agent: SessionAgent = {
 };
 
 const meta = {
-  title: "App Core/Agents/Agent Card",
+  title: "App Core/Agents/Overview/Agent Card",
   component: AgentCard,
   tags: ["autodocs"],
   argTypes: {

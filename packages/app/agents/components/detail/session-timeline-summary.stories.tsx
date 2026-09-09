@@ -61,7 +61,7 @@ const meta: Meta<typeof SessionTimelineSummary> = {
       </div>
     ),
   ],
-  title: "App Core/Agents/Session Timeline Summary",
+  title: "App Core/Agents/Timeline/Session Timeline Summary",
 };
 
 export default meta;

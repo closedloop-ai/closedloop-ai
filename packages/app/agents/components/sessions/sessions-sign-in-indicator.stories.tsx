@@ -21,7 +21,7 @@ import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
  * variants are shown together to keep that distinction visible.
  */
 const meta = {
-  title: "App Core/Agents/Sessions Sign In Indicator",
+  title: "App Core/Agents/Sessions/Sessions Sign In Indicator",
   component: SessionsSignInIndicator,
   tags: ["autodocs"],
   argTypes: {

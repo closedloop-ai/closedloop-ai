@@ -50,7 +50,7 @@ import {
  * its stem, not by this field.
  */
 const meta = {
-  title: "App Core/Agents/Session Timeline Cost Rail",
+  title: "App Core/Agents/Timeline/Session Timeline Cost Rail",
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionTimelineBarLabels>;
 

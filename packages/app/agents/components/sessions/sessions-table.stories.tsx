@@ -11,7 +11,7 @@ import { SessionsTable, type SessionTableRow } from "./sessions-table";
  * navigation element (a `<Link>` on the web, a `<button>` on desktop).
  */
 const meta = {
-  title: "App Core/Agents/Sessions Table",
+  title: "App Core/Agents/Sessions/Sessions Table",
   component: SessionsTable,
   tags: ["autodocs"],
   argTypes: {

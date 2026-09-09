@@ -56,6 +56,11 @@ const preview: Preview = {
           ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Design System",
           "App Core",
+          // Agents is the largest feature by a wide margin, so its subgroups
+          // are ordered rather than left alphabetical: the general surfaces
+          // first, then the session detail it drills into, then the timeline
+          // and trace family that sits inside that.
+          ["Agents", ["Overview", "Sessions", "Detail", "Timeline"]],
           "Desktop App",
           "Screens",
           ["Login", "Dashboard", "Settings"],

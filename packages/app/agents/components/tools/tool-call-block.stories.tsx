@@ -8,7 +8,7 @@ const toolUse = assistantMessage.blocks?.find(
 );
 
 const meta = {
-  title: "App Core/Agents/Tool Call Block",
+  title: "App Core/Agents/Tools/Tool Call Block",
   component: ToolCallBlock,
   tags: ["autodocs"],
   argTypes: {

@@ -46,7 +46,7 @@ const PHONE_VIEWPORT_PX = 390;
 const DESKTOP_VIEWPORT_PX = 1100;
 
 const meta = {
-  title: "App Core/Agents/Agents Type Tab Strip",
+  title: "App Core/Agents/Workspace/Agents Type Tab Strip",
   component: AgentsTypeTabStrip,
   tags: ["autodocs"],
   argTypes: {

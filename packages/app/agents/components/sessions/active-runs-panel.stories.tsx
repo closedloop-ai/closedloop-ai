@@ -65,7 +65,7 @@ const stalled = createAgentSessionListItemFixture({
 });
 
 const meta = {
-  title: "App Core/Agents/Active Runs Panel",
+  title: "App Core/Agents/Sessions/Active Runs Panel",
   component: ActiveRunsPanel,
   tags: ["autodocs"],
   argTypes: {

@@ -205,7 +205,7 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Token Trend Chart",
+  title: "App Core/Agents/Workspace/Token Trend Chart",
   component: TokenTrendChart,
   tags: ["autodocs"],
   argTypes: {

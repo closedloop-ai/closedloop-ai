@@ -39,7 +39,7 @@ const group: SessionEventGroup = {
 };
 
 const meta = {
-  title: "App Core/Agents/Event Group Row",
+  title: "App Core/Agents/Overview/Event Group Row",
   component: EventGroupRow,
   tags: ["autodocs"],
   argTypes: {

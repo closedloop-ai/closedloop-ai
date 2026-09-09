@@ -3,7 +3,7 @@ import { fn } from "storybook/test";
 import { UserUsageTable } from "./user-usage-table";
 
 const meta = {
-  title: "App Core/Agents/User Usage Table",
+  title: "App Core/Agents/Overview/User Usage Table",
   component: UserUsageTable,
   tags: ["autodocs"],
   argTypes: {

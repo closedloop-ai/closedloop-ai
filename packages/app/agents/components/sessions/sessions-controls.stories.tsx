@@ -9,7 +9,7 @@ import { useState } from "react";
 import { SessionsControls } from "./sessions-controls";
 
 const meta = {
-  title: "App Core/Agents/Sessions Controls",
+  title: "App Core/Agents/Sessions/Sessions Controls",
   component: SessionsControls,
   tags: ["autodocs"],
   argTypes: {

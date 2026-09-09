@@ -34,7 +34,7 @@ function MetricRow({ children }: Readonly<{ children: ReactNode }>) {
  * `render`, so one frame wraps exactly the rows that story means to show.
  */
 const meta = {
-  title: "App Core/Agents/LOC Per Dollar Column Value",
+  title: "App Core/Agents/Workspace/LOC Per Dollar Column Value",
   component: LocPerDollarColumnValue,
   tags: ["autodocs"],
   argTypes: {

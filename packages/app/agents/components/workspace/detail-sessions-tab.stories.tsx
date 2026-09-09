@@ -181,7 +181,7 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail Sessions Tab",
+  title: "App Core/Agents/Workspace/Detail Sessions Tab",
   component: DetailSessionsTab,
   tags: ["autodocs"],
   argTypes: {
