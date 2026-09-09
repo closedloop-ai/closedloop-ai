@@ -53,7 +53,7 @@ const preview: Preview = {
           "Catalog",
           ["Inventory"],
           "Foundations",
-          ["Colors", "Typography", "Spacing", "Radius & Elevation"],
+          ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Design System",
           "App Core",
           "Desktop",
