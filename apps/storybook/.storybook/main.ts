@@ -33,7 +33,11 @@ const config: StorybookConfig = {
   ],
   addons: [
     getAbsolutePath("@chromatic-com/storybook"),
-    getAbsolutePath("@storybook/addon-onboarding"),
+    // Surfaces axe results per story in the Accessibility panel. The design
+    // system already carries accessibility contracts in its component source;
+    // this is what makes a violation visible while reviewing rather than only
+    // in a later audit.
+    getAbsolutePath("@storybook/addon-a11y"),
     getAbsolutePath("@storybook/addon-themes"),
   ],
   framework: {
