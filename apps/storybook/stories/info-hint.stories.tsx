@@ -10,7 +10,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * popover — it is not open at rest.
  */
 const meta = {
-  title: "Design System/Primitives/Info Hint",
+  title: "Design System/Feedback & Status/Info Hint",
   component: InfoHint,
   tags: ["autodocs"],
   argTypes: {

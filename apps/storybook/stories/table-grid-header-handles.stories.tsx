@@ -120,7 +120,7 @@ function TableGridHeaderHandlesDemo({
 }
 
 const meta = {
-  title: "Design System/Primitives/Table Grid Header Handles",
+  title: "Design System/Data Display/Tables/Table Grid Header Handles",
   component: TableGridHeaderHandlesDemo,
   tags: ["autodocs"],
   argTypes: {

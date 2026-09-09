@@ -21,7 +21,7 @@ import { fn } from "storybook/test";
  * exactly as in the grid.
  */
 const meta = {
-  title: "Design System/Primitives/Table Grid Column Menu",
+  title: "Design System/Data Display/Tables/Table Grid Column Menu",
   component: ColumnOptionsMenu,
   tags: ["autodocs"],
   argTypes: {

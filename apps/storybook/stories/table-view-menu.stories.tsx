@@ -107,7 +107,7 @@ function TableViewMenuDemo() {
 }
 
 const meta = {
-  title: "Design System/Primitives/Table View Menu",
+  title: "Design System/Data Display/Tables/Table View Menu",
   component: TableViewMenuDemo,
   tags: ["autodocs"],
   parameters: {

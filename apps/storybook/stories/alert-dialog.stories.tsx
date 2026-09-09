@@ -17,7 +17,7 @@ import { fn } from "storybook/test";
  * a response.
  */
 const meta: Meta<typeof AlertDialog> = {
-  title: "Design System/Primitives/Alert Dialog",
+  title: "Design System/Overlays/Alert Dialog",
   component: AlertDialog,
   tags: ["autodocs"],
   argTypes: {

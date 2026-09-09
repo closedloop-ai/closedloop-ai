@@ -269,7 +269,7 @@ function FilterPopoverDemo({
 }
 
 const meta = {
-  title: "Design System/Primitives/Filter Popover",
+  title: "Design System/Overlays/Filter Popover",
   component: FilterPopoverDemo,
   tags: ["autodocs"],
   parameters: {

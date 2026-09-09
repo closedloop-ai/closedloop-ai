@@ -2,7 +2,7 @@ import { FileList } from "@repo/design-system/components/ui/primitives/file-list
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Primitives/File List",
+  title: "Design System/Data Display/File List",
   component: FileList,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

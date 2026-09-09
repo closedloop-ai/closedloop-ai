@@ -20,7 +20,7 @@ const timeBucketData = [
 ];
 
 const meta = {
-  title: "Design System/Primitives/Category Bar Chart",
+  title: "Design System/Data Display/Data Visualization/Category Bar Chart",
   component: CategoryBarChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

@@ -55,6 +55,19 @@ const preview: Preview = {
           "Foundations",
           ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Design System",
+          // Atoms first, then the things built from them, then the specialised
+          // surfaces. Alphabetical would put Primitives last, which is exactly
+          // backwards for someone reading the system for the first time.
+          [
+            "Primitives",
+            "Overlays",
+            "Layout",
+            "Navigation & Shell",
+            "Data Display",
+            "Documents & Conversation",
+            "Feedback & Status",
+            "Configuration & Admin",
+          ],
           "App Core",
           // Agents is the largest feature by a wide margin, so its subgroups
           // are ordered rather than left alphabetical: the general surfaces

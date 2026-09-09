@@ -15,7 +15,7 @@ const text = [
 ].join("\n");
 
 const meta = {
-  title: "Design System/Primitives/Markdown Content",
+  title: "Design System/Documents & Conversation/Markdown Content",
   component: MarkdownContent,
   tags: ["autodocs"],
   argTypes: {
