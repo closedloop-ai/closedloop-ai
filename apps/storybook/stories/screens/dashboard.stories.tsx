@@ -69,9 +69,25 @@ const STATUS_TONE: Record<string, ComponentProps<typeof ToneBadge>["tone"]> = {
   Failed: "danger",
 };
 
+const DASHBOARD_COPY = {
+  heading: "Dashboard",
+  description:
+    "Agent-session telemetry across your organization's synced compute targets.",
+} as const;
+
 type DashboardScreenProps = {
   /** Org-relative path the sidebar should mark as current. */
   activePath?: string;
+  /** Page heading. */
+  heading?: string;
+  /** Supporting line under the heading. */
+  description?: string;
+  /** Show the four metric cards across the top. */
+  showMetrics?: boolean;
+  /** Show the Recent sessions table. */
+  showRecentSessions?: boolean;
+  /** Show the Model usage breakdown. */
+  showModelUsage?: boolean;
   /**
    * How many of the fixture sessions to show. Drops to a header-only table at
    * 0, which is the state this screen has no empty message for yet.
@@ -81,126 +97,138 @@ type DashboardScreenProps = {
 
 const DashboardScreen = ({
   activePath = "/dashboard",
+  description = DASHBOARD_COPY.description,
+  heading = DASHBOARD_COPY.heading,
   sessionCount = RECENT_SESSIONS.length,
+  showMetrics = true,
+  showModelUsage = true,
+  showRecentSessions = true,
 }: DashboardScreenProps) => (
   <AppScreenShell activePath={activePath} breadcrumbs={["Dashboard"]}>
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
       <div>
-        <h1 className="font-semibold text-2xl tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">
-          Agent-session telemetry across your organization's synced compute
-          targets.
-        </p>
+        <h1 className="font-semibold text-2xl tracking-tight">{heading}</h1>
+        <p className="text-muted-foreground">{description}</p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          deltaLabel="+12% vs prior period"
-          info={{
-            what: "Sessions started by any connected agent.",
-            how: "Counted from session telemetry across every synced target.",
-          }}
-          label="Agent sessions"
-          sparkline={SPARK}
-          value="1,284"
-        />
-        <MetricCard
-          deltaLabel="+4% vs prior period"
-          info={{ what: "Share of agent branches that reached main." }}
-          label="Merge rate"
-          unitLabel="%"
-          value="72"
-        />
-        <MetricCard
-          detail="Calculated from available data."
-          info={{ what: "Median lines changed per pull request." }}
-          label="Median PR size"
-          unitLabel="LOC"
-          value="148"
-        />
-        <MetricCard
-          info={{ what: "Spend attributed to agent sessions this period." }}
-          label="Spend"
-          sparkline={SPARK}
-          value="$4,206"
-        />
-      </div>
+      {showMetrics ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            deltaLabel="+12% vs prior period"
+            info={{
+              what: "Sessions started by any connected agent.",
+              how: "Counted from session telemetry across every synced target.",
+            }}
+            label="Agent sessions"
+            sparkline={SPARK}
+            value="1,284"
+          />
+          <MetricCard
+            deltaLabel="+4% vs prior period"
+            info={{ what: "Share of agent branches that reached main." }}
+            label="Merge rate"
+            unitLabel="%"
+            value="72"
+          />
+          <MetricCard
+            detail="Calculated from available data."
+            info={{ what: "Median lines changed per pull request." }}
+            label="Median PR size"
+            unitLabel="LOC"
+            value="148"
+          />
+          <MetricCard
+            info={{ what: "Spend attributed to agent sessions this period." }}
+            label="Spend"
+            sparkline={SPARK}
+            value="$4,206"
+          />
+        </div>
+      ) : null}
 
-      <div className="grid min-h-0 gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Recent sessions</CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <Table className="text-sm">
-              <TableHeader>
-                <TableRow className="text-muted-foreground text-xs">
-                  <TableHead className="px-6">Agent</TableHead>
-                  <TableHead className="px-6">Repository</TableHead>
-                  <TableHead className="px-6">Status</TableHead>
-                  <TableHead className="px-6 text-right">Started</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {RECENT_SESSIONS.slice(0, sessionCount).map((session) => (
-                  <TableRow
-                    className="last:border-0"
-                    key={`${session.agent}-${session.when}`}
-                  >
-                    <TableCell className="px-6 py-3 font-medium">
-                      {session.agent}
-                    </TableCell>
-                    <TableCell className="px-6 py-3 text-muted-foreground">
-                      {session.repo}
-                    </TableCell>
-                    <TableCell className="px-6 py-3">
-                      <ToneBadge
-                        label={session.status}
-                        tone={STATUS_TONE[session.status]}
+      {showRecentSessions || showModelUsage ? (
+        <div className="grid min-h-0 gap-4 lg:grid-cols-3">
+          {showRecentSessions ? (
+            <Card className="lg:col-span-2">
+              <CardHeader>
+                <CardTitle>Recent sessions</CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <Table className="text-sm">
+                  <TableHeader>
+                    <TableRow className="text-muted-foreground text-xs">
+                      <TableHead className="px-6">Agent</TableHead>
+                      <TableHead className="px-6">Repository</TableHead>
+                      <TableHead className="px-6">Status</TableHead>
+                      <TableHead className="px-6 text-right">Started</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {RECENT_SESSIONS.slice(0, sessionCount).map((session) => (
+                      <TableRow
+                        className="last:border-0"
+                        key={`${session.agent}-${session.when}`}
+                      >
+                        <TableCell className="px-6 py-3 font-medium">
+                          {session.agent}
+                        </TableCell>
+                        <TableCell className="px-6 py-3 text-muted-foreground">
+                          {session.repo}
+                        </TableCell>
+                        <TableCell className="px-6 py-3">
+                          <ToneBadge
+                            label={session.status}
+                            tone={STATUS_TONE[session.status]}
+                          />
+                        </TableCell>
+                        <TableCell className="px-6 py-3 text-right text-muted-foreground">
+                          {session.when}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          ) : null}
+
+          {showModelUsage ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Model usage</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {[
+                  { model: "claude-opus", share: 54, token: "--chart-1" },
+                  { model: "claude-sonnet", share: 31, token: "--chart-2" },
+                  { model: "codex", share: 15, token: "--chart-3" },
+                ].map((row) => (
+                  <div className="space-y-1" key={row.model}>
+                    <div className="flex items-baseline justify-between text-sm">
+                      <span>{row.model}</span>
+                      <span className="text-muted-foreground">
+                        {row.share}%
+                      </span>
+                    </div>
+                    <div className="h-2 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          background: `var(${row.token})`,
+                          width: `${row.share}%`,
+                        }}
                       />
-                    </TableCell>
-                    <TableCell className="px-6 py-3 text-right text-muted-foreground">
-                      {session.when}
-                    </TableCell>
-                  </TableRow>
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Model usage</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {[
-              { model: "claude-opus", share: 54, token: "--chart-1" },
-              { model: "claude-sonnet", share: 31, token: "--chart-2" },
-              { model: "codex", share: 15, token: "--chart-3" },
-            ].map((row) => (
-              <div className="space-y-1" key={row.model}>
-                <div className="flex items-baseline justify-between text-sm">
-                  <span>{row.model}</span>
-                  <span className="text-muted-foreground">{row.share}%</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      background: `var(${row.token})`,
-                      width: `${row.share}%`,
-                    }}
-                  />
-                </div>
-              </div>
-            ))}
-            <Button className="w-full" size="sm" variant="outline">
-              View all models
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
+                <Button className="w-full" size="sm" variant="outline">
+                  View all models
+                </Button>
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   </AppScreenShell>
 );
@@ -222,10 +250,32 @@ const meta = {
         "Rows shown in Recent sessions. 0 leaves a header with no body.",
       table: { category: "Content" },
     },
+    heading: { control: "text", table: { category: "Content" } },
+    description: { control: "text", table: { category: "Content" } },
+    showMetrics: {
+      control: "boolean",
+      description: "The four metric cards across the top.",
+      table: { category: "Composition" },
+    },
+    showRecentSessions: {
+      control: "boolean",
+      description: "The Recent sessions table.",
+      table: { category: "Composition" },
+    },
+    showModelUsage: {
+      control: "boolean",
+      description: "The Model usage breakdown.",
+      table: { category: "Composition" },
+    },
   },
   args: {
     activePath: "/dashboard",
+    description: DASHBOARD_COPY.description,
+    heading: DASHBOARD_COPY.heading,
     sessionCount: RECENT_SESSIONS.length,
+    showMetrics: true,
+    showModelUsage: true,
+    showRecentSessions: true,
   },
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof DashboardScreen>;
@@ -235,3 +285,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+/** No sessions yet. The table drops to a header with no body, which is the
+ * state this screen has no empty message for. */
+export const NoSessions: Story = {
+  name: "No sessions",
+  args: { sessionCount: 0 },
+};
+
+/** Metrics only, the arrangement while the lower panels are still loading. */
+export const MetricsOnly: Story = {
+  name: "Metrics only",
+  args: { showModelUsage: false, showRecentSessions: false },
+};
