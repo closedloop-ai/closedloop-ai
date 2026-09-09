@@ -91,6 +91,14 @@ jobs:
           # prisma generate (runs via postinstall) only needs the URL format, not a live DB
           DATABASE_URL: postgresql://localhost:5432/placeholder
 
+      # Static: reads the screens sources and the design-system sources, mounts
+      # nothing. Runs before the build so a screen that recolors a design-system
+      # component fails in seconds rather than after the build. The full
+      # storybook suite is not run here on purpose: its story sweep mounts every
+      # one of ~1470 stories and does not fit this job's budget.
+      - name: Check screens compose the design system
+        run: pnpm --filter storybook test:static
+
       # Storybook resolves @closedloop-ai/design-system through its package
       # `exports` map to the built dist/, so the design-system (and its workspace
       # deps, e.g. loops-api, whose dist/*.d.ts the design-system DTS build needs)

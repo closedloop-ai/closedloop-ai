@@ -10,7 +10,8 @@
     "catalog:sync": "node ./scripts/sync-component-catalog.mjs",
     "validate:catalog": "node ./scripts/validate-story-titles.mjs",
     "clean": "git clean -xdf .cache .turbo dist node_modules",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:static": "vitest run __tests__/screens-respect-design-system.test.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
