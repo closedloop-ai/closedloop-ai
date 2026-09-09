@@ -1,3 +1,4 @@
+import { PRIMARY_NAV_DESTINATIONS } from "@repo/app/shared/lib/primary-nav-destinations";
 import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
@@ -35,8 +36,35 @@ const MEMBERS = [
   { email: "mike@closedloop.ai", name: "Mike", role: "Member" },
 ];
 
-const SettingsScreen = () => (
-  <AppScreenShell activePath="/settings" breadcrumbs={["Settings"]}>
+// One source for the tab bar and for the control that drives it.
+const SETTINGS_TABS = [
+  { label: "General", value: "general" },
+  { label: "Members", value: "members" },
+  { label: "Integrations", value: "integrations" },
+  { label: "Billing", value: "billing" },
+] as const;
+
+// Derived from the same canonical nav the shell renders, so the control can
+// never offer a destination the product does not have.
+const NAV_PATHS = PRIMARY_NAV_DESTINATIONS.map(
+  (destination) => destination.path
+);
+
+type SettingsScreenProps = {
+  /** Org-relative path the sidebar should mark as current. */
+  activePath?: string;
+  /** Which tab reads as selected. */
+  activeTab?: (typeof SETTINGS_TABS)[number]["value"];
+  /** How many of the fixture members to list. */
+  memberCount?: number;
+};
+
+const SettingsScreen = ({
+  activePath = "/settings",
+  activeTab = "general",
+  memberCount = MEMBERS.length,
+}: SettingsScreenProps) => (
+  <AppScreenShell activePath={activePath} breadcrumbs={["Settings"]}>
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
       <div>
         <h1 className="font-semibold text-2xl tracking-tight">Settings</h1>
@@ -45,12 +73,16 @@ const SettingsScreen = () => (
         </p>
       </div>
 
-      <Tabs defaultValue="general">
+      {/* `key` remounts on control change so the new default takes effect,
+          while staying uncontrolled so clicking a tab still works. A bare
+          `value` with no handler would freeze the tab bar. */}
+      <Tabs defaultValue={activeTab} key={activeTab}>
         <TabsList>
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="members">Members</TabsTrigger>
-          <TabsTrigger value="integrations">Integrations</TabsTrigger>
-          <TabsTrigger value="billing">Billing</TabsTrigger>
+          {SETTINGS_TABS.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
       </Tabs>
 
@@ -88,7 +120,7 @@ const SettingsScreen = () => (
         <CardContent className="p-0">
           <Table className="text-sm">
             <TableBody>
-              {MEMBERS.map((member) => (
+              {MEMBERS.slice(0, memberCount).map((member) => (
                 <TableRow className="last:border-0" key={member.email}>
                   <TableCell className="px-6 py-3">
                     <p className="font-medium">{member.name}</p>
@@ -155,7 +187,33 @@ const SettingsScreen = () => (
 const meta = {
   title: "Screens/Settings",
   component: SettingsScreen,
-  parameters: { controls: { disable: true }, layout: "fullscreen" },
+  tags: ["autodocs"],
+  argTypes: {
+    activePath: {
+      options: NAV_PATHS,
+      control: { type: "select" },
+      description: "Which sidebar destination renders as current.",
+      table: { category: "Shell" },
+    },
+    activeTab: {
+      options: SETTINGS_TABS.map((tab) => tab.value),
+      control: { type: "radio" },
+      description:
+        "Which tab reads as selected. The tab bar is presentational here: the cards below always render Organization, Members and Preferences together, rather than one panel per tab.",
+      table: { category: "Content" },
+    },
+    memberCount: {
+      control: { type: "number", min: 0, max: MEMBERS.length, step: 1 },
+      description: "Rows listed in the members table.",
+      table: { category: "Content" },
+    },
+  },
+  args: {
+    activePath: "/settings",
+    activeTab: "general",
+    memberCount: MEMBERS.length,
+  },
+  parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof SettingsScreen>;
 
 export default meta;

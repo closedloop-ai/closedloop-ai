@@ -10,34 +10,56 @@ import type { Meta, StoryObj } from "@storybook/react";
  * live Clerk instance — so this is the same layout and copy built from our own
  * primitives, for reviewing the surrounding page rather than Clerk's internals.
  */
-const LoginScreen = () => (
+type LoginScreenProps = {
+  /** Page heading above the card. */
+  heading?: string;
+  /** Supporting line under the heading. */
+  subheading?: string;
+  /**
+   * Show the GitHub and Google buttons and the "or" divider. Off is the
+   * email-only arrangement, which is what an org with social sign-in disabled
+   * sees.
+   */
+  showSocialProviders?: boolean;
+  /** Label on the primary submit button. */
+  submitLabel?: string;
+};
+
+const LoginScreen = ({
+  heading = "Welcome back",
+  subheading = "Enter your details to sign in.",
+  showSocialProviders = true,
+  submitLabel = "Sign in",
+}: LoginScreenProps) => (
   <div className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-2 text-center">
         <div className="mx-auto flex size-10 items-center justify-center rounded-lg bg-primary font-semibold text-lg text-primary-foreground">
           C
         </div>
-        <h1 className="font-semibold text-2xl tracking-tight">Welcome back</h1>
-        <p className="text-muted-foreground text-sm">
-          Enter your details to sign in.
-        </p>
+        <h1 className="font-semibold text-2xl tracking-tight">{heading}</h1>
+        <p className="text-muted-foreground text-sm">{subheading}</p>
       </div>
 
       <div className="space-y-4 rounded-xl border bg-card p-6 shadow-sm">
-        <Button className="w-full" variant="outline">
-          Continue with GitHub
-        </Button>
-        <Button className="w-full" variant="outline">
-          Continue with Google
-        </Button>
+        {showSocialProviders ? (
+          <>
+            <Button className="w-full" variant="outline">
+              Continue with GitHub
+            </Button>
+            <Button className="w-full" variant="outline">
+              Continue with Google
+            </Button>
 
-        <div className="flex items-center gap-3">
-          <Separator className="flex-1" />
-          <span className="text-muted-foreground text-xs uppercase tracking-wide">
-            or
-          </span>
-          <Separator className="flex-1" />
-        </div>
+            <div className="flex items-center gap-3">
+              <Separator className="flex-1" />
+              <span className="text-muted-foreground text-xs uppercase tracking-wide">
+                or
+              </span>
+              <Separator className="flex-1" />
+            </div>
+          </>
+        ) : null}
 
         <div className="space-y-2">
           <Label htmlFor="login-email">Email address</Label>
@@ -66,7 +88,7 @@ const LoginScreen = () => (
           />
         </div>
 
-        <Button className="w-full">Sign in</Button>
+        <Button className="w-full">{submitLabel}</Button>
       </div>
 
       <p className="text-center text-muted-foreground text-sm">
@@ -82,7 +104,25 @@ const LoginScreen = () => (
 const meta = {
   title: "Screens/Login",
   component: LoginScreen,
-  parameters: { controls: { disable: true }, layout: "fullscreen" },
+  tags: ["autodocs"],
+  argTypes: {
+    heading: { control: "text", table: { category: "Content" } },
+    subheading: { control: "text", table: { category: "Content" } },
+    submitLabel: { control: "text", table: { category: "Content" } },
+    showSocialProviders: {
+      control: "boolean",
+      description:
+        "Off drops the GitHub and Google buttons and the divider, leaving the email-only arrangement.",
+      table: { category: "State" },
+    },
+  },
+  args: {
+    heading: "Welcome back",
+    subheading: "Enter your details to sign in.",
+    showSocialProviders: true,
+    submitLabel: "Sign in",
+  },
+  parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof LoginScreen>;
 
 export default meta;

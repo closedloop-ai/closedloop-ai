@@ -1,3 +1,4 @@
+import { PRIMARY_NAV_DESTINATIONS } from "@repo/app/shared/lib/primary-nav-destinations";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -18,6 +19,12 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ComponentProps } from "react";
 import { AppScreenShell } from "./app-shell";
+
+// Derived from the same canonical nav the shell renders, so the control can
+// never offer a destination the product does not have.
+const NAV_PATHS = PRIMARY_NAV_DESTINATIONS.map(
+  (destination) => destination.path
+);
 
 const SPARK = [12, 18, 15, 24, 22, 31, 28, 36, 33, 41, 38, 46];
 
@@ -62,8 +69,21 @@ const STATUS_TONE: Record<string, ComponentProps<typeof ToneBadge>["tone"]> = {
   Failed: "danger",
 };
 
-const DashboardScreen = () => (
-  <AppScreenShell activePath="/dashboard" breadcrumbs={["Dashboard"]}>
+type DashboardScreenProps = {
+  /** Org-relative path the sidebar should mark as current. */
+  activePath?: string;
+  /**
+   * How many of the fixture sessions to show. Drops to a header-only table at
+   * 0, which is the state this screen has no empty message for yet.
+   */
+  sessionCount?: number;
+};
+
+const DashboardScreen = ({
+  activePath = "/dashboard",
+  sessionCount = RECENT_SESSIONS.length,
+}: DashboardScreenProps) => (
+  <AppScreenShell activePath={activePath} breadcrumbs={["Dashboard"]}>
     <div className="flex min-h-0 flex-1 flex-col gap-6 p-6">
       <div>
         <h1 className="font-semibold text-2xl tracking-tight">Dashboard</h1>
@@ -122,7 +142,7 @@ const DashboardScreen = () => (
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {RECENT_SESSIONS.map((session) => (
+                {RECENT_SESSIONS.slice(0, sessionCount).map((session) => (
                   <TableRow
                     className="last:border-0"
                     key={`${session.agent}-${session.when}`}
@@ -188,7 +208,26 @@ const DashboardScreen = () => (
 const meta = {
   title: "Screens/Dashboard",
   component: DashboardScreen,
-  parameters: { controls: { disable: true }, layout: "fullscreen" },
+  tags: ["autodocs"],
+  argTypes: {
+    activePath: {
+      options: NAV_PATHS,
+      control: { type: "select" },
+      description: "Which sidebar destination renders as current.",
+      table: { category: "Shell" },
+    },
+    sessionCount: {
+      control: { type: "number", min: 0, max: RECENT_SESSIONS.length, step: 1 },
+      description:
+        "Rows shown in Recent sessions. 0 leaves a header with no body.",
+      table: { category: "Content" },
+    },
+  },
+  args: {
+    activePath: "/dashboard",
+    sessionCount: RECENT_SESSIONS.length,
+  },
+  parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof DashboardScreen>;
 
 export default meta;
