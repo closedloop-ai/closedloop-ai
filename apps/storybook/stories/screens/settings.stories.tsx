@@ -12,6 +12,12 @@ import { Label } from "@repo/design-system/components/ui/label";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import { Switch } from "@repo/design-system/components/ui/switch";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableRow,
+} from "@repo/design-system/components/ui/table";
+import {
   Tabs,
   TabsList,
   TabsTrigger,
@@ -80,23 +86,23 @@ const SettingsScreen = () => (
           <CardDescription>People with access to this org.</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <tbody>
+          <Table className="text-sm">
+            <TableBody>
               {MEMBERS.map((member) => (
-                <tr className="border-b last:border-0" key={member.email}>
-                  <td className="px-6 py-3">
+                <TableRow className="last:border-0" key={member.email}>
+                  <TableCell className="px-6 py-3">
                     <p className="font-medium">{member.name}</p>
                     <p className="text-muted-foreground text-xs">
                       {member.email}
                     </p>
-                  </td>
-                  <td className="px-6 py-3 text-right">
+                  </TableCell>
+                  <TableCell className="px-6 py-3 text-right">
                     <Badge variant="secondary">{member.role}</Badge>
-                  </td>
-                </tr>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
