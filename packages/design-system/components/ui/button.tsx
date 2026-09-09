@@ -18,6 +18,16 @@ const buttonVariants = cva(
           "bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost: "hover:bg-muted hover:text-foreground",
         link: "text-primary underline-offset-4 hover:underline",
+        // The same affordance as `link` in the foreground tone, for an inline
+        // link inside running text that should read as part of the sentence
+        // rather than as a brand-colored call to action. Added because twelve
+        // of the eighteen `variant="link"` call sites in this repo were already
+        // repainting it to `text-foreground` at the call site, across the app,
+        // the desktop renderer and the prototypes. That is a missing variant,
+        // not twelve sloppy call sites, and an override at the call site beats
+        // the variant it lands on, which is how the dashboard status badges
+        // ended up rendering a fill the design system does not contain.
+        linkForeground: "text-foreground underline-offset-4 hover:underline",
       },
       size: {
         default:

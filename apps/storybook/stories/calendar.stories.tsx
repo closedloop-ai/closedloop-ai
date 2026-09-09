@@ -70,6 +70,7 @@ const meta = {
         "secondary",
         "ghost",
         "link",
+        "linkForeground",
       ],
       control: { type: "select" },
       description: "Button variant used for the previous and next nav buttons.",
