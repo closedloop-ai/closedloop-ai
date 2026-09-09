@@ -58,7 +58,7 @@ function honestUsageFixture(
 }
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Cards",
+  title: "App Core/Agents/Sessions/Sessions Summary Cards",
   component: SessionsSummaryCards,
   tags: ["autodocs"],
   argTypes: {

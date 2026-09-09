@@ -165,7 +165,7 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Invocation Evidence List",
+  title: "App Core/Agents/Workspace/Invocation Evidence List",
   component: InvocationEvidenceList,
   tags: ["autodocs"],
   argTypes: {

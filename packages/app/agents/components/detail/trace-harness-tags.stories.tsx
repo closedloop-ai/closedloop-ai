@@ -6,7 +6,7 @@ import {
 } from "./trace-harness-tags";
 
 const meta = {
-  title: "App Core/Agents/Trace Tag Chip",
+  title: "App Core/Agents/Timeline/Trace Tag Chip",
   component: TraceTagChip,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

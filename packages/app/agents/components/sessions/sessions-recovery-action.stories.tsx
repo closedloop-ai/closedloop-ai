@@ -19,7 +19,7 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
  * label, which is the part that lied.
  */
 const meta = {
-  title: "App Core/Agents/Sessions Recovery Action",
+  title: "App Core/Agents/Sessions/Sessions Recovery Action",
   component: SessionsRecoveryAction,
   tags: ["autodocs"],
   argTypes: {

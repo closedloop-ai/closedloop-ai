@@ -50,7 +50,7 @@ const detailShellDecorator: Decorator = (Story) => (
 const USERS_QUERY_DATA = [[userKeys.organizationUsers(), []]] as const;
 
 const meta = {
-  title: "App Core/Agents/Session Comments Rail",
+  title: "App Core/Agents/Detail/Session Comments Rail",
   component: SessionCommentsRail,
   tags: ["autodocs"],
   parameters: {

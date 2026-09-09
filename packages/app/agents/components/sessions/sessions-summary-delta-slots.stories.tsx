@@ -130,7 +130,7 @@ const COLLAPSED_COST_PRESENTATION = resolveCostCardPresentation(
 const IN_RANGE_DETAIL = "in the active filter set";
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Delta Slots",
+  title: "App Core/Agents/Sessions/Sessions Summary Delta Slots",
   component: SessionsDeltaSlotCard,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

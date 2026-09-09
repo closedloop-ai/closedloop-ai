@@ -32,7 +32,7 @@ import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
  * the `TooltipProvider`.
  */
 const meta = {
-  title: "App Core/Agents/Cloud Sync State Badge",
+  title: "App Core/Agents/Sessions/Cloud Sync State Badge",
   component: CloudSyncStateBadge,
   tags: ["autodocs"],
   argTypes: {

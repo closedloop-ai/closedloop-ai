@@ -33,7 +33,7 @@ import {
  * mounts globally (ISS-5665).
  */
 const meta = {
-  title: "App Core/Agents/Agent Session Detail States",
+  title: "App Core/Agents/Detail/Agent Session Detail States",
   component: SessionDetailNotFound,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },

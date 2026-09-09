@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { SessionCard } from "./session-card";
 
 const meta = {
-  title: "App Core/Agents/Session Card",
+  title: "App Core/Agents/Sessions/Session Card",
   component: SessionCard,
   tags: ["autodocs"],
   argTypes: {

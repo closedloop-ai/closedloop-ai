@@ -42,7 +42,7 @@ const ALL_CLEAR_HEADLINE = "No errors in this session";
 const NARROW_COLUMN_PX = 320;
 
 const meta = {
-  title: "App Core/Agents/Error Propagation Map",
+  title: "App Core/Agents/Detail/Error Propagation Map",
   component: ErrorPropagationMap,
   tags: ["autodocs"],
   argTypes: {

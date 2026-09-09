@@ -33,7 +33,7 @@ function eventGroup(
 }
 
 const meta = {
-  title: "App Core/Agents/Trace Event Row",
+  title: "App Core/Agents/Timeline/Trace Event Row",
   component: TraceEventRow,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

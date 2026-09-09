@@ -35,7 +35,7 @@ function PullRequestPillFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Session Pull Request Pill",
+  title: "App Core/Agents/Detail/Session Pull Request Pill",
   component: PullRequestPill,
   tags: ["autodocs"],
   argTypes: {

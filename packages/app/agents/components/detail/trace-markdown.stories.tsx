@@ -106,7 +106,7 @@ const UNBREAKABLE_TOKENS = [
 ].join("\n");
 
 const meta = {
-  title: "App Core/Agents/Trace Markdown",
+  title: "App Core/Agents/Timeline/Trace Markdown",
   component: TraceMarkdown,
   tags: ["autodocs"],
   argTypes: {

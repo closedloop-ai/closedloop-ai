@@ -46,7 +46,7 @@ const LOADING_DETAIL = "Loading…";
 const IMPORTING_HISTORY_DETAIL = "Importing your history";
 
 const meta = {
-  title: "App Core/Agents/Sessions Summary Cards Loading",
+  title: "App Core/Agents/Sessions/Sessions Summary Cards Loading",
   component: SessionsSummaryCardsLoading,
   tags: ["autodocs"],
   argTypes: {

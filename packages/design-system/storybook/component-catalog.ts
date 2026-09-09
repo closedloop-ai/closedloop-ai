@@ -1328,92 +1328,16 @@ export const appComponentCatalog =
 export const appCoreComponentCatalog =
   [
   {
-    "id": "active-runs-panel",
-    "label": "Active Runs Panel",
-    "sourcePath": "packages/app/agents/components/sessions/active-runs-panel.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "active-runs-panel",
-    "storyTitle": "App Core/Agents/Active Runs Panel"
-  },
-  {
-    "id": "activity-bucket-tooltip",
-    "label": "Activity Bucket Tooltip",
-    "sourcePath": "packages/app/agents/components/detail/activity-bucket-tooltip.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "activity-bucket-tooltip",
-    "storyTitle": "App Core/Agents/Activity Bucket Tooltip"
-  },
-  {
-    "id": "agent-card",
-    "label": "Agent Card",
-    "sourcePath": "packages/app/agents/components/agent-card.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-card",
-    "storyTitle": "App Core/Agents/Agent Card"
-  },
-  {
-    "id": "agent-collaboration-network",
-    "label": "Agent Collaboration Network",
-    "sourcePath": "packages/app/agents/components/agent-collaboration-network.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-collaboration-network",
-    "storyTitle": "App Core/Agents/Agent Collaboration Network"
-  },
-  {
-    "id": "agent-detail",
-    "label": "Agent Detail",
-    "sourcePath": "packages/app/agents/components/workspace/agent-detail.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-detail",
-    "storyTitle": "App Core/Agents/Agent Detail"
-  },
-  {
-    "id": "orchestration-dag",
-    "label": "Agent Orchestration Graph",
-    "sourcePath": "packages/app/agents/components/orchestration-dag.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "orchestration-dag",
-    "storyTitle": "App Core/Agents/Agent Orchestration Graph"
-  },
-  {
-    "id": "agent-pipeline-graph",
-    "label": "Agent Pipeline Graph",
-    "sourcePath": "packages/app/agents/components/agent-pipeline-graph.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-pipeline-graph",
-    "storyTitle": "App Core/Agents/Agent Pipeline Graph"
-  },
-  {
     "id": "agent-session-detail-analytics-tabs",
     "label": "Agent Session Detail Analytics Tabs",
     "sourcePath": "packages/app/agents/components/detail/agent-session-detail-analytics-tabs.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "agent-session-detail-analytics-tabs",
-    "storyTitle": "App Core/Agents/Agent Session Detail Analytics Tabs"
+    "storyTitle": "App Core/Agents/Detail/Agent Session Detail Analytics Tabs"
   },
   {
     "id": "agent-session-detail-states",
@@ -1421,120 +1345,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/agent-session-detail-states.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "agent-session-detail-states",
-    "storyTitle": "App Core/Agents/Agent Session Detail States"
-  },
-  {
-    "id": "agent-sessions-list",
-    "label": "Agent Sessions List",
-    "sourcePath": "packages/app/agents/components/sessions/agent-sessions-list.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-sessions-list",
-    "storyTitle": "App Core/Agents/Agent Sessions List"
-  },
-  {
-    "id": "agents-table",
-    "label": "Agents Table",
-    "sourcePath": "packages/app/agents/components/workspace/agents-table.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agents-table",
-    "storyTitle": "App Core/Agents/Agents Table"
-  },
-  {
-    "id": "agents-type-tab-strip",
-    "label": "Agents Type Tab Strip",
-    "sourcePath": "packages/app/agents/components/workspace/agents-type-tab-strip.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agents-type-tab-strip",
-    "storyTitle": "App Core/Agents/Agents Type Tab Strip"
-  },
-  {
-    "id": "cli-tools-panel",
-    "label": "Cli Tools Panel",
-    "sourcePath": "packages/app/agents/components/cli-tools-panel.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "cli-tools-panel",
-    "storyTitle": "App Core/Agents/Cli Tools Panel"
-  },
-  {
-    "id": "cloud-sync-state-badge",
-    "label": "Cloud Sync State Badge",
-    "sourcePath": "packages/app/agents/components/sessions/cloud-sync-state-badge.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "cloud-sync-state-badge",
-    "storyTitle": "App Core/Agents/Cloud Sync State Badge"
-  },
-  {
-    "id": "compaction-impact",
-    "label": "Compaction Impact",
-    "sourcePath": "packages/app/agents/components/compaction-impact.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "compaction-impact",
-    "storyTitle": "App Core/Agents/Compaction Impact"
-  },
-  {
-    "id": "context-cards",
-    "label": "Context Cards",
-    "sourcePath": "packages/app/agents/components/analytics/context-cards.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "context-cards",
-    "storyTitle": "App Core/Agents/Context Cards"
-  },
-  {
-    "id": "cost-metric-card",
-    "label": "Cost Metric Card",
-    "sourcePath": "packages/app/agents/components/sessions/cost-metric-card.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "cost-metric-card",
-    "storyTitle": "App Core/Agents/Cost Metric Card"
-  },
-  {
-    "id": "detail-branches-tab",
-    "label": "Detail Branches Tab",
-    "sourcePath": "packages/app/agents/components/workspace/detail-branches-tab.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "detail-branches-tab",
-    "storyTitle": "App Core/Agents/Detail Branches Tab"
-  },
-  {
-    "id": "detail-sessions-tab",
-    "label": "Detail Sessions Tab",
-    "sourcePath": "packages/app/agents/components/workspace/detail-sessions-tab.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "detail-sessions-tab",
-    "storyTitle": "App Core/Agents/Detail Sessions Tab"
+    "storyTitle": "App Core/Agents/Detail/Agent Session Detail States"
   },
   {
     "id": "error-propagation-map",
@@ -1542,54 +1357,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/error-propagation-map.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "error-propagation-map",
-    "storyTitle": "App Core/Agents/Error Propagation Map"
-  },
-  {
-    "id": "event-group-row",
-    "label": "Event Group Row",
-    "sourcePath": "packages/app/agents/components/events/event-group-row.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "event-group-row",
-    "storyTitle": "App Core/Agents/Event Group Row"
-  },
-  {
-    "id": "invocation-evidence-list",
-    "label": "Invocation Evidence List",
-    "sourcePath": "packages/app/agents/components/workspace/invocation-evidence-list.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "invocation-evidence-list",
-    "storyTitle": "App Core/Agents/Invocation Evidence List"
-  },
-  {
-    "id": "loc-per-dollar-cell",
-    "label": "LOC Per Dollar Column Value",
-    "sourcePath": "packages/app/agents/components/workspace/loc-per-dollar-cell.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "loc-per-dollar-cell",
-    "storyTitle": "App Core/Agents/LOC Per Dollar Column Value"
-  },
-  {
-    "id": "model-usage-table",
-    "label": "Model Usage Table",
-    "sourcePath": "packages/app/agents/components/model-usage-table.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "model-usage-table",
-    "storyTitle": "App Core/Agents/Model Usage Table"
+    "storyTitle": "App Core/Agents/Detail/Error Propagation Map"
   },
   {
     "id": "property-values",
@@ -1597,10 +1369,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/property-values.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "property-values",
-    "storyTitle": "App Core/Agents/Property Value"
+    "storyTitle": "App Core/Agents/Detail/Property Value"
   },
   {
     "id": "session-activity-breakdown",
@@ -1608,43 +1381,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-activity-breakdown.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-activity-breakdown",
-    "storyTitle": "App Core/Agents/Session Activity Breakdown"
-  },
-  {
-    "id": "agent-session-activity-feed",
-    "label": "Session Activity Feed",
-    "sourcePath": "packages/app/agents/components/activity/agent-session-activity-feed.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-session-activity-feed",
-    "storyTitle": "App Core/Agents/Session Activity Feed"
-  },
-  {
-    "id": "session-card",
-    "label": "Session Card",
-    "sourcePath": "packages/app/agents/components/sessions/session-card.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-card",
-    "storyTitle": "App Core/Agents/Session Card"
-  },
-  {
-    "id": "session-cell-chips",
-    "label": "Session Cell Chips",
-    "sourcePath": "packages/app/agents/components/sessions/session-cell-chips.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-cell-chips",
-    "storyTitle": "App Core/Agents/Session Cell Chips"
+    "storyTitle": "App Core/Agents/Detail/Session Activity Breakdown"
   },
   {
     "id": "session-comments-rail",
@@ -1652,21 +1393,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-comments-rail.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-comments-rail",
-    "storyTitle": "App Core/Agents/Session Comments Rail"
-  },
-  {
-    "id": "session-cost-cell",
-    "label": "Session Cost Cell",
-    "sourcePath": "packages/app/agents/components/sessions/session-cost-cell.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-cost-cell",
-    "storyTitle": "App Core/Agents/Session Cost Cell"
+    "storyTitle": "App Core/Agents/Detail/Session Comments Rail"
   },
   {
     "id": "agent-session-detail-view",
@@ -1674,10 +1405,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/agent-session-detail-view.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "agent-session-detail-view",
-    "storyTitle": "App Core/Agents/Session Detail"
+    "storyTitle": "App Core/Agents/Detail/Session Detail"
   },
   {
     "id": "agent-orchestration-graph",
@@ -1685,10 +1417,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/agent-orchestration-graph.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "agent-orchestration-graph",
-    "storyTitle": "App Core/Agents/Session Detail Orchestration Graph"
+    "storyTitle": "App Core/Agents/Detail/Session Detail Orchestration Graph"
   },
   {
     "id": "session-detail-panels",
@@ -1696,10 +1429,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-detail-panels.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-detail-panels",
-    "storyTitle": "App Core/Agents/Session Detail Panels"
+    "storyTitle": "App Core/Agents/Detail/Session Detail Panels"
   },
   {
     "id": "session-duration-property",
@@ -1707,10 +1441,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-duration-property.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-duration-property",
-    "storyTitle": "App Core/Agents/Session Duration Property"
+    "storyTitle": "App Core/Agents/Detail/Session Duration Property"
   },
   {
     "id": "session-flagged-properties",
@@ -1718,21 +1453,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-flagged-properties.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-flagged-properties",
-    "storyTitle": "App Core/Agents/Session Flagged Properties"
-  },
-  {
-    "id": "session-group-icons",
-    "label": "Session Group Icons",
-    "sourcePath": "packages/app/agents/components/sessions/session-group-icons.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-group-icons",
-    "storyTitle": "App Core/Agents/Session Group Icons"
+    "storyTitle": "App Core/Agents/Detail/Session Flagged Properties"
   },
   {
     "id": "session-linked-artifacts-row",
@@ -1740,10 +1465,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-linked-artifacts-row.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-linked-artifacts-row",
-    "storyTitle": "App Core/Agents/Session Linked Artifacts Row"
+    "storyTitle": "App Core/Agents/Detail/Session Linked Artifacts Row"
   },
   {
     "id": "session-loc-per-dollar-property",
@@ -1751,10 +1477,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-loc-per-dollar-property.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-loc-per-dollar-property",
-    "storyTitle": "App Core/Agents/Session LOC Per Dollar Property"
+    "storyTitle": "App Core/Agents/Detail/Session LOC Per Dollar Property"
   },
   {
     "id": "session-measured-properties",
@@ -1762,10 +1489,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-measured-properties.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-measured-properties",
-    "storyTitle": "App Core/Agents/Session Measured Properties"
+    "storyTitle": "App Core/Agents/Detail/Session Measured Properties"
   },
   {
     "id": "session-output-diff",
@@ -1773,10 +1501,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-output-diff.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-output-diff",
-    "storyTitle": "App Core/Agents/Session Output Diff"
+    "storyTitle": "App Core/Agents/Detail/Session Output Diff"
   },
   {
     "id": "session-properties-panel",
@@ -1784,21 +1513,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-properties-panel.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-properties-panel",
-    "storyTitle": "App Core/Agents/Session Properties Panel"
-  },
-  {
-    "id": "session-provenance-chip",
-    "label": "Session Provenance Chip",
-    "sourcePath": "packages/app/agents/components/sessions/session-provenance-chip.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-provenance-chip",
-    "storyTitle": "App Core/Agents/Session Provenance Chip"
+    "storyTitle": "App Core/Agents/Detail/Session Properties Panel"
   },
   {
     "id": "session-pull-request-pill",
@@ -1806,10 +1525,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-pull-request-pill.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-pull-request-pill",
-    "storyTitle": "App Core/Agents/Session Pull Request Pill"
+    "storyTitle": "App Core/Agents/Detail/Session Pull Request Pill"
   },
   {
     "id": "session-pull-requests-row",
@@ -1817,142 +1537,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-pull-requests-row.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-pull-requests-row",
-    "storyTitle": "App Core/Agents/Session Pull Requests Row"
-  },
-  {
-    "id": "session-status-badges",
-    "label": "Session Status Badges",
-    "sourcePath": "packages/app/agents/components/session-status-badges.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-status-badges",
-    "storyTitle": "App Core/Agents/Session Status Badges"
-  },
-  {
-    "id": "session-sync-status-badge",
-    "label": "Session Sync Status Badge",
-    "sourcePath": "packages/app/agents/components/sessions/session-sync-status-badge.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-sync-status-badge",
-    "storyTitle": "App Core/Agents/Session Sync Status Badge"
-  },
-  {
-    "id": "session-timeline-axis",
-    "label": "Session Timeline Axis",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-axis.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-axis",
-    "storyTitle": "App Core/Agents/Session Timeline Axis"
-  },
-  {
-    "id": "session-timeline-bars",
-    "label": "Session Timeline Bars",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-bars.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-bars",
-    "storyTitle": "App Core/Agents/Session Timeline Bars"
-  },
-  {
-    "id": "session-timeline-controls",
-    "label": "Session Timeline Controls",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-controls.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-controls",
-    "storyTitle": "App Core/Agents/Session Timeline Controls"
-  },
-  {
-    "id": "session-timeline-bar-labels",
-    "label": "Session Timeline Cost Rail",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-bar-labels.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-bar-labels",
-    "storyTitle": "App Core/Agents/Session Timeline Cost Rail"
-  },
-  {
-    "id": "session-timeline-dot-rail",
-    "label": "Session Timeline Dot Rail",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-dot-rail.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-dot-rail",
-    "storyTitle": "App Core/Agents/Session Timeline Dot Rail"
-  },
-  {
-    "id": "session-timeline-strip-parts",
-    "label": "Session Timeline Event Dot Tooltip",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-strip-parts.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-strip-parts",
-    "storyTitle": "App Core/Agents/Session Timeline Event Dot Tooltip"
-  },
-  {
-    "id": "session-timeline-summary",
-    "label": "Session Timeline Summary",
-    "sourcePath": "packages/app/agents/components/detail/session-timeline-summary.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-timeline-summary",
-    "storyTitle": "App Core/Agents/Session Timeline Summary"
-  },
-  {
-    "id": "session-trace",
-    "label": "Session Trace",
-    "sourcePath": "packages/app/agents/components/detail/session-trace.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-trace",
-    "storyTitle": "App Core/Agents/Session Trace"
-  },
-  {
-    "id": "session-trace-subagent",
-    "label": "Session Trace Subagent",
-    "sourcePath": "packages/app/agents/components/detail/session-trace-subagent.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-trace-subagent",
-    "storyTitle": "App Core/Agents/Session Trace Subagent"
-  },
-  {
-    "id": "session-trace-tool-row-detail",
-    "label": "Session Trace Tool Row Detail",
-    "sourcePath": "packages/app/agents/components/detail/session-trace-tool-row-detail.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "session-trace-tool-row-detail",
-    "storyTitle": "App Core/Agents/Session Trace Tool Row Detail"
+    "storyTitle": "App Core/Agents/Detail/Session Pull Requests Row"
   },
   {
     "id": "session-transcript-panel",
@@ -1960,109 +1549,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/session-transcript-panel.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "session-transcript-panel",
-    "storyTitle": "App Core/Agents/Session Transcript Panel"
-  },
-  {
-    "id": "sessions-active-filters-bar",
-    "label": "Sessions Active Filters Bar",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-active-filters-bar.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-active-filters-bar",
-    "storyTitle": "App Core/Agents/Sessions Active Filters Bar"
-  },
-  {
-    "id": "sessions-controls",
-    "label": "Sessions Controls",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-controls.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-controls",
-    "storyTitle": "App Core/Agents/Sessions Controls"
-  },
-  {
-    "id": "sessions-empty-state",
-    "label": "Sessions Empty State",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-empty-state.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-empty-state",
-    "storyTitle": "App Core/Agents/Sessions Empty State"
-  },
-  {
-    "id": "sessions-recovery-action",
-    "label": "Sessions Recovery Action",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-recovery-action.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-recovery-action",
-    "storyTitle": "App Core/Agents/Sessions Recovery Action"
-  },
-  {
-    "id": "sessions-sign-in-indicator",
-    "label": "Sessions Sign In Indicator",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-sign-in-indicator.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-sign-in-indicator",
-    "storyTitle": "App Core/Agents/Sessions Sign In Indicator"
-  },
-  {
-    "id": "sessions-summary-cards",
-    "label": "Sessions Summary Cards",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-cards.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-summary-cards",
-    "storyTitle": "App Core/Agents/Sessions Summary Cards"
-  },
-  {
-    "id": "sessions-summary-cards-loading",
-    "label": "Sessions Summary Cards Loading",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-cards-loading.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-summary-cards-loading",
-    "storyTitle": "App Core/Agents/Sessions Summary Cards Loading"
-  },
-  {
-    "id": "sessions-summary-delta-slots",
-    "label": "Sessions Summary Delta Slots",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-delta-slots.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-summary-delta-slots",
-    "storyTitle": "App Core/Agents/Sessions Summary Delta Slots"
-  },
-  {
-    "id": "sessions-table",
-    "label": "Sessions Table",
-    "sourcePath": "packages/app/agents/components/sessions/sessions-table.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "sessions-table",
-    "storyTitle": "App Core/Agents/Sessions Table"
+    "storyTitle": "App Core/Agents/Detail/Session Transcript Panel"
   },
   {
     "id": "subagent-effectiveness-panel",
@@ -2070,153 +1561,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/subagent-effectiveness-panel.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "subagent-effectiveness-panel",
-    "storyTitle": "App Core/Agents/Subagent Effectiveness Panel"
-  },
-  {
-    "id": "synced-sessions-table",
-    "label": "Synced Sessions Table",
-    "sourcePath": "packages/app/agents/components/sessions/synced-sessions-table.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "synced-sessions-table",
-    "storyTitle": "App Core/Agents/Synced Sessions Table"
-  },
-  {
-    "id": "agent-telemetry-analytics",
-    "label": "Telemetry Analytics",
-    "sourcePath": "packages/app/agents/components/analytics/agent-telemetry-analytics.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "agent-telemetry-analytics",
-    "storyTitle": "App Core/Agents/Telemetry Analytics"
-  },
-  {
-    "id": "thinking-block",
-    "label": "Thinking Block",
-    "sourcePath": "packages/app/agents/components/thinking-block.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "thinking-block",
-    "storyTitle": "App Core/Agents/Thinking Block"
-  },
-  {
-    "id": "token-trend-chart",
-    "label": "Token Trend Chart",
-    "sourcePath": "packages/app/agents/components/workspace/token-trend-chart.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "token-trend-chart",
-    "storyTitle": "App Core/Agents/Token Trend Chart"
-  },
-  {
-    "id": "tool-call-block",
-    "label": "Tool Call Block",
-    "sourcePath": "packages/app/agents/components/tools/tool-call-block.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "tool-call-block",
-    "storyTitle": "App Core/Agents/Tool Call Block"
-  },
-  {
-    "id": "tool-data-view",
-    "label": "Tool Data View",
-    "sourcePath": "packages/app/agents/components/tools/tool-data-view.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "tool-data-view",
-    "storyTitle": "App Core/Agents/Tool Data View"
-  },
-  {
-    "id": "tool-execution-flow",
-    "label": "Tool Execution Flow",
-    "sourcePath": "packages/app/agents/components/detail/tool-execution-flow.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "tool-execution-flow",
-    "storyTitle": "App Core/Agents/Tool Execution Flow"
-  },
-  {
-    "id": "tool-result-block",
-    "label": "Tool Result Block",
-    "sourcePath": "packages/app/agents/components/tools/tool-result-block.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "tool-result-block",
-    "storyTitle": "App Core/Agents/Tool Result Block"
-  },
-  {
-    "id": "trace-comments-rail",
-    "label": "Trace Comments Rail",
-    "sourcePath": "packages/app/agents/components/detail/trace-comments-rail.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "trace-comments-rail",
-    "storyTitle": "App Core/Agents/Trace Comments Rail"
-  },
-  {
-    "id": "trace-event-row",
-    "label": "Trace Event Row",
-    "sourcePath": "packages/app/agents/components/detail/trace-event-row.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "trace-event-row",
-    "storyTitle": "App Core/Agents/Trace Event Row"
-  },
-  {
-    "id": "trace-markdown",
-    "label": "Trace Markdown",
-    "sourcePath": "packages/app/agents/components/detail/trace-markdown.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "trace-markdown",
-    "storyTitle": "App Core/Agents/Trace Markdown"
-  },
-  {
-    "id": "trace-message-body",
-    "label": "Trace Message Body",
-    "sourcePath": "packages/app/agents/components/detail/trace-message-body.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "trace-message-body",
-    "storyTitle": "App Core/Agents/Trace Message Body"
-  },
-  {
-    "id": "trace-harness-tags",
-    "label": "Trace Tag Chip",
-    "sourcePath": "packages/app/agents/components/detail/trace-harness-tags.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "trace-harness-tags",
-    "storyTitle": "App Core/Agents/Trace Tag Chip"
+    "storyTitle": "App Core/Agents/Detail/Subagent Effectiveness Panel"
   },
   {
     "id": "transcript-file-switcher",
@@ -2224,10 +1573,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/transcript-file-switcher.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "transcript-file-switcher",
-    "storyTitle": "App Core/Agents/Transcript File Switcher"
+    "storyTitle": "App Core/Agents/Detail/Transcript File Switcher"
   },
   {
     "id": "transcript-force-archive-action",
@@ -2235,21 +1585,11 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/transcript-force-archive-action.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "transcript-force-archive-action",
-    "storyTitle": "App Core/Agents/Transcript Force Archive Action"
-  },
-  {
-    "id": "user-usage-table",
-    "label": "User Usage Table",
-    "sourcePath": "packages/app/agents/components/user-usage-table.tsx",
-    "section": "App Core",
-    "pathSegments": [
-      "Agents"
-    ],
-    "storyId": "user-usage-table",
-    "storyTitle": "App Core/Agents/User Usage Table"
+    "storyTitle": "App Core/Agents/Detail/Transcript Force Archive Action"
   },
   {
     "id": "viewport-tooltip",
@@ -2257,10 +1597,755 @@ export const appCoreComponentCatalog =
     "sourcePath": "packages/app/agents/components/detail/viewport-tooltip.tsx",
     "section": "App Core",
     "pathSegments": [
-      "Agents"
+      "Agents",
+      "Detail"
     ],
     "storyId": "viewport-tooltip",
-    "storyTitle": "App Core/Agents/Viewport Tooltip"
+    "storyTitle": "App Core/Agents/Detail/Viewport Tooltip"
+  },
+  {
+    "id": "agent-card",
+    "label": "Agent Card",
+    "sourcePath": "packages/app/agents/components/agent-card.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "agent-card",
+    "storyTitle": "App Core/Agents/Overview/Agent Card"
+  },
+  {
+    "id": "agent-collaboration-network",
+    "label": "Agent Collaboration Network",
+    "sourcePath": "packages/app/agents/components/agent-collaboration-network.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "agent-collaboration-network",
+    "storyTitle": "App Core/Agents/Overview/Agent Collaboration Network"
+  },
+  {
+    "id": "orchestration-dag",
+    "label": "Agent Orchestration Graph",
+    "sourcePath": "packages/app/agents/components/orchestration-dag.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "orchestration-dag",
+    "storyTitle": "App Core/Agents/Overview/Agent Orchestration Graph"
+  },
+  {
+    "id": "agent-pipeline-graph",
+    "label": "Agent Pipeline Graph",
+    "sourcePath": "packages/app/agents/components/agent-pipeline-graph.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "agent-pipeline-graph",
+    "storyTitle": "App Core/Agents/Overview/Agent Pipeline Graph"
+  },
+  {
+    "id": "cli-tools-panel",
+    "label": "Cli Tools Panel",
+    "sourcePath": "packages/app/agents/components/cli-tools-panel.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "cli-tools-panel",
+    "storyTitle": "App Core/Agents/Overview/Cli Tools Panel"
+  },
+  {
+    "id": "compaction-impact",
+    "label": "Compaction Impact",
+    "sourcePath": "packages/app/agents/components/compaction-impact.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "compaction-impact",
+    "storyTitle": "App Core/Agents/Overview/Compaction Impact"
+  },
+  {
+    "id": "context-cards",
+    "label": "Context Cards",
+    "sourcePath": "packages/app/agents/components/analytics/context-cards.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "context-cards",
+    "storyTitle": "App Core/Agents/Overview/Context Cards"
+  },
+  {
+    "id": "event-group-row",
+    "label": "Event Group Row",
+    "sourcePath": "packages/app/agents/components/events/event-group-row.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "event-group-row",
+    "storyTitle": "App Core/Agents/Overview/Event Group Row"
+  },
+  {
+    "id": "model-usage-table",
+    "label": "Model Usage Table",
+    "sourcePath": "packages/app/agents/components/model-usage-table.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "model-usage-table",
+    "storyTitle": "App Core/Agents/Overview/Model Usage Table"
+  },
+  {
+    "id": "agent-session-activity-feed",
+    "label": "Session Activity Feed",
+    "sourcePath": "packages/app/agents/components/activity/agent-session-activity-feed.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "agent-session-activity-feed",
+    "storyTitle": "App Core/Agents/Overview/Session Activity Feed"
+  },
+  {
+    "id": "session-status-badges",
+    "label": "Session Status Badges",
+    "sourcePath": "packages/app/agents/components/session-status-badges.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "session-status-badges",
+    "storyTitle": "App Core/Agents/Overview/Session Status Badges"
+  },
+  {
+    "id": "agent-telemetry-analytics",
+    "label": "Telemetry Analytics",
+    "sourcePath": "packages/app/agents/components/analytics/agent-telemetry-analytics.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "agent-telemetry-analytics",
+    "storyTitle": "App Core/Agents/Overview/Telemetry Analytics"
+  },
+  {
+    "id": "thinking-block",
+    "label": "Thinking Block",
+    "sourcePath": "packages/app/agents/components/thinking-block.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "thinking-block",
+    "storyTitle": "App Core/Agents/Overview/Thinking Block"
+  },
+  {
+    "id": "user-usage-table",
+    "label": "User Usage Table",
+    "sourcePath": "packages/app/agents/components/user-usage-table.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Overview"
+    ],
+    "storyId": "user-usage-table",
+    "storyTitle": "App Core/Agents/Overview/User Usage Table"
+  },
+  {
+    "id": "active-runs-panel",
+    "label": "Active Runs Panel",
+    "sourcePath": "packages/app/agents/components/sessions/active-runs-panel.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "active-runs-panel",
+    "storyTitle": "App Core/Agents/Sessions/Active Runs Panel"
+  },
+  {
+    "id": "agent-sessions-list",
+    "label": "Agent Sessions List",
+    "sourcePath": "packages/app/agents/components/sessions/agent-sessions-list.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "agent-sessions-list",
+    "storyTitle": "App Core/Agents/Sessions/Agent Sessions List"
+  },
+  {
+    "id": "cloud-sync-state-badge",
+    "label": "Cloud Sync State Badge",
+    "sourcePath": "packages/app/agents/components/sessions/cloud-sync-state-badge.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "cloud-sync-state-badge",
+    "storyTitle": "App Core/Agents/Sessions/Cloud Sync State Badge"
+  },
+  {
+    "id": "cost-metric-card",
+    "label": "Cost Metric Card",
+    "sourcePath": "packages/app/agents/components/sessions/cost-metric-card.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "cost-metric-card",
+    "storyTitle": "App Core/Agents/Sessions/Cost Metric Card"
+  },
+  {
+    "id": "session-card",
+    "label": "Session Card",
+    "sourcePath": "packages/app/agents/components/sessions/session-card.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-card",
+    "storyTitle": "App Core/Agents/Sessions/Session Card"
+  },
+  {
+    "id": "session-cell-chips",
+    "label": "Session Cell Chips",
+    "sourcePath": "packages/app/agents/components/sessions/session-cell-chips.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-cell-chips",
+    "storyTitle": "App Core/Agents/Sessions/Session Cell Chips"
+  },
+  {
+    "id": "session-cost-cell",
+    "label": "Session Cost Cell",
+    "sourcePath": "packages/app/agents/components/sessions/session-cost-cell.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-cost-cell",
+    "storyTitle": "App Core/Agents/Sessions/Session Cost Cell"
+  },
+  {
+    "id": "session-group-icons",
+    "label": "Session Group Icons",
+    "sourcePath": "packages/app/agents/components/sessions/session-group-icons.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-group-icons",
+    "storyTitle": "App Core/Agents/Sessions/Session Group Icons"
+  },
+  {
+    "id": "session-provenance-chip",
+    "label": "Session Provenance Chip",
+    "sourcePath": "packages/app/agents/components/sessions/session-provenance-chip.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-provenance-chip",
+    "storyTitle": "App Core/Agents/Sessions/Session Provenance Chip"
+  },
+  {
+    "id": "session-sync-status-badge",
+    "label": "Session Sync Status Badge",
+    "sourcePath": "packages/app/agents/components/sessions/session-sync-status-badge.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "session-sync-status-badge",
+    "storyTitle": "App Core/Agents/Sessions/Session Sync Status Badge"
+  },
+  {
+    "id": "sessions-active-filters-bar",
+    "label": "Sessions Active Filters Bar",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-active-filters-bar.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-active-filters-bar",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Active Filters Bar"
+  },
+  {
+    "id": "sessions-controls",
+    "label": "Sessions Controls",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-controls.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-controls",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Controls"
+  },
+  {
+    "id": "sessions-empty-state",
+    "label": "Sessions Empty State",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-empty-state.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-empty-state",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Empty State"
+  },
+  {
+    "id": "sessions-recovery-action",
+    "label": "Sessions Recovery Action",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-recovery-action.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-recovery-action",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Recovery Action"
+  },
+  {
+    "id": "sessions-sign-in-indicator",
+    "label": "Sessions Sign In Indicator",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-sign-in-indicator.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-sign-in-indicator",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Sign In Indicator"
+  },
+  {
+    "id": "sessions-summary-cards",
+    "label": "Sessions Summary Cards",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-cards.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-summary-cards",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Summary Cards"
+  },
+  {
+    "id": "sessions-summary-cards-loading",
+    "label": "Sessions Summary Cards Loading",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-cards-loading.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-summary-cards-loading",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Summary Cards Loading"
+  },
+  {
+    "id": "sessions-summary-delta-slots",
+    "label": "Sessions Summary Delta Slots",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-summary-delta-slots.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-summary-delta-slots",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Summary Delta Slots"
+  },
+  {
+    "id": "sessions-table",
+    "label": "Sessions Table",
+    "sourcePath": "packages/app/agents/components/sessions/sessions-table.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "sessions-table",
+    "storyTitle": "App Core/Agents/Sessions/Sessions Table"
+  },
+  {
+    "id": "synced-sessions-table",
+    "label": "Synced Sessions Table",
+    "sourcePath": "packages/app/agents/components/sessions/synced-sessions-table.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Sessions"
+    ],
+    "storyId": "synced-sessions-table",
+    "storyTitle": "App Core/Agents/Sessions/Synced Sessions Table"
+  },
+  {
+    "id": "activity-bucket-tooltip",
+    "label": "Activity Bucket Tooltip",
+    "sourcePath": "packages/app/agents/components/detail/activity-bucket-tooltip.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "activity-bucket-tooltip",
+    "storyTitle": "App Core/Agents/Timeline/Activity Bucket Tooltip"
+  },
+  {
+    "id": "session-timeline-axis",
+    "label": "Session Timeline Axis",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-axis.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-axis",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Axis"
+  },
+  {
+    "id": "session-timeline-bars",
+    "label": "Session Timeline Bars",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-bars.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-bars",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Bars"
+  },
+  {
+    "id": "session-timeline-controls",
+    "label": "Session Timeline Controls",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-controls.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-controls",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Controls"
+  },
+  {
+    "id": "session-timeline-bar-labels",
+    "label": "Session Timeline Cost Rail",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-bar-labels.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-bar-labels",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Cost Rail"
+  },
+  {
+    "id": "session-timeline-dot-rail",
+    "label": "Session Timeline Dot Rail",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-dot-rail.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-dot-rail",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Dot Rail"
+  },
+  {
+    "id": "session-timeline-strip-parts",
+    "label": "Session Timeline Event Dot Tooltip",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-strip-parts.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-strip-parts",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Event Dot Tooltip"
+  },
+  {
+    "id": "session-timeline-summary",
+    "label": "Session Timeline Summary",
+    "sourcePath": "packages/app/agents/components/detail/session-timeline-summary.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-timeline-summary",
+    "storyTitle": "App Core/Agents/Timeline/Session Timeline Summary"
+  },
+  {
+    "id": "session-trace",
+    "label": "Session Trace",
+    "sourcePath": "packages/app/agents/components/detail/session-trace.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-trace",
+    "storyTitle": "App Core/Agents/Timeline/Session Trace"
+  },
+  {
+    "id": "session-trace-subagent",
+    "label": "Session Trace Subagent",
+    "sourcePath": "packages/app/agents/components/detail/session-trace-subagent.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-trace-subagent",
+    "storyTitle": "App Core/Agents/Timeline/Session Trace Subagent"
+  },
+  {
+    "id": "session-trace-tool-row-detail",
+    "label": "Session Trace Tool Row Detail",
+    "sourcePath": "packages/app/agents/components/detail/session-trace-tool-row-detail.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "session-trace-tool-row-detail",
+    "storyTitle": "App Core/Agents/Timeline/Session Trace Tool Row Detail"
+  },
+  {
+    "id": "tool-execution-flow",
+    "label": "Tool Execution Flow",
+    "sourcePath": "packages/app/agents/components/detail/tool-execution-flow.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "tool-execution-flow",
+    "storyTitle": "App Core/Agents/Timeline/Tool Execution Flow"
+  },
+  {
+    "id": "trace-comments-rail",
+    "label": "Trace Comments Rail",
+    "sourcePath": "packages/app/agents/components/detail/trace-comments-rail.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "trace-comments-rail",
+    "storyTitle": "App Core/Agents/Timeline/Trace Comments Rail"
+  },
+  {
+    "id": "trace-event-row",
+    "label": "Trace Event Row",
+    "sourcePath": "packages/app/agents/components/detail/trace-event-row.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "trace-event-row",
+    "storyTitle": "App Core/Agents/Timeline/Trace Event Row"
+  },
+  {
+    "id": "trace-markdown",
+    "label": "Trace Markdown",
+    "sourcePath": "packages/app/agents/components/detail/trace-markdown.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "trace-markdown",
+    "storyTitle": "App Core/Agents/Timeline/Trace Markdown"
+  },
+  {
+    "id": "trace-message-body",
+    "label": "Trace Message Body",
+    "sourcePath": "packages/app/agents/components/detail/trace-message-body.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "trace-message-body",
+    "storyTitle": "App Core/Agents/Timeline/Trace Message Body"
+  },
+  {
+    "id": "trace-harness-tags",
+    "label": "Trace Tag Chip",
+    "sourcePath": "packages/app/agents/components/detail/trace-harness-tags.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Timeline"
+    ],
+    "storyId": "trace-harness-tags",
+    "storyTitle": "App Core/Agents/Timeline/Trace Tag Chip"
+  },
+  {
+    "id": "tool-call-block",
+    "label": "Tool Call Block",
+    "sourcePath": "packages/app/agents/components/tools/tool-call-block.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Tools"
+    ],
+    "storyId": "tool-call-block",
+    "storyTitle": "App Core/Agents/Tools/Tool Call Block"
+  },
+  {
+    "id": "tool-data-view",
+    "label": "Tool Data View",
+    "sourcePath": "packages/app/agents/components/tools/tool-data-view.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Tools"
+    ],
+    "storyId": "tool-data-view",
+    "storyTitle": "App Core/Agents/Tools/Tool Data View"
+  },
+  {
+    "id": "tool-result-block",
+    "label": "Tool Result Block",
+    "sourcePath": "packages/app/agents/components/tools/tool-result-block.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Tools"
+    ],
+    "storyId": "tool-result-block",
+    "storyTitle": "App Core/Agents/Tools/Tool Result Block"
+  },
+  {
+    "id": "agent-detail",
+    "label": "Agent Detail",
+    "sourcePath": "packages/app/agents/components/workspace/agent-detail.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "agent-detail",
+    "storyTitle": "App Core/Agents/Workspace/Agent Detail"
+  },
+  {
+    "id": "agents-table",
+    "label": "Agents Table",
+    "sourcePath": "packages/app/agents/components/workspace/agents-table.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "agents-table",
+    "storyTitle": "App Core/Agents/Workspace/Agents Table"
+  },
+  {
+    "id": "agents-type-tab-strip",
+    "label": "Agents Type Tab Strip",
+    "sourcePath": "packages/app/agents/components/workspace/agents-type-tab-strip.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "agents-type-tab-strip",
+    "storyTitle": "App Core/Agents/Workspace/Agents Type Tab Strip"
+  },
+  {
+    "id": "detail-branches-tab",
+    "label": "Detail Branches Tab",
+    "sourcePath": "packages/app/agents/components/workspace/detail-branches-tab.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "detail-branches-tab",
+    "storyTitle": "App Core/Agents/Workspace/Detail Branches Tab"
+  },
+  {
+    "id": "detail-sessions-tab",
+    "label": "Detail Sessions Tab",
+    "sourcePath": "packages/app/agents/components/workspace/detail-sessions-tab.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "detail-sessions-tab",
+    "storyTitle": "App Core/Agents/Workspace/Detail Sessions Tab"
+  },
+  {
+    "id": "invocation-evidence-list",
+    "label": "Invocation Evidence List",
+    "sourcePath": "packages/app/agents/components/workspace/invocation-evidence-list.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "invocation-evidence-list",
+    "storyTitle": "App Core/Agents/Workspace/Invocation Evidence List"
+  },
+  {
+    "id": "loc-per-dollar-cell",
+    "label": "LOC Per Dollar Column Value",
+    "sourcePath": "packages/app/agents/components/workspace/loc-per-dollar-cell.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "loc-per-dollar-cell",
+    "storyTitle": "App Core/Agents/Workspace/LOC Per Dollar Column Value"
+  },
+  {
+    "id": "token-trend-chart",
+    "label": "Token Trend Chart",
+    "sourcePath": "packages/app/agents/components/workspace/token-trend-chart.tsx",
+    "section": "App Core",
+    "pathSegments": [
+      "Agents",
+      "Workspace"
+    ],
+    "storyId": "token-trend-chart",
+    "storyTitle": "App Core/Agents/Workspace/Token Trend Chart"
   },
   {
     "id": "branch-cost-to-merge",

@@ -46,7 +46,7 @@ const SPLIT_TOKEN_USAGE: SyncedAgentSessionTokenUsage[] = [
 ];
 
 const meta = {
-  title: "App Core/Agents/Session Flagged Properties",
+  title: "App Core/Agents/Detail/Session Flagged Properties",
   component: CacheWriteTtlProperty,
   tags: ["autodocs"],
   argTypes: {

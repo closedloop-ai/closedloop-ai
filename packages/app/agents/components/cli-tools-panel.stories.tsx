@@ -24,7 +24,7 @@ function CliToolsPanelStory() {
 }
 
 const meta = {
-  title: "App Core/Agents/Cli Tools Panel",
+  title: "App Core/Agents/Overview/Cli Tools Panel",
   component: CliToolsPanelStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

@@ -50,7 +50,7 @@ const UNAVAILABLE_DURATION = "—";
 const NARROW_VIEWPORT_PX = 380;
 
 const meta = {
-  title: "App Core/Agents/Subagent Effectiveness Panel",
+  title: "App Core/Agents/Detail/Subagent Effectiveness Panel",
   component: SubagentEffectivenessPanel,
   tags: ["autodocs"],
   argTypes: {

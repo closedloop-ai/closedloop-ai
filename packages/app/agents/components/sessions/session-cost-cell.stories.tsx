@@ -20,7 +20,7 @@ import { SessionCostCell } from "./session-cost-cell";
  */
 const meta: Meta<typeof SessionCostCell> = {
   component: SessionCostCell,
-  title: "App Core/Agents/Session Cost Cell",
+  title: "App Core/Agents/Sessions/Session Cost Cell",
   tags: ["autodocs"],
   argTypes: {
     availability: {

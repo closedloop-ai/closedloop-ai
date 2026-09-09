@@ -13,7 +13,7 @@ import { SessionProvenanceChip } from "./session-provenance-chip";
  * it a reader has to guess whether a missing chip is intentional or a bug.
  */
 const meta = {
-  title: "App Core/Agents/Session Provenance Chip",
+  title: "App Core/Agents/Sessions/Session Provenance Chip",
   component: SessionProvenanceChip,
   tags: ["autodocs"],
   argTypes: {

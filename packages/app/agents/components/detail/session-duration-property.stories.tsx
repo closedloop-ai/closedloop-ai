@@ -11,7 +11,7 @@ const STARTED_AT = "2026-07-30T10:00:00.000Z";
 const ENDED_AT = "2026-07-30T14:54:00.000Z";
 
 const meta = {
-  title: "App Core/Agents/Session Duration Property",
+  title: "App Core/Agents/Detail/Session Duration Property",
   component: SessionDurationProperty,
   tags: ["autodocs"],
   argTypes: {

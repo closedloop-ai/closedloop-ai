@@ -50,7 +50,7 @@ const transcriptTransportDecorator: Decorator = (Story, context) => (
 const FORCE_BUTTON_NAME = "Sync this transcript anyway";
 
 const meta = {
-  title: "App Core/Agents/Transcript Force Archive Action",
+  title: "App Core/Agents/Detail/Transcript Force Archive Action",
   component: TranscriptForceArchiveAction,
   tags: ["autodocs"],
   argTypes: {
