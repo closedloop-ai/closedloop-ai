@@ -56,7 +56,7 @@ const preview: Preview = {
           ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Design System",
           "App Core",
-          "Desktop",
+          "Desktop App",
           "Screens",
           ["Login", "Dashboard", "Settings"],
         ],
