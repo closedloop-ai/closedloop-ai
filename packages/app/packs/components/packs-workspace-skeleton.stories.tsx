@@ -4,8 +4,18 @@ import { PacksWorkspaceSkeleton } from "./packs-workspace-skeleton";
 const meta = {
   title: "App Core/Packs/Packs Workspace Skeleton",
   component: PacksWorkspaceSkeleton,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
+  },
+  argTypes: {
+    cardCount: { control: { type: "number", min: 0, max: 24, step: 1 } },
+    header: { control: false },
+    showTeamLayout: { control: "boolean" },
+  },
+  args: {
+    cardCount: 6,
+    showTeamLayout: true,
   },
 } satisfies Meta<typeof PacksWorkspaceSkeleton>;
 

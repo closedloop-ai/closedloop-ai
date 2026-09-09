@@ -5,6 +5,13 @@ const meta = {
   title: "App Core/Agents/Model Usage Table",
   component: ModelUsageTable,
   tags: ["autodocs"],
+  argTypes: {
+    rows: {
+      control: "object",
+      description:
+        "Pre-formatted usage rows. An empty array is the empty state, not a table with no body.",
+    },
+  },
   args: {
     rows: [
       {

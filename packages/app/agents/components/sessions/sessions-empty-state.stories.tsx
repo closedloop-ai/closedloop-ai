@@ -30,6 +30,35 @@ const meta = {
   title: "App Core/Agents/Sessions Empty State",
   component: SessionsEmptyState,
   tags: ["autodocs"],
+  argTypes: {
+    signals: {
+      control: "object",
+      description:
+        "The reason is DERIVED from these, never passed in. isUnavailable wins, then hasActiveFilters.",
+    },
+    isSyncing: {
+      control: "boolean",
+      description:
+        "Among unavailable states, is the local source still coming up rather than broken? Desktop only.",
+    },
+    hasConnectedAgent: {
+      control: "boolean",
+      description:
+        "Only false swaps the genuinely-empty copy for the onboarding CTA. Unset means unknown.",
+    },
+    errorRecoveryAction: {
+      control: false,
+      description:
+        "Host-owned recovery Link for the errored card. A rendered element, so it is wired per story.",
+    },
+    onboardingAction: {
+      control: false,
+      description:
+        "Host-owned connect-a-compute-target CTA. A rendered element, so it is wired per story.",
+    },
+    onClearFilters: { control: false, table: { category: "Events" } },
+    onRetry: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -39,6 +68,7 @@ const meta = {
     ),
   ],
   args: {
+    isSyncing: false,
     signals: { isUnavailable: false, hasActiveFilters: false },
   },
 } satisfies Meta<typeof SessionsEmptyState>;

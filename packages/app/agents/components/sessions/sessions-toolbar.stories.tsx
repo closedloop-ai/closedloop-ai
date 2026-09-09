@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
+import { DATE_RANGES } from "../../../shared/lib/format-utils";
 import { SESSIONS_TOGGLEABLE_COLUMNS } from "../../hooks/use-sessions-view-state";
 import { DEFAULT_SESSION_FACET_FILTERS } from "../../lib/session-filter-adapter";
 import { SessionGroupBy } from "../../lib/session-grouping";
@@ -24,6 +26,76 @@ import { SessionsToolbar } from "./sessions-toolbar";
 const meta: Meta<typeof SessionsToolbar> = {
   title: "App Core/Sessions/SessionsToolbar",
   component: SessionsToolbar,
+  tags: ["autodocs"],
+  argTypes: {
+    dateRange: {
+      control: { type: "radio" },
+      options: DATE_RANGES,
+      table: { category: "State" },
+      description:
+        "First-class time window. Drives the list query AND the summary metrics.",
+    },
+    filters: { control: "object", table: { category: "State" } },
+    groupBy: {
+      control: { type: "radio" },
+      options: Object.values(SessionGroupBy),
+      table: { category: "State" },
+      description:
+        "The View menu's Group by dimension. Renders only when onGroupByChange is wired too.",
+    },
+    scopeUserId: {
+      control: "text",
+      table: { category: "State" },
+      description:
+        "An out-of-facet selected-user narrower the host owns, surfaced in the chip row.",
+    },
+    visibleColumns: {
+      control: false,
+      table: { category: "Data" },
+      description:
+        "A Set of column ids, so it cannot be edited here without replacing it with a plain object.",
+    },
+    usage: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Feeds the Repository, Owner, Harness and Model facet options.",
+    },
+    includeProjectFilter: {
+      control: "boolean",
+      table: { category: "Appearance" },
+      description:
+        "Offer the Project facet. Web only, since desktop cannot resolve cloud projects.",
+    },
+    includeLinkedEntityColumns: {
+      control: "boolean",
+      table: { category: "Appearance" },
+      description:
+        "This surface renders the Owning project and Linked issues columns, so offer their View entries.",
+    },
+    trailing: {
+      control: false,
+      table: { category: "Content" },
+      description: "Extra actions rendered after the built-in controls.",
+    },
+    onDateRangeChange: { control: false, table: { category: "Events" } },
+    onFiltersChange: { control: false, table: { category: "Events" } },
+    onToggleColumn: { control: false, table: { category: "Events" } },
+    onClearFilters: { control: false, table: { category: "Events" } },
+    onGroupByChange: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Left unwired here so Default keeps showing the View menu WITHOUT the Group by section.",
+    },
+    onResetView: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Left unwired here so the View menu keeps the shape a host without a reset actually renders.",
+    },
+    onRemoveScopeUser: { control: false, table: { category: "Events" } },
+  },
   decorators: [
     (Story) => (
       <div className="w-full max-w-5xl border-b p-4">
@@ -34,15 +106,12 @@ const meta: Meta<typeof SessionsToolbar> = {
   args: {
     dateRange: "7d",
     filters: DEFAULT_SESSION_FACET_FILTERS,
-    onDateRangeChange: () => {
-      // presentational
-    },
-    onFiltersChange: () => {
-      // presentational
-    },
-    onToggleColumn: () => {
-      // presentational
-    },
+    includeLinkedEntityColumns: false,
+    includeProjectFilter: false,
+    onClearFilters: fn(),
+    onDateRangeChange: fn(),
+    onFiltersChange: fn(),
+    onToggleColumn: fn(),
     visibleColumns: new Set(SESSIONS_TOGGLEABLE_COLUMNS.map((c) => c.id)),
   },
 };

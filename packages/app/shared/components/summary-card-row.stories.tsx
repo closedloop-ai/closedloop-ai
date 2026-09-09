@@ -100,11 +100,26 @@ function DerivedStrip() {
   );
 }
 
+// No `autodocs` tag: every story below pins a VIEWPORT, which is the row's real
+// input, and a docs page renders them all at the docs container's own width. All
+// six would come out identical, showing none of the tiers they exist to pin.
+// `activity-bucket-tooltip.stories.tsx` omits the tag for the same kind of reason.
 const meta = {
   title: "App Core/Shared/Summary Card Row",
   component: SummaryCardRow,
   parameters: { layout: "padded" },
-  args: { children: null as ReactNode },
+  argTypes: {
+    busy: { control: "boolean" },
+    children: { control: false },
+    className: { control: "text" },
+    minWidth: {
+      control: { type: "number", min: 160, max: 400, step: 4 },
+      description:
+        "Explicit per-card floor in px. Leave it empty to take the row's own tier: the dense floor at compact, 260 at comfortable.",
+    },
+    wrapBelow: { control: "boolean" },
+  },
+  args: { busy: false, children: null as ReactNode, wrapBelow: true },
 } satisfies Meta<typeof SummaryCardRow>;
 
 export default meta;

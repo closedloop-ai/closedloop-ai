@@ -20,7 +20,7 @@ import { GuestSignupIntent } from "./guest-signup-provider";
  * the flow the packaged app runs rather than a lookalike.
  */
 const meta = {
-  title: "Desktop/Onboarding/Account Dialog",
+  title: "Desktop App/Onboarding/Account Dialog",
   component: AccountDialog,
   parameters: {
     layout: "fullscreen",

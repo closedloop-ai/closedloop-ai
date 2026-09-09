@@ -177,6 +177,13 @@ const meta = {
   title: "App Core/Agents/Session Activity Breakdown",
   component: SessionActivityBreakdown,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "Detail projection. Only activitySegments and the session cost rollup reach this panel.",
+    },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionActivityBreakdown>;
 

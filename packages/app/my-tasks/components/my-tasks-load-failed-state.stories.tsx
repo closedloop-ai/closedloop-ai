@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { MyTasksLoadFailedState } from "./my-tasks-load-failed-state";
 
 /**
@@ -16,6 +17,12 @@ const meta = {
   title: "App Core/My Tasks/Load Failed State",
   component: MyTasksLoadFailedState,
   tags: ["autodocs"],
+  args: {
+    onRetry: fn(),
+  },
+  argTypes: {
+    onRetry: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -30,6 +37,4 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** The only state this component has: a named failure with a way out. */
-export const Default: Story = {
-  args: { onRetry: () => undefined },
-};
+export const Default: Story = {};

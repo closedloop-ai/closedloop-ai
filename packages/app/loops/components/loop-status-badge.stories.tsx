@@ -20,6 +20,16 @@ import { LoopStatusBadge } from "./loop-status-badge";
 const meta: Meta<typeof LoopStatusBadge> = {
   title: "App Core/Loops/Loop Status Badge",
   component: LoopStatusBadge,
+  tags: ["autodocs"],
+  argTypes: {
+    status: { control: "select", options: Object.values(LoopStatus) },
+    errorCode: {
+      control: "text",
+      description:
+        "Open string on the wire. A code this client does not know narrows to the generic failure copy rather than an unstyled state.",
+    },
+  },
+  args: { status: LoopStatus.Running },
   parameters: { appCore: { enabledFlags: ["ghost-loop-ux"] } },
 };
 

@@ -12,6 +12,15 @@ const meta = {
     ),
   ],
   title: "App Core/Branches/Provider Availability",
+  tags: ["autodocs"],
+  argTypes: {
+    availability: {
+      control: "object",
+      description:
+        "Independent bounded-coverage facts. Every applicable one is disclosed, so combinations render more than one line.",
+    },
+  },
+  args: { availability: availability() },
 } satisfies Meta<typeof BranchProviderAvailability>;
 
 export default meta;

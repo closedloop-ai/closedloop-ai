@@ -35,6 +35,21 @@ const meta = {
   title: "App Core/Agents/Session Group Icons",
   component: GroupSectionHeader,
   tags: ["autodocs"],
+  argTypes: {
+    icon: {
+      control: false,
+      description:
+        "The dimension's glyph, taken from SESSION_GROUP_ICONS. A rendered element, so it is set per story rather than typed here.",
+    },
+    label: { control: "text" },
+    isOpen: { control: "boolean" },
+    count: {
+      control: { type: "number", min: 0 },
+      description:
+        "Rows in this band. Deliberately unset: the Sessions list is server-paginated, so a number here would read as the population.",
+    },
+    onToggle: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   args: {
     icon: SESSION_GROUP_ICONS[SessionGroupBy.Status],

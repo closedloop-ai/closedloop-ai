@@ -1,12 +1,17 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { UserUsageTable } from "./user-usage-table";
 
 const meta = {
   title: "App Core/Agents/User Usage Table",
   component: UserUsageTable,
   tags: ["autodocs"],
+  argTypes: {
+    rows: { control: "object" },
+    onToggleUser: { control: false, table: { category: "Events" } },
+  },
   args: {
-    onToggleUser: () => undefined,
+    onToggleUser: fn(),
     rows: [
       {
         id: "user-1",

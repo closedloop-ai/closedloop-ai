@@ -230,8 +230,41 @@ const meta = {
   title: "App Core/Agents/Session Transcript Panel",
   component: SessionTranscriptPanel,
   tags: ["autodocs"],
+  argTypes: {
+    activeRow: {
+      control: { min: 0, step: 1, type: "number" },
+      table: { category: "State" },
+    },
+    /*
+     * Presence is the switch: the file switcher renders only when a surface can
+     * build a deep link, so this stays a story-level decision rather than a
+     * meta-level `fn()` that would put the switcher on every canvas.
+     */
+    buildTranscriptFileHref: { control: false, table: { category: "Events" } },
+    fallbackItems: { control: "object", table: { category: "Data" } },
+    fileKey: { control: "text", table: { category: "Data" } },
+    highlightAnchor: { control: "object", table: { category: "State" } },
+    invocationAnchor: { control: "object", table: { category: "State" } },
+    onInvocationAnchorResolved: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onJump: { control: false, table: { category: "Events" } },
+    onSubmitTraceComment: { control: false, table: { category: "Events" } },
+    onTraceRowTranslatorChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+    /*
+     * `AgentSessionDetail` carries real `Date` fields, which an object control
+     * serializes to strings on edit; the transcript read and the projection
+     * both take them as dates, so the session is changed by picking a story.
+     */
+    session: { control: false, table: { category: "Data" } },
+  },
   parameters: { layout: "padded" },
   args: {
+    fileKey: MAIN_TRANSCRIPT_FILE_KEY,
     session: cloudSessionFixture(),
   },
 } satisfies Meta<typeof SessionTranscriptPanel>;

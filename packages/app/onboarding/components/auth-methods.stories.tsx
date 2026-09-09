@@ -1,5 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { AuthMethods } from "./auth-methods";
+
+/**
+ * The three methods the panel can offer, plus `null` for "nothing in flight".
+ * Copied from the `AuthMethod` union in `./auth-methods`, which ships no
+ * companion array to import.
+ */
+const PENDING_METHOD_OPTIONS = [null, "github", "google", "email"] as const;
+
+/** The native `method` values a host adapter can hand the email form. */
+const NATIVE_METHOD_OPTIONS = ["get", "post", "dialog"] as const;
 
 /**
  * The sign-in method chooser itself, shared by desktop onboarding, web sign-in,
@@ -18,10 +29,25 @@ import { AuthMethods } from "./auth-methods";
  */
 const meta: Meta<typeof AuthMethods> = {
   args: {
-    onSelect: () => {
-      // Storybook has no auth client; the controls are here to be looked at.
-      // A story that resolved a pick would pretend an OAuth round trip happened.
+    emailCtaLabel: "Continue with email",
+    // Storybook has no auth client; the controls are here to be looked at.
+    // A story that resolved a pick would pretend an OAuth round trip happened.
+    onSelect: fn(),
+    pendingMethod: null,
+    showEmail: true,
+  },
+  argTypes: {
+    emailCtaLabel: { control: "text" },
+    nativeMethod: {
+      control: { type: "radio" },
+      options: NATIVE_METHOD_OPTIONS,
     },
+    onSelect: { control: false, table: { category: "Events" } },
+    pendingMethod: {
+      control: { type: "radio" },
+      options: PENDING_METHOD_OPTIONS,
+    },
+    showEmail: { control: "boolean" },
   },
   component: AuthMethods,
   // Matches the hosts, which all clamp this panel to a narrow column.
@@ -32,6 +58,7 @@ const meta: Meta<typeof AuthMethods> = {
       </div>
     ),
   ],
+  tags: ["autodocs"],
   title: "App Core/Onboarding/Auth Methods",
 };
 

@@ -32,7 +32,16 @@ const baseSession: SessionTimelineSummarySession = {
 };
 
 const meta: Meta<typeof SessionTimelineSummary> = {
+  argTypes: {
+    /*
+     * The whole matrix lives in one prop, and every field it turns on is plain
+     * data: the instants are typed `Date | string | null`, so an edited object
+     * control stays inside the contract the derivations read.
+     */
+    session: { control: "object" },
+  },
   component: SessionTimelineSummary,
+  tags: ["autodocs"],
   /*
    * The strip is laid out by `.sd3-act-head` in production (flex,
    * space-between), so it is framed here the same way rather than floating.

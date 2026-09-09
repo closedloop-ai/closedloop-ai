@@ -1,6 +1,7 @@
 import { BranchPrCommentKind } from "@repo/api/src/types/branch";
 import { TraceCommentTargetType } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import {
   BranchCommentCard,
   BranchCommentComposerKind,
@@ -21,19 +22,50 @@ const meta = {
     ),
   ],
   title: "App Core/Branches/Comment Card",
+  tags: ["autodocs"],
+  argTypes: {
+    canEditRoot: { control: "boolean", table: { category: "State" } },
+    canReply: { control: "boolean", table: { category: "State" } },
+    draftFor: {
+      control: false,
+      description:
+        "Returns the in-progress body for the edit or reply composer.",
+      table: { category: "State" },
+    },
+    isPending: {
+      control: false,
+      description: "Whether the edit or reply composer is awaiting a response.",
+      table: { category: "State" },
+    },
+    mode: {
+      control: "object",
+      description:
+        "Which composer is open, and on which thread. Omit for none.",
+      table: { category: "State" },
+    },
+    onCancelComposer: { control: false, table: { category: "Events" } },
+    onDeleteReply: { control: false, table: { category: "Events" } },
+    onDeleteThread: { control: false, table: { category: "Events" } },
+    onJump: { control: false, table: { category: "Events" } },
+    onOpenComposer: { control: false, table: { category: "Events" } },
+    onSubmitComposer: { control: false, table: { category: "Events" } },
+    onUpdateDraft: { control: false, table: { category: "Events" } },
+    renderBody: { control: false, table: { category: "Content" } },
+    thread: { control: "object", table: { category: "Data" } },
+  },
   args: {
     canEditRoot: true,
     canReply: true,
     draftFor: (_kind: BranchCommentComposerKind): string | undefined =>
       undefined,
     isPending: (_kind: BranchCommentComposerKind) => false,
-    onCancelComposer: () => undefined,
-    onDeleteReply: () => undefined,
-    onDeleteThread: () => undefined,
-    onJump: () => undefined,
-    onOpenComposer: () => undefined,
-    onSubmitComposer: () => undefined,
-    onUpdateDraft: () => undefined,
+    onCancelComposer: fn(),
+    onDeleteReply: fn(),
+    onDeleteThread: fn(),
+    onJump: fn(),
+    onOpenComposer: fn(),
+    onSubmitComposer: fn(),
+    onUpdateDraft: fn(),
     thread: makePlatformThread(),
   },
 } satisfies Meta<typeof BranchCommentCard>;

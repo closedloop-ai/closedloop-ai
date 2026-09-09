@@ -1,4 +1,7 @@
-import { DocumentType } from "@repo/api/src/types/document";
+import {
+  DOCUMENT_TYPE_OPTIONS,
+  DocumentType,
+} from "@repo/api/src/types/document";
 import { DocumentTypeBadge } from "@repo/app/documents/components/document-type-badge";
 import type { Meta, StoryObj } from "@storybook/react";
 
@@ -6,8 +9,12 @@ const meta = {
   title: "App Core/Documents/Document Type Badge",
   component: DocumentTypeBadge,
   tags: ["autodocs"],
+  argTypes: {
+    type: { control: { type: "select" }, options: DOCUMENT_TYPE_OPTIONS },
+    appearance: { control: { type: "radio" }, options: ["compact", "pill"] },
+  },
   parameters: { layout: "padded" },
-  args: { type: DocumentType.Prd },
+  args: { type: DocumentType.Prd, appearance: "compact" },
 } satisfies Meta<typeof DocumentTypeBadge>;
 
 export default meta;

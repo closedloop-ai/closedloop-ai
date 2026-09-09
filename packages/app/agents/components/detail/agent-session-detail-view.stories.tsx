@@ -18,6 +18,7 @@ import {
   truncatedEventsWithTranscriptAgentSessionDetailFixture,
   unknownStateAgentSessionDetailFixture,
 } from "./agent-session-detail-fixtures";
+import { SessionDetailErrorKind } from "./agent-session-detail-states";
 import { AgentSessionDetailView } from "./agent-session-detail-view";
 
 /**
@@ -35,6 +36,40 @@ const detailViewDecorator: Decorator = (Story) => (
 const meta: Meta<typeof AgentSessionDetailView> = {
   title: "App Core/Agents/Session Detail",
   component: AgentSessionDetailView,
+  args: { commentsRailOpen: true, isError: false },
+  argTypes: {
+    session: { control: "object", table: { category: "Data" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isError: {
+      control: "boolean",
+      description: "The read settled to a failure rather than an empty result.",
+      table: { category: "State" },
+    },
+    errorKind: {
+      control: { type: "radio" },
+      options: Object.values(SessionDetailErrorKind),
+      description: "Only consulted when isError is set and no session arrived.",
+      table: { category: "State" },
+    },
+    commentsRailOpen: { control: "boolean", table: { category: "State" } },
+    artifactHrefPending: {
+      control: "boolean",
+      description:
+        "True while the shell cannot yet say whether artifact links resolve.",
+      table: { category: "State" },
+    },
+    transcriptFileKey: {
+      control: "text",
+      description:
+        "Transcript the conversation region renders: main, or a subagent:{id} sidechain.",
+      table: { category: "Content" },
+    },
+    invocationAnchor: { control: "object", table: { category: "Content" } },
+    backHref: { control: "text", table: { category: "Routing" } },
+    buildTranscriptFileHref: { control: false, table: { category: "Routing" } },
+    buildArtifactHref: { control: false, table: { category: "Routing" } },
+    getBranchHref: { control: false, table: { category: "Routing" } },
+  },
   parameters: {
     layout: "fullscreen",
   },

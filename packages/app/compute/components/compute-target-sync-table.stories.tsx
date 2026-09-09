@@ -15,6 +15,13 @@ const meta = {
   title: "App Core/Compute/Compute Target Sync Table",
   component: ComputeTargetSyncTable,
   tags: ["autodocs"],
+  argTypes: {
+    rows: {
+      control: "object",
+      description:
+        "One row per compute target. `lastSyncLabel` is the last batch the cloud accepted; `lastDataLabel` is when session rows last landed.",
+    },
+  },
   args: {
     rows: [
       {

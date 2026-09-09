@@ -49,6 +49,34 @@ const meta = {
   title: "App Core/Agents/Sessions Summary Cards Loading",
   component: SessionsSummaryCardsLoading,
   tags: ["autodocs"],
+  argTypes: {
+    loadingDetail: {
+      control: "text",
+      description:
+        "The caption every shell carries. The only slot that can say WHY the strip is blank.",
+    },
+    locPerDollarLabel: {
+      control: { type: "radio" },
+      options: [LOC_PER_DOLLAR_LABEL, LOC_PER_DOLLAR_MERGED_LABEL],
+      description:
+        "The fifth card's label, resolved by the caller from a flag so the shell and the settled row agree.",
+    },
+    reservesDeltaSlot: {
+      control: "boolean",
+      description:
+        "Does the host surface compare against a prior period? Reserved only where it will be filled.",
+    },
+    wrapBelow: {
+      control: "boolean",
+      description:
+        "Wrap into a two-column grid below md instead of scrolling the fixed-width row sideways.",
+    },
+    cardClassName: {
+      control: false,
+      description:
+        "Per-card sizing, resolved by the caller from its layout mode via summaryCardClass.",
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     // Both production hosts opt into the wrapping grid, so the shell lays out the

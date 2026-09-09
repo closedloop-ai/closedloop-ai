@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import type { FixtureRoute } from "../../../shared/storybook/fixture-fetch";
 import {
   createAgentSessionAnalyticsFixture,
@@ -85,6 +86,46 @@ const storyApiRoutes: FixtureRoute[] = [
 
 const meta: Meta<typeof AgentTelemetryAnalytics> = {
   component: AgentTelemetryAnalytics,
+  tags: ["autodocs"],
+  argTypes: {
+    queryState: {
+      control: "object",
+      description:
+        "Date range, harness, status, the org filter selections and the page index. The wrapper owns the URL; this component only reads and reports.",
+      table: { category: "State" },
+    },
+    analyticsBreakdownsEnabled: {
+      control: "boolean",
+      description: "Gates the org analytics breakdown queries and sections.",
+      table: { category: "State" },
+    },
+    organizationFiltersEnabled: {
+      control: "boolean",
+      description:
+        "Gates the team, project and user filters for admin viewers.",
+      table: { category: "State" },
+    },
+    exportHref: { control: "text", table: { category: "Content" } },
+    extraColumnLabel: {
+      control: "text",
+      description: "Header for the wrapper-supplied column.",
+      table: { category: "Content" },
+    },
+    getSessionHref: { control: false, table: { category: "Content" } },
+    getUserHref: { control: false, table: { category: "Content" } },
+    renderExtraColumn: { control: false, table: { category: "Content" } },
+    footerSlot: {
+      control: false,
+      description:
+        "Rendered at the bottom of the scroll column, so a wrapper can fold in an adjacent org-wide section.",
+      table: { category: "Content" },
+    },
+    onQueryStateChange: { control: false, table: { category: "Events" } },
+  },
+  args: {
+    analyticsBreakdownsEnabled: false,
+    organizationFiltersEnabled: false,
+  },
   parameters: { appCore: { apiRoutes: storyApiRoutes } },
   title: "App Core/Agents/Telemetry Analytics",
 };
@@ -99,7 +140,7 @@ export const Org: Story = {
     exportHref: "/api/agent-sessions/export?format=csv",
     extraColumnLabel: "Artifact",
     getSessionHref: (item) => `/org-test/sessions/${item.id}`,
-    onQueryStateChange: () => undefined,
+    onQueryStateChange: fn(),
     organizationFiltersEnabled: true,
     queryState,
     renderExtraColumn: () => <a href="/org-test/features/FEA-1702">View</a>,
@@ -110,7 +151,7 @@ export const NonOrg: Story = {
   args: {
     exportHref: "/api/agent-sessions/export?format=csv",
     getSessionHref: (item) => `/sessions/${item.id}`,
-    onQueryStateChange: () => undefined,
+    onQueryStateChange: fn(),
     queryState,
   },
 };

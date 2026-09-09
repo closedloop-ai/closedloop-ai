@@ -15,6 +15,9 @@ const meta = {
   title: "App Core/Branches/Branch Lead Time Waterfall",
   component: BranchLeadTimeWaterfall,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object" },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchLeadTimeWaterfall>;
 

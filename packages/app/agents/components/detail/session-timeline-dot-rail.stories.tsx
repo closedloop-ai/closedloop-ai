@@ -1,7 +1,7 @@
 import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
-import { expect, within } from "storybook/test";
+import { expect, fn, within } from "storybook/test";
 import type { DotColor } from "./activity-dot-rendering";
 import type { ActivityMarker } from "./session-timeline-axis";
 import { SessionTimelineDotRail } from "./session-timeline-dot-rail";
@@ -42,18 +42,24 @@ const meta = {
   title: "App Core/Agents/Session Timeline Dot Rail",
   component: SessionTimelineDotRail,
   tags: ["autodocs"],
+  argTypes: {
+    buckets: { control: "object", table: { category: "Data" } },
+    cells: { control: "object", table: { category: "Data" } },
+    disabled: { control: "boolean", table: { category: "State" } },
+    hoverDot: { control: "object", table: { category: "State" } },
+    onHoverDot: { control: false, table: { category: "Events" } },
+    onJump: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   args: {
     buckets: stageBuckets(),
     cells: mixedLaneCells(),
     disabled: false,
     hoverDot: null,
-    onHoverDot: () => {
-      // Static stories; the hover state is driven by the `hoverDot` arg.
-    },
-    onJump: () => {
-      // No transcript to scroll in isolation.
-    },
+    // Static stories; the hover state is driven by the `hoverDot` arg.
+    onHoverDot: fn(),
+    // No transcript to scroll in isolation.
+    onJump: fn(),
   },
 } satisfies Meta<typeof SessionTimelineDotRail>;
 

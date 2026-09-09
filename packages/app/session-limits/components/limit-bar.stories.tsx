@@ -3,6 +3,19 @@ import type { RateLimit } from "../types";
 import { LimitBar } from "./limit-bar";
 
 /**
+ * Fixed clock and time zone (ISS-5286). The reset line is relative ("in 3h") and
+ * the absolute variant is time-zone formatted, so an unpinned story would render
+ * differently on every run and on every machine.
+ */
+const NOW = new Date("2026-07-19T12:00:00.000Z");
+const TIME_ZONE = "UTC";
+const RESETS_AT = "2026-07-19T15:00:00.000Z";
+
+function limit(utilization: number, resetsAt: string | null = RESETS_AT) {
+  return { utilization, resetsAt } satisfies RateLimit;
+}
+
+/**
  * PRD-538 R6 (ISS-5354): one usage meter, across the urgency scale it colours
  * itself by.
  *
@@ -21,25 +34,37 @@ import { LimitBar } from "./limit-bar";
 const meta = {
   title: "App Core/Session Limits/Limit Bar",
   component: LimitBar,
+  tags: ["autodocs"],
   parameters: {
     layout: "centered",
+  },
+  argTypes: {
+    className: { control: false },
+    limit: {
+      control: "object",
+      description:
+        "The window this meter draws. A non-finite `utilization` is the honest unknown, and renders the hatch rather than a measured zero.",
+    },
+    now: {
+      control: false,
+      description: "Pinned clock the relative reset label is measured against.",
+    },
+    showResetDateTime: { control: "boolean" },
+    subtext: { control: "text" },
+    timeZone: { control: "text" },
+    title: { control: "text" },
+  },
+  args: {
+    limit: limit(42),
+    now: NOW,
+    showResetDateTime: false,
+    subtext: null,
+    timeZone: TIME_ZONE,
+    title: "Current session",
   },
 };
 
 export default meta;
-
-/**
- * Fixed clock and time zone (ISS-5286). The reset line is relative ("in 3h") and
- * the absolute variant is time-zone formatted, so an unpinned story would render
- * differently on every run and on every machine.
- */
-const NOW = new Date("2026-07-19T12:00:00.000Z");
-const TIME_ZONE = "UTC";
-const RESETS_AT = "2026-07-19T15:00:00.000Z";
-
-function limit(utilization: number, resetsAt: string | null = RESETS_AT) {
-  return { utilization, resetsAt } satisfies RateLimit;
-}
 
 /**
  * The sidebar footer's real width and surface. These bars only ever ship ~14rem

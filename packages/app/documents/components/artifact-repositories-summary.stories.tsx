@@ -34,11 +34,21 @@ const meta = {
   title: "App Core/Documents/Artifact Repositories Summary",
   component: ArtifactRepositoriesSummary,
   tags: ["autodocs"],
+  argTypes: {
+    snapshot: { control: "object" },
+    layout: {
+      control: { type: "radio" },
+      options: ["horizontal", "vertical"],
+    },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     snapshot: snapshotWithPrimary,
+    layout: "horizontal",
+    separator: false,
+    title: "",
   },
 } satisfies Meta<typeof ArtifactRepositoriesSummary>;
 

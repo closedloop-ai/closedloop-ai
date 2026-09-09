@@ -1,3 +1,4 @@
+import { Priority } from "@repo/api/src/types/common";
 import {
   DocumentType,
   IssueStatus,
@@ -11,12 +12,45 @@ import {
 } from "@repo/design-system/components/ui/avatar";
 import type { Meta, StoryObj } from "@storybook/react";
 import { FileCodeIcon, SparklesIcon } from "lucide-react";
+import { fn } from "storybook/test";
 import { ArtifactRowView } from "./artifact-row-view";
 
 const meta = {
   title: "App Core/Documents/Artifact Row View",
   component: ArtifactRowView,
   tags: ["autodocs"],
+  argTypes: {
+    title: { control: "text", table: { category: "Content" } },
+    slug: { control: "text", table: { category: "Content" } },
+    typeLabel: { control: "text", table: { category: "Content" } },
+    statusLabel: {
+      control: "text",
+      description:
+        "Accessible name for the status button and the copy inside its tooltip.",
+      table: { category: "Content" },
+    },
+    href: {
+      control: "text",
+      description:
+        "Null renders the title as plain text and disables the View item in the overflow menu.",
+      table: { category: "Content" },
+    },
+    typeIcon: { control: false, table: { category: "Appearance" } },
+    statusIcon: { control: false, table: { category: "Appearance" } },
+    assignee: { control: false, table: { category: "Appearance" } },
+    priority: {
+      control: { type: "radio" },
+      options: Object.values(Priority),
+      table: { category: "Appearance" },
+    },
+    depth: {
+      control: { type: "number", min: 1, max: 5, step: 1 },
+      description: "Anything past 1 draws the child indent glyph.",
+      table: { category: "Appearance" },
+    },
+    className: { control: false, table: { category: "Appearance" } },
+    onDetach: { control: false, table: { category: "Events" } },
+  },
   args: {
     assignee: (
       <Avatar className="size-6">
@@ -28,8 +62,8 @@ const meta = {
     // "Issue". Read both from their canonical maps so this fixture cannot drift
     // back to the retired "Feature" vocabulary.
     href: `/acme/${TYPE_ROUTE_PREFIX[DocumentType.Feature]}/platform-shell`,
-    onDetach: () => undefined,
-    priority: "HIGH",
+    onDetach: fn(),
+    priority: Priority.High,
     slug: "platform-shell",
     statusIcon: <IssueStatusIcon status={IssueStatus.InReview} />,
     statusLabel: "In review",

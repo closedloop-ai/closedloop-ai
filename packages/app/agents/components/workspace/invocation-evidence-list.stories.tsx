@@ -167,6 +167,15 @@ const storyDecorator: Decorator = (Story) => (
 const meta = {
   title: "App Core/Agents/Invocation Evidence List",
   component: InvocationEvidenceList,
+  tags: ["autodocs"],
+  argTypes: {
+    page: {
+      control: "object",
+      description:
+        "Rows plus the counts the readouts state: `total`, `hasMore`, and the attribution-exception tallies.",
+    },
+    getSessionHref: { control: false },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     page: makePage({ items: mixedPathRows, total: mixedPathRows.length }),

@@ -42,6 +42,18 @@ const meta = {
   title: "App Core/Agents/Event Group Row",
   component: EventGroupRow,
   tags: ["autodocs"],
+  argTypes: {
+    group: {
+      control: "object",
+      description:
+        "The coalesced event group. More than one event switches the row to its multi-event treatment.",
+    },
+    defaultExpanded: {
+      control: "boolean",
+      description:
+        "Initial disclosure state only; the row owns it after mount.",
+    },
+  },
   parameters: { layout: "padded" },
   args: { group, defaultExpanded: true },
 } satisfies Meta<typeof EventGroupRow>;

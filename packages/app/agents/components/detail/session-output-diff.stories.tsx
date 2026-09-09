@@ -32,6 +32,13 @@ const meta = {
   title: "App Core/Agents/Session Output Diff",
   component: SessionOutputDiff,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "Only the four scalars the scope resolver reads: linesAdded, linesRemoved, authoredPrLinesChanged and branchDiffStats.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

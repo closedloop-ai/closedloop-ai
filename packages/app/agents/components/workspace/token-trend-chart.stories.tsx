@@ -207,6 +207,21 @@ const storyDecorator: Decorator = (Story) => (
 const meta = {
   title: "App Core/Agents/Token Trend Chart",
   component: TokenTrendChart,
+  tags: ["autodocs"],
+  argTypes: {
+    slug: {
+      control: "text",
+      description:
+        "Key the trend query resolves against; a slug with no seeded cache entry leaves the query pending.",
+    },
+    versions: { control: "object" },
+    usageSessions: { control: "object" },
+    sessions: {
+      control: { type: "number", min: 0, step: 1 },
+      description:
+        "The component's session count. `null` means the producer could not measure it, which the empty copy must not read as zero.",
+    },
+  },
   parameters: {
     layout: "fullscreen",
     appCore: {

@@ -45,6 +45,18 @@ const meta = {
   title: "App Core/Agents/Error Propagation Map",
   component: ErrorPropagationMap,
   tags: ["autodocs"],
+  argTypes: {
+    agents: {
+      control: "object",
+      description:
+        "Synced roster. A failed status alone reddens a node, with or without error events.",
+    },
+    events: {
+      control: "object",
+      description:
+        "Synced events. Error rows are counted per agent, and any that name no synced agent become the unattributed total.",
+    },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ErrorPropagationMap>;
 

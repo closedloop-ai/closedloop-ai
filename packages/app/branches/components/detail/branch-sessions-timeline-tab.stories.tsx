@@ -11,6 +11,7 @@ import {
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { Meta, StoryObj } from "@storybook/react";
 import { createRef } from "react";
+import { fn } from "storybook/test";
 import {
   makeBranchDetail,
   makeBranchSession,
@@ -151,8 +152,29 @@ const meta = {
       </BranchesDataSourceProvider>
     ),
   ],
+  argTypes: {
+    detail: {
+      control: "object",
+      description:
+        "Branch projection whose `id` selects the trace this tab lazily reads.",
+    },
+    loc: {
+      control: "object",
+      description: "Pre-resolved changed-LOC. Null members mean unavailable.",
+    },
+    onComposerTargetChange: { control: false, table: { category: "Events" } },
+    onRenderedSessionsChange: { control: false, table: { category: "Events" } },
+    pendingJumpAnchor: { control: "object" },
+    queryIdentity: { control: "object" },
+    scrollElementRef: {
+      control: false,
+      description: "Scroll container the timeline virtualizer measures.",
+    },
+  },
   args: {
     detail: partialDetail,
+    onComposerTargetChange: fn(),
+    onRenderedSessionsChange: fn(),
     scrollElementRef,
   },
 } satisfies Meta<typeof BranchSessionsTimelineTab>;

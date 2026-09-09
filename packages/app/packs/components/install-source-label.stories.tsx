@@ -9,6 +9,9 @@ const meta = {
   args: {
     source: InstallSource.Pushed,
   },
+  argTypes: {
+    source: { control: "select", options: Object.values(InstallSource) },
+  },
   parameters: {
     layout: "padded",
   },

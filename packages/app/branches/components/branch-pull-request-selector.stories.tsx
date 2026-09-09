@@ -7,6 +7,7 @@ import {
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { BranchPullRequestSelector } from "./branch-pull-request-selector";
 
 const completeCollection = makeCollection(
@@ -17,10 +18,17 @@ const meta = {
   title: "App Core/Branches/Pull Request Selector",
   component: BranchPullRequestSelector,
   tags: ["autodocs"],
+  argTypes: {
+    collection: { control: "object" },
+    disabled: { control: "boolean" },
+    selectedId: { control: "text" },
+    onChange: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   args: {
     collection: completeCollection,
-    onChange: () => undefined,
+    disabled: false,
+    onChange: fn(),
     selectedId: completeCollection.selectedId,
   },
 } satisfies Meta<typeof BranchPullRequestSelector>;

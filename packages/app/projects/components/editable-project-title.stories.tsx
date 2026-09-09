@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import { EditableProjectTitle } from "./editable-project-title";
 
@@ -23,10 +24,21 @@ const projectRoutes: FixtureRoute[] = [
 const meta: Meta<typeof EditableProjectTitle> = {
   title: "App Core/Projects/Editable Project Title",
   component: EditableProjectTitle,
+  tags: ["autodocs"],
   parameters: { appCore: { apiRoutes: projectRoutes } },
+  argTypes: {
+    initialTitle: { control: "text" },
+    onTitleChange: { control: false, table: { category: "Events" } },
+    projectId: {
+      control: "text",
+      description:
+        "Project the save mutation targets. The fixture route below answers any id.",
+    },
+  },
   args: {
     projectId: PROJECT_ID,
     initialTitle: "Q3 Roadmap",
+    onTitleChange: fn(),
   },
 };
 

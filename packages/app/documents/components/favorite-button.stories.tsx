@@ -81,6 +81,11 @@ const favoriteRoutes: FixtureRoute[] = [
 const meta: Meta<typeof FavoriteButton> = {
   title: "App Core/Documents/Favorite Button",
   component: FavoriteButton,
+  tags: ["autodocs"],
+  argTypes: {
+    size: { control: { type: "radio" }, options: ["sm", "default"] },
+  },
+  args: { size: "sm" },
   parameters: {
     appCore: {
       apiRoutes: favoriteRoutes,

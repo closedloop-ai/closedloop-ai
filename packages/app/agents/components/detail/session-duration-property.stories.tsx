@@ -14,6 +14,13 @@ const meta = {
   title: "App Core/Agents/Session Duration Property",
   component: SessionDurationProperty,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "Only the duration bounds are read: status, startedAt, endedAt, lastActivityAt and awaitingInputSince.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

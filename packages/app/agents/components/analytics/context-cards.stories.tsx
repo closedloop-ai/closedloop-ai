@@ -74,6 +74,13 @@ const meta = {
   title: "App Core/Agents/Context Cards",
   component: ContextCards,
   tags: ["autodocs"],
+  argTypes: {
+    targets: {
+      control: "object",
+      description:
+        "One row per compute target. `lastAgentSessionSyncAt` is the landed-data watermark; `lastAgentSessionSyncAttemptAt` is the accepted-batch one, and they are shown in separate columns because they answer different questions.",
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     targets: [syncingWithNothingNew, offlineTarget, neverSyncedTarget],

@@ -1,10 +1,14 @@
 import { BranchKpiState } from "@repo/api/src/types/branch";
-import { InsightsSection } from "@repo/api/src/types/insights";
+import {
+  INSIGHTS_SECTION_OPTIONS,
+  InsightsSection,
+} from "@repo/api/src/types/insights";
 import { FeatureFlagAdapterProvider } from "@repo/app/shared/feature-flags/provider";
 import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/static-feature-flag-adapter";
 import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
+import { fn } from "storybook/test";
 import {
   makeAgentsSections,
   makeDeliverySections,
@@ -33,10 +37,6 @@ const SPEND_BY_OUTCOME_TILE_ID = "chart:spendByOutcome";
  */
 const SPEND_BY_OUTCOME_DONUT_TILE_ID = "chart:spendByOutcome:donut";
 
-const noop = () => {
-  // Stories are presentational; pin/replace/unpin are wired by the page.
-};
-
 // Annotated `boolean` rather than inferred: a story arg widening a meta arg has
 // to stay assignable to it, and an inferred `() => false` / type-predicate
 // signature is narrower than the `(id: string) => boolean` prop.
@@ -62,14 +62,57 @@ const meta = {
   title: "App Core/Insights/Metric Picker",
   component: MetricPicker,
   tags: ["autodocs"],
+  argTypes: {
+    open: { control: "boolean", table: { category: "State" } },
+    editingTileId: {
+      control: "text",
+      description:
+        "A pinned tile id puts the dialog in edit mode (Edit widget heading, Remove beside Save). Null or unset opens the add flow.",
+      table: { category: "State" },
+    },
+    comparisonAvailable: { control: "boolean", table: { category: "State" } },
+    comparisonLabel: { control: "text", table: { category: "State" } },
+    availableSections: {
+      control: { type: "check" },
+      description: "Which insight sections the picker may offer metrics from.",
+      options: INSIGHTS_SECTION_OPTIONS,
+      table: { category: "Data" },
+    },
+    sections: {
+      control: "object",
+      description: "The fixture data the preview tile draws from.",
+      table: { category: "Data" },
+    },
+    comparisonSections: { control: "object", table: { category: "Data" } },
+    githubConnectHref: { control: "text", table: { category: "Data" } },
+    isPinned: { control: false, table: { category: "Data" } },
+    getTileSettings: { control: false, table: { category: "Data" } },
+    getTileAvailability: {
+      control: false,
+      description:
+        "Returning a gated state swaps the preview body for the connect CTA.",
+      table: { category: "Data" },
+    },
+    onOpenChange: { control: false, table: { category: "Events" } },
+    onPinTile: { control: false, table: { category: "Events" } },
+    onReplaceTile: { control: false, table: { category: "Events" } },
+    onUnpinTile: { control: false, table: { category: "Events" } },
+    onConnectGitHub: {
+      control: false,
+      description:
+        "Left unset in these stories on purpose: the connect CTA prefers it over `githubConnectHref`, which is what UnavailableWithConnectGitHub pins.",
+      table: { category: "Events" },
+    },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     open: true,
-    onOpenChange: noop,
+    onOpenChange: fn(),
     isPinned: nonePinned,
-    onPinTile: noop,
-    onReplaceTile: noop,
-    onUnpinTile: noop,
+    // Stories are presentational; pin/replace/unpin are wired by the page.
+    onPinTile: fn(),
+    onReplaceTile: fn(),
+    onUnpinTile: fn(),
     getTileSettings: () => ({}),
     availableSections: [InsightsSection.Agents],
     sections: agentsSections,

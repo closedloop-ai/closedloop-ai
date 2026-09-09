@@ -22,6 +22,13 @@ const meta = {
   title: "App Core/Agents/Session Measured Properties",
   component: SessionAutonomyProperty,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "The measured fields these rows read: autonomy, tokensIn, tokensOut, cache, cacheWrite, turns and toolCallsTotal. Null is absent, 0 is measured, and the two must not render alike.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

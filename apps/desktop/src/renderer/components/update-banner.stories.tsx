@@ -14,8 +14,12 @@ import type { UpdateBannerState } from "./update-banner-state";
  * drives the real reducer rather than a parallel mock of it.
  */
 const meta = {
-  title: "Desktop/App Shell/Update Banner",
+  title: "Desktop App/App Shell/Update Banner",
   component: UpdateBanner,
+  tags: ["autodocs"],
+  // `UpdateBanner` takes no props: it holds its own state and only ever moves
+  // through the `desktop:update-status` window event each story dispatches, so
+  // there is nothing here a control could drive.
   parameters: {
     layout: "fullscreen",
   },

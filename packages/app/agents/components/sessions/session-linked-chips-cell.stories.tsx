@@ -19,6 +19,27 @@ import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
 const meta: Meta<typeof SessionLinkedChipsCell> = {
   component: SessionLinkedChipsCell,
   title: "App Core/Sessions/SessionLinkedChipsCell",
+  tags: ["autodocs"],
+  argTypes: {
+    chips: { control: "object" },
+    icon: {
+      control: false,
+      description:
+        "Leading glyph shared by every chip in the column. A rendered element, so it is set per story.",
+    },
+    overflowNoun: {
+      control: "text",
+      description:
+        "Singular noun the +N counter announces, so a screen reader hears what is hidden.",
+    },
+    testId: { control: "text" },
+    uncapped: {
+      control: "boolean",
+      description:
+        "Render every chip instead of collapsing into +N. The card fallback below the grid breakpoint.",
+    },
+  },
+  args: { uncapped: false },
 };
 
 export default meta;

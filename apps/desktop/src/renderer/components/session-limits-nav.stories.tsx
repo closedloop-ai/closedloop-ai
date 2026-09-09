@@ -7,6 +7,14 @@ import {
 import type { ReactNode } from "react";
 
 /**
+ * Fixed clock and time zone so the relative labels ("in 3h") and the absolute
+ * datetimes are stable across machines and CI, rather than drifting with the
+ * snapshot's real age.
+ */
+const NOW = new Date("2026-07-19T12:00:00.000Z");
+const TIME_ZONE = "UTC";
+
+/**
  * PRD-538 R6 (ISS-5354): the sidebar-footer session-limit summary, across the
  * states it must keep apart.
  *
@@ -23,22 +31,39 @@ import type { ReactNode } from "react";
  * page width can still wrap its reset line in the only place it actually ships.
  */
 const meta = {
-  title: "Desktop/Shell/Session Limits Nav",
+  title: "Desktop App/Shell/Session Limits Nav",
   component: SessionLimitsNav,
+  tags: ["autodocs"],
+  argTypes: {
+    state: {
+      control: "object",
+      description:
+        "The four-state snapshot contract. Loading, Unavailable and Ready render differently, so a nullable value cannot stand in for it.",
+      table: { category: "Data" },
+    },
+    now: {
+      control: false,
+      description: "Injectable clock, so relative labels are stable in CI.",
+      table: { category: "Data" },
+    },
+    timeZone: {
+      control: "text",
+      description:
+        "Injectable time zone, so tests are not hostage to the runner's TZ.",
+      table: { category: "Data" },
+    },
+  },
+  args: {
+    now: NOW,
+    state: ready(baseLimits()),
+    timeZone: TIME_ZONE,
+  },
   parameters: {
     layout: "centered",
   },
 };
 
 export default meta;
-
-/**
- * Fixed clock and time zone so the relative labels ("in 3h") and the absolute
- * datetimes are stable across machines and CI, rather than drifting with the
- * snapshot's real age.
- */
-const NOW = new Date("2026-07-19T12:00:00.000Z");
-const TIME_ZONE = "UTC";
 
 function baseLimits(overrides: Partial<SessionLimits> = {}): SessionLimits {
   return {

@@ -1,6 +1,9 @@
 import { DocumentType } from "@repo/api/src/types/document";
 import type { SearchHit } from "@repo/api/src/types/search";
-import { SearchEntityType } from "@repo/api/src/types/search-entity-kind";
+import {
+  PHASE_1_SEARCH_ENTITY_TYPES,
+  SearchEntityType,
+} from "@repo/api/src/types/search-entity-kind";
 import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { UnifiedSearchResults } from "./unified-search-results";
@@ -44,13 +47,36 @@ const meta = {
   component: UnifiedSearchResults,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    activeTypes: {
+      control: "multi-select",
+      options: PHASE_1_SEARCH_ENTITY_TYPES,
+      description: "Selected type facets. Empty means all queryable types.",
+      table: { category: "State" },
+    },
+    filterErrorMessage: { control: "text", table: { category: "State" } },
+    hideActiveFacetChips: {
+      control: "boolean",
+      table: { category: "Appearance" },
+    },
+    hideTypeFacets: { control: "boolean", table: { category: "Appearance" } },
+    isError: { control: "boolean", table: { category: "State" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    onRetry: { control: false, table: { category: "Events" } },
+    onSelectResult: { control: false, table: { category: "Events" } },
+    onToggleType: { control: false, table: { category: "Events" } },
+    results: { control: "object", table: { category: "Data" } },
+  },
   args: {
     results,
     isLoading: false,
     isError: false,
     activeTypes: [],
+    hideActiveFacetChips: false,
+    hideTypeFacets: false,
     onToggleType: fn(),
     onRetry: fn(),
+    onSelectResult: fn(),
   },
 } satisfies Meta<typeof UnifiedSearchResults>;
 

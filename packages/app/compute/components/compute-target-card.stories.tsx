@@ -48,11 +48,33 @@ const checks: CheckResult[] = [
 const meta = {
   title: "App Core/Compute/Compute Target Card",
   component: ComputeTargetCard,
+  tags: ["autodocs"],
+  argTypes: {
+    actions: { control: false, table: { category: "Content" } },
+    className: { control: "text", table: { category: "Appearance" } },
+    isOnline: {
+      control: "boolean",
+      description: "Drives the online/offline badge only.",
+      table: { category: "State" },
+    },
+    name: { control: "text", table: { category: "Content" } },
+    onShareCheckedChange: { control: false, table: { category: "Events" } },
+    securityBadge: { control: false, table: { category: "Content" } },
+    shareChecked: { control: "boolean", table: { category: "State" } },
+    shareDescription: { control: "text", table: { category: "Content" } },
+    shareDisabled: { control: "boolean", table: { category: "State" } },
+    shareTitle: { control: "text", table: { category: "Content" } },
+    subtitle: { control: false, table: { category: "Content" } },
+    systemCheck: { control: false, table: { category: "Content" } },
+  },
   args: {
     name: "Mike’s MacBook Pro",
     isOnline: true,
     subtitle: "macOS - Last seen May 29, 2026, 10:04 AM",
     shareChecked: true,
+    shareDisabled: false,
+    shareTitle: "Share with team",
+    shareDescription: "Allow anyone in your org to run jobs on this machine",
     onShareCheckedChange: fn(),
     securityBadge: <DesktopSecurityBadge security={protectedTarget} />,
     actions: (

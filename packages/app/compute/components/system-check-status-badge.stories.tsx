@@ -7,6 +7,17 @@ import {
 const meta: Meta<typeof SystemCheckStatusBadge> = {
   title: "App Core/Compute/System Check Status Badge",
   component: SystemCheckStatusBadge,
+  tags: ["autodocs"],
+  argTypes: {
+    tone: {
+      control: { type: "radio" },
+      options: Object.values(SystemCheckStatusTone),
+    },
+  },
+  args: {
+    label: "Enabled",
+    tone: SystemCheckStatusTone.Success,
+  },
 };
 
 export default meta;

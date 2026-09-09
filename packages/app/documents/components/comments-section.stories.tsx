@@ -5,6 +5,7 @@ import {
 } from "@repo/app/documents/components/comments-section";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 const VIEWER_ID = "user-you";
 
@@ -91,6 +92,21 @@ const meta = {
   title: "App Core/Documents/Comments Section",
   component: CommentsSectionView,
   tags: ["autodocs"],
+  argTypes: {
+    comments: { control: "object", table: { category: "Content" } },
+    mentionNames: { control: "object", table: { category: "Content" } },
+    open: { control: "boolean", table: { category: "State" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isSubmitting: { control: "boolean", table: { category: "State" } },
+    isReplyPending: { control: "boolean", table: { category: "State" } },
+    disabled: { control: "boolean", table: { category: "State" } },
+    viewerId: { control: "text", table: { category: "State" } },
+    now: { control: false, table: { category: "State" } },
+    onOpenChange: { control: false, table: { category: "Events" } },
+    onSubmitComment: { control: false, table: { category: "Events" } },
+    onReply: { control: false, table: { category: "Events" } },
+    onToggleResolved: { control: false, table: { category: "Events" } },
+  },
   // The view resolves the current viewer through `useCurrentUser` to decide
   // reopen permission, so it needs the app-core ports mounted. Without them
   // every story in this file throws "Auth hooks require an
@@ -99,15 +115,15 @@ const meta = {
     open: true,
     viewerId: VIEWER_ID,
     mentionNames,
+    isLoading: false,
+    disabled: false,
+    isSubmitting: false,
+    isReplyPending: false,
     // Same instant as AUTHORED_AT, so relative labels are deterministic AND a
     // just-posted comment still reads as new. See AUTHORED_AT above.
     now: new Date(AUTHORED_AT),
-    onOpenChange: () => {
-      // storybook no-op
-    },
-    onSubmitComment: () => {
-      // storybook no-op
-    },
+    onOpenChange: fn(),
+    onSubmitComment: fn(),
   },
 } satisfies Meta<typeof CommentsSectionView>;
 

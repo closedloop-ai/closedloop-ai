@@ -20,8 +20,15 @@ import { PageShell } from "./layout/page-shell";
  * not (a bare centered "Loading...").
  */
 const meta = {
-  title: "Desktop/Shell/Labs Gate Surfaces",
+  title: "Desktop App/Shell/Labs Gate Surfaces",
   component: LabsPageUnavailable,
+  tags: ["autodocs"],
+  // Each story mounts its own surface with the props it is about, so a control
+  // here would edit an arg no render function reads.
+  argTypes: {
+    pageId: { control: false },
+    labsNavOn: { control: false },
+  },
   parameters: {
     layout: "fullscreen",
   },

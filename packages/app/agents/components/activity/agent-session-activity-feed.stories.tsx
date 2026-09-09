@@ -17,6 +17,14 @@ const storyApiRoutes: FixtureRoute[] = [
 
 const meta: Meta<typeof AgentSessionActivityFeed> = {
   component: AgentSessionActivityFeed,
+  tags: ["autodocs"],
+  argTypes: {
+    getSessionHref: {
+      control: false,
+      description:
+        "Builds the href for one activity row. Omitted, rows render without a link.",
+    },
+  },
   parameters: { appCore: { apiRoutes: storyApiRoutes } },
   title: "App Core/Agents/Session Activity Feed",
 };

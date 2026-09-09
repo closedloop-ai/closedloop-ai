@@ -56,6 +56,18 @@ const meta = {
   title: "App Core/Agents/Session Detail Orchestration Graph",
   component: AgentOrchestrationGraph,
   tags: ["autodocs"],
+  argTypes: {
+    agents: {
+      control: "object",
+      description:
+        "Synced roster. Parent links drive the tree; drop them all and the flat-roster note appears.",
+    },
+    events: {
+      control: "object",
+      description:
+        "Synced events, read only for the tool and error counts in each node's hover card.",
+    },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof AgentOrchestrationGraph>;
 

@@ -16,6 +16,8 @@ import type {
 import { CloudStatusKind } from "../../hooks/use-ingest-progress";
 import { ConnectionStatusSection } from "./connection-status-section";
 
+const STORY_GATEWAY_PORT = 41_234;
+
 /**
  * ISS-5310 (wongk story review on PR #4484): the gateway health rollup that used
  * to sit behind the Labs flag as `GatewayHealthCard` now renders here
@@ -40,16 +42,72 @@ import { ConnectionStatusSection } from "./connection-status-section";
  * checkable.
  */
 const meta = {
-  title: "Desktop/Settings/Connection Status Section",
+  title: "Desktop App/Settings/Connection Status Section",
   component: ConnectionStatusSection,
+  tags: ["autodocs"],
+  argTypes: {
+    gatewayHealthy: {
+      control: "boolean",
+      description:
+        "Health: has recovery or the liveness probe confirmed the gateway. Distinct from reachability.",
+      table: { category: "State" },
+    },
+    serverAlive: {
+      control: "boolean",
+      description: "Reachability: is the local gateway server listening.",
+      table: { category: "State" },
+    },
+    gatewayPort: {
+      control: { type: "number", min: 0, max: 65_535 },
+      description:
+        "An out-of-range or stringified port is not a port; the cell falls back to the shared placeholder.",
+      table: { category: "State" },
+    },
+    cloudConnectionEnabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    remoteCommandsPaused: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    cloudStatus: {
+      control: "object",
+      table: { category: "Data" },
+    },
+    cloudSyncProgress: {
+      control: "object",
+      table: { category: "Data" },
+    },
+    cloudSyncBacklog: {
+      control: "object",
+      description:
+        "The whole-app, all-lanes backlog. This, not cloudSyncProgress.caughtUp, decides whether History Sync may claim Up to date.",
+      table: { category: "Data" },
+    },
+    security: {
+      control: "object",
+      description: "The gateway's connectionSecurity status object.",
+      table: { category: "Data" },
+    },
+  },
+  args: {
+    cloudConnectionEnabled: true,
+    cloudStatus: { kind: CloudStatusKind.Online },
+    cloudSyncBacklog: backlogWith({}),
+    cloudSyncProgress: caughtUpSync(),
+    gatewayHealthy: true,
+    gatewayPort: STORY_GATEWAY_PORT,
+    remoteCommandsPaused: false,
+    security: { mode: ConnectionSecurityMode.Enhanced },
+    serverAlive: true,
+  },
   parameters: {
     layout: "padded",
   },
 };
 
 export default meta;
-
-const STORY_GATEWAY_PORT = 41_234;
 
 /**
  * Everything healthy: the gateway is reachable and reporting healthy, the port

@@ -5,9 +5,14 @@ const meta = {
   title: "App Core/Agents/Thinking Block",
   component: ThinkingBlock,
   tags: ["autodocs"],
+  argTypes: {
+    text: { control: "text" },
+    defaultExpanded: { control: "boolean" },
+  },
   parameters: { layout: "padded" },
   args: {
     text: "The right merge boundary is a shared card primitive plus page-level composition, not another monitor-only wrapper.",
+    defaultExpanded: false,
   },
 } satisfies Meta<typeof ThinkingBlock>;
 

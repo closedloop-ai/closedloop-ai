@@ -38,6 +38,10 @@ const meta = {
   title: "App Core/Agents/Session Pull Request Pill",
   component: PullRequestPill,
   tags: ["autodocs"],
+  argTypes: {
+    pr: { control: "object" },
+    repositoryFullName: { control: "text" },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

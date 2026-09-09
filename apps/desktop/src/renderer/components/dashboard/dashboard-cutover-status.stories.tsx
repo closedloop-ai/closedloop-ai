@@ -25,8 +25,17 @@ import { DashboardCutoverStatus } from "./dashboard-cutover-status";
  * them is ever on screen at a time.
  */
 const meta = {
-  title: "Desktop/Dashboard/Cutover Status",
+  title: "Desktop App/Dashboard/Cutover Status",
   component: DashboardCutoverStatus,
+  tags: ["autodocs"],
+  argTypes: {
+    analyzing: { control: "boolean" },
+    cutover: {
+      control: "object",
+      description:
+        "Overrides the provider-injected decision. `blocker` and `mode` decide whether the line speaks at all.",
+    },
+  },
   parameters: { layout: "padded" },
 };
 

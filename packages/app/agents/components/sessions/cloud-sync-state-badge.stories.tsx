@@ -1,4 +1,7 @@
-import { AgentSessionCloudSyncState } from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
+import {
+  AgentSessionCloudSyncState,
+  agentSessionCloudSyncStateValues,
+} from "@repo/api/src/types/agent-session-cloud-sync-state-constants";
 import { TranscriptDisposition } from "@repo/api/src/types/transcript-disposition-constants";
 import type { Meta, StoryObj } from "@storybook/react";
 import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
@@ -32,6 +35,21 @@ const meta = {
   title: "App Core/Agents/Cloud Sync State Badge",
   component: CloudSyncStateBadge,
   tags: ["autodocs"],
+  argTypes: {
+    cloudSyncState: {
+      control: { type: "radio" },
+      options: agentSessionCloudSyncStateValues,
+      description:
+        "Only pending renders anything. Synced and an omitted value render nothing at all.",
+    },
+    transcriptDisposition: {
+      control: { type: "select" },
+      options: Object.values(TranscriptDisposition),
+      description:
+        "Scopes the pending copy to the transcript. A settled verdict, or none, keeps the broader Local only wording.",
+    },
+    className: { control: false },
+  },
   parameters: { layout: "centered" },
   args: {
     cloudSyncState: AgentSessionCloudSyncState.Pending,

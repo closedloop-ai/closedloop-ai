@@ -31,6 +31,28 @@ const idleSaveState = {
 const meta = {
   title: "App Core/Settings/Org Policy Toggle Card",
   component: OrgPolicyEditableCard,
+  tags: ["autodocs"],
+  argTypes: {
+    description: { control: "text", table: { category: "Content" } },
+    onToggle: { control: false, table: { category: "Events" } },
+    saveState: {
+      control: "object",
+      description:
+        "The in-flight write: the requested value, whether it is still settling, and the alert to show. Pair a `saveAlert` with an ORG_POLICY_SAVE_OUTCOME_ALERTS entry.",
+      table: { category: "State" },
+    },
+    state: {
+      control: { type: "radio" },
+      options: Object.values(OrgPolicyFieldState),
+      description:
+        "What the server said. `unavailable` is its own answer, not an off.",
+      table: { category: "State" },
+    },
+    title: { control: "text", table: { category: "Content" } },
+    toggleHelpText: { control: "text", table: { category: "Content" } },
+    toggleId: { control: "text", table: { category: "Content" } },
+    toggleLabel: { control: "text", table: { category: "Content" } },
+  },
   args: {
     description: DESCRIPTION,
     saveState: idleSaveState,

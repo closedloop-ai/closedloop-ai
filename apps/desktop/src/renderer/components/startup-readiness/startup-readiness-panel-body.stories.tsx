@@ -20,6 +20,35 @@ import {
   type StartupReadinessInputs,
 } from "./startup-readiness-state";
 
+const CAUGHT_UP_CLOUD_SYNC: CloudSyncProgress = {
+  identified: true,
+  pendingBackfillSessions: 0,
+  pendingIncrementalSessions: 0,
+  backfilling: false,
+  caughtUp: true,
+  deadLetteredSessions: 0,
+};
+
+/**
+ * ISS-5768: every lane owes nothing — the only backlog that lets the panel
+ * claim the cloud is up to date. Built through the production derivation rather
+ * than hand-shaped, so a change to what "drained" means reaches this fixture.
+ */
+const DRAINED_BACKLOG: CloudSyncBacklog = resolveCloudSyncBacklog({
+  sampledAtIso: "2026-08-10T12:00:00.000Z",
+  importComplete: true,
+  lanes: SYNC_LANE_IDS.map((lane) => ({
+    lane,
+    state: SyncLaneDrainState.Drained,
+    itemsRemaining: 0,
+    itemsRemainingIsLowerBound: false,
+    deadLetteredCount: 0,
+    unmeasuredRows: 0,
+  })),
+});
+
+const ONLINE_CLOUD_STATUS: CloudStatus = { kind: CloudStatusKind.Online };
+
 /**
  * ISS-4715: the startup readiness panel, one story per reachable phase.
  *
@@ -37,8 +66,42 @@ import {
  * additionally needs a wedged or unverifiable cloud sync.
  */
 const meta = {
-  title: "Desktop/App Shell/Startup Readiness Panel Body",
+  title: "Desktop App/App Shell/Startup Readiness Panel Body",
   component: StartupReadinessPanelBody,
+  tags: ["autodocs"],
+  argTypes: {
+    model: {
+      control: "object",
+      description:
+        "The already built readiness model. `buildStartupReadinessModel` is the pure function that decides the headline, steps and counts.",
+      table: { category: "Data" },
+    },
+    expanded: {
+      control: "boolean",
+      description: "Whether the checklist below the headline is open.",
+      table: { category: "State" },
+    },
+    paused: {
+      control: "boolean",
+      description: "Whether the user has held history processing.",
+      table: { category: "State" },
+    },
+    onToggleExpanded: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onTogglePause: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
+  args: {
+    expanded: true,
+    model: buildStartupReadinessModel(baseInputs()),
+    onToggleExpanded: () => undefined,
+    onTogglePause: () => undefined,
+    paused: false,
+  },
   parameters: {
     layout: "fullscreen",
   },
@@ -164,35 +227,6 @@ export const Ready = {
       inputs: baseInputs(),
     }),
 };
-
-const CAUGHT_UP_CLOUD_SYNC: CloudSyncProgress = {
-  identified: true,
-  pendingBackfillSessions: 0,
-  pendingIncrementalSessions: 0,
-  backfilling: false,
-  caughtUp: true,
-  deadLetteredSessions: 0,
-};
-
-/**
- * ISS-5768: every lane owes nothing — the only backlog that lets the panel
- * claim the cloud is up to date. Built through the production derivation rather
- * than hand-shaped, so a change to what "drained" means reaches this fixture.
- */
-const DRAINED_BACKLOG: CloudSyncBacklog = resolveCloudSyncBacklog({
-  sampledAtIso: "2026-08-10T12:00:00.000Z",
-  importComplete: true,
-  lanes: SYNC_LANE_IDS.map((lane) => ({
-    lane,
-    state: SyncLaneDrainState.Drained,
-    itemsRemaining: 0,
-    itemsRemainingIsLowerBound: false,
-    deadLetteredCount: 0,
-    unmeasuredRows: 0,
-  })),
-});
-
-const ONLINE_CLOUD_STATUS: CloudStatus = { kind: CloudStatusKind.Online };
 
 function baseInputs(): StartupReadinessInputs {
   return {

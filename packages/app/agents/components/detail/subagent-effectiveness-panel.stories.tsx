@@ -53,6 +53,10 @@ const meta = {
   title: "App Core/Agents/Subagent Effectiveness Panel",
   component: SubagentEffectivenessPanel,
   tags: ["autodocs"],
+  argTypes: {
+    agents: { control: "object" },
+    events: { control: "object" },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SubagentEffectivenessPanel>;
 

@@ -6,6 +6,14 @@ const meta = {
   title: "App Core/Branches/PR Description Markdown",
   component: PrDescriptionMarkdown,
   tags: ["autodocs"],
+  argTypes: {
+    className: { control: "text" },
+    text: {
+      control: "text",
+      description:
+        "Untrusted PR body. Raw HTML stays inert, `javascript:` and `data:` sources are dropped, and images render as external links.",
+    },
+  },
   decorators: [
     (Story) => (
       <div className="w-[640px] p-4 text-[13px]">

@@ -11,6 +11,14 @@ const meta = {
   title: "App Core/Branches/Branch Headline Cards",
   component: BranchHeadlineCards,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object" },
+    analytics: { control: "object" },
+    loc: {
+      control: "object",
+      description: "Branch changed-LOC resolved once at the page boundary.",
+    },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchHeadlineCards>;
 

@@ -9,6 +9,16 @@ import {
 const meta = {
   title: "App Core/Settings/Session Frustration Card",
   component: SessionFrustrationToggleCard,
+  tags: ["autodocs"],
+  argTypes: {
+    checked: {
+      control: "boolean",
+      description: "What the server reports, not what was just requested.",
+    },
+    hasSaveError: { control: "boolean" },
+    isSaving: { control: "boolean" },
+    onToggle: { control: false, table: { category: "Events" } },
+  },
   args: {
     checked: false,
     isSaving: false,

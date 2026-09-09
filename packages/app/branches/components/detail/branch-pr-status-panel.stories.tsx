@@ -34,6 +34,13 @@ const meta = {
   title: "App Core/Branches/Branch PR Status Panel",
   component: BranchPrStatusPanel,
   tags: ["autodocs"],
+  argTypes: {
+    detail: {
+      control: "object",
+      description:
+        "Branch projection. The panel renders nothing without `selectedPullRequest`, and `selectedPullRequestChecks` carries the check evidence and its coverage.",
+    },
+  },
   decorators: [
     (Story) => (
       <div className="w-[420px] p-4">

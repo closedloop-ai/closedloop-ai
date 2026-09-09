@@ -3,6 +3,7 @@ import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 import {
   DEFAULT_SESSION_FACET_FILTERS,
   type SessionFacetFilters,
@@ -95,13 +96,36 @@ const meta = {
   title: "App Core/Agents/Sessions Active Filters Bar",
   component: SessionsActiveFiltersBar,
   tags: ["autodocs"],
+  argTypes: {
+    filters: { control: "object" },
+    usage: {
+      control: "object",
+      description:
+        "Supplies the Owner / Repository / Harness / Model labels the chips are named with.",
+    },
+    includeProjectFilter: {
+      control: "boolean",
+      description:
+        "Offer the Project dimension. Off on desktop, which cannot resolve cloud projects.",
+    },
+    scopeUserId: {
+      control: "text",
+      description:
+        "Out-of-facet selected-user narrower the host owns, folded in as an Owner chip.",
+    },
+    onFiltersChange: { control: false, table: { category: "Events" } },
+    onClearAll: { control: false, table: { category: "Events" } },
+    onRemoveScopeUser: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   // The chip labels resolve owner names through an auth-aware hook, so this bar
   // needs the app-core ports mounted. Without them every story in this file
   // throws "Auth hooks require an <AuthAdapterProvider> ancestor" on mount.
   args: {
     filters: DEFAULT_SESSION_FACET_FILTERS,
-    onFiltersChange: () => undefined,
+    includeProjectFilter: false,
+    onClearAll: fn(),
+    onFiltersChange: fn(),
     usage,
   },
 } satisfies Meta<typeof SessionsActiveFiltersBar>;

@@ -41,6 +41,20 @@ const meta = {
   title: "App Core/Insights/Tile Content",
   component: InsightsChartContent,
   tags: ["autodocs"],
+  argTypes: {
+    tile: {
+      control: "object",
+      description:
+        "The catalog descriptor that picks the chart kind, its data key, and its grouping.",
+    },
+    sections: {
+      control: "object",
+      description:
+        "Per-section responses. A missing section renders a skeleton rather than an empty chart.",
+    },
+    comparisonSections: { control: "object" },
+    comparisonLabel: { control: "text" },
+  },
   parameters: { layout: "centered" },
   args: {
     sections: initialSections,

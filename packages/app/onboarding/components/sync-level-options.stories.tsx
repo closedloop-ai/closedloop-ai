@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 import { DataSyncLevelValue } from "../../shared/lib/data-sync-copy";
 import {
   DEFAULT_SYNC_LEVEL,
@@ -7,6 +8,18 @@ import {
   type SyncConsentLevel,
   SyncLevelOptions,
 } from "./sync-consent";
+
+/**
+ * The three levels onboarding surfaces, in the presentation order
+ * `SYNC_CONSENT_LEVELS` uses. Built from the canonical
+ * {@link DataSyncLevelValue} members rather than `Object.values`, because
+ * `SyncConsentLevel` deliberately excludes the forward-compat `redacted` level.
+ */
+const SYNC_LEVEL_OPTIONS: readonly SyncConsentLevel[] = [
+  DataSyncLevelValue.Off,
+  DataSyncLevelValue.Metadata,
+  DataSyncLevelValue.Full,
+];
 
 /**
  * The three-level consent radio group, on its own.
@@ -25,6 +38,14 @@ import {
  * levels; the prop that allowed it is gone.
  */
 const meta: Meta<typeof SyncLevelOptions> = {
+  args: {
+    onSelect: fn(),
+    selected: DEFAULT_SYNC_LEVEL,
+  },
+  argTypes: {
+    onSelect: { control: false, table: { category: "Events" } },
+    selected: { control: { type: "radio" }, options: SYNC_LEVEL_OPTIONS },
+  },
   component: SyncLevelOptions,
   decorators: [
     (Story) => (
@@ -33,6 +54,7 @@ const meta: Meta<typeof SyncLevelOptions> = {
       </div>
     ),
   ],
+  tags: ["autodocs"],
   title: "App Core/Onboarding/Sync Level Options",
 };
 

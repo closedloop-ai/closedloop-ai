@@ -109,6 +109,21 @@ const meta = {
   title: "App Core/Agents/Trace Markdown",
   component: TraceMarkdown,
   tags: ["autodocs"],
+  argTypes: {
+    text: { control: "text" },
+    dense: {
+      control: "boolean",
+      description: "Tight paragraph rhythm, which is the trace default.",
+    },
+    className: { control: false },
+    onJump: {
+      control: false,
+      description:
+        "Without it a #<row> token renders as a static span rather than a jump button.",
+      table: { category: "Events" },
+    },
+  },
+  args: { dense: true, text: CONSTRUCT_SAMPLER },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

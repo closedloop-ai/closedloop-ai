@@ -68,6 +68,33 @@ const meta = {
   title: "App Core/Agents/Transcript File Switcher",
   component: TranscriptFileSwitcher,
   tags: ["autodocs"],
+  argTypes: {
+    activeFileKey: {
+      control: "text",
+      description: "The transcript being rendered: main, or subagent:{id}.",
+    },
+    files: {
+      control: "object",
+      description:
+        "Per-file availability. Undefined means the producer reported none, and the switcher renders nothing rather than a confident zero.",
+    },
+    subagentCount: {
+      control: { type: "number", min: 0, step: 1 },
+      description:
+        "The count the Subagents metric card shows, or null when the agent rows have not arrived.",
+    },
+    agents: {
+      control: "object",
+      description:
+        "Session agent rows, used only to give a sidechain chip a readable name instead of a raw id.",
+    },
+    buildHref: {
+      control: false,
+      description:
+        "Omitted on a surface without routing, which hides the switcher.",
+      table: { category: "Routing" },
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     activeFileKey: "main",

@@ -3,28 +3,6 @@ import { SESSION_LIMIT_SOURCES, type SessionLimits } from "../types";
 import { SessionLimitsDetail } from "./session-limits-detail";
 
 /**
- * PRD-538 R6 (ISS-5354): the drawer's contents, across the plan shapes it has
- * to render.
- *
- * It lives inside `DrawerContent`, which does not mount until the drawer opens,
- * so none of the sibling nav stories reach it — the skeleton and the stale
- * caveat get covered there only because they sit in the closed trigger. Which
- * rows exist is entirely plan-driven, and the row set is the thing most likely
- * to look wrong without being wrong in a unit assertion: a per-model week
- * duplicating the all-models week, extra usage appearing at $0, the empty state
- * arriving as a bare drawer (wongk, PR #4572).
- */
-const meta = {
-  title: "App Core/Session Limits/Session Limits Detail",
-  component: SessionLimitsDetail,
-  parameters: {
-    layout: "centered",
-  },
-};
-
-export default meta;
-
-/**
  * Fixed clock and time zone (ISS-5286). Every row carries a reset time rendered
  * both relatively and absolutely, so both have to be pinned or the canvas drifts
  * with the wall clock and the runner's zone.
@@ -44,6 +22,47 @@ function limits(overrides: Partial<SessionLimits> = {}): SessionLimits {
     ...overrides,
   };
 }
+
+/**
+ * PRD-538 R6 (ISS-5354): the drawer's contents, across the plan shapes it has
+ * to render.
+ *
+ * It lives inside `DrawerContent`, which does not mount until the drawer opens,
+ * so none of the sibling nav stories reach it — the skeleton and the stale
+ * caveat get covered there only because they sit in the closed trigger. Which
+ * rows exist is entirely plan-driven, and the row set is the thing most likely
+ * to look wrong without being wrong in a unit assertion: a per-model week
+ * duplicating the all-models week, extra usage appearing at $0, the empty state
+ * arriving as a bare drawer (wongk, PR #4572).
+ */
+const meta = {
+  title: "App Core/Session Limits/Session Limits Detail",
+  component: SessionLimitsDetail,
+  tags: ["autodocs"],
+  parameters: {
+    layout: "centered",
+  },
+  argTypes: {
+    limits: {
+      control: "object",
+      description:
+        "The snapshot. Which rows exist is entirely plan-driven: null out a window to drop its row.",
+    },
+    now: {
+      control: false,
+      description:
+        "Pinned clock the relative reset and freshness labels are measured against.",
+    },
+    timeZone: { control: "text" },
+  },
+  args: {
+    limits: limits(),
+    now: NOW,
+    timeZone: TIME_ZONE,
+  },
+};
+
+export default meta;
 
 /** The drawer's own width, which is where this content actually ships. */
 function drawerFrame(children: ReactNode) {

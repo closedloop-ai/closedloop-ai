@@ -14,6 +14,18 @@ const meta = {
   title: "App Core/Branches/Branch Delivered Panel",
   component: BranchDeliveredPanel,
   tags: ["autodocs"],
+  argTypes: {
+    detail: {
+      control: "object",
+      description:
+        "Branch projection. `selectedPullRequest` overrides the branch-level PR fields, and `linkedArtifactsCollection` drives the completeness disclosure.",
+    },
+    getArtifactHref: {
+      control: false,
+      description:
+        "Resolves an in-app href for a linked artifact slug. A null return renders that row as a plain label.",
+    },
+  },
   decorators: [
     (Story) => (
       <div className="w-full max-w-2xl p-4">

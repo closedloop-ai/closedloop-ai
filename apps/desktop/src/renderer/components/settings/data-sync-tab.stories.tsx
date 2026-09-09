@@ -23,8 +23,12 @@ import { DataSyncTab } from "./data-sync-tab";
  * Apply round-trips on the canvas the way the real IPC bridge does.
  */
 const meta = {
-  title: "Desktop/Settings/Data Sync Tab",
+  title: "Desktop App/Settings/Data Sync Tab",
   component: DataSyncTab,
+  tags: ["autodocs"],
+  // `DataSyncTab` takes no props: the persisted level arrives through
+  // `window.desktopApi` and the option set through the feature-flag adapter, so
+  // there is nothing here a control could drive.
   parameters: {
     layout: "fullscreen",
   },

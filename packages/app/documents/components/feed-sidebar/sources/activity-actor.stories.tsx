@@ -54,6 +54,17 @@ const HUMAN: ActivityFeedActor = {
 
 const meta = {
   component: ActivityActor,
+  argTypes: {
+    actor: {
+      control: "object",
+      description: "The actor's kind and the id the directory is asked for.",
+    },
+    directory: {
+      control: false,
+      description:
+        "The row's org-user lookup and how far it has settled. It carries a find function, so each story passes one in rather than editing it here.",
+    },
+  },
   args: {
     actor: HUMAN,
     directory: directoryOf(ActivityDirectoryStatus.Ready, [DANA]),

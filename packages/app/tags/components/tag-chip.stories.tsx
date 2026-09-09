@@ -1,6 +1,7 @@
 import type { TagSummary } from "@repo/api/src/types/tag";
 import { TagColor } from "@repo/api/src/types/tag";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { TagChip, TagChips } from "./tag-chip";
 
 /**
@@ -10,6 +11,19 @@ import { TagChip, TagChips } from "./tag-chip";
 const meta: Meta<typeof TagChip> = {
   title: "App Core/Tags/Tag Chip",
   component: TagChip,
+  tags: ["autodocs"],
+  argTypes: {
+    tag: { control: "object" },
+    size: { control: { type: "radio" }, options: ["sm", "md"] },
+    onClick: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "When supplied the chip renders as a button and hides the remove control.",
+    },
+    onRemove: { control: false, table: { category: "Events" } },
+  },
+  args: { size: "sm" },
 };
 
 export default meta;
@@ -24,7 +38,7 @@ export const Default: Story = {
 export const Removable: Story = {
   args: {
     tag: { id: "t2", name: "urgent", color: TagColor.Red },
-    onRemove: () => undefined,
+    onRemove: fn(),
   },
 };
 

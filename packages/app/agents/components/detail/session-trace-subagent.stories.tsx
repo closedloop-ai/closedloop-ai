@@ -143,6 +143,10 @@ const meta = {
   title: "App Core/Agents/Session Trace Subagent",
   component: SessionTraceSubagent,
   tags: ["autodocs"],
+  argTypes: {
+    invocationAnchor: { control: "object" },
+    item: { control: "object" },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

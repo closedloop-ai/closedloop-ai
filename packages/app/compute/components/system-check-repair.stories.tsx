@@ -8,7 +8,17 @@ import { SystemCheckRepairPanel } from "./system-check-repair";
 const meta: Meta<typeof SystemCheckRepairPanel> = {
   title: "App Core/Compute/System Check Repair Panel",
   component: SystemCheckRepairPanel,
+  tags: ["autodocs"],
+  argTypes: {
+    steps: { control: "object" },
+  },
   parameters: { layout: "padded" },
+  args: {
+    steps: [],
+    isRepairing: false,
+    errorMessage: null,
+    joinedInFlight: false,
+  },
 };
 
 export default meta;

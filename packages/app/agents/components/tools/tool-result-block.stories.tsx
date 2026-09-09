@@ -5,6 +5,10 @@ const meta = {
   title: "App Core/Agents/Tool Result Block",
   component: ToolResultBlock,
   tags: ["autodocs"],
+  argTypes: {
+    result: { control: "object" },
+    defaultExpanded: { control: "boolean" },
+  },
   parameters: { layout: "padded" },
   args: {
     result: {
