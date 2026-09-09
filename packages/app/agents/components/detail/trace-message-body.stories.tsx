@@ -120,6 +120,40 @@ const meta = {
   title: "App Core/Agents/Trace Message Body",
   component: TraceMessageBody,
   tags: ["autodocs"],
+  argTypes: {
+    text: {
+      control: "text",
+      description:
+        "The turn body. Harness wrapper tags in it fold into chips; everything else parses as markdown.",
+      table: { category: "Content" },
+    },
+    traceHighlight: {
+      control: "object",
+      description:
+        "An exact anchor highlights a span in rendered coordinates; a row anchor tints the whole body.",
+      table: { category: "Content" },
+    },
+    className: { control: false, table: { category: "Appearance" } },
+    traceSelectionEnabled: {
+      control: "boolean",
+      description:
+        "Publishes the data-trace-* attributes the comment rail reads back from a selection.",
+      table: { category: "State" },
+    },
+    traceRow: {
+      control: { type: "number", min: 0, step: 1 },
+      description:
+        "Row number of this turn. Without it no selection anchor is published at all.",
+      table: { category: "Data" },
+    },
+    traceActor: { control: "object", table: { category: "Data" } },
+    traceId: { control: "text", table: { category: "Data" } },
+    traceSessionId: { control: "text", table: { category: "Data" } },
+    traceText: { control: "text", table: { category: "Data" } },
+    traceTurnId: { control: "text", table: { category: "Data" } },
+    onJump: { control: false, table: { category: "Events" } },
+  },
+  args: { text: PLAIN_BODY, traceSelectionEnabled: false },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

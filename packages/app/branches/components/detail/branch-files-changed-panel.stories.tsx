@@ -61,9 +61,32 @@ const meta = {
       </div>
     ),
   ],
+  argTypes: {
+    branchId: {
+      control: "text",
+      description: "Branch the diff query reads. Falls back to `detail.id`.",
+    },
+    detail: { control: "object" },
+    filesError: { control: "boolean" },
+    filesLoading: { control: "boolean" },
+    filesResponse: {
+      control: "object",
+      description:
+        "Bounded file evidence. `coverage.completeness` and `grossTotals` drive the disclosures, not the row count.",
+    },
+    onRetry: {
+      control: false,
+      description:
+        "Omit to render the unavailable state without a Retry button.",
+      table: { category: "Events" },
+    },
+    queryIdentity: { control: "object" },
+  },
   args: {
     branchId: "branch-1",
     detail: selectedDetail(),
+    filesError: false,
+    filesLoading: false,
   },
 } satisfies Meta<typeof BranchFilesChangedPanel>;
 

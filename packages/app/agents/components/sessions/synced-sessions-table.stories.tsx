@@ -5,6 +5,9 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { ExternalLinkIcon, FilterXIcon } from "lucide-react";
+import { fn } from "storybook/test";
+import { SessionGroupBy } from "../../lib/session-grouping";
+import { SessionSortDir, SessionSortKey } from "../../lib/session-sort-group";
 import { AgentSessionsListContent } from "./agent-sessions-list";
 import {
   createAgentSessionListItemFixture,
@@ -17,12 +20,60 @@ import { SyncedSessionsTable } from "./synced-sessions-table";
 const meta = {
   title: "App Core/Agents/Synced Sessions Table",
   component: SyncedSessionsTable,
+  tags: ["autodocs"],
+  argTypes: {
+    items: { control: "object", table: { category: "Data" } },
+    // A `Set`, which an object control would hand back as a plain object and
+    // the table would call `.has` on.
+    visibleColumns: { control: false, table: { category: "Data" } },
+    columnOrder: { control: "object", table: { category: "Data" } },
+    emptyState: { control: false, table: { category: "Content" } },
+    extraColumnLabel: { control: "text", table: { category: "Content" } },
+    renderExtraColumn: { control: false, table: { category: "Content" } },
+    getSessionHref: { control: false, table: { category: "Content" } },
+    getIssueHref: { control: false, table: { category: "Content" } },
+    sortBy: {
+      control: "select",
+      options: Object.values(SessionSortKey),
+      description:
+        "Server sort key, not the column id (Owner sorts by `user`).",
+      table: { category: "State" },
+    },
+    sortDir: {
+      control: "radio",
+      options: Object.values(SessionSortDir),
+      table: { category: "State" },
+    },
+    groupBy: {
+      control: "radio",
+      options: Object.values(SessionGroupBy),
+      table: { category: "State" },
+    },
+    showLinkedEntityColumns: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    hostScroll: { control: "boolean", table: { category: "Appearance" } },
+    mode: {
+      control: "radio",
+      options: ["auto", "compact", "expanded"],
+      table: { category: "Appearance" },
+    },
+    onSort: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     getSessionHref: (item) => `/sessions/${item.id}`,
+    groupBy: SessionGroupBy.None,
+    hostScroll: false,
     items: populatedAgentSessionListFixtures,
+    onColumnOrderChange: fn(),
+    showLinkedEntityColumns: false,
+    sortBy: null,
+    sortDir: SessionSortDir.Asc,
   },
 } satisfies Meta<typeof SyncedSessionsTable>;
 

@@ -9,6 +9,7 @@ import {
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { makeBranchDetail } from "../../__tests__/branch-fixtures";
 import type { BranchesDataSource } from "../../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../../data-source/provider";
@@ -100,8 +101,38 @@ const meta = {
       </BranchesDataSourceProvider>
     ),
   ],
+  argTypes: {
+    analytics: { control: "object", table: { category: "Data" } },
+    branchId: {
+      control: "text",
+      description:
+        "Drives the detail and comments reads through the data source.",
+      table: { category: "Data" },
+    },
+    detail: { control: "object", table: { category: "Data" } },
+    getArtifactHref: { control: false, table: { category: "Data" } },
+    loc: {
+      control: "object",
+      description: "Pre-resolved changed-LOC. Null members mean unavailable.",
+      table: { category: "Data" },
+    },
+    onCommentsContextChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onSelectionChange: { control: false, table: { category: "Events" } },
+    queryIdentity: { control: "object", table: { category: "Data" } },
+    selection: {
+      control: "object",
+      description:
+        "Explicit historical-PR selection. Null reads the branch's own selected PR.",
+      table: { category: "Data" },
+    },
+  },
   args: {
     detail: baseDetail,
+    onCommentsContextChange: fn(),
+    onSelectionChange: fn(),
     selection: targetSelection,
   },
 } satisfies Meta<typeof BranchSelectedPullRequestWorkspace>;

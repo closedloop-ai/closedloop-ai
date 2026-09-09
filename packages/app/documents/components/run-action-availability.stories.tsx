@@ -19,11 +19,17 @@ const meta = {
   title: "App Core/Documents/Run Action Availability",
   component: RunInFlightReason,
   tags: ["autodocs"],
+  argTypes: {
+    id: { control: "text" },
+    live: { control: "boolean" },
+    className: { control: false },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     id: REASON_ID,
+    live: false,
   },
 } satisfies Meta<typeof RunInFlightReason>;
 

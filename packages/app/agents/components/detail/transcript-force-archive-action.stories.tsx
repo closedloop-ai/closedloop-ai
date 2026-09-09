@@ -53,6 +53,23 @@ const meta = {
   title: "App Core/Agents/Transcript Force Archive Action",
   component: TranscriptForceArchiveAction,
   tags: ["autodocs"],
+  argTypes: {
+    externalSessionId: {
+      control: "text",
+      description:
+        "Harness session id. Undefined means the local sync store has no row to aim at, so the action renders nothing.",
+    },
+    fileKey: {
+      control: "text",
+      description: "Transcript file to force: main, or subagent:{id}.",
+    },
+    onArchived: {
+      control: false,
+      description:
+        "Fires only when the result means the transcript is readable now (a caught-up upload, or a server-side noop).",
+      table: { category: "Events" },
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [transcriptTransportDecorator],
   args: {

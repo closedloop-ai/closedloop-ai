@@ -1,3 +1,4 @@
+import { PrCommentAuthorKind } from "@repo/api/src/types/branch-view";
 import { CommentAvatar } from "@repo/app/shared/components/comment-avatar";
 import type { Meta, StoryObj } from "@storybook/react";
 
@@ -6,9 +7,26 @@ const meta = {
   component: CommentAvatar,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    author: {
+      control: "text",
+      description: "Also the source of the two-letter fallback initials.",
+    },
+    authorAvatar: {
+      control: "text",
+      description: "Image URL. Null or absent falls back to the initials.",
+    },
+    authorKind: {
+      control: { type: "radio" },
+      options: Object.values(PrCommentAuthorKind),
+      description: "Bot authors get the glyph tile instead of an avatar.",
+    },
+    size: { control: { type: "radio" }, options: ["md", "sm", "xs"] },
+  },
   args: {
     author: "Annie Case",
     authorAvatar: null,
+    authorKind: PrCommentAuthorKind.User,
     size: "md",
   },
 } satisfies Meta<typeof CommentAvatar>;

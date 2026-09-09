@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 import { DocumentRatingSection } from "./document-rating-section";
 
 function InteractiveDocumentRatingSection() {
@@ -35,6 +36,25 @@ function InteractiveDocumentRatingSection() {
 const meta = {
   title: "App Core/Documents/Document Rating Section",
   component: DocumentRatingSection,
+  tags: ["autodocs"],
+  argTypes: {
+    summary: { control: "object", table: { category: "Data" } },
+    currentDocumentVersion: {
+      control: { type: "number", min: 1 },
+      table: { category: "Data" },
+    },
+    selectedScore: {
+      control: { type: "number", min: 0, max: 5 },
+      table: { category: "State" },
+    },
+    commentDraft: { control: "text", table: { category: "State" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isSaving: { control: "boolean", table: { category: "State" } },
+    onScoreChange: { control: false, table: { category: "Events" } },
+    onCommentChange: { control: false, table: { category: "Events" } },
+    onCancelComment: { control: false, table: { category: "Events" } },
+    onSaveComment: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
   },
@@ -44,6 +64,10 @@ const meta = {
     selectedScore: null,
     isLoading: false,
     isSaving: false,
+    onScoreChange: fn(),
+    onCommentChange: fn(),
+    onCancelComment: fn(),
+    onSaveComment: fn(),
     summary: {
       average: 4.4,
       count: 7,

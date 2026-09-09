@@ -15,6 +15,10 @@ const meta = {
   title: "App Core/Branches/Branch Cost to Merge",
   component: BranchCostToMerge,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object" },
+    suppressSplits: { control: false },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchCostToMerge>;
 

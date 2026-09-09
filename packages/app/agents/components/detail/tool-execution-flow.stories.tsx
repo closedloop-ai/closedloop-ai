@@ -46,6 +46,22 @@ const meta = {
   title: "App Core/Agents/Tool Execution Flow",
   component: ToolExecutionFlow,
   tags: ["autodocs"],
+  argTypes: {
+    agents: {
+      control: "object",
+      description:
+        "Agent rows the lanes are built from. A tool event whose agent is absent here falls to the trailing unattributed lane.",
+    },
+    events: {
+      control: "object",
+      description:
+        "Session events. Only those carrying a toolName draw a dot; the rest are ignored.",
+    },
+  },
+  args: {
+    agents: populatedAgentSessionDetailFixture.agents,
+    events: populatedAgentSessionDetailFixture.events,
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ToolExecutionFlow>;
 

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
 
 /**
@@ -23,6 +24,24 @@ const meta = {
   title: "App Core/Agents/Sessions Sign In Indicator",
   component: SessionsSignInIndicator,
   tags: ["autodocs"],
+  argTypes: {
+    banner: {
+      control: "boolean",
+      description:
+        "Render the one horizontal ask above the whole KPI row instead of the per-card caption.",
+    },
+    signInError: {
+      control: "text",
+      description:
+        "Copy from the last failed attempt. Renders in the destructive tone with the CTA as the retry.",
+    },
+    onSignIn: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Surface-injected sign-in action. Omit it and the affordance degrades to informational copy.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -31,7 +50,7 @@ const meta = {
       </div>
     ),
   ],
-  args: { onSignIn: () => undefined },
+  args: { banner: false, onSignIn: fn(), signInError: null },
 } satisfies Meta<typeof SessionsSignInIndicator>;
 
 export default meta;

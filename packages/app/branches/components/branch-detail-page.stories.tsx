@@ -24,13 +24,19 @@ import {
   type MergedTraceItem,
 } from "@repo/api/src/types/branch-trace";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
+import { BranchDetailTabParam } from "@repo/api/src/types/notification-routes";
 import { SelectedPullRequestFileStatus } from "@repo/api/src/types/selected-pull-request-evidence";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import type { BranchesDataSource } from "../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../data-source/provider";
-import { BranchDetailPage } from "./branch-detail-page";
+import { BranchBackLabel } from "../lib/branch-back-href";
+import {
+  BranchDetailErrorKind,
+  BranchDetailPage,
+  BranchDetailRefreshState,
+} from "./branch-detail-page";
 import {
   completeMetrics,
   completePhaseAttribution,
@@ -325,11 +331,56 @@ const meta = {
       </BranchesDataSourceProvider>
     ),
   ],
+  argTypes: {
+    detail: { control: "object", table: { category: "Data" } },
+    analytics: { control: "object", table: { category: "Data" } },
+    queryIdentity: {
+      control: "object",
+      description: "Caller-owned cache identity for the branch reads.",
+      table: { category: "Data" },
+    },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isError: { control: "boolean", table: { category: "State" } },
+    errorKind: {
+      control: "radio",
+      options: Object.values(BranchDetailErrorKind),
+      table: { category: "State" },
+    },
+    refreshState: {
+      control: "radio",
+      options: Object.values(BranchDetailRefreshState),
+      table: { category: "State" },
+    },
+    initialTab: {
+      control: "radio",
+      options: Object.values(BranchDetailTabParam),
+      table: { category: "State" },
+    },
+    commentsControl: {
+      control: false,
+      description:
+        "Header-owned comments state; the page owns it when omitted.",
+      table: { category: "State" },
+    },
+    branchId: { control: "text", table: { category: "Content" } },
+    backHref: { control: "text", table: { category: "Navigation" } },
+    backLabel: {
+      control: "radio",
+      options: Object.values(BranchBackLabel),
+      table: { category: "Navigation" },
+    },
+    getSessionHref: { control: false, table: { category: "Navigation" } },
+    getArtifactHref: { control: false, table: { category: "Navigation" } },
+  },
   args: {
     branchId: "b-1",
     backHref: "/branches",
+    backLabel: BranchBackLabel.Branches,
+    errorKind: BranchDetailErrorKind.ProviderError,
+    initialTab: BranchDetailTabParam.BranchDetails,
     isLoading: false,
     isError: false,
+    refreshState: BranchDetailRefreshState.Idle,
   },
 } satisfies Meta<typeof BranchDetailPage>;
 

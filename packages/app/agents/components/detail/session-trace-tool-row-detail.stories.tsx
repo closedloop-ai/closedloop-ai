@@ -26,6 +26,15 @@ const meta = {
   title: "App Core/Agents/Session Trace Tool Row Detail",
   component: SessionTraceToolRowDetail,
   tags: ["autodocs"],
+  argTypes: {
+    /*
+     * One prop, and it is the whole state matrix: `detailState` (see
+     * `TOOL_CALL_DETAIL_STATES`), `input`/`output` and their truncation flags
+     * all live inside it, so the panel is driven by editing the object rather
+     * than by a control per field.
+     */
+    tool: { control: "object" },
+  },
   parameters: { layout: "padded" },
   args: {
     tool: buildTool({

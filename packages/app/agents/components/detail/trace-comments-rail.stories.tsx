@@ -85,6 +85,38 @@ const meta = {
   tags: ["autodocs"],
   parameters: { layout: "padded" },
   decorators: [detailShellDecorator],
+  argTypes: {
+    comments: { control: "object", table: { category: "Data" } },
+    traceIdentity: {
+      control: "text",
+      description:
+        "Session or branch id the rail is showing. Changing it resets the sort back to newest-first.",
+      table: { category: "Data" },
+    },
+    activeRow: {
+      control: { type: "number", min: 0, step: 1 },
+      description:
+        "Trace row the reader is on. The comment anchored to it renders selected.",
+      table: { category: "State" },
+    },
+    width: {
+      control: { type: "number", min: 300, step: 10 },
+      description:
+        "Rail width in px. The drag handle clamps to 300 at the low end.",
+      table: { category: "Appearance" },
+    },
+    onCollapse: { control: false, table: { category: "Events" } },
+    onDelete: { control: false, table: { category: "Events" } },
+    onJump: { control: false, table: { category: "Events" } },
+    onReply: { control: false, table: { category: "Events" } },
+    onUpdate: { control: false, table: { category: "Events" } },
+    onWidthChange: {
+      control: false,
+      description:
+        "Absent on a host that does not resize: the handle is not rendered.",
+      table: { category: "Events" },
+    },
+  },
   args: {
     activeRow: null,
     comments: [],

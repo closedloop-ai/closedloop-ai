@@ -89,11 +89,22 @@ const meta = {
   title: "App Core/Documents/Attachment List",
   component: AttachmentList,
   tags: ["autodocs"],
+  argTypes: {
+    attachments: { control: "object" },
+    actionVisibility: {
+      control: { type: "radio" },
+      options: ["hover", "always"],
+    },
+    emptyState: { control: false },
+    onDelete: { control: false, table: { category: "Events" } },
+    onDownload: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     attachments: defaultAttachments,
+    actionVisibility: "hover",
   },
 } satisfies Meta<typeof AttachmentList>;
 

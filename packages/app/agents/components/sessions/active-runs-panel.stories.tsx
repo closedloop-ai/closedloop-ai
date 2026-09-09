@@ -67,6 +67,21 @@ const stalled = createAgentSessionListItemFixture({
 const meta = {
   title: "App Core/Agents/Active Runs Panel",
   component: ActiveRunsPanel,
+  tags: ["autodocs"],
+  argTypes: {
+    items: {
+      control: "object",
+      description:
+        "The active session rows. The panel derives phase and stall state from them.",
+    },
+    isLoading: { control: "boolean" },
+    getSessionHref: { control: false, table: { category: "Routing" } },
+    pinnedNowMs: {
+      control: false,
+      description:
+        "Freezes the panel: pins the clock to this instant and stops the 10s tick. Stories and tests only.",
+    },
+  },
   parameters: {
     layout: "padded",
   },

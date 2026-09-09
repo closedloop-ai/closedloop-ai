@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { MyTasksRecencyEmptyState } from "./my-tasks-recency-empty-state";
 
 /**
@@ -18,7 +19,10 @@ const meta = {
     layout: "padded",
   },
   args: {
-    onShowAll: () => undefined,
+    onShowAll: fn(),
+  },
+  argTypes: {
+    onShowAll: { control: false, table: { category: "Events" } },
   },
 } satisfies Meta<typeof MyTasksRecencyEmptyState>;
 

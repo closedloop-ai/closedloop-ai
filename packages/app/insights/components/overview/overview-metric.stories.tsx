@@ -17,6 +17,22 @@ import { OverviewMetric } from "./overview-metric";
 const meta: Meta<typeof OverviewMetric> = {
   title: "App Core/Insights/Overview Metric",
   component: OverviewMetric,
+  tags: ["autodocs"],
+  argTypes: {
+    label: { control: "text" },
+    value: { control: "text" },
+    detail: {
+      control: false,
+      description:
+        "The caption beneath the value. A ReactNode, so each story passes one in rather than editing it here.",
+    },
+    className: { control: false },
+  },
+  args: {
+    label: "Cost per merged PR",
+    value: "$12.40",
+    detail: "214 PRs merged in range",
+  },
   parameters: { layout: "padded" },
 };
 

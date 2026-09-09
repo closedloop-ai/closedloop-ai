@@ -39,6 +39,40 @@ const meta = {
   title: "App Core/Agents/Property Value",
   component: PropertyValue,
   tags: ["autodocs"],
+  args: { mono: false },
+  argTypes: {
+    children: { control: "text", table: { category: "Content" } },
+    label: { control: "text", table: { category: "Content" } },
+    explanation: {
+      control: "text",
+      description:
+        "Reason a value is this build's hedge rather than a fact. Ignored when copyValue is set.",
+      table: { category: "Content" },
+    },
+    copyValue: {
+      control: "text",
+      description:
+        "Raw text the copy button writes. Set, it wins over href and explanation.",
+      table: { category: "State" },
+    },
+    href: {
+      control: "text",
+      description:
+        "In-app link target for the value. Ignored when copyValue is set.",
+      table: { category: "State" },
+    },
+    icon: {
+      control: false,
+      description: "Lucide glyph for the leading slot, or null for no slot.",
+      table: { category: "Appearance" },
+    },
+    leading: {
+      control: false,
+      description: "Replaces the icon slot outright when supplied.",
+      table: { category: "Appearance" },
+    },
+    mono: { control: "boolean", table: { category: "Appearance" } },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

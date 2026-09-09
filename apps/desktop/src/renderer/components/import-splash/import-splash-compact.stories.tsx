@@ -24,8 +24,19 @@ import {
  * printing a fabricated 0%.
  */
 const meta = {
-  title: "Desktop/App Shell/Import Splash Compact",
+  title: "Desktop App/App Shell/Import Splash Compact",
   component: ImportSplashCompact,
+  tags: ["autodocs"],
+  // Every story renders a fixed scenario through the real derivation, so these
+  // props document the surface rather than drive it: a live control would edit
+  // an arg no render function reads.
+  argTypes: {
+    state: { control: false },
+    railPaused: { control: false },
+    onContinue: { control: false, table: { category: "Events" } },
+    onExpand: { control: false, table: { category: "Events" } },
+    onTogglePause: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "fullscreen",
   },

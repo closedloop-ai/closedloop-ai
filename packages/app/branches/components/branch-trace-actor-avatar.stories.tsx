@@ -24,6 +24,13 @@ const meta = {
   title: "App Core/Branches/Trace Actor Avatar",
   component: BranchTraceActorAvatar,
   tags: ["autodocs"],
+  argTypes: {
+    actor: { control: "object" },
+    actorDomain: {
+      control: false,
+      description: "Shared color domain built by buildActorColorDomain.",
+    },
+  },
   parameters: { layout: "centered" },
   args: {
     actor: namedActor,

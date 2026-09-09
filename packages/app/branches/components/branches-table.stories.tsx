@@ -14,13 +14,14 @@ import {
 } from "@repo/app/branches/lib/branch-row";
 import { BRANCH_SAMPLE_ROWS } from "@repo/app/branches/lib/branch-sample-data";
 import {
-  type BranchSortDir,
-  type BranchSortKey,
+  BranchSortDir,
+  BranchSortKey,
   sortBranchRows,
 } from "@repo/app/branches/lib/branch-sort-group";
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useMemo } from "react";
+import { fn } from "storybook/test";
 
 /**
  * Presentational branches table shared by the web `/branches` page and the
@@ -31,6 +32,72 @@ import { useMemo } from "react";
 const meta = {
   title: "App Core/Branches/Branches Table",
   component: BranchesTable,
+  tags: ["autodocs"],
+  argTypes: {
+    items: {
+      control: "object",
+      description: "Display-ready rows for the page currently painted.",
+      table: { category: "Data" },
+    },
+    allRows: {
+      control: "object",
+      description:
+        "Complete pre-pagination cohort for repository collision labels.",
+      table: { category: "Data" },
+    },
+    approved: {
+      control: "boolean",
+      description: "Render the PRD-601 fixed-schema List.",
+      table: { category: "State" },
+    },
+    tagsReadOnly: { control: "boolean", table: { category: "State" } },
+    mode: {
+      control: "radio",
+      options: ["auto", "compact", "expanded"],
+      description:
+        "Layout forwarded to GridTable; auto follows the measured width.",
+      table: { category: "Appearance" },
+    },
+    visibleColumns: {
+      control: false,
+      description: "Set of data-column ids to render.",
+      table: { category: "Appearance" },
+    },
+    columnOrder: { control: "object", table: { category: "Appearance" } },
+    columnWidths: { control: "object", table: { category: "Appearance" } },
+    sortBy: {
+      control: "select",
+      options: Object.values(BranchSortKey),
+      table: { category: "Appearance" },
+    },
+    sortDir: {
+      control: "radio",
+      options: Object.values(BranchSortDir),
+      table: { category: "Appearance" },
+    },
+    extraColumnLabel: {
+      control: "text",
+      description: "Adds one trailing column before the row-actions column.",
+      table: { category: "Content" },
+    },
+    renderExtraColumn: { control: false, table: { category: "Content" } },
+    renderBranchLink: { control: false, table: { category: "Content" } },
+    getBranchHref: { control: false, table: { category: "Navigation" } },
+    getSessionsHref: { control: false, table: { category: "Navigation" } },
+    onOpenDetail: { control: false, table: { category: "Events" } },
+    onSort: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+    onColumnWidthChange: { control: false, table: { category: "Events" } },
+  },
+  args: {
+    approved: false,
+    mode: "auto",
+    onColumnOrderChange: fn(),
+    onColumnWidthChange: fn(),
+    onOpenDetail: fn(),
+    onSort: fn(),
+    tagsReadOnly: false,
+  },
   parameters: {
     layout: "fullscreen",
   },

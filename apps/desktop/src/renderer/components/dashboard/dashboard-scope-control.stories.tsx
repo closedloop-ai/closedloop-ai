@@ -1,4 +1,7 @@
-import { InsightsScope } from "@closedloop-ai/loops-api/insights";
+import {
+  INSIGHTS_SCOPE_OPTIONS,
+  InsightsScope,
+} from "@closedloop-ai/loops-api/insights";
 import { DashboardScopeControl } from "./dashboard-scope-control";
 
 /**
@@ -15,8 +18,19 @@ import { DashboardScopeControl } from "./dashboard-scope-control";
  * generic primitive, and the gating is entirely this wrapper's.
  */
 const meta = {
-  title: "Desktop/Dashboard/Scope Control",
+  title: "Desktop App/Dashboard/Scope Control",
   component: DashboardScopeControl,
+  tags: ["autodocs"],
+  argTypes: {
+    available: { control: "boolean" },
+    gated: {
+      control: "boolean",
+      description:
+        "Holds the DISPLAYED value on Organization while the sign-up ask is on screen.",
+    },
+    scope: { control: { type: "radio" }, options: INSIGHTS_SCOPE_OPTIONS },
+    onValueChange: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
 };
 

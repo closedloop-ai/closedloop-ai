@@ -1,6 +1,7 @@
 import { PackInstallState } from "@repo/app/packs/lib/install-state";
 import { MemberInstallDispatchTone } from "@repo/app/packs/lib/member-install-dispatch-copy";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { MemberInstallControl } from "./member-install-control";
 
 /**
@@ -18,7 +19,20 @@ const meta = {
     packName: "release-captain",
     computeTargetName: "parkers-mbp",
     harnessLabel: "Claude",
-    onAction: () => undefined,
+    dispatch: null,
+    isPending: false,
+    onAction: fn(),
+  },
+  argTypes: {
+    computeTargetName: { control: "text" },
+    // The last dispatch outcome for this cell: message, tone, and whether
+    // offering the action again is safe.
+    dispatch: { control: "object" },
+    harnessLabel: { control: "text" },
+    isPending: { control: "boolean" },
+    onAction: { control: false, table: { category: "Events" } },
+    packName: { control: "text" },
+    state: { control: "select", options: Object.values(PackInstallState) },
   },
   parameters: {
     layout: "padded",

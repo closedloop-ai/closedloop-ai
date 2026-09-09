@@ -12,6 +12,27 @@ const meta = {
   title: "App Core/Agents/Sessions Controls",
   component: SessionsControls,
   tags: ["autodocs"],
+  argTypes: {
+    controls: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Title, count label, current values and the harness / status / sort option lists.",
+    },
+    pagination: {
+      control: "object",
+      table: { category: "Data" },
+      description: "Page, page size and totals for the footer's pager.",
+    },
+    onSearchValueChange: { control: false, table: { category: "Events" } },
+    onDirectoryValueChange: { control: false, table: { category: "Events" } },
+    onSortValueChange: { control: false, table: { category: "Events" } },
+    onSortDirectionChange: { control: false, table: { category: "Events" } },
+    onRefresh: { control: false, table: { category: "Events" } },
+    onHarnessValueChange: { control: false, table: { category: "Events" } },
+    onStatusValueChange: { control: false, table: { category: "Events" } },
+    onPageChange: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   args: {
     controls: sessionControls,

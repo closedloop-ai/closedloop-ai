@@ -10,6 +10,24 @@ const meta = {
   component: TraceTagChip,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    name: {
+      control: "text",
+      description:
+        "Raw harness wrapper tag name. Mapped names render a friendly label on the chip head; anything else falls back to the name itself.",
+    },
+    inner: {
+      control: "text",
+      description:
+        "Folded inner text. Empty means the chip has nothing to expand into.",
+    },
+    renderInner: {
+      control: false,
+      description:
+        "How the owning surface renders the inner text. Event rows pass renderTraceLinks; the message body recurses through markdown.",
+    },
+    onJump: { control: false, table: { category: "Events" } },
+  },
   args: {
     name: "local-command-stdout",
     inner: "Model set to Opus\nContext window: 1M tokens",

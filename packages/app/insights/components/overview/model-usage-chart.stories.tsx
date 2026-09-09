@@ -122,6 +122,19 @@ const storyDecorator: Decorator = (Story) => (
 const meta = {
   title: "App Core/Insights/Model Usage Chart",
   component: ModelUsageChart,
+  tags: ["autodocs"],
+  argTypes: {
+    series: {
+      control: "object",
+      description:
+        "Spend by model over time. Undefined is the whole card's loading sentinel.",
+    },
+    tokenSeries: {
+      control: "object",
+      description:
+        "Optional token volume. Undefined while spend has arrived is a completed absence, and the # view resolves to the unavailable empty state.",
+    },
+  },
   parameters: { layout: "fullscreen" },
   args: { series: REALISTIC_SPEND, tokenSeries: REALISTIC_TOKENS },
   decorators: [storyDecorator],

@@ -39,6 +39,19 @@ const meta = {
   title: "App Core/Agents/Session Properties Panel",
   component: SessionPropertiesPanel,
   tags: ["autodocs"],
+  argTypes: {
+    artifactHrefPending: { control: "boolean" },
+    buildArtifactHref: { control: false },
+    getBranchHref: { control: false },
+    /*
+     * `AgentSessionDetail` carries real `Date` fields (`startedAt`,
+     * `updatedAt`, ...). An object control serializes them to strings on edit,
+     * which the derivations this panel reads cannot take, so the session is
+     * changed by picking a story rather than by typing into the panel.
+     */
+    session: { control: false },
+  },
+  args: { artifactHrefPending: false },
   parameters: { layout: "fullscreen" },
   decorators: [detailScopeDecorator],
 } satisfies Meta<typeof SessionPropertiesPanel>;

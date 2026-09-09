@@ -21,6 +21,7 @@ import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { artifactLinkKeys } from "@repo/app/documents/hooks/use-artifact-links";
 import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { BranchesSection } from "./branches-section";
 
 const DOCUMENT_ID = "iss-5508-story-document";
@@ -61,9 +62,28 @@ const meta = {
   title: "App Core/Documents/Branches Section",
   component: BranchesSection,
   tags: ["autodocs"],
+  argTypes: {
+    documentId: {
+      control: false,
+      description:
+        "Keys the seeded link query in `parameters.appCore`; editing it drops the fixture and the empty state stops being deterministic.",
+    },
+    projectId: { control: false },
+    planId: {
+      control: "text",
+      description:
+        "Null swaps Start Building for the needs-an-approved-plan button.",
+    },
+    generationStatus: {
+      control: "object",
+      description:
+        "An execute run in an active state is what closes the Start Building gate.",
+    },
+    onStartBuild: { control: false, table: { category: "Events" } },
+  },
   args: {
     documentId: DOCUMENT_ID,
-    onStartBuild: () => undefined,
+    onStartBuild: fn(),
     planId: PLAN_ID,
     projectId: PROJECT_ID,
   },

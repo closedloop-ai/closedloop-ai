@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { ApiError } from "../../shared/api/api-error";
 import {
   API_NO_RESPONSE_STATUS,
@@ -22,14 +23,20 @@ const timeoutError = new ApiError(
 const meta = {
   title: "App Core/Packs/Packs Load Failed",
   component: PacksLoadFailed,
+  tags: ["autodocs"],
   parameters: {
     layout: "centered",
   },
+  argTypes: {
+    // An ApiError instance, not editable data: the timeout branch keys off
+    // `error.isTimeout()`, which a control-authored plain object would not carry.
+    error: { control: false },
+    onRetry: { control: false, table: { category: "Events" } },
+  },
   args: {
-    onRetry: () => {
-      // Presentational story: the retry affordance is what's under review, not
-      // what it refetches.
-    },
+    // Presentational story: the retry affordance is what's under review, not
+    // what it refetches.
+    onRetry: fn(),
   },
 } satisfies Meta<typeof PacksLoadFailed>;
 

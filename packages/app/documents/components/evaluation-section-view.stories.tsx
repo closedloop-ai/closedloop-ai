@@ -43,10 +43,21 @@ const meta = {
   title: "App Core/Documents/Evaluation Section View",
   component: EvaluationSectionView,
   tags: ["autodocs"],
+  argTypes: {
+    state: {
+      control: { type: "radio" },
+      options: ["awaiting", "empty", "ready"],
+    },
+    acceptedCount: { control: { type: "number", min: 0 } },
+    totalCount: { control: { type: "number", min: 0 } },
+    children: { control: false },
+  },
   args: {
     defaultOpen: true,
     state: "ready",
     title: "Evaluation",
+    awaitingMessage: "Awaiting LLM Judges feedback",
+    emptyMessage: "No judges have been evaluated yet",
     acceptedCount: 2,
     totalCount: 3,
   },

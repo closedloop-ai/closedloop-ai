@@ -7,6 +7,13 @@ const meta = {
   title: "App Core/Agents/Session LOC Per Dollar Property",
   component: SessionLocPerDollarProperty,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "Only linesAdded, linesRemoved and estimatedCost reach the ratio. Either side at zero renders the placeholder.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

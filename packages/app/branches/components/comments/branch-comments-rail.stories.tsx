@@ -1,8 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { useRef, useState } from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { BranchCommentsTab } from "./branch-comments-model";
-import { BranchCommentsRail } from "./branch-comments-rail";
+import {
+  BRANCH_COMMENTS_MAX_WIDTH,
+  BRANCH_COMMENTS_MIN_WIDTH,
+  BranchCommentsRail,
+} from "./branch-comments-rail";
 
 const RESIZE_CONTROL_NAME = "Resize comments rail";
 
@@ -10,12 +14,36 @@ const RESIZE_CONTROL_NAME = "Resize comments rail";
 const meta = {
   title: "App Core/Branches/Comments Rail",
   component: BranchCommentsRail,
+  tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
+  argTypes: {
+    activeTab: {
+      control: { type: "radio" },
+      options: Object.values(BranchCommentsTab),
+    },
+    children: { control: false },
+    onClose: { control: false, table: { category: "Events" } },
+    onWidthChange: { control: false, table: { category: "Events" } },
+    open: { control: "boolean" },
+    returnFocusRef: {
+      control: false,
+      description: "Element focus returns to when a Sheet variant closes.",
+    },
+    width: {
+      control: {
+        type: "range",
+        min: BRANCH_COMMENTS_MIN_WIDTH,
+        max: BRANCH_COMMENTS_MAX_WIDTH,
+        step: 4,
+      },
+      description: "Inline rail width in px. Sheet variants ignore it.",
+    },
+  },
   args: {
     activeTab: BranchCommentsTab.Details,
     children: null,
-    onClose: () => undefined,
-    onWidthChange: () => undefined,
+    onClose: fn(),
+    onWidthChange: fn(),
     open: true,
     returnFocusRef: { current: null },
     width: 380,

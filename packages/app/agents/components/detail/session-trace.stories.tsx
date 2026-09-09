@@ -63,9 +63,35 @@ const meta = {
   title: "App Core/Agents/Session Trace",
   component: SessionTrace,
   tags: ["autodocs"],
+  argTypes: {
+    activeRow: {
+      control: { min: 0, step: 1, type: "number" },
+      table: { category: "State" },
+    },
+    className: { control: "text", table: { category: "Appearance" } },
+    highlightAnchor: { control: "object", table: { category: "State" } },
+    invocationAnchor: { control: "object", table: { category: "State" } },
+    items: { control: "object", table: { category: "Data" } },
+    /*
+     * The callbacks are documented, not defaulted to `fn()` here. The trace
+     * reads `onSubmitTraceComment || onTraceSelectionChange` as its switch into
+     * selection mode, so a meta-level spy would turn every story on this page
+     * into a comment surface. The two comment stories pass their own spies.
+     */
+    onJump: { control: false, table: { category: "Events" } },
+    onSubmitTraceComment: { control: false, table: { category: "Events" } },
+    onTraceSelectionChange: { control: false, table: { category: "Events" } },
+    renderGutterActor: { control: false, table: { category: "Appearance" } },
+    scrollElementRef: { control: false, table: { category: "Data" } },
+    virtualize: { control: "boolean", table: { category: "State" } },
+  },
   parameters: { layout: "padded" },
   args: {
+    activeRow: null,
+    highlightAnchor: null,
+    invocationAnchor: null,
     items: populatedSessionTraceItems,
+    virtualize: false,
   },
 } satisfies Meta<typeof SessionTrace>;
 

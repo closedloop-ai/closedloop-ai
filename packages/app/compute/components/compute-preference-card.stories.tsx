@@ -24,11 +24,37 @@ const options: ComputePreferenceOption[] = [
 const meta = {
   title: "App Core/Compute/Compute Preference Card",
   component: ComputePreferenceCard,
+  tags: ["autodocs"],
+  argTypes: {
+    description: { control: "text", table: { category: "Content" } },
+    disabled: { control: "boolean", table: { category: "State" } },
+    headerIcon: { control: false, table: { category: "Content" } },
+    isLoading: {
+      control: "boolean",
+      description: "Replaces the radio group with a spinner.",
+      table: { category: "State" },
+    },
+    onValueChange: { control: false, table: { category: "Events" } },
+    options: {
+      control: false,
+      description:
+        "Each option carries a value, label, description and icon node.",
+      table: { category: "Data" },
+    },
+    title: { control: "text", table: { category: "Content" } },
+    value: {
+      control: { type: "radio" },
+      options: options.map((option) => option.value),
+      table: { category: "State" },
+    },
+  },
   args: {
     title: "Compute Mode",
     description:
       "Choose where AI agent jobs run. Cloud uses Closedloop infrastructure. Local routes jobs to your registered desktop agent.",
+    disabled: false,
     headerIcon: <ContainerIcon className="h-5 w-5" />,
+    isLoading: false,
     options,
     value: "cloud",
     onValueChange: fn(),

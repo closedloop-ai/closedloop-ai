@@ -2,6 +2,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react";
 import { RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
+import { fn } from "storybook/test";
 import { SystemCheckRepairButton } from "./system-check-repair";
 
 /**
@@ -13,15 +14,21 @@ import { SystemCheckRepairButton } from "./system-check-repair";
 const meta = {
   title: "App Core/Compute/System Check Repair Button",
   component: SystemCheckRepairButton,
+  tags: ["autodocs"],
+  argTypes: {
+    repairableCount: { control: { type: "number", min: 0 } },
+    variant: { control: { type: "radio" }, options: ["default", "secondary"] },
+    onRepair: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "padded" },
   args: {
     repairableCount: 1,
     isSupported: true,
     isRepairing: false,
     isCheckRunning: false,
-    onRepair: () => {
-      // Presentational story: the surface owns the transport.
-    },
+    variant: "default",
+    // Presentational story: the surface owns the transport.
+    onRepair: fn(),
   },
 } satisfies Meta<typeof SystemCheckRepairButton>;
 

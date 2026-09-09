@@ -2,6 +2,7 @@ import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { CheckSquareIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { fn } from "storybook/test";
 import type { DocumentRowData } from "../../documents/lib/artifact-row-adapter";
 import { makeArtifact } from "../../shared/test-fixtures/documents";
 import { MyTasksCardView } from "./my-tasks-card-view";
@@ -48,6 +49,59 @@ const meta = {
   title: "App Core/My Tasks/Card View",
   component: MyTasksCardView,
   tags: ["autodocs"],
+  argTypes: {
+    artifacts: {
+      control: "object",
+      description:
+        "This page's rows after any client-side search or facet narrowing.",
+      table: { category: "Data" },
+    },
+    assigneeId: {
+      control: "text",
+      description: "Null is the signed-out branch.",
+      table: { category: "Data" },
+    },
+    total: {
+      control: { type: "number", min: 0, step: 1 },
+      description: "The server's count of the viewer's assigned artifacts.",
+      table: { category: "Data" },
+    },
+    pageCount: {
+      control: { type: "number", min: 0, step: 1 },
+      description: "How many rows the server returned before client narrowing.",
+      table: { category: "Data" },
+    },
+    offset: {
+      control: { type: "number", min: 0, step: 1 },
+      table: { category: "Data" },
+    },
+    page: {
+      control: { type: "number", min: 0, step: 1 },
+      table: { category: "Data" },
+    },
+    totalPages: {
+      control: { type: "number", min: 0, step: 1 },
+      table: { category: "Data" },
+    },
+    board: {
+      control: false,
+      description:
+        "The kanban board, injected as a slot because it reaches for host-app route context.",
+      table: { category: "Content" },
+    },
+    emptyState: {
+      control: false,
+      description: "The queue-is-clear state, injected for the same reason.",
+      table: { category: "Content" },
+    },
+    isError: { control: "boolean", table: { category: "State" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isNarrowed: { control: "boolean", table: { category: "State" } },
+    isUserLoading: { control: "boolean", table: { category: "State" } },
+    onClearFilters: { control: false, table: { category: "Events" } },
+    onPageChange: { control: false, table: { category: "Events" } },
+    onRetry: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     artifacts: cardsOf(50),
@@ -59,9 +113,9 @@ const meta = {
     isNarrowed: false,
     isUserLoading: false,
     offset: 0,
-    onClearFilters: () => undefined,
-    onPageChange: () => undefined,
-    onRetry: () => undefined,
+    onClearFilters: fn(),
+    onPageChange: fn(),
+    onRetry: fn(),
     page: 0,
     pageCount: 50,
     total: 137,

@@ -20,8 +20,26 @@ import { StartupReadinessPhase } from "./startup-readiness-state";
  * needs-attention state additionally needs a wedged or unverifiable cloud sync.
  */
 const meta = {
-  title: "Desktop/App Shell/Startup Readiness Progress Bar",
+  title: "Desktop App/App Shell/Startup Readiness Progress Bar",
   component: StartupReadinessProgressBar,
+  tags: ["autodocs"],
+  argTypes: {
+    phase: {
+      control: "select",
+      options: Object.values(StartupReadinessPhase),
+      description:
+        "Every phase but Ready draws an indeterminate bar; Ready is the only determinate 100.",
+    },
+    paused: {
+      control: "boolean",
+      description: "Drops the sweep and leaves the primitive's static hatch.",
+    },
+    className: { control: false, table: { category: "Appearance" } },
+  },
+  args: {
+    paused: false,
+    phase: StartupReadinessPhase.OpeningStore,
+  },
   parameters: {
     layout: "padded",
   },

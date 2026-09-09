@@ -22,8 +22,20 @@ import {
  * also needs the import to wedge for two minutes.
  */
 const meta = {
-  title: "Desktop/App Shell/Import Splash Body",
+  title: "Desktop App/App Shell/Import Splash Body",
   component: ImportSplashBody,
+  tags: ["autodocs"],
+  // Every story renders a fixed scenario through the real derivation, so these
+  // props document the surface rather than drive it: a live control would edit
+  // an arg no render function reads.
+  argTypes: {
+    state: { control: false },
+    railPaused: { control: false },
+    panelId: { control: false },
+    onCollapse: { control: false, table: { category: "Events" } },
+    onContinue: { control: false, table: { category: "Events" } },
+    onTogglePause: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "fullscreen",
   },

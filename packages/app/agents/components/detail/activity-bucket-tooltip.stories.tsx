@@ -41,6 +41,36 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 const meta = {
   title: "App Core/Agents/Activity Bucket Tooltip",
   component: ActivityBucketTooltip,
+  args: { costUnmeasured: false },
+  argTypes: {
+    anchor: {
+      control: false,
+      description:
+        "Viewport rect the card pins itself to. The stage re-measures its stand-in bar on layout, so editing this value does not move the card.",
+    },
+    block: {
+      control: { type: "radio" },
+      options: [
+        null,
+        BucketJumpBlock.NoTurn,
+        BucketJumpBlock.NotInReadTranscript,
+      ],
+      description: "Why a click cannot land, or null when the bar is jumpable.",
+    },
+    bucket: { control: "object" },
+    costUnmeasured: {
+      control: "boolean",
+      description:
+        "True when this strip's money was synthesized, not measured.",
+    },
+    grouping: {
+      control: { type: "radio" },
+      options: Object.values(TimelineStackGrouping),
+      description:
+        "Active Group-by cut. Leave unset for the per-model cache/out/in table.",
+    },
+    segments: { control: "object" },
+  },
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof ActivityBucketTooltip>;
 

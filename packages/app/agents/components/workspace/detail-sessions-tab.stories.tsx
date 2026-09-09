@@ -183,10 +183,24 @@ const storyDecorator: Decorator = (Story) => (
 const meta = {
   title: "App Core/Agents/Detail Sessions Tab",
   component: DetailSessionsTab,
+  tags: ["autodocs"],
+  argTypes: {
+    component: { control: "object" },
+    sessions: { control: "object" },
+    sessionsTabTruncated: {
+      control: "boolean",
+      description:
+        "The producer's own statement that `sessions` is a bounded sample.",
+    },
+    usageSessions: { control: "object" },
+    versions: { control: "object" },
+    getSessionHref: { control: false },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     component,
     sessions: ordinarySessions,
+    sessionsTabTruncated: false,
     getSessionHref: (row: { id: string }) => `/sessions/${row.id}`,
   },
   decorators: [storyDecorator],

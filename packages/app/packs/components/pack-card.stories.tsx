@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { mockPackViews } from "../lib/pack-view-mock";
 import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PackCard } from "./pack-card";
@@ -10,7 +11,22 @@ const meta = {
   args: {
     pack: mockPackViews[1],
     context: createPacksContext(PacksMode.DesktopTeam),
-    onSelect: () => {},
+    onSelect: fn(),
+    selected: false,
+    trending: false,
+  },
+  argTypes: {
+    // The surface mode plus the capability booleans it resolves to. Editing a
+    // capability changes what the card offers.
+    context: { control: "object" },
+    disambiguator: { control: "text" },
+    // Omitted from `args` on purpose: its PRESENCE is what switches the primary
+    // action from a GitHub redirect to a local install.
+    onInstall: { control: false, table: { category: "Events" } },
+    onSelect: { control: false, table: { category: "Events" } },
+    pack: { control: "object" },
+    selected: { control: "boolean" },
+    trending: { control: "boolean" },
   },
   parameters: {
     layout: "padded",

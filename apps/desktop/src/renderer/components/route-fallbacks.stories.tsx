@@ -23,8 +23,20 @@ import {
  * "Loading..." on an otherwise blank body that a cold detail open used to show.
  */
 const meta = {
-  title: "Desktop/Shell/Route Fallbacks",
+  title: "Desktop App/Shell/Route Fallbacks",
   component: DetailRouteFallback,
+  tags: ["autodocs"],
+  argTypes: {
+    label: {
+      control: { type: "radio" },
+      options: Object.values(DETAIL_FALLBACK_LABELS),
+      description:
+        "Accessible name on the polite live region. Deliberately not rendered as visible text.",
+    },
+  },
+  args: {
+    label: DETAIL_FALLBACK_LABELS.session,
+  },
   parameters: {
     layout: "fullscreen",
   },

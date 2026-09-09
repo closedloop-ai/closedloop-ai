@@ -10,11 +10,51 @@ import {
 import { makeBranchAnalytics } from "@repo/app/branches/components/branch-analytics-fixtures";
 import { BranchesSummaryCards } from "@repo/app/branches/components/branches-summary-cards";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 const meta = {
   title: "App Core/Branches/Branches Summary Cards",
   component: BranchesSummaryCards,
-  args: { approved: true, isError: false, isPending: false },
+  tags: ["autodocs"],
+  argTypes: {
+    analytics: {
+      control: "object",
+      description:
+        "The fetched analytics, or undefined while the read is pending.",
+      table: { category: "Data" },
+    },
+    isPending: { control: "boolean", table: { category: "State" } },
+    isError: { control: "boolean", table: { category: "State" } },
+    approved: {
+      control: "boolean",
+      description: "Render the canonical PRD-601 five-card bundle.",
+      table: { category: "State" },
+    },
+    approvedComparisonSuppressedByFilter: {
+      control: "boolean",
+      description:
+        "The filtered-metrics fallback replaced the card comparisons.",
+      table: { category: "State" },
+    },
+    showDelta: {
+      control: "boolean",
+      description: "Only meaningful on a 30-day window, the fixed baseline.",
+      table: { category: "State" },
+    },
+    wrapBelow: { control: "boolean", table: { category: "Appearance" } },
+    className: { control: "text", table: { category: "Appearance" } },
+    cardClassName: { control: "text", table: { category: "Appearance" } },
+    onConnectGitHub: { control: false, table: { category: "Events" } },
+  },
+  args: {
+    approved: true,
+    approvedComparisonSuppressedByFilter: false,
+    isError: false,
+    isPending: false,
+    onConnectGitHub: fn(),
+    showDelta: true,
+    wrapBelow: false,
+  },
 } satisfies Meta<typeof BranchesSummaryCards>;
 
 export default meta;

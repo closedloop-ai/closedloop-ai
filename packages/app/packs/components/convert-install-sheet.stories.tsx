@@ -4,6 +4,7 @@ import { ConvertInstallState } from "@repo/api/src/types/convert-install";
 import { ConversionSupport } from "@repo/api/src/types/harness-conversion";
 import { HarnessName } from "@repo/crewd/model";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import {
   ConvertInstallSheet,
   type ConvertInstallTarget,
@@ -63,14 +64,24 @@ const resolveInstalled = (): Promise<ConvertInstallOutcome> =>
 const meta = {
   title: "App Core/Packs/Convert Install Sheet",
   component: ConvertInstallSheet,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },
   args: {
     harnessLabel,
-    onConvertInstall: resolveInstalled,
-    onOpenChange: () => undefined,
+    onConvertInstall: fn(resolveInstalled),
+    onOpenChange: fn(),
     target: cleanTarget,
+    targetOffline: false,
+  },
+  argTypes: {
+    // A resolver the surface injects, not a value to edit.
+    harnessLabel: { control: false },
+    onConvertInstall: { control: false, table: { category: "Events" } },
+    onOpenChange: { control: false, table: { category: "Events" } },
+    target: { control: "object" },
+    targetOffline: { control: "boolean" },
   },
 } satisfies Meta<typeof ConvertInstallSheet>;
 

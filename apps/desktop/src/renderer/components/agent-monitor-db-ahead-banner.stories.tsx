@@ -21,7 +21,7 @@ import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
  * wrapper with no main process behind it.
  */
 const meta = {
-  title: "Desktop/App Shell/Agent Monitor DB Ahead Banner",
+  title: "Desktop App/App Shell/Agent Monitor DB Ahead Banner",
   component: AgentMonitorDbAheadBanner,
   parameters: {
     layout: "fullscreen",

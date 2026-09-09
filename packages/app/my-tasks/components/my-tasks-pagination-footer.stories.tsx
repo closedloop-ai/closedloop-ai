@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import {
   MyTasksPagedUnit,
   resolveMyTasksRangeReadout,
@@ -45,11 +46,18 @@ const meta = {
   tags: ["autodocs"],
   parameters: { layout: "padded" },
   args: {
-    onPageChange: () => undefined,
+    onPageChange: fn(),
     page: 0,
     readout: COMPLETE_TOTAL,
     totalPages: 3,
     truncationNote: null,
+  },
+  argTypes: {
+    onPageChange: { control: false, table: { category: "Events" } },
+    page: { control: { type: "number", min: 0, step: 1 } },
+    readout: { control: "text" },
+    totalPages: { control: { type: "number", min: 1, max: 100, step: 1 } },
+    truncationNote: { control: "text" },
   },
   decorators: [
     (Story) => (

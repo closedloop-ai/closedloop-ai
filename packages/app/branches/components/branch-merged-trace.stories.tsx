@@ -13,6 +13,7 @@ import { TraceCommentsRail } from "@repo/app/agents/components/detail/trace-comm
 import type { Meta, StoryObj } from "@storybook/react";
 import type { CSSProperties } from "react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 import { BranchMergedTrace } from "./branch-merged-trace";
 
 const traceItems: MergedTraceItem[] = [
@@ -67,6 +68,55 @@ const meta = {
   title: "App Core/Branches/Merged Trace",
   component: BranchMergedTrace,
   tags: ["autodocs"],
+  argTypes: {
+    traceItems: { control: "object", table: { category: "Data" } },
+    traceState: {
+      control: "object",
+      description: "Hydration evidence kept beside the loaded trace turns.",
+      table: { category: "Data" },
+    },
+    sessionTotals: {
+      control: "object",
+      description:
+        "Per-session totals, shown only on complete aggregate evidence.",
+      table: { category: "Data" },
+    },
+    actorDomain: {
+      control: false,
+      description:
+        "Shared actor color domain; derived internally when omitted.",
+      table: { category: "Data" },
+    },
+    activeRow: {
+      control: { type: "number", min: 0, step: 1 },
+      table: { category: "State" },
+    },
+    highlightAnchor: {
+      control: "object",
+      description:
+        "Selected passage highlighted alongside local trace comments.",
+      table: { category: "State" },
+    },
+    scrollElementRef: { control: false, table: { category: "State" } },
+    onJump: { control: false, table: { category: "Events" } },
+    onSubmitTraceComment: { control: false, table: { category: "Events" } },
+    onTraceSelectionChange: { control: false, table: { category: "Events" } },
+    onScrolledToRow: { control: false, table: { category: "Events" } },
+    onScrolledToTraceEnd: { control: false, table: { category: "Events" } },
+    registerScroll: {
+      control: false,
+      description: "Subscribes the trace to timeline-driven scrubs.",
+      table: { category: "Events" },
+    },
+    className: { control: "text", table: { category: "Appearance" } },
+  },
+  args: {
+    onJump: fn(),
+    onScrolledToRow: fn(),
+    onScrolledToTraceEnd: fn(),
+    onSubmitTraceComment: fn(),
+    onTraceSelectionChange: fn(),
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchMergedTrace>;
 

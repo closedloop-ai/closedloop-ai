@@ -33,6 +33,17 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 const meta = {
   title: "App Core/Agents/Session Timeline Event Dot Tooltip",
   component: EventDotTooltip,
+  argTypes: {
+    anchor: { control: "object" },
+    /*
+     * `DotColor` is a bare union with no companion array anywhere in the repo
+     * (the rail's own `DOT_ORDER` is module-private), so these are copied from
+     * the union itself: b human steering, g commits and PRs, r failures and
+     * limits.
+     */
+    color: { control: "radio", options: ["b", "g", "r"] },
+    events: { control: "object" },
+  },
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof EventDotTooltip>;
 

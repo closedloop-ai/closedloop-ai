@@ -14,6 +14,24 @@ import { AuthTransitionPanel } from "./auth-transition-panel";
  * why on a healthy hop most users never see these screens at all.
  */
 const meta: Meta<typeof AuthTransitionPanel> = {
+  args: {
+    busy: false,
+    title: "Taking you to GitHub",
+  },
+  argTypes: {
+    // A recovery affordance rendered as-is. An edited node would not survive
+    // the round trip through the controls panel.
+    action: { control: false },
+    busy: { control: "boolean" },
+    description: { control: "text" },
+    // Omitted deliberately from `args`: a transition that is not
+    // provider-specific renders no mark, and TitleOnly is exactly that case.
+    provider: {
+      control: { type: "radio" },
+      options: Object.values(DesktopSignInProvider),
+    },
+    title: { control: "text" },
+  },
   component: AuthTransitionPanel,
   // Matches the `(unauthenticated)` layout, which clamps children to max-w-sm.
   decorators: [
@@ -23,6 +41,7 @@ const meta: Meta<typeof AuthTransitionPanel> = {
       </div>
     ),
   ],
+  tags: ["autodocs"],
   title: "App Core/Onboarding/Auth Transition Panel",
 };
 

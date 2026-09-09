@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { SessionsRecoveryAction } from "./sessions-recovery-action";
 
 /**
@@ -21,10 +22,23 @@ const meta = {
   title: "App Core/Agents/Sessions Recovery Action",
   component: SessionsRecoveryAction,
   tags: ["autodocs"],
+  argTypes: {
+    href: {
+      control: "text",
+      description:
+        "The clean Sessions list root, so a modified click still opens a working list in a new tab.",
+    },
+    onClearFilters: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Resets the host's filter state. Fires on a plain click only, never on a modified one.",
+    },
+  },
   parameters: { layout: "centered" },
   args: {
     href: "/sessions",
-    onClearFilters: () => undefined,
+    onClearFilters: fn(),
   },
 } satisfies Meta<typeof SessionsRecoveryAction>;
 

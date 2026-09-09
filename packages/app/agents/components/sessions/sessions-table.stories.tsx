@@ -13,6 +13,71 @@ import { SessionsTable, type SessionTableRow } from "./sessions-table";
 const meta = {
   title: "App Core/Agents/Sessions Table",
   component: SessionsTable,
+  tags: ["autodocs"],
+  argTypes: {
+    items: { control: "object", table: { category: "Data" } },
+    columnOrder: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Persisted data-column order. The trailing extra column stays pinned and never reorders.",
+    },
+    visibleColumns: {
+      control: false,
+      table: { category: "Data" },
+      description:
+        "A Set of column ids, so it cannot be edited here without replacing it with a plain object.",
+    },
+    groupBy: {
+      control: { type: "radio" },
+      options: Object.values(SessionGroupBy),
+      table: { category: "State" },
+      description:
+        "The View menu's Group by dimension. The banded column drops out of every row.",
+    },
+    showGroupCount: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Off by default: the list is server-paginated, so a band count would read as the population.",
+    },
+    showProvenanceChip: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Render the Agent / Bot chip beside the name. Off for the Sessions listing.",
+    },
+    sortBy: { control: "text", table: { category: "State" } },
+    sortDir: {
+      control: { type: "radio" },
+      options: ["asc", "desc"],
+      table: { category: "State" },
+    },
+    mode: {
+      control: { type: "radio" },
+      options: ["auto", "compact", "expanded"],
+      table: { category: "Appearance" },
+      description:
+        "auto is a card list below the md container width and the grid at md+.",
+    },
+    extraColumnLabel: {
+      control: "text",
+      table: { category: "Appearance" },
+      description:
+        "Header for an optional trailing column. Supplying it grows the grid one track.",
+    },
+    renderName: {
+      control: false,
+      table: { category: "Content" },
+      description:
+        "Wraps the session name in the platform's navigation element. Apply the className it receives.",
+    },
+    renderExtraColumn: { control: false, table: { category: "Content" } },
+    renderProjects: { control: false, table: { category: "Content" } },
+    renderIssues: { control: false, table: { category: "Content" } },
+    onSort: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "fullscreen",
   },
@@ -23,6 +88,11 @@ const meta = {
       </main>
     ),
   ],
+  args: {
+    groupBy: SessionGroupBy.None,
+    showGroupCount: false,
+    showProvenanceChip: false,
+  },
 } satisfies Meta<typeof SessionsTable>;
 
 export default meta;

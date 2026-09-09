@@ -11,8 +11,21 @@ import { WithheldTab } from "./withheld-tab";
  * which is not something you can arrange on demand.
  */
 const meta = {
-  title: "Desktop/Diagnostics/Withheld Tab",
+  title: "Desktop App/Diagnostics/Withheld Tab",
   component: WithheldTab,
+  tags: ["autodocs"],
+  argTypes: {
+    withheld: {
+      control: "object",
+      description:
+        "`undefined` is a third state, not a spelling of the empty list.",
+    },
+    scans: {
+      control: "object",
+      description:
+        "Stores that completed a scan. An empty array reads as unknown, not complete.",
+    },
+  },
 };
 
 export default meta;

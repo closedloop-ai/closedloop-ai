@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import {
   DesktopRecheckPhase,
   DesktopUndetectedNotice,
@@ -20,10 +21,22 @@ import {
  */
 const meta: Meta<typeof DesktopUndetectedNotice> = {
   args: {
-    onRecheck: () => {
-      // Storybook has no detection store; the control is here to be looked at.
-    },
+    detectionExhausted: false,
+    latestVersion: null,
+    // Storybook has no detection store; the control is here to be looked at.
+    onRecheck: fn(),
+    phase: DesktopRecheckPhase.Idle,
     runningVersion: null,
+  },
+  argTypes: {
+    detectionExhausted: { control: "boolean" },
+    latestVersion: { control: "text" },
+    onRecheck: { control: false, table: { category: "Events" } },
+    phase: {
+      control: { type: "radio" },
+      options: Object.values(DesktopRecheckPhase),
+    },
+    runningVersion: { control: "text" },
   },
   component: DesktopUndetectedNotice,
   // Matches the onboarding step body, which clamps its content to max-w-2xl.
@@ -34,6 +47,7 @@ const meta: Meta<typeof DesktopUndetectedNotice> = {
       </div>
     ),
   ],
+  tags: ["autodocs"],
   title: "App Core/Onboarding/Desktop Undetected Notice",
 };
 

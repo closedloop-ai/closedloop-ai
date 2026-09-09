@@ -16,7 +16,7 @@ import { DesktopSessionExpiredBanner } from "./desktop-session-expired-banner";
  * the packaged app does rather than a hand-faked context.
  */
 const meta = {
-  title: "Desktop/App Shell/Desktop Session Expired Banner",
+  title: "Desktop App/App Shell/Desktop Session Expired Banner",
   component: DesktopSessionExpiredBanner,
   parameters: {
     layout: "fullscreen",

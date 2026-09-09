@@ -21,6 +21,26 @@ import { SessionCostCell } from "./session-cost-cell";
 const meta: Meta<typeof SessionCostCell> = {
   component: SessionCostCell,
   title: "App Core/Agents/Session Cost Cell",
+  tags: ["autodocs"],
+  argTypes: {
+    availability: {
+      control: "select",
+      options: Object.values(CostAvailability),
+      description:
+        "Why the row has (or has not) a cost. This, not the figure, is what decides whether an explanation exists.",
+    },
+    label: { control: "text" },
+    tooltip: {
+      control: "text",
+      description:
+        "The explanation a non-obvious figure carries. Null renders plain text with no tooltip trigger.",
+    },
+  },
+  args: {
+    availability: CostAvailability.Available,
+    label: "$1.01",
+    tooltip: null,
+  },
 };
 
 export default meta;

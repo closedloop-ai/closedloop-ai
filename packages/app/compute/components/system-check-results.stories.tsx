@@ -4,11 +4,8 @@ import {
   HealthCheckRepairAction,
 } from "@repo/api/src/types/compute-target";
 import type { Meta, StoryObj } from "@storybook/react";
-import {
-  SystemCheckResults,
-  type SystemCheckResultsRemediationClick,
-  type SystemCheckResultsRemediationView,
-} from "./system-check-results";
+import { fn } from "storybook/test";
+import { SystemCheckResults } from "./system-check-results";
 
 const CLAUDE_CLI_REMEDIATION =
   "Update binary path in Settings, or clear the override";
@@ -82,15 +79,41 @@ const baseChecks: CheckResult[] = [
 const meta = {
   title: "App Core/Compute/System Check Results",
   component: SystemCheckResults,
+  tags: ["autodocs"],
+  argTypes: {
+    checks: { control: "object", table: { category: "Data" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    revealedCount: {
+      control: { type: "number", min: 0 },
+      description: "Rows revealed so far. Leave empty to reveal every row.",
+      table: { category: "State" },
+    },
+    pluginAutoUpdateEnabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    targetKind: {
+      control: { type: "radio" },
+      options: ["local", "owned_relay", "shared_relay"],
+      table: { category: "State" },
+    },
+    afterRequired: { control: false, table: { category: "Content" } },
+    onStructuredRemediationViewed: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onStructuredRemediationLinkClick: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
   args: {
     checks: baseChecks,
+    isLoading: false,
     pluginAutoUpdateEnabled: true,
-    onStructuredRemediationViewed: (
-      _payload: SystemCheckResultsRemediationView
-    ) => {},
-    onStructuredRemediationLinkClick: (
-      _payload: SystemCheckResultsRemediationClick
-    ) => {},
+    targetKind: "local",
+    onStructuredRemediationViewed: fn(),
+    onStructuredRemediationLinkClick: fn(),
   },
 } satisfies Meta<typeof SystemCheckResults>;
 

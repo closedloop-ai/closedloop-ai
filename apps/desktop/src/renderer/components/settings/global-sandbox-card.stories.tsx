@@ -23,8 +23,24 @@ type SandboxApiScenario = {
 };
 
 const meta = {
-  title: "Desktop/Settings/Global Sandbox Section",
+  title: "Desktop App/Settings/Global Sandbox Section",
   component: GlobalSandboxSection,
+  tags: ["autodocs"],
+  argTypes: {
+    settings: {
+      control: "object",
+      description:
+        "The resolved desktop settings record, or null while the async load has not returned. Null is not an empty value: the section must not assert a sandbox boundary it does not yet know.",
+    },
+    onSettingsChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
+  args: {
+    onSettingsChange: () => undefined,
+    settings: { sandboxBaseDirectory: SETTLED_SANDBOX },
+  },
   parameters: {
     layout: "centered",
   },

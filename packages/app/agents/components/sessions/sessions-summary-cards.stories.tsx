@@ -61,9 +61,99 @@ const meta = {
   title: "App Core/Agents/Sessions Summary Cards",
   component: SessionsSummaryCards,
   tags: ["autodocs"],
+  argTypes: {
+    usage: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "The cloud usage summary, or undefined while the read is pending.",
+    },
+    localUsage: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Local SQLite totals. A FAILURE FALLBACK only: a healthy cloud read always wins.",
+    },
+    deltas: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Period-over-period comparison. Its PRESENCE is the host declaring that this surface compares at all.",
+    },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isError: { control: "boolean", table: { category: "State" } },
+    isLocalError: { control: "boolean", table: { category: "State" } },
+    alwaysAvailableLoading: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Skeleton just the Sessions / Tokens / Cost value slots while the local fallback hydrates.",
+    },
+    transientRecovering: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "A transient db-host error is auto-retrying. Holds the labels and skeletons only the values.",
+    },
+    importInProgress: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "A genuine first-launch import, which is what earns the stronger wait caption.",
+    },
+    authenticated: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Does the surface have a cloud session? False shows the sign-in CTA on the delivery cards.",
+    },
+    signInPromptSuppressed: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "The shell already owns the ask, so do not hoist a second one.",
+    },
+    costUnknownActive: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "The active Cost facet is the Unknown option, so the tile dashes rather than summing to $0.",
+    },
+    couldNotImportLabel: {
+      control: "text",
+      table: { category: "Content" },
+      description:
+        "Ready-made caveat phrase for transcripts the local import had to skip. Null for none.",
+    },
+    signInError: {
+      control: "text",
+      table: { category: "Content" },
+      description:
+        "Copy from the last failed sign-in, rendered with the CTA as the retry.",
+    },
+    wrapBelow: { control: "boolean", table: { category: "Appearance" } },
+    className: { control: false, table: { category: "Appearance" } },
+    cardClassName: { control: false, table: { category: "Appearance" } },
+    onSignIn: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Surface-owned sign-in action. Left unwired here so the signed-out stories keep their per-card CTAs.",
+    },
+  },
   parameters: { layout: "padded" },
   args: {
+    alwaysAvailableLoading: false,
+    authenticated: true,
+    costUnknownActive: false,
+    couldNotImportLabel: null,
+    importInProgress: false,
+    isError: false,
     isLoading: false,
+    isLocalError: false,
+    signInError: null,
+    signInPromptSuppressed: false,
+    transientRecovering: false,
     usage: honestUsageFixture(),
     // Both production call sites (the web Sessions page and the desktop
     // `SessionsView`) opt into the wrapping grid, so the stories lay the strip

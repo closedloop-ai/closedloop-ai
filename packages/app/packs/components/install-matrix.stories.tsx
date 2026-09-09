@@ -86,6 +86,10 @@ const meta = {
     matrix: MATRIX,
     componentName: "pre-commit-guard",
   },
+  argTypes: {
+    componentName: { control: "text" },
+    matrix: { control: "object" },
+  },
   parameters: {
     layout: "padded",
   },

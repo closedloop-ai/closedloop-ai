@@ -63,6 +63,20 @@ const LONG_TITLE =
 
 const meta = {
   component: ActivityCardView,
+  argTypes: {
+    actor: {
+      control: false,
+      description: "The rendered actor cell, taken as an opaque slot.",
+    },
+    createdAt: { control: false },
+    headline: { control: "text" },
+    change: {
+      control: "object",
+      description:
+        "The before/after pair. Both sides null renders no chips at all, and one side null drops the arrow.",
+    },
+    pending: { control: "boolean" },
+  },
   args: {
     actor: ACTOR,
     createdAt: new Date("2026-02-01T09:30:00.000Z"),

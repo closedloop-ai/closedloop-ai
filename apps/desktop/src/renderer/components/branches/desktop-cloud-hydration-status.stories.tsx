@@ -6,8 +6,16 @@ import {
 import { DesktopCloudHydrationStatus } from "../../shared-branches/desktop-cloud-hydration-status";
 
 const meta = {
-  title: "Desktop/Branches/Cloud Hydration Status",
+  title: "Desktop App/Branches/Cloud Hydration Status",
   component: DesktopCloudHydrationStatus,
+  tags: ["autodocs"],
+  argTypes: {
+    rows: {
+      control: "object",
+      description:
+        "Only `cloudHydrationStatus` is read, and a Failed row outranks a Stale one.",
+    },
+  },
   parameters: { layout: "padded" },
 };
 

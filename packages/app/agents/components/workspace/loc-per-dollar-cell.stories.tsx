@@ -37,6 +37,13 @@ const meta = {
   title: "App Core/Agents/LOC Per Dollar Column Value",
   component: LocPerDollarColumnValue,
   tags: ["autodocs"],
+  argTypes: {
+    value: {
+      control: { type: "number", min: 0, step: 0.01 },
+      description: "LOC per dollar. `null` is the honest not-applicable cell.",
+    },
+    alignEnd: { control: "boolean" },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

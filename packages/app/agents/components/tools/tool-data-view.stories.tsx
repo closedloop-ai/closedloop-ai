@@ -5,6 +5,14 @@ const meta = {
   title: "App Core/Agents/Tool Data View",
   component: ToolInputView,
   tags: ["autodocs"],
+  argTypes: {
+    toolName: {
+      control: "text",
+      description:
+        "Selects the per-tool renderer. An `mcp__` prefix routes to the generic key/value grid.",
+    },
+    input: { control: "object" },
+  },
   parameters: { layout: "padded" },
   args: {
     toolName: "Write",

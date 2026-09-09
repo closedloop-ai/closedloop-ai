@@ -23,6 +23,33 @@ const appliedTags: TagSummary[] = [
 const meta: Meta<typeof TagPicker> = {
   title: "App Core/Tags/Tag Picker",
   component: TagPicker,
+  tags: ["autodocs"],
+  argTypes: {
+    entityType: {
+      control: { type: "radio" },
+      options: Object.values(TagEntityType),
+      table: { category: "Data" },
+    },
+    entityId: { control: "text", table: { category: "Data" } },
+    appliedTags: { control: "object", table: { category: "Data" } },
+    trigger: { control: false, table: { category: "Content" } },
+    showCreate: { control: "boolean", table: { category: "State" } },
+    canApply: { control: "boolean", table: { category: "State" } },
+    canRemove: { control: "boolean", table: { category: "State" } },
+    showAppliedChips: { control: "boolean", table: { category: "State" } },
+    onChipClick: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "When supplied the applied chips become buttons instead of static labels.",
+    },
+  },
+  args: {
+    showCreate: true,
+    canApply: true,
+    canRemove: true,
+    showAppliedChips: true,
+  },
   parameters: { appCore: { queryData: [[tagKeys.list({}), orgTags]] } },
 };
 

@@ -127,6 +127,28 @@ const meta = {
   title: "App Core/Agents/Session Linked Artifacts Row",
   component: SessionLinkedArtifactsRow,
   tags: ["autodocs"],
+  args: { artifactHrefPending: false },
+  argTypes: {
+    linkedArtifacts: {
+      control: "object",
+      description: "Links the projection shipped. Empty renders no row at all.",
+    },
+    total: {
+      control: { type: "number", min: 0, step: 1 },
+      description:
+        "True resolved link count. Above the six visible pills it drives the +N chip, so it can exceed linkedArtifacts.length.",
+    },
+    buildArtifactHref: {
+      control: false,
+      description:
+        "Returns a destination per artifact, or null for a non-clickable label. Omitted entirely on shells with no artifact routing.",
+    },
+    artifactHrefPending: {
+      control: "boolean",
+      description:
+        "The shell cannot yet say whether links resolve, so the pills wait instead of asserting either answer.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

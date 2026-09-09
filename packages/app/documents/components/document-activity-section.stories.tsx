@@ -5,9 +5,13 @@ const meta = {
   title: "App Core/Documents/Document Activity Section",
   component: DocumentActivitySection,
   tags: ["autodocs"],
+  argTypes: {
+    createdByContent: { control: false },
+  },
   args: {
     createdAt: "2026-01-05T12:00:00.000Z",
     updatedAt: "2026-01-06T12:00:00.000Z",
+    emptyCreatorLabel: "Unknown user",
     defaultOpen: true,
   },
 } satisfies Meta<typeof DocumentActivitySection>;

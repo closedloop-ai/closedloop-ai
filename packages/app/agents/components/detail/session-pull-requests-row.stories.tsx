@@ -47,6 +47,10 @@ const meta = {
   title: "App Core/Agents/Session Pull Requests Row",
   component: SessionPullRequestsRow,
   tags: ["autodocs"],
+  argTypes: {
+    prs: { control: "object" },
+    repositoryFullName: { control: "text" },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionPullRequestsRow>;
 

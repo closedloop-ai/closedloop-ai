@@ -5,6 +5,7 @@ import {
 } from "@repo/api/src/types/branch";
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { BranchPrSessionSwimlane } from "./branch-pr-session-swimlane";
 
 function session(over: Partial<BranchSession>): BranchSession {
@@ -86,6 +87,37 @@ const meta = {
   title: "App Core/Branches/PR Session Swimlane",
   component: BranchPrSessionSwimlane,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object", table: { category: "Data" } },
+    actorDomain: {
+      control: false,
+      description:
+        "Shared actor color domain; derived internally when omitted.",
+      table: { category: "Data" },
+    },
+    range: {
+      control: "object",
+      description: "Shared axis so lanes align with the timeline bars.",
+      table: { category: "Data" },
+    },
+    activeTimestamp: {
+      control: "text",
+      description: "Draws the playhead line across the lanes.",
+      table: { category: "State" },
+    },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    onScrubTimestamp: { control: false, table: { category: "Events" } },
+    getSessionHref: {
+      control: false,
+      description: "Omitted keeps the lane label plain text.",
+      table: { category: "Events" },
+    },
+    className: { control: "text", table: { category: "Appearance" } },
+  },
+  args: {
+    isLoading: false,
+    onScrubTimestamp: fn(),
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchPrSessionSwimlane>;
 

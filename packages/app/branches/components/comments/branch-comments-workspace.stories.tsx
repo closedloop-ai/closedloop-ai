@@ -8,12 +8,17 @@ import {
 } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useRef, useState } from "react";
+import { fn } from "storybook/test";
 import {
   BranchCommentSource,
   BranchCommentsTab,
   type BranchCommentsWorkspaceProps,
   type BranchCommentThread,
 } from "./branch-comments-model";
+import {
+  BRANCH_COMMENTS_MAX_WIDTH,
+  BRANCH_COMMENTS_MIN_WIDTH,
+} from "./branch-comments-rail";
 import { BranchCommentsWorkspace } from "./branch-comments-workspace";
 
 const meta = {
@@ -26,6 +31,60 @@ const meta = {
     ),
   ],
   title: "App Core/Branches/Comments Workspace",
+  tags: ["autodocs"],
+  argTypes: {
+    activeTab: {
+      control: { type: "radio" },
+      options: Object.values(BranchCommentsTab),
+      table: { category: "State" },
+    },
+    branchId: { control: "text", table: { category: "Data" } },
+    comments: { control: "object", table: { category: "Data" } },
+    composerTarget: {
+      control: "object",
+      description: "Anchor and target the new-comment composer writes against.",
+      table: { category: "Data" },
+    },
+    coverageNote: {
+      control: "text",
+      description: "Disclosure shown when some Sessions could not be rendered.",
+      table: { category: "Content" },
+    },
+    hasError: { control: "boolean", table: { category: "State" } },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    onClose: { control: false, table: { category: "Events" } },
+    onCreate: { control: false, table: { category: "Events" } },
+    onDeleteReply: { control: false, table: { category: "Events" } },
+    onDeleteThread: { control: false, table: { category: "Events" } },
+    onEditRoot: { control: false, table: { category: "Events" } },
+    onJump: { control: false, table: { category: "Events" } },
+    onReply: { control: false, table: { category: "Events" } },
+    onWidthChange: { control: false, table: { category: "Events" } },
+    open: { control: "boolean", table: { category: "State" } },
+    providerAvailability: {
+      control: "object",
+      description: "Bounded-coverage facts for the selected provider result.",
+      table: { category: "Data" },
+    },
+    railId: { control: "text", table: { category: "State" } },
+    renderBody: { control: false, table: { category: "Content" } },
+    renderedSessionIds: {
+      control: "object",
+      description: "Session ids the timeline actually rendered.",
+      table: { category: "Data" },
+    },
+    returnFocusRef: { control: false, table: { category: "Data" } },
+    selectedPullRequestKey: { control: "text", table: { category: "Data" } },
+    width: {
+      control: {
+        type: "range",
+        min: BRANCH_COMMENTS_MIN_WIDTH,
+        max: BRANCH_COMMENTS_MAX_WIDTH,
+        step: 4,
+      },
+      table: { category: "State" },
+    },
+  },
 } satisfies Meta<typeof BranchCommentsWorkspace>;
 
 export default meta;
@@ -113,14 +172,16 @@ function makeArgs(
       anchor: makeStoryAnchor("Branch trace, line 42", "detail-anchor"),
       target: { id: "branch-1", type: TraceCommentTargetType.Branch },
     },
-    onClose: () => undefined,
-    onCreate: () => Promise.resolve(),
-    onDeleteReply: () => Promise.resolve(),
-    onDeleteThread: () => Promise.resolve(),
-    onEditRoot: () => Promise.resolve(),
-    onJump: () => undefined,
-    onReply: () => Promise.resolve(),
-    onWidthChange: () => undefined,
+    hasError: false,
+    isLoading: false,
+    onClose: fn(),
+    onCreate: fn(() => Promise.resolve()),
+    onDeleteReply: fn(() => Promise.resolve()),
+    onDeleteThread: fn(() => Promise.resolve()),
+    onEditRoot: fn(() => Promise.resolve()),
+    onJump: fn(),
+    onReply: fn(() => Promise.resolve()),
+    onWidthChange: fn(),
     open: true,
     renderedSessionIds: ["session-a"],
     returnFocusRef: { current: null },

@@ -2,6 +2,7 @@ import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import type { TimelineStackSegment } from "@repo/app/agents/lib/session-timeline-stacks";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
+import { fn } from "storybook/test";
 import { BucketJumpBlock, getBucketCost } from "./activity-bucket-rendering";
 import { buildBucketAccessibleCosts } from "./session-timeline-bar-labels";
 import { SessionTimelineBars } from "./session-timeline-bars";
@@ -125,6 +126,37 @@ const meta = {
   title: "App Core/Agents/Session Timeline Bars",
   component: SessionTimelineBars,
   tags: ["autodocs"],
+  argTypes: {
+    accessibleCosts: { control: "object", table: { category: "Data" } },
+    buckets: { control: "object", table: { category: "Data" } },
+    columnHitTargetEnabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    costUnmeasured: { control: "boolean", table: { category: "State" } },
+    disabled: { control: "boolean", table: { category: "State" } },
+    hoverIndex: {
+      control: {
+        max: STAGE_BUCKETS.length - 1,
+        min: 0,
+        step: 1,
+        type: "number",
+      },
+      table: { category: "State" },
+    },
+    jumpBlocks: { control: "object", table: { category: "Data" } },
+    maxCost: {
+      control: { min: 0, step: 0.05, type: "number" },
+      table: { category: "Data" },
+    },
+    onHover: { control: false, table: { category: "Events" } },
+    onJump: { control: false, table: { category: "Events" } },
+    stacks: { control: "object", table: { category: "Data" } },
+    unreadFromIndex: {
+      control: { max: STAGE_BUCKETS.length, min: 0, step: 1, type: "number" },
+      table: { category: "State" },
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     accessibleCosts: buildBucketAccessibleCosts({
@@ -138,12 +170,12 @@ const meta = {
     hoverIndex: null,
     jumpBlocks: noBlocks(),
     maxCost: STAGE_MAX_COST,
-    onHover: () => {
-      // Stories are static; hover state is driven by the `hoverIndex` arg.
-    },
-    onJump: () => {
-      // No transcript to scroll in isolation.
-    },
+    // Stories are static; hover state is driven by the `hoverIndex` arg.
+    onHover: fn(),
+    // No transcript to scroll in isolation.
+    onJump: fn(),
+    // The ungated shape: the three hardcoded in/out/cache slices, no grouping.
+    stacks: null,
     unreadFromIndex: STAGE_BUCKETS.length,
   },
 } satisfies Meta<typeof SessionTimelineBars>;

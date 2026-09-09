@@ -3,6 +3,21 @@ import { SESSION_LIMIT_SOURCES, type SessionLimits } from "../types";
 import { SessionLimitsProvenance } from "./session-limits-provenance";
 
 /**
+ * Fixed clock and time zone (ISS-5286). Every label here is either a duration
+ * measured against `now` or a time zone-formatted instant, so an unpinned story
+ * would render differently on every run.
+ */
+const NOW = new Date("2026-07-19T12:00:00.000Z");
+const TIME_ZONE = "UTC";
+
+function provenance(
+  fetchedAt: string | null,
+  source: SessionLimits["source"] = SESSION_LIMIT_SOURCES.UsageApi
+) {
+  return { fetchedAt, source };
+}
+
+/**
  * PRD-538 R6 (ISS-5354): the detail drawer's provenance footer, across the
  * states it swaps wording for.
  *
@@ -20,27 +35,31 @@ import { SessionLimitsProvenance } from "./session-limits-provenance";
 const meta = {
   title: "App Core/Session Limits/Session Limits Provenance",
   component: SessionLimitsProvenance,
+  tags: ["autodocs"],
   parameters: {
     layout: "centered",
+  },
+  argTypes: {
+    limits: {
+      control: "object",
+      description:
+        "Just the two provenance fields. `fetchedAt` null renders nothing at all; `source` takes a SESSION_LIMIT_SOURCES value, or null for no tooltip.",
+    },
+    now: {
+      control: false,
+      description:
+        "Pinned clock the relative freshness label is measured against.",
+    },
+    timeZone: { control: "text" },
+  },
+  args: {
+    limits: provenance("2026-07-19T11:55:00.000Z"),
+    now: NOW,
+    timeZone: TIME_ZONE,
   },
 };
 
 export default meta;
-
-/**
- * Fixed clock and time zone (ISS-5286). Every label here is either a duration
- * measured against `now` or a time zone-formatted instant, so an unpinned story
- * would render differently on every run.
- */
-const NOW = new Date("2026-07-19T12:00:00.000Z");
-const TIME_ZONE = "UTC";
-
-function provenance(
-  fetchedAt: string | null,
-  source: SessionLimits["source"] = SESSION_LIMIT_SOURCES.UsageApi
-) {
-  return { fetchedAt, source };
-}
 
 /** The drawer's width, and the rule the footer hangs beneath. */
 function drawerFrame(children: ReactNode) {

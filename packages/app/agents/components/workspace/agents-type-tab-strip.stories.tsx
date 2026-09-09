@@ -48,6 +48,18 @@ const DESKTOP_VIEWPORT_PX = 1100;
 const meta = {
   title: "App Core/Agents/Agents Type Tab Strip",
   component: AgentsTypeTabStrip,
+  tags: ["autodocs"],
+  argTypes: {
+    // Each option carries a `LucideIcon` component; an object control would
+    // hand back a plain object and the strip would render a missing icon.
+    options: { control: false },
+    value: {
+      control: "select",
+      options: STRIP_OPTIONS.map((option) => option.value),
+    },
+    overflowMenuEnabled: { control: "boolean" },
+    onValueChange: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     onValueChange: fn(),

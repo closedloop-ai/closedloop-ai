@@ -36,8 +36,20 @@ const meta = {
   title: "App Core/Agents/Agent Card",
   component: AgentCard,
   tags: ["autodocs"],
+  argTypes: {
+    agent: {
+      control: "object",
+      description:
+        "The agent row, including its nested `children` subagents. Type and status drive the icon and the border tone.",
+    },
+    active: {
+      control: "boolean",
+      description: "The selected treatment: primary ring and tinted surface.",
+    },
+    className: { control: false },
+  },
   parameters: { layout: "padded" },
-  args: { agent },
+  args: { active: false, agent },
 } satisfies Meta<typeof AgentCard>;
 
 export default meta;

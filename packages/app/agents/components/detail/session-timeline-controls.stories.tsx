@@ -22,8 +22,25 @@ import {
  * the wrap behaviour of.
  */
 const meta: Meta<typeof SessionTimelineControls> = {
+  /*
+   * No controls, deliberately. Every story below renders a LIVE wrapper that
+   * holds its own scale and grouping state, so nothing reaches the component
+   * through args. A `scale` select here would offer the four real values
+   * (`TIMELINE_SCALE_OPTIONS`) and change nothing on screen, which is worse
+   * than no control at all. The props stay in the table; the states are reached
+   * by picking a story, or by operating the controls themselves.
+   */
+  argTypes: {
+    activityPhasesEnabled: { control: false },
+    grouping: { control: false },
+    onGroupingChange: { control: false, table: { category: "Events" } },
+    onScaleChange: { control: false, table: { category: "Events" } },
+    scale: { control: false },
+    subColumnSource: { control: false },
+  },
   component: SessionTimelineControls,
   parameters: { layout: "padded" },
+  tags: ["autodocs"],
   title: "App Core/Agents/Session Timeline Controls",
 };
 

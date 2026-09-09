@@ -7,7 +7,12 @@ const meta = {
   component: InstallStateStatus,
   tags: ["autodocs"],
   args: {
+    size: 16,
     state: PackInstallState.Installed,
+  },
+  argTypes: {
+    size: { control: { type: "radio" }, options: [16, 20] },
+    state: { control: "select", options: Object.values(PackInstallState) },
   },
   parameters: {
     layout: "padded",

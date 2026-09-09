@@ -1,4 +1,5 @@
 import { BranchTagAvailability } from "@repo/api/src/types/branch";
+import { readSourceValues } from "@repo/api/src/types/read-source";
 import { TagColor } from "@repo/api/src/types/tag";
 import {
   BranchesToolbar,
@@ -10,8 +11,10 @@ import {
   DEFAULT_BRANCH_FILTERS,
 } from "@repo/app/branches/lib/branch-row";
 import { BRANCH_SAMPLE_ROWS } from "@repo/app/branches/lib/branch-sample-data";
+import { DATE_RANGES } from "@repo/app/shared/lib/format-utils";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 const rows = BRANCH_SAMPLE_ROWS.map((row, index) => ({
   ...row,
@@ -48,17 +51,63 @@ const savedViews: BranchesToolbarProps["savedViews"] = {
 const meta = {
   title: "App Core/Branches/Branches Toolbar",
   component: BranchesToolbar,
+  tags: ["autodocs"],
   parameters: {
     layout: "padded",
+  },
+  argTypes: {
+    approved: {
+      control: "boolean",
+      description:
+        "Selects the complete PRD-601 facet set over the legacy one.",
+      table: { category: "State" },
+    },
+    dateRange: {
+      control: { type: "radio" },
+      options: DATE_RANGES,
+      table: { category: "State" },
+    },
+    filters: { control: "object", table: { category: "State" } },
+    onDateRangeChange: { control: false, table: { category: "Events" } },
+    onFiltersChange: { control: false, table: { category: "Events" } },
+    onResetView: { control: false, table: { category: "Events" } },
+    onToggleColumn: { control: false, table: { category: "Events" } },
+    readSource: {
+      control: { type: "radio" },
+      options: readSourceValues,
+      description: "Store the rows were read from. Unset renders no badge.",
+      table: { category: "State" },
+    },
+    readSourceDetail: {
+      control: "text",
+      description:
+        "Desktop-only sentence explaining why that source is in play.",
+      table: { category: "State" },
+    },
+    readSourceIncomplete: { control: "boolean", table: { category: "State" } },
+    rows: { control: "object", table: { category: "Data" } },
+    savedViews: {
+      control: false,
+      description:
+        "Named saved views plus their callbacks. Omit to hide the switcher.",
+      table: { category: "Data" },
+    },
+    trailing: { control: false, table: { category: "Content" } },
+    visibleColumns: {
+      control: false,
+      description: "Set of visible column ids. Change it from the View menu.",
+      table: { category: "Data" },
+    },
   },
   args: {
     approved: true,
     dateRange: "30d",
     filters: DEFAULT_BRANCH_FILTERS,
-    onDateRangeChange: () => undefined,
-    onFiltersChange: () => undefined,
-    onResetView: () => undefined,
-    onToggleColumn: () => undefined,
+    onDateRangeChange: fn(),
+    onFiltersChange: fn(),
+    onResetView: fn(),
+    onToggleColumn: fn(),
+    readSourceIncomplete: false,
     rows,
     visibleColumns,
   },

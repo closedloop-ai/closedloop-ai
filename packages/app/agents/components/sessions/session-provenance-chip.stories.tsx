@@ -16,6 +16,14 @@ const meta = {
   title: "App Core/Agents/Session Provenance Chip",
   component: SessionProvenanceChip,
   tags: ["autodocs"],
+  argTypes: {
+    provenance: {
+      control: { type: "radio" },
+      options: [...Object.values(BranchProvenance), null],
+      description:
+        "Origin of the session. Human and null are real values that render nothing at all.",
+    },
+  },
   parameters: { layout: "centered" },
   args: { provenance: BranchProvenance.Agent },
 } satisfies Meta<typeof SessionProvenanceChip>;

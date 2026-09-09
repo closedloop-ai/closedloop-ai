@@ -1,5 +1,6 @@
 import type { JudgeFeedbackItem } from "@repo/api/src/types/evaluation";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { JudgeResultCardView } from "./judge-result-card-view";
 
 const passingItem: JudgeFeedbackItem = {
@@ -30,13 +31,44 @@ const meta = {
   title: "App Core/Documents/Judge Result Card View",
   component: JudgeResultCardView,
   tags: ["autodocs"],
+  argTypes: {
+    title: { control: "text", table: { category: "Content" } },
+    justification: { control: "text", table: { category: "Content" } },
+    scoreLabel: {
+      control: "text",
+      description:
+        "The score as the caller wants it read. The component does not derive it from `score`.",
+      table: { category: "Content" },
+    },
+    score: {
+      control: { type: "number", min: 0, max: 1, step: 0.01 },
+      table: { category: "Data" },
+    },
+    threshold: {
+      control: { type: "number", min: 0, max: 1, step: 0.01 },
+      description: "At or above this value the card reads as passing.",
+      table: { category: "Data" },
+    },
+    defaultOpen: { control: "boolean", table: { category: "State" } },
+    editable: { control: "boolean", table: { category: "State" } },
+    inputValue: { control: "text", table: { category: "State" } },
+    isSaving: { control: "boolean", table: { category: "State" } },
+    validationError: { control: "text", table: { category: "State" } },
+    onInputBlur: { control: false, table: { category: "Events" } },
+    onInputChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     defaultOpen: true,
+    editable: false,
+    isSaving: false,
     justification: passingItem.justification,
+    onInputBlur: fn(),
+    onInputChange: fn(),
     score: passingItem.score,
     scoreLabel: "92%",
     threshold: passingItem.threshold,
     title: passingItem.metricName,
+    validationError: null,
   },
 } satisfies Meta<typeof JudgeResultCardView>;
 
@@ -68,8 +100,6 @@ export const Editable: Story = {
     inputValue: "0.92",
     isSaving: false,
     justification: passingItem.justification,
-    onInputBlur: () => undefined,
-    onInputChange: () => undefined,
     score: passingItem.score,
     scoreLabel: "92%",
     threshold: passingItem.threshold,

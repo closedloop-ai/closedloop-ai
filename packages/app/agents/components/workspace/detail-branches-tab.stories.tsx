@@ -86,9 +86,23 @@ const storyDecorator: Decorator = (Story) => (
 const meta = {
   title: "App Core/Agents/Detail Branches Tab",
   component: DetailBranchesTab,
+  tags: ["autodocs"],
+  argTypes: {
+    branches: { control: "object" },
+    branchesTabTruncated: {
+      control: "boolean",
+      description:
+        "The producer's own statement that `branches` is a bounded sample.",
+    },
+    usageSessions: { control: "object" },
+    versions: { control: "object" },
+    getBranchHref: { control: false },
+    renderBranchLink: { control: false },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     branches: ordinaryBranches,
+    branchesTabTruncated: false,
     getBranchHref: (item: { branchName: string }) =>
       `/branches/${item.branchName}`,
   },

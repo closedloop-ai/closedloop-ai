@@ -49,6 +49,13 @@ const meta = {
   title: "App Core/Agents/Session Flagged Properties",
   component: CacheWriteTtlProperty,
   tags: ["autodocs"],
+  argTypes: {
+    session: {
+      control: "object",
+      description:
+        "Both rows self-suppress from this alone: tokenUsageByModel for Cache Write, transcriptDisposition and lastSyncedAt for Sync.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [propertiesFrameDecorator],
 } satisfies Meta<typeof CacheWriteTtlProperty>;

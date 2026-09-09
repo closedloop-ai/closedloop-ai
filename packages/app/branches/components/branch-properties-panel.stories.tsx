@@ -13,6 +13,13 @@ const meta = {
   title: "App Core/Branches/Branch Properties Panel",
   component: BranchPropertiesPanel,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object" },
+    loc: {
+      control: "object",
+      description: "Branch changed-LOC; omit to read the detail columns.",
+    },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

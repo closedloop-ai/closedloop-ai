@@ -20,8 +20,20 @@ const STORY_BRANCH_ID = encodeBranchId({
 type SessionDetailViewStoryArgs = Parameters<typeof SessionDetailView>[0];
 
 const meta = {
-  title: "Desktop/Sessions/Session Detail",
+  title: "Desktop App/Sessions/Session Detail",
   component: SessionDetailView,
+  tags: ["autodocs"],
+  argTypes: {
+    backHref: {
+      control: "text",
+      description: "Where the detail's back affordance returns to.",
+    },
+    sessionId: {
+      control: "text",
+      description:
+        "The session the detail reads. Only the fixture id resolves on this canvas.",
+    },
+  },
   parameters: {
     layout: "fullscreen",
   },

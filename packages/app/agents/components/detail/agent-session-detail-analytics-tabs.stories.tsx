@@ -50,6 +50,24 @@ const meta = {
   title: "App Core/Agents/Agent Session Detail Analytics Tabs",
   component: AgentSessionDetailAnalyticsTabs,
   tags: ["autodocs"],
+  argTypes: {
+    agents: {
+      control: "object",
+      description:
+        "Synced roster. Empty with no visible telemetry in events and the whole card is withheld.",
+    },
+    defaultTab: {
+      control: { type: "radio" },
+      options: Object.values(AgentSessionAnalyticsTab),
+      description:
+        "Fallback tab only. A `?view=` already in the URL wins over this.",
+    },
+    events: {
+      control: "object",
+      description:
+        "Synced events. Tool and error rows here are what open the card.",
+    },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof AgentSessionDetailAnalyticsTabs>;
 

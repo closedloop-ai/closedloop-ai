@@ -11,6 +11,10 @@ const meta = {
   title: "App Core/Agents/Tool Call Block",
   component: ToolCallBlock,
   tags: ["autodocs"],
+  argTypes: {
+    toolUse: { control: "object" },
+    toolResult: { control: "object" },
+  },
   parameters: { layout: "padded" },
   args: {
     toolUse,

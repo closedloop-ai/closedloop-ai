@@ -2,6 +2,7 @@ import {
   type AgentComponent,
   AgentComponentKind,
   AgentComponentSortDir,
+  AgentComponentSortKey,
   AgentMetricMode,
   Harness,
   SourceType,
@@ -222,11 +223,55 @@ const TYPE_PRESENTATION_COMPONENTS: AgentComponent[] = [
 const meta = {
   title: "App Core/Agents/Agents Table",
   component: AgentsTable,
+  tags: ["autodocs"],
+  argTypes: {
+    items: { control: "object", table: { category: "Data" } },
+    groups: {
+      control: "object",
+      description:
+        "When set, `items` is ignored and one section renders per group.",
+      table: { category: "Data" },
+    },
+    columnOrder: { control: "object", table: { category: "Data" } },
+    // A `Set`, which an object control would hand back as a plain object and
+    // the table would call `.has` on.
+    visibleColumns: { control: false, table: { category: "Data" } },
+    getComponentHref: { control: false, table: { category: "Content" } },
+    sortBy: {
+      control: "select",
+      options: Object.values(AgentComponentSortKey),
+      table: { category: "State" },
+    },
+    sortDir: {
+      control: "radio",
+      options: Object.values(AgentComponentSortDir),
+      table: { category: "State" },
+    },
+    metricMode: {
+      control: "radio",
+      options: Object.values(AgentMetricMode),
+      table: { category: "State" },
+    },
+    mode: {
+      control: "radio",
+      options: ["auto", "compact", "expanded"],
+      table: { category: "Appearance" },
+    },
+    alwaysShowActions: {
+      control: "boolean",
+      description:
+        "Unset keeps the pointer-aware default; true pins the row actions open.",
+      table: { category: "Appearance" },
+    },
+    onSort: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+  },
   parameters: { layout: "fullscreen" },
   args: {
     items: MIXED_MAGNITUDE_COMPONENTS,
     metricMode: AgentMetricMode.LocPerDollar,
     mode: "expanded",
+    onColumnOrderChange: fn(),
     onSort: fn(),
     sortBy: "name",
     sortDir: AgentComponentSortDir.Asc,

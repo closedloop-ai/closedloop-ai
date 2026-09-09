@@ -11,6 +11,7 @@ import {
   BranchTraceUnavailableReason,
 } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { BranchPrActivityTimeline } from "./branch-pr-activity-timeline";
 
 function ses(over: Partial<BranchSession>): BranchSession {
@@ -89,6 +90,43 @@ const meta = {
   title: "App Core/Branches/PR Activity Timeline",
   component: BranchPrActivityTimeline,
   tags: ["autodocs"],
+  argTypes: {
+    detail: { control: "object", table: { category: "Data" } },
+    traceState: {
+      control: "object",
+      description: "Per-session hydration evidence behind the coverage notes.",
+      table: { category: "Data" },
+    },
+    loc: {
+      control: "object",
+      description: "Branch changed-LOC resolved once at the page boundary.",
+      table: { category: "Data" },
+    },
+    actorDomain: {
+      control: false,
+      description:
+        "Shared actor color domain; derived internally when omitted.",
+      table: { category: "Data" },
+    },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    activeHourStart: {
+      control: "text",
+      description: "Hour bucket the shared playhead currently sits in.",
+      table: { category: "State" },
+    },
+    activeFraction: {
+      control: { type: "number", min: 0, max: 1, step: 0.01 },
+      description: "Playhead position within the active hour.",
+      table: { category: "State" },
+    },
+    onScrubHour: { control: false, table: { category: "Events" } },
+    children: { control: false, table: { category: "Content" } },
+    className: { control: "text", table: { category: "Appearance" } },
+  },
+  args: {
+    isLoading: false,
+    onScrubHour: fn(),
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof BranchPrActivityTimeline>;
 

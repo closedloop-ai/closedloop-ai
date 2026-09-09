@@ -4,6 +4,7 @@ import {
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
 import { WithUnifiedDeltaPill } from "@repo/app/shared/feature-flags/metric-delta-treatment-fixtures";
+import { MetricDeltaTreatment } from "@repo/design-system/components/ui/primitives/metric-polarity";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   COST_METRIC_CARD_LABEL,
@@ -43,6 +44,61 @@ const meta = {
   title: "App Core/Agents/Cost Metric Card",
   component: CostMetricCard,
   tags: ["autodocs"],
+  argTypes: {
+    cost: {
+      control: { type: "number", step: 1 },
+      description:
+        "Whole-dollar headline. Null, undefined or a non-finite value renders the unavailable sentinel rather than a confident $0.",
+      table: { category: "Data" },
+    },
+    loading: {
+      control: "boolean",
+      description:
+        "Skeletons the value slot only; the label, info and detail stay put.",
+      table: { category: "State" },
+    },
+    label: { control: "text", table: { category: "Content" } },
+    info: {
+      control: "object",
+      description:
+        "Info popover copy: what the number is, and how it is derived.",
+      table: { category: "Content" },
+    },
+    detail: { control: false, table: { category: "Content" } },
+    trend: { control: false, table: { category: "Content" } },
+    delta: {
+      control: {
+        type: "number",
+        min: -MAX_DELTA_PCT,
+        max: MAX_DELTA_PCT,
+        step: 1,
+      },
+      description:
+        "Period-over-period change. Cost is lower-is-better, so a rise reads as a regression. Omit it and the placeholder fills the slot.",
+      table: { category: "Delta" },
+    },
+    deltaCapped: {
+      control: "boolean",
+      description: "Marks the figure as clamped to the display ceiling.",
+      table: { category: "Delta" },
+    },
+    deltaLabel: { control: false, table: { category: "Delta" } },
+    deltaPlaceholder: {
+      control: false,
+      description:
+        "Fills the delta slot when there is no numeric delta for the range.",
+      table: { category: "Delta" },
+    },
+    sparkline: { control: "object", table: { category: "Delta" } },
+    deltaTreatment: {
+      control: { type: "radio" },
+      options: Object.values(MetricDeltaTreatment),
+      description:
+        "The treatment the calling surface resolved. Without one the card falls back to its own flag read.",
+      table: { category: "Delta" },
+    },
+    className: { control: false, table: { category: "Appearance" } },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (
@@ -53,6 +109,7 @@ const meta = {
   ],
   args: {
     cost: 9061,
+    loading: false,
   },
 } satisfies Meta<typeof CostMetricCard>;
 

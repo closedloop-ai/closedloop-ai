@@ -1,5 +1,6 @@
 import type { TurnItem } from "@repo/api/src/types/agent-session";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 import { type TraceEventGroup, TraceEventRow } from "./trace-event-row";
 
 /**
@@ -36,7 +37,29 @@ const meta = {
   component: TraceEventRow,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
-  args: { group: eventGroup() },
+  argTypes: {
+    group: {
+      control: "object",
+      description:
+        "The coalesced event line, as session-trace.tsx builds it in buildTraceGroups.",
+    },
+    active: {
+      control: "boolean",
+      description: "Read-only 'you are here' highlight driven by the trace.",
+    },
+    invocationAnchor: {
+      control: "object",
+      description:
+        "Anchor the row is compared against to stamp data-invocation-anchor-target.",
+    },
+    onJump: {
+      control: false,
+      description:
+        "Omit it and the row is a plain separator. Supplying it makes the whole row the jump target, unless the row folds into a harness chip.",
+      table: { category: "Events" },
+    },
+  },
+  args: { active: false, group: eventGroup(), invocationAnchor: null },
 } satisfies Meta<typeof TraceEventRow>;
 
 export default meta;
@@ -47,7 +70,7 @@ export const Separator: Story = {};
 
 /** With `onJump` the whole row becomes the clickable jump target. */
 export const ClickableSeparator: Story = {
-  args: { onJump: () => undefined },
+  args: { onJump: fn() },
 };
 
 /**
@@ -59,7 +82,7 @@ export const FoldedChipBlock: Story = {
     group: eventGroup({
       text: "<local-command-stdout>Model set to Opus</local-command-stdout>",
     }),
-    onJump: () => undefined,
+    onJump: fn(),
   },
 };
 

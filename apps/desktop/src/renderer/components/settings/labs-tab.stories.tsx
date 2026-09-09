@@ -27,8 +27,24 @@ import { LabsTab } from "./labs-tab";
  * so a rename cannot silently leave a story asserting a dead key.
  */
 const meta = {
-  title: "Desktop/Settings/Labs Tab",
+  title: "Desktop App/Settings/Labs Tab",
   component: LabsTab,
+  tags: ["autodocs"],
+  argTypes: {
+    settings: {
+      control: "object",
+      description:
+        "The desktop settings record, keyed by flag key. The flag LIST is not a prop: the tab renders the real FEATURE_FLAGS registry.",
+    },
+    onSettingsChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
+  args: {
+    onSettingsChange: () => undefined,
+    settings: { [DESKTOP_AGENTS_NAV_FEATURE_FLAG_KEY]: true },
+  },
   parameters: {
     layout: "fullscreen",
   },

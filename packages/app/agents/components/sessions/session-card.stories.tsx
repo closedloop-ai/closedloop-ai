@@ -6,8 +6,18 @@ const meta = {
   title: "App Core/Agents/Session Card",
   component: SessionCard,
   tags: ["autodocs"],
+  argTypes: {
+    session: { control: "object" },
+    active: { control: "boolean" },
+    onClick: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Makes the whole card a button. Left unwired here so both stories render the plain, non-interactive card.",
+    },
+  },
   parameters: { layout: "padded" },
-  args: { session: sessions[0] },
+  args: { session: sessions[0], active: false },
 } satisfies Meta<typeof SessionCard>;
 
 export default meta;

@@ -11,6 +11,11 @@ import { ArtifactRunInFlight } from "./artifact-run-in-flight";
 const meta = {
   title: "App Core/Documents/Artifact Run In Flight",
   component: ArtifactRunInFlight,
+  tags: ["autodocs"],
+  argTypes: {
+    generationStatus: { control: "object" },
+    variant: { control: { type: "radio" }, options: ["panel", "banner"] },
+  },
   parameters: { layout: "padded" },
 } satisfies Meta<typeof ArtifactRunInFlight>;
 

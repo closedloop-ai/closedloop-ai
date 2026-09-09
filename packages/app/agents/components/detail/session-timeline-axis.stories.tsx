@@ -31,6 +31,10 @@ const meta = {
   title: "App Core/Agents/Session Timeline Axis",
   component: SessionTimelineAxis,
   tags: ["autodocs"],
+  argTypes: {
+    axisDurationLabel: { control: "text" },
+    span: { control: "object" },
+  },
   parameters: { layout: "padded" },
   decorators: [
     (Story) => (

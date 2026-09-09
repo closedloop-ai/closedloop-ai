@@ -11,9 +11,43 @@ import { PackDetail } from "./pack-detail";
 const meta = {
   title: "App Core/Packs/Pack Detail",
   component: PackDetail,
+  tags: ["autodocs"],
   args: {
     pack: mockPackViews[0],
     context: createPacksContext(PacksMode.DesktopTeam),
+  },
+  // The callbacks below are deliberately absent from `args`. On this component a
+  // handler's PRESENCE is the feature switch — `onWithdrawDistribution` is what
+  // puts the withdraw control on the Distribution tab, and the install handlers
+  // are what give the header its controls — so wiring spies at the meta level
+  // would hand every story affordances its own story already covers.
+  argTypes: {
+    // Replaces the read-only Contents list, so it renders as given.
+    contentsSlot: { control: false, table: { category: "Content" } },
+    context: { control: "object", table: { category: "Data" } },
+    disambiguator: { control: "text", table: { category: "Content" } },
+    headerActions: { control: false, table: { category: "Content" } },
+    installError: { control: "text", table: { category: "State" } },
+    installPending: { control: "object", table: { category: "State" } },
+    memberTargetsDescription: {
+      control: "text",
+      table: { category: "Content" },
+    },
+    memberTargetsError: { control: "boolean", table: { category: "State" } },
+    // Presence turns the read-only member per-machine list into an actionable
+    // one, so this is data plus a handler rather than a plain fixture.
+    memberTargetsInstall: { control: false, table: { category: "Data" } },
+    memberTargetsLoading: { control: "boolean", table: { category: "State" } },
+    onInstall: { control: false, table: { category: "Events" } },
+    onManageDistribution: { control: false, table: { category: "Events" } },
+    onUninstall: { control: false, table: { category: "Events" } },
+    onUpdate: { control: false, table: { category: "Events" } },
+    onWithdrawDistribution: { control: false, table: { category: "Events" } },
+    pack: { control: "object", table: { category: "Data" } },
+    withdrawDistributionPending: {
+      control: "boolean",
+      table: { category: "State" },
+    },
   },
   parameters: {
     layout: "fullscreen",

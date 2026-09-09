@@ -1,4 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
+import { SessionGroupBy } from "../../lib/session-grouping";
 import { AgentSessionsListContent } from "./agent-sessions-list";
 import {
   mixedAgentSessionListFixtures,
@@ -41,6 +43,73 @@ const meta = {
       </div>
     ),
   ],
+  argTypes: {
+    items: { control: "object", table: { category: "Data" } },
+    emptySignals: {
+      control: "object",
+      description:
+        "Why the list is empty: did the read fail or is the source unhydrated, and are filters active.",
+      table: { category: "Data" },
+    },
+    columnOrder: { control: "object", table: { category: "Data" } },
+    visibleColumns: {
+      control: false,
+      description:
+        "A Set of data-column ids. When present only those render; autonomy always shows.",
+      table: { category: "Data" },
+    },
+    groupBy: {
+      control: { type: "radio" },
+      options: Object.values(SessionGroupBy),
+      table: { category: "Data" },
+    },
+    sortBy: { control: "text", table: { category: "Data" } },
+    sortDir: {
+      control: { type: "radio" },
+      options: ["asc", "desc"],
+      description:
+        "Wire sortBy, sortDir and onSort together to get clickable sort headers.",
+      table: { category: "Data" },
+    },
+    isLoading: { control: "boolean", table: { category: "State" } },
+    isSyncing: {
+      control: "boolean",
+      description:
+        "Desktop only: the local source is still coming up, so an unavailable read reads as a holding message rather than an error.",
+      table: { category: "State" },
+    },
+    hasConnectedAgent: {
+      control: "boolean",
+      description:
+        "False means the org never connected a desktop agent, so an empty list shows onboarding instead of a filters message.",
+      table: { category: "State" },
+    },
+    hostScroll: {
+      control: "boolean",
+      description:
+        "Render bare so the host owns the single bounded scroll container.",
+      table: { category: "State" },
+    },
+    showLinkedEntityColumns: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    emptyState: {
+      control: false,
+      description:
+        "A host-supplied empty branch that replaces the derived one entirely.",
+      table: { category: "Content" },
+    },
+    onboardingAction: { control: false, table: { category: "Content" } },
+    errorRecoveryAction: { control: false, table: { category: "Content" } },
+    loadingClassName: { control: "text", table: { category: "Content" } },
+    onSort: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+    onClearFilters: { control: false, table: { category: "Events" } },
+    onRetry: { control: false, table: { category: "Events" } },
+    getSessionHref: { control: false, table: { category: "Routing" } },
+    getIssueHref: { control: false, table: { category: "Routing" } },
+  },
   args: {
     items: populatedAgentSessionListFixtures,
     isLoading: false,
@@ -83,7 +152,7 @@ export const EmptyFiltered: Story = {
   args: {
     items: [],
     emptySignals: { isUnavailable: false, hasActiveFilters: true },
-    onClearFilters: () => undefined,
+    onClearFilters: fn(),
   },
 };
 
@@ -92,7 +161,7 @@ export const EmptyUnavailable: Story = {
   args: {
     items: [],
     emptySignals: { isUnavailable: true, hasActiveFilters: false },
-    onRetry: () => undefined,
+    onRetry: fn(),
   },
 };
 
