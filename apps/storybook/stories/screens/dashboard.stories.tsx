@@ -1,4 +1,3 @@
-import { Badge } from "@repo/design-system/components/ui/badge";
 import { Button } from "@repo/design-system/components/ui/button";
 import {
   Card,
@@ -7,7 +6,17 @@ import {
   CardTitle,
 } from "@repo/design-system/components/ui/card";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
+import { ToneBadge } from "@repo/design-system/components/ui/primitives/status-badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@repo/design-system/components/ui/table";
 import type { Meta, StoryObj } from "@storybook/react";
+import type { ComponentProps } from "react";
 import { AppScreenShell } from "./app-shell";
 
 const SPARK = [12, 18, 15, 24, 22, 31, 28, 36, 33, 41, 38, 46];
@@ -45,10 +54,12 @@ const RECENT_SESSIONS = [
   },
 ];
 
-const STATUS_TONE: Record<string, string> = {
-  Merged: "bg-success text-success-foreground",
-  Open: "bg-info text-info-foreground",
-  Failed: "bg-destructive text-destructive-foreground",
+// Tones, not classes. `ToneBadge` owns what each tone looks like and carries a
+// state dot alongside the fill, so the status is not conveyed by color alone.
+const STATUS_TONE: Record<string, ComponentProps<typeof ToneBadge>["tone"]> = {
+  Merged: "success",
+  Open: "info",
+  Failed: "danger",
 };
 
 const DashboardScreen = () => (
@@ -101,37 +112,40 @@ const DashboardScreen = () => (
             <CardTitle>Recent sessions</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-muted-foreground text-xs">
-                  <th className="px-6 py-2 font-medium">Agent</th>
-                  <th className="px-6 py-2 font-medium">Repository</th>
-                  <th className="px-6 py-2 font-medium">Status</th>
-                  <th className="px-6 py-2 text-right font-medium">Started</th>
-                </tr>
-              </thead>
-              <tbody>
+            <Table className="text-sm">
+              <TableHeader>
+                <TableRow className="text-muted-foreground text-xs">
+                  <TableHead className="px-6">Agent</TableHead>
+                  <TableHead className="px-6">Repository</TableHead>
+                  <TableHead className="px-6">Status</TableHead>
+                  <TableHead className="px-6 text-right">Started</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {RECENT_SESSIONS.map((session) => (
-                  <tr
-                    className="border-b last:border-0"
+                  <TableRow
+                    className="last:border-0"
                     key={`${session.agent}-${session.when}`}
                   >
-                    <td className="px-6 py-3 font-medium">{session.agent}</td>
-                    <td className="px-6 py-3 text-muted-foreground">
+                    <TableCell className="px-6 py-3 font-medium">
+                      {session.agent}
+                    </TableCell>
+                    <TableCell className="px-6 py-3 text-muted-foreground">
                       {session.repo}
-                    </td>
-                    <td className="px-6 py-3">
-                      <Badge className={STATUS_TONE[session.status]}>
-                        {session.status}
-                      </Badge>
-                    </td>
-                    <td className="px-6 py-3 text-right text-muted-foreground">
+                    </TableCell>
+                    <TableCell className="px-6 py-3">
+                      <ToneBadge
+                        label={session.status}
+                        tone={STATUS_TONE[session.status]}
+                      />
+                    </TableCell>
+                    <TableCell className="px-6 py-3 text-right text-muted-foreground">
                       {session.when}
-                    </td>
-                  </tr>
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
 
