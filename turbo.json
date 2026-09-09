@@ -133,6 +133,10 @@
     "@repo/rich-text#test": {
       "dependsOn": ["^test", "@closedloop-ai/design-system#build"]
     },
+    "storybook#test": {
+      "dependsOn": ["^test", "@closedloop-ai/design-system#build"],
+      "cache": false
+    },
     "desktop#test": {
       "dependsOn": [
         "@closedloop-ai/design-system#build",

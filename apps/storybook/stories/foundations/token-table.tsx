@@ -16,11 +16,23 @@ import { useEffect, useState } from "react";
 export function useResolvedTokens(tokenNames: readonly string[]) {
   const [values, setValues] = useState<Record<string, string>>({});
 
+  /**
+   * Every caller passes a fresh array literal (`TOKENS.map(...)`), so depending
+   * on the array's identity re-runs the effect on every render, and the
+   * `setValues` inside it schedules the next render. That is an infinite loop:
+   * it pegs the CPU on these pages in the browser and hangs the story sweep
+   * before it can mount anything. Depend on the CONTENT instead, which is
+   * stable across renders as long as the token list is.
+   */
+  const tokenKey = tokenNames.join(",");
+
   useEffect(() => {
+    const names = tokenKey.length > 0 ? tokenKey.split(",") : [];
+
     const read = () => {
       const computed = getComputedStyle(document.documentElement);
       const next: Record<string, string> = {};
-      for (const name of tokenNames) {
+      for (const name of names) {
         next[name] = computed.getPropertyValue(`--${name}`).trim();
       }
       setValues(next);
@@ -37,7 +49,7 @@ export function useResolvedTokens(tokenNames: readonly string[]) {
       attributes: true,
     });
     return () => observer.disconnect();
-  }, [tokenNames]);
+  }, [tokenKey]);
 
   return values;
 }
