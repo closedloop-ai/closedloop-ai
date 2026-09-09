@@ -11,6 +11,19 @@ import { useState } from "react";
 const meta = {
   title: "Design System/Data Display/Table Placeholder Actions",
   component: TablePlaceholderActions,
+  tags: ["autodocs"],
+  argTypes: {
+    primaryLabel: {
+      control: "text",
+      description:
+        "Label for the primary create button. Leave empty to render no primary action.",
+    },
+    leading: {
+      control: false,
+      description:
+        "Functional control rendered before the dimmed placeholders, such as a real Filter menu.",
+    },
+  },
   parameters: {
     layout: "centered",
   },

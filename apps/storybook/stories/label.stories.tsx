@@ -12,6 +12,11 @@ const meta = {
     children: {
       control: { type: "text" },
     },
+    htmlFor: {
+      control: "text",
+      description: "Id of the form control this label names.",
+    },
+    className: { control: "text" },
   },
   args: {
     children: "Your email address",

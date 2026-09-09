@@ -2,6 +2,7 @@ import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { StatusMetadataSection } from "@repo/design-system/components/ui/status-metadata-section";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 // `User` requires `name` — `UserSelectPopover` renders it and derives the avatar
 // fallback from it via `getInitials(value.name)`. This fixture previously carried
@@ -42,10 +43,32 @@ const meta = {
   title: "Design System/Configuration & Admin/Status Metadata Section",
   component: StatusMetadataSection,
   tags: ["autodocs"],
+  argTypes: {
+    layout: {
+      options: ["horizontal", "vertical"],
+      control: { type: "radio" },
+    },
+    status: {
+      options: options.map((option) => option.value),
+      control: { type: "select" },
+      description:
+        "Value of the selected option. Must match one of the `options` values or the trigger renders empty.",
+    },
+    // `options` carries rendered status icons, and a `User` without `name`
+    // crashes the assignee popover on mount, so none of these three survives a
+    // hand edit in a JSON editor.
+    options: { control: false },
+    assignee: { control: false },
+    teamMembers: { control: false },
+    className: { control: "text" },
+    onStatusChange: { control: false, table: { category: "Events" } },
+    onAssigneeChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     assignee: users[0],
-    onAssigneeChange: () => undefined,
-    onStatusChange: () => undefined,
+    layout: "vertical",
+    onAssigneeChange: fn(),
+    onStatusChange: fn(),
     options,
     status: "in_progress",
     teamMembers: users,

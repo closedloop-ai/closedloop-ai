@@ -56,6 +56,31 @@ const meta = {
   title: "Design System/Navigation & Shell/Sidebar Collapsible Section",
   component: SidebarCollapsibleSectionDemo,
   tags: ["autodocs"],
+  argTypes: {
+    title: {
+      control: "text",
+    },
+    defaultOpen: {
+      control: "boolean",
+      description:
+        "Starting state. A persisted state, when persistenceKey is set, replaces it after mount.",
+    },
+    action: {
+      control: false,
+      description: "Trailing control rendered beside the section label.",
+    },
+    children: {
+      control: false,
+    },
+    className: {
+      control: "text",
+    },
+    persistenceKey: {
+      control: "text",
+      description:
+        "localStorage key that keeps the open state across reloads. Omit for state that should not persist.",
+    },
+  },
   parameters: {
     layout: "centered",
   },

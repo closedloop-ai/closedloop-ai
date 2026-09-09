@@ -4,6 +4,7 @@ import { CategoryBarChart } from "@repo/design-system/components/ui/category-bar
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ComponentProps } from "react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 const categoryData = [
   { key: "planning", label: "Planning", value: 18 },
@@ -23,8 +24,60 @@ const meta = {
   component: CategoryBarChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    data: {
+      control: "object",
+      table: { category: "Content" },
+    },
+    emptyMessage: {
+      control: "text",
+      description: "Shown when there is no data, or every value is zero.",
+      table: { category: "Content" },
+    },
+    horizontal: {
+      control: "boolean",
+      description: "Lay the bars out horizontally, for label-heavy categories.",
+      table: { category: "Appearance" },
+    },
+    showValueLabels: {
+      control: "boolean",
+      description: "Draw each value on its bar so it reads without hovering.",
+      table: { category: "Appearance" },
+    },
+    colorByKey: {
+      control: "object",
+      description:
+        "Fixed datum key to color map for semantic categories. Unmapped keys fall back to the index palette.",
+      table: { category: "Appearance" },
+    },
+    allowDecimals: {
+      control: "boolean",
+      description: "Allow fractional ticks on the numeric axis.",
+      table: { category: "Formatting" },
+    },
+    valueFormatter: {
+      control: false,
+      description: "Formats the numeric axis, tooltip, and on-bar labels.",
+      table: { category: "Formatting" },
+    },
+    selectedKey: {
+      control: "text",
+      description: "Datum key marked with the tracker line.",
+      table: { category: "State" },
+    },
+    onDatumClick: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
   args: {
+    allowDecimals: false,
     data: categoryData,
+    emptyMessage: "No data",
+    horizontal: false,
+    onDatumClick: fn(),
+    selectedKey: null,
+    showValueLabels: false,
   },
   decorators: [
     (Story) => (

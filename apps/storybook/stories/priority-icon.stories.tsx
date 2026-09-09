@@ -10,15 +10,26 @@ const meta = {
   tags: ["autodocs"],
   argTypes: {
     priority: {
-      control: "select",
+      control: { type: "radio" },
       options: ["LOW", "MEDIUM", "HIGH", "URGENT"],
+      description:
+        "Priority level. LOW/MEDIUM/HIGH light one, two or three signal bars; URGENT swaps to the filled exclamation glyph.",
     },
     size: {
-      control: "number",
+      control: { type: "number", min: 8, max: 64, step: 1 },
+      description: "Icon width and height in pixels.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the `svg`.",
     },
   },
   parameters: {
     layout: "centered",
+  },
+  args: {
+    priority: "LOW",
+    size: 16,
   },
 } satisfies Meta<typeof PriorityIcon>;
 

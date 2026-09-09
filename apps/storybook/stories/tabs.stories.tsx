@@ -6,6 +6,7 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 /**
  * A set of layered sections of content—known as tab panels—that are displayed
@@ -15,10 +16,39 @@ const meta: Meta<typeof Tabs> = {
   title: "Design System/Navigation & Shell/Tabs",
   component: Tabs,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    defaultValue: {
+      control: "text",
+      description: "Tab selected on first render while uncontrolled.",
+    },
+    value: {
+      control: false,
+      description:
+        "Controlled selected tab. The default canvas drives this from local state, so it is not an arg here.",
+    },
+    orientation: {
+      options: ["horizontal", "vertical"],
+      control: { type: "radio" },
+    },
+    dir: {
+      options: ["ltr", "rtl"],
+      control: { type: "radio" },
+    },
+    activationMode: {
+      options: ["automatic", "manual"],
+      control: { type: "radio" },
+      description:
+        "Whether arrowing onto a tab selects it or the user has to confirm with Enter or Space.",
+    },
+    className: { control: "text" },
+    onValueChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     defaultValue: "account",
     className: "w-96",
+    orientation: "horizontal",
+    activationMode: "automatic",
+    onValueChange: fn(),
   },
   render: (args) => {
     function TabsCanvas() {

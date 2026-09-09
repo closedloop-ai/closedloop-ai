@@ -1,6 +1,7 @@
 import { StarRating } from "@repo/design-system/components/ui/star-rating";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 const InteractiveStarRating = ({
   value,
@@ -16,10 +17,27 @@ const meta = {
   title: "Design System/Primitives/Star Rating",
   component: StarRating,
   tags: ["autodocs"],
+  argTypes: {
+    value: {
+      control: { type: "range", min: 0, max: 5, step: 1 },
+      description: "Filled star count. The component clamps to 0 through 5.",
+    },
+    size: {
+      options: ["sm", "default", "lg"],
+      control: { type: "radio" },
+    },
+    readonly: {
+      control: "boolean",
+      description:
+        "Turns off hover, click and keyboard interaction even when onChange is supplied.",
+    },
+    onChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     value: 4,
     size: "default",
     readonly: false,
+    onChange: fn(),
   },
 } satisfies Meta<typeof StarRating>;
 

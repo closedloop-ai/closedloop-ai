@@ -17,6 +17,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Mail, Plus, PlusCircle, Search, UserPlus } from "lucide-react";
+import { fn } from "storybook/test";
 
 /**
  * Displays a menu to the user — such as a set of actions or functions —
@@ -26,7 +27,28 @@ const meta: Meta<typeof DropdownMenu> = {
   title: "Design System/Primitives/Dropdown Menu",
   component: DropdownMenu,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    children: {
+      control: false,
+      description: "Trigger and content, supplied by the story render.",
+    },
+    dir: {
+      options: ["ltr", "rtl"],
+      control: { type: "radio" },
+      description: "Reading direction the menu navigates in.",
+    },
+    open: {
+      control: false,
+      description:
+        "Controlled open state. Left uncontrolled here so the trigger still works; use defaultOpen to start open.",
+    },
+    defaultOpen: { control: "boolean" },
+    modal: {
+      control: "boolean",
+      description: "Blocks interaction with the page behind the open menu.",
+    },
+    onOpenChange: { control: false, table: { category: "Events" } },
+  },
   render: (args) => (
     <DropdownMenu {...args}>
       <DropdownMenuTrigger>Open</DropdownMenuTrigger>
@@ -42,6 +64,12 @@ const meta: Meta<typeof DropdownMenu> = {
   ),
   parameters: {
     layout: "centered",
+  },
+  args: {
+    dir: "ltr",
+    defaultOpen: false,
+    modal: true,
+    onOpenChange: fn(),
   },
 };
 

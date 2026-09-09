@@ -17,6 +17,42 @@ const meta = {
   title: "Design System/Primitives/Status Icon Primitives",
   component: StatusRing,
   tags: ["autodocs"],
+  argTypes: {
+    percentage: {
+      control: { type: "range", min: 0, max: 100, step: 0.5 },
+      description: "Fill amount. 0 renders an empty or dashed track.",
+    },
+    color: {
+      control: "text",
+      description:
+        'Arc and inner pie color. Usually a token, e.g. "var(--progress-foreground)".',
+    },
+    trackColor: {
+      control: "text",
+      description: "Background circle color. Defaults to var(--progress).",
+    },
+    label: {
+      control: "text",
+      description: "Accessible name for the icon.",
+    },
+    dashed: {
+      control: "boolean",
+      description: "Dashed track, the backlog look.",
+    },
+    thinking: {
+      control: "boolean",
+      description:
+        "Replaces the progress arc with a spinner while keeping the inner pie visible.",
+    },
+    size: {
+      options: [16, 20],
+      control: { type: "radio" },
+    },
+    ringStrokeWidth: {
+      control: { type: "number", min: 0.5, max: 6, step: 0.5 },
+      description: "Track and arc stroke width. Defaults to 2.",
+    },
+  },
   parameters: { layout: "centered" },
 } satisfies Meta<typeof StatusRing>;
 

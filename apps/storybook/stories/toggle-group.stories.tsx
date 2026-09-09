@@ -4,6 +4,7 @@ import {
 } from "@repo/design-system/components/ui/toggle-group";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Bold, Italic, Underline } from "lucide-react";
+import { fn } from "storybook/test";
 
 /**
  * A set of two-state buttons that can be toggled on or off.
@@ -13,16 +14,50 @@ const meta: Meta<typeof ToggleGroup> = {
   component: ToggleGroup,
   tags: ["autodocs"],
   argTypes: {
+    variant: {
+      options: ["default", "outline"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+    },
+    size: {
+      options: ["default", "sm", "lg"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+    },
+    spacing: {
+      control: { type: "number", min: 0, max: 8, step: 1 },
+      table: { category: "Appearance" },
+      description: "Gap between items, in spacing-scale units.",
+    },
     type: {
       options: ["multiple", "single"],
       control: { type: "radio" },
+      table: { category: "State" },
     },
+    disabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    orientation: {
+      options: ["horizontal", "vertical"],
+      control: { type: "radio" },
+      table: { category: "State" },
+    },
+    // Selection shape follows `type` (a string for single, a string array for
+    // multiple), so editing it from the panel can hand Radix the wrong shape.
+    value: { control: false, table: { category: "State" } },
+    defaultValue: { control: false, table: { category: "State" } },
+    children: { control: false, table: { category: "Content" } },
+    onValueChange: { control: false, table: { category: "Events" } },
   },
   args: {
     variant: "default",
     size: "default",
+    spacing: 0,
     type: "multiple",
+    orientation: "horizontal",
     disabled: false,
+    onValueChange: fn(),
   },
   render: (args) => (
     <ToggleGroup {...args}>

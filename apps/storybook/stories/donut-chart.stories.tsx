@@ -30,8 +30,40 @@ const meta = {
   component: DonutChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    data: { control: "object" },
+    emptyMessage: {
+      control: "text",
+      description: "Shown instead of the ring when every value is zero.",
+    },
+    showSharePercent: {
+      control: "boolean",
+      description:
+        "Appends each slice's share of the ring to its legend entry.",
+    },
+    colorByKey: {
+      control: "object",
+      description:
+        "Slice key to colour. Unmapped keys fall back to the index palette.",
+    },
+    textureByKey: {
+      control: "object",
+      description:
+        'Slice key to one of "solid", "diagonal", "dots" or "crosshatch".',
+    },
+    textureMarkColorByKey: {
+      control: "object",
+      description: "Slice key to the colour its texture marks are drawn in.",
+    },
+    valueFormatter: {
+      control: false,
+      description: "Formats the slice value shown in the tooltip.",
+    },
+  },
   args: {
     data: donutData,
+    emptyMessage: "No data",
+    showSharePercent: false,
   },
   decorators: [
     // ISS-5362 (#4514 review): `bg-card`, not `bg-background`. Every donut in

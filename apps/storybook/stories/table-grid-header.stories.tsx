@@ -120,6 +120,30 @@ const meta = {
   title: "Design System/Primitives/Table Grid Header",
   component: TableGridHeaderDemo,
   tags: ["autodocs"],
+  argTypes: {
+    visibleColumns: {
+      control: "object",
+      description:
+        "Columns rendered after the lead column, each with its own `sortable`, `tooltip` and `headerAlign`.",
+    },
+    initialSortBy: {
+      control: "text",
+      description:
+        "Column id the header starts sorted by, or null for no sort.",
+    },
+    initialSortDir: {
+      options: ["asc", "desc"],
+      control: { type: "radio" },
+    },
+    withNameSortOptions: {
+      control: "boolean",
+      description:
+        "Renders the lead column as a sort-option dropdown instead of a single sort button.",
+    },
+    showSelectAll: { control: "boolean" },
+    allSelected: { control: "boolean" },
+    someSelected: { control: "boolean" },
+  },
   parameters: {
     layout: "padded",
   },

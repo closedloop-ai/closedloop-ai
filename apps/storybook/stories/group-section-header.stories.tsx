@@ -45,6 +45,24 @@ const meta = {
   title: "Design System/Primitives/Group Section Header",
   component: GroupSectionHeaderDemo,
   tags: ["autodocs"],
+  argTypes: {
+    label: { control: "text" },
+    count: {
+      control: { type: "number", min: 0, max: 999, step: 1 },
+      description:
+        "Rows in this group. Clear it when the caller only holds one page of a larger set.",
+    },
+    defaultOpen: {
+      control: "boolean",
+      description:
+        "Open state the demo seeds its own state with on first render.",
+    },
+    tone: {
+      options: ["status", "priority", "assignee"],
+      control: { type: "radio" },
+      description: "Picks the grouping-dimension icon shown beside the label.",
+    },
+  },
   parameters: {
     layout: "centered",
   },

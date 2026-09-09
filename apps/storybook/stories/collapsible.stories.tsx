@@ -5,6 +5,7 @@ import {
 } from "@repo/design-system/components/ui/collapsible";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Info } from "lucide-react";
+import { fn } from "storybook/test";
 
 /**
  * An interactive component which expands/collapses a panel.
@@ -13,10 +14,25 @@ const meta: Meta<typeof Collapsible> = {
   title: "Design System/Primitives/Collapsible",
   component: Collapsible,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    open: {
+      control: "boolean",
+      description: "Controlled open state. Leave unset to use `defaultOpen`.",
+    },
+    defaultOpen: {
+      control: "boolean",
+      description: "Initial open state when the collapsible is uncontrolled.",
+    },
+    disabled: { control: "boolean" },
+    className: { control: "text" },
+    children: { control: false },
+    onOpenChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     className: "w-96",
+    defaultOpen: false,
     disabled: false,
+    onOpenChange: fn(),
   },
   render: (args) => (
     <Collapsible {...args}>

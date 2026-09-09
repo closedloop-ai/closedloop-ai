@@ -9,6 +9,7 @@ import {
   SheetTrigger,
 } from "@repo/design-system/components/ui/sheet";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * Extends the Dialog component to display content that complements the main
@@ -25,9 +26,46 @@ const meta: Meta<typeof SheetContent> = {
         type: "radio",
       },
     },
+    hideClose: {
+      control: "boolean",
+      description:
+        "Hide the built-in close button for sheets that carry their own dismiss control.",
+    },
+    className: {
+      control: "text",
+    },
+    children: {
+      control: false,
+    },
+    onOpenAutoFocus: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onCloseAutoFocus: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onEscapeKeyDown: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onPointerDownOutside: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onInteractOutside: {
+      control: false,
+      table: { category: "Events" },
+    },
   },
   args: {
     side: "right",
+    hideClose: false,
+    onOpenAutoFocus: fn(),
+    onCloseAutoFocus: fn(),
+    onEscapeKeyDown: fn(),
+    onPointerDownOutside: fn(),
+    onInteractOutside: fn(),
   },
   render: (args) => (
     <Sheet>

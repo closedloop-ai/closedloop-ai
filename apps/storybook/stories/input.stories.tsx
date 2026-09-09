@@ -1,5 +1,6 @@
 import { Input } from "@repo/design-system/components/ui/input";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * Displays a form input field or a component that looks like an input field.
@@ -8,12 +9,42 @@ const meta = {
   title: "Design System/Primitives/Input",
   component: Input,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    type: {
+      options: [
+        "text",
+        "email",
+        "password",
+        "number",
+        "search",
+        "tel",
+        "url",
+        "date",
+        "file",
+      ],
+      control: { type: "select" },
+      table: { category: "Content" },
+    },
+    placeholder: { control: "text", table: { category: "Content" } },
+    defaultValue: { control: "text", table: { category: "Content" } },
+    className: { control: "text", table: { category: "Appearance" } },
+    disabled: { control: "boolean", table: { category: "State" } },
+    readOnly: { control: "boolean", table: { category: "State" } },
+    required: { control: "boolean", table: { category: "State" } },
+    onChange: { control: false, table: { category: "Events" } },
+    onFocus: { control: false, table: { category: "Events" } },
+    onBlur: { control: false, table: { category: "Events" } },
+  },
   args: {
     className: "w-96",
     type: "email",
     placeholder: "Email",
     disabled: false,
+    readOnly: false,
+    required: false,
+    onChange: fn(),
+    onFocus: fn(),
+    onBlur: fn(),
   },
   parameters: {
     layout: "centered",

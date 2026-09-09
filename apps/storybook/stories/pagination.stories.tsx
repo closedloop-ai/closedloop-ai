@@ -20,7 +20,21 @@ const meta = {
   title: "Design System/Data Display/Pagination",
   component: Pagination,
   tags: ["autodocs"],
+  argTypes: {
+    children: {
+      control: false,
+      description:
+        "The composed `PaginationContent` tree. Supplied by the story render, not by a control.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the wrapping `nav`.",
+    },
+  },
   parameters: { layout: "centered" },
+  args: {
+    className: "",
+  },
 } satisfies Meta<typeof Pagination>;
 
 export default meta;
@@ -28,8 +42,8 @@ type Story = StoryObj<typeof meta>;
 
 /** A representative composed pagination with an active page and ellipsis. */
 export const Default: Story = {
-  render: () => (
-    <Pagination>
+  render: (args) => (
+    <Pagination {...args}>
       <PaginationContent>
         <PaginationItem>
           <PaginationPrevious href="#" />

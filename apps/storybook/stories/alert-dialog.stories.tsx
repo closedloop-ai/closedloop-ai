@@ -10,6 +10,7 @@ import {
   AlertDialogTrigger,
 } from "@repo/design-system/components/ui/alert-dialog";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * A modal dialog that interrupts the user with important content and expects
@@ -19,7 +20,25 @@ const meta: Meta<typeof AlertDialog> = {
   title: "Design System/Primitives/Alert Dialog",
   component: AlertDialog,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    // `open` is left without an arg on purpose: supplying it makes the dialog
+    // controlled, and the trigger would then stop opening it.
+    open: {
+      control: "boolean",
+      description:
+        "Controlled open state. Leave unset so the trigger drives the dialog.",
+    },
+    defaultOpen: {
+      control: "boolean",
+      description: "Open state on first render when `open` is not supplied.",
+    },
+    onOpenChange: { control: false, table: { category: "Events" } },
+    children: { control: false },
+  },
+  args: {
+    defaultOpen: false,
+    onOpenChange: fn(),
+  },
   render: (args) => (
     <AlertDialog {...args}>
       <AlertDialogTrigger>Open</AlertDialogTrigger>

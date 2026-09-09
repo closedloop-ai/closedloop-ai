@@ -9,6 +9,7 @@ import {
   DrawerTrigger,
 } from "@repo/design-system/components/ui/drawer";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * A drawer component for React.
@@ -17,7 +18,60 @@ const meta: Meta<typeof Drawer> = {
   title: "Design System/Primitives/Drawer",
   component: Drawer,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    direction: {
+      options: ["top", "bottom", "left", "right"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+      description: "Edge of the viewport the drawer slides in from.",
+    },
+    shouldScaleBackground: {
+      control: "boolean",
+      table: { category: "Appearance" },
+      description: "Scales the page behind the drawer while it is open.",
+    },
+    open: {
+      control: false,
+      table: { category: "Behavior" },
+      description:
+        "Controlled open state. Left uncontrolled here so the trigger still works; use defaultOpen to start open.",
+    },
+    defaultOpen: {
+      control: "boolean",
+      table: { category: "Behavior" },
+    },
+    modal: {
+      control: "boolean",
+      table: { category: "Behavior" },
+      description: "Blocks interaction with the page behind the drawer.",
+    },
+    dismissible: {
+      control: "boolean",
+      table: { category: "Behavior" },
+      description: "Allows closing by drag, scrim click, or Escape.",
+    },
+    handleOnly: {
+      control: "boolean",
+      table: { category: "Behavior" },
+      description:
+        "Limits dragging to the handle instead of the whole content.",
+    },
+    closeThreshold: {
+      control: { type: "number", min: 0, max: 1, step: 0.05 },
+      table: { category: "Behavior" },
+      description: "Fraction of the drawer that must be dragged away to close.",
+    },
+    scrollLockTimeout: {
+      control: { type: "number", min: 0, max: 1000, step: 50 },
+      table: { category: "Behavior" },
+      description: "Milliseconds after a scroll before dragging resumes.",
+    },
+    onOpenChange: { control: false, table: { category: "Events" } },
+    onClose: { control: false, table: { category: "Events" } },
+    onDrag: { control: false, table: { category: "Events" } },
+    onRelease: { control: false, table: { category: "Events" } },
+    onAnimationEnd: { control: false, table: { category: "Events" } },
+  },
   render: (args) => (
     <Drawer {...args}>
       <DrawerTrigger>Open</DrawerTrigger>
@@ -44,6 +98,21 @@ const meta: Meta<typeof Drawer> = {
   ),
   parameters: {
     layout: "centered",
+  },
+  args: {
+    direction: "bottom",
+    defaultOpen: false,
+    modal: true,
+    dismissible: true,
+    handleOnly: false,
+    shouldScaleBackground: false,
+    closeThreshold: 0.25,
+    scrollLockTimeout: 100,
+    onOpenChange: fn(),
+    onClose: fn(),
+    onDrag: fn(),
+    onRelease: fn(),
+    onAnimationEnd: fn(),
   },
 };
 

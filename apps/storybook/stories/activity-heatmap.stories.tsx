@@ -25,8 +25,29 @@ const meta = {
   title: "Design System/Data Display/Data Visualization/Activity Heatmap",
   component: ActivityHeatmap,
   tags: ["autodocs"],
+  argTypes: {
+    weeks: {
+      control: "object",
+      description:
+        "Sunday-started weeks of { date, count } cells, oldest week first.",
+    },
+    label: {
+      control: "text",
+      description: "Accessible name for the whole grid.",
+    },
+    accentVar: {
+      control: "text",
+      description:
+        "Design-system color token the density ramp mixes from, written without var(), such as --primary or --success.",
+    },
+    valueFormatter: {
+      control: false,
+      description:
+        "Formats a cell value for its tooltip and accessible label. Defaults to a plain event count.",
+    },
+  },
   parameters: { layout: "padded" },
-  args: { weeks },
+  args: { weeks, label: "Activity by day", accentVar: "--primary" },
 } satisfies Meta<typeof ActivityHeatmap>;
 
 export default meta;

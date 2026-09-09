@@ -42,7 +42,46 @@ const meta = {
   title: "Design System/Primitives/Calendar",
   component: Calendar,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    // `mode` stays out of the panel: `selected` has to match the mode's shape
+    // (Date, Date[], or DateRange), so flipping mode alone throws inside
+    // react-day-picker. The Multiple and Range stories below cover the modes.
+    mode: {
+      control: false,
+      description:
+        "Selection mode. Set per story because `selected` has to carry the matching shape.",
+    },
+    selected: { control: false },
+    defaultMonth: { control: false },
+    today: { control: false },
+    disabled: { control: false },
+    onSelect: { control: false, table: { category: "Events" } },
+    captionLayout: {
+      options: ["label", "dropdown", "dropdown-months", "dropdown-years"],
+      control: { type: "radio" },
+      description:
+        "Whether the caption is static text or month/year dropdowns.",
+    },
+    buttonVariant: {
+      options: [
+        "default",
+        "destructive",
+        "outline",
+        "secondary",
+        "ghost",
+        "link",
+      ],
+      control: { type: "select" },
+      description: "Button variant used for the previous and next nav buttons.",
+    },
+    numberOfMonths: {
+      control: { type: "number", min: 1, max: 4, step: 1 },
+    },
+    showOutsideDays: { control: "boolean" },
+    fixedWeeks: { control: "boolean" },
+    showWeekNumber: { control: "boolean" },
+    className: { control: "text" },
+  },
   args: {
     mode: "single",
     selected: REFERENCE_DATE,
@@ -50,6 +89,12 @@ const meta = {
     today: REFERENCE_DATE,
     onSelect: action("onDayClick"),
     className: "rounded-md border w-fit",
+    captionLayout: "label",
+    buttonVariant: "ghost",
+    numberOfMonths: 1,
+    showOutsideDays: true,
+    fixedWeeks: false,
+    showWeekNumber: false,
   },
   parameters: {
     layout: "centered",

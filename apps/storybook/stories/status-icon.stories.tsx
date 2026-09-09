@@ -25,10 +25,26 @@ const meta = {
         "executed",
         "complete",
         "wont-do",
+        // Also a real member of `StatusIconStatus`: the muted neutral marker
+        // the component falls back to for a status it does not recognize.
+        "decorative",
       ],
     },
-    size: { control: "select", options: [16, 20] },
-    thinking: { control: "boolean" },
+    size: {
+      options: [16, 20],
+      control: { type: "radio" },
+      description: "Rendered box size in pixels.",
+    },
+    thinking: {
+      control: "boolean",
+      description:
+        "Spinning arc for AI processing. Ignored for the terminal statuses complete and wont-do.",
+    },
+  },
+  args: {
+    status: "in-progress",
+    size: 16,
+    thinking: false,
   },
   parameters: { layout: "centered" },
 } satisfies Meta<typeof StatusIcon>;

@@ -7,8 +7,32 @@ const meta = {
   title: "Design System/Primitives/Empty State App Example",
   component: EmptyState,
   tags: ["autodocs"],
+  argTypes: {
+    icon: {
+      control: false,
+      description: "Lucide icon component rendered above the title.",
+    },
+    title: { control: "text" },
+    titleAs: {
+      options: ["h1", "h2", "h3"],
+      control: { type: "radio" },
+      description:
+        "Promotes the title to a real heading for full-page empty states.",
+    },
+    description: { control: "text" },
+    size: {
+      options: ["default", "compact"],
+      control: { type: "radio" },
+    },
+    action: {
+      control: false,
+      description: "Optional call-to-action node rendered under the copy.",
+    },
+    className: { control: "text" },
+  },
   args: {
     icon: FolderSearchIcon,
+    size: "default",
     title: "No related artifacts yet",
     description:
       "Attach a PRD or implementation plan to start building the relationship graph.",

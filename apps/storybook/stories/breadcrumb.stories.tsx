@@ -16,7 +16,14 @@ const meta = {
   title: "Design System/Navigation & Shell/Breadcrumb",
   component: Breadcrumb,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    children: {
+      control: false,
+      description:
+        "Set by the story render: a BreadcrumbList of items, links, and separators.",
+    },
+    className: { control: "text" },
+  },
   args: {},
   render: (args) => (
     <Breadcrumb {...args}>

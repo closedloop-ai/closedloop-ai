@@ -6,6 +6,16 @@ const meta = {
   component: CopyButton,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    text: {
+      control: "text",
+      description: "Value written to the clipboard on click.",
+    },
+    label: {
+      control: "text",
+      description: "Button label before the copy succeeds.",
+    },
+  },
   args: {
     text: "pnpm -C apps/storybook build",
     label: "Copy command",

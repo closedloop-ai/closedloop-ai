@@ -33,6 +33,76 @@ import {
 const meta = {
   title: "Design System/Data Display/Grid Table",
   component: GridTable,
+  tags: ["autodocs"],
+  // Every story below renders the table itself, so these argTypes document the
+  // props and keep the panel from offering a JSON editor on a render function.
+  argTypes: {
+    items: { control: false, table: { category: "Data" } },
+    getRowId: { control: false, table: { category: "Data" } },
+    columns: { control: false, table: { category: "Data" } },
+    groups: {
+      control: false,
+      description:
+        "Contiguous row sections under collapsible headers. Replaces `items` when set.",
+      table: { category: "Data" },
+    },
+    gridTemplateColumns: {
+      control: "text",
+      description:
+        "CSS grid template: the lead track, one track per column, then any trailing slot.",
+      table: { category: "Appearance" },
+    },
+    leadingLabel: { control: "text", table: { category: "Content" } },
+    renderLead: { control: false, table: { category: "Content" } },
+    renderCell: { control: false, table: { category: "Content" } },
+    renderLeadingUtility: { control: false, table: { category: "Content" } },
+    leadingUtilityHeader: { control: false, table: { category: "Content" } },
+    groupIcon: { control: false, table: { category: "Content" } },
+    cardRender: { control: false, table: { category: "Content" } },
+    mode: {
+      options: ["auto", "compact", "expanded"],
+      control: { type: "radio" },
+      description:
+        "`auto` follows the measured container width, `expanded` always renders the grid, `compact` always renders cards.",
+      table: { category: "Appearance" },
+    },
+    snapFoldToColumns: {
+      control: "boolean",
+      description:
+        "Widen the leading track so the container's right edge lands on a column boundary.",
+      table: { category: "Appearance" },
+    },
+    foldFitSettleMs: {
+      control: { type: "number", min: 0, max: 1000, step: 10 },
+      description:
+        "How long the container width must hold still before the fold fit re-runs. Ignored without `snapFoldToColumns`.",
+      table: { category: "Appearance" },
+    },
+    enhancedHeaderInteractions: {
+      control: "boolean",
+      table: { category: "Appearance" },
+    },
+    sortBy: { control: "text", table: { category: "State" } },
+    sortDir: {
+      options: ["asc", "desc"],
+      control: { type: "radio" },
+      table: { category: "State" },
+    },
+    leadingSortKey: { control: "text", table: { category: "State" } },
+    showGroupCount: { control: "boolean", table: { category: "State" } },
+    columnOrder: { control: "object", table: { category: "State" } },
+    columnWidths: { control: "object", table: { category: "State" } },
+    keyboardCellNavigation: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    isRowSelected: { control: false, table: { category: "State" } },
+    headerActions: { control: false, table: { category: "Events" } },
+    onSort: { control: false, table: { category: "Events" } },
+    onRowClick: { control: false, table: { category: "Events" } },
+    onColumnOrderChange: { control: false, table: { category: "Events" } },
+    onColumnWidthChange: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "fullscreen",
   },

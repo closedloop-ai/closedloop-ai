@@ -17,7 +17,13 @@ const meta = {
   title: "Design System/Data Display/Table",
   component: Table,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    className: {
+      control: "text",
+      description: "Merged over the base `w-full caption-bottom text-sm`.",
+    },
+    children: { control: false },
+  },
   render: (args) => (
     <Table {...args}>
       <TableCaption>A list of your recent invoices.</TableCaption>

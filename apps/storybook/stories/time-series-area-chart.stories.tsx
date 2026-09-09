@@ -33,9 +33,77 @@ const meta = {
   component: TimeSeriesAreaChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    series: {
+      control: "object",
+      table: { category: "Data" },
+      description: "One entry per drawn band, as { key, label }.",
+    },
+    points: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Time buckets. `date` is YYYY-MM-DD and `values` maps a series key to its number.",
+    },
+    comparison: {
+      control: "object",
+      table: { category: "Data" },
+      description: "Optional dashed trend line drawn behind the stacked areas.",
+    },
+    comparisonLabel: {
+      control: "text",
+      table: { category: "Data" },
+    },
+    markers: {
+      control: "object",
+      table: { category: "Data" },
+      description:
+        "Vertical event markers. Only dates matching a rendered bucket are drawn.",
+    },
+    maxSeries: {
+      control: {
+        type: "number",
+        min: 1,
+        max: CHART_SERIES_COLOR_LIMIT,
+        step: 1,
+      },
+      table: { category: "Appearance" },
+      description:
+        "Cap on separately colored series. Anything past it folds into one aggregate band.",
+    },
+    otherSeriesLabel: {
+      control: "text",
+      table: { category: "Appearance" },
+      description: "Noun the folded aggregate band is named with.",
+    },
+    colorOffset: {
+      control: { type: "number", min: 0, max: 9, step: 1 },
+      table: { category: "Appearance" },
+      description: "Shifts where the categorical palette starts.",
+    },
+    allowDecimals: {
+      control: "boolean",
+      table: { category: "Appearance" },
+      description: "Allow fractional y-axis ticks.",
+    },
+    emptyMessage: {
+      control: "text",
+      table: { category: "Appearance" },
+    },
+    valueFormatter: { control: false, table: { category: "Appearance" } },
+    resetKey: {
+      control: "text",
+      table: { category: "State" },
+      description:
+        "Change it to clear the legend's hidden-series state when the data identity changes.",
+    },
+  },
   args: {
+    allowDecimals: false,
+    colorOffset: 0,
     comparison,
     comparisonLabel: "Previous week",
+    emptyMessage: "No data",
     points,
     series,
   },

@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * Displays a list of options for the user to pick from—triggered by a button.
@@ -17,7 +18,86 @@ const meta: Meta<typeof Select> = {
   title: "Design System/Primitives/Select",
   component: Select,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    defaultValue: {
+      options: [
+        "apple",
+        "banana",
+        "blueberry",
+        "grapes",
+        "pineapple",
+        "aubergine",
+        "broccoli",
+        "carrot",
+        "courgette",
+        "leek",
+        "beef",
+        "chicken",
+        "lamb",
+        "pork",
+      ],
+      control: { type: "select" },
+      description: "Initial selection when the select is left uncontrolled.",
+      table: { category: "State" },
+    },
+    value: {
+      control: false,
+      description:
+        "Controlled selection. Pair it with onValueChange or the select cannot change.",
+      table: { category: "State" },
+    },
+    open: {
+      control: false,
+      description: "Controlled open state. Pair it with onOpenChange.",
+      table: { category: "State" },
+    },
+    defaultOpen: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    dir: {
+      options: ["ltr", "rtl"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+    },
+    disabled: {
+      control: "boolean",
+      table: { category: "Form" },
+    },
+    required: {
+      control: "boolean",
+      table: { category: "Form" },
+    },
+    name: {
+      control: "text",
+      description: "Field name submitted with the surrounding form.",
+      table: { category: "Form" },
+    },
+    autoComplete: {
+      control: "text",
+      table: { category: "Form" },
+    },
+    form: {
+      control: "text",
+      description: "Id of a form elsewhere in the document to submit with.",
+      table: { category: "Form" },
+    },
+    onValueChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+    onOpenChange: {
+      control: false,
+      table: { category: "Events" },
+    },
+  },
+  args: {
+    defaultOpen: false,
+    disabled: false,
+    required: false,
+    onValueChange: fn(),
+    onOpenChange: fn(),
+  },
   render: (args) => (
     <Select {...args}>
       <SelectTrigger className="w-96">

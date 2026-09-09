@@ -29,6 +29,14 @@ const meta = {
   component: ConversationTranscript,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    messages: {
+      control: "object",
+      description:
+        "Ordered transcript entries. Each needs an id, a role and content.",
+    },
+    className: { control: "text" },
+  },
   args: {
     className: "max-w-2xl rounded-lg border bg-background p-4",
     messages,

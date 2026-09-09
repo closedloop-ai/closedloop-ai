@@ -275,6 +275,18 @@ const meta = {
   parameters: {
     layout: "centered",
   },
+  argTypes: {
+    initialState: {
+      control: "object",
+      description:
+        "Filter selections the demo controller starts with. Every key is required, so edit values rather than removing them.",
+    },
+    viewModel: {
+      control: false,
+      description:
+        "Option lists and member data for the menu. Carries React nodes for the row icons, so it is set per story rather than edited here.",
+    },
+  },
   args: {
     initialState: baseState,
     viewModel: defaultViewModel,

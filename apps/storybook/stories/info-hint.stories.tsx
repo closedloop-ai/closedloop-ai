@@ -29,6 +29,15 @@ const meta = {
       options: ["top", "right", "bottom", "left"],
       description: "Popover side (default `bottom`).",
     },
+    iconClassName: {
+      control: "text",
+      description: "Icon size class (default `size-3.5`).",
+    },
+    sideOffset: {
+      control: { type: "number", min: 0, max: 24, step: 1 },
+      description:
+        "Gap in px between the trigger and the popover (default 0, flush).",
+    },
     triggerClassName: {
       control: "text",
       description:
@@ -46,6 +55,10 @@ const meta = {
   },
   args: {
     label: "About Active sessions",
+    align: "start",
+    side: "bottom",
+    sideOffset: 0,
+    iconClassName: "size-3.5",
     contentClassName: "w-60 space-y-1 p-3 text-xs",
     children: (
       <>

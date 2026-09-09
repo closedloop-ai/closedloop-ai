@@ -22,14 +22,22 @@ const meta = {
         "warning",
         "info",
         "accent",
+        "ai",
         "muted",
+        "neutral",
         "outline",
       ],
-      control: { type: "radio" },
+      control: { type: "select" },
+    },
+    asChild: {
+      control: false,
+      description:
+        "Renders the badge styles onto the single child element instead of a span.",
     },
   },
   args: {
     children: "Badge",
+    variant: "default",
   },
   parameters: {
     layout: "centered",

@@ -5,6 +5,24 @@ const meta = {
   title: "Design System/Primitives/Sidebar Count Badge",
   component: SidebarCountBadge,
   tags: ["autodocs"],
+  argTypes: {
+    count: {
+      control: { type: "number", min: 0, max: 999, step: 1 },
+    },
+    max: {
+      control: { type: "number", min: 1, max: 999, step: 1 },
+      description:
+        "Cap above which the pill shows a capped `9+` style value instead of the raw count.",
+    },
+    label: {
+      control: "text",
+      description:
+        "Accessible name so the count is announced with meaning instead of as a bare number.",
+    },
+    className: {
+      control: "text",
+    },
+  },
   args: {
     count: 7,
   },

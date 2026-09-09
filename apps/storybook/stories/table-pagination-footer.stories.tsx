@@ -1,6 +1,7 @@
 import { TablePaginationFooter } from "@repo/design-system/components/ui/table-pagination-footer";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 /**
  * The shared paginated-table footer (ISS-4681): a `border-t` strip with an
@@ -11,8 +12,52 @@ import { useState } from "react";
 const meta = {
   title: "Design System/Data Display/Table Pagination Footer",
   component: TablePaginationFooter,
+  tags: ["autodocs"],
+  argTypes: {
+    page: {
+      control: { type: "number", min: 0, max: 500, step: 1 },
+      table: { category: "State" },
+      description: "Zero-based current page index.",
+    },
+    totalPages: {
+      control: { type: "number", min: 1, max: 500, step: 1 },
+      table: { category: "State" },
+    },
+    pageSize: {
+      control: { type: "number", min: 1, max: 500, step: 1 },
+      table: { category: "State" },
+      description:
+        "Wire this together with onPageSizeChange to render the rows-per-page select. Omit either and the footer is unchanged.",
+    },
+    readout: {
+      control: "text",
+      table: { category: "Content" },
+      description:
+        "Range readout for the current page, announced as a live region. Omit when the surface has no honest total.",
+    },
+    truncationNote: {
+      control: "text",
+      table: { category: "Content" },
+      description:
+        "Secondary note shown under the readout when the result set was capped server-side.",
+    },
+    pageSizeOptions: {
+      control: "object",
+      table: { category: "Content" },
+      description: "Overrides the shared 25/50/100 ladder.",
+    },
+    className: { control: "text", table: { category: "Appearance" } },
+    onPageChange: { control: false, table: { category: "Events" } },
+    onPageSizeChange: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
+  },
+  args: {
+    page: 0,
+    totalPages: 10,
+    readout: "Showing 1-25 of 240 tasks",
+    onPageChange: fn(),
   },
 } satisfies Meta<typeof TablePaginationFooter>;
 

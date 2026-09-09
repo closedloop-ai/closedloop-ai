@@ -104,7 +104,21 @@ const meta = {
   title: "Design System/Data Display/Chart",
   component: ChartContainer,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    config: {
+      control: "object",
+      description:
+        "Series key to label and color map. Drives the CSS variables the marks read.",
+    },
+    resetKey: {
+      control: "text",
+      description:
+        "Change when the chart's data identity changes so hidden series reset.",
+    },
+    className: { control: "text" },
+    id: { control: "text" },
+    children: { control: false },
+  },
   args: {
     children: <div />,
   },

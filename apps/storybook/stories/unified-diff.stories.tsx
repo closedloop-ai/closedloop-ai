@@ -6,6 +6,13 @@ const meta = {
   component: UnifiedDiff,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    hunks: {
+      control: "object",
+      description:
+        "Unified-diff hunks. Each line keeps its leading +, -, or space, and the counters start at oldStart / newStart. An empty array renders the no-diff state.",
+    },
+  },
   args: {
     hunks: [
       {

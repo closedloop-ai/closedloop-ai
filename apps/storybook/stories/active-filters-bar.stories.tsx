@@ -249,12 +249,35 @@ const meta = {
   title: "Design System/Primitives/Active Filters Bar",
   component: ActiveFiltersBarDemo,
   tags: ["autodocs"],
+  argTypes: {
+    initialState: {
+      control: "object",
+      description:
+        "Filter state the demo seeds its local store with. Decides which chips render.",
+    },
+    viewModel: {
+      control: false,
+      description:
+        "Facet options plus loading and error flags. Its option icons are React nodes, so it is set per story rather than edited here.",
+    },
+    extraChips: {
+      control: false,
+      description:
+        "Surface-owned chips rendered ahead of the managed facet chips.",
+    },
+    showFilterControls: {
+      control: "boolean",
+      description:
+        "Whether the trailing add filter and clear all controls render.",
+    },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     initialState: defaultState,
     viewModel: defaultViewModel,
+    showFilterControls: true,
   },
 } satisfies Meta<typeof ActiveFiltersBarDemo>;
 

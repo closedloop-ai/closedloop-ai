@@ -22,15 +22,28 @@ const meta = {
         "muted",
         "outline",
       ],
-      control: { type: "radio" },
+      control: { type: "select" },
     },
     size: {
       options: ["sm", "default", "lg"],
       control: { type: "radio" },
     },
+    interactive: {
+      control: "boolean",
+      description: "Adds the shared focus ring and hover treatment.",
+    },
+    asChild: {
+      control: false,
+      description: "Render the child element instead of a span.",
+    },
+    className: { control: "text" },
+    children: { control: "text" },
   },
   args: {
     children: "Shared chip",
+    interactive: false,
+    size: "default",
+    variant: "muted",
   },
 } satisfies Meta<typeof Chip>;
 

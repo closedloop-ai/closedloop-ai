@@ -25,11 +25,21 @@ const meta = {
         "warning",
         "info",
         "accent",
+        "ai",
         "muted",
+        "neutral",
         "outline",
       ],
-      control: { type: "radio" },
+      control: { type: "select" },
+      description:
+        "Tone, drawn from the same variant vocabulary `Badge` and `Chip` use.",
     },
+    title: {
+      control: "text",
+      description:
+        "Native title attribute, for a fuller accessible name when the visible text is a short stem.",
+    },
+    className: { control: false },
   },
   args: {
     children: "Manual",

@@ -2,7 +2,25 @@ import { CommentActionMenu } from "@repo/design-system/components/ui/comment-act
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 
-function CommentActionMenuStory() {
+type CommentActionMenuStoryProps = {
+  canDelete?: boolean;
+  canEdit?: boolean;
+  chatLabel?: string;
+  copySuccessMessage?: string;
+  copyValue?: string | null;
+  isResolvePending?: boolean;
+  resolveLabel?: string;
+};
+
+function CommentActionMenuStory({
+  canDelete = true,
+  canEdit = true,
+  chatLabel = "Chat About This",
+  copySuccessMessage = "Copied PR link",
+  copyValue = "https://example.com/pr/42#discussion_r1",
+  isResolvePending = false,
+  resolveLabel = "Resolve Conversation",
+}: CommentActionMenuStoryProps) {
   const [lastAction, setLastAction] = useState("No action yet");
 
   return (
@@ -12,13 +30,17 @@ function CommentActionMenuStory() {
         <div className="text-muted-foreground text-xs">{lastAction}</div>
       </div>
       <CommentActionMenu
-        copySuccessMessage="Copied PR link"
-        copyValue="https://example.com/pr/42#discussion_r1"
-        onChatAboutThis={() => setLastAction("Chat About This")}
+        canDelete={canDelete}
+        canEdit={canEdit}
+        chatLabel={chatLabel}
+        copySuccessMessage={copySuccessMessage}
+        copyValue={copyValue}
+        isResolvePending={isResolvePending}
+        onChatAboutThis={() => setLastAction(chatLabel)}
         onDelete={() => setLastAction("Delete")}
         onEditToggle={() => setLastAction("Edit")}
-        onResolveAction={() => setLastAction("Resolve Conversation")}
-        resolveLabel="Resolve Conversation"
+        onResolveAction={() => setLastAction(resolveLabel)}
+        resolveLabel={resolveLabel}
       />
     </div>
   );
@@ -29,6 +51,33 @@ const meta = {
   component: CommentActionMenuStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    canEdit: { control: "boolean" },
+    canDelete: { control: "boolean" },
+    isResolvePending: {
+      control: "boolean",
+      description: "Disables the resolve item while a resolve is in flight.",
+    },
+    resolveLabel: {
+      control: "text",
+      description: "Empty hides the resolve item entirely.",
+    },
+    chatLabel: { control: "text" },
+    copyValue: {
+      control: "text",
+      description: "Link the Copy Link item writes. Empty hides that item.",
+    },
+    copySuccessMessage: { control: "text" },
+  },
+  args: {
+    canDelete: true,
+    canEdit: true,
+    chatLabel: "Chat About This",
+    copySuccessMessage: "Copied PR link",
+    copyValue: "https://example.com/pr/42#discussion_r1",
+    isResolvePending: false,
+    resolveLabel: "Resolve Conversation",
+  },
 } satisfies Meta<typeof CommentActionMenuStory>;
 
 export default meta;

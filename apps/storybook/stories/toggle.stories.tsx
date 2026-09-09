@@ -1,6 +1,7 @@
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Bold, Italic } from "lucide-react";
+import { fn } from "storybook/test";
 
 /**
  * A two-state button that can be either on or off.
@@ -10,13 +11,34 @@ const meta: Meta<typeof Toggle> = {
   component: Toggle,
   tags: ["autodocs"],
   argTypes: {
+    variant: {
+      options: ["default", "outline"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+    },
+    size: {
+      options: ["default", "sm", "lg"],
+      control: { type: "radio" },
+      table: { category: "Appearance" },
+    },
+    disabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
     children: {
       control: { disable: true },
+      table: { category: "Content" },
     },
+    asChild: { control: false, table: { category: "Content" } },
+    onPressedChange: { control: false, table: { category: "Events" } },
   },
   args: {
+    variant: "default",
+    size: "default",
+    disabled: false,
     children: <Bold className="h-4 w-4" />,
     "aria-label": "Toggle bold",
+    onPressedChange: fn(),
   },
   parameters: {
     layout: "centered",

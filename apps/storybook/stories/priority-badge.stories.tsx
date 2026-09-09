@@ -10,12 +10,21 @@ const meta = {
   tags: ["autodocs"],
   argTypes: {
     priority: {
-      control: "select",
+      control: { type: "radio" },
       options: ["LOW", "MEDIUM", "HIGH", "URGENT"],
+      description:
+        "Priority level. Drives both the badge colour and its visible label.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the badge.",
     },
   },
   parameters: {
     layout: "centered",
+  },
+  args: {
+    priority: "MEDIUM",
   },
 } satisfies Meta<typeof PriorityBadge>;
 
