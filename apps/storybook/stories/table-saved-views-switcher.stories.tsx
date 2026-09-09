@@ -74,8 +74,30 @@ const meta = {
   title: "Design System/Primitives/Table Saved Views Switcher",
   component: TableSavedViewsSwitcherDemo,
   tags: ["autodocs"],
+  argTypes: {
+    initialActiveViewId: {
+      options: ["view-mine", "view-review", "view-merged"],
+      control: { type: "select" },
+      description:
+        "Saved view that starts active. Null seeds the unnamed default arrangement, which the ModifiedOnDefaultView story covers.",
+    },
+    initialModified: {
+      control: "boolean",
+      description:
+        "Seeds the live table as diverged from the active view's saved snapshot, which is what shows the modified marker and the Update item.",
+    },
+    withUpdateView: {
+      control: "boolean",
+      description: "Wires onUpdateView. Turn it off to hide the Update item.",
+    },
+  },
   parameters: {
     layout: "centered",
+  },
+  args: {
+    initialActiveViewId: "view-mine",
+    initialModified: true,
+    withUpdateView: true,
   },
 } satisfies Meta<typeof TableSavedViewsSwitcherDemo>;
 

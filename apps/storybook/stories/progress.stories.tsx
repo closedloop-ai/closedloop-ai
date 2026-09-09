@@ -12,10 +12,50 @@ const meta = {
   title: "Design System/Primitives/Progress",
   component: Progress,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    value: {
+      control: { type: "number", min: 0, max: 100, step: 1 },
+      description:
+        "Amount completed. `null` (or a value above `max`) is Radix's indeterminate contract: no `aria-valuenow`, and the track renders the diagonal hatch instead of a fill.",
+    },
+    max: {
+      control: { type: "number", min: 1, max: 1000, step: 1 },
+      description:
+        "Upper bound the value is read against. A zero or non-finite max falls back to 100.",
+    },
+    tone: {
+      control: { type: "select" },
+      options: [
+        ProgressTone.Default,
+        ProgressTone.Neutral,
+        ProgressTone.Success,
+        ProgressTone.Warning,
+        ProgressTone.Destructive,
+      ],
+      description:
+        "Semantic colour of the track, fill, hatch and sheen together. Prefer this over recolouring the indicator from the call site.",
+    },
+    paused: {
+      control: "boolean",
+      description:
+        "Freezes the indeterminate sweep for work known to have stopped advancing. The hatch stays, so the bar reads as held rather than reset. Ignored when `value` is a number.",
+    },
+    sweep: {
+      control: "boolean",
+      description:
+        "Sweeps the liveness sheen over a DETERMINATE fill, for a known value whose updating thread can block.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the track.",
+    },
+  },
   args: {
     value: 30,
     max: 100,
+    tone: ProgressTone.Default,
+    paused: false,
+    sweep: false,
   },
 } satisfies Meta<typeof Progress>;
 

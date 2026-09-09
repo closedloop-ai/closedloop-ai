@@ -5,6 +5,13 @@ const meta = {
   title: "Design System/Primitives/Match List",
   component: MatchList,
   tags: ["autodocs"],
+  argTypes: {
+    matches: {
+      control: "object",
+      description:
+        "Grep-style hits. Each entry renders its file, line, and text when present.",
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     matches: [

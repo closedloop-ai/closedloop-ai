@@ -6,6 +6,12 @@ const meta = {
   component: FileList,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    paths: {
+      control: "object",
+      description: "Repository-relative file paths, rendered in order.",
+    },
+  },
   args: {
     paths: [
       "apps/app/app/(authenticated)/sessions/page.tsx",

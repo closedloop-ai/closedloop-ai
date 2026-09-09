@@ -6,6 +6,7 @@ import {
 } from "@repo/design-system/components/ui/table-page-size-select";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 /**
  * The rows-per-page control that sits at the left of `TablePaginationFooter`
@@ -23,8 +24,25 @@ import { useState } from "react";
 const meta = {
   title: "Design System/Primitives/Table Page Size Select",
   component: TablePageSizeSelect,
+  tags: ["autodocs"],
+  argTypes: {
+    pageSize: {
+      control: { type: "number", min: 1, max: 500, step: 1 },
+      description: "Rows per page currently selected.",
+    },
+    options: {
+      control: "object",
+      description: "Overrides the shared 25/50/100 ladder.",
+    },
+    onPageSizeChange: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
+  },
+  args: {
+    pageSize: DEFAULT_TABLE_PAGE_SIZE,
+    options: TABLE_PAGE_SIZE_OPTIONS,
+    onPageSizeChange: fn(),
   },
 } satisfies Meta<typeof TablePageSizeSelect>;
 

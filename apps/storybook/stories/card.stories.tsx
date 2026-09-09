@@ -31,7 +31,14 @@ const meta = {
   title: "Design System/Layout/Card",
   component: Card,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    className: { control: "text" },
+    children: {
+      control: false,
+      description:
+        "Card content. This story renders a fixed header, content, and footer.",
+    },
+  },
   args: {
     className: "w-96",
   },

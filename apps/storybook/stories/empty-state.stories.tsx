@@ -9,10 +9,34 @@ const meta = {
   component: EmptyState,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    icon: {
+      control: false,
+      description: "Lucide icon component rendered above the title.",
+    },
+    title: { control: "text" },
+    titleAs: {
+      options: ["h1", "h2", "h3"],
+      control: { type: "radio" },
+      description:
+        "Promotes the title to a real heading for full-page empty states.",
+    },
+    description: { control: "text" },
+    size: {
+      options: ["default", "compact"],
+      control: { type: "radio" },
+    },
+    action: {
+      control: false,
+      description: "Optional call-to-action node rendered under the copy.",
+    },
+    className: { control: "text" },
+  },
   args: {
     description:
       "No matching sessions were found. Adjust filters or refresh the source.",
     icon: SearchXIcon,
+    size: "default",
     title: "No sessions found",
   },
   decorators: [

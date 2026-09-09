@@ -9,6 +9,7 @@ import {
   DialogTrigger,
 } from "@repo/design-system/components/ui/dialog";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * A window overlaid on either the primary window or another dialog window,
@@ -18,7 +19,28 @@ const meta: Meta<typeof Dialog> = {
   title: "Design System/Primitives/Dialog",
   component: Dialog,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    // Left out of `args` on purpose: setting it makes the dialog controlled and
+    // the trigger stops opening it.
+    open: {
+      control: "boolean",
+      description: "Controlled open state. Overrides defaultOpen.",
+      table: { category: "State" },
+    },
+    defaultOpen: { control: "boolean", table: { category: "State" } },
+    modal: {
+      control: "boolean",
+      description: "Marks content outside the dialog inert while it is open.",
+      table: { category: "State" },
+    },
+    children: { control: false, table: { category: "Content" } },
+    onOpenChange: { control: false, table: { category: "Events" } },
+  },
+  args: {
+    defaultOpen: false,
+    modal: true,
+    onOpenChange: fn(),
+  },
   render: (args) => (
     <Dialog {...args}>
       <DialogTrigger>Open</DialogTrigger>

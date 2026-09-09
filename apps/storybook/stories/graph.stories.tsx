@@ -32,12 +32,39 @@ const meta: Meta<typeof Graph> = {
       </div>
     ),
   ],
+  argTypes: {
+    nodes: {
+      control: "object",
+      table: { category: "Content" },
+      description:
+        "Graph nodes. `value` drives the radius; `color` and `strokeColor` are optional overrides.",
+    },
+    links: {
+      control: "object",
+      table: { category: "Content" },
+      description:
+        "Edges between nodes. `source` and `target` must match node ids.",
+    },
+    emptyMessage: {
+      control: "text",
+      table: { category: "Content" },
+      description: "Shown in place of the canvas when there are no nodes.",
+    },
+    ariaLabel: { control: "text", table: { category: "Labels" } },
+    legendLabel: { control: "text", table: { category: "Labels" } },
+    edgeLegendLabel: { control: "text", table: { category: "Labels" } },
+    getNodeRows: { control: false, table: { category: "Tooltips" } },
+    getLinkRows: { control: false, table: { category: "Tooltips" } },
+    getNodeDescription: { control: false, table: { category: "Tooltips" } },
+    getLinkDescription: { control: false, table: { category: "Tooltips" } },
+  },
   args: {
     nodes,
     links,
     ariaLabel: "Workflow graph",
     legendLabel: "Agent types",
     edgeLegendLabel: "A hands off to B",
+    emptyMessage: "No data",
   },
 };
 

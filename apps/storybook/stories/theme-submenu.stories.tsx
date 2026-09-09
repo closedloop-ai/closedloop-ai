@@ -17,6 +17,14 @@ const meta = {
   title: "Design System/Navigation & Shell/Theme Submenu",
   component: ThemeSubmenu,
   tags: ["autodocs"],
+  argTypes: {
+    icon: {
+      control: false,
+      table: { category: "Content" },
+      description:
+        "Fixed trigger icon. Left unset, the trigger follows the active theme (sun, moon, or monitor).",
+    },
+  },
   parameters: {
     layout: "centered",
   },

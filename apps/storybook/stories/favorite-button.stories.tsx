@@ -50,10 +50,28 @@ const meta = {
   parameters: {
     layout: "centered",
   },
+  argTypes: {
+    initialFavorite: {
+      control: "boolean",
+      description: "Favorite state the demo wrapper starts in.",
+    },
+    size: {
+      options: ["sm", "default"],
+      control: { type: "radio" },
+    },
+    isPending: {
+      control: "boolean",
+      description: "Disables the button while a toggle is in flight.",
+    },
+    addLabel: { control: "text" },
+    removeLabel: { control: "text" },
+  },
   args: {
     initialFavorite: false,
     size: "sm",
     isPending: false,
+    addLabel: "Add to favorites",
+    removeLabel: "Remove from favorites",
   },
 } satisfies Meta<typeof FavoriteButtonDemo>;
 

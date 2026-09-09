@@ -4,6 +4,7 @@ import {
   ResizablePanelGroup,
 } from "@repo/design-system/components/ui/resizable";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * Accessible resizable panel groups and layouts with keyboard support.
@@ -13,13 +14,43 @@ const meta: Meta<typeof ResizablePanelGroup> = {
   component: ResizablePanelGroup,
   tags: ["autodocs"],
   argTypes: {
+    direction: {
+      control: { type: "radio" },
+      options: ["horizontal", "vertical"],
+      description: "Axis the top-level panels are laid out along.",
+    },
+    children: {
+      control: false,
+      description:
+        "The `ResizablePanel` / `ResizableHandle` tree. Supplied by the story render, not by a control.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the group container.",
+    },
+    autoSaveId: {
+      control: "text",
+      description:
+        "Key the layout is persisted under in storage. Leave empty to keep the layout in memory only.",
+    },
+    keyboardResizeBy: {
+      control: { type: "number", min: 1, max: 100, step: 1 },
+      description:
+        "Percentage a panel moves per arrow key press on a focused handle.",
+    },
+    storage: {
+      control: false,
+      description: "Custom storage adapter used with `autoSaveId`.",
+    },
     onLayout: {
       control: false,
+      table: { category: "Events" },
     },
   },
   args: {
     className: "max-w-96 rounded-lg border",
     direction: "horizontal",
+    onLayout: fn(),
   },
   render: (args) => (
     <ResizablePanelGroup {...args}>

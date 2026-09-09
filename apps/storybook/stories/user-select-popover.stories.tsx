@@ -2,13 +2,66 @@ import { UserSelectPopover } from "@repo/design-system/components/ui/user-select
 import { mockUsers } from "@repo/design-system/storybook/mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 const meta = {
   title: "Design System/Primitives/User Select Popover",
   component: UserSelectPopover,
   tags: ["autodocs"],
+  argTypes: {
+    users: {
+      control: "object",
+      table: { category: "Content" },
+      description: "The list the picker searches over.",
+    },
+    placeholder: {
+      control: "text",
+      table: { category: "Content" },
+    },
+    // Both stories hold the selection in local state and pass it themselves, so
+    // a panel control here would be inert.
+    value: { control: false, table: { category: "State" } },
+    trigger: {
+      control: false,
+      table: { category: "Content" },
+      description: "Custom trigger element. Defaults to an add-person button.",
+    },
+    iconOnly: {
+      control: "boolean",
+      table: { category: "Appearance" },
+      description: "Render the trigger as a bare icon button, for inline use.",
+    },
+    disabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    isLoading: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Swaps the empty-state copy while the user list is still loading.",
+    },
+    ariaLabel: {
+      control: "text",
+      table: { category: "Accessibility" },
+      description:
+        'Field name announced with the value, e.g. "Assignee: Ada Lovelace".',
+    },
+    id: {
+      control: "text",
+      table: { category: "Accessibility" },
+      description: "Trigger id, so a sibling label can point at it.",
+    },
+    className: { control: false, table: { category: "Appearance" } },
+    onSelect: { control: false, table: { category: "Events" } },
+  },
   args: {
-    onSelect: () => {},
+    ariaLabel: "Assignee",
+    disabled: false,
+    iconOnly: false,
+    isLoading: false,
+    onSelect: fn(),
+    placeholder: "Select user...",
     users: mockUsers,
   },
 } satisfies Meta<typeof UserSelectPopover>;
@@ -38,7 +91,7 @@ export const Default: Story = {
 export const IconOnly: Story = {
   args: {
     iconOnly: true,
-    onSelect: () => {},
+    onSelect: fn(),
     users: mockUsers,
   },
   render: (args) => {

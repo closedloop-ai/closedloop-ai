@@ -9,6 +9,43 @@ const meta = {
   title: "Design System/Data Display/Data Visualization/Ranked Bar",
   component: RankedBar,
   tags: ["autodocs"],
+  argTypes: {
+    label: {
+      control: "text",
+      description: "Row title. Accepts a node, but a plain string is typical.",
+    },
+    value: {
+      control: "text",
+      description: "Formatted figure shown at the end of the row.",
+    },
+    percent: {
+      control: { type: "range", min: 0, max: 100, step: 1 },
+      description:
+        "Fill width as a percentage. Clamped to 0-100; a non-finite value falls back to 0.",
+    },
+    description: {
+      control: "text",
+      description: "Muted caption under the label.",
+    },
+    badge: {
+      control: false,
+      description: "Optional node rendered beside the label.",
+    },
+    presentation: {
+      control: { type: "radio" },
+      options: [RankedBarPresentation.Framed, RankedBarPresentation.Flat],
+      description:
+        "`framed` draws the bordered card around the row; `flat` drops the frame for rows already inside one.",
+    },
+    showPercent: {
+      control: "boolean",
+      description: "Renders the percentage badge beside the value.",
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the row container.",
+    },
+  },
   parameters: {
     layout: "centered",
   },
@@ -18,6 +55,8 @@ const meta = {
     label: "Read -> Edit",
     percent: 76,
     value: "126 lines/$",
+    presentation: RankedBarPresentation.Framed,
+    showPercent: true,
   },
   render: (args) => (
     <div className="w-[480px]">

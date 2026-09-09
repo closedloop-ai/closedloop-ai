@@ -13,10 +13,25 @@ const meta = {
   component: StatusPercentageIcon,
   tags: ["autodocs"],
   argTypes: {
-    value: { control: { type: "range", min: 0, max: 100, step: 1 } },
-    size: { control: "select", options: [16, 20] },
-    thinking: { control: "boolean" },
-    label: { control: "text" },
+    value: {
+      control: { type: "range", min: 0, max: 100, step: 1 },
+      description:
+        "Completion percentage. The slider covers the 0 to 100 range only; the separate `null` empty-population case is shown by the EmptyPopulation story.",
+    },
+    size: {
+      options: [16, 20],
+      control: { type: "radio" },
+      description: "Rendered box size in pixels.",
+    },
+    thinking: {
+      control: "boolean",
+      description: "Spinning arc for AI processing. Ignored at 100 percent.",
+    },
+    label: {
+      control: "text",
+      description:
+        'Accessible name. Defaults to "N% complete", and is required when value is null.',
+    },
   },
   parameters: { layout: "centered" },
 } satisfies Meta<typeof StatusPercentageIcon>;

@@ -1,5 +1,6 @@
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import type { Meta, StoryObj } from "@storybook/react";
+import { fn } from "storybook/test";
 
 /**
  * Displays a form textarea or a component that looks like a textarea.
@@ -8,10 +9,41 @@ const meta = {
   title: "Design System/Primitives/Textarea",
   component: Textarea,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    placeholder: {
+      control: "text",
+      table: { category: "Content" },
+    },
+    rows: {
+      control: { type: "number", min: 1, max: 20, step: 1 },
+      table: { category: "Content" },
+      description: "Visible line count before the field starts scrolling.",
+    },
+    disabled: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    readOnly: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    required: {
+      control: "boolean",
+      table: { category: "State" },
+    },
+    onChange: { control: false, table: { category: "Events" } },
+    onFocus: { control: false, table: { category: "Events" } },
+    onBlur: { control: false, table: { category: "Events" } },
+  },
   args: {
     placeholder: "Type your message here.",
+    rows: 4,
     disabled: false,
+    readOnly: false,
+    required: false,
+    onBlur: fn(),
+    onChange: fn(),
+    onFocus: fn(),
   },
 } satisfies Meta<typeof Textarea>;
 

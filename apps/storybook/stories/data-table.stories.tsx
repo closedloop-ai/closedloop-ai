@@ -76,8 +76,53 @@ const meta = {
   title: "Design System/Data Display/Data Table",
   component: ProjectDataTable,
   tags: ["autodocs"],
+  argTypes: {
+    data: { control: "object", table: { category: "Data" } },
+    // Column definitions carry `render` functions, so a JSON editor here would
+    // hand the table a plain object where a function is expected.
+    columns: { control: false, table: { category: "Data" } },
+    searchKey: {
+      options: ["id", "name", "owner", "status", "updatedAt"],
+      control: { type: "select" },
+      description: "Row field the search box matches against.",
+      table: { category: "Data" },
+    },
+    filterKey: {
+      options: ["id", "name", "owner", "status", "updatedAt"],
+      control: { type: "select" },
+      description: "Row field the filter select matches against.",
+      table: { category: "Data" },
+    },
+    sortOptions: {
+      control: "object",
+      description:
+        "Sort dropdown entries as `field:asc` or `field:desc`. Ignored when any column is sortable.",
+      table: { category: "Data" },
+    },
+    filterOptions: { control: "object", table: { category: "Data" } },
+    searchPlaceholder: { control: "text", table: { category: "Content" } },
+    emptyMessage: { control: "text", table: { category: "Content" } },
+    pageSize: {
+      control: { type: "number", min: 1, max: 50, step: 1 },
+      table: { category: "Pagination" },
+    },
+    pageSizeOptions: { control: "object", table: { category: "Pagination" } },
+    rowHref: {
+      control: false,
+      description: "Turns each row into a link when it returns a href.",
+      table: { category: "Rendering" },
+    },
+    renderRowActions: { control: false, table: { category: "Rendering" } },
+    onRowClick: { control: false, table: { category: "Events" } },
+    // Deliberately left without an arg: supplying `onPageSizeChange` switches
+    // the table to a controlled page size, which would freeze the pager the
+    // Paginated play function drives.
+    onPageSizeChange: { control: false, table: { category: "Events" } },
+  },
   args: {
     data: mockProjectRows,
+    emptyMessage: "No items found.",
+    pageSize: 10,
     columns,
     searchKey: "name",
     searchPlaceholder: "Search projects...",

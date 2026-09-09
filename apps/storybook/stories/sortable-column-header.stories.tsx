@@ -94,6 +94,25 @@ const meta = {
   title: "Design System/Primitives/Sortable Column Header",
   component: SortableColumnHeaderDemo,
   tags: ["autodocs"],
+  argTypes: {
+    initialSortBy: {
+      // `mapping` keeps the unsorted state selectable: the prop's third value
+      // is `null`, which a radio cannot label on its own.
+      options: ["name", "updatedAt", "none"],
+      mapping: { name: "name", updatedAt: "updatedAt", none: null },
+      control: { type: "radio" },
+      description:
+        'Column the table sorts on when it first renders. "none" starts unsorted.',
+    },
+    initialSortDir: {
+      options: ["asc", "desc"],
+      control: { type: "radio" },
+    },
+  },
+  args: {
+    initialSortBy: "name",
+    initialSortDir: "desc",
+  },
   parameters: {
     layout: "padded",
   },

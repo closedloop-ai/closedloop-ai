@@ -6,6 +6,14 @@ const meta = {
   component: ConversationMessage,
   tags: ["autodocs"],
   parameters: { layout: "centered" },
+  argTypes: {
+    role: {
+      options: ["user", "assistant"],
+      control: { type: "radio" },
+    },
+    content: { control: "text" },
+    className: { control: "text" },
+  },
   decorators: [
     (Story) => (
       <div className="w-[520px] rounded-lg border bg-background p-4">

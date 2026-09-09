@@ -5,6 +5,17 @@ const meta = {
   title: "Design System/Primitives/Key Value Grid",
   component: KeyValueGrid,
   tags: ["autodocs"],
+  argTypes: {
+    data: {
+      control: "object",
+      description:
+        "Key/value pairs to render. Object and array values render as formatted JSON.",
+    },
+    priority: {
+      control: "object",
+      description: "Keys pinned to the top, in this order, ahead of the rest.",
+    },
+  },
   parameters: { layout: "padded" },
   args: {
     data: {

@@ -5,7 +5,10 @@ import {
   summaryCardClass,
 } from "@repo/app/shared/components/summary-card-row";
 import { MetricCard } from "@repo/design-system/components/ui/primitives/metric-card";
-import { MetricPolarity } from "@repo/design-system/components/ui/primitives/metric-polarity";
+import {
+  MetricDeltaTreatment,
+  MetricPolarity,
+} from "@repo/design-system/components/ui/primitives/metric-polarity";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
@@ -16,28 +19,40 @@ const meta = {
     label: {
       control: "text",
       description: "Uppercase caption rendered above the value.",
+      table: { category: "Content" },
     },
     value: {
       control: "text",
       description: "Formatted metric value (string or number).",
+      table: { category: "Content" },
     },
     unitLabel: {
       control: "text",
       description: "Unit suffix rendered beside the value (FEA-2416).",
+      table: { category: "Content" },
     },
     detail: {
       control: "text",
       description: "Secondary caption in the footer.",
+      table: { category: "Content" },
     },
     trend: {
       control: "text",
       description: "Emphasised trend text aligned to the footer end.",
+      table: { category: "Content" },
+    },
+    info: {
+      control: "object",
+      description: "`{ what, how? }` explainer rendered in a label popover.",
+      table: { category: "Content" },
     },
     delta: {
-      control: { type: "select" },
-      options: [undefined, -8, 0, 12],
+      // Bounded to the display ceiling the component's own formatter uses
+      // (MAX_DELTA_PCT); past it a caller is expected to pass `deltaCapped`.
+      control: { type: "number", min: -999, max: 999, step: 1 },
       description:
         "Period-over-period change (`number`). Renders a signed chip whose glyph follows the number's direction and whose colour follows `deltaPolarity`. When omitted, `deltaPlaceholder` (if provided) fills the same delta slot.",
+      table: { category: "Delta" },
     },
     deltaPolarity: {
       control: { type: "radio" },
@@ -48,44 +63,72 @@ const meta = {
       ],
       description:
         'Which direction is GOOD for this metric (ISS-4633). Defaults to `higher-is-better`; a spend/latency/backlog metric MUST pass `lower-is-better` or a rise renders as if the card were improving. The caption leads with a visible "better"/"worse" so the verdict is never colour-only.',
+      table: { category: "Delta" },
     },
     deltaLabel: {
       control: "text",
       description: 'Caption beside the delta chip (e.g. "vs. prior 90 days").',
+      table: { category: "Delta" },
+    },
+    deltaCapped: {
+      control: "boolean",
+      description:
+        'Marks a numeric `delta` as clamped by the caller, so the chip renders the ">999%" / "<-999%" affordance instead of implying the exact figure.',
+      table: { category: "Delta" },
+    },
+    deltaTreatment: {
+      control: { type: "radio" },
+      options: [MetricDeltaTreatment.Legacy, MetricDeltaTreatment.UnifiedPill],
+      description:
+        "Which delta presentation the consumer has opted into (ISS-5842). `legacy` scores the chip and prints the verdict word; `unified-pill` gives every tone the same pill geometry and drops the word.",
+      table: { category: "Delta" },
     },
     deltaPlaceholder: {
       control: false,
       description:
         '"No comparison" affordance rendered in the delta slot when `delta` is omitted, so the footer layout stays stable across ranges.',
+      table: { category: "Delta" },
     },
     sparkline: {
       control: "object",
       description:
         "Recent values; when the delta is a number and at least two points are finite, the chip renders a sparkline instead of an icon.",
-    },
-    info: {
-      control: "object",
-      description: "`{ what, how? }` explainer rendered in a label popover.",
+      table: { category: "Delta" },
     },
     placeholder: {
       control: "boolean",
       description:
         'Dims the card and adds a "Sample" badge for placeholder data.',
+      table: { category: "State" },
+    },
+    muted: {
+      control: "boolean",
+      description:
+        'Dims the card WITHOUT the "Sample" badge, for a value that failed to load rather than demo data. Ignored when `placeholder` is set.',
+      table: { category: "State" },
     },
     loading: {
       control: "boolean",
       description:
         "Keeps the card frame (label, info, footer/detail) and skeletons ONLY the value while it hydrates — the partial-load pattern, never a bare slab.",
+      table: { category: "State" },
     },
     valueUnavailable: {
       control: "boolean",
       description:
         'Forces the no-data value slot for a non-null placeholder value. A nullish `value` triggers the same state automatically, so callers usually pass `value={null}` instead of setting this. Renders `valueUnavailableLabel` ("No data") muted at the SAME 2xl size the value occupies — the card keeps full opacity (unlike `muted`, which dims the whole card for a failed read) and stays baseline-aligned with a sibling that has a value.',
+      table: { category: "State" },
     },
     valueUnavailableLabel: {
       control: "text",
       description:
         'Copy for the no-data value slot when the value is absent (default "No data").',
+      table: { category: "State" },
+    },
+    className: {
+      control: "text",
+      description: "Extra classes merged onto the card frame.",
+      table: { category: "Appearance" },
     },
   },
   parameters: {
@@ -95,6 +138,12 @@ const meta = {
     label: "Active sessions",
     value: 18,
     className: "w-[280px]",
+    deltaTreatment: MetricDeltaTreatment.Legacy,
+    deltaCapped: false,
+    placeholder: false,
+    muted: false,
+    loading: false,
+    valueUnavailable: false,
   },
 } satisfies Meta<typeof MetricCard>;
 

@@ -18,8 +18,22 @@ const meta = {
   title: "Design System/Primitives/Markdown Content",
   component: MarkdownContent,
   tags: ["autodocs"],
+  argTypes: {
+    text: { control: "text" },
+    dense: {
+      control: "boolean",
+      description: "Tightens paragraph spacing and drops the body to 12px.",
+    },
+    skipHtml: {
+      control: "boolean",
+      description: "Drops raw HTML nodes instead of rendering author markup.",
+    },
+    className: { control: "text" },
+    components: { control: false },
+    remarkPlugins: { control: false },
+  },
   parameters: { layout: "padded" },
-  args: { text },
+  args: { text, dense: false, skipHtml: false },
 } satisfies Meta<typeof MarkdownContent>;
 
 export default meta;

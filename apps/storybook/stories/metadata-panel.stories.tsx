@@ -24,11 +24,27 @@ const meta = {
   title: "Design System/Primitives/Metadata Panel",
   component: MetadataPanel,
   tags: ["autodocs"],
+  argTypes: {
+    title: {
+      control: "text",
+      description: "Heading above the sections. Sidebar variant only.",
+    },
+    variant: {
+      options: ["sidebar", "bar"],
+      control: { type: "radio" },
+      description:
+        "`sidebar` is the bordered 20rem rail, `bar` the inline horizontal strip.",
+    },
+    className: { control: "text" },
+    children: { control: false },
+  },
   parameters: {
     layout: "padded",
   },
   args: {
     children: <div />,
+    title: "PRD Details",
+    variant: "sidebar",
   },
 } satisfies Meta<typeof MetadataPanel>;
 

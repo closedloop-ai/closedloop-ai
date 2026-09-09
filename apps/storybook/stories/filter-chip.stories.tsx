@@ -7,6 +7,7 @@ import {
 import { FilterChip } from "@repo/design-system/components/ui/filter-chip";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
+import { fn } from "storybook/test";
 
 function InteractiveFilterChipSet() {
   const [chips, setChips] = useState([
@@ -89,9 +90,23 @@ const meta = {
   title: "Design System/Primitives/Filter Chip",
   component: FilterChip,
   tags: ["autodocs"],
+  argTypes: {
+    label: { control: "text" },
+    children: {
+      control: false,
+      description:
+        "Dropdown menu contents. When present the label becomes a menu trigger.",
+    },
+    dropdownClassName: {
+      control: "text",
+      description: "Classes applied to the dropdown content, not the chip.",
+    },
+    className: { control: "text" },
+    onRemove: { control: false, table: { category: "Events" } },
+  },
   args: {
     label: "Status: Active",
-    onRemove: () => undefined,
+    onRemove: fn(),
   },
 } satisfies Meta<typeof FilterChip>;
 

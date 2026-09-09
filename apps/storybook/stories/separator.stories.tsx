@@ -8,7 +8,24 @@ const meta = {
   title: "Design System/Layout/Separator",
   component: Separator,
   tags: ["autodocs"],
-  argTypes: {},
+  argTypes: {
+    orientation: {
+      options: ["horizontal", "vertical"],
+      control: { type: "radio" },
+    },
+    decorative: {
+      control: "boolean",
+      description:
+        "Purely visual dividers stay decorative so assistive tech skips them. Turn it off when the rule marks a real content boundary.",
+    },
+    className: {
+      control: "text",
+    },
+  },
+  args: {
+    orientation: "horizontal",
+    decorative: true,
+  },
 } satisfies Meta<typeof Separator>;
 
 export default meta;

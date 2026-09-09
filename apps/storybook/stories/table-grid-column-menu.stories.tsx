@@ -1,6 +1,7 @@
 import { ColumnOptionsMenu } from "@repo/design-system/components/ui/table-grid-column-menu";
 import type { Meta, StoryObj } from "@storybook/react";
 import { type ReactNode, useState } from "react";
+import { fn } from "storybook/test";
 
 /**
  * The per-column options menu `TableGridHeader` grows under GridTable v2.
@@ -22,8 +23,54 @@ import { type ReactNode, useState } from "react";
 const meta = {
   title: "Design System/Primitives/Table Grid Column Menu",
   component: ColumnOptionsMenu,
+  tags: ["autodocs"],
+  argTypes: {
+    label: {
+      control: "text",
+      table: { category: "Content" },
+      description:
+        "Header text, also used to name the trigger for a screen reader.",
+    },
+    columnId: {
+      control: "text",
+      table: { category: "Content" },
+      description: "Id handed back to every action callback.",
+    },
+    sortable: {
+      control: "boolean",
+      table: { category: "State" },
+      description:
+        "Adds the two sort items. Sort never summons the menu on its own, it only rides along.",
+    },
+    filterable: { control: "boolean", table: { category: "State" } },
+    groupable: { control: "boolean", table: { category: "State" } },
+    movable: { control: "boolean", table: { category: "State" } },
+    sortDir: {
+      options: ["asc", "desc"],
+      control: { type: "radio" },
+      table: { category: "State" },
+    },
+    actions: {
+      control: false,
+      table: { category: "Events" },
+      description:
+        "Optional per-column callbacks. An item renders only when its action is wired here and the column opts in.",
+    },
+    onSort: { control: false, table: { category: "Events" } },
+  },
   parameters: {
     layout: "padded",
+  },
+  args: {
+    label: "Owner",
+    columnId: "owner",
+    sortable: true,
+    filterable: true,
+    groupable: true,
+    movable: true,
+    sortDir: "desc",
+    actions: { onFilter: fn(), onGroup: fn(), onMove: fn() },
+    onSort: fn(),
   },
 } satisfies Meta<typeof ColumnOptionsMenu>;
 

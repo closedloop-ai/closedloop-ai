@@ -20,7 +20,32 @@ const meta: Meta<typeof Form> = {
   title: "Design System/Primitives/Form",
   component: Form,
   tags: ["autodocs"],
-  argTypes: {},
+  // `Form` is React Hook Form's `FormProvider`, so every prop other than
+  // `children` is a live form method or the form state object. None of them are
+  // safe to edit from the panel, and the story supplies them from `useForm`.
+  argTypes: {
+    children: {
+      control: false,
+      description: "Form fields, supplied by the story render function.",
+    },
+    control: { control: false, table: { category: "Form API" } },
+    formState: { control: false, table: { category: "Form API" } },
+    register: { control: false, table: { category: "Form API" } },
+    unregister: { control: false, table: { category: "Form API" } },
+    handleSubmit: { control: false, table: { category: "Form API" } },
+    watch: { control: false, table: { category: "Form API" } },
+    subscribe: { control: false, table: { category: "Form API" } },
+    getValues: { control: false, table: { category: "Form API" } },
+    getFieldState: { control: false, table: { category: "Form API" } },
+    setValue: { control: false, table: { category: "Form API" } },
+    setValues: { control: false, table: { category: "Form API" } },
+    setError: { control: false, table: { category: "Form API" } },
+    clearErrors: { control: false, table: { category: "Form API" } },
+    setFocus: { control: false, table: { category: "Form API" } },
+    trigger: { control: false, table: { category: "Form API" } },
+    reset: { control: false, table: { category: "Form API" } },
+    resetField: { control: false, table: { category: "Form API" } },
+  },
   render: (args) => <ProfileForm {...args} />,
 } satisfies Meta<typeof Form>;
 

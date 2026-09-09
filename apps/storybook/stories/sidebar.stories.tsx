@@ -151,7 +151,7 @@ function ClosedloopMark() {
   );
 }
 
-function GlobalNavDemo() {
+function GlobalNavDemo(props: Parameters<typeof Sidebar>[0]) {
   const pathname = usePath();
   // The preview's memory adapter starts at "/"; show Sessions as the active
   // view until an item is clicked so the default canvas matches the app.
@@ -159,7 +159,7 @@ function GlobalNavDemo() {
 
   return (
     <SidebarProvider>
-      <Sidebar variant="inset">
+      <Sidebar variant="inset" {...props}>
         <form className="flex items-center px-2 pt-2.5">
           <div className="relative w-full">
             <SearchIcon
@@ -280,6 +280,34 @@ const meta: Meta<typeof Sidebar> = {
   title: "Design System/Navigation & Shell/Sidebar",
   component: Sidebar,
   tags: ["autodocs"],
+  argTypes: {
+    side: {
+      options: ["left", "right"],
+      control: { type: "radio" },
+      description: "Edge the sidebar docks to.",
+    },
+    variant: {
+      options: ["sidebar", "floating", "inset"],
+      control: { type: "radio" },
+    },
+    collapsible: {
+      options: ["offcanvas", "icon", "none"],
+      control: { type: "radio" },
+      description:
+        "How the sidebar collapses: slide away, shrink to icons, or stay fixed.",
+    },
+    className: {
+      control: "text",
+    },
+    children: {
+      control: false,
+    },
+  },
+  args: {
+    side: "left",
+    variant: "inset",
+    collapsible: "offcanvas",
+  },
   parameters: {
     layout: "fullscreen",
   },
@@ -289,7 +317,7 @@ export default meta;
 type Story = StoryObj<typeof Sidebar>;
 
 export const GlobalNav: Story = {
-  render: () => <GlobalNavDemo />,
+  render: (args) => <GlobalNavDemo {...args} />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
 

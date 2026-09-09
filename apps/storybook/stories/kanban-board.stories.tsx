@@ -402,7 +402,7 @@ function DroppableColumn({
   );
 }
 
-function KanbanBoardCanvas() {
+function KanbanBoardCanvas({ stackBelow = false }: { stackBelow?: boolean }) {
   const [items, setItems] = useState<BoardItem[]>(initialItems);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -475,7 +475,11 @@ function KanbanBoardCanvas() {
         onDragStart={handleDragStart}
         sensors={sensors}
       >
-        <KanbanBoardLayout className="w-full" contentClassName="min-h-[30rem]">
+        <KanbanBoardLayout
+          className="w-full"
+          contentClassName="min-h-[30rem]"
+          stackBelow={stackBelow}
+        >
           {columns.map((column) => {
             const columnItems = items.filter(
               (item) => item.columnId === column.id
@@ -526,7 +530,17 @@ const meta = {
   title: "Design System/Layout/Kanban Board",
   component: KanbanBoardCanvas,
   tags: ["autodocs"],
+  argTypes: {
+    stackBelow: {
+      control: "boolean",
+      description:
+        "Stack the columns into one scrollable column below `sm` (640px) instead of scrolling them sideways.",
+    },
+  },
   parameters: { layout: "fullscreen" },
+  args: {
+    stackBelow: false,
+  },
 } satisfies Meta<typeof KanbanBoardCanvas>;
 
 export default meta;

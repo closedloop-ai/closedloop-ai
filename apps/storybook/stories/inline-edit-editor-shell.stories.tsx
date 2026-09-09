@@ -57,8 +57,23 @@ const meta = {
   title: "Design System/Documents & Conversation/Inline Edit Editor Shell",
   component: InlineEditEditorShellDemo,
   tags: ["autodocs"],
+  argTypes: {
+    initialExpanded: {
+      control: "boolean",
+      description:
+        "Expanded state the demo seeds its own state with on first render.",
+    },
+    paragraphCount: {
+      control: { type: "number", min: 1, max: 50, step: 1 },
+      description: "Body paragraphs rendered inside the shell.",
+    },
+  },
   parameters: {
     layout: "padded",
+  },
+  args: {
+    initialExpanded: false,
+    paragraphCount: 1,
   },
 } satisfies Meta<typeof InlineEditEditorShellDemo>;
 

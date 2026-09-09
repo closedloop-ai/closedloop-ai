@@ -7,19 +7,46 @@ const meta = {
   tags: ["autodocs"],
   parameters: { layout: "padded" },
   argTypes: {
+    code: { control: "text", table: { category: "Content" } },
+    children: {
+      control: false,
+      description: "Fallback content used when `code` is not supplied.",
+      table: { category: "Content" },
+    },
+    filename: { control: "text", table: { category: "Content" } },
+    label: {
+      control: "text",
+      description: "Header caption used when there is no `filename`.",
+      table: { category: "Content" },
+    },
     tone: {
       options: ["default", "danger", "success"],
       control: { type: "radio" },
+      table: { category: "Appearance" },
     },
     compact: {
       control: "boolean",
+      description: "Drop the header chrome and render only the code.",
+      table: { category: "Appearance" },
     },
     showLineNumbers: {
       control: "boolean",
+      description:
+        "Force the numbered gutter. Left unset it appears at four or more lines.",
+      table: { category: "Appearance" },
     },
+    maxHeight: {
+      control: "text",
+      description: "CSS max-height for the scroll area. Null removes the cap.",
+      table: { category: "Appearance" },
+    },
+    className: { control: "text", table: { category: "Appearance" } },
   },
   args: {
+    compact: false,
     filename: "session-table.tsx",
+    maxHeight: "24rem",
+    tone: "default",
     code: "export function SessionTable() {\n  return <div>Sessions</div>;\n}",
   },
 } satisfies Meta<typeof CodeBlock>;

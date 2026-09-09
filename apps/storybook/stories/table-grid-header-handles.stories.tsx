@@ -123,6 +123,13 @@ const meta = {
   title: "Design System/Primitives/Table Grid Header Handles",
   component: TableGridHeaderHandlesDemo,
   tags: ["autodocs"],
+  argTypes: {
+    enhancedHeaderInteractions: {
+      control: "boolean",
+      description:
+        "Switches the resize affordance from the pre-v2 1.5px divider bar to the GridTable v2 12px hit-strip with its `after:` hairline.",
+    },
+  },
   parameters: {
     layout: "padded",
   },

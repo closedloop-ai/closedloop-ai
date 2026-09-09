@@ -3,6 +3,7 @@ import { CommentComposer } from "@repo/design-system/components/ui/comment-compo
 import type { Meta, StoryObj } from "@storybook/react";
 import { AtSign, GithubIcon, Paperclip } from "lucide-react";
 import { type ComponentProps, useState } from "react";
+import { fn } from "storybook/test";
 
 function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
   const [value, setValue] = useState(args.value ?? "");
@@ -25,8 +26,59 @@ const meta = {
   component: CommentComposerStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    value: {
+      control: "text",
+      description:
+        "Controlled draft body. This story seeds its local state from it.",
+      table: { category: "Content" },
+    },
+    defaultValue: {
+      control: "text",
+      description: "Uncontrolled starting draft body.",
+      table: { category: "Content" },
+    },
+    placeholder: { control: "text", table: { category: "Content" } },
+    ariaLabel: {
+      control: "text",
+      description:
+        "Accessible name for the textarea. Falls back to placeholder.",
+      table: { category: "Content" },
+    },
+    submitLabel: { control: "text", table: { category: "Content" } },
+    cancelLabel: { control: "text", table: { category: "Content" } },
+    helperText: { control: false, table: { category: "Content" } },
+    leadingActions: {
+      control: false,
+      description: "Nodes rendered at the left edge of the footer row.",
+      table: { category: "Content" },
+    },
+    disabled: { control: "boolean", table: { category: "State" } },
+    isPending: { control: "boolean", table: { category: "State" } },
+    clearOnSubmit: {
+      control: "boolean",
+      description: "Uncontrolled mode only. Resets the draft on submit.",
+      table: { category: "State" },
+    },
+    minHeightClassName: { control: "text", table: { category: "Appearance" } },
+    containerClassName: { control: "text", table: { category: "Appearance" } },
+    footerClassName: { control: "text", table: { category: "Appearance" } },
+    onValueChange: { control: false, table: { category: "Events" } },
+    onSubmit: { control: false, table: { category: "Events" } },
+    onCancel: { control: false, table: { category: "Events" } },
+  },
   args: {
-    onSubmit: () => undefined,
+    cancelLabel: "Cancel",
+    clearOnSubmit: true,
+    defaultValue: "",
+    disabled: false,
+    isPending: false,
+    minHeightClassName: "min-h-[96px]",
+    onCancel: fn(),
+    onSubmit: fn(),
+    onValueChange: fn(),
+    placeholder: "Add a comment...",
+    submitLabel: "Comment",
   },
 } satisfies Meta<typeof CommentComposerStory>;
 
@@ -89,7 +141,7 @@ export const InlineEdit: Story = {
     ariaLabel: "Edit comment",
     defaultValue:
       "The error handling still needs a user-facing fallback for timeout cases.",
-    onCancel: () => undefined,
+    onCancel: fn(),
     submitLabel: "Save",
   },
 };

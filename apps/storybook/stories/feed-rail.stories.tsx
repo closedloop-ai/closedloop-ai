@@ -131,6 +131,17 @@ const meta = {
   component: FeedRailStory,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
+  argTypes: {
+    mode: {
+      options: ["inline", "overlay", "sheet"],
+      control: { type: "radio" },
+      description:
+        "Layout the rail resolves to. `inline` is adaptive (sheet below sm, overlay sm to lg, inline above lg); the others are forced.",
+    },
+  },
+  args: {
+    mode: "inline",
+  },
 } satisfies Meta<typeof FeedRailStory>;
 
 export default meta;

@@ -12,10 +12,37 @@ const meta = {
     children: {
       control: "text",
     },
+    type: {
+      options: ["auto", "always", "scroll", "hover"],
+      control: { type: "radio" },
+      description: "When the scrollbars are visible.",
+    },
+    scrollbars: {
+      options: ["vertical", "horizontal", "both"],
+      control: { type: "radio" },
+      description: "Which axes get a scrollbar.",
+    },
+    scrollHideDelay: {
+      control: { type: "number", min: 0, max: 2000, step: 50 },
+      description:
+        "Milliseconds before the scrollbars hide, for the scroll and hover types.",
+    },
+    dir: {
+      options: ["ltr", "rtl"],
+      control: { type: "radio" },
+    },
+    className: {
+      control: "text",
+    },
+    asChild: {
+      control: false,
+    },
   },
   args: {
     className: "h-32 w-80 rounded-md border p-4",
     type: "auto",
+    scrollbars: "vertical",
+    scrollHideDelay: 600,
     children:
       "Jokester began sneaking into the castle in the middle of the night and leaving jokes all over the place: under the king's pillow, in his soup, even in the royal toilet. The king was furious, but he couldn't seem to stop Jokester. And then, one day, the people of the kingdom discovered that the jokes left by Jokester were so funny that they couldn't help but laugh. And once they started laughing, they couldn't stop. The king was so angry that he banished Jokester from the kingdom, but the people still laughed, and they laughed, and they laughed. And they all lived happily ever after.",
   },

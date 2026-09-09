@@ -10,6 +10,16 @@ import { useState } from "react";
 const meta = {
   title: "Design System/Data Display/Table Filter Menu",
   component: TableFilterMenu,
+  tags: ["autodocs"],
+  argTypes: {
+    // Each group carries a rendered icon and an `onValueChange` callback, so
+    // there is no JSON shape a control could edit without breaking the menu.
+    groups: {
+      control: false,
+      description:
+        "Filter groups, each rendered as a single-select radio submenu. Built by the caller from its own filter state.",
+    },
+  },
   parameters: {
     layout: "centered",
   },

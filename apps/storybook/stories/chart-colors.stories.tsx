@@ -41,6 +41,12 @@ const meta = {
   component: ChartColorsPalette,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
+  argTypes: {
+    count: {
+      control: { type: "number", min: 1, max: 40, step: 1 },
+      description: "How many swatches to draw, to show the modulo cycling.",
+    },
+  },
   args: { count: CHART_COLOR_TOKENS.length },
 } satisfies Meta<typeof ChartColorsPalette>;
 
