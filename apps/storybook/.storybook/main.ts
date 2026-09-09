@@ -44,7 +44,12 @@ const config: StorybookConfig = {
     name: getAbsolutePath("@storybook/nextjs"),
     options: {},
   },
-  staticDirs: ["../public"],
+  // `../../app/public` so the Screens layer can use the real brand assets the
+  // app serves (logo.svg, logo-dark.svg, CL-SS3.png) rather than approximating
+  // them. A screen that mocks up its own logo is showing something the product
+  // does not contain, which is the whole failure mode the Screens layer exists
+  // to catch.
+  staticDirs: ["../public", "../../app/public"],
   typescript: {
     // The default `react-docgen` parser silently bails on several of this
     // repo's component files (tabs, badge, tooltip, toggle-group, textarea,

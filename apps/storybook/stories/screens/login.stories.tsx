@@ -7,31 +7,38 @@ import { Input } from "@repo/design-system/components/ui/input";
 import { Label } from "@repo/design-system/components/ui/label";
 import { Separator } from "@repo/design-system/components/ui/separator";
 import type { Meta, StoryObj } from "@storybook/react";
+import Image from "next/image";
 
 /**
- * The unauthenticated sign-in screen.
+ * The unauthenticated sign-in screen, as a whole page.
  *
- * Production renders Clerk's hosted `<SignIn>` embed
- * (`@repo/auth/components/sign-in`), which cannot mount here without a live
- * Clerk instance. This mirrors the canonical layout that embed is themed to
- * reproduce: the GitHub-first hierarchy in
- * `packages/auth/components/appearance.ts` (FEA-4059, PRD-532 M7), whose own
- * source of truth is the prototype at `apps/prototypes/app/p/sign-in`.
+ * Two things this composes, because neither can mount here directly:
  *
- * The hierarchy is the point, so it is worth stating: GitHub is the single
- * filled call to action and sits ALONE above the divider. Everything below the
- * divider is the de-emphasized alternatives bucket, Google as an outline button
- * and the email path with a secondary submit, so neither reads as a peer of
- * GitHub. Getting the emphasis wrong here is the difference between a screen
- * that recommends a path and one that offers three equal ones.
+ * The PAGE CHROME is `apps/app/app/(unauthenticated)/layout.tsx` — a two column
+ * grid with the wordmark over a centered card on the left, and the product
+ * screenshot on the brand gradient on the right, hidden below `lg`. That layout
+ * imports `@/env` and the app's navigation Link, neither of which resolve from
+ * Storybook, so the structure is reproduced here against the same real assets
+ * (`/logo.svg`, `/logo-dark.svg`, `/CL-SS3.png`, `var(--brand-gradient)`) that
+ * the app serves.
  *
- * Two things Clerk renders that this does not: the "Last used" badge on
- * whichever provider you signed in with before, and the physical ordering of
- * the social buttons, which is a Clerk Dashboard setting and out of code scope.
+ * The CARD is Clerk's hosted `<SignIn>` embed, themed by
+ * `githubFirstAuthPageAppearance` (FEA-4059, PRD-532 M7), which needs a live
+ * Clerk instance. The hierarchy that appearance encodes is the point and is
+ * reproduced faithfully: GitHub is the single filled call to action, Google is
+ * an outline fallback, and the email submit is `secondary` so the email path
+ * never competes with GitHub.
+ *
+ * Two things the real page shows that this cannot: Clerk's "Last used" badge on
+ * whichever provider you signed in with before, and the physical top-to-bottom
+ * ordering of the social buttons, which is a Clerk Dashboard setting and
+ * explicitly out of code scope. So a screenshot of production may show Google
+ * above GitHub while this shows GitHub first; the emphasis is what is designed,
+ * the order is not.
  */
 
-// Copy mirrors `apps/prototypes/app/p/sign-in/mock.ts`, which is what the live
-// screen shows.
+// Copy mirrors `apps/prototypes/app/p/sign-in/mock.ts`, the design source the
+// Clerk appearance is themed to reproduce.
 const LOGIN_COPY = {
   heading: "Welcome to Closedloop",
   emailLabel: "Email address",
@@ -55,13 +62,18 @@ type LoginScreenProps = {
   /** Show the email path below the divider. */
   showEmail?: boolean;
   /**
-   * Show the Privacy and Terms chrome. Deliberately non-interactive in the
-   * prototype: there is no privacy or terms route yet, and a link that looks
-   * clickable and goes nowhere is the thing that sandbox exists to catch.
+   * Show the Privacy and Terms chrome. Deliberately non-interactive: there is
+   * no privacy or terms route yet, and a link that looks clickable and goes
+   * nowhere is the thing the prototype sandbox exists to catch.
    */
   showFooter?: boolean;
   /** Disable every control, the state while a submission is in flight. */
   pending?: boolean;
+  /**
+   * Render the right-hand gradient panel. The real layout hides it below the
+   * `lg` breakpoint, so turning it off is the mobile and tablet arrangement.
+   */
+  showShowcase?: boolean;
 };
 
 const OrDivider = () => (
@@ -72,6 +84,101 @@ const OrDivider = () => (
   </div>
 );
 
+const SignInCard = ({
+  continueLabel,
+  emailLabel,
+  emailPlaceholder,
+  heading,
+  pending,
+  showEmail,
+  showFooter,
+  showGoogle,
+}: Required<Omit<LoginScreenProps, "showShowcase">>) => {
+  const hasAlternatives = showGoogle || showEmail;
+
+  return (
+    <div className="w-full">
+      <h1 className="text-center font-semibold text-2xl">{heading}</h1>
+
+      {/* GitHub is the single filled call to action, alone above the divider so
+          it reads as the one recommended way in. */}
+      <div className="mt-8">
+        <Button className="w-full" disabled={pending} size="lg">
+          <GitHubMark className="size-4" />
+          Continue with GitHub
+        </Button>
+      </div>
+
+      {hasAlternatives ? (
+        <div className="my-6">
+          <OrDivider />
+        </div>
+      ) : null}
+
+      <div className="flex flex-col gap-4">
+        {showGoogle ? (
+          <Button
+            className="w-full"
+            disabled={pending}
+            size="lg"
+            variant="outline"
+          >
+            <GoogleGlyph className="size-4" />
+            Continue with Google
+          </Button>
+        ) : null}
+
+        {showEmail ? (
+          <>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="login-email">{emailLabel}</Label>
+              <Input
+                autoComplete="email"
+                disabled={pending}
+                id="login-email"
+                placeholder={emailPlaceholder}
+                type="email"
+              />
+            </div>
+
+            {/* Secondary, so the email path never competes with GitHub. */}
+            <Button
+              className="w-full"
+              disabled={pending}
+              size="lg"
+              variant="secondary"
+            >
+              {continueLabel}
+            </Button>
+          </>
+        ) : null}
+      </div>
+
+      <p className="mt-6 text-center text-muted-foreground text-sm">
+        {LOGIN_COPY.signUpPrompt}{" "}
+        {/* The prototype overrides `variant="link"` to `text-foreground`,
+            because the design wants a foreground-toned inline link and Button's
+            only link variant is `text-primary`. Recoloring a variant at the
+            call site is what screens-respect-design-system.test.ts forbids, so
+            this uses the variant as it ships. The fix belongs on Button. */}
+        <Button
+          className="h-auto p-0 align-baseline font-medium"
+          variant="link"
+        >
+          {LOGIN_COPY.signUpCta}
+        </Button>
+      </p>
+
+      {showFooter ? (
+        <div className="mt-8 flex items-center justify-center gap-4 text-muted-foreground text-xs">
+          <span>Privacy</span>
+          <span>Terms</span>
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 const LoginScreen = ({
   continueLabel = LOGIN_COPY.continueLabel,
   emailLabel = LOGIN_COPY.emailLabel,
@@ -81,96 +188,65 @@ const LoginScreen = ({
   showEmail = true,
   showFooter = true,
   showGoogle = true,
-}: LoginScreenProps) => {
-  const hasAlternatives = showGoogle || showEmail;
+  showShowcase = true,
+}: LoginScreenProps) => (
+  <main className="relative grid min-h-dvh lg:grid-cols-2">
+    {/* Left: wordmark pinned top-left, card centered in the remaining height. */}
+    <div className="flex min-h-dvh flex-col overflow-y-auto px-6 py-10 lg:px-10">
+      <span className="inline-flex self-start">
+        {/* Two files, one per theme, exactly as the layout serves them. */}
+        <Image
+          alt="Closedloop logo"
+          className="dark:hidden"
+          height={30}
+          src="/logo.svg"
+          width={200}
+        />
+        <Image
+          alt="Closedloop logo"
+          className="hidden dark:block"
+          height={30}
+          src="/logo-dark.svg"
+          width={200}
+        />
+      </span>
 
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
-      <div className="w-full max-w-sm">
-        <h1 className="text-center font-semibold text-2xl">{heading}</h1>
-
-        {/* GitHub is the single filled call to action, alone above the divider
-            so it reads as the one recommended way in. */}
-        <div className="mt-8">
-          <Button className="w-full" disabled={pending} size="lg">
-            <GitHubMark className="size-4" />
-            Continue with GitHub
-          </Button>
+      <div className="flex flex-1 items-center justify-center py-8">
+        <div className="w-full max-w-sm">
+          <SignInCard
+            continueLabel={continueLabel}
+            emailLabel={emailLabel}
+            emailPlaceholder={emailPlaceholder}
+            heading={heading}
+            pending={pending}
+            showEmail={showEmail}
+            showFooter={showFooter}
+            showGoogle={showGoogle}
+          />
         </div>
-
-        {hasAlternatives ? (
-          <div className="my-6">
-            <OrDivider />
-          </div>
-        ) : null}
-
-        {/* Everything below the divider is the de-emphasized bucket. */}
-        <div className="flex flex-col gap-4">
-          {showGoogle ? (
-            <Button
-              className="w-full"
-              disabled={pending}
-              size="lg"
-              variant="outline"
-            >
-              <GoogleGlyph className="size-4" />
-              Continue with Google
-            </Button>
-          ) : null}
-
-          {showEmail ? (
-            <>
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="login-email">{emailLabel}</Label>
-                <Input
-                  autoComplete="email"
-                  disabled={pending}
-                  id="login-email"
-                  placeholder={emailPlaceholder}
-                  type="email"
-                />
-              </div>
-
-              {/* Secondary, so the email path never competes with GitHub. */}
-              <Button
-                className="w-full"
-                disabled={pending}
-                size="lg"
-                variant="secondary"
-              >
-                {continueLabel}
-              </Button>
-            </>
-          ) : null}
-        </div>
-
-        <p className="mt-6 text-center text-muted-foreground text-sm">
-          {LOGIN_COPY.signUpPrompt}{" "}
-          {/* The prototype this mirrors overrides `variant="link"` to
-              `text-foreground`, because the design wants a foreground-toned
-              inline link and Button's only link variant is `text-primary`.
-              Recoloring a variant at the call site is the thing
-              screens-respect-design-system.test.ts forbids, so this uses the
-              variant as it ships. The divergence is real and the fix belongs on
-              Button, as a link variant that carries the foreground tone. */}
-          <Button
-            className="h-auto p-0 align-baseline font-medium"
-            variant="link"
-          >
-            {LOGIN_COPY.signUpCta}
-          </Button>
-        </p>
-
-        {showFooter ? (
-          <div className="mt-8 flex items-center justify-center gap-4 text-muted-foreground text-xs">
-            <span>Privacy</span>
-            <span>Terms</span>
-          </div>
-        ) : null}
       </div>
     </div>
-  );
-};
+
+    {/* Right: near full-bleed gradient panel, a slim gutter, art flush right. */}
+    {showShowcase ? (
+      <div className="hidden h-full p-3 lg:block">
+        <div
+          className="flex h-full w-full items-center justify-end overflow-hidden rounded-2xl pl-12"
+          style={{ background: "var(--brand-gradient)" }}
+        >
+          <Image
+            alt="Closedloop product screenshot"
+            className="max-h-full w-auto object-contain"
+            height={1191}
+            priority
+            src="/CL-SS3.png"
+            width={1060}
+          />
+        </div>
+      </div>
+    ) : null}
+  </main>
+);
 
 const meta = {
   title: "Screens/Login",
@@ -197,6 +273,12 @@ const meta = {
       description: "Privacy and Terms chrome. Not interactive by design.",
       table: { category: "Composition" },
     },
+    showShowcase: {
+      control: "boolean",
+      description:
+        "The gradient panel. The real layout hides it below lg, so off is the mobile arrangement.",
+      table: { category: "Composition" },
+    },
     pending: {
       control: "boolean",
       description: "Everything disabled, as while a submission is in flight.",
@@ -211,6 +293,7 @@ const meta = {
     showGoogle: true,
     showEmail: true,
     showFooter: true,
+    showShowcase: true,
     pending: false,
   },
   parameters: { layout: "fullscreen" },
@@ -222,10 +305,15 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+/** Below `lg`, where the layout drops the showcase panel. */
+export const Narrow: Story = {
+  name: "Narrow (no showcase)",
+  args: { showShowcase: false },
+  parameters: { viewport: { defaultViewport: "md" } },
+};
+
 /** GitHub only, the state when no other provider is enabled for the org. */
 export const GitHubOnly: Story = {
-  // Storybook splits camelCase for the sidebar label, which renders this as
-  // "Git Hub Only". Named explicitly.
   name: "GitHub only",
   args: { showEmail: false, showGoogle: false },
 };
