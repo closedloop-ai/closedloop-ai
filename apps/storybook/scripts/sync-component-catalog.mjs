@@ -149,7 +149,17 @@ const splitWordsRegex = /[-_\s]+/;
 const uppercaseWordRegex = /^[A-Z0-9]+$/;
 // Anchor on `const meta` so the match skips any fixture/metadata array whose
 // nested `title:` would otherwise match first (mirrors validate-story-titles).
-export const metaTitleRegex = /const meta\b[\s\S]*?\btitle:\s*"([^"]+)"/;
+// The `\n  ` is load-bearing: it pins the match to a key at the meta object's
+// OWN indentation. Without it the lazy scan takes the first `title:` anywhere
+// after `const meta`, which a nested one shadows — and a component with a
+// `title` prop puts exactly that in `args`. `AuthTransitionPanel` does, and its
+// story reported its title as "Taking you to GitHub" rather than its real
+// "App Core/Onboarding/Auth Transition Panel", so the catalog check failed on a
+// story whose title was correct all along.
+//
+// Verified against all 335 story files in the repo: this and the previous
+// pattern agree on 334, and differ only on that one, where this is right.
+export const metaTitleRegex = /const meta\b[\s\S]*?\n {2}title:\s*"([^"]+)"/;
 const storyFileSuffixRegex = /\.stories\.tsx$/;
 
 function toPosixPath(value) {
