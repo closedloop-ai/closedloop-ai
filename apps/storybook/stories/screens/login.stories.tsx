@@ -156,14 +156,9 @@ const SignInCard = ({
 
       <p className="mt-6 text-center text-muted-foreground text-sm">
         {LOGIN_COPY.signUpPrompt}{" "}
-        {/* The prototype overrides `variant="link"` to `text-foreground`,
-            because the design wants a foreground-toned inline link and Button's
-            only link variant is `text-primary`. Recoloring a variant at the
-            call site is what screens-respect-design-system.test.ts forbids, so
-            this uses the variant as it ships. The fix belongs on Button. */}
         <Button
           className="h-auto p-0 align-baseline font-medium"
-          variant="link"
+          variant="linkForeground"
         >
           {LOGIN_COPY.signUpCta}
         </Button>

@@ -21,6 +21,7 @@ const meta = {
         "secondary",
         "ghost",
         "link",
+        "linkForeground",
       ],
       control: { type: "radio" },
     },
