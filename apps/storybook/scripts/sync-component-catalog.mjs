@@ -93,6 +93,27 @@ const designSystemOverridesById = {
   resizable: {
     label: "Resizable Panel Group",
   },
+
+  // Support components: they exist to build one specific parent, not to be
+  // reached for directly. Marking them keeps them out of the catalog's
+  // browsable list (see `hasStory`) while leaving their stories in the sidebar,
+  // so you can still inspect one without it reading as a component to compose
+  // with. Derived rather than chosen: each is imported by another design-system
+  // component and by no application code.
+  "filter-range-submenu": {
+    internal: true,
+    note: "Submenu inside the table filter menu.",
+  },
+  "grid-table-card": {
+    internal: true,
+    note: "Card row rendered by GridTable in compact mode.",
+  },
+  // `table-grid-header-handles` matches the same derivation but is NOT marked.
+  // It has its own story, and `validate-story-titles.mjs` requires every
+  // design-system story to be cataloged, which marking it internal breaks. That
+  // invariant is right: giving a component a story is presenting it for review,
+  // which is the opposite of "do not reach for this". So a component is either
+  // reviewable or internal, not both.
 };
 
 const appComponentSurfaces = [

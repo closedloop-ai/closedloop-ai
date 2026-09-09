@@ -304,6 +304,8 @@ export const designSystemComponentCatalog =
       "Primitives"
     ],
     "storyStatus": "catalog-only",
+    "internal": true,
+    "note": "Submenu inside the table filter menu.",
     "storyTitle": "Design System/Primitives/Filter Range Submenu"
   },
   {
@@ -326,6 +328,8 @@ export const designSystemComponentCatalog =
       "Primitives"
     ],
     "storyStatus": "catalog-only",
+    "internal": true,
+    "note": "Card row rendered by GridTable in compact mode.",
     "storyTitle": "Design System/Primitives/Grid Table Card"
   },
   {
