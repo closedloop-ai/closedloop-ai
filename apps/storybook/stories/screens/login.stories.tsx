@@ -224,6 +224,9 @@ export const Default: Story = {};
 
 /** GitHub only, the state when no other provider is enabled for the org. */
 export const GitHubOnly: Story = {
+  // Storybook splits camelCase for the sidebar label, which renders this as
+  // "Git Hub Only". Named explicitly.
+  name: "GitHub only",
   args: { showEmail: false, showGoogle: false },
 };
 
