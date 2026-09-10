@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { InstallSourceLabel } from "./install-source-label";
 
 const meta = {
-  title: "App Core/Packs/Install Source Label",
+  title: "Composites/Packs/Install Source Label",
   component: InstallSourceLabel,
   tags: ["autodocs"],
   args: {

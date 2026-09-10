@@ -123,7 +123,7 @@ function BarRowStage({
 }
 
 const meta = {
-  title: "App Core/Agents/Timeline/Session Timeline Bars",
+  title: "Primitives/Charts/Session Timeline Bars",
   component: SessionTimelineBars,
   tags: ["autodocs"],
   argTypes: {

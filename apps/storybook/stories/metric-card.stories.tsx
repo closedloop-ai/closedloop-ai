@@ -12,7 +12,7 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Data Display/Metric Card",
+  title: "Composites/Data Display/Metric Card",
   component: MetricCard,
   tags: ["autodocs"],
   argTypes: {

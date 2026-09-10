@@ -31,7 +31,7 @@ const CHECKS_BUTTON_NAME = /checks/i;
  * check-link geometry visible rather than leaving it to unit assertions.
  */
 const meta = {
-  title: "App Core/Branches/Branch PR Status Panel",
+  title: "Composites/Branches/Branch PR Status Panel",
   component: BranchPrStatusPanel,
   tags: ["autodocs"],
   argTypes: {

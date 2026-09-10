@@ -13,7 +13,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "App Core/Branches/Branches Summary Cards",
+  title: "Composites/Branches/Branches Summary Cards",
   component: BranchesSummaryCards,
   tags: ["autodocs"],
   argTypes: {

@@ -93,7 +93,7 @@ const MANY_FACET_FILTERS: SessionFacetFilters = {
 };
 
 const meta = {
-  title: "App Core/Agents/Sessions/Sessions Active Filters Bar",
+  title: "Composites/Sessions/Listing/Sessions Active Filters Bar",
   component: SessionsActiveFiltersBar,
   tags: ["autodocs"],
   argTypes: {

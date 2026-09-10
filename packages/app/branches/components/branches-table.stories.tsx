@@ -30,7 +30,7 @@ import { fn } from "storybook/test";
  * columns), and column headers drive sorting.
  */
 const meta = {
-  title: "App Core/Branches/Branches Table",
+  title: "Composites/Branches/Branches Table",
   component: BranchesTable,
   tags: ["autodocs"],
   argTypes: {

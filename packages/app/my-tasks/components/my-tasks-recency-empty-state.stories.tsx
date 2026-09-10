@@ -12,7 +12,7 @@ import { MyTasksRecencyEmptyState } from "./my-tasks-recency-empty-state";
  * still there, and must be able to get to it.
  */
 const meta = {
-  title: "App Core/My Tasks/Recency Empty State",
+  title: "Composites/My Tasks/Recency Empty State",
   component: MyTasksRecencyEmptyState,
   tags: ["autodocs"],
   parameters: {

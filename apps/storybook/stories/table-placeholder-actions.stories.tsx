@@ -9,7 +9,7 @@ import { useState } from "react";
  * "New …"). Pass a functional control such as a Filter menu via `leading`.
  */
 const meta = {
-  title: "Design System/Data Display/Table Placeholder Actions",
+  title: "Composites/Data Display/Table Placeholder Actions",
   component: TablePlaceholderActions,
   tags: ["autodocs"],
   argTypes: {

@@ -86,7 +86,7 @@ const meta = {
   },
   parameters: { layout: "padded" },
   tags: ["autodocs"],
-  title: "App Core/Documents/Activity Card View",
+  title: "Composites/Documents/Activity Card View",
 } satisfies Meta<typeof ActivityCardView>;
 
 export default meta;

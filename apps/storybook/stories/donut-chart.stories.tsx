@@ -26,7 +26,7 @@ const partialOutcomeColors: Record<string, string> = Object.fromEntries(
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Donut Chart",
+  title: "Primitives/Charts/Donut Chart",
   component: DonutChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

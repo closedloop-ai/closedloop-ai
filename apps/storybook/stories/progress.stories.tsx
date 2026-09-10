@@ -9,7 +9,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * displayed as a progress bar.
  */
 const meta = {
-  title: "Design System/Primitives/Progress",
+  title: "Primitives/Feedback & Status/Progress",
   component: Progress,
   tags: ["autodocs"],
   argTypes: {

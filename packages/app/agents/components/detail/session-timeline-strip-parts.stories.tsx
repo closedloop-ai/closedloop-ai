@@ -31,7 +31,7 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
  * every story at once would stack them all on the same viewport coordinates.
  */
 const meta = {
-  title: "App Core/Agents/Timeline/Session Timeline Event Dot Tooltip",
+  title: "Primitives/Overlays/Session Timeline Event Dot Tooltip",
   component: EventDotTooltip,
   argTypes: {
     anchor: { control: "object" },

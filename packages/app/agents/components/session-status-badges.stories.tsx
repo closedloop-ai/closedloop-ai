@@ -80,7 +80,7 @@ const SessionStatusBadgesGallery = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Overview/Session Status Badges",
+  title: "Composites/Sessions/Listing/Session Status Badges",
   component: SessionStatusBadgesGallery,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

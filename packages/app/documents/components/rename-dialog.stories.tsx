@@ -3,7 +3,7 @@ import { fn } from "storybook/test";
 import { RenameDialog } from "./rename-dialog";
 
 const meta = {
-  title: "App Core/Documents/Rename Dialog",
+  title: "Composites/Documents/Rename Dialog",
   component: RenameDialog,
   tags: ["autodocs"],
   argTypes: {

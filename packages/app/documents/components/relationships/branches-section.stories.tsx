@@ -59,7 +59,7 @@ const EXECUTE_RUNNING: GenerationStatus = {
 };
 
 const meta = {
-  title: "App Core/Documents/Branches Section",
+  title: "Composites/Documents/Branches Section",
   component: BranchesSection,
   tags: ["autodocs"],
   argTypes: {

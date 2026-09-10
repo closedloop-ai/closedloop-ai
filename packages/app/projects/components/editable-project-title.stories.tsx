@@ -22,7 +22,7 @@ const projectRoutes: FixtureRoute[] = [
 ];
 
 const meta: Meta<typeof EditableProjectTitle> = {
-  title: "App Core/Projects/Editable Project Title",
+  title: "Composites/My Tasks/Editable Project Title",
   component: EditableProjectTitle,
   tags: ["autodocs"],
   parameters: { appCore: { apiRoutes: projectRoutes } },

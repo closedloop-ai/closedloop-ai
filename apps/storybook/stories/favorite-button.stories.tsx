@@ -44,7 +44,7 @@ function FavoriteButtonDemo({
 }
 
 const meta = {
-  title: "Design System/Primitives/Favorite Button",
+  title: "Composites/Actions/Favorite Button",
   component: FavoriteButtonDemo,
   tags: ["autodocs"],
   parameters: {

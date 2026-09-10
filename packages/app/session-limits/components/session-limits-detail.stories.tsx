@@ -36,7 +36,7 @@ function limits(overrides: Partial<SessionLimits> = {}): SessionLimits {
  * arriving as a bare drawer (wongk, PR #4572).
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Detail",
+  title: "Primitives/Feedback & Status/Session Limits Detail",
   component: SessionLimitsDetail,
   tags: ["autodocs"],
   parameters: {

@@ -33,7 +33,7 @@ const SCREENS_DIR = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "stories",
-  "screens"
+  "surfaces"
 );
 
 // Only story files. `app-shell.tsx` is a shared helper, not a screen.

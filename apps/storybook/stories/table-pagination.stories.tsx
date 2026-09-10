@@ -9,7 +9,7 @@ import { fn } from "storybook/test";
  * the target zero-based page. Renders nothing for a single page.
  */
 const meta = {
-  title: "Design System/Data Display/Table Pagination",
+  title: "Composites/Data Display/Table Pagination",
   component: TablePagination,
   tags: ["autodocs"],
   argTypes: {

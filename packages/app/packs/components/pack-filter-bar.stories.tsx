@@ -12,7 +12,7 @@ const harnesses = Array.from(
 const harnessOptions = ["all", ...harnesses];
 
 const meta = {
-  title: "App Core/Packs/Pack Filter Bar",
+  title: "Composites/Packs/Pack Filter Bar",
   component: PackFilterBar,
   tags: ["autodocs"],
   argTypes: {

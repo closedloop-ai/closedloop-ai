@@ -11,8 +11,23 @@ The hosted copy lives at https://storybook.preview.closedloop-stage.ai behind HT
 
 ## How it is organised
 
-Four levels: Foundations, Primitives, Composites, Surfaces. `TAXONOMY.md` has the rules,
-the three judgment calls behind them, and how to classify something new.
+Four levels: Foundations, Primitives, Composites, Surfaces. Every story is titled
+`<Level>/<Group>/<Component>`.
+
+```
+Foundations     6    the tokens themselves
+Primitives    116    one cohesive element
+Composites    197    built from primitives
+Surfaces       16    a page, or a full page region
+```
+
+A component's title says what it is, never which package its code sits in. There is
+no longer a `Design System` / `App Core` / `Desktop App` split: web and desktop are
+held to parity, and anything that genuinely differs under the Electron shell gets a
+variant that names the difference.
+
+`TAXONOMY.md` has the group vocabulary, the judgment calls behind it, and how to
+classify something new. Read it before adding a story.
 
 ## What changed: this now runs on Vite
 
@@ -92,4 +107,7 @@ pnpm -C apps/storybook validate:catalog
 
 Story titles feed the component catalog, so they are checked. If you add or rename a story and this fails, run `pnpm -C apps/storybook catalog:sync` and commit the regenerated `packages/design-system/storybook/component-catalog.ts`.
 
-Colocated App Core stories must be titled `App Core/<Feature>/<Component>` or the catalog cannot see them.
+Every story, colocated or not, must be titled `<Level>/<Group>/<Component>` where the
+level is one of the four above. The catalog parses `section` and `pathSegments` straight
+out of `meta.title`, so a title that does not start with a level cannot be catalogued at
+all, and `validate:catalog` fails rather than letting it disappear.

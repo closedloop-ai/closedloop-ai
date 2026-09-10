@@ -17,7 +17,7 @@ import { z } from "zod";
  * Building forms with React Hook Form and Zod.
  */
 const meta: Meta<typeof Form> = {
-  title: "Design System/Primitives/Form",
+  title: "Composites/Inputs/Form",
   component: Form,
   tags: ["autodocs"],
   // `Form` is React Hook Form's `FormProvider`, so every prop other than

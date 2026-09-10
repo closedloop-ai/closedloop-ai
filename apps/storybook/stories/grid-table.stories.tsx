@@ -31,7 +31,7 @@ import {
  * sticky header and horizontal scroll resolve against that host.
  */
 const meta = {
-  title: "Design System/Data Display/Grid Table",
+  title: "Primitives/Data Display/Grid Table",
   component: GridTable,
   tags: ["autodocs"],
   // Every story below renders the table itself, so these argTypes document the

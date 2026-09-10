@@ -527,7 +527,7 @@ function KanbanBoardCanvas({ stackBelow = false }: { stackBelow?: boolean }) {
 }
 
 const meta = {
-  title: "Design System/Layout/Kanban Board",
+  title: "Composites/Layout/Kanban Board",
   component: KanbanBoardCanvas,
   tags: ["autodocs"],
   argTypes: {

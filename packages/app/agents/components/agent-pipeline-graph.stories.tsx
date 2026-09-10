@@ -10,7 +10,7 @@ const AgentPipelineGraphCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Overview/Agent Pipeline Graph",
+  title: "Primitives/Charts/Agent Pipeline Graph",
   component: AgentPipelineGraphCanvas,
   tags: ["autodocs"],
   parameters: {

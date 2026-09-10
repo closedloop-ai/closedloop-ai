@@ -35,7 +35,7 @@ import { Sidebar } from "./Sidebar";
  * dashboard's wrapping title row does.
  */
 const meta = {
-  title: "Desktop App/App Shell/Sidebar Account Footer",
+  title: "Composites/App Shell/Sidebar Account Footer",
   component: Sidebar,
   parameters: { layout: "fullscreen" },
 };

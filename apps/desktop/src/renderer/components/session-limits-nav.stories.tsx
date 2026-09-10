@@ -31,7 +31,7 @@ const TIME_ZONE = "UTC";
  * page width can still wrap its reset line in the only place it actually ships.
  */
 const meta = {
-  title: "Desktop App/App Shell/Session Limits Nav",
+  title: "Composites/App Shell/Session Limits Nav",
   component: SessionLimitsNav,
   tags: ["autodocs"],
   argTypes: {

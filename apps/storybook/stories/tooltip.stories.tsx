@@ -13,7 +13,7 @@ import { fn } from "storybook/test";
  * receives keyboard focus or the mouse hovers over it.
  */
 const meta: Meta<typeof TooltipContent> = {
-  title: "Design System/Overlays/Tooltip",
+  title: "Primitives/Overlays/Tooltip",
   component: TooltipContent,
   tags: ["autodocs"],
   argTypes: {

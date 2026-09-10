@@ -9,7 +9,7 @@ import { ArtifactRunInFlight } from "./artifact-run-in-flight";
  * link that goes nowhere.
  */
 const meta = {
-  title: "App Core/Documents/Artifact Run In Flight",
+  title: "Composites/Documents/Artifact Run In Flight",
   component: ArtifactRunInFlight,
   tags: ["autodocs"],
   argTypes: {

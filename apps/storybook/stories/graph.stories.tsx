@@ -19,7 +19,7 @@ const links = workflowData.cooccurrence.slice(0, 8).map((link) => ({
 }));
 
 const meta: Meta<typeof Graph> = {
-  title: "Design System/Data Display/Data Visualization/Graph",
+  title: "Primitives/Charts/Graph",
   component: Graph,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

@@ -20,7 +20,7 @@ import { PageShell } from "./layout/page-shell";
  * not (a bare centered "Loading...").
  */
 const meta = {
-  title: "Desktop App/App Shell/Labs Gate Surfaces",
+  title: "Composites/App Shell/Labs Gate Surfaces",
   component: LabsPageUnavailable,
   tags: ["autodocs"],
   // Each story mounts its own surface with the props it is about, so a control

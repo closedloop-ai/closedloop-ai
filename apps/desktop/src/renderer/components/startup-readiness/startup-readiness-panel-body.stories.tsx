@@ -66,7 +66,7 @@ const ONLINE_CLOUD_STATUS: CloudStatus = { kind: CloudStatusKind.Online };
  * additionally needs a wedged or unverifiable cloud sync.
  */
 const meta = {
-  title: "Desktop App/App Shell/Startup Readiness Panel Body",
+  title: "Composites/App Shell/Startup Readiness Panel Body",
   component: StartupReadinessPanelBody,
   tags: ["autodocs"],
   argTypes: {

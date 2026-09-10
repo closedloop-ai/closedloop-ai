@@ -14,7 +14,7 @@ import type { ReactNode } from "react";
  * compose these to render their own status vocabularies.
  */
 const meta = {
-  title: "Design System/Feedback & Status/Status Icon Primitives",
+  title: "Primitives/Feedback & Status/Status Icon Primitives",
   component: StatusRing,
   tags: ["autodocs"],
   argTypes: {

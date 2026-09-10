@@ -65,7 +65,7 @@ const traceItems: MergedTraceItem[] = [
 ];
 
 const meta = {
-  title: "App Core/Branches/Merged Trace",
+  title: "Composites/Branches/Merged Trace",
   component: BranchMergedTrace,
   tags: ["autodocs"],
   argTypes: {

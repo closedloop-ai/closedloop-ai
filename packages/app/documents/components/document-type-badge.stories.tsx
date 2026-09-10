@@ -6,7 +6,7 @@ import { DocumentTypeBadge } from "@repo/app/documents/components/document-type-
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "App Core/Documents/Document Type Badge",
+  title: "Composites/Documents/Document Type Badge",
   component: DocumentTypeBadge,
   tags: ["autodocs"],
   argTypes: {

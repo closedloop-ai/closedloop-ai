@@ -44,7 +44,7 @@ function PropertiesFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Pull Requests Row",
+  title: "Primitives/Data Display/Session Pull Requests Row",
   component: SessionPullRequestsRow,
   tags: ["autodocs"],
   argTypes: {

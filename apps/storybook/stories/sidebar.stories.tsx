@@ -277,7 +277,7 @@ function GlobalNavDemo(props: Parameters<typeof Sidebar>[0]) {
 }
 
 const meta: Meta<typeof Sidebar> = {
-  title: "Design System/Navigation & Shell/Sidebar",
+  title: "Composites/Navigation/Sidebar",
   component: Sidebar,
   tags: ["autodocs"],
   argTypes: {

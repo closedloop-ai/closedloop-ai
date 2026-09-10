@@ -3,7 +3,7 @@ import { SankeyGraph } from "@repo/design-system/components/ui/primitives/sankey
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Sankey Graph",
+  title: "Primitives/Charts/Sankey Graph",
   component: SankeyGraph,
   tags: ["autodocs"],
   argTypes: {

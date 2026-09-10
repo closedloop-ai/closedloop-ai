@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { PacksWorkspaceSkeleton } from "./packs-workspace-skeleton";
 
 const meta = {
-  title: "App Core/Packs/Packs Workspace Skeleton",
+  title: "Composites/Packs/Packs Workspace Skeleton",
   component: PacksWorkspaceSkeleton,
   tags: ["autodocs"],
   parameters: {

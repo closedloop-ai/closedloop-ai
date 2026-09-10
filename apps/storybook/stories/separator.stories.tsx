@@ -5,7 +5,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Visually or semantically separates content.
  */
 const meta = {
-  title: "Design System/Layout/Separator",
+  title: "Primitives/Layout/Separator",
   component: Separator,
   tags: ["autodocs"],
   argTypes: {

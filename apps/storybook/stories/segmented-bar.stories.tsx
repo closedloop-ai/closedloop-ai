@@ -14,7 +14,7 @@ const SegmentedBarCanvas = (props: Parameters<typeof SegmentedBar>[0]) => (
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Segmented Bar",
+  title: "Primitives/Charts/Segmented Bar",
   component: SegmentedBarCanvas,
   tags: ["autodocs"],
   parameters: {

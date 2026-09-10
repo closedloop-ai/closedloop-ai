@@ -18,7 +18,7 @@ import { DashboardScopeControl } from "./dashboard-scope-control";
  * generic primitive, and the gating is entirely this wrapper's.
  */
 const meta = {
-  title: "Desktop App/Dashboard/Scope Control",
+  title: "Composites/Insights/Scope Control",
   component: DashboardScopeControl,
   tags: ["autodocs"],
   argTypes: {

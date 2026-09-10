@@ -16,7 +16,7 @@ import { fn } from "storybook/test";
 import { ArtifactRowView } from "./artifact-row-view";
 
 const meta = {
-  title: "App Core/Documents/Artifact Row View",
+  title: "Composites/Documents/Artifact Row View",
   component: ArtifactRowView,
   tags: ["autodocs"],
   argTypes: {

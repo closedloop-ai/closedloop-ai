@@ -18,7 +18,7 @@ import { LoopStatusBadge } from "./loop-status-badge";
  * stays green. Without this assertion the parameter migration is unverified.
  */
 const meta: Meta<typeof LoopStatusBadge> = {
-  title: "App Core/Loops/Loop Status Badge",
+  title: "Primitives/Feedback & Status/Loop Status Badge",
   component: LoopStatusBadge,
   tags: ["autodocs"],
   argTypes: {

@@ -46,7 +46,7 @@ function cardsOf(count: number): DocumentRowData[] {
 }
 
 const meta = {
-  title: "App Core/My Tasks/Card View",
+  title: "Composites/My Tasks/Card View",
   component: MyTasksCardView,
   tags: ["autodocs"],
   argTypes: {

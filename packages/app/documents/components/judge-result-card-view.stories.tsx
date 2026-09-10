@@ -28,7 +28,7 @@ const failingItem: JudgeFeedbackItem = {
 };
 
 const meta = {
-  title: "App Core/Documents/Judge Result Card View",
+  title: "Composites/Documents/Judge Result Card View",
   component: JudgeResultCardView,
   tags: ["autodocs"],
   argTypes: {

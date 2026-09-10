@@ -21,7 +21,7 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Comment Card",
+  title: "Composites/Branches/Comment Card",
   tags: ["autodocs"],
   argTypes: {
     canEditRoot: { control: "boolean", table: { category: "State" } },

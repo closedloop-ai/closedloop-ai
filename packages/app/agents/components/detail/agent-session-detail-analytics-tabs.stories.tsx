@@ -47,7 +47,7 @@ const ERROR_MAP_MARKER = "1 error event total";
 const NARROW_VIEWPORT_PX = 360;
 
 const meta = {
-  title: "App Core/Agents/Detail/Agent Session Detail Analytics Tabs",
+  title: "Composites/Sessions/Detail/Agent Session Detail Analytics Tabs",
   component: AgentSessionDetailAnalyticsTabs,
   tags: ["autodocs"],
   argTypes: {

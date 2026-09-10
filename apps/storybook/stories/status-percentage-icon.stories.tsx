@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
  * a "thinking" spinner overlay for AI/agent processing.
  */
 const meta = {
-  title: "Design System/Data Display/Status Percentage Icon",
+  title: "Primitives/Feedback & Status/Status Percentage Icon",
   component: StatusPercentageIcon,
   tags: ["autodocs"],
   argTypes: {

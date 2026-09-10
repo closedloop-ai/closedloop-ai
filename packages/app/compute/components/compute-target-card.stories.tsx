@@ -46,7 +46,7 @@ const checks: CheckResult[] = [
 ];
 
 const meta = {
-  title: "App Core/Compute/Compute Target Card",
+  title: "Composites/Compute/Compute Target Card",
   component: ComputeTargetCard,
   tags: ["autodocs"],
   argTypes: {

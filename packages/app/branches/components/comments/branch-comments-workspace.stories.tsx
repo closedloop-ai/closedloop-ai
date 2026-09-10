@@ -30,7 +30,7 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Comments Workspace",
+  title: "Surfaces/Comments Workspace",
   tags: ["autodocs"],
   argTypes: {
     activeTab: {

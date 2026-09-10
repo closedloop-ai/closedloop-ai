@@ -32,7 +32,7 @@ import { createSessionTableRowFixture } from "./session-list-fixtures";
  * question a reader has when they scan a banded list.
  */
 const meta = {
-  title: "App Core/Agents/Sessions/Session Group Icons",
+  title: "Primitives/Content/Session Group Icons",
   component: GroupSectionHeader,
   tags: ["autodocs"],
   argTypes: {

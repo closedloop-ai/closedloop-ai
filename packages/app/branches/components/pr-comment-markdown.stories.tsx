@@ -3,7 +3,7 @@ import { PrDescriptionMarkdown } from "./pr-comment-markdown";
 
 /** GitHub PR-description structure and untrusted-link/image safety matrix. */
 const meta = {
-  title: "App Core/Branches/PR Description Markdown",
+  title: "Composites/Branches/PR Description Markdown",
   component: PrDescriptionMarkdown,
   tags: ["autodocs"],
   argTypes: {

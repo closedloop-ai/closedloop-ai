@@ -89,7 +89,7 @@ const resolvedThread: CommentThreadItem = {
 };
 
 const meta = {
-  title: "App Core/Documents/Comments Section",
+  title: "Composites/Documents/Comments Section",
   component: CommentsSectionView,
   tags: ["autodocs"],
   argTypes: {

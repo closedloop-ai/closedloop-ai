@@ -27,7 +27,7 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
  * tone, because one is a breakage and the other is just not-yet.
  */
 const meta = {
-  title: "App Core/Agents/Sessions/Sessions Empty State",
+  title: "Composites/Sessions/Listing/Sessions Empty State",
   component: SessionsEmptyState,
   tags: ["autodocs"],
   argTypes: {

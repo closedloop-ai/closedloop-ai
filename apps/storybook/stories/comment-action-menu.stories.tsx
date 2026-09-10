@@ -47,7 +47,7 @@ function CommentActionMenuStory({
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Action Menu",
+  title: "Composites/Overlays/Comment Action Menu",
   component: CommentActionMenuStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

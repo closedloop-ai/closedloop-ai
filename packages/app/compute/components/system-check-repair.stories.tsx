@@ -6,7 +6,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { SystemCheckRepairPanel } from "./system-check-repair";
 
 const meta: Meta<typeof SystemCheckRepairPanel> = {
-  title: "App Core/Compute/System Check Repair Panel",
+  title: "Composites/Compute/System Check Repair Panel",
   component: SystemCheckRepairPanel,
   tags: ["autodocs"],
   argTypes: {

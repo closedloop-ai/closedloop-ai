@@ -15,7 +15,7 @@ import { OverviewMetric } from "./overview-metric";
  * the row still reads as a row.
  */
 const meta: Meta<typeof OverviewMetric> = {
-  title: "App Core/Insights/Overview Metric",
+  title: "Primitives/Data Display/Overview Metric",
   component: OverviewMetric,
   tags: ["autodocs"],
   argTypes: {

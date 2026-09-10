@@ -2,7 +2,7 @@ import { ConversationMessage } from "@repo/design-system/components/ui/conversat
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Documents & Conversation/Conversation Message",
+  title: "Primitives/Content/Conversation Message",
   component: ConversationMessage,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

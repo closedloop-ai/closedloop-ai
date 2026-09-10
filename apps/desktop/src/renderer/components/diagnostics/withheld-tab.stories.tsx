@@ -11,7 +11,7 @@ import { WithheldTab } from "./withheld-tab";
  * which is not something you can arrange on demand.
  */
 const meta = {
-  title: "Desktop App/Diagnostics/Withheld Tab",
+  title: "Surfaces/Withheld Tab",
   component: WithheldTab,
   tags: ["autodocs"],
   argTypes: {

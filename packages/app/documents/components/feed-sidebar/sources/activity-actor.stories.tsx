@@ -71,7 +71,7 @@ const meta = {
   },
   parameters: { layout: "padded" },
   tags: ["autodocs"],
-  title: "App Core/Documents/Activity Actor",
+  title: "Composites/Documents/Activity Actor",
 } satisfies Meta<typeof ActivityActor>;
 
 export default meta;

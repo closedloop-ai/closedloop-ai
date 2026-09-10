@@ -36,7 +36,7 @@ const detailScopeDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Properties Panel",
+  title: "Composites/Sessions/Detail/Session Properties Panel",
   component: SessionPropertiesPanel,
   tags: ["autodocs"],
   argTypes: {

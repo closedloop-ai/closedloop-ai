@@ -22,7 +22,7 @@ const weeks: AnalyticsHeatmapWeek[] = Array.from(
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Activity Heatmap",
+  title: "Primitives/Charts/Activity Heatmap",
   component: ActivityHeatmap,
   tags: ["autodocs"],
   argTypes: {

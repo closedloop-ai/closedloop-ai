@@ -2,7 +2,7 @@ import { TerminalBlock } from "@repo/design-system/components/ui/primitives/term
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Documents & Conversation/Terminal Block",
+  title: "Primitives/Content/Terminal Block",
   component: TerminalBlock,
   tags: ["autodocs"],
   argTypes: {

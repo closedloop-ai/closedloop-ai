@@ -18,7 +18,7 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
 import { SyncedSessionsTable } from "./synced-sessions-table";
 
 const meta = {
-  title: "App Core/Agents/Sessions/Synced Sessions Table",
+  title: "Composites/Sessions/Listing/Synced Sessions Table",
   component: SyncedSessionsTable,
   tags: ["autodocs"],
   argTypes: {

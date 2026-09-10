@@ -41,7 +41,7 @@ const PARTIAL_TOTAL = resolveMyTasksRangeReadout({
 });
 
 const meta = {
-  title: "App Core/My Tasks/Pagination Footer",
+  title: "Composites/My Tasks/Pagination Footer",
   component: MyTasksPaginationFooter,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

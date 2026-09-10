@@ -21,7 +21,7 @@ const harnessActor: TurnActor = {
 const actorDomain = buildActorColorDomain(["Kaiti", "claude"]);
 
 const meta = {
-  title: "App Core/Branches/Trace Actor Avatar",
+  title: "Composites/Branches/Trace Actor Avatar",
   component: BranchTraceActorAvatar,
   tags: ["autodocs"],
   argTypes: {

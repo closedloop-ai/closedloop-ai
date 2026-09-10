@@ -11,7 +11,7 @@ const meta = {
       </div>
     ),
   ],
-  title: "App Core/Branches/Provider Availability",
+  title: "Primitives/Feedback & Status/Provider Availability",
   tags: ["autodocs"],
   argTypes: {
     availability: {

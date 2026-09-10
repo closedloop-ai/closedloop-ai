@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ToolInputView, ToolResponseView } from "./tool-data-view";
 
 const meta = {
-  title: "App Core/Agents/Tools/Tool Data View",
+  title: "Composites/Sessions/Trace/Tool Data View",
   component: ToolInputView,
   tags: ["autodocs"],
   argTypes: {

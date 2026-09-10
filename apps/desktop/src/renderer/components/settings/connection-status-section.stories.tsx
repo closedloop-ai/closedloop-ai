@@ -42,7 +42,7 @@ const STORY_GATEWAY_PORT = 41_234;
  * checkable.
  */
 const meta = {
-  title: "Desktop App/Settings/Connection Status Section",
+  title: "Composites/Settings/Connection Status Section",
   component: ConnectionStatusSection,
   tags: ["autodocs"],
   argTypes: {

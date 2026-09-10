@@ -10,7 +10,7 @@ import { fn } from "storybook/test";
  * one queue reads the same way on every surface.
  */
 const meta = {
-  title: "Design System/Data Display/Table Pagination Footer",
+  title: "Composites/Data Display/Table Pagination Footer",
   component: TablePaginationFooter,
   tags: ["autodocs"],
   argTypes: {

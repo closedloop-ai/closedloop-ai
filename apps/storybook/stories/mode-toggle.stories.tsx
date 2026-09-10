@@ -2,7 +2,7 @@ import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Navigation & Shell/Mode Toggle",
+  title: "Primitives/Navigation/Mode Toggle",
   component: ModeToggle,
   tags: ["autodocs"],
   argTypes: {

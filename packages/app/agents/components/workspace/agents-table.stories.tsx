@@ -221,7 +221,7 @@ const TYPE_PRESENTATION_COMPONENTS: AgentComponent[] = [
 ];
 
 const meta = {
-  title: "App Core/Agents/Workspace/Agents Table",
+  title: "Composites/Agents/Agents Table",
   component: AgentsTable,
   tags: ["autodocs"],
   argTypes: {

@@ -5,7 +5,7 @@ import { SearchXIcon } from "lucide-react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Feedback & Status/Empty State",
+  title: "Composites/Feedback & Status/Empty State",
   component: EmptyState,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

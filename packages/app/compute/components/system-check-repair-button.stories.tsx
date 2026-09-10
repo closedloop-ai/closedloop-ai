@@ -12,7 +12,7 @@ import { SystemCheckRepairButton } from "./system-check-repair";
  * concurrent check, and the two treatments the two host surfaces ask for.
  */
 const meta = {
-  title: "App Core/Compute/System Check Repair Button",
+  title: "Composites/Compute/System Check Repair Button",
   component: SystemCheckRepairButton,
   tags: ["autodocs"],
   argTypes: {

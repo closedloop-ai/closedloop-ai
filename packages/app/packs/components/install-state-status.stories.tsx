@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { InstallStateStatus } from "./install-state-status";
 
 const meta = {
-  title: "App Core/Packs/Install State Status",
+  title: "Composites/Packs/Install State Status",
   component: InstallStateStatus,
   tags: ["autodocs"],
   args: {

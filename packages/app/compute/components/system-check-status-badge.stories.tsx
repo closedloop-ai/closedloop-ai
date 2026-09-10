@@ -5,7 +5,7 @@ import {
 } from "./system-check-status-badge";
 
 const meta: Meta<typeof SystemCheckStatusBadge> = {
-  title: "App Core/Compute/System Check Status Badge",
+  title: "Primitives/Feedback & Status/System Check Status Badge",
   component: SystemCheckStatusBadge,
   tags: ["autodocs"],
   argTypes: {

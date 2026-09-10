@@ -227,7 +227,7 @@ function parsedTranscriptParameters(availability: TranscriptAvailability) {
  * touches the network.
  */
 const meta = {
-  title: "App Core/Agents/Detail/Session Transcript Panel",
+  title: "Surfaces/Session Transcript Panel",
   component: SessionTranscriptPanel,
   tags: ["autodocs"],
   argTypes: {

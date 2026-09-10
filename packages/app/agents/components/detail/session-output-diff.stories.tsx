@@ -29,7 +29,7 @@ import { SessionPropertiesFrame } from "./session-properties-story-frame";
  */
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Output Diff",
+  title: "Primitives/Data Display/Session Output Diff",
   component: SessionOutputDiff,
   tags: ["autodocs"],
   argTypes: {

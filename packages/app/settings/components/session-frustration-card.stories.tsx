@@ -7,7 +7,7 @@ import {
 } from "./session-frustration-card";
 
 const meta = {
-  title: "App Core/Settings/Session Frustration Card",
+  title: "Composites/Settings/Session Frustration Card",
   component: SessionFrustrationToggleCard,
   tags: ["autodocs"],
   argTypes: {

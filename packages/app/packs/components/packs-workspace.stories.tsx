@@ -9,7 +9,7 @@ import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PacksWorkspace } from "./packs-workspace";
 
 const meta = {
-  title: "App Core/Packs/Packs Workspace",
+  title: "Surfaces/Packs Workspace",
   component: PacksWorkspace,
   tags: ["autodocs"],
   argTypes: {

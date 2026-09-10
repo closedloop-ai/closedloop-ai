@@ -117,7 +117,7 @@ function TableGridHeaderDemo({
 }
 
 const meta = {
-  title: "Design System/Data Display/Tables/Table Grid Header",
+  title: "Primitives/Data Display/Table Grid Header",
   component: TableGridHeaderDemo,
   tags: ["autodocs"],
   argTypes: {

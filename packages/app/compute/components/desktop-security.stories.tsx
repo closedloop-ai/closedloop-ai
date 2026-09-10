@@ -45,7 +45,7 @@ function DesktopSecurityStory() {
 }
 
 const meta = {
-  title: "App Core/Compute/Desktop Security",
+  title: "Composites/Compute/Desktop Security",
   component: DesktopSecurityStory,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

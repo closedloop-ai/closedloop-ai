@@ -73,7 +73,7 @@ const ProjectDataTable = (props: ProjectDataTableProps) => (
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Table",
+  title: "Primitives/Data Display/Data Table",
   component: ProjectDataTable,
   tags: ["autodocs"],
   argTypes: {

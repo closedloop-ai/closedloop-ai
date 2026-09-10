@@ -4,7 +4,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Overlays/Backend Mismatch Modal",
+  title: "Composites/Overlays/Backend Mismatch Modal",
   component: BackendMismatchModal,
   tags: ["autodocs"],
   argTypes: {

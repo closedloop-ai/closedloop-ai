@@ -22,7 +22,7 @@ import { fn } from "storybook/test";
  * for assistive tech (WCAG 4.1.2).
  */
 const meta = {
-  title: "Design System/Data Display/Tables/Table Page Size Select",
+  title: "Primitives/Inputs/Table Page Size Select",
   component: TablePageSizeSelect,
   tags: ["autodocs"],
   argTypes: {

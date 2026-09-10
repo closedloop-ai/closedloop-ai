@@ -40,7 +40,7 @@ const judgeItems: JudgeFeedbackItem[] = [
 ];
 
 const meta = {
-  title: "App Core/Documents/Evaluation Section View",
+  title: "Composites/Documents/Evaluation Section View",
   component: EvaluationSectionView,
   tags: ["autodocs"],
   argTypes: {

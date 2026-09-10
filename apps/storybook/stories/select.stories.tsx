@@ -15,7 +15,7 @@ import { fn } from "storybook/test";
  * Displays a list of options for the user to pick from—triggered by a button.
  */
 const meta: Meta<typeof Select> = {
-  title: "Design System/Primitives/Select",
+  title: "Primitives/Inputs/Select",
   component: Select,
   tags: ["autodocs"],
   argTypes: {

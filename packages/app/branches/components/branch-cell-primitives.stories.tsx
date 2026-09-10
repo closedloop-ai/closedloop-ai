@@ -11,7 +11,7 @@ import { BranchPRBadge } from "./branch-pr-badge";
 // A composite showcase of three primitives — no single `component` binding, so
 // the render-only stories don't inherit one primitive's required args.
 const meta = {
-  title: "App Core/Branches/Cell Primitives",
+  title: "Primitives/Data Display/Branch Cell Primitives",
   tags: ["autodocs"],
   parameters: { layout: "centered" },
 } satisfies Meta;

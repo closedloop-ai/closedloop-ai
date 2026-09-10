@@ -234,7 +234,7 @@ const DashboardScreen = ({
 );
 
 const meta = {
-  title: "Screens/Dashboard",
+  title: "Surfaces/Dashboard",
   component: DashboardScreen,
   tags: ["autodocs"],
   argTypes: {

@@ -2,7 +2,7 @@ import { SidebarCountBadge } from "@repo/design-system/components/ui/sidebar-cou
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Count Badge",
+  title: "Primitives/Data Display/Sidebar Count Badge",
   component: SidebarCountBadge,
   tags: ["autodocs"],
   argTypes: {

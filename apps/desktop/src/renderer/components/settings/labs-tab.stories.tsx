@@ -27,7 +27,7 @@ import { LabsTab } from "./labs-tab";
  * so a rename cannot silently leave a story asserting a dead key.
  */
 const meta = {
-  title: "Desktop App/Settings/Labs Tab",
+  title: "Composites/Settings/Labs Tab",
   component: LabsTab,
   tags: ["autodocs"],
   argTypes: {

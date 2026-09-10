@@ -34,7 +34,7 @@ function CollapsibleSectionStory({
 }
 
 const meta = {
-  title: "Design System/Layout/Collapsible Section",
+  title: "Primitives/Layout/Collapsible Section",
   component: CollapsibleSectionStory,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

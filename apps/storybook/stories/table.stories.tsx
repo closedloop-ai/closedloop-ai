@@ -14,7 +14,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * Powerful table and datagrids built using TanStack Table.
  */
 const meta = {
-  title: "Design System/Data Display/Table",
+  title: "Primitives/Data Display/Table",
   component: Table,
   tags: ["autodocs"],
   argTypes: {

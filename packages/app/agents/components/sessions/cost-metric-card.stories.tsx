@@ -41,7 +41,7 @@ import {
  * `TooltipProvider`. So it declares no `parameters.appCore`.
  */
 const meta = {
-  title: "App Core/Agents/Sessions/Cost Metric Card",
+  title: "Composites/Sessions/Listing/Cost Metric Card",
   component: CostMetricCard,
   tags: ["autodocs"],
   argTypes: {

@@ -10,7 +10,7 @@ const rangeOptions = [
 ];
 
 const meta = {
-  title: "Design System/Data Display/Analytics Range Toggle",
+  title: "Primitives/Inputs/Analytics Range Toggle",
   component: AnalyticsRangeToggle,
   tags: ["autodocs"],
   argTypes: {

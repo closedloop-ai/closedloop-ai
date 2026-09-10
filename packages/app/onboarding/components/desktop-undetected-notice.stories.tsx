@@ -48,7 +48,7 @@ const meta: Meta<typeof DesktopUndetectedNotice> = {
     ),
   ],
   tags: ["autodocs"],
-  title: "App Core/Onboarding/Desktop Undetected Notice",
+  title: "Composites/Onboarding/Desktop Undetected Notice",
 };
 
 export default meta;

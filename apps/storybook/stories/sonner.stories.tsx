@@ -23,7 +23,7 @@ const EVENT_TIMESTAMP_LABEL = EVENT_TIMESTAMP.toLocaleString("en-US", {
  * An opinionated toast component for React.
  */
 const meta: Meta<typeof Toaster> = {
-  title: "Design System/Overlays/Sonner",
+  title: "Primitives/Overlays/Sonner",
   component: Toaster,
   tags: ["autodocs"],
   argTypes: {

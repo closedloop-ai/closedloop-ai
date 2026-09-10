@@ -72,7 +72,7 @@ function BadgeSection({
 }
 
 const meta = {
-  title: "App Core/Shared/Status Badges",
+  title: "Composites/Feedback & Status/Status Badges",
   component: BadgeGallery,
   tags: ["autodocs"],
 } satisfies Meta<typeof BadgeGallery>;

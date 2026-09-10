@@ -24,7 +24,7 @@ import {
  * printing a fabricated 0%.
  */
 const meta = {
-  title: "Desktop App/App Shell/Import Splash Compact",
+  title: "Composites/App Shell/Import Splash Compact",
   component: ImportSplashCompact,
   tags: ["autodocs"],
   // Every story renders a fixed scenario through the real derivation, so these

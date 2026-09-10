@@ -19,7 +19,7 @@ const SIGN_IN_LABEL = "Sign in";
  * takes two callbacks and nothing else, which is what makes it storyable at all.
  */
 const meta = {
-  title: "Desktop App/Onboarding/Guest Landing",
+  title: "Composites/Onboarding/Guest Landing",
   component: GuestLanding,
   tags: ["autodocs"],
   argTypes: {

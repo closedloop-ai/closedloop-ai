@@ -14,7 +14,7 @@ import type { UpdateBannerState } from "./update-banner-state";
  * drives the real reducer rather than a parallel mock of it.
  */
 const meta = {
-  title: "Desktop App/App Shell/Update Banner",
+  title: "Composites/App Shell/Update Banner",
   component: UpdateBanner,
   tags: ["autodocs"],
   // `UpdateBanner` takes no props: it holds its own state and only ever moves

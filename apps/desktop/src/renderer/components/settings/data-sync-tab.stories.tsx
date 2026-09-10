@@ -23,7 +23,7 @@ import { DataSyncTab } from "./data-sync-tab";
  * Apply round-trips on the canvas the way the real IPC bridge does.
  */
 const meta = {
-  title: "Desktop App/Settings/Data Sync Tab",
+  title: "Surfaces/Data Sync Tab",
   component: DataSyncTab,
   tags: ["autodocs"],
   // `DataSyncTab` takes no props: the persisted level arrives through

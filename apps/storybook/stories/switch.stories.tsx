@@ -6,7 +6,7 @@ import { fn } from "storybook/test";
  * A control that allows the user to toggle between checked and not checked.
  */
 const meta: Meta<typeof Switch> = {
-  title: "Design System/Primitives/Switch",
+  title: "Primitives/Inputs/Switch",
   component: Switch,
   tags: ["autodocs"],
   argTypes: {

@@ -124,7 +124,7 @@ function buildArtifactHref(artifact: SessionLinkedArtifact): string | null {
 // own single-column min drives the width — no hard-coded pixel value needed.
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Linked Artifacts Row",
+  title: "Composites/Sessions/Detail/Session Linked Artifacts Row",
   component: SessionLinkedArtifactsRow,
   tags: ["autodocs"],
   args: { artifactHrefPending: false },

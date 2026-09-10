@@ -39,7 +39,7 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
  * `agent-session-detail-view.stories.tsx` omits the tag for the same reason.
  */
 const meta = {
-  title: "App Core/Agents/Timeline/Activity Bucket Tooltip",
+  title: "Primitives/Overlays/Activity Bucket Tooltip",
   component: ActivityBucketTooltip,
   args: { costUnmeasured: false },
   argTypes: {

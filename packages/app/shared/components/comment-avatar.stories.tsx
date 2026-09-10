@@ -3,7 +3,7 @@ import { CommentAvatar } from "@repo/app/shared/components/comment-avatar";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "App Core/Shared/Comment Avatar",
+  title: "Composites/Branches/Comment Avatar",
   component: CommentAvatar,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

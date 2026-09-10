@@ -59,7 +59,7 @@ function withSpendOutcomeFlag(children: ReactNode) {
 }
 
 const meta = {
-  title: "App Core/Insights/Metric Picker",
+  title: "Composites/Insights/Metric Picker",
   component: MetricPicker,
   tags: ["autodocs"],
   argTypes: {

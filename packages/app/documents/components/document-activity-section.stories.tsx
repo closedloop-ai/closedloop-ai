@@ -2,7 +2,7 @@ import { DocumentActivitySection } from "@repo/app/documents/components/document
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "App Core/Documents/Document Activity Section",
+  title: "Composites/Documents/Document Activity Section",
   component: DocumentActivitySection,
   tags: ["autodocs"],
   argTypes: {

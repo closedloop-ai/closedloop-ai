@@ -174,7 +174,7 @@ function ComputeTargetSystemCheckDemo({
 }
 
 const meta = {
-  title: "App Core/Compute/Compute Target System Check",
+  title: "Composites/Compute/Compute Target System Check",
   component: ComputeTargetSystemCheckDemo,
   tags: ["autodocs"],
   args: {

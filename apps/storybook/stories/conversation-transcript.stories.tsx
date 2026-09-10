@@ -25,7 +25,7 @@ const messages: ConversationMessageItem[] = [
 ];
 
 const meta = {
-  title: "Design System/Documents & Conversation/Conversation Transcript",
+  title: "Primitives/Content/Conversation Transcript",
   component: ConversationTranscript,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

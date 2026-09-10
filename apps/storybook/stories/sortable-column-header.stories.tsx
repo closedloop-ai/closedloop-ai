@@ -91,7 +91,7 @@ function SortableColumnHeaderDemo({
 }
 
 const meta = {
-  title: "Design System/Data Display/Tables/Sortable Column Header",
+  title: "Composites/Data Display/Sortable Column Header",
   component: SortableColumnHeaderDemo,
   tags: ["autodocs"],
   argTypes: {

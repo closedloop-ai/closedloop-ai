@@ -4,7 +4,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { FolderSearchIcon } from "lucide-react";
 
 const meta = {
-  title: "Design System/Feedback & Status/Empty State App Example",
+  title: "Composites/Feedback & Status/Empty State App Example",
   component: EmptyState,
   tags: ["autodocs"],
   argTypes: {

@@ -7,7 +7,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Documents & Conversation/Collapsed Comment Row",
+  title: "Primitives/Content/Collapsed Comment Row",
   component: CollapsedCommentRow,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

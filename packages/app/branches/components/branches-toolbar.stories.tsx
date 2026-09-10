@@ -49,7 +49,7 @@ const savedViews: BranchesToolbarProps["savedViews"] = {
 };
 
 const meta = {
-  title: "App Core/Branches/Branches Toolbar",
+  title: "Composites/Branches/Branches Toolbar",
   component: BranchesToolbar,
   tags: ["autodocs"],
   parameters: {

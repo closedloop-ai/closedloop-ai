@@ -21,7 +21,7 @@ const timeoutError = new ApiError(
 );
 
 const meta = {
-  title: "App Core/Packs/Packs Load Failed",
+  title: "Composites/Packs/Packs Load Failed",
   component: PacksLoadFailed,
   tags: ["autodocs"],
   parameters: {

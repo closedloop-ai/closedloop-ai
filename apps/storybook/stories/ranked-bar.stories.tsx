@@ -6,7 +6,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Ranked Bar",
+  title: "Composites/Charts/Ranked Bar",
   component: RankedBar,
   tags: ["autodocs"],
   argTypes: {

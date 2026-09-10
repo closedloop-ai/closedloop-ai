@@ -244,7 +244,7 @@ const LoginScreen = ({
 );
 
 const meta = {
-  title: "Screens/Login",
+  title: "Surfaces/Login",
   component: LoginScreen,
   tags: ["autodocs"],
   argTypes: {

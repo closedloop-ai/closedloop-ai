@@ -8,7 +8,7 @@ import { useState } from "react";
  * build the `groups` from their own filter state; the menu is data-agnostic.
  */
 const meta = {
-  title: "Design System/Data Display/Table Filter Menu",
+  title: "Composites/Data Display/Table Filter Menu",
   component: TableFilterMenu,
   tags: ["autodocs"],
   argTypes: {

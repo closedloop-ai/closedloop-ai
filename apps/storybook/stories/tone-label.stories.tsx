@@ -10,7 +10,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * string. The color comes from the same `variant` vocabulary the badge uses.
  */
 const meta = {
-  title: "Design System/Data Display/Tone Label",
+  title: "Primitives/Data Display/Tone Label",
   component: ToneLabel,
   tags: ["autodocs"],
   argTypes: {

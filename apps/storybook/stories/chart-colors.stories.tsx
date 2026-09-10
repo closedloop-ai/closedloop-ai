@@ -37,7 +37,7 @@ function ChartColorsPalette({ count }: { count: number }) {
 }
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Chart Colors",
+  title: "Foundations/Chart Colors",
   component: ChartColorsPalette,
   tags: ["autodocs"],
   parameters: { layout: "padded" },
