@@ -1,8 +1,2 @@
-/** @type {import('postcss-load-config').Config} */
-const config = {
-  plugins: {
-    tailwindcss: {},
-  },
-};
-
-export default config;
+// biome-ignore lint/performance/noBarrelFile: re-exporting design system postcss config
+export { default } from "../../packages/design-system/postcss.config.mjs";
