@@ -35,6 +35,16 @@ const config: StorybookConfig = {
   ],
   addons: [
     getAbsolutePath("@chromatic-com/storybook"),
+    // Renders the Docs page every story's `autodocs` tag asks for, and is what
+    // makes the Controls table appear inside it.
+    //
+    // This was MISSING. Storybook 9 dissolved `addon-essentials`, which used to
+    // carry docs, into separate packages, and nothing re-added this one. 1,405
+    // of 1,484 entries were tagged `autodocs` and the built index contained
+    // zero `type: "docs"` entries, so every one of those tags was inert: the
+    // prop tables this Storybook's whole Controls effort produces had no page
+    // to render on.
+    getAbsolutePath("@storybook/addon-docs"),
     // Surfaces axe results per story in the Accessibility panel. The design
     // system already carries accessibility contracts in its component source;
     // this is what makes a violation visible while reviewing rather than only

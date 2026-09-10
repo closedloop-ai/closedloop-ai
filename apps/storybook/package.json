@@ -35,6 +35,7 @@
     "@chromatic-com/storybook": "^5.2.1",
     "@repo/typescript-config": "workspace:*",
     "@storybook/addon-a11y": "^10.6.0",
+    "@storybook/addon-docs": "^10.6.0",
     "@storybook/addon-mcp": "^10.6.0",
     "@storybook/addon-themes": "^10.6.0",
     "@storybook/addon-vitest": "^10.6.0",

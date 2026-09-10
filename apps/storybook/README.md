@@ -79,6 +79,21 @@ Prop data can vanish without any error, so treat it as something to measure rath
 
 The number that matters is not component count, it is **option values lost**. Reordering a union is cosmetic. Losing `"warning"` from a badge variant is not. The migration was accepted at 644 to 610 components with zero option values lost.
 
+## Docs pages
+
+Every story carries `tags: ["autodocs"]`, which generates a Docs page per component
+with the description, a rendered example and the props table.
+
+That tag was inert until recently. Storybook 9 dissolved `addon-essentials`, which
+used to carry docs, into separate packages, and `@storybook/addon-docs` was never
+re-added here. 1,405 entries were tagged `autodocs` and the built index contained
+zero docs entries, so the prop tables this Storybook's Controls work produces had
+nowhere to render. The addon is installed now and the build emits 320 docs pages.
+
+Sixteen story files still have no `autodocs` tag, so they get no Docs page. Five are
+the Foundations pages, which document tokens and have no props to table. The other
+eleven look like oversights rather than decisions.
+
 ## MCP
 
 With the dev server running, an MCP endpoint is served at `/mcp`. `.mcp.json` at the repo root points a client at it.
