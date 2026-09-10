@@ -19,6 +19,14 @@ const designSystemRoot = path.join(
 // packages/app/<feature>/components/, mirroring the Storybook glob in main.ts.
 const appPackageRoot = path.join(repoRoot, "packages/app");
 
+// Desktop renderer stories, the third root `.storybook/main.ts` globs. The
+// catalog does not carry entries for these, but the title rules apply to them
+// exactly as much: they sit in the same four levels as everything else.
+const desktopRendererRoot = path.join(
+  repoRoot,
+  "apps/desktop/src/renderer/components"
+);
+
 // The catalog's sections ARE the atomic levels. They used to be "Design System"
 // and "App Core", which named where a component's code lived rather than what
 // the component is — the exact split the taxonomy removed. A component moving
@@ -57,6 +65,9 @@ const catalogGroupOrder = [
   "Tags",
   "App Shell",
 ];
+
+// Sub-groups within a domain. Only Sessions is big enough to have them.
+const catalogSubGroupOrder = ["Listing", "Detail", "Trace"];
 
 // The four surfaces with no story of their own, so there is no meta title to
 // read. Titled here rather than derived, because a synthesized title is a
@@ -212,6 +223,24 @@ function walkStoryFiles(dirPath) {
 
 // Collect colocated stories under packages/app/<feature>/components/, matching
 // the third stories glob in apps/storybook/.storybook/main.ts.
+/**
+ * Every story file Storybook indexes, across all three glob roots in
+ * `.storybook/main.ts`.
+ *
+ * `collectAppCoreStoryFiles` below covers only `packages/app`, and the catalog's
+ * freshness check covers only the flat `apps/storybook/stories` directory. That
+ * left 33 rendered stories (the desktop renderer, plus `stories/foundations/`
+ * and `stories/surfaces/`) outside every title check: they could be titled
+ * anything, or duplicate an existing title, and `validate:catalog` still passed.
+ */
+export function collectAllStoryFiles() {
+  return [
+    ...walkStoryFiles(storybookStoriesRoot),
+    ...collectAppCoreStoryFiles(),
+    ...walkStoryFiles(desktopRendererRoot),
+  ];
+}
+
 export function collectAppCoreStoryFiles() {
   const files = [];
 
@@ -299,6 +328,17 @@ function splitStoryTitle(storyTitle, sourceDescription) {
   if (segments.length < 2) {
     throw new Error(
       `${sourceDescription} has title "${storyTitle}" with no component name after the level.`
+    );
+  }
+
+  // An empty segment means a stray or doubled slash ("Composites/Agents/" or
+  // "Composites//Foo"). Left alone these produce an entry with a blank label or
+  // a blank path segment, which reads as a nameless row in the catalog rather
+  // than as an error.
+  const blank = segments.findIndex((segment) => segment.trim() === "");
+  if (blank !== -1) {
+    throw new Error(
+      `${sourceDescription} has title "${storyTitle}" with an empty segment at position ${blank}. Check for a doubled or trailing slash.`
     );
   }
 
@@ -402,6 +442,18 @@ function compareCatalogEntries(left, right) {
     return (
       (leftGroup === -1 ? catalogGroupOrder.length : leftGroup) -
       (rightGroup === -1 ? catalogGroupOrder.length : rightGroup)
+    );
+  }
+
+  // Sub-groups (only Sessions has them) follow the sidebar's curated order
+  // rather than sorting alphabetically, so the catalog page and the sidebar
+  // present Listing, Detail, Trace in the same sequence.
+  const leftSub = catalogSubGroupOrder.indexOf(left.pathSegments[1]);
+  const rightSub = catalogSubGroupOrder.indexOf(right.pathSegments[1]);
+  if (leftSub !== rightSub) {
+    return (
+      (leftSub === -1 ? catalogSubGroupOrder.length : leftSub) -
+      (rightSub === -1 ? catalogSubGroupOrder.length : rightSub)
     );
   }
 

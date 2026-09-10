@@ -1892,174 +1892,6 @@ export const appCoreComponentCatalog =
     "storyTitle": "Composites/Agents/User Usage Table"
   },
   {
-    "id": "agent-session-detail-analytics-tabs",
-    "label": "Agent Session Detail Analytics Tabs",
-    "sourcePath": "packages/app/agents/components/detail/agent-session-detail-analytics-tabs.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "agent-session-detail-analytics-tabs",
-    "storyTitle": "Composites/Sessions/Detail/Agent Session Detail Analytics Tabs"
-  },
-  {
-    "id": "agent-session-detail-states",
-    "label": "Agent Session Detail States",
-    "sourcePath": "packages/app/agents/components/detail/agent-session-detail-states.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "agent-session-detail-states",
-    "storyTitle": "Composites/Sessions/Detail/Agent Session Detail States"
-  },
-  {
-    "id": "detail-sessions-tab",
-    "label": "Detail Sessions Tab",
-    "sourcePath": "packages/app/agents/components/workspace/detail-sessions-tab.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "detail-sessions-tab",
-    "storyTitle": "Composites/Sessions/Detail/Detail Sessions Tab"
-  },
-  {
-    "id": "event-group-row",
-    "label": "Event Group Row",
-    "sourcePath": "packages/app/agents/components/events/event-group-row.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "event-group-row",
-    "storyTitle": "Composites/Sessions/Detail/Event Group Row"
-  },
-  {
-    "id": "limit-bar",
-    "label": "Limit Bar",
-    "sourcePath": "packages/app/session-limits/components/limit-bar.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "limit-bar",
-    "storyTitle": "Composites/Sessions/Detail/Limit Bar"
-  },
-  {
-    "id": "property-values",
-    "label": "Property Value",
-    "sourcePath": "packages/app/agents/components/detail/property-values.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "property-values",
-    "storyTitle": "Composites/Sessions/Detail/Property Value"
-  },
-  {
-    "id": "agent-session-activity-feed",
-    "label": "Session Activity Feed",
-    "sourcePath": "packages/app/agents/components/activity/agent-session-activity-feed.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "agent-session-activity-feed",
-    "storyTitle": "Composites/Sessions/Detail/Session Activity Feed"
-  },
-  {
-    "id": "session-detail-panels",
-    "label": "Session Detail Panels",
-    "sourcePath": "packages/app/agents/components/detail/session-detail-panels.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-detail-panels",
-    "storyTitle": "Composites/Sessions/Detail/Session Detail Panels"
-  },
-  {
-    "id": "session-duration-property",
-    "label": "Session Duration Property",
-    "sourcePath": "packages/app/agents/components/detail/session-duration-property.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-duration-property",
-    "storyTitle": "Composites/Sessions/Detail/Session Duration Property"
-  },
-  {
-    "id": "session-limits-provenance",
-    "label": "Session Limits Provenance",
-    "sourcePath": "packages/app/session-limits/components/session-limits-provenance.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-limits-provenance",
-    "storyTitle": "Composites/Sessions/Detail/Session Limits Provenance"
-  },
-  {
-    "id": "session-linked-artifacts-row",
-    "label": "Session Linked Artifacts Row",
-    "sourcePath": "packages/app/agents/components/detail/session-linked-artifacts-row.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-linked-artifacts-row",
-    "storyTitle": "Composites/Sessions/Detail/Session Linked Artifacts Row"
-  },
-  {
-    "id": "session-measured-properties",
-    "label": "Session Measured Properties",
-    "sourcePath": "packages/app/agents/components/detail/session-measured-properties.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-measured-properties",
-    "storyTitle": "Composites/Sessions/Detail/Session Measured Properties"
-  },
-  {
-    "id": "session-properties-panel",
-    "label": "Session Properties Panel",
-    "sourcePath": "packages/app/agents/components/detail/session-properties-panel.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-properties-panel",
-    "storyTitle": "Composites/Sessions/Detail/Session Properties Panel"
-  },
-  {
-    "id": "session-pull-request-pill",
-    "label": "Session Pull Request Pill",
-    "sourcePath": "packages/app/agents/components/detail/session-pull-request-pill.tsx",
-    "section": "Composites",
-    "pathSegments": [
-      "Sessions",
-      "Detail"
-    ],
-    "storyId": "session-pull-request-pill",
-    "storyTitle": "Composites/Sessions/Detail/Session Pull Request Pill"
-  },
-  {
     "id": "active-runs-panel",
     "label": "Active Runs Panel",
     "sourcePath": "packages/app/agents/components/sessions/active-runs-panel.tsx",
@@ -2298,6 +2130,174 @@ export const appCoreComponentCatalog =
     ],
     "storyId": "synced-sessions-table",
     "storyTitle": "Composites/Sessions/Listing/Synced Sessions Table"
+  },
+  {
+    "id": "agent-session-detail-analytics-tabs",
+    "label": "Agent Session Detail Analytics Tabs",
+    "sourcePath": "packages/app/agents/components/detail/agent-session-detail-analytics-tabs.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "agent-session-detail-analytics-tabs",
+    "storyTitle": "Composites/Sessions/Detail/Agent Session Detail Analytics Tabs"
+  },
+  {
+    "id": "agent-session-detail-states",
+    "label": "Agent Session Detail States",
+    "sourcePath": "packages/app/agents/components/detail/agent-session-detail-states.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "agent-session-detail-states",
+    "storyTitle": "Composites/Sessions/Detail/Agent Session Detail States"
+  },
+  {
+    "id": "detail-sessions-tab",
+    "label": "Detail Sessions Tab",
+    "sourcePath": "packages/app/agents/components/workspace/detail-sessions-tab.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "detail-sessions-tab",
+    "storyTitle": "Composites/Sessions/Detail/Detail Sessions Tab"
+  },
+  {
+    "id": "event-group-row",
+    "label": "Event Group Row",
+    "sourcePath": "packages/app/agents/components/events/event-group-row.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "event-group-row",
+    "storyTitle": "Composites/Sessions/Detail/Event Group Row"
+  },
+  {
+    "id": "limit-bar",
+    "label": "Limit Bar",
+    "sourcePath": "packages/app/session-limits/components/limit-bar.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "limit-bar",
+    "storyTitle": "Composites/Sessions/Detail/Limit Bar"
+  },
+  {
+    "id": "property-values",
+    "label": "Property Value",
+    "sourcePath": "packages/app/agents/components/detail/property-values.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "property-values",
+    "storyTitle": "Composites/Sessions/Detail/Property Value"
+  },
+  {
+    "id": "agent-session-activity-feed",
+    "label": "Session Activity Feed",
+    "sourcePath": "packages/app/agents/components/activity/agent-session-activity-feed.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "agent-session-activity-feed",
+    "storyTitle": "Composites/Sessions/Detail/Session Activity Feed"
+  },
+  {
+    "id": "session-detail-panels",
+    "label": "Session Detail Panels",
+    "sourcePath": "packages/app/agents/components/detail/session-detail-panels.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-detail-panels",
+    "storyTitle": "Composites/Sessions/Detail/Session Detail Panels"
+  },
+  {
+    "id": "session-duration-property",
+    "label": "Session Duration Property",
+    "sourcePath": "packages/app/agents/components/detail/session-duration-property.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-duration-property",
+    "storyTitle": "Composites/Sessions/Detail/Session Duration Property"
+  },
+  {
+    "id": "session-limits-provenance",
+    "label": "Session Limits Provenance",
+    "sourcePath": "packages/app/session-limits/components/session-limits-provenance.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-limits-provenance",
+    "storyTitle": "Composites/Sessions/Detail/Session Limits Provenance"
+  },
+  {
+    "id": "session-linked-artifacts-row",
+    "label": "Session Linked Artifacts Row",
+    "sourcePath": "packages/app/agents/components/detail/session-linked-artifacts-row.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-linked-artifacts-row",
+    "storyTitle": "Composites/Sessions/Detail/Session Linked Artifacts Row"
+  },
+  {
+    "id": "session-measured-properties",
+    "label": "Session Measured Properties",
+    "sourcePath": "packages/app/agents/components/detail/session-measured-properties.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-measured-properties",
+    "storyTitle": "Composites/Sessions/Detail/Session Measured Properties"
+  },
+  {
+    "id": "session-properties-panel",
+    "label": "Session Properties Panel",
+    "sourcePath": "packages/app/agents/components/detail/session-properties-panel.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-properties-panel",
+    "storyTitle": "Composites/Sessions/Detail/Session Properties Panel"
+  },
+  {
+    "id": "session-pull-request-pill",
+    "label": "Session Pull Request Pill",
+    "sourcePath": "packages/app/agents/components/detail/session-pull-request-pill.tsx",
+    "section": "Composites",
+    "pathSegments": [
+      "Sessions",
+      "Detail"
+    ],
+    "storyId": "session-pull-request-pill",
+    "storyTitle": "Composites/Sessions/Detail/Session Pull Request Pill"
   },
   {
     "id": "session-timeline-controls",
