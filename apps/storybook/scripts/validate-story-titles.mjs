@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   atomicLevels,
   buildCatalogData,
-  collectAppCoreStoryFiles,
+  collectAllStoryFiles,
   metaTitleRegex,
 } from "./sync-component-catalog.mjs";
 
@@ -135,14 +135,20 @@ for (const [storyId, actualTitle] of actualTitles) {
   }
 }
 
-// Colocated stories live in packages/app/<feature>/components/, outside
-// `storiesDir`. The freshness check above catches title DRIFT on existing
-// entries, but a story whose title does not start with an atomic level cannot be
-// placed in the catalog at all — it would still render in Storybook while being
-// invisible to every consumer of the catalog. Assert the level prefix so that
-// mistake fails CI instead of slipping through.
-let appCoreStoryCount = 0;
-for (const storyFile of collectAppCoreStoryFiles()) {
+// Every story file Storybook indexes, across all three glob roots.
+//
+// The freshness check above catches title DRIFT, but only on the 113 entries the
+// catalog already carries, and those come from the flat `apps/storybook/stories`
+// directory alone. This walks everything: `packages/app`, the desktop renderer,
+// and the `stories/` subdirectories. Before it did, 33 rendered stories sat
+// outside every check here and could be titled anything at all.
+//
+// A story whose title does not start with an atomic level cannot be placed in
+// the catalog, so it would keep rendering in Storybook while being invisible to
+// every consumer of the catalog. Assert the level prefix so that fails CI.
+let indexedStoryCount = 0;
+const storyFilesByTitle = new Map();
+for (const storyFile of collectAllStoryFiles()) {
   const titleMatch = readFileSync(storyFile, "utf8").match(metaTitleRegex);
   const relativePath = path.relative(repoRoot, storyFile);
 
@@ -152,11 +158,18 @@ for (const storyFile of collectAppCoreStoryFiles()) {
     continue;
   }
 
-  appCoreStoryCount += 1;
+  indexedStoryCount += 1;
 
-  if (!atomicLevels.has(titleMatch[1].split("/")[0])) {
+  const existingClaim = storyFilesByTitle.get(titleMatch[1]) ?? [];
+  existingClaim.push(relativePath);
+  storyFilesByTitle.set(titleMatch[1], existingClaim);
+
+  // `Catalog` is the inventory page itself, which indexes the other four levels
+  // rather than sitting in one. It is the only title outside them.
+  const level = titleMatch[1].split("/")[0];
+  if (!(atomicLevels.has(level) || level === "Catalog")) {
     console.error(
-      `Colocated story ${relativePath} has title "${titleMatch[1]}" — every story must be titled "<Level>/<Group>/<Component>" where Level is one of ${[...atomicLevels].join(", ")}. See apps/storybook/TAXONOMY.md.`
+      `Story ${relativePath} has title "${titleMatch[1]}" — every story must be titled "<Level>/<Group>/<Component>" where Level is one of ${[...atomicLevels].join(", ")}. See apps/storybook/TAXONOMY.md.`
     );
     process.exitCode = 1;
   }
@@ -166,33 +179,17 @@ for (const storyFile of collectAppCoreStoryFiles()) {
 // is unique by construction, so none of them can see two DIFFERENT files
 // claiming the same `meta.title`. That collision is silent and lossy in both
 // directions: Storybook folds same-titled files into one sidebar/autodocs
-// identity (one component becomes unreachable), and `buildAppCoreEntries` copies
-// `storyTitle` verbatim, so the generated catalog gains duplicate storyTitle
-// keys that any title -> component lookup resolves arbitrarily. Assert titles are
-// unique across the whole catalog so the next one fails CI instead of shipping.
-const sourcePathsByTitle = new Map();
-for (const entry of [
-  ...designSystemEntries,
-  ...appEntries,
-  ...appCoreEntries,
-]) {
-  if (!entry.storyTitle) {
-    continue;
-  }
-
-  const existing = sourcePathsByTitle.get(entry.storyTitle);
-  if (existing) {
-    existing.push(entry.sourcePath);
-    continue;
-  }
-
-  sourcePathsByTitle.set(entry.storyTitle, [entry.sourcePath]);
-}
-
-for (const [storyTitle, sourcePaths] of sourcePathsByTitle) {
-  if (sourcePaths.length > 1) {
+// identity (one component becomes unreachable), and the catalog gains duplicate
+// storyTitle keys that any title -> component lookup resolves arbitrarily.
+//
+// Checked over every story FILE rather than over catalog entries. The catalog
+// carries no entry for the desktop renderer or the `stories/` subdirectories, so
+// a check built on entries alone would not notice one of those 33 files taking a
+// title the catalog already uses.
+for (const [storyTitle, storyPaths] of storyFilesByTitle) {
+  if (storyPaths.length > 1) {
     console.error(
-      `Duplicate story title "${storyTitle}" claimed by ${sourcePaths.length} components: ${sourcePaths.join(", ")}. Story titles must be unique — give each a distinct "<Level>/<Group>/<Component>" title and re-run catalog:sync.`
+      `Duplicate story title "${storyTitle}" claimed by ${storyPaths.length} story files: ${storyPaths.join(", ")}. Storybook folds same-titled files into one identity, so one of them becomes unreachable. Give each a distinct "<Level>/<Group>/<Component>" title and re-run catalog:sync.`
     );
     process.exitCode = 1;
   }
@@ -200,6 +197,6 @@ for (const [storyTitle, sourcePaths] of sourcePathsByTitle) {
 
 if (!process.exitCode) {
   console.log(
-    `Validated ${expectedTitles.size} cataloged story titles against ${actualTitles.size} story files, plus ${appCoreStoryCount} colocated App Core stories, and ${sourcePathsByTitle.size} unique story titles.`
+    `Validated ${expectedTitles.size} cataloged story titles against ${actualTitles.size} story files, plus ${indexedStoryCount} story files across all three glob roots, and ${storyFilesByTitle.size} unique story titles.`
   );
 }

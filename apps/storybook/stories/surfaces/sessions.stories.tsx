@@ -1,17 +1,21 @@
 import {
   createFullyPopulatedSessionsUsageFixture,
   createSessionSummaryDeltasFixture,
-  createSessionTableRowFixture,
+  mixedAgentSessionListFixtures,
 } from "@repo/app/agents/components/sessions/session-list-fixtures";
 import { SessionsEmptyState } from "@repo/app/agents/components/sessions/sessions-empty-state";
 import { SessionsRecoveryAction } from "@repo/app/agents/components/sessions/sessions-recovery-action";
 import { SessionsSummaryCards } from "@repo/app/agents/components/sessions/sessions-summary-cards";
-import { SessionsTable } from "@repo/app/agents/components/sessions/sessions-table";
 import { SessionsToolbar } from "@repo/app/agents/components/sessions/sessions-toolbar";
-import { SESSIONS_TOGGLEABLE_COLUMNS } from "@repo/app/agents/hooks/use-sessions-view-state";
+import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { DEFAULT_SESSION_FACET_FILTERS } from "@repo/app/agents/lib/session-filter-adapter";
 import { SessionGroupBy } from "@repo/app/agents/lib/session-grouping";
+import {
+  SessionSortDir,
+  SessionSortKey,
+} from "@repo/app/agents/lib/session-sort-group";
 import { sessionsRangeReadout } from "@repo/app/agents/lib/sessions-range-readout";
+import { SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS } from "@repo/app/agents/lib/sessions-table-columns";
 import type { DateRange } from "@repo/app/shared/lib/format-utils";
 import { DATE_RANGES } from "@repo/app/shared/lib/format-utils";
 import { PRIMARY_NAV_DESTINATIONS } from "@repo/app/shared/lib/primary-nav-destinations";
@@ -46,67 +50,18 @@ const NAV_PATHS = PRIMARY_NAV_DESTINATIONS.map(
   (destination) => destination.path
 );
 
-const VISIBLE_COLUMNS = new Set(
-  SESSIONS_TOGGLEABLE_COLUMNS.map((column) => column.id)
-);
+// The page's never-saved default, NOT every toggleable column. `pr`, `merge`,
+// `started` and `updated` are hidden until someone turns them on, so showing
+// them here would put a wider table in front of a reviewer than the product
+// opens with.
+const VISIBLE_COLUMNS = new Set(SESSIONS_DEFAULT_VISIBLE_COLUMN_IDS);
 
-const ROWS = [
-  createSessionTableRowFixture({
-    branch: "fea-2036",
-    costLabel: "$4.12",
-    durationLabel: "12m 04s",
-    id: "ses_1",
-    lastActivityLabel: "2h ago",
-    model: "opus-4.8",
-    name: "agent/refactor-auth-guard",
-    repo: "closedloop-ai/app",
-    user: { avatarUrl: null, name: "Parker Byrd" },
-  }),
-  createSessionTableRowFixture({
-    branch: "fea-2041",
-    costLabel: "$1.08",
-    durationLabel: "3m 22s",
-    id: "ses_2",
-    lastActivityLabel: "4h ago",
-    model: "sonnet-5",
-    name: "agent/session-table-columns",
-    repo: "closedloop-ai/api",
-    user: { avatarUrl: null, name: "Ada Okafor" },
-  }),
-  createSessionTableRowFixture({
-    branch: "main",
-    costLabel: "$0.42",
-    durationLabel: "48s",
-    id: "ses_3",
-    lastActivityLabel: "6h ago",
-    model: "sonnet-5",
-    name: "agent/fix-sync-badge",
-    repo: "closedloop-ai/desktop",
-    user: { avatarUrl: null, name: "Sam Reyes" },
-  }),
-  createSessionTableRowFixture({
-    branch: "fea-1994",
-    costLabel: "$9.60",
-    durationLabel: "41m 10s",
-    id: "ses_4",
-    lastActivityLabel: "1d ago",
-    model: "opus-4.8",
-    name: "agent/telemetry-rollup",
-    repo: "closedloop-ai/app",
-    user: { avatarUrl: null, name: "Parker Byrd" },
-  }),
-  createSessionTableRowFixture({
-    branch: "fea-2002",
-    costLabel: "$2.75",
-    durationLabel: "8m 51s",
-    id: "ses_5",
-    lastActivityLabel: "2d ago",
-    model: "sonnet-5",
-    name: "agent/pack-install-matrix",
-    repo: "closedloop-ai/web",
-    user: { avatarUrl: null, name: "Ada Okafor" },
-  }),
-];
+/**
+ * The shared mixed-state fixture, five rows across different cloud sync states.
+ * Shared rather than hand-built here, per `packages/app/agents/AGENTS.md`, so
+ * this surface and the table's own stories cannot drift onto different data.
+ */
+const ROWS = mixedAgentSessionListFixtures;
 
 /**
  * The five states the real page can be in, named for what the reader sees
@@ -166,18 +121,25 @@ const SessionsSurface = ({
 
   // Mirrors the page's `tableContent` branch order: pending first, then the
   // three empty readings, then the table.
+  // `SyncedSessionsTable`, with the props the web shell
+  // (`apps/app/components/agent-sessions/sessions-table.tsx`) injects. That
+  // shell is thin on purpose: it supplies href construction, the page's
+  // sort/column state, and the fact that the page owns the scroll container,
+  // then delegates every row-level decision here. Mounting the presentational
+  // `SessionsTable` underneath it instead would silently drop the row-state
+  // chips and the linked-entity columns the product renders.
   let listContent = (
-    <SessionsTable
-      columnOrder={undefined}
+    <SyncedSessionsTable
+      getIssueHref={(issue) => `#/issues/${issue.id}`}
+      getSessionHref={(item) => `#/sessions/${item.id}`}
       groupBy={groupBy}
+      hostScroll
       items={rows}
-      renderName={(row, className) => (
-        <a className={className} href={`#/sessions/${row.id}`}>
-          {row.name}
-        </a>
-      )}
-      sortBy="lastActivity"
-      sortDir="desc"
+      onColumnOrderChange={fn()}
+      onSort={fn()}
+      showLinkedEntityColumns
+      sortBy={SessionSortKey.LastActivity}
+      sortDir={SessionSortDir.Desc}
       visibleColumns={VISIBLE_COLUMNS}
     />
   );
@@ -295,7 +257,8 @@ const meta = {
     },
     sessionCount: {
       control: { type: "number", min: 0, max: ROWS.length, step: 1 },
-      description: "Rows the table renders, up to the fixture population.",
+      description:
+        "Rows the table renders, up to the shared fixture's five mixed-sync-state sessions.",
       table: { category: "Content" },
     },
     total: {
