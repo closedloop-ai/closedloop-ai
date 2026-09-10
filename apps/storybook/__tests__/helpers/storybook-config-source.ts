@@ -89,3 +89,56 @@ export function visitSource(
   };
   visit(source);
 }
+
+export const STORYBOOK_PREVIEW_PATH = path.join(STORYBOOK_DIR, "preview.tsx");
+
+/** A storySort `order` array: strings, and arrays of the same, to any depth. */
+export type StorySortOrder = readonly (string | StorySortOrder)[];
+
+/**
+ * `parameters.options.storySort.order` from `preview.tsx`.
+ *
+ * Storybook's indexer reads this array STATICALLY, so it is literal by
+ * construction: hoisting a shared list into a `const` and referencing it here
+ * fails the build with "Unexpected 'ELEMENT_KINDS'. Parameter
+ * 'options.storySort'". Being literal is also why it can drift from the story
+ * corpus without anything failing, which is what
+ * `story-sort-covers-taxonomy.test.ts` uses this to check.
+ */
+export function storybookStorySortOrder(): StorySortOrder {
+  let order: StorySortOrder | null = null;
+
+  visitSource(STORYBOOK_PREVIEW_PATH, (node) => {
+    if (
+      order === null &&
+      ts.isPropertyAssignment(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "order" &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      order = readOrderArray(node.initializer);
+    }
+  });
+
+  if (order === null) {
+    throw new Error(
+      `no \`order\` array found in ${STORYBOOK_PREVIEW_PATH} — if storySort moved, update the guard rather than deleting it`
+    );
+  }
+
+  return order;
+}
+
+function readOrderArray(node: ts.ArrayLiteralExpression): StorySortOrder {
+  return node.elements.map((element) => {
+    if (ts.isStringLiteral(element)) {
+      return element.text;
+    }
+    if (ts.isArrayLiteralExpression(element)) {
+      return readOrderArray(element);
+    }
+    throw new Error(
+      `storySort.order contains a non-literal entry (${element.getText()}). Storybook's indexer rejects those, so this should be unreachable.`
+    );
+  });
+}

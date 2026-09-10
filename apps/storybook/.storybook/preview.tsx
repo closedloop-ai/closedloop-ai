@@ -41,23 +41,6 @@ type AppCoreStoryParameters = Pick<
   "queryData" | "apiRoutes" | "enabledFlags"
 >;
 
-/**
- * The element-kind vocabulary, shared by Primitives and Composites so the two
- * levels cannot drift into different words for the same idea. Ordered by what
- * the user does with the thing rather than alphabetically.
- */
-const ELEMENT_KINDS = [
-  "Actions",
-  "Inputs",
-  "Data Display",
-  "Charts",
-  "Content",
-  "Layout",
-  "Navigation",
-  "Overlays",
-  "Feedback & Status",
-];
-
 const preview: Preview = {
   parameters: {
     options: {
@@ -66,6 +49,12 @@ const preview: Preview = {
       // then the desktop shell, and finally whole assembled screens. Catalog
       // sits above everything as the browsable index into the rest.
       storySort: {
+        // NOTE: the nine element kinds are written out twice, once under
+        // Primitives and once under Composites. They cannot be hoisted into a
+        // shared const: Storybook's indexer reads `storySort.order` STATICALLY
+        // and rejects a variable reference with "Unexpected 'ELEMENT_KINDS'.
+        // Parameter 'options.storySort'", failing the build. The two copies are
+        // held in step by `__tests__/story-sort-covers-taxonomy.test.ts`.
         // Atomic order, smallest to largest: the tokens, then one element, then
         // things built from elements, then whole pages. Alphabetical would put
         // Composites above Foundations and Primitives last, which is exactly
@@ -91,10 +80,28 @@ const preview: Preview = {
             "Chart Colors",
           ],
           "Primitives",
-          ELEMENT_KINDS,
+          [
+            "Actions",
+            "Inputs",
+            "Data Display",
+            "Charts",
+            "Content",
+            "Layout",
+            "Navigation",
+            "Overlays",
+            "Feedback & Status",
+          ],
           "Composites",
           [
-            ...ELEMENT_KINDS,
+            "Actions",
+            "Inputs",
+            "Data Display",
+            "Charts",
+            "Content",
+            "Layout",
+            "Navigation",
+            "Overlays",
+            "Feedback & Status",
             "Agents",
             "Sessions",
             // The only domain big enough to need a split (46 stories). It
