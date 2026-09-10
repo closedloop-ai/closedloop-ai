@@ -1,40 +1,90 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/pages/api-reference/create-next-app).
+# Storybook
 
-## Getting Started
-
-First, run the development server:
+The component catalog for the design system, the shared App Core feature layer, and the Desktop renderer. Around 1,470 stories across 335 components.
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm turbo build --filter=@closedloop-ai/design-system   # first time, or after design-system changes
+pnpm -C apps/storybook dev                               # http://localhost:6006
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The hosted copy lives at https://storybook.preview.closedloop-stage.ai behind HTTP basic auth. See `DESIGNER-GUIDE.md` for the credential and the designer-facing tour.
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+## What changed: this now runs on Vite
 
-[API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+Storybook used to build with Webpack (`@storybook/nextjs`). It now builds with Vite (`@storybook/nextjs-vite`).
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) instead of React pages.
+The trigger was `@storybook/addon-mcp`, which needs `@storybook/addon-vitest`, which refuses to run on a Webpack builder. But the migration was worth doing on its own:
 
-This project uses [`next/font`](https://nextjs.org/docs/pages/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| | Webpack | Vite |
+|---|---|---|
+| clean build | 47s | 43s |
+| output size | 70M | 26M |
+| dev server ready | minutes | 217ms manager, 264ms preview |
 
-## Learn More
+Dev startup is the one you will feel. It went from waiting for a full bundle to being usable before you have switched windows.
 
-To learn more about Next.js, take a look at the following resources:
+### Run `pnpm install`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn-pages-router) - an interactive Next.js tutorial.
+Dependencies changed. `@storybook/nextjs` is gone, `@storybook/nextjs-vite` and the addons are in.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### `postcss.config.mjs` changed
 
-## Deploy on Vercel
+This app used to register `tailwindcss` directly as a PostCSS plugin. Tailwind v4 rejects that form, and every other app in the repo already re-exports the design-system config. This one now does too. Webpack never exercised that code path, so the bug sat there unnoticed. `vitest.config.ts` had already called it out in a comment.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Three things in `.storybook/main.ts` that are load-bearing
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/pages/building-your-application/deploying) for more details.
+If Controls panels go empty or the build starts failing, it is almost certainly one of these. Please do not remove them without reading this.
+
+**1. The docgen plugin is limited to TypeScript files.**
+
+`react-docgen` (the JavaScript parser) calls a Babel 7 API that Babel 8 removed, and this repo runs Babel 8. Its latest release still requires Babel 7, so there is no version to upgrade to. Any `.js` file that reaches it crashes the build. Every component whose props matter here is TypeScript, so the plugin is constrained to `.ts` and `.tsx` and the problem disappears.
+
+**2. Docgen gets explicit compiler options and include globs.**
+
+The Vite docgen plugin builds a TypeScript program and silently skips any file outside it. This app's `tsconfig.json` only covers `apps/storybook`, so without this every component in `packages/**` gets no prop data. The build still passes. Nothing warns you.
+
+That is exactly what happened on the first green Vite build: docgen fell from 644 components to 7 and the build reported success.
+
+**3. `@repo/design-system` and `@repo/*` are aliased to source.**
+
+The design-system package's `exports` map points at `dist`, which meant the builder was reading compiled JavaScript. Aliasing to source means docgen reads real `.tsx`. It also means the Storybook build no longer depends on `dist` being intact, which had been its own source of confusing failures.
+
+## Checking that Controls did not regress
+
+Prop data can vanish without any error, so treat it as something to measure rather than assume. There is a snapshot approach that was used to gate this migration:
+
+1. Build Storybook.
+2. Extract every `__docgenInfo` block from `storybook-static/assets/*.js` and record each component and prop.
+3. Make your change, rebuild, extract again, diff.
+
+The number that matters is not component count, it is **option values lost**. Reordering a union is cosmetic. Losing `"warning"` from a badge variant is not. The migration was accepted at 644 to 610 components with zero option values lost.
+
+## MCP
+
+With the dev server running, an MCP endpoint is served at `/mcp`. `.mcp.json` at the repo root points a client at it.
+
+Eight tools are exposed, including `docs-list`, `docs-show`, and `stories-find-by-component`, which maps a component source file to the stories that render it. The point is that an agent asks the Storybook instead of grepping the codebase.
+
+**This is dev only.** `storybook build` produces static files with no server behind them, so `/mcp` does not exist on the hosted URL and cannot. It works for whoever is running Storybook locally.
+
+If port 6006 is busy, Storybook silently picks another one. Check the "Storybook ready" banner for the real port, and update `.mcp.json` to match, or free 6006 first.
+
+## Tests
+
+```bash
+pnpm -C apps/storybook test
+```
+
+1,520 tests, about 25 seconds. The bulk is a sweep that mounts and plays every indexed story, so a story that throws on mount fails the suite.
+
+These run on pull requests via the `storybook-build` job. That is recent: for a long time no Storybook test ran in CI at all.
+
+## Titles are validated
+
+```bash
+pnpm -C apps/storybook validate:catalog
+```
+
+Story titles feed the component catalog, so they are checked. If you add or rename a story and this fails, run `pnpm -C apps/storybook catalog:sync` and commit the regenerated `packages/design-system/storybook/component-catalog.ts`.
+
+Colocated App Core stories must be titled `App Core/<Feature>/<Component>` or the catalog cannot see them.
