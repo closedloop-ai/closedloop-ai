@@ -41,7 +41,7 @@ function VersionActionsToolbarDemo({
 }
 
 const meta = {
-  title: "App Core/Documents/Version Actions Toolbar",
+  title: "Composites/Documents/Version Actions Toolbar",
   component: VersionActionsToolbarDemo,
   tags: ["autodocs"],
   parameters: {

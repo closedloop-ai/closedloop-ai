@@ -19,7 +19,7 @@ import { SessionPropertiesFrame } from "./session-properties-story-frame";
  * is deliberately adjacent so the difference is visible rather than inferred.
  */
 const meta = {
-  title: "App Core/Agents/Detail/Session Measured Properties",
+  title: "Composites/Sessions/Detail/Session Measured Properties",
   component: SessionAutonomyProperty,
   tags: ["autodocs"],
   argTypes: {

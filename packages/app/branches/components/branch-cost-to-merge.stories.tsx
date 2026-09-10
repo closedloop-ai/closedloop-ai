@@ -12,7 +12,7 @@ import {
 } from "./branch-story-metric-fixtures";
 
 const meta = {
-  title: "App Core/Branches/Branch Cost to Merge",
+  title: "Primitives/Charts/Branch Cost to Merge",
   component: BranchCostToMerge,
   tags: ["autodocs"],
   argTypes: {

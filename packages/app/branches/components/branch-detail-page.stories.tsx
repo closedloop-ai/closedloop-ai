@@ -317,7 +317,7 @@ const StoryFrame = ({ children }: { children: ReactNode }) => (
 );
 
 const meta = {
-  title: "App Core/Branches/Branch Detail Page",
+  title: "Surfaces/Branch Detail Page",
   component: BranchDetailPage,
   tags: ["autodocs"],
   parameters: {

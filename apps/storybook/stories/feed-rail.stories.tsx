@@ -127,7 +127,7 @@ function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Feed Rail",
+  title: "Primitives/Layout/Feed Rail",
   component: FeedRailStory,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },

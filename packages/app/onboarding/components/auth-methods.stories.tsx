@@ -59,7 +59,7 @@ const meta: Meta<typeof AuthMethods> = {
     ),
   ],
   tags: ["autodocs"],
-  title: "App Core/Onboarding/Auth Methods",
+  title: "Composites/Onboarding/Auth Methods",
 };
 
 export default meta;

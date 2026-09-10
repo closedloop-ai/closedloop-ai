@@ -55,7 +55,7 @@ const meta: Meta<typeof SyncLevelOptions> = {
     ),
   ],
   tags: ["autodocs"],
-  title: "App Core/Onboarding/Sync Level Options",
+  title: "Composites/Onboarding/Sync Level Options",
 };
 
 export default meta;

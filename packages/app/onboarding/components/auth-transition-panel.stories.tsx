@@ -42,7 +42,7 @@ const meta: Meta<typeof AuthTransitionPanel> = {
     ),
   ],
   tags: ["autodocs"],
-  title: "App Core/Onboarding/Auth Transition Panel",
+  title: "Composites/Onboarding/Auth Transition Panel",
 };
 
 export default meta;

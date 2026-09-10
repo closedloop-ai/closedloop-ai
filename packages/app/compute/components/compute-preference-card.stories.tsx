@@ -22,7 +22,7 @@ const options: ComputePreferenceOption[] = [
 ];
 
 const meta = {
-  title: "App Core/Compute/Compute Preference Card",
+  title: "Composites/Compute/Compute Preference Card",
   component: ComputePreferenceCard,
   tags: ["autodocs"],
   argTypes: {

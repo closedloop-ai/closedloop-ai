@@ -29,7 +29,7 @@ const comparison = {
 };
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Time Series Area Chart",
+  title: "Primitives/Charts/Time Series Area Chart",
   component: TimeSeriesAreaChart,
   tags: ["autodocs"],
   parameters: { layout: "centered" },

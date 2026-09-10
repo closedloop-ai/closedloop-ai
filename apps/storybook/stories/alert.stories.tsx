@@ -15,7 +15,7 @@ import {
  * Displays a callout for user attention.
  */
 const meta = {
-  title: "Design System/Feedback & Status/Alert",
+  title: "Primitives/Feedback & Status/Alert",
   component: Alert,
   tags: ["autodocs"],
   argTypes: {

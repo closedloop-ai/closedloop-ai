@@ -41,6 +41,23 @@ type AppCoreStoryParameters = Pick<
   "queryData" | "apiRoutes" | "enabledFlags"
 >;
 
+/**
+ * The element-kind vocabulary, shared by Primitives and Composites so the two
+ * levels cannot drift into different words for the same idea. Ordered by what
+ * the user does with the thing rather than alphabetically.
+ */
+const ELEMENT_KINDS = [
+  "Actions",
+  "Inputs",
+  "Data Display",
+  "Charts",
+  "Content",
+  "Layout",
+  "Navigation",
+  "Overlays",
+  "Feedback & Status",
+];
+
 const preview: Preview = {
   parameters: {
     options: {
@@ -49,34 +66,52 @@ const preview: Preview = {
       // then the desktop shell, and finally whole assembled screens. Catalog
       // sits above everything as the browsable index into the rest.
       storySort: {
+        // Atomic order, smallest to largest: the tokens, then one element, then
+        // things built from elements, then whole pages. Alphabetical would put
+        // Composites above Foundations and Primitives last, which is exactly
+        // backwards for someone reading the system for the first time.
+        //
+        // Inside Primitives and Composites the ELEMENT KINDS come first in a
+        // fixed reading order (what you click, what you type into, what shows
+        // you a value, ...), then Composites continues into the product
+        // DOMAINS. A group's name says what a thing is, never where its code
+        // lives: `packages/app` and `apps/desktop` components sit in the same
+        // domain group as their web counterparts, and anything that genuinely
+        // differs on the desktop shell says so in its own name.
         order: [
           "Catalog",
           ["Inventory"],
           "Foundations",
-          ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
-          "Design System",
-          // Atoms first, then the things built from them, then the specialised
-          // surfaces. Alphabetical would put Primitives last, which is exactly
-          // backwards for someone reading the system for the first time.
           [
-            "Primitives",
-            "Overlays",
-            "Layout",
-            "Navigation & Shell",
-            "Data Display",
-            "Documents & Conversation",
-            "Feedback & Status",
-            "Configuration & Admin",
+            "Colors",
+            "Typography",
+            "Spacing",
+            "Radius & Elevation",
+            "Motion",
+            "Chart Colors",
           ],
-          "App Core",
-          // Agents is the largest feature by a wide margin, so its subgroups
-          // are ordered rather than left alphabetical: the general surfaces
-          // first, then the session detail it drills into, then the timeline
-          // and trace family that sits inside that.
-          ["Agents", ["Overview", "Sessions", "Detail", "Timeline"]],
-          "Desktop App",
-          "Screens",
-          ["Login", "Dashboard", "Settings"],
+          "Primitives",
+          ELEMENT_KINDS,
+          "Composites",
+          [
+            ...ELEMENT_KINDS,
+            "Agents",
+            "Sessions",
+            // The only domain big enough to need a split (46 stories). It
+            // divides by the surface each part serves.
+            ["Listing", "Detail", "Trace"],
+            "Branches",
+            "Documents",
+            "Packs",
+            "Compute",
+            "Insights",
+            "My Tasks",
+            "Settings",
+            "Onboarding",
+            "Tags",
+            "App Shell",
+          ],
+          "Surfaces",
         ],
       },
     },

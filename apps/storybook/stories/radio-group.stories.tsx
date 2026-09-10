@@ -10,7 +10,7 @@ import { fn } from "storybook/test";
  * the buttons can be checked at a time.
  */
 const meta: Meta<typeof RadioGroup> = {
-  title: "Design System/Primitives/Radio Group",
+  title: "Primitives/Inputs/Radio Group",
   component: RadioGroup,
   tags: ["autodocs"],
   argTypes: {

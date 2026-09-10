@@ -32,7 +32,7 @@ function limit(utilization: number, resetsAt: string | null = RESETS_AT) {
  * without either one looking wrong on its own.
  */
 const meta = {
-  title: "App Core/Session Limits/Limit Bar",
+  title: "Composites/Sessions/Detail/Limit Bar",
   component: LimitBar,
   tags: ["autodocs"],
   parameters: {

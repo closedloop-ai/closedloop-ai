@@ -50,7 +50,7 @@ const diffRoutes = [
  * the immutable inline-diff interaction reviewable without a live API.
  */
 const meta = {
-  title: "App Core/Branches/Branch Files Changed Panel",
+  title: "Composites/Branches/Branch Files Changed Panel",
   component: BranchFilesChangedPanel,
   tags: ["autodocs"],
   parameters: { appCore: { apiRoutes: diffRoutes } },

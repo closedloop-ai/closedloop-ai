@@ -37,7 +37,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCREENS_DIR = join(HERE, "..", "stories", "screens");
+const SCREENS_DIR = join(HERE, "..", "stories", "surfaces");
 const DESIGN_SYSTEM_ROOT = join(
   HERE,
   "..",

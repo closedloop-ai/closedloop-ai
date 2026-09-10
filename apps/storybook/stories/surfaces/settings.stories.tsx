@@ -209,7 +209,7 @@ const SettingsScreen = ({
 );
 
 const meta = {
-  title: "Screens/Settings",
+  title: "Surfaces/Settings",
   component: SettingsScreen,
   tags: ["autodocs"],
   argTypes: {

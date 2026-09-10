@@ -43,7 +43,7 @@ const UNATTRIBUTED_LANE = "Unattributed telemetry";
 const NARROW_COLUMN_PX = 320;
 
 const meta = {
-  title: "App Core/Agents/Timeline/Tool Execution Flow",
+  title: "Composites/Sessions/Trace/Tool Execution Flow",
   component: ToolExecutionFlow,
   tags: ["autodocs"],
   argTypes: {

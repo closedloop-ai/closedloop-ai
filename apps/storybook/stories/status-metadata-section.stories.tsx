@@ -40,7 +40,7 @@ const options = [
 ];
 
 const meta = {
-  title: "Design System/Configuration & Admin/Status Metadata Section",
+  title: "Composites/Inputs/Status Metadata Section",
   component: StatusMetadataSection,
   tags: ["autodocs"],
   argTypes: {

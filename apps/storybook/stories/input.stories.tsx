@@ -6,7 +6,7 @@ import { fn } from "storybook/test";
  * Displays a form input field or a component that looks like an input field.
  */
 const meta = {
-  title: "Design System/Primitives/Input",
+  title: "Primitives/Inputs/Input",
   component: Input,
   tags: ["autodocs"],
   argTypes: {

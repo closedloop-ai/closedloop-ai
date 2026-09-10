@@ -36,7 +36,7 @@ import {
  *    answer about the user's uploads.
  */
 const meta = {
-  title: "Desktop App/App Shell/Import Splash Sync Footnote",
+  title: "Composites/App Shell/Import Splash Sync Footnote",
   component: SyncFootnote,
   tags: ["autodocs"],
   // `Matrix` already renders every member of the union and each row supplies its

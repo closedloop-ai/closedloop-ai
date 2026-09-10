@@ -137,7 +137,7 @@ function CommentThreadStory() {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Thread",
+  title: "Primitives/Content/Comment Thread",
   component: CommentThreadStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

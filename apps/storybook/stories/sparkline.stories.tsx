@@ -2,7 +2,7 @@ import { Sparkline } from "@repo/design-system/components/ui/primitives/sparklin
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Sparkline",
+  title: "Primitives/Charts/Sparkline",
   component: Sparkline,
   tags: ["autodocs"],
   argTypes: {

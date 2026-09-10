@@ -21,7 +21,7 @@ const appliedTags: TagSummary[] = [
  * the open-popover states render without any network access.
  */
 const meta: Meta<typeof TagPicker> = {
-  title: "App Core/Tags/Tag Picker",
+  title: "Composites/Tags/Tag Picker",
   component: TagPicker,
   tags: ["autodocs"],
   argTypes: {

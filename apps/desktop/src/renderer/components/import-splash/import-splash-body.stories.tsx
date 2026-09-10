@@ -22,7 +22,7 @@ import {
  * also needs the import to wedge for two minutes.
  */
 const meta = {
-  title: "Desktop App/App Shell/Import Splash Body",
+  title: "Composites/App Shell/Import Splash Body",
   component: ImportSplashBody,
   tags: ["autodocs"],
   // Every story renders a fixed scenario through the real derivation, so these

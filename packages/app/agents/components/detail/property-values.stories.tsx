@@ -36,7 +36,7 @@ const LONG_WORKING_DIRECTORY =
 // unstyled and the truncation story has no fixed-width track to clip against.
 
 const meta = {
-  title: "App Core/Agents/Detail/Property Value",
+  title: "Composites/Sessions/Detail/Property Value",
   component: PropertyValue,
   tags: ["autodocs"],
   args: { mono: false },

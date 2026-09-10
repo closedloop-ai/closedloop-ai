@@ -30,7 +30,7 @@ const LineChartCanvas = ({
 );
 
 const meta = {
-  title: "Design System/Data Display/Data Visualization/Line Chart",
+  title: "Primitives/Charts/Line Chart",
   component: LineChartCanvas,
   tags: ["autodocs"],
   argTypes: {

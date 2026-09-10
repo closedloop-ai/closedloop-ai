@@ -29,7 +29,7 @@ const idleSaveState = {
 };
 
 const meta = {
-  title: "App Core/Settings/Org Policy Toggle Card",
+  title: "Composites/Settings/Org Policy Toggle Card",
   component: OrgPolicyEditableCard,
   tags: ["autodocs"],
   argTypes: {

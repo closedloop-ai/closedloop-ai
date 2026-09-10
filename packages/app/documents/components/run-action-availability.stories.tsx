@@ -16,7 +16,7 @@ import { GaugeIcon, PlayIcon, SparklesIcon } from "lucide-react";
 const REASON_ID = "run-in-flight-reason";
 
 const meta = {
-  title: "App Core/Documents/Run Action Availability",
+  title: "Composites/Documents/Run Action Availability",
   component: RunInFlightReason,
   tags: ["autodocs"],
   argTypes: {

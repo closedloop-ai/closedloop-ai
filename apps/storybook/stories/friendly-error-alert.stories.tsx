@@ -3,7 +3,7 @@ import { mockFriendlyError } from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Feedback & Status/Friendly Error Alert",
+  title: "Primitives/Feedback & Status/Friendly Error Alert",
   component: FriendlyErrorAlert,
   tags: ["autodocs"],
   argTypes: {

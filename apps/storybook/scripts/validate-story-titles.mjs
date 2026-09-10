@@ -4,6 +4,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import {
+  atomicLevels,
   buildCatalogData,
   collectAppCoreStoryFiles,
   metaTitleRegex,
@@ -134,12 +135,12 @@ for (const [storyId, actualTitle] of actualTitles) {
   }
 }
 
-// Colocated App Core stories live in packages/app/<feature>/components/, outside
-// `storiesDir`. The freshness check above catches title DRIFT on existing entries,
-// but `buildAppCoreEntries` silently skips any colocated story whose title does not
-// start with "App Core/" — so a net-new story titled "Oops/Bar" would be invisible to
-// the catalog yet still render in Storybook. Assert every colocated story is
-// App Core-prefixed so those net-new mistakes fail CI instead of slipping through.
+// Colocated stories live in packages/app/<feature>/components/, outside
+// `storiesDir`. The freshness check above catches title DRIFT on existing
+// entries, but a story whose title does not start with an atomic level cannot be
+// placed in the catalog at all — it would still render in Storybook while being
+// invisible to every consumer of the catalog. Assert the level prefix so that
+// mistake fails CI instead of slipping through.
 let appCoreStoryCount = 0;
 for (const storyFile of collectAppCoreStoryFiles()) {
   const titleMatch = readFileSync(storyFile, "utf8").match(metaTitleRegex);
@@ -153,9 +154,9 @@ for (const storyFile of collectAppCoreStoryFiles()) {
 
   appCoreStoryCount += 1;
 
-  if (!titleMatch[1].startsWith("App Core/")) {
+  if (!atomicLevels.has(titleMatch[1].split("/")[0])) {
     console.error(
-      `Colocated story ${relativePath} has title "${titleMatch[1]}" — packages/app stories must be titled "App Core/<Feature>/<Component>" to be cataloged.`
+      `Colocated story ${relativePath} has title "${titleMatch[1]}" — every story must be titled "<Level>/<Group>/<Component>" where Level is one of ${[...atomicLevels].join(", ")}. See apps/storybook/TAXONOMY.md.`
     );
     process.exitCode = 1;
   }
@@ -191,7 +192,7 @@ for (const entry of [
 for (const [storyTitle, sourcePaths] of sourcePathsByTitle) {
   if (sourcePaths.length > 1) {
     console.error(
-      `Duplicate story title "${storyTitle}" claimed by ${sourcePaths.length} components: ${sourcePaths.join(", ")}. Story titles must be unique — give each a distinct "App Core/<Feature>/<Component>" title and re-run catalog:sync.`
+      `Duplicate story title "${storyTitle}" claimed by ${sourcePaths.length} components: ${sourcePaths.join(", ")}. Story titles must be unique — give each a distinct "<Level>/<Group>/<Component>" title and re-run catalog:sync.`
     );
     process.exitCode = 1;
   }

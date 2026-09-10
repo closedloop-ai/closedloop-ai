@@ -11,7 +11,7 @@ import { fn } from "storybook/test";
  * An interactive component which expands/collapses a panel.
  */
 const meta: Meta<typeof Collapsible> = {
-  title: "Design System/Layout/Collapsible",
+  title: "Primitives/Layout/Collapsible",
   component: Collapsible,
   tags: ["autodocs"],
   argTypes: {

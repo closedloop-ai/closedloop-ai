@@ -101,7 +101,7 @@ const texturedSeriesConfig = {
  * Beautiful charts. Built using Recharts. Copy and paste into your apps.
  */
 const meta = {
-  title: "Design System/Data Display/Chart",
+  title: "Primitives/Charts/Chart",
   component: ChartContainer,
   tags: ["autodocs"],
   argTypes: {

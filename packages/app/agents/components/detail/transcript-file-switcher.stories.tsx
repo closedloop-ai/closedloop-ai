@@ -65,7 +65,7 @@ function agents(count: number): SyncedAgentSessionAgent[] {
  * disclosure is the switcher's only rendering and no story seeds a flag.
  */
 const meta = {
-  title: "App Core/Agents/Detail/Transcript File Switcher",
+  title: "Composites/Sessions/Trace/Transcript File Switcher",
   component: TranscriptFileSwitcher,
   tags: ["autodocs"],
   argTypes: {

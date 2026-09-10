@@ -5,7 +5,7 @@ import { useState } from "react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Overlays/User Select Popover",
+  title: "Composites/Overlays/User Select Popover",
   component: UserSelectPopover,
   tags: ["autodocs"],
   argTypes: {

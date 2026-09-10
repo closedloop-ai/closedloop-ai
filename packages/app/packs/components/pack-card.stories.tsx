@@ -5,7 +5,7 @@ import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PackCard } from "./pack-card";
 
 const meta = {
-  title: "App Core/Packs/Pack Card",
+  title: "Composites/Packs/Pack Card",
   component: PackCard,
   tags: ["autodocs"],
   args: {

@@ -87,7 +87,7 @@ function detail(
 }
 
 const meta = {
-  title: "App Core/Branches/PR Activity Timeline",
+  title: "Composites/Branches/PR Activity Timeline",
   component: BranchPrActivityTimeline,
   tags: ["autodocs"],
   argTypes: {

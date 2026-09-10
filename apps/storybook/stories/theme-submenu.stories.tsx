@@ -14,7 +14,7 @@ import { SunMoonIcon } from "lucide-react";
  * Dark, and System. Drop it inside any `DropdownMenuContent`.
  */
 const meta = {
-  title: "Design System/Navigation & Shell/Theme Submenu",
+  title: "Primitives/Navigation/Theme Submenu",
   component: ThemeSubmenu,
   tags: ["autodocs"],
   argTypes: {

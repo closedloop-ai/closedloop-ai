@@ -25,7 +25,7 @@ import { DashboardCutoverStatus } from "./dashboard-cutover-status";
  * them is ever on screen at a time.
  */
 const meta = {
-  title: "Desktop App/Dashboard/Cutover Status",
+  title: "Primitives/Feedback & Status/Cutover Status",
   component: DashboardCutoverStatus,
   tags: ["autodocs"],
   argTypes: {

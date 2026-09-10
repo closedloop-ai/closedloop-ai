@@ -8,7 +8,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "App Core/Branches/Branches List Body",
+  title: "Composites/Branches/Branches List Body",
   component: BranchesListBody,
   tags: ["autodocs"],
   argTypes: {

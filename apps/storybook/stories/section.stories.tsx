@@ -7,7 +7,7 @@ const SectionCanvas = (props: Parameters<typeof Section>[0]) => (
 );
 
 const meta = {
-  title: "Design System/Layout/Section",
+  title: "Composites/Layout/Section",
   component: SectionCanvas,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

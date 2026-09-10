@@ -6,7 +6,7 @@ import {
 import { DesktopCloudHydrationStatus } from "../../shared-branches/desktop-cloud-hydration-status";
 
 const meta = {
-  title: "Desktop App/Branches/Cloud Hydration Status",
+  title: "Primitives/Feedback & Status/Cloud Hydration Status",
   component: DesktopCloudHydrationStatus,
   tags: ["autodocs"],
   argTypes: {

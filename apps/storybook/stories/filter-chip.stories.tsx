@@ -87,7 +87,7 @@ function InteractiveFilterChipSet() {
 }
 
 const meta = {
-  title: "Design System/Data Display/Tables/Filter Chip",
+  title: "Composites/Data Display/Filter Chip",
   component: FilterChip,
   tags: ["autodocs"],
   argTypes: {

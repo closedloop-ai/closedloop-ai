@@ -2,7 +2,7 @@ import { MatchList } from "@repo/design-system/components/ui/primitives/match-li
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Data Display/Match List",
+  title: "Primitives/Data Display/Match List",
   component: MatchList,
   tags: ["autodocs"],
   argTypes: {

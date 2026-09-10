@@ -15,7 +15,7 @@ const completeCollection = makeCollection(
 );
 
 const meta = {
-  title: "App Core/Branches/Pull Request Selector",
+  title: "Composites/Branches/Pull Request Selector",
   component: BranchPullRequestSelector,
   tags: ["autodocs"],
   argTypes: {

@@ -33,7 +33,7 @@ function PackInstallDialogCanvas() {
 }
 
 const meta = {
-  title: "App Core/Packs/Pack Install Dialog",
+  title: "Composites/Packs/Pack Install Dialog",
   component: PackInstallDialogCanvas,
   tags: ["autodocs"],
   parameters: {

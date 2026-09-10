@@ -34,7 +34,7 @@ const detailViewDecorator: Decorator = (Story) => (
 );
 
 const meta: Meta<typeof AgentSessionDetailView> = {
-  title: "App Core/Agents/Detail/Session Detail",
+  title: "Surfaces/Session Detail",
   component: AgentSessionDetailView,
   args: { commentsRailOpen: true, isError: false },
   argTypes: {

@@ -59,7 +59,7 @@ function SidebarSectionHeaderDemo() {
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Section Header",
+  title: "Primitives/Navigation/Sidebar Section Header",
   component: SidebarSectionHeaderDemo,
   tags: ["autodocs"],
   parameters: {

@@ -86,7 +86,7 @@ function InteractiveAttachmentList({
 }
 
 const meta = {
-  title: "App Core/Documents/Attachment List",
+  title: "Composites/Documents/Attachment List",
   component: AttachmentList,
   tags: ["autodocs"],
   argTypes: {

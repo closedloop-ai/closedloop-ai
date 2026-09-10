@@ -9,7 +9,7 @@ import { TagChip, TagChips } from "./tag-chip";
  * the AppCoreStoryProviders harness — no Next.js, no Clerk, no live API.
  */
 const meta: Meta<typeof TagChip> = {
-  title: "App Core/Tags/Tag Chip",
+  title: "Composites/Tags/Tag Chip",
   component: TagChip,
   tags: ["autodocs"],
   argTypes: {

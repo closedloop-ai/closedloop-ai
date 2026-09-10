@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { GitPullRequest, Play, Sparkles } from "lucide-react";
 
 const meta = {
-  title: "Design System/Primitives/Chip",
+  title: "Primitives/Data Display/Chip",
   component: Chip,
   tags: ["autodocs"],
   parameters: {

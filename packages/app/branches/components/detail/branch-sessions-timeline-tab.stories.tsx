@@ -139,7 +139,7 @@ const timelineSource: BranchesDataSource = {
 };
 
 const meta = {
-  title: "App Core/Branches/Branch Sessions Timeline Tab",
+  title: "Composites/Branches/Branch Sessions Timeline Tab",
   component: BranchSessionsTimelineTab,
   tags: ["autodocs"],
   parameters: { layout: "fullscreen" },

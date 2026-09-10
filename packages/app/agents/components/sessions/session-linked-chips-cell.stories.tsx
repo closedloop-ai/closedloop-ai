@@ -18,7 +18,7 @@ import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
  */
 const meta: Meta<typeof SessionLinkedChipsCell> = {
   component: SessionLinkedChipsCell,
-  title: "App Core/Sessions/SessionLinkedChipsCell",
+  title: "Composites/Sessions/Listing/Session Linked Chips Cell",
   tags: ["autodocs"],
   argTypes: {
     chips: { control: "object" },

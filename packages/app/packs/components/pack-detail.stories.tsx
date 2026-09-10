@@ -9,7 +9,7 @@ import { memberInstallCellKey } from "./member-targets-block";
 import { PackDetail } from "./pack-detail";
 
 const meta = {
-  title: "App Core/Packs/Pack Detail",
+  title: "Surfaces/Pack Detail",
   component: PackDetail,
   tags: ["autodocs"],
   args: {

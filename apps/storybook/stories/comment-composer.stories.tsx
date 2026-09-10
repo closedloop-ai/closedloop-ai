@@ -22,7 +22,7 @@ function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Composer",
+  title: "Composites/Inputs/Comment Composer",
   component: CommentComposerStory,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

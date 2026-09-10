@@ -79,7 +79,7 @@ const favoriteRoutes: FixtureRoute[] = [
 ];
 
 const meta: Meta<typeof FavoriteButton> = {
-  title: "App Core/Documents/Favorite Button",
+  title: "Composites/Documents/Artifact Favorite Button",
   component: FavoriteButton,
   tags: ["autodocs"],
   argTypes: {

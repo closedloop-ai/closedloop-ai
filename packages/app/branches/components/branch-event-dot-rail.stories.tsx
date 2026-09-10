@@ -21,7 +21,7 @@ const greenAndRed: MergedTraceItem[] = [
 ];
 
 const meta = {
-  title: "App Core/Branches/Event Dot Rail",
+  title: "Composites/Branches/Event Dot Rail",
   component: BranchEventDotRail,
   tags: ["autodocs"],
   argTypes: {

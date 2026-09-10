@@ -85,7 +85,7 @@ const SessionSyncStatusBadgeGallery = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Sessions/Session Sync Status Badge",
+  title: "Composites/Sessions/Listing/Session Sync Status Badge",
   component: SessionSyncStatusBadgeGallery,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

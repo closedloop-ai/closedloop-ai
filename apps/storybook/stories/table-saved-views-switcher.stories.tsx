@@ -71,7 +71,7 @@ function TableSavedViewsSwitcherDemo({
 }
 
 const meta = {
-  title: "Design System/Data Display/Tables/Table Saved Views Switcher",
+  title: "Primitives/Navigation/Table Saved Views Switcher",
   component: TableSavedViewsSwitcherDemo,
   tags: ["autodocs"],
   argTypes: {

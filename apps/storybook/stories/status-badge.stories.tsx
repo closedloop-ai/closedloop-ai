@@ -103,7 +103,7 @@ const ToneBadgeGallery = () => (
 );
 
 const meta = {
-  title: "Design System/Feedback & Status/Status Badge",
+  title: "Composites/Feedback & Status/Status Badge",
   component: ToneBadgeGallery,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

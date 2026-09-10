@@ -82,7 +82,7 @@ const PillNoComparisonCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Insights/KPI Delta Placeholder",
+  title: "Composites/Insights/KPI Delta Placeholder",
   component: PillNoComparisonCanvas,
   tags: ["autodocs"],
   parameters: {

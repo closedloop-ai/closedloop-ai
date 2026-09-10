@@ -48,7 +48,7 @@ const SIGNED_OUT: DesktopAuthState = {
  * would otherwise pretend a system-browser OAuth round-trip happened.
  */
 const meta = {
-  title: "Desktop App/Onboarding/Guest Landing Sign In",
+  title: "Composites/Onboarding/Guest Landing Sign In",
   component: GuestLandingSignIn,
   tags: ["autodocs"],
   argTypes: {

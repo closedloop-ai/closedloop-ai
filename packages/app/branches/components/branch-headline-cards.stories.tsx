@@ -8,7 +8,7 @@ import { BranchHeadlineCards } from "./branch-headline-cards";
 import { completeMetrics } from "./branch-story-metric-fixtures";
 
 const meta = {
-  title: "App Core/Branches/Branch Headline Cards",
+  title: "Composites/Branches/Branch Headline Cards",
   component: BranchHeadlineCards,
   tags: ["autodocs"],
   argTypes: {

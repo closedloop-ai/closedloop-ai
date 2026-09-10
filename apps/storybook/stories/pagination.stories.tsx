@@ -17,7 +17,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * `Table Pagination`.
  */
 const meta = {
-  title: "Design System/Data Display/Pagination",
+  title: "Composites/Data Display/Pagination",
   component: Pagination,
   tags: ["autodocs"],
   argTypes: {

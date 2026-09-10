@@ -10,7 +10,7 @@ const LONG_REPOSITORY_NAME =
 const PROPERTIES_RE = /Properties/;
 
 const meta = {
-  title: "App Core/Branches/Branch Properties Panel",
+  title: "Primitives/Data Display/Branch Properties Panel",
   component: BranchPropertiesPanel,
   tags: ["autodocs"],
   argTypes: {

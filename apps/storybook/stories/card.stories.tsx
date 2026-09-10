@@ -28,7 +28,7 @@ const notifications = [
  * Displays a card with header, content, and footer.
  */
 const meta = {
-  title: "Design System/Layout/Card",
+  title: "Primitives/Layout/Card",
   component: Card,
   tags: ["autodocs"],
   argTypes: {

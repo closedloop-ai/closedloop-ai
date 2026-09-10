@@ -178,7 +178,7 @@ const NoComparisonReasonsCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Insights/KPI Metric Tile",
+  title: "Composites/Insights/KPI Metric Tile",
   component: PinnedKpiMetricTileCanvas,
   tags: ["autodocs"],
   parameters: {

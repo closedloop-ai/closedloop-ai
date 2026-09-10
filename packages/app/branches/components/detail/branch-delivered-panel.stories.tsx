@@ -11,7 +11,7 @@ const HEAD_SHA = "b".repeat(40);
 
 /** Linked-artifact completeness and selected-PR attribution matrix. */
 const meta = {
-  title: "App Core/Branches/Branch Delivered Panel",
+  title: "Composites/Branches/Branch Delivered Panel",
   component: BranchDeliveredPanel,
   tags: ["autodocs"],
   argTypes: {

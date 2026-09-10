@@ -71,7 +71,7 @@ function SidebarNavLinkItemDemo() {
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Nav Link Item",
+  title: "Primitives/Navigation/Sidebar Nav Link Item",
   component: SidebarNavLinkItemDemo,
   tags: ["autodocs"],
   parameters: {

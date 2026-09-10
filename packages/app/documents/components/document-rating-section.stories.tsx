@@ -34,7 +34,7 @@ function InteractiveDocumentRatingSection() {
 }
 
 const meta = {
-  title: "App Core/Documents/Document Rating Section",
+  title: "Composites/Documents/Document Rating Section",
   component: DocumentRatingSection,
   tags: ["autodocs"],
   argTypes: {

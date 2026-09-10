@@ -24,7 +24,7 @@ import { SessionsToolbar } from "./sessions-toolbar";
  * provider.
  */
 const meta: Meta<typeof SessionsToolbar> = {
-  title: "App Core/Sessions/SessionsToolbar",
+  title: "Composites/Sessions/Listing/Sessions Toolbar",
   component: SessionsToolbar,
   tags: ["autodocs"],
   argTypes: {

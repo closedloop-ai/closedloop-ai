@@ -10,7 +10,7 @@ import { fn } from "storybook/test";
  * A set of two-state buttons that can be toggled on or off.
  */
 const meta: Meta<typeof ToggleGroup> = {
-  title: "Design System/Primitives/Toggle Group",
+  title: "Composites/Inputs/Toggle Group",
   component: ToggleGroup,
   tags: ["autodocs"],
   argTypes: {

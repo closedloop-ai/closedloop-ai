@@ -20,7 +20,7 @@ const STORY_BRANCH_ID = encodeBranchId({
 type SessionDetailViewStoryArgs = Parameters<typeof SessionDetailView>[0];
 
 const meta = {
-  title: "Desktop App/Sessions/Session Detail",
+  title: "Surfaces/Session Detail (Desktop Shell)",
   component: SessionDetailView,
   tags: ["autodocs"],
   argTypes: {

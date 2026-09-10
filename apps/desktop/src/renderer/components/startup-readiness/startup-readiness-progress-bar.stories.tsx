@@ -20,7 +20,7 @@ import { StartupReadinessPhase } from "./startup-readiness-state";
  * needs-attention state additionally needs a wedged or unverifiable cloud sync.
  */
 const meta = {
-  title: "Desktop App/App Shell/Startup Readiness Progress Bar",
+  title: "Composites/App Shell/Startup Readiness Progress Bar",
   component: StartupReadinessProgressBar,
   tags: ["autodocs"],
   argTypes: {

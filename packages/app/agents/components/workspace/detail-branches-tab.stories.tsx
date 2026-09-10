@@ -84,7 +84,7 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Workspace/Detail Branches Tab",
+  title: "Composites/Branches/Detail Branches Tab",
   component: DetailBranchesTab,
   tags: ["autodocs"],
   argTypes: {

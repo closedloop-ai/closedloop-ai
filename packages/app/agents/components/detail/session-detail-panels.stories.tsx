@@ -222,7 +222,7 @@ function SessionDetailPanelsActivity() {
 }
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Detail Panels",
+  title: "Composites/Sessions/Detail/Session Detail Panels",
   component: SessionDetailPanelsOverview,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

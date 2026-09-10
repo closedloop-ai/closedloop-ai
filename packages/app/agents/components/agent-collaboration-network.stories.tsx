@@ -10,7 +10,7 @@ const AgentCollaborationNetworkCanvas = () => (
 );
 
 const meta = {
-  title: "App Core/Agents/Overview/Agent Collaboration Network",
+  title: "Composites/Agents/Agent Collaboration Network",
   component: AgentCollaborationNetworkCanvas,
   tags: ["autodocs"],
   parameters: {

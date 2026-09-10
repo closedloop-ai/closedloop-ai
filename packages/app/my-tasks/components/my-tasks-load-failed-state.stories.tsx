@@ -14,7 +14,7 @@ import { MyTasksLoadFailedState } from "./my-tasks-load-failed-state";
  * never masquerade as "your queue is clear" (the FEA-3938 rule).
  */
 const meta = {
-  title: "App Core/My Tasks/Load Failed State",
+  title: "Composites/My Tasks/Load Failed State",
   component: MyTasksLoadFailedState,
   tags: ["autodocs"],
   args: {

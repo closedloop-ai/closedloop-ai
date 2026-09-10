@@ -21,7 +21,7 @@ const scrollSections = [
 ] as const;
 
 const meta = {
-  title: "Design System/Data Display/Metadata Panel",
+  title: "Composites/Data Display/Metadata Panel",
   component: MetadataPanel,
   tags: ["autodocs"],
   argTypes: {

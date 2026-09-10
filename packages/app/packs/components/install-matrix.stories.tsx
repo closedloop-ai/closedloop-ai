@@ -79,7 +79,7 @@ const MATRIX: PackComponentInstallMatrix = {
 };
 
 const meta = {
-  title: "App Core/Packs/Install Matrix",
+  title: "Composites/Packs/Install Matrix",
   component: InstallMatrix,
   tags: ["autodocs"],
   args: {

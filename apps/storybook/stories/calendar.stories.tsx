@@ -39,7 +39,7 @@ const REFERENCE_DATE = new Date(2025, 5, 11);
  * A date field component that allows users to enter and edit date.
  */
 const meta = {
-  title: "Design System/Primitives/Calendar",
+  title: "Composites/Inputs/Calendar",
   component: Calendar,
   tags: ["autodocs"],
   argTypes: {

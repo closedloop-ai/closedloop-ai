@@ -12,7 +12,7 @@ import { IssueStatusIcon } from "./issue-status-icon";
  * from the Document authoring lifecycle. Documents use `DocumentStatusIcon`.
  */
 const meta = {
-  title: "App Core/Documents/Issue Status Icon",
+  title: "Composites/Documents/Issue Status Icon",
   component: IssueStatusIcon,
   tags: ["autodocs"],
   argTypes: {

@@ -31,7 +31,7 @@ const emptySnapshot: ArtifactRepositorySnapshot = {
 };
 
 const meta = {
-  title: "App Core/Documents/Artifact Repositories Summary",
+  title: "Composites/Documents/Artifact Repositories Summary",
   component: ArtifactRepositoriesSummary,
   tags: ["autodocs"],
   argTypes: {

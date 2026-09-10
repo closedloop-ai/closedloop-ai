@@ -62,7 +62,7 @@ const resolveInstalled = (): Promise<ConvertInstallOutcome> =>
   Promise.resolve(installedOutcome);
 
 const meta = {
-  title: "App Core/Packs/Convert Install Sheet",
+  title: "Composites/Packs/Convert Install Sheet",
   component: ConvertInstallSheet,
   tags: ["autodocs"],
   parameters: {

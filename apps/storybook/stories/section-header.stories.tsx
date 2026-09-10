@@ -21,7 +21,7 @@ function ToggleDemo() {
 }
 
 const meta = {
-  title: "Design System/Layout/Section Header",
+  title: "Primitives/Layout/Section Header",
   component: SectionHeader,
   tags: ["autodocs"],
   argTypes: {

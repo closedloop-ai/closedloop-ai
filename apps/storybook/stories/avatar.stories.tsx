@@ -9,7 +9,7 @@ import type { Meta, StoryObj } from "@storybook/react";
  * An image element with a fallback for representing the user.
  */
 const meta: Meta<typeof Avatar> = {
-  title: "Design System/Data Display/Avatar",
+  title: "Primitives/Data Display/Avatar",
   component: Avatar,
   tags: ["autodocs"],
   argTypes: {

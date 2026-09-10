@@ -143,7 +143,7 @@ function Row({
 }
 
 const meta = {
-  title: "App Core/Shared/Read Source Badge",
+  title: "Composites/Feedback & Status/Read Source Badge",
   component: BadgeGallery,
   tags: ["autodocs"],
 } satisfies Meta<typeof BadgeGallery>;

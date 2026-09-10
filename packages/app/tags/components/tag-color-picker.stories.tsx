@@ -6,7 +6,7 @@ import { fn } from "storybook/test";
 import { TagColorPicker } from "./tag-color-picker";
 
 const meta: Meta<typeof TagColorPicker> = {
-  title: "App Core/Tags/Tag Color Picker",
+  title: "Primitives/Inputs/Tag Color Picker",
   component: TagColorPicker,
   tags: ["autodocs"],
   argTypes: {

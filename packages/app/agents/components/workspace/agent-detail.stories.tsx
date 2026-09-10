@@ -81,7 +81,7 @@ const COMPLETE_HISTORY_DETAIL = makeDetail({
 });
 
 const meta: Meta<typeof AgentDetail> = {
-  title: "App Core/Agents/Workspace/Agent Detail",
+  title: "Surfaces/Agent Detail",
   component: AgentDetail,
   tags: ["autodocs"],
   argTypes: {

@@ -174,7 +174,7 @@ const withPhaseConfidenceDisclosure: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Agents/Detail/Session Activity Breakdown",
+  title: "Surfaces/Session Activity Breakdown",
   component: SessionActivityBreakdown,
   tags: ["autodocs"],
   argTypes: {

@@ -14,7 +14,7 @@ import { fn } from "storybook/test";
  * Fast, composable, unstyled command menu for React.
  */
 const meta = {
-  title: "Design System/Overlays/Command",
+  title: "Composites/Overlays/Command",
   component: Command,
   tags: ["autodocs"],
   argTypes: {

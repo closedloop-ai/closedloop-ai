@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ThinkingBlock } from "./thinking-block";
 
 const meta = {
-  title: "App Core/Agents/Overview/Thinking Block",
+  title: "Composites/Sessions/Trace/Thinking Block",
   component: ThinkingBlock,
   tags: ["autodocs"],
   argTypes: {

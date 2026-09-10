@@ -77,7 +77,7 @@ const baseChecks: CheckResult[] = [
 ];
 
 const meta = {
-  title: "App Core/Compute/System Check Results",
+  title: "Composites/Compute/System Check Results",
   component: SystemCheckResults,
   tags: ["autodocs"],
   argTypes: {

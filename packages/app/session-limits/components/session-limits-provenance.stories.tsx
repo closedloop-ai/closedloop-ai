@@ -33,7 +33,7 @@ function provenance(
  * a snapshot that stopped refreshing must read as "the figures are from THEN".
  */
 const meta = {
-  title: "App Core/Session Limits/Session Limits Provenance",
+  title: "Composites/Sessions/Detail/Session Limits Provenance",
   component: SessionLimitsProvenance,
   tags: ["autodocs"],
   parameters: {

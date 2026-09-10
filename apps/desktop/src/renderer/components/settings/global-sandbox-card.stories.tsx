@@ -23,7 +23,7 @@ type SandboxApiScenario = {
 };
 
 const meta = {
-  title: "Desktop App/Settings/Global Sandbox Section",
+  title: "Composites/Compute/Global Sandbox Section",
   component: GlobalSandboxSection,
   tags: ["autodocs"],
   argTypes: {

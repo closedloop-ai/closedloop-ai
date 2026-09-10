@@ -105,7 +105,7 @@ function DerivedStrip() {
 // six would come out identical, showing none of the tiers they exist to pin.
 // `activity-bucket-tooltip.stories.tsx` omits the tag for the same kind of reason.
 const meta = {
-  title: "App Core/Shared/Summary Card Row",
+  title: "Composites/Layout/Summary Card Row",
   component: SummaryCardRow,
   parameters: { layout: "padded" },
   argTypes: {

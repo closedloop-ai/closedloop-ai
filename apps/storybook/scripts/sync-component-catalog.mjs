@@ -19,128 +19,65 @@ const designSystemRoot = path.join(
 // packages/app/<feature>/components/, mirroring the Storybook glob in main.ts.
 const appPackageRoot = path.join(repoRoot, "packages/app");
 
-const canonicalStorybookRoots = ["Catalog", "Design System", "App Core"];
-
-const designSystemCategoryOrder = [
+// The catalog's sections ARE the atomic levels. They used to be "Design System"
+// and "App Core", which named where a component's code lived rather than what
+// the component is — the exact split the taxonomy removed. A component moving
+// between packages must not change how it is catalogued.
+const canonicalStorybookRoots = [
+  "Catalog",
+  "Foundations",
   "Primitives",
+  "Composites",
+  "Surfaces",
+];
+
+// Sort order INSIDE a level: the element kinds in their reading order, then the
+// product domains. Mirrors `.storybook/preview.tsx`'s storySort, so the catalog
+// page and the sidebar present the same sequence.
+const catalogGroupOrder = [
+  "Actions",
+  "Inputs",
+  "Data Display",
+  "Charts",
+  "Content",
+  "Layout",
+  "Navigation",
   "Overlays",
   "Feedback & Status",
-  "Layout",
-  "Navigation & Shell",
-  "Data Display",
-  "Activity & Monitoring",
-  "Documents & Conversation",
-  "Configuration & Admin",
-  "Catalog & Integrations",
+  "Agents",
+  "Sessions",
+  "Branches",
+  "Documents",
+  "Packs",
+  "Compute",
+  "Insights",
+  "My Tasks",
+  "Settings",
+  "Onboarding",
+  "Tags",
+  "App Shell",
 ];
+
+// The four surfaces with no story of their own, so there is no meta title to
+// read. Titled here rather than derived, because a synthesized title is a
+// decision and it should be visible.
+const catalogOnlyTitlesById = {
+  "donut-slice-textures": "Primitives/Charts/Donut Slice Textures",
+  "filter-range-submenu": "Primitives/Inputs/Filter Range Submenu",
+  "grid-table-card": "Primitives/Data Display/Grid Table Card",
+  "workflow-stat-tile": "Primitives/Data Display/Workflow Stat Tile",
+};
+
+/** Every level a story title may start with. */
+export const atomicLevels = new Set([
+  "Foundations",
+  "Primitives",
+  "Composites",
+  "Surfaces",
+]);
 
 // Category per surface id, mirroring the curated story titles. Root surfaces
 // without an entry default to "Primitives"; composites must be listed here.
-const designSystemCategoriesById = {
-  "active-filters-bar": "Data Display/Tables",
-  alert: "Feedback & Status",
-  "alert-dialog": "Overlays",
-  "backend-mismatch-modal": "Overlays",
-  calendar: "Primitives",
-  "category-bar-chart": "Data Display/Data Visualization",
-  "code-block": "Documents & Conversation",
-  collapsible: "Layout",
-  "collapsible-section": "Layout",
-  command: "Overlays",
-  "confirmation-dialog": "Overlays",
-  "conversation-message": "Documents & Conversation",
-  "date-picker-popover": "Overlays",
-  "delete-confirmation-dialog": "Overlays",
-  dialog: "Overlays",
-  drawer: "Overlays",
-  "dropdown-menu": "Overlays",
-  "empty-state": "Feedback & Status",
-  "empty-state-app": "Feedback & Status",
-  "favorite-button": "Primitives",
-  "file-list": "Data Display",
-  "filter-chip": "Data Display/Tables",
-  "filter-popover": "Overlays",
-  "friendly-error-alert": "Feedback & Status",
-  "group-section-header": "Layout",
-  "info-hint": "Feedback & Status",
-  "key-value-grid": "Data Display",
-  "markdown-content": "Documents & Conversation",
-  "match-list": "Data Display",
-  "metadata-panel": "Data Display",
-  "metric-card": "Data Display",
-  "page-loading-spinner": "Feedback & Status",
-  popover: "Overlays",
-  sheet: "Overlays",
-  "sidebar-count-badge": "Navigation & Shell",
-  sonner: "Overlays",
-  "sortable-column-header": "Data Display/Tables",
-  "status-badge": "Feedback & Status",
-  "status-icon-primitives": "Feedback & Status",
-  "table-grid-column-menu": "Data Display/Tables",
-  "table-grid-header": "Data Display/Tables",
-  "table-grid-header-handles": "Data Display/Tables",
-  "table-page-size-select": "Data Display/Tables",
-  "table-saved-views-switcher": "Data Display/Tables",
-  "table-view-menu": "Data Display/Tables",
-  "terminal-block": "Documents & Conversation",
-  "time-series-area-chart": "Data Display/Data Visualization",
-  tooltip: "Overlays",
-  "underline-tabs": "Navigation & Shell",
-  "unified-diff": "Documents & Conversation",
-  "user-select-popover": "Overlays",
-  "activity-heatmap": "Data Display/Data Visualization",
-  "analytics-range-toggle": "Data Display",
-  avatar: "Data Display",
-  badge: "Data Display",
-  breadcrumb: "Navigation & Shell",
-  card: "Layout",
-  chart: "Data Display",
-  "collapsed-comment-row": "Documents & Conversation",
-  "comment-action-menu": "Documents & Conversation",
-  "comment-composer": "Documents & Conversation",
-  "comment-thread": "Documents & Conversation",
-  "comment-thread-action-footer": "Documents & Conversation",
-  "conversation-transcript": "Documents & Conversation",
-  "data-table": "Data Display",
-  "donut-chart": "Data Display/Data Visualization",
-  "feed-rail": "Documents & Conversation",
-  graph: "Data Display/Data Visualization",
-  "grid-table": "Data Display",
-  "inline-edit-editor-shell": "Documents & Conversation",
-  "interactive-metric-card": "Data Display",
-  "judge-result-card": "Documents & Conversation",
-  "line-chart": "Data Display/Data Visualization",
-  "mode-toggle": "Navigation & Shell",
-  "navigation-menu": "Navigation & Shell",
-  "priority-badge": "Data Display",
-  "priority-icon": "Data Display",
-  "ranked-bar": "Data Display/Data Visualization",
-  resizable: "Layout",
-  "sankey-graph": "Data Display/Data Visualization",
-  "scroll-area": "Layout",
-  "section-header": "Layout",
-  "segmented-bar": "Data Display/Data Visualization",
-  separator: "Layout",
-  sidebar: "Navigation & Shell",
-  "sidebar-collapsible-section": "Navigation & Shell",
-  "sidebar-favorites-group": "Navigation & Shell",
-  "sidebar-tree-nav": "Navigation & Shell",
-  sparkline: "Data Display/Data Visualization",
-  "status-icon": "Data Display",
-  "status-metadata-section": "Configuration & Admin",
-  "status-percentage-icon": "Data Display",
-  table: "Data Display",
-  "table-filter-menu": "Data Display",
-  "table-pagination": "Data Display",
-  // ISS-4681: the shared paginated-table footer sits beside the control it
-  // composes, so it categorizes with it rather than defaulting to Primitives.
-  "table-pagination-footer": "Data Display",
-  "table-placeholder-actions": "Data Display",
-  tabs: "Navigation & Shell",
-  "theme-submenu": "Navigation & Shell",
-  "tone-label": "Data Display",
-  "version-actions-toolbar": "Documents & Conversation",
-};
 
 const designSystemOverridesById = {
   resizable: {
@@ -199,28 +136,6 @@ const appComponentSurfaces = [
 
 const designSystemPrivateSurfaceIds = new Set(["empty", "pagination"]);
 
-const wordOverrides = {
-  api: "API",
-  dnd: "DnD",
-  github: "GitHub",
-  id: "ID",
-  json: "JSON",
-  jsonl: "JSONL",
-  mdx: "MDX",
-  otp: "OTP",
-  pr: "PR",
-  prd: "PRD",
-  prds: "PRDs",
-  repo: "Repo",
-  repos: "Repos",
-  rum: "RUM",
-  yaml: "YAML",
-};
-
-const camelCaseBoundaryRegex = /([a-z0-9])([A-Z])/g;
-const acronymBoundaryRegex = /([A-Z]+)([A-Z][a-z])/g;
-const splitWordsRegex = /[-_\s]+/;
-const uppercaseWordRegex = /^[A-Z0-9]+$/;
 // Anchor on `const meta` so the match skips any fixture/metadata array whose
 // nested `title:` would otherwise match first (mirrors validate-story-titles).
 // The `\n  ` is load-bearing: it pins the match to a key at the meta object's
@@ -265,29 +180,6 @@ function walkTsxFiles(dirPath) {
   }
 
   return entries;
-}
-
-function titleCaseFromStem(stem) {
-  return stem
-    .replace(camelCaseBoundaryRegex, "$1 $2")
-    .replace(acronymBoundaryRegex, "$1 $2")
-    .split(splitWordsRegex)
-    .filter(Boolean)
-    .map((part) => {
-      const lower = part.toLowerCase();
-      const override = wordOverrides[lower];
-
-      if (override) {
-        return override;
-      }
-
-      if (uppercaseWordRegex.test(part)) {
-        return part;
-      }
-
-      return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
-    })
-    .join(" ");
 }
 
 function collectStoryIds() {
@@ -350,8 +242,75 @@ export function collectAppCoreStoryFiles() {
   return files;
 }
 
+/**
+ * Story title per file stem, across BOTH story roots.
+ *
+ * The catalog used to synthesize its titles from `designSystemCategoriesById`,
+ * a category map maintained alongside the story files. That is two sources of
+ * truth for the same fact, and they drifted: after the atomic retitle every one
+ * of the 113 design-system entries disagreed with the story it points at.
+ *
+ * The story's `meta.title` is now the only source. The category map survives
+ * only to place the four surfaces that have no story at all.
+ */
+let storyTitleIndexCache;
+function storyTitleIndex() {
+  if (storyTitleIndexCache) {
+    return storyTitleIndexCache;
+  }
+
+  const index = new Map();
+  // Scoped to `apps/storybook/stories` ONLY. The index is keyed by file stem,
+  // and a design-system component can share a stem with an unrelated colocated
+  // one (`status-badge`, `favorite-button` both exist in each root). Including
+  // both roots let the colocated title overwrite the design-system one and gave
+  // two different components the same catalog title. Colocated stories never
+  // need this map: `buildAppCoreEntries` reads each file's title directly.
+  const files = walkStoryFiles(storybookStoriesRoot);
+
+  for (const fullPath of files) {
+    const stem = path.basename(fullPath, ".stories.tsx");
+    const titleMatch = readFileSync(fullPath, "utf8").match(metaTitleRegex);
+    if (titleMatch) {
+      index.set(stem, titleMatch[1]);
+    }
+  }
+
+  storyTitleIndexCache = index;
+  return index;
+}
+
+/**
+ * Split a story title into the shape the catalog stores. `label` is the leaf,
+ * `section` the atomic level, `pathSegments` everything between — so
+ * "Composites/Sessions/Listing/Sessions Table" yields section "Composites",
+ * pathSegments ["Sessions", "Listing"], label "Sessions Table".
+ */
+function splitStoryTitle(storyTitle, sourceDescription) {
+  const segments = storyTitle.split("/");
+  const section = segments[0];
+
+  if (!atomicLevels.has(section)) {
+    throw new Error(
+      `${sourceDescription} has title "${storyTitle}", which does not start with one of ${[...atomicLevels].join(", ")}. See apps/storybook/TAXONOMY.md.`
+    );
+  }
+
+  if (segments.length < 2) {
+    throw new Error(
+      `${sourceDescription} has title "${storyTitle}" with no component name after the level.`
+    );
+  }
+
+  return {
+    section,
+    pathSegments: segments.slice(1, -1),
+    label: segments.at(-1),
+    storyTitle,
+  };
+}
+
 function buildDesignSystemEntries() {
-  const availableStoryIds = collectStoryIds();
   const allEntries = walkTsxFiles(designSystemRoot);
   const rootSurfaceNames = new Set(
     allEntries
@@ -390,52 +349,70 @@ function buildDesignSystemEntries() {
         ""
       );
       const override = designSystemOverridesById[fileStem] ?? {};
-      let category = designSystemCategoriesById[fileStem] ?? "Primitives";
-      if (relativePath.startsWith("layout/")) {
-        category = "Layout";
-      } else if (relativePath.startsWith("composites/")) {
-        category = designSystemCategoriesById[fileStem] ?? "";
+      const hasStory =
+        override.storyStatus !== "catalog-only" &&
+        storyTitleIndex().has(fileStem);
+      const storyTitle = hasStory
+        ? storyTitleIndex().get(fileStem)
+        : catalogOnlyTitlesById[fileStem];
+
+      if (!storyTitle) {
+        throw new Error(
+          `"${fileStem}" (${relativePath}) has no story and no entry in catalogOnlyTitlesById. Give it a story, or title it there.`
+        );
       }
 
-      if (!(category || override.internal)) {
-        throw new Error(`Missing design system category for "${fileStem}"`);
-      }
-
-      const label = override.label ?? titleCaseFromStem(fileStem);
+      const split = splitStoryTitle(
+        storyTitle,
+        `${fileStem} (${relativePath})`
+      );
 
       return {
         id: fileStem,
-        label,
+        label: override.label ?? split.label,
         sourcePath,
-        section: "Design System",
-        pathSegments: category.split("/"),
-        storyId:
-          override.storyStatus === "catalog-only" ||
-          !availableStoryIds.has(fileStem)
-            ? undefined
-            : fileStem,
-        storyStatus:
-          override.storyStatus ??
-          (availableStoryIds.has(fileStem) ? undefined : "catalog-only"),
+        section: split.section,
+        pathSegments: split.pathSegments,
+        storyId: hasStory ? fileStem : undefined,
+        storyStatus: hasStory ? undefined : "catalog-only",
         internal: override.internal,
         note: override.note,
-        storyTitle: `Design System/${category}/${label}`,
+        storyTitle: split.storyTitle,
       };
     })
-    .sort((left, right) => {
-      const leftCategoryIndex = designSystemCategoryOrder.indexOf(
-        left.pathSegments[0]
-      );
-      const rightCategoryIndex = designSystemCategoryOrder.indexOf(
-        right.pathSegments[0]
-      );
+    .sort(compareCatalogEntries);
+}
 
-      if (leftCategoryIndex !== rightCategoryIndex) {
-        return leftCategoryIndex - rightCategoryIndex;
-      }
+/**
+ * Level first (Foundations before Primitives before Composites before
+ * Surfaces), then group in the curated order, then the component name.
+ */
+function compareCatalogEntries(left, right) {
+  const levelDelta =
+    canonicalStorybookRoots.indexOf(left.section) -
+    canonicalStorybookRoots.indexOf(right.section);
+  if (levelDelta !== 0) {
+    return levelDelta;
+  }
 
-      return left.label.localeCompare(right.label);
-    });
+  const leftGroup = catalogGroupOrder.indexOf(left.pathSegments[0]);
+  const rightGroup = catalogGroupOrder.indexOf(right.pathSegments[0]);
+  if (leftGroup !== rightGroup) {
+    // An unlisted group sorts after every listed one rather than before.
+    return (
+      (leftGroup === -1 ? catalogGroupOrder.length : leftGroup) -
+      (rightGroup === -1 ? catalogGroupOrder.length : rightGroup)
+    );
+  }
+
+  const pathDelta = left.pathSegments
+    .join("/")
+    .localeCompare(right.pathSegments.join("/"));
+  if (pathDelta !== 0) {
+    return pathDelta;
+  }
+
+  return left.label.localeCompare(right.label);
 }
 
 function renderCatalogSource({
@@ -517,14 +494,16 @@ function buildAppCoreEntries() {
     }
 
     const storyTitle = titleMatch[1];
-    if (!storyTitle.startsWith("App Core/")) {
-      continue;
-    }
-
-    const segments = storyTitle.split("/");
-    const label = segments.at(-1);
-    const pathSegments = segments.slice(1, -1);
     const relativePath = toPosixPath(path.relative(repoRoot, fullPath));
+    // Every colocated story is catalogued now. The old gate skipped anything
+    // not prefixed "App Core/", which after the retitle would have silently
+    // dropped all 184 of them from the catalog while they kept rendering in
+    // Storybook. `validate:catalog` asserts the prefix instead, so a bad title
+    // fails loudly rather than disappearing.
+    const { section, pathSegments, label } = splitStoryTitle(
+      storyTitle,
+      relativePath
+    );
 
     // A 1:1 story derives its source by swapping `.stories.tsx → .tsx`. A
     // COMPOSITE story (one showcase for several component files, e.g.
@@ -543,42 +522,46 @@ function buildAppCoreEntries() {
       id: path.basename(fullPath, ".stories.tsx"),
       label,
       sourcePath,
-      section: "App Core",
+      section,
       pathSegments,
       storyId: path.basename(fullPath, ".stories.tsx"),
       storyTitle,
     });
   }
 
-  return entries.sort((left, right) => {
-    const leftKey = left.pathSegments.join("/");
-    const rightKey = right.pathSegments.join("/");
-
-    if (leftKey !== rightKey) {
-      return leftKey.localeCompare(rightKey);
-    }
-
-    return left.label.localeCompare(right.label);
-  });
+  return entries.sort(compareCatalogEntries);
 }
 
 function buildAppEntries() {
   const availableStoryIds = collectStoryIds();
 
-  return appComponentSurfaces.map(({ id, sourcePath, category }) => {
-    const label = titleCaseFromStem(id);
+  return appComponentSurfaces
+    .map(({ id, sourcePath }) => {
+      const hasStory = availableStoryIds.has(id);
+      const storyTitle = hasStory
+        ? storyTitleIndex().get(id)
+        : catalogOnlyTitlesById[id];
 
-    return {
-      id,
-      label,
-      sourcePath,
-      section: "Design System",
-      pathSegments: category.split("/"),
-      storyId: availableStoryIds.has(id) ? id : undefined,
-      storyStatus: availableStoryIds.has(id) ? undefined : "catalog-only",
-      storyTitle: `Design System/${category}/${label}`,
-    };
-  });
+      if (!storyTitle) {
+        throw new Error(
+          `App surface "${id}" (${sourcePath}) has no readable story title and no catalogOnlyTitlesById entry.`
+        );
+      }
+
+      const split = splitStoryTitle(storyTitle, `${id} (${sourcePath})`);
+
+      return {
+        id,
+        label: split.label,
+        sourcePath,
+        section: split.section,
+        pathSegments: split.pathSegments,
+        storyId: hasStory ? id : undefined,
+        storyStatus: hasStory ? undefined : "catalog-only",
+        storyTitle: split.storyTitle,
+      };
+    })
+    .sort(compareCatalogEntries);
 }
 
 function syncCatalogFile() {

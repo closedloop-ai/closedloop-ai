@@ -43,7 +43,7 @@ const results: SearchHit[] = [
 ];
 
 const meta = {
-  title: "App Core/Search/Unified Search Results",
+  title: "Composites/Data Display/Unified Search Results",
   component: UnifiedSearchResults,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

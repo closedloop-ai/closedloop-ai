@@ -14,7 +14,7 @@ const InteractiveStarRating = ({
 };
 
 const meta = {
-  title: "Design System/Primitives/Star Rating",
+  title: "Primitives/Inputs/Star Rating",
   component: StarRating,
   tags: ["autodocs"],
   argTypes: {

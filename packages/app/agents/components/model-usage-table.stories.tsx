@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ModelUsageTable } from "./model-usage-table";
 
 const meta = {
-  title: "App Core/Agents/Overview/Model Usage Table",
+  title: "Composites/Agents/Model Usage Table",
   component: ModelUsageTable,
   tags: ["autodocs"],
   argTypes: {

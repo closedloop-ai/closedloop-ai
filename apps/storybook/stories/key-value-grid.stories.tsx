@@ -2,7 +2,7 @@ import { KeyValueGrid } from "@repo/design-system/components/ui/primitives/key-v
 import type { Meta, StoryObj } from "@storybook/react";
 
 const meta = {
-  title: "Design System/Data Display/Key Value Grid",
+  title: "Primitives/Data Display/Key Value Grid",
   component: KeyValueGrid,
   tags: ["autodocs"],
   argTypes: {

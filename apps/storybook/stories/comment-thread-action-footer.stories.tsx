@@ -4,7 +4,7 @@ import { CheckCheck } from "lucide-react";
 import { fn } from "storybook/test";
 
 const meta = {
-  title: "Design System/Documents & Conversation/Comment Thread Action Footer",
+  title: "Composites/Actions/Comment Thread Action Footer",
   component: CommentThreadActionFooter,
   tags: ["autodocs"],
   parameters: { layout: "padded" },

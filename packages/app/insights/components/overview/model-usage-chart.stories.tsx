@@ -120,7 +120,7 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "App Core/Insights/Model Usage Chart",
+  title: "Composites/Insights/Model Usage Chart",
   component: ModelUsageChart,
   tags: ["autodocs"],
   argTypes: {

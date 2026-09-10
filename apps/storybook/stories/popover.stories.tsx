@@ -10,7 +10,7 @@ import { fn } from "storybook/test";
  * Displays rich content in a portal, triggered by a button.
  */
 const meta: Meta<typeof Popover> = {
-  title: "Design System/Overlays/Popover",
+  title: "Primitives/Overlays/Popover",
   component: Popover,
   tags: ["autodocs"],
   argTypes: {

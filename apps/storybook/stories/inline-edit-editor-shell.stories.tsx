@@ -54,7 +54,7 @@ function InlineEditEditorShellDemo({
 }
 
 const meta = {
-  title: "Design System/Documents & Conversation/Inline Edit Editor Shell",
+  title: "Primitives/Layout/Inline Edit Editor Shell",
   component: InlineEditEditorShellDemo,
   tags: ["autodocs"],
   argTypes: {

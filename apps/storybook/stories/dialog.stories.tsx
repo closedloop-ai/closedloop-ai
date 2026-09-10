@@ -16,7 +16,7 @@ import { fn } from "storybook/test";
  * rendering the content underneath inert.
  */
 const meta: Meta<typeof Dialog> = {
-  title: "Design System/Overlays/Dialog",
+  title: "Primitives/Overlays/Dialog",
   component: Dialog,
   tags: ["autodocs"],
   argTypes: {

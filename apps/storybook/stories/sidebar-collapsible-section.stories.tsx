@@ -53,7 +53,7 @@ function SidebarCollapsibleSectionDemo(
 }
 
 const meta = {
-  title: "Design System/Navigation & Shell/Sidebar Collapsible Section",
+  title: "Primitives/Layout/Sidebar Collapsible Section",
   component: SidebarCollapsibleSectionDemo,
   tags: ["autodocs"],
   argTypes: {

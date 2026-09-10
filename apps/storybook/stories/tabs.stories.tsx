@@ -13,7 +13,7 @@ import { fn } from "storybook/test";
  * one at a time.
  */
 const meta: Meta<typeof Tabs> = {
-  title: "Design System/Navigation & Shell/Tabs",
+  title: "Primitives/Navigation/Tabs",
   component: Tabs,
   tags: ["autodocs"],
   argTypes: {
