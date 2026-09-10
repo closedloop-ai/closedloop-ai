@@ -9,6 +9,11 @@ pnpm -C apps/storybook dev                               # http://localhost:6006
 
 The hosted copy lives at https://storybook.preview.closedloop-stage.ai behind HTTP basic auth. See `DESIGNER-GUIDE.md` for the credential and the designer-facing tour.
 
+## How it is organised
+
+Four levels: Foundations, Primitives, Composites, Surfaces. `TAXONOMY.md` has the rules,
+the three judgment calls behind them, and how to classify something new.
+
 ## What changed: this now runs on Vite
 
 Storybook used to build with Webpack (`@storybook/nextjs`). It now builds with Vite (`@storybook/nextjs-vite`).
