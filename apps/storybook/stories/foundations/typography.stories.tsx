@@ -105,6 +105,10 @@ const TypographyPage = () => (
   </FoundationsPage>
 );
 
+/**
+ * The type scale, font families and weights the product uses, so you reach
+ * for a size or weight instead of guessing one that breaks the rhythm.
+ */
 const meta = {
   title: "Foundations/Typography",
   component: TypographyPage,

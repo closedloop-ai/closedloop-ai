@@ -44,45 +44,11 @@ export const Default: Story = {
 };
 
 /**
- * Low priority badge.
+ * Renders every priority level together, each labelled by the badge's own
+ * text, so one Chromatic snapshot keeps visual coverage for all four levels
+ * instead of four separate story snapshots.
  */
-export const Low: Story = {
-  args: {
-    priority: "LOW",
-  },
-};
-
-/**
- * Medium priority badge.
- */
-export const Medium: Story = {
-  args: {
-    priority: "MEDIUM",
-  },
-};
-
-/**
- * High priority badge.
- */
-export const High: Story = {
-  args: {
-    priority: "HIGH",
-  },
-};
-
-/**
- * Urgent priority badge.
- */
-export const Urgent: Story = {
-  args: {
-    priority: "URGENT",
-  },
-};
-
-/**
- * All priority badges displayed together.
- */
-export const AllPriorities: Story = {
+export const AllVariants: Story = {
   args: {
     priority: "MEDIUM",
   },

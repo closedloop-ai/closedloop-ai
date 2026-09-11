@@ -88,18 +88,23 @@ const PillNoComparisonCanvas = () => (
  */
 const meta = {
   title: "Composites/Insights/KPI Delta Placeholder",
-  component: PillNoComparisonCanvas,
+  // The canvas below composes three whole `MetricCard`s for comparison, but
+  // `KpiDeltaPlaceholder` is the real component this file is about, so it is
+  // the one bound here for the props table. `render` on the story keeps the
+  // comparison canvas rendering unchanged.
+  component: KpiDeltaPlaceholder,
   tags: ["autodocs"],
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof PillNoComparisonCanvas>;
+} satisfies Meta<typeof KpiDeltaPlaceholder>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
 export const PillNoComparisonReasons: Story = {
+  render: () => <PillNoComparisonCanvas />,
   play: async ({ canvasElement }) => {
     // Real Tab presses, not `.focus()`. The chip's ring is `focus-visible:`, and
     // Chromium applies that only when the last input was a keyboard, so a

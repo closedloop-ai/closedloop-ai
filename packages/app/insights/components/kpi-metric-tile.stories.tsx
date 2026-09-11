@@ -184,18 +184,38 @@ const NoComparisonReasonsCanvas = () => (
  */
 const meta = {
   title: "Composites/Insights/KPI Metric Tile",
-  component: PinnedKpiMetricTileCanvas,
+  // Every canvas below composes one or more real `KpiMetricTile`s, so it is
+  // the component bound here for the props table. Each story keeps its own
+  // `render`, so the composed comparisons render unchanged; the args below
+  // exist only to satisfy the component's required props.
+  component: KpiMetricTile,
   tags: ["autodocs"],
+  args: {
+    kpi: {
+      key: InsightsKpiKey.Merged,
+      label: "Merged PRs",
+      value: 128,
+      format: KpiFormat.Number,
+      sub: "PRs found in local sessions",
+      deltaPct: null,
+    },
+    pinned: true,
+    polarity: MetricPolarity.HigherIsBetter,
+    tileId: "kpi:merged",
+    title: "Merged PRs",
+  },
   parameters: {
     layout: "centered",
   },
-} satisfies Meta<typeof PinnedKpiMetricTileCanvas>;
+} satisfies Meta<typeof KpiMetricTile>;
 
 export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const PinnedWithInfo: Story = {};
+export const PinnedWithInfo: Story = {
+  render: () => <PinnedKpiMetricTileCanvas />,
+};
 
 export const RisingDeltaByPolarity: Story = {
   render: () => <RisingDeltaPolarityCanvas />,

@@ -155,6 +155,10 @@ const MotionPage = () => (
   </FoundationsPage>
 );
 
+/**
+ * Every named animation and the reduced motion behaviour it maps to, so you
+ * reach for a token instead of picking your own duration and easing.
+ */
 const meta = {
   title: "Foundations/Motion",
   component: MotionPage,

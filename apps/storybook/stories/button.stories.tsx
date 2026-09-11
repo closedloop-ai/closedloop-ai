@@ -51,53 +51,75 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 /**
- * Use the `outline` button to reduce emphasis on secondary actions, such as
- * canceling or dismissing a dialog.
+ * Every `variant` value rendered side by side, labelled, so one Chromatic
+ * snapshot keeps visual coverage of the full set instead of one story per
+ * value. Drive `variant` from the Controls panel on Default to preview a
+ * single value in isolation.
  */
-export const Outline: Story = {
-  args: {
-    variant: "outline",
-  },
+export const AllVariants: Story = {
+  render: () => (
+    <div className="flex flex-wrap items-end gap-4">
+      {(
+        [
+          "default",
+          "destructive",
+          "outline",
+          "secondary",
+          "ghost",
+          "link",
+          "linkForeground",
+        ] as const
+      ).map((variant) => (
+        <div className="flex flex-col items-center gap-2" key={variant}>
+          <span className="text-muted-foreground text-xs">{variant}</span>
+          <Button variant={variant}>Button</Button>
+        </div>
+      ))}
+    </div>
+  ),
 };
 
 /**
- * Use the `ghost` button is minimalistic and subtle, for less intrusive
- * actions.
+ * Every `size` value rendered side by side, labelled, so one Chromatic
+ * snapshot keeps visual coverage of the full set instead of one story per
+ * value. Drive `size` from the Controls panel on Default to preview a single
+ * value in isolation.
  */
-export const Ghost: Story = {
-  args: {
-    variant: "ghost",
-  },
-};
-
-/**
- * Use the `secondary` button to call for less emphasized actions, styled to
- * complement the primary button while being less conspicuous.
- */
-export const Secondary: Story = {
-  args: {
-    variant: "secondary",
-  },
-};
-
-/**
- * Use the `destructive` button to indicate errors, alerts, or the need for
- * immediate attention.
- */
-export const Destructive: Story = {
-  args: {
-    variant: "destructive",
-  },
-};
-
-/**
- * Use the `link` button to reduce emphasis on tertiary actions, such as
- * hyperlink or navigation, providing a text-only interactive element.
- */
-export const Link: Story = {
-  args: {
-    variant: "link",
-  },
+export const AllSizes: Story = {
+  render: () => (
+    <div className="flex flex-wrap items-end gap-4">
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">default</span>
+        <Button>Button</Button>
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">sm</span>
+        <Button size="sm">Button</Button>
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">lg</span>
+        <Button size="lg">Button</Button>
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">icon</span>
+        <Button size="icon" variant="secondary">
+          <Mail />
+        </Button>
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">icon-sm</span>
+        <Button size="icon-sm" variant="secondary">
+          <Mail />
+        </Button>
+      </div>
+      <div className="flex flex-col items-center gap-2">
+        <span className="text-muted-foreground text-xs">icon-lg</span>
+        <Button size="icon-lg" variant="secondary">
+          <Mail />
+        </Button>
+      </div>
+    </div>
+  ),
 };
 
 /**
@@ -112,7 +134,7 @@ export const Loading: Story = {
     </Button>
   ),
   args: {
-    ...Outline.args,
+    variant: "outline",
     disabled: true,
   },
 };
@@ -128,62 +150,7 @@ export const WithIcon: Story = {
     </Button>
   ),
   args: {
-    ...Secondary.args,
-  },
-};
-
-/**
- * Use the `sm` size for a smaller button, suitable for interfaces needing
- * compact elements without sacrificing usability.
- */
-export const Small: Story = {
-  args: {
-    size: "sm",
-  },
-};
-
-/**
- * Use the `lg` size for a larger button, offering better visibility and
- * easier interaction for users.
- */
-export const Large: Story = {
-  args: {
-    size: "lg",
-  },
-};
-
-/**
- * Use the "icon" size for a button with only an icon.
- */
-export const Icon: Story = {
-  args: {
-    ...Secondary.args,
-    size: "icon",
-    children: <Mail />,
-  },
-};
-
-/**
- * Use the `icon-sm` size for a smaller icon-only button, suitable for dense
- * toolbars and compact controls.
- */
-export const IconSm: Story = {
-  args: {
-    ...Secondary.args,
-    size: "icon-sm",
-    children: <Mail />,
-  },
-};
-
-/**
- * Use the `icon-lg` size for a larger icon-only button, offering a bigger hit
- * target for prominent actions.
- */
-export const IconLg: Story = {
-  args: {
-    ...Secondary.args,
-    size: "icon-lg",
-    children: <Mail />,
+    variant: "secondary",
   },
 };
 

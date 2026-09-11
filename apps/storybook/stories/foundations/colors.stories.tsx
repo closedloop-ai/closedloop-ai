@@ -160,6 +160,10 @@ const ColorsPage = () => (
   </FoundationsPage>
 );
 
+/**
+ * The full set of colour tokens the product draws from, read live from the
+ * running theme, so you can check a token's value before hardcoding a hex.
+ */
 const meta = {
   title: "Foundations/Colors",
   component: ColorsPage,

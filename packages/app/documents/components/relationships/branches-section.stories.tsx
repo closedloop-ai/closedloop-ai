@@ -15,8 +15,21 @@
  * assertions cannot see.
  */
 
-import { LinkDirection, LinkQueryMode } from "@repo/api/src/types/artifact";
+import {
+  type ArtifactLinkEndpoint,
+  type ArtifactLinkWithEndpoints,
+  ArtifactType,
+  LinkDirection,
+  LinkQueryMode,
+  LinkType,
+  type PullRequestDetail,
+} from "@repo/api/src/types/artifact";
+import {
+  ChecksStatus,
+  ReviewDecision,
+} from "@repo/api/src/types/branch-checks";
 import type { GenerationStatus } from "@repo/api/src/types/document";
+import { GitHubPRState } from "@repo/api/src/types/github";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
 import { artifactLinkKeys } from "@repo/app/documents/hooks/use-artifact-links";
 import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
@@ -46,6 +59,167 @@ const NO_BRANCH_LINKS = [
     resolved: true,
   }),
   [],
+] as const;
+
+const STORY_TIMESTAMP = new Date("2026-04-02T15:00:00Z");
+
+const STORY_DOCUMENT_ENDPOINT: ArtifactLinkEndpoint = {
+  id: DOCUMENT_ID,
+  organizationId: "org-story",
+  projectId: PROJECT_ID,
+  type: ArtifactType.Document,
+  subtype: null,
+  name: "Branches Section story document",
+  slug: "branches-section-story-document",
+  status: "IN_PROGRESS",
+  priority: null,
+  assigneeId: null,
+  dueDate: null,
+  externalUrl: null,
+  sortOrder: null,
+  createdAt: STORY_TIMESTAMP,
+  createdById: null,
+  updatedAt: STORY_TIMESTAMP,
+};
+
+/** Builds one branch link with a realistic PR attached, or none at all. */
+function branchLink(input: {
+  id: string;
+  branchName: string;
+  pullRequest: PullRequestDetail | null;
+}): ArtifactLinkWithEndpoints {
+  return {
+    id: `link-${input.id}`,
+    organizationId: "org-story",
+    sourceId: DOCUMENT_ID,
+    targetId: input.id,
+    linkType: LinkType.Produces,
+    metadata: null,
+    createdAt: STORY_TIMESTAMP,
+    source: STORY_DOCUMENT_ENDPOINT,
+    target: {
+      id: input.id,
+      organizationId: "org-story",
+      projectId: PROJECT_ID,
+      type: ArtifactType.Branch,
+      subtype: null,
+      name: input.branchName,
+      slug: null,
+      status: "OPEN",
+      priority: null,
+      assigneeId: null,
+      dueDate: null,
+      externalUrl: input.pullRequest?.htmlUrl ?? null,
+      sortOrder: null,
+      createdAt: STORY_TIMESTAMP,
+      createdById: null,
+      updatedAt: STORY_TIMESTAMP,
+      branch: {
+        branchName: input.branchName,
+        currentPullRequest: input.pullRequest,
+      },
+    },
+  };
+}
+
+/**
+ * Three branches at the lifecycle stages a real document collects: a PR
+ * still being reviewed, one still in draft, and one already merged. Seeded
+ * the same way `NO_BRANCH_LINKS` is, so the populated state renders
+ * deterministically instead of depending on the fixture transport.
+ */
+const POPULATED_BRANCH_LINKS = [
+  artifactLinkKeys.list({
+    artifactId: DOCUMENT_ID,
+    direction: LinkDirection.Target,
+    linkType: undefined,
+    maxDepth: undefined,
+    mode: LinkQueryMode.Tree,
+    resolved: true,
+  }),
+  [
+    branchLink({
+      branchName: "agent/chart-legend-color-order",
+      id: "branch-chart-legend",
+      pullRequest: {
+        baseBranch: "main",
+        body: null,
+        branchArtifactId: "branch-chart-legend",
+        checksStatus: ChecksStatus.Passing,
+        closedAt: null,
+        githubId: "PR_story_1822",
+        headBranch: "agent/chart-legend-color-order",
+        headSha: "3f1c9a2",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-web/pull/1822",
+        id: "pr-1822",
+        isDraft: false,
+        lastRefreshAttemptAt: STORY_TIMESTAMP,
+        lastVerifiedAt: STORY_TIMESTAMP,
+        mergeCommitSha: null,
+        mergedAt: null,
+        number: 1822,
+        prState: GitHubPRState.Open,
+        repositoryFullName: "closedloop-ai/closedloop-web",
+        repositoryId: "repo-closedloop-web",
+        reviewDecision: ReviewDecision.ChangesRequested,
+        title: "Fix chart series legend color order",
+      },
+    }),
+    branchLink({
+      branchName: "agent/onboarding-empty-state-copy",
+      id: "branch-onboarding-copy",
+      pullRequest: {
+        baseBranch: "main",
+        body: null,
+        branchArtifactId: "branch-onboarding-copy",
+        checksStatus: ChecksStatus.Pending,
+        closedAt: null,
+        githubId: "PR_story_1825",
+        headBranch: "agent/onboarding-empty-state-copy",
+        headSha: "9b7e410",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-web/pull/1825",
+        id: "pr-1825",
+        isDraft: true,
+        lastRefreshAttemptAt: STORY_TIMESTAMP,
+        lastVerifiedAt: STORY_TIMESTAMP,
+        mergeCommitSha: null,
+        mergedAt: null,
+        number: 1825,
+        prState: GitHubPRState.Open,
+        repositoryFullName: "closedloop-ai/closedloop-web",
+        repositoryId: "repo-closedloop-web",
+        reviewDecision: null,
+        title: "Draft: rewrite onboarding empty-state copy",
+      },
+    }),
+    branchLink({
+      branchName: "agent/session-timeline-bar-labels",
+      id: "branch-session-timeline",
+      pullRequest: {
+        baseBranch: "main",
+        body: null,
+        branchArtifactId: "branch-session-timeline",
+        checksStatus: ChecksStatus.Passing,
+        closedAt: null,
+        githubId: "PR_story_1798",
+        headBranch: "agent/session-timeline-bar-labels",
+        headSha: "6a44dc8",
+        htmlUrl: "https://github.com/closedloop-ai/closedloop-web/pull/1798",
+        id: "pr-1798",
+        isDraft: false,
+        lastRefreshAttemptAt: STORY_TIMESTAMP,
+        lastVerifiedAt: STORY_TIMESTAMP,
+        mergeCommitSha: "e21fa90",
+        mergedAt: STORY_TIMESTAMP,
+        number: 1798,
+        prState: GitHubPRState.Merged,
+        repositoryFullName: "closedloop-ai/closedloop-web",
+        repositoryId: "repo-closedloop-web",
+        reviewDecision: ReviewDecision.Approved,
+        title: "Add cost rail labels to the session timeline bar",
+      },
+    }),
+  ],
 ] as const;
 
 /** An execute run the poll reports as still going. */
@@ -101,6 +275,13 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
+
+/** Three branches at different points in their pull request lifecycle. */
+export const Default: Story = {
+  parameters: {
+    appCore: { queryData: [POPULATED_BRANCH_LINKS] },
+  },
+};
 
 /** No branches and nothing running: "Start Building" is plainly available. */
 export const EmptyState: Story = {};

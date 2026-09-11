@@ -89,13 +89,61 @@ type Story = StoryObj<typeof ToggleGroup>;
 export const Default: Story = {};
 
 /**
- * Use the `outline` variant to emphasizing the individuality of each button
- * while keeping them visually cohesive.
+ * Every `variant` value rendered side by side, labelled, so one Chromatic
+ * snapshot keeps visual coverage of the full set instead of one story per
+ * value. Drive `variant` from the Controls panel on Default to preview a
+ * single value in isolation.
  */
-export const Outline: Story = {
-  args: {
-    variant: "outline",
-  },
+export const AllVariants: Story = {
+  render: () => (
+    <div className="flex flex-wrap items-center gap-6">
+      {(["default", "outline"] as const).map((variant) => (
+        <div className="flex flex-col items-center gap-2" key={variant}>
+          <span className="text-muted-foreground text-xs">{variant}</span>
+          <ToggleGroup type="multiple" variant={variant}>
+            <ToggleGroupItem aria-label="Toggle bold" value="bold">
+              <Bold className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem aria-label="Toggle italic" value="italic">
+              <Italic className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem aria-label="Toggle underline" value="underline">
+              <Underline className="h-4 w-4" />
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      ))}
+    </div>
+  ),
+};
+
+/**
+ * Every `size` value rendered side by side, labelled, so one Chromatic
+ * snapshot keeps visual coverage of the full set instead of one story per
+ * value. Drive `size` from the Controls panel on Default to preview a single
+ * value in isolation.
+ */
+export const AllSizes: Story = {
+  render: () => (
+    <div className="flex flex-wrap items-center gap-6">
+      {(["default", "sm", "lg"] as const).map((size) => (
+        <div className="flex flex-col items-center gap-2" key={size}>
+          <span className="text-muted-foreground text-xs">{size}</span>
+          <ToggleGroup size={size} type="multiple">
+            <ToggleGroupItem aria-label="Toggle bold" value="bold">
+              <Bold className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem aria-label="Toggle italic" value="italic">
+              <Italic className="h-4 w-4" />
+            </ToggleGroupItem>
+            <ToggleGroupItem aria-label="Toggle underline" value="underline">
+              <Underline className="h-4 w-4" />
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      ))}
+    </div>
+  ),
 };
 
 /**
@@ -105,26 +153,6 @@ export const Outline: Story = {
 export const Single: Story = {
   args: {
     type: "single",
-  },
-};
-
-/**
- * Use the `sm` size for a compact version of the button group, featuring
- * smaller buttons for spaces with limited real estate.
- */
-export const Small: Story = {
-  args: {
-    size: "sm",
-  },
-};
-
-/**
- * Use the `lg` size for a more prominent version of the button group, featuring
- * larger buttons for emphasis.
- */
-export const Large: Story = {
-  args: {
-    size: "lg",
   },
 };
 

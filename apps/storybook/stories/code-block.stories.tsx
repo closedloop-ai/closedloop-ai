@@ -62,10 +62,11 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 /**
- * Showcase all three tones together — `default`, `danger`, and `success` —
- * useful for eyeballing the tint contrast side by side.
+ * Renders all three `tone` values together, each labelled with its own name,
+ * so one Chromatic snapshot keeps visual coverage for default, danger, and
+ * success instead of three separate story snapshots.
  */
-export const Tones: Story = {
+export const AllVariants: Story = {
   render: () => (
     <div className="flex flex-col gap-3">
       <CodeBlock
@@ -75,12 +76,12 @@ export const Tones: Story = {
       />
       <CodeBlock
         code="- const stale = getStaleSessions();\n- await purge(stale);"
-        label="removed"
+        label="danger (removed)"
         tone="danger"
       />
       <CodeBlock
         code="+ const fresh = getActiveSessions();\n+ await sync(fresh);"
-        label="added"
+        label="success (added)"
         tone="success"
       />
     </div>
@@ -88,34 +89,9 @@ export const Tones: Story = {
 };
 
 /**
- * Use the `danger` tone to surface failed tool calls or error output — it tints
- * the chrome and border red.
- */
-export const Danger: Story = {
-  args: {
-    tone: "danger",
-    filename: undefined,
-    label: "error",
-    code: 'Error: command failed with exit code 1\n  at run (session-table.tsx:42)\n  throw new Error("boom");',
-  },
-};
-
-/**
- * Use the `success` tone to highlight successful results — it tints the chrome
- * and border emerald.
- */
-export const Success: Story = {
-  args: {
-    tone: "success",
-    filename: undefined,
-    label: "result",
-    code: '{\n  "status": "ok",\n  "sessions": 3\n}',
-  },
-};
-
-/**
- * `compact` mode drops the header chrome (filename/label row and copy button),
- * rendering just the code — useful inline inside markdown or dense tool views.
+ * `compact` mode drops the header chrome (filename/label row and copy
+ * button), rendering just the code. Useful inline inside markdown or dense
+ * tool views.
  */
 export const Compact: Story = {
   args: {

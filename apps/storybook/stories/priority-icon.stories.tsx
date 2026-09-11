@@ -48,45 +48,11 @@ export const Default: Story = {
 };
 
 /**
- * Low priority — one active bar.
+ * Renders every priority level side by side, each labelled with its own
+ * name, so one Chromatic snapshot keeps visual coverage for all four levels
+ * instead of four separate story snapshots.
  */
-export const Low: Story = {
-  args: {
-    priority: "LOW",
-  },
-};
-
-/**
- * Medium priority — two active bars.
- */
-export const Medium: Story = {
-  args: {
-    priority: "MEDIUM",
-  },
-};
-
-/**
- * High priority — three active bars.
- */
-export const High: Story = {
-  args: {
-    priority: "HIGH",
-  },
-};
-
-/**
- * Urgent priority — filled rectangle with exclamation mark.
- */
-export const Urgent: Story = {
-  args: {
-    priority: "URGENT",
-  },
-};
-
-/**
- * All four priority levels displayed side by side.
- */
-export const AllPriorities: Story = {
+export const AllVariants: Story = {
   args: {
     priority: "LOW",
   },
