@@ -2,10 +2,6 @@ import { workflowData } from "@repo/app/agents/lib/session-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 import { OrchestrationDag } from "./orchestration-dag";
 
-const OrchestrationDagCanvas = () => (
-  <OrchestrationDag data={workflowData.orchestration} />
-);
-
 /**
  * Traces sessions flowing into the main agent, out to subagents, and through
  * compactions to an outcome, for the workflow view across many sessions
@@ -13,12 +9,15 @@ const OrchestrationDagCanvas = () => (
  */
 const meta = {
   title: "Composites/Agents/Agent Orchestration Graph",
-  component: OrchestrationDagCanvas,
+  component: OrchestrationDag,
   tags: ["autodocs"],
+  args: {
+    data: workflowData.orchestration,
+  },
   parameters: {
     layout: "fullscreen",
   },
-} satisfies Meta<typeof OrchestrationDagCanvas>;
+} satisfies Meta<typeof OrchestrationDag>;
 
 export default meta;
 

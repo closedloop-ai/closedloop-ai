@@ -54,90 +54,75 @@ type Story = StoryObj<typeof meta>;
  */
 export const Default: Story = {};
 
-/**
- * Use the `destructive` alert to indicate a destructive action.
- */
-export const Destructive: Story = {
-  render: (args) => (
-    <Alert {...args}>
-      <AlertCircle className="h-4 w-4" />
-      <AlertTitle>Error</AlertTitle>
-      <AlertDescription>
-        Your session has expired. Please log in again.
-      </AlertDescription>
-    </Alert>
-  ),
-  args: {
+type AlertVariant = (typeof meta)["args"]["variant"];
+
+const ALL_VARIANTS: {
+  variant: AlertVariant;
+  icon: typeof AlertCircle | null;
+  title: string;
+  description: string;
+}[] = [
+  {
+    variant: "default",
+    icon: null,
+    title: "Heads up!",
+    description: "You can add components to your app using the cli.",
+  },
+  {
     variant: "destructive",
+    icon: AlertCircle,
+    title: "Error",
+    description: "Your session has expired. Please log in again.",
   },
-};
-
-/**
- * The tinted `error` alert for surfacing failures inline.
- */
-export const ErrorAlert: Story = {
-  render: (args) => (
-    <Alert {...args}>
-      <AlertCircle className="h-4 w-4" />
-      <AlertTitle>Something went wrong</AlertTitle>
-      <AlertDescription>
-        We couldn't load your data. Please try again.
-      </AlertDescription>
-    </Alert>
-  ),
-  args: {
+  {
     variant: "error",
+    icon: AlertCircle,
+    title: "Something went wrong",
+    description: "We couldn't load your data. Please try again.",
   },
-};
-
-/**
- * Use the `warning` alert to flag a non-blocking caution.
- */
-export const Warning: Story = {
-  render: (args) => (
-    <Alert {...args}>
-      <AlertTriangle className="h-4 w-4" />
-      <AlertTitle>Heads up</AlertTitle>
-      <AlertDescription>
-        This action can't be undone once confirmed.
-      </AlertDescription>
-    </Alert>
-  ),
-  args: {
+  {
     variant: "warning",
+    icon: AlertTriangle,
+    title: "Heads up",
+    description: "This action can't be undone once confirmed.",
   },
-};
-
-/**
- * Use the `info` alert to convey neutral, contextual information.
- */
-export const InfoAlert: Story = {
-  render: (args) => (
-    <Alert {...args}>
-      <InfoIcon className="h-4 w-4" />
-      <AlertTitle>Good to know</AlertTitle>
-      <AlertDescription>
-        Changes are saved automatically as you edit.
-      </AlertDescription>
-    </Alert>
-  ),
-  args: {
+  {
     variant: "info",
+    icon: InfoIcon,
+    title: "Good to know",
+    description: "Changes are saved automatically as you edit.",
   },
-};
+  {
+    variant: "success",
+    icon: CheckCircle,
+    title: "All set",
+    description: "Your changes have been saved.",
+  },
+];
 
 /**
- * Use the `success` alert to confirm a completed action.
+ * Every `variant` value rendered together, each labelled. The individual
+ * variant stories were pure style permutations of the same alert, so this one
+ * story keeps a single Chromatic snapshot covering all of them instead of one
+ * snapshot per variant. Drive a single variant through the Controls panel on
+ * the Default story above.
  */
-export const Success: Story = {
-  render: (args) => (
-    <Alert {...args}>
-      <CheckCircle className="h-4 w-4" />
-      <AlertTitle>All set</AlertTitle>
-      <AlertDescription>Your changes have been saved.</AlertDescription>
-    </Alert>
+export const AllVariants: Story = {
+  render: () => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {ALL_VARIANTS.map(({ variant, icon: Icon, title, description }) => (
+        <div
+          key={variant}
+          style={{ display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <span style={{ fontSize: 11 }}>{variant}</span>
+          <Alert variant={variant}>
+            {Icon ? <Icon className="h-4 w-4" /> : null}
+            <AlertTitle>{title}</AlertTitle>
+            <AlertDescription>{description}</AlertDescription>
+          </Alert>
+        </div>
+      ))}
+    </div>
   ),
-  args: {
-    variant: "success",
-  },
 };

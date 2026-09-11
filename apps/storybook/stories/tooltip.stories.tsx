@@ -114,29 +114,43 @@ type Story = StoryObj<typeof meta>;
  */
 export const Default: Story = {};
 
-/**
- * Use the `bottom` side to display the tooltip below the element.
- */
-export const Bottom: Story = {
-  args: {
-    side: "bottom",
-  },
-};
+const ALL_SIDES = ["top", "bottom", "left", "right"] as const;
 
 /**
- * Use the `left` side to display the tooltip to the left of the element.
+ * Every `side` value rendered together, each labelled, with the tooltip
+ * forced open via `defaultOpen` so the position is actually visible in a
+ * static render. The individual side stories were pure position permutations
+ * of the same tooltip, so this one story keeps a single Chromatic snapshot
+ * covering all of them instead of one snapshot per side. Drive a single side
+ * through the Controls panel on the Default story above.
  */
-export const Left: Story = {
-  args: {
-    side: "left",
-  },
-};
-
-/**
- * Use the `right` side to display the tooltip to the right of the element.
- */
-export const Right: Story = {
-  args: {
-    side: "right",
-  },
+export const AllSides: Story = {
+  render: () => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 48, padding: 48 }}>
+      {ALL_SIDES.map((side) => (
+        <div
+          key={side}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <TooltipProvider>
+            <Tooltip defaultOpen>
+              <TooltipTrigger>
+                <Plus className="h-4 w-4" />
+                <span className="sr-only">Add</span>
+              </TooltipTrigger>
+              <TooltipContent avoidCollisions={false} side={side}>
+                Add to library
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <span style={{ fontSize: 11 }}>{side}</span>
+        </div>
+      ))}
+    </div>
+  ),
 };

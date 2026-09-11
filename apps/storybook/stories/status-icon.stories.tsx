@@ -59,38 +59,6 @@ export const Default: Story = {
   args: { status: "in-progress" },
 };
 
-export const Backlog: Story = {
-  args: { status: "backlog" },
-};
-
-export const Todo: Story = {
-  args: { status: "todo" },
-};
-
-export const Started: Story = {
-  args: { status: "started" },
-};
-
-export const InProgress: Story = {
-  args: { status: "in-progress" },
-};
-
-export const InReview: Story = {
-  args: { status: "in-review" },
-};
-
-export const Executed: Story = {
-  args: { status: "executed" },
-};
-
-export const Complete: Story = {
-  args: { status: "complete" },
-};
-
-export const WontDo: Story = {
-  args: { status: "wont-do" },
-};
-
 const ALL_STATUSES: StatusIconStatus[] = [
   "backlog",
   "todo",
@@ -102,7 +70,13 @@ const ALL_STATUSES: StatusIconStatus[] = [
   "wont-do",
 ];
 
-/** All statuses at default size (16px). */
+/**
+ * Every status value at the default size (16px), each labelled. The
+ * individual per-status stories were pure icon permutations of the same
+ * component, so this one story keeps a single Chromatic snapshot covering
+ * all of them instead of one snapshot per status. Drive a single status
+ * through the Controls panel on the Default story above.
+ */
 export const AllStatuses: Story = {
   args: { status: "backlog" },
   render: () => (
@@ -148,7 +122,7 @@ export const Size20: Story = {
   ),
 };
 
-/** Thinking spinner on arc-based statuses — inner fill stays visible. */
+/** Thinking spinner on arc-based statuses, inner fill stays visible. */
 export const Thinking: Story = {
   args: { status: "in-progress", thinking: true },
   render: () => (

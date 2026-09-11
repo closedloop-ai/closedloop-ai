@@ -218,6 +218,10 @@ function StatCard({
   );
 }
 
+/**
+ * The generated inventory of every component in the design system, showing
+ * what has a story, what is catalog only, and what stays internal.
+ */
 const meta = {
   title: "Catalog/Inventory",
   component: CatalogPage,

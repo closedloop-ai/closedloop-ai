@@ -63,28 +63,32 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 /**
- * Use the `type` prop with `always` to always show the scroll area.
+ * Renders every `type` value side by side, each labelled with its own name,
+ * so one Chromatic snapshot keeps visual coverage for auto, always, scroll,
+ * and hover instead of four separate story snapshots.
  */
-export const Always: Story = {
-  args: {
-    type: "always",
-  },
-};
-
-/**
- * Use the `type` prop with `hover` to show the scroll area on hover.
- */
-export const Hover: Story = {
-  args: {
-    type: "hover",
-  },
-};
-
-/**
- * Use the `type` prop with `scroll` to show the scroll area when scrolling.
- */
-export const Scroll: Story = {
-  args: {
-    type: "scroll",
-  },
+export const AllVariants: Story = {
+  render: () => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+      {(["auto", "always", "scroll", "hover"] as const).map((type) => (
+        <div
+          key={type}
+          style={{ display: "flex", flexDirection: "column", gap: 4 }}
+        >
+          <span style={{ fontSize: 11 }}>{type}</span>
+          <ScrollArea
+            className="h-32 w-64 rounded-md border p-4"
+            scrollbars="vertical"
+            scrollHideDelay={600}
+            type={type}
+          >
+            Jokester began sneaking into the castle in the middle of the night
+            and leaving jokes all over the place: under the king's pillow, in
+            his soup, even in the royal toilet. The king was furious, but he
+            couldn't seem to stop Jokester.
+          </ScrollArea>
+        </div>
+      ))}
+    </div>
+  ),
 };

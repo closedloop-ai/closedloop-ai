@@ -55,92 +55,10 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 /**
- * Use the `secondary` badge to call for less urgent information, blending
- * into the interface while still signaling minor updates or statuses.
- */
-export const Secondary: Story = {
-  args: {
-    variant: "secondary",
-  },
-};
-
-/**
- * Use the `destructive` badge to  indicate errors, alerts, or the need for
- * immediate attention.
- */
-export const Destructive: Story = {
-  args: {
-    variant: "destructive",
-  },
-};
-
-/**
- * Use the `error` badge for a light destructive tint — signaling errors or
- * failed states without the heavier solid fill of the `destructive` variant.
- */
-export const ErrorVariant: Story = {
-  args: {
-    variant: "error",
-  },
-};
-
-/**
- * Use the `success` badge to indicate a positive outcome or completed state.
- */
-export const Success: Story = {
-  args: {
-    variant: "success",
-  },
-};
-
-/**
- * Use the `warning` badge to flag items needing caution or attention.
- */
-export const Warning: Story = {
-  args: {
-    variant: "warning",
-  },
-};
-
-/**
- * Use the `info` badge to convey neutral, contextual information.
- */
-export const Info: Story = {
-  args: {
-    variant: "info",
-  },
-};
-
-/**
- * Use the `accent` badge to highlight featured or promoted content.
- */
-export const Accent: Story = {
-  args: {
-    variant: "accent",
-  },
-};
-
-/**
- * Use the `muted` badge for low-emphasis metadata or supplementary labels.
- */
-export const Muted: Story = {
-  args: {
-    variant: "muted",
-  },
-};
-
-/**
- * Use the `outline` badge for overlaying without obscuring interface details,
- * emphasizing clarity and subtlety.
- */
-export const Outline: Story = {
-  args: {
-    variant: "outline",
-  },
-};
-
-/**
- * All 10 badge variants displayed together for comparison.
+ * Every `variant` value rendered together, labelled, so one Chromatic
+ * snapshot keeps visual coverage of the full set instead of one story per
+ * value. Drive `variant` from the Controls panel on Default to preview a
+ * single value in isolation.
  */
 export const AllVariants: Story = {
   render: () => (
@@ -153,7 +71,9 @@ export const AllVariants: Story = {
       <Badge variant="warning">Warning</Badge>
       <Badge variant="info">Info</Badge>
       <Badge variant="accent">Accent</Badge>
+      <Badge variant="ai">Ai</Badge>
       <Badge variant="muted">Muted</Badge>
+      <Badge variant="neutral">Neutral</Badge>
       <Badge variant="outline">Outline</Badge>
     </div>
   ),

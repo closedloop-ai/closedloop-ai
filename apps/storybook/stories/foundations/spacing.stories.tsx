@@ -97,6 +97,10 @@ const SpacingPage = () => (
   </FoundationsPage>
 );
 
+/**
+ * The spacing scale plus tokens for tap targets, row density and icon
+ * sizing, so you reach for a named value instead of eyeballing a pixel amount.
+ */
 const meta = {
   title: "Foundations/Spacing",
   component: SpacingPage,

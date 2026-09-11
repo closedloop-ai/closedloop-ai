@@ -90,6 +90,11 @@ const RadiusElevationPage = () => (
   </FoundationsPage>
 );
 
+/**
+ * Corner radius and z-index tokens for every layer in the product, so you
+ * pick a rounding or stacking value from the scale instead of a one-off
+ * number.
+ */
 const meta = {
   title: "Foundations/Radius & Elevation",
   component: RadiusElevationPage,

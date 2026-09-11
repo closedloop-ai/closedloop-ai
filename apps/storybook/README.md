@@ -26,9 +26,16 @@ no longer a `Design System` / `App Core` / `Desktop App` split: web and desktop 
 held to parity, and anything that genuinely differs under the Electron shell gets a
 variant that names the difference.
 
-`TAXONOMY.md` has the group vocabulary, the judgment calls behind it, and how to
-classify something new. `WRITING.md` is the standard for the description that sits
-at the top of each Docs page. Read both before adding a story.
+### The docs in this directory
+
+| | |
+|---|---|
+| `BUILDING.md` | using these components to build a screen. Start here if you are writing UI. |
+| `MCP.md` | connecting an agent, either the local MCP server or the hosted catalog. |
+| `TAXONOMY.md` | the four levels, the group vocabulary, and how to classify something new. |
+| `WRITING.md` | the one-sentence description at the top of each Docs page. |
+| `AGENTS.md` | what a story file must carry. |
+| `DESIGNER-GUIDE.md` | the designer-facing tour, and the preview credential. |
 
 ## What changed: this now runs on Vite
 

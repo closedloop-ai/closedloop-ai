@@ -17,3 +17,15 @@ Consequences worth stating once:
 - **`tags: ["autodocs"]`**, which is what generates the Docs page.
 - **A description**: a comment directly above `const meta`. It becomes the paragraph at the top of the Docs page AND the text the component manifest hands to an agent asking what the component is. `WRITING.md` is the standard. Plain English, written for designers and product people as much as for engineers, not a ticket summary.
 - **A first story that shows the component working.** Storybook orders stories by export order and lands on the first one, so a file that opens on `Loading` or `Error` shows a broken state as the component's face. Put the representative story first and name it `Default` unless there is a reason not to.
+
+## Building UI with these components
+
+`BUILDING.md` is the guide: how to find the right component, the rules that
+actually get broken (colour via `className` beating a variant, chart series
+order, form control alignment), and how to compose a Surface from real
+components rather than lookalikes.
+
+`MCP.md` covers connecting an agent, either to the local MCP server while you
+work or to the hosted component manifest at
+`https://storybook.preview.closedloop-stage.ai/manifests/components.json`, which
+carries 309 descriptions and 1,632 props and needs no dev server.
