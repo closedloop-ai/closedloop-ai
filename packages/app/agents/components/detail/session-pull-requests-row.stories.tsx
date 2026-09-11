@@ -43,6 +43,14 @@ function PropertiesFrame({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
+/**
+ * A details panel row listing the pull requests a session actually authored,
+ * each shown as its own pill; pull requests the session only referenced or
+ * reviewed are filtered out before they reach this row. When a session
+ * opened no pull requests the row reads "None authored" rather than a bare
+ * "None," because a session can still have changed real code, shown in the
+ * neighbouring Lines Changed row, without ever opening one.
+ */
 const meta = {
   title: "Primitives/Data Display/Session Pull Requests Row",
   component: SessionPullRequestsRow,

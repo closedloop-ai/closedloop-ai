@@ -3,7 +3,13 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * Displays a form input field or a component that looks like an input field.
+ * A single-line text box for typing a value into a form, such as an email
+ * address, a password or a search term. The type prop switches the keyboard
+ * and built-in browser behaviour, for example showing a reveal toggle for
+ * passwords or a numeric keypad on mobile for numbers. Reach for Textarea
+ * instead when someone needs to type more than a line or two. Pair it with a
+ * Label rather than relying on placeholder text alone, since a placeholder
+ * disappears the moment someone starts typing.
  */
 const meta = {
   title: "Primitives/Inputs/Input",

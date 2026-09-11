@@ -1,6 +1,14 @@
 import { UnifiedDiff } from "@repo/design-system/components/ui/primitives/unified-diff";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * A dark panel that renders a unified code diff: each hunk gets its own
+ * header line with the old and new line ranges, and added or removed lines
+ * are tinted green or red with their own line numbers. Use it when you have
+ * diff hunks to show rather than a full file, which is what Code Block is
+ * for. An empty list of hunks renders a plain "No diff" message instead of
+ * an empty box.
+ */
 const meta = {
   title: "Primitives/Content/Unified Diff",
   component: UnifiedDiff,

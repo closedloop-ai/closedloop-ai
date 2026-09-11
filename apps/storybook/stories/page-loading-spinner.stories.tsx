@@ -7,6 +7,13 @@ const LoadingCanvas = () => (
   </div>
 );
 
+/**
+ * A centred spinning icon that fills its container, used as the whole-page
+ * loading state while a route's content has not started rendering yet. Reach
+ * for it instead of Skeleton when you have nothing yet to preview the shape
+ * of. It carries no text or accessible label of its own, so it depends on
+ * the surrounding page to announce that something is loading.
+ */
 const meta = {
   title: "Primitives/Feedback & Status/Page Loading Spinner",
   component: LoadingCanvas,

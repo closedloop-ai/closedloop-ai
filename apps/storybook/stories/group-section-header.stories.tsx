@@ -41,6 +41,16 @@ function GroupSectionHeaderDemo({
   );
 }
 
+/**
+ * A clickable row that sits above a group of related table or list rows,
+ * showing a chevron, an icon for what the rows are grouped by (status,
+ * priority or assignee), the group's label, and how many rows are in it. Use
+ * it specifically for grouped list or table headers, not general page
+ * sections, where Section Header is the right choice instead. Leave the
+ * count out when you only hold one page of a larger set: showing a number
+ * there would read as the group's whole size when it is really just what
+ * happened to load.
+ */
 const meta = {
   title: "Primitives/Layout/Group Section Header",
   component: GroupSectionHeaderDemo,

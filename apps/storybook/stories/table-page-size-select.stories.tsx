@@ -8,18 +8,25 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { fn } from "storybook/test";
 
+// The rows-per-page control that sits at the left of `TablePaginationFooter`
+// (FEA-4199), and the range readout derived beside it.
+// It lives in the design system rather than in the Sessions surface that asked
+// for it because every list surface already shares that footer — a Sessions-local
+// pager would have been the fifth hand-rolled variant of a strip that was
+// consolidated precisely to stop those drifting apart.
+// The label is the option text ("25 / page") rather than a separate "Rows per
+// page" caption: the strip is dense, and the trigger carries the accessible name
+// for assistive tech (WCAG 4.1.2).
 /**
- * The rows-per-page control that sits at the left of `TablePaginationFooter`
- * (FEA-4199), and the range readout derived beside it.
- *
- * It lives in the design system rather than in the Sessions surface that asked
- * for it because every list surface already shares that footer — a Sessions-local
- * pager would have been the fifth hand-rolled variant of a strip that was
- * consolidated precisely to stop those drifting apart.
- *
- * The label is the option text ("25 / page") rather than a separate "Rows per
- * page" caption: the strip is dense, and the trigger carries the accessible name
- * for assistive tech (WCAG 4.1.2).
+ * A small dropdown that lets someone choose how many rows show per page in a
+ * paginated table, labelled directly with the option text, like "25 / page".
+ * Use it inside a table's pagination footer instead of building a one-off
+ * page size control, since every list in the product shares the same 25, 50,
+ * 100 ladder and the matching "1 to 25 of 240" range readout that sits
+ * beside it. A surface with rows that are expensive to render can pass a
+ * shorter list of choices, and the trigger still carries its own accessible
+ * name for screen readers even though the visible text never spells out
+ * "rows per page".
  */
 const meta = {
   title: "Primitives/Inputs/Table Page Size Select",

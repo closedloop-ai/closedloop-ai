@@ -20,6 +20,15 @@ function ToggleDemo() {
   );
 }
 
+/**
+ * A header row for a page section or panel, showing a bold title on the left
+ * and any trailing actions, like a button, on the right. Pass both isOpen
+ * and onToggle together to make the title itself a collapse toggle with a
+ * chevron, or leave them out for a plain, static title. It only supplies the
+ * header row: use Collapsible Section when you also want it wired up to hide
+ * and show a block of content beneath it, and use Group Section Header
+ * instead for the denser row that sits above a group of table or list rows.
+ */
 const meta = {
   title: "Primitives/Layout/Section Header",
   component: SectionHeader,

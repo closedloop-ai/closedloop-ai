@@ -2,7 +2,13 @@ import { Badge } from "@repo/design-system/components/ui/badge";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Displays a badge or a component that looks like a badge.
+ * A small, static pill of text used to label a state or category, such as a
+ * status word or a tag. Reach for it over Chip when the label is not
+ * clickable and does not need to hold an icon: Badge has more built-in
+ * colour variants for meaning, including matched pairs like error and
+ * destructive for a lighter or heavier warning, while Chip is the one built
+ * for icons, sizes, and interactive hover and focus states. Badge has no
+ * size prop; it is a single fixed size everywhere it is used.
  */
 const meta = {
   title: "Primitives/Data Display/Badge",

@@ -70,6 +70,19 @@ function TableSavedViewsSwitcherDemo({
   );
 }
 
+/**
+ * A button that names the table's current saved view and opens a menu for
+ * switching between named views, renaming or deleting one, or saving the
+ * current column layout, sort and filters as a new view. Reach for it when a
+ * table supports multiple named arrangements a person can save and return
+ * to, not just changing what the current view shows, which is what the Table
+ * View Menu is for. When the live table has drifted from the view you are
+ * on, the button quietly marks itself as modified and offers an update
+ * action, and that marker never appears on the unsaved default arrangement,
+ * since there is nothing saved to have drifted from. Deleting a view asks
+ * for confirmation first, and naming one opens a small dialog rather than an
+ * inline field.
+ */
 const meta = {
   title: "Primitives/Navigation/Table Saved Views Switcher",
   component: TableSavedViewsSwitcherDemo,

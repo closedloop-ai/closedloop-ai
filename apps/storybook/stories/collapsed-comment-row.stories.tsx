@@ -6,6 +6,15 @@ import { CollapsedCommentRow } from "@repo/design-system/components/ui/collapsed
 import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
+/**
+ * A single-line button that stands in for a resolved comment thread: an
+ * avatar, the author's name, a status like "Comment resolved", and an
+ * optional thread title, all truncated to one row. Use it wherever a full
+ * Comment Thread would take up too much space once a conversation is
+ * settled, such as a list of resolved discussions. Clicking it does not
+ * resolve or reply to anything; it only calls back to expand the row into
+ * the full thread.
+ */
 const meta = {
   title: "Primitives/Content/Collapsed Comment Row",
   component: CollapsedCommentRow,

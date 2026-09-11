@@ -9,6 +9,14 @@ const rangeOptions = [
   { label: "All", value: "all" },
 ];
 
+/**
+ * A labelled row of pill buttons for picking a time range, such as 7 days,
+ * 30 days or all time, sitting above a chart or table. Reach for it instead
+ * of Select when you want every option visible and one tap away, which
+ * matters for something people switch often, like a reporting window. Only
+ * one segment can be active at a time, and it always shows a short label,
+ * such as "Range", ahead of the pills so the row reads clearly on its own.
+ */
 const meta = {
   title: "Primitives/Inputs/Analytics Range Toggle",
   component: AnalyticsRangeToggle,

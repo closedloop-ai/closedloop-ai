@@ -3,6 +3,15 @@ import { createAgentSessionDetailFixture } from "./agent-session-detail-fixtures
 import { SessionLocPerDollarProperty } from "./session-loc-per-dollar-property";
 import { SessionPropertiesFrame } from "./session-properties-story-frame";
 
+/**
+ * A single row in the session details panel showing lines of code changed
+ * per dollar spent, labelled and set in monospace like the neighbouring Cost
+ * and Lines Changed rows it draws from. Use it anywhere a session's cost
+ * efficiency needs to sit alongside those two figures so all three reconcile
+ * on the same card. When there is no cost to divide by, or no lines were
+ * changed, the row shows the shared not applicable placeholder instead of a
+ * misleading 0.00.
+ */
 const meta = {
   title: "Primitives/Data Display/Session LOC Per Dollar Property",
   component: SessionLocPerDollarProperty,

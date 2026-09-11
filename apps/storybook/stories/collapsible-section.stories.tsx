@@ -33,6 +33,16 @@ function CollapsibleSectionStory({
   );
 }
 
+/**
+ * A titled section with a chevron toggle: click the title to expand or
+ * collapse the block of content beneath it. Reach for it on a page or panel
+ * where you want a labelled, collapsible block, rather than the bare
+ * Collapsible primitive, which has no title or chevron built in, or Sidebar
+ * Collapsible Section, which is styled for a sidebar and can remember its
+ * open state across reloads. This version is always controlled: you own the
+ * open state and pass it back in through open and onOpenChange, and it has
+ * no memory of its own.
+ */
 const meta = {
   title: "Primitives/Layout/Collapsible Section",
   component: CollapsibleSectionStory,

@@ -1,6 +1,14 @@
 import { FileList } from "@repo/design-system/components/ui/primitives/file-list";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * A simple bordered panel that lists file paths, each on its own row with a
+ * folder icon, under a "Files" header. Use it for a short reference list of
+ * file paths, such as the files a change touched, not for anything a person
+ * needs to sort, filter, or click into. Long paths wrap rather than
+ * truncate, and an empty list shows an italic "No files" message instead of
+ * collapsing to nothing.
+ */
 const meta = {
   title: "Primitives/Data Display/File List",
   component: FileList,

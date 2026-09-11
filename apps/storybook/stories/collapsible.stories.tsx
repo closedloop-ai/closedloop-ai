@@ -8,7 +8,14 @@ import { Info } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * An interactive component which expands/collapses a panel.
+ * A bare expand and collapse primitive: a trigger you click and a content
+ * region that shows or hides underneath it, with no header styling of its
+ * own. Reach for this when you are building a custom expandable pattern. For
+ * a ready-made section with a title, chevron and open state already wired
+ * up, use Collapsible Section instead, or Sidebar Collapsible Section inside
+ * a sidebar. It can run controlled with the open prop or uncontrolled with
+ * defaultOpen, and the disabled prop stops the trigger from responding at
+ * all.
  */
 const meta: Meta<typeof Collapsible> = {
   title: "Primitives/Layout/Collapsible",

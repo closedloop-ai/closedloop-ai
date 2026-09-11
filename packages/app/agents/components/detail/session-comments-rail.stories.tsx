@@ -49,6 +49,17 @@ const detailShellDecorator: Decorator = (Story) => (
  */
 const USERS_QUERY_DATA = [[userKeys.organizationUsers(), []]] as const;
 
+/**
+ * The panel that decides what shows on the right edge of a session detail
+ * screen for comments: nothing when the panel is closed, a slim handle with
+ * an unread count when it is collapsed, or the full comment rail when it is
+ * open. Use it as the single seam a page mounts, rather than choosing
+ * between the rail and the handle yourself, since it also handles the honest
+ * zero case: a collapsed handle with no comments waiting drops its count
+ * instead of showing a bare zero, and an open rail with none explains why it
+ * is empty. It only decides which surface to show; the comments themselves
+ * and their replies are the full rail's job, documented separately.
+ */
 const meta = {
   title: "Primitives/Content/Session Comments Rail",
   component: SessionCommentsRail,

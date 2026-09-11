@@ -57,6 +57,16 @@ function Section({
   );
 }
 
+/**
+ * A live region that fills in while a feature flag has not answered yet,
+ * wrapping whatever skeleton placeholders you give it for that surface.
+ * Reach for it instead of a bare Skeleton whenever a surface's whole layout
+ * depends on a flag lookup, because it also tells screen readers that the
+ * surface is loading, something a placeholder alone cannot do. It takes a
+ * label that becomes both the announced sentence and the region's accessible
+ * name, so a screen reader user is not left with only decorative bars and no
+ * explanation.
+ */
 const meta = {
   title: "Primitives/Feedback & Status/Feature Flag Pending",
   component: PendingGallery,

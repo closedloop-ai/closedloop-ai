@@ -1,6 +1,15 @@
 import { ConversationMessage } from "@repo/design-system/components/ui/conversation-message";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * One chat bubble in a back-and-forth conversation, with a small user or
+ * assistant icon beside it and the bubble aligned to whichever side that
+ * role speaks from. Use it when you are building a chat-style exchange
+ * rather than a Session Trace or tool log, where messages read top to bottom
+ * without alternating sides. Long text wraps and preserves line breaks, but
+ * the component has no built-in scrolling or grouping; stack several inside
+ * a Conversation Transcript for that.
+ */
 const meta = {
   title: "Primitives/Content/Conversation Message",
   component: ConversationMessage,

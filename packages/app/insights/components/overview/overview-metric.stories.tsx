@@ -1,18 +1,25 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { OverviewMetric } from "./overview-metric";
 
+// `OverviewMetric` was a private piece of `AiImpactCard`'s markup until it was
+// promoted to a shared module, which is the moment `packages/app/AGENTS.md`
+// says a prop-driven component owes its own story: its states stop being
+// covered by the parent's single-shape fixture.
+// The contract that is genuinely this component's own is what happens when the
+// value does not fit. It commits to ONE line — `truncate` with the full string
+// on `title` — because a metric that wraps to two lines breaks the baseline it
+// shares with every sibling in the grid. These stories are how that gets
+// checked, since a test asserting the class name proves nothing about whether
+// the row still reads as a row.
 /**
- * `OverviewMetric` was a private piece of `AiImpactCard`'s markup until it was
- * promoted to a shared module, which is the moment `packages/app/AGENTS.md`
- * says a prop-driven component owes its own story: its states stop being
- * covered by the parent's single-shape fixture.
- *
- * The contract that is genuinely this component's own is what happens when the
- * value does not fit. It commits to ONE line — `truncate` with the full string
- * on `title` — because a metric that wraps to two lines breaks the baseline it
- * shares with every sibling in the grid. These stories are how that gets
- * checked, since a test asserting the class name proves nothing about whether
- * the row still reads as a row.
+ * Shows one headline number inside a metrics summary: a small uppercase
+ * label on top, a large value in the middle, and a muted caption underneath
+ * explaining what the number covers. Use it when you need several of these
+ * stat tiles lined up in a row and want them all to share one baseline,
+ * rather than building a one off metric block for each. The value always
+ * stays on a single line and truncates rather than wrapping, with the full
+ * figure still reachable on hover, and a missing number should show the
+ * honest placeholder rather than a fabricated zero.
  */
 const meta: Meta<typeof OverviewMetric> = {
   title: "Primitives/Data Display/Overview Metric",

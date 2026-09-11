@@ -19,8 +19,8 @@
  *
  * `WRITING.md` is the standard these rules come from.
  *
- * SCOPE: Surfaces and Composites. Primitives are the next pass; widen
- * `DESCRIBED_LEVELS` when they land.
+ * SCOPE: every level except Foundations, which document tokens rather than
+ * components and have no props to table.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -40,7 +40,9 @@ const STORY_ROOTS = [
   join(REPO_ROOT, "apps/desktop/src/renderer/components"),
 ];
 
-const DESCRIBED_LEVELS = ["Surfaces", "Composites"];
+// Foundations are deliberately absent. They document tokens rather than
+// components, have no props to table, and the page itself is the documentation.
+const DESCRIBED_LEVELS = ["Surfaces", "Composites", "Primitives"];
 
 const TITLE = /const meta\b[\s\S]*?\n {2}title:\s*"([^"]+)"/;
 /**
@@ -110,9 +112,9 @@ const described: Described[] = STORY_ROOTS.flatMap(walkStories)
 /** Repo-relative, so a failure names something you can open. */
 const rel = (file: string) => file.slice(REPO_ROOT.length + 1);
 
-describe("Surfaces and Composites explain themselves", () => {
+describe("every component explains itself", () => {
   it("finds the components it is supposed to check", () => {
-    expect(described.length).toBeGreaterThan(200);
+    expect(described.length).toBeGreaterThan(300);
   });
 
   it("gives every one a description", () => {

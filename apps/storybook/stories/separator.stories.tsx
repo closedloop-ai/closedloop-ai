@@ -2,7 +2,14 @@ import { Separator } from "@repo/design-system/components/ui/separator";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Visually or semantically separates content.
+ * A thin line that divides two pieces of content, either a horizontal rule
+ * or, with orientation set to vertical, a vertical rule between items
+ * sitting side by side. It carries no spacing of its own, so you still
+ * control the gap around it with your own layout. By default it is
+ * decorative, meaning screen readers skip over it as pure visual styling.
+ * Turn decorative off only when the line marks a real boundary in the
+ * content, like the end of one list and the start of another, so assistive
+ * tech announces it.
  */
 const meta = {
   title: "Primitives/Layout/Separator",

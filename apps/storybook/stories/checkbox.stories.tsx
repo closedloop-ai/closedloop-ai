@@ -3,7 +3,13 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A control that allows the user to toggle between checked and not checked.
+ * A small square box you click to turn a single choice on or off, showing a
+ * check mark when selected. Use it for an independent yes-or-no choice, like
+ * agreeing to terms, or for one item in a multi-select list. Reach for
+ * Switch instead when the choice takes effect immediately, like a settings
+ * toggle, and Radio Group when only one of several options can be picked. It
+ * also supports an indeterminate state, shown as a dash instead of a check,
+ * for when only some items in a group it represents are selected.
  */
 const meta: Meta<typeof Checkbox> = {
   title: "Primitives/Inputs/Checkbox",

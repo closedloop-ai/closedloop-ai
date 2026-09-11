@@ -18,6 +18,17 @@ const links = workflowData.cooccurrence.slice(0, 8).map((link) => ({
   label: `${String(link.weight)}x`,
 }));
 
+/**
+ * A force-directed diagram of circles connected by lines, where each circle
+ * is a node sized by its value and each line is a weighted connection, with
+ * a hover tooltip for both. Use it for open-ended relationship data where
+ * individual connections matter. Reach for Sankey Graph instead when the
+ * relative volume flowing between stages is the point, and for Agent
+ * Pipeline Graph when you need the pre-built version of this chart wired to
+ * agent handoff data. It sizes itself to fill its container rather than
+ * taking fixed dimensions, so it needs a parent with real height or it falls
+ * back to a default box size.
+ */
 const meta: Meta<typeof Graph> = {
   title: "Primitives/Charts/Graph",
   component: Graph,

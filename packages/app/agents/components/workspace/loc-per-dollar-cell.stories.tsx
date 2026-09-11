@@ -24,14 +24,21 @@ function MetricRow({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
+// ISS-5333: the meta decorator supplies the providers and the COLUMN FRAME only —
+// it deliberately does not also open a row. Storybook composes a story's own
+// decorators INSIDE the meta's, so a story that needed several rows used to wrap
+// a second `MetricColumnFrame` and got a `w-32 border-t` frame nested inside an
+// `h-10` row: the two canvases whose whole job is proving the fixed precision
+// buys a scan were unreadable. Each story now contributes its own rows through
+// `render`, so one frame wraps exactly the rows that story means to show.
 /**
- * ISS-5333: the meta decorator supplies the providers and the COLUMN FRAME only —
- * it deliberately does not also open a row. Storybook composes a story's own
- * decorators INSIDE the meta's, so a story that needed several rows used to wrap
- * a second `MetricColumnFrame` and got a `w-32 border-t` frame nested inside an
- * `h-10` row: the two canvases whose whole job is proving the fixed precision
- * buys a scan were unreadable. Each story now contributes its own rows through
- * `render`, so one frame wraps exactly the rows that story means to show.
+ * Shows one row's lines of code per dollar ratio inside a table cell,
+ * formatted to a fixed two decimal places so every value in a sorted column
+ * lines up on the same decimal point. Turn on the alignEnd option when the
+ * cell sits in a data grid column, and leave it off when the value sits
+ * inline next to other text, like a type label on a card. A ratio below 0.01
+ * reads as "< 0.01" rather than a misleading 0.00, and a session with
+ * nothing to divide by shows a plain dash instead of a fabricated zero.
  */
 const meta = {
   title: "Primitives/Data Display/LOC Per Dollar Column Value",

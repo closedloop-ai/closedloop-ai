@@ -106,6 +106,18 @@ function TableViewMenuDemo() {
   );
 }
 
+/**
+ * A toolbar popover for a table's overall display: switching between list
+ * and card view, grouping by a field, and toggling which columns are
+ * visible, with a reset action at the bottom. Reach for it for changing how
+ * the current view of a table looks, as distinct from the Table Saved Views
+ * Switcher, which switches between whole named views a person has saved, and
+ * the Table Grid Column Menu, which handles one column at a time from inside
+ * the header instead of the whole table from a toolbar button. Each section,
+ * view toggle, group by, columns and reset, only appears when the table
+ * actually wires it up, so a simple table's menu can be as small as a column
+ * list alone.
+ */
 const meta = {
   title: "Primitives/Overlays/Table View Menu",
   component: TableViewMenuDemo,

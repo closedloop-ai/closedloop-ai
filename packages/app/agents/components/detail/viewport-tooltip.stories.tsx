@@ -185,6 +185,20 @@ function ViewportTooltipDemo({
   );
 }
 
+/**
+ * The shared positioning behavior behind the Session Timeline's two hover
+ * cards, the Activity Bucket Tooltip and the Event Dot Tooltip: given a
+ * rectangle on screen to point at, it renders a floating card pinned to that
+ * spot, flips it above or below depending on which side has room, and keeps
+ * it fully inside the browser window even when the rectangle sits right at
+ * an edge. You would not normally reach for it directly; it exists so both
+ * of the timeline's tooltip cards share one positioning behavior instead of
+ * each solving it separately, and it renders hidden for one frame while it
+ * measures itself so the card never visibly jumps into place. It also has to
+ * be told the rectangle to anchor to rather than following an element
+ * automatically, which is why the demo here measures a stand-in bar before
+ * showing the card.
+ */
 const meta = {
   title: "Primitives/Overlays/Viewport Tooltip",
   component: ViewportTooltipDemo,

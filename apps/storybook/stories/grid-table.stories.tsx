@@ -23,12 +23,20 @@ import {
   playKeyboardResize,
 } from "./grid-table-play-helpers";
 
+// Data-agnostic table built on `TableGridHeader` + a `grid min-w-fit` row.
+// Callers supply the row type, column descriptors, a CSS grid template, and
+// render functions for the leading cell and each data cell. The component owns
+// no scroll container — wrap it in a `min-w-fit` / `overflow-auto` host so the
+// sticky header and horizontal scroll resolve against that host.
 /**
- * Data-agnostic table built on `TableGridHeader` + a `grid min-w-fit` row.
- * Callers supply the row type, column descriptors, a CSS grid template, and
- * render functions for the leading cell and each data cell. The component owns
- * no scroll container — wrap it in a `min-w-fit` / `overflow-auto` host so the
- * sticky header and horizontal scroll resolve against that host.
+ * A CSS grid-based table you configure with column widths, render functions
+ * for each cell, and a scrolling host you supply yourself. Reach for it over
+ * Data Table when you need resizable or drag-to-reorder columns, collapsible
+ * row groups with a banded header, or a fallback to a stacked card layout on
+ * narrow screens; reach for Data Table instead when you just need search,
+ * filter, sort, and paging on a plain row array. It renders no scroll
+ * container of its own, so wrap it in a host with its own scrolling or the
+ * sticky header and horizontal scroll will not line up correctly.
  */
 const meta = {
   title: "Primitives/Data Display/Grid Table",

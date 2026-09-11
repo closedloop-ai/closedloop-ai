@@ -13,6 +13,15 @@ const InteractiveStarRating = ({
   );
 };
 
+/**
+ * Shows five stars that fill in as you click or drag across them, giving a
+ * whole-number rating from zero to five. Reach for it when someone needs to
+ * rate something on a small numeric scale, rather than Switch or Checkbox,
+ * which only handle on and off. It also responds to arrow keys, and the
+ * readonly flag turns off all interaction even when you still pass an
+ * onChange handler, which is how you display a rating without letting anyone
+ * change it.
+ */
 const meta = {
   title: "Primitives/Inputs/Star Rating",
   component: StarRating,

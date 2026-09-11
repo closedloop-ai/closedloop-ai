@@ -1,6 +1,16 @@
 import { KeyValueGrid } from "@repo/design-system/components/ui/primitives/key-value-grid";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * Lays out an object as a two column table, with the key sitting in a muted
+ * left column and the value on the right, whether that value is a plain
+ * string, a formatted number, a true or false tag, or a nested object
+ * printed as indented JSON. Reach for it when you need to inspect a raw
+ * record, like a session payload, rather than a fixed set of named fields
+ * like Overview Metric. You can pin specific keys to the top in whatever
+ * order matters, and an empty object shows a plain "Empty" message instead
+ * of a blank table.
+ */
 const meta = {
   title: "Primitives/Data Display/Key Value Grid",
   component: KeyValueGrid,
