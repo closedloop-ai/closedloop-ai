@@ -5,7 +5,7 @@ a thing *is* from where it sits, rather than from which package its code happens
 to live in.
 
 ```
-Foundations   the tokens themselves: colour, type, spacing, radius, motion, chart palette
+Foundations   the tokens themselves: colour, type, spacing, radius, motion
 Primitives    one cohesive element
 Composites    built from primitives
 Surfaces      a page, or a full page region, built from composites
@@ -36,9 +36,13 @@ Surfaces/Session Detail (Desktop Shell)    3 stories for the Electron boundaries
 
 ## The four levels
 
-**Foundation.** Documents tokens, not components. Six of them. Five read their
-values out of the DOM at runtime so they cannot drift from `globals.css`; the
-sixth, Chart Colors, renders live `var(--chart-N)` swatches for the same reason.
+**Foundation.** Documents tokens, not components. Five of them, and they read
+their values out of the DOM at runtime so they cannot drift from `globals.css`.
+
+The chart palette lives inside Colors rather than beside it. It was briefly its
+own Foundations entry, which was wrong twice over: Colors already listed every
+chart token, so the page was a duplicate, and a palette is a kind of colour, not
+a peer of colour.
 
 **Primitive.** Renders as one element. Wrapping a third-party control still
 counts: `Select` wraps Radix, `Calendar` wraps react-day-picker, and both are
@@ -205,7 +209,7 @@ ones). Count that component's imports matching
 Zero imports is a primitive. One or more is a composite unless it renders as a
 single element. Surfaces is the reviewed list above, not a derived result.
 
-Today that gives 116 primitives, 197 composites, 16 surfaces and 6 foundations
+Today that gives 116 primitives, 197 composites, 16 surfaces and 5 foundations
 across 335 story files.
 
 ## A note on renaming cost

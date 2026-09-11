@@ -71,14 +71,7 @@ const preview: Preview = {
           "Catalog",
           ["Inventory"],
           "Foundations",
-          [
-            "Colors",
-            "Typography",
-            "Spacing",
-            "Radius & Elevation",
-            "Motion",
-            "Chart Colors",
-          ],
+          ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Primitives",
           [
             "Actions",

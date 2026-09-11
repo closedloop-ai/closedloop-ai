@@ -1,3 +1,7 @@
+import {
+  CHART_SERIES_COLOR_LIMIT,
+  CHART_SERIES_TOKEN_INDEXES,
+} from "@repo/design-system/components/ui/chart-colors";
 import type { Meta, StoryObj } from "@storybook/react";
 import {
   ColorPairGrid,
@@ -76,6 +80,13 @@ const CHART_TOKENS = [
   "chart-axis-label",
 ] as const;
 
+// Derived from the module rather than retyped, so the order shown here is the
+// order charts actually draw. `CHART_SERIES_TOKEN_INDEXES` is 0-based; the
+// tokens are 1-based.
+const CHART_SERIES_ORDER = CHART_SERIES_TOKEN_INDEXES.map(
+  (index) => `chart-${index + 1}`
+);
+
 const CONTRAST_PAIRS = [
   { bg: "primary", fg: "primary-foreground" },
   { bg: "secondary", fg: "secondary-foreground" },
@@ -134,10 +145,17 @@ const ColorsPage = () => (
     </TokenSection>
 
     <TokenSection
-      note="The categorical series used by charts, in order. Assign by index so series colours stay stable across a dashboard."
+      note="The ten categorical tokens, plus the axis pair. This is the palette, not the order to use it in — see below."
       title="Data visualization"
     >
       <ColorSwatchGrid tokens={CHART_TOKENS} />
+    </TokenSection>
+
+    <TokenSection
+      note={`Series order, and it is deliberately not chart-1..10. The natural order seats colour-vision-confusable hues next to each other and opens on the one token that is nearly invisible on the light surface: measured, it fails at CVD ΔE 5.4 with 1.31:1 contrast in the first slot, where this order passes at ΔE 18.0 and 3.89:1. Call chartSeriesColor(i) rather than picking a token by index. It caps at ${CHART_SERIES_COLOR_LIMIT} series and never wraps; past that, fold the remainder into a neutral "Other" band. Colour alone still separates only about one series across all pairs, so a chart this dense needs a second encoding too.`}
+      title="Chart series order"
+    >
+      <ColorSwatchGrid tokens={CHART_SERIES_ORDER} />
     </TokenSection>
   </FoundationsPage>
 );
