@@ -15,6 +15,10 @@ Every story title is `<Level>/<Group>/<Component>`. Foundations is flat, and
 Surfaces is flat. `validate:catalog` fails the build if a title does not start
 with one of the four levels.
 
+`Start Here` is the one exception. It is not a level: it holds the two pages
+that document the system rather than being part of it, `Start Here/Introduction`
+and `Start Here/Catalog`, and it sorts above Foundations.
+
 ## Where the code lives does not matter
 
 This is the rule the whole structure hangs on.

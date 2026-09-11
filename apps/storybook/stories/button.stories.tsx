@@ -1,6 +1,30 @@
 import { Button } from "@repo/design-system/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Loader2, Mail } from "lucide-react";
+import type { ComponentProps, ReactNode } from "react";
+
+/** The sizes that render a square box with no room alongside an icon. */
+const ICON_SIZES = new Set(["icon", "icon-sm", "icon-lg"]);
+
+/** The label every story starts with, so a typed-in one can be told apart. */
+const DEFAULT_LABEL = "Button";
+
+/**
+ * An icon size is a square the width of its height, so the default text label
+ * renders as a clipped word in a box: a shape the product never ships. Switch
+ * to an icon when an icon size is picked and the label is still the untouched
+ * default, and leave a label you typed yourself alone.
+ */
+function childForSize(
+  size: ComponentProps<typeof Button>["size"],
+  children: ReactNode
+) {
+  if (ICON_SIZES.has(size ?? "") && children === DEFAULT_LABEL) {
+    return <Mail />;
+  }
+
+  return children;
+}
 
 /**
  * A clickable control for triggering a one-time action, like submitting a
@@ -13,6 +37,8 @@ const meta = {
   argTypes: {
     children: {
       control: "text",
+      description:
+        "What the button says. On an icon size the default label becomes an icon instead. A label you type is used as it is.",
     },
     variant: {
       options: [
@@ -29,6 +55,8 @@ const meta = {
     size: {
       options: ["default", "sm", "lg", "icon", "icon-sm", "icon-lg"],
       control: { type: "radio" },
+      description:
+        "Height, plus a matching width on the three icon sizes. Those are square and hold one icon, with no room for a label, so picking one swaps the label for an icon.",
     },
   },
   parameters: {
@@ -37,7 +65,7 @@ const meta = {
   args: {
     variant: "default",
     size: "default",
-    children: "Button",
+    children: DEFAULT_LABEL,
   },
 } satisfies Meta<typeof Button>;
 
@@ -48,7 +76,11 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the button, used for primary actions and commands.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  render: ({ children, ...args }) => (
+    <Button {...args}>{childForSize(args.size, children)}</Button>
+  ),
+};
 
 /**
  * Every `variant` value rendered side by side, labelled, so one Chromatic
@@ -158,6 +190,9 @@ export const WithIcon: Story = {
  * Add the `disabled` prop to prevent interactions with the button.
  */
 export const Disabled: Story = {
+  render: ({ children, ...args }) => (
+    <Button {...args}>{childForSize(args.size, children)}</Button>
+  ),
   args: {
     disabled: true,
   },

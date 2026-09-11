@@ -72,9 +72,10 @@ on, `git branch --show-current` prints it.
 
 The left sidebar goes from smallest to largest, top to bottom.
 
-1. **Catalog** — a searchable index of every component with a live preview of
-   each one. Start here when you do not know what something is called. Click any
-   card to jump to it.
+1. **Start Here** is two pages. Introduction explains what the system is and
+   how to read a component page. Catalog is a searchable index of every
+   component with a live preview of each one, for when you do not know what
+   something is called. Click any card to jump to it.
 2. **Foundations** — the raw ingredients. Colors, type sizes, spacing, corner
    rounding. These are the decisions everything else is built from.
 3. **Design System** — the basic building blocks. Buttons, inputs, badges,
