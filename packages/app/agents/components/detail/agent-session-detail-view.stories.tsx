@@ -36,6 +36,7 @@ const detailViewDecorator: Decorator = (Story) => (
 const meta: Meta<typeof AgentSessionDetailView> = {
   title: "Surfaces/Session Detail",
   component: AgentSessionDetailView,
+  tags: ["autodocs"],
   args: { commentsRailOpen: true, isError: false },
   argTypes: {
     session: { control: "object", table: { category: "Data" } },
@@ -80,20 +81,6 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Loading: Story = {
-  args: {
-    backHref: "/sessions",
-    isLoading: true,
-  },
-};
-
-export const NotFound: Story = {
-  args: {
-    backHref: "/sessions",
-    isLoading: false,
-  },
-};
-
 /**
  * The Session detail page as it ships: the title row carries the session's
  * status chip beside the `h1` at the prototype's `text-2xl` size (a sibling,
@@ -123,6 +110,20 @@ export const PopulatedHierarchyTimeline: Story = {
     );
     expect(trace).toBeDefined();
     expect(trace?.closest("section[aria-labelledby]")).not.toBeNull();
+  },
+};
+
+export const Loading: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: true,
+  },
+};
+
+export const NotFound: Story = {
+  args: {
+    backHref: "/sessions",
+    isLoading: false,
   },
 };
 

@@ -19,6 +19,7 @@ import {
  */
 const meta: Meta = {
   title: "Composites/Sessions/Listing/Session Cell Chips",
+  tags: ["autodocs"],
 };
 
 export default meta;

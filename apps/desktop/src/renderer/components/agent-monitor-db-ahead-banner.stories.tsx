@@ -23,6 +23,7 @@ import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
 const meta = {
   title: "Composites/App Shell/Agent Monitor DB Ahead Banner",
   component: AgentMonitorDbAheadBanner,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },

@@ -188,6 +188,7 @@ function ViewportTooltipDemo({
 const meta = {
   title: "Primitives/Overlays/Viewport Tooltip",
   component: ViewportTooltipDemo,
+  tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
 } satisfies Meta<typeof ViewportTooltipDemo>;
 

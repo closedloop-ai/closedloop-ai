@@ -18,6 +18,7 @@ import { DesktopSessionExpiredBanner } from "./desktop-session-expired-banner";
 const meta = {
   title: "Composites/App Shell/Desktop Session Expired Banner",
   component: DesktopSessionExpiredBanner,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },

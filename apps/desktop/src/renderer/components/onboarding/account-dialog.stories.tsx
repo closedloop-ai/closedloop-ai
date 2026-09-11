@@ -22,6 +22,7 @@ import { GuestSignupIntent } from "./guest-signup-provider";
 const meta = {
   title: "Composites/Onboarding/Account Dialog",
   component: AccountDialog,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },
