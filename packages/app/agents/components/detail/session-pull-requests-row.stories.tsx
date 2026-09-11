@@ -58,24 +58,6 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * ISS-4769, as shipped — the state this change exists for. One word narrows the
- * row's claim to what its lane actually computed, and the two rows stop arguing:
- * this session opened no PRs, and it still changed 500 lines. The bare "None"
- * this replaced read as "nothing was delivered" beside that "+420 -80 in
- * session" figure, which is the contradiction the canvas exists to judge.
- */
-export const EmptyAuthoredNone: Story = {
-  args: { prs: [], repositoryFullName: "closedloop-ai/symphony-alpha" },
-  decorators: [
-    (Story) => (
-      <PropertiesFrame>
-        <Story />
-      </PropertiesFrame>
-    ),
-  ],
-};
-
-/**
  * The populated row: the copy is an EMPTY-state label only, so a session with
  * attributed PRs renders no empty-state text at all. Pinned on a canvas because
  * "the label never appears here" is easy to assert in a test and easy to get
@@ -89,6 +71,24 @@ export const WithAttributedPrs: Story = {
     ],
     repositoryFullName: "closedloop-ai/symphony-alpha",
   },
+  decorators: [
+    (Story) => (
+      <PropertiesFrame>
+        <Story />
+      </PropertiesFrame>
+    ),
+  ],
+};
+
+/**
+ * ISS-4769, as shipped — the state this change exists for. One word narrows the
+ * row's claim to what its lane actually computed, and the two rows stop arguing:
+ * this session opened no PRs, and it still changed 500 lines. The bare "None"
+ * this replaced read as "nothing was delivered" beside that "+420 -80 in
+ * session" figure, which is the contradiction the canvas exists to judge.
+ */
+export const EmptyAuthoredNone: Story = {
+  args: { prs: [], repositoryFullName: "closedloop-ai/symphony-alpha" },
   decorators: [
     (Story) => (
       <PropertiesFrame>

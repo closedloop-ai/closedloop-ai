@@ -33,6 +33,7 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 const meta = {
   title: "Primitives/Overlays/Session Timeline Event Dot Tooltip",
   component: EventDotTooltip,
+  tags: ["autodocs"],
   argTypes: {
     anchor: { control: "object" },
     /*

@@ -388,6 +388,10 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+export const Populated: Story = {
+  args: { detail: populatedDetail },
+};
+
 export const Loading: Story = {
   args: { isLoading: true },
 };
@@ -398,10 +402,6 @@ export const ErrorState: Story = {
 
 export const EmptyNoSessions: Story = {
   args: { detail: { ...populatedDetail, sessions: [] } },
-};
-
-export const Populated: Story = {
-  args: { detail: populatedDetail },
 };
 
 export const CommentsUnsynced: Story = {

@@ -31,15 +31,15 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-/** Off by default — the score is derived from prompt content, so orgs opt in. */
-export const Disabled: Story = {};
-
 /** The org opted in. */
 export const Enabled: Story = {
   args: {
     checked: true,
   },
 };
+
+/** Off by default — the score is derived from prompt content, so orgs opt in. */
+export const Disabled: Story = {};
 
 /** A save is in flight; the switch is locked until it settles. */
 export const Saving: Story = {

@@ -131,12 +131,6 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Empty: Story = {
-  args: {
-    comments: [],
-  },
-};
-
 export const Threaded: Story = {
   render: (args) => {
     function StatefulCommentsSection() {
@@ -208,6 +202,12 @@ export const Threaded: Story = {
   },
   args: {
     comments,
+  },
+};
+
+export const Empty: Story = {
+  args: {
+    comments: [],
   },
 };
 

@@ -182,15 +182,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+/** One unavailable Session and truncated events remain explicit beside the loaded trace. */
+export const TruncatedPartialSessionCoverage: Story = {};
+
 /** Lazy trace acquisition keeps the timeline geometry stable with one bounded skeleton. */
 export const Loading: Story = {
   args: {
     detail: { ...partialDetail, id: LOADING_BRANCH_ID },
   },
 };
-
-/** One unavailable Session and truncated events remain explicit beside the loaded trace. */
-export const TruncatedPartialSessionCoverage: Story = {};
 
 function pendingTrace(): Promise<BranchTraceResult> {
   return new Promise(() => undefined);

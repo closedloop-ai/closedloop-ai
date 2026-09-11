@@ -21,16 +21,16 @@ const meta = {
 
 export default meta;
 
-export const Failed = {
-  args: { rows: [makeRow(BranchCloudHydrationStatus.Failed)] },
+export const Fresh = {
+  args: { rows: [makeRow(BranchCloudHydrationStatus.Fresh)] },
 };
 
 export const Stale = {
   args: { rows: [makeRow(BranchCloudHydrationStatus.Stale)] },
 };
 
-export const Fresh = {
-  args: { rows: [makeRow(BranchCloudHydrationStatus.Fresh)] },
+export const Failed = {
+  args: { rows: [makeRow(BranchCloudHydrationStatus.Failed)] },
 };
 
 function makeRow(cloudHydrationStatus: BranchCloudHydrationStatus): BranchRow {

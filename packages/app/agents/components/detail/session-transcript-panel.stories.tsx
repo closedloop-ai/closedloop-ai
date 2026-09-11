@@ -274,6 +274,27 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
+ * The ordinary web path: the archived transcript parsed, and its turns are the
+ * trace. No notice above it, because the copy is current and there is nothing
+ * to caveat.
+ *
+ * The session ALSO carries `eventsTruncated`, which is what makes the missing
+ * end-of-read footer meaningful. That flag describes the DB event read, and a
+ * parsed archive is read whole, so the note would claim these rows stop early
+ * when they do not. {@link LocalProjectionTruncated} is the same flag over the
+ * source it actually describes, and does print it.
+ */
+export const LoadedTranscript: Story = {
+  args: { session: cloudSessionFixture({ eventsTruncated: true }) },
+  parameters: parsedTranscriptParameters(TranscriptAvailability.Available),
+  play: ({ canvasElement }) => {
+    expect(canvasElement.textContent).toContain(TRANSCRIPT_PROMPT_TEXT);
+    expect(canvasElement.textContent).not.toContain(TRACE_END_OF_READ_NOTE);
+    expect(canvasElement.querySelector('[aria-busy="true"]')).toBeNull();
+  },
+};
+
+/**
  * Descriptors have not arrived yet. The skeleton carries `aria-busy`, so this
  * reads as "we are still asking" to a screen reader as well as to the eye.
  *
@@ -496,27 +517,6 @@ export const OversizedGate: Story = {
     expect(
       canvas.getByRole("button", { name: LOAD_FULL_BUTTON_NAME })
     ).toBeVisible();
-  },
-};
-
-/**
- * The ordinary web path: the archived transcript parsed, and its turns are the
- * trace. No notice above it, because the copy is current and there is nothing
- * to caveat.
- *
- * The session ALSO carries `eventsTruncated`, which is what makes the missing
- * end-of-read footer meaningful. That flag describes the DB event read, and a
- * parsed archive is read whole, so the note would claim these rows stop early
- * when they do not. {@link LocalProjectionTruncated} is the same flag over the
- * source it actually describes, and does print it.
- */
-export const LoadedTranscript: Story = {
-  args: { session: cloudSessionFixture({ eventsTruncated: true }) },
-  parameters: parsedTranscriptParameters(TranscriptAvailability.Available),
-  play: ({ canvasElement }) => {
-    expect(canvasElement.textContent).toContain(TRANSCRIPT_PROMPT_TEXT);
-    expect(canvasElement.textContent).not.toContain(TRACE_END_OF_READ_NOTE);
-    expect(canvasElement.querySelector('[aria-busy="true"]')).toBeNull();
   },
 };
 

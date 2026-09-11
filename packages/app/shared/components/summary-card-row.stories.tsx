@@ -107,6 +107,7 @@ function DerivedStrip() {
 const meta = {
   title: "Composites/Layout/Summary Card Row",
   component: SummaryCardRow,
+  tags: ["autodocs"],
   parameters: { layout: "padded" },
   argTypes: {
     busy: { control: "boolean" },

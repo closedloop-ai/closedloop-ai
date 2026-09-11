@@ -41,6 +41,7 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 const meta = {
   title: "Primitives/Overlays/Activity Bucket Tooltip",
   component: ActivityBucketTooltip,
+  tags: ["autodocs"],
   args: { costUnmeasured: false },
   argTypes: {
     anchor: {

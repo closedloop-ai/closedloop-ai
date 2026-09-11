@@ -51,6 +51,7 @@ import {
  */
 const meta = {
   title: "Primitives/Charts/Session Timeline Cost Rail",
+  tags: ["autodocs"],
   parameters: { layout: "padded" },
 } satisfies Meta<typeof SessionTimelineBarLabels>;
 

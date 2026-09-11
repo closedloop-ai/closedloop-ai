@@ -37,6 +37,7 @@ import { Sidebar } from "./Sidebar";
 const meta = {
   title: "Composites/App Shell/Sidebar Account Footer",
   component: Sidebar,
+  tags: ["autodocs"],
   parameters: { layout: "fullscreen" },
 };
 
