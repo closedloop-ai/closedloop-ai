@@ -52,6 +52,17 @@ const FLAT_ROSTER_NOTE =
 /** A phone-width column, where the node card has to wrap rather than clip. */
 const NARROW_COLUMN_PX = 320;
 
+/**
+ * A nested tree of cards showing how the agents inside one session delegated
+ * work to each other, connected by a rail of lines. Each card's left border
+ * and dot color show that agent's status, and a card with children shows how
+ * many sub-agents it has. This is the single-session delegation view: for
+ * the aggregate flow across every session, use the workflow-level Agent
+ * Orchestration Graph instead, and for the same tree colored to trace errors
+ * rather than status, use the Error Propagation Map. When none of the agents
+ * in a session have a parent, the tree prints a note that everyone here is
+ * top level rather than implying a hierarchy that is not there.
+ */
 const meta = {
   title: "Composites/Agents/Session Detail Orchestration Graph",
   component: AgentOrchestrationGraph,

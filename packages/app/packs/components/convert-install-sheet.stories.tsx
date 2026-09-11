@@ -61,6 +61,18 @@ const installedOutcome: ConvertInstallOutcome = {
 const resolveInstalled = (): Promise<ConvertInstallOutcome> =>
   Promise.resolve(installedOutcome);
 
+/**
+ * A side panel that walks you through installing one skill, agent, or hook
+ * onto a different AI harness, such as moving a Codex skill so it works in
+ * Claude, converting its format along the way. It shows where the component
+ * came from and whether the conversion is clean, will drop some fields, or
+ * can't happen at all, and it will not let you confirm until you have seen
+ * which one applies. Reach for it whenever an item needs a format conversion
+ * before it can install, since a plain install action would either fail
+ * outright or silently drop information. While the conversion and install is
+ * running, the sheet locks its own close button and the Escape key, so you
+ * can't dismiss it mid run and lose track of whether it finished.
+ */
 const meta = {
   title: "Composites/Packs/Convert Install Sheet",
   component: ConvertInstallSheet,

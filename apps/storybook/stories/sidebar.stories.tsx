@@ -276,6 +276,16 @@ function GlobalNavDemo(props: Parameters<typeof Sidebar>[0]) {
   );
 }
 
+/**
+ * The app's main left hand navigation: a column of links and grouped
+ * sections, with a header and footer for account or workspace switching.
+ * Reach for it as the one navigation shell for a signed in app rather than
+ * building a page specific nav, since it already handles collapsing to a
+ * slim icon only rail, sliding off canvas on mobile, and remembering whether
+ * the user left it collapsed or expanded. It supports nested sub items under
+ * a parent link, collapsible groups, and small count badges next to a label,
+ * and a toggle button placed anywhere in the app can open or close it.
+ */
 const meta: Meta<typeof Sidebar> = {
   title: "Composites/Navigation/Sidebar",
   component: Sidebar,

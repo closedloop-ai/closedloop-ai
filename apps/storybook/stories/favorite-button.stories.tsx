@@ -43,6 +43,14 @@ function FavoriteButtonDemo({
   );
 }
 
+/**
+ * A star icon button that toggles whether something is marked as a favorite.
+ * The star fills in yellow when the item is favorited, and a tooltip
+ * explains what clicking it will do next, such as Add to favorites or Remove
+ * from favorites. It does not track its own state, so the screen that uses
+ * it has to hold the current favorited value and handle the toggle, and it
+ * can be disabled while a save is in flight.
+ */
 const meta = {
   title: "Composites/Actions/Favorite Button",
   component: FavoriteButtonDemo,

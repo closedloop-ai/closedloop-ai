@@ -64,6 +64,15 @@ const traceItems: MergedTraceItem[] = [
   { type: "end", sessionId: "ci1", text: "Run complete" },
 ];
 
+/**
+ * A single scrolling feed of everything that happened across every session
+ * tied to a branch: prompts, tool calls, and idle gaps, in time order, each
+ * with a colored avatar showing who or what did it. Reach for it when you
+ * need to read the full story across a branch's sessions, rather than the
+ * session swimlane, which only shows when each session was running. It
+ * shares its actor colors with the rest of the branch page, but scrolling or
+ * clicking inside it does not move the shared timeline playhead on its own.
+ */
 const meta = {
   title: "Composites/Branches/Merged Trace",
   component: BranchMergedTrace,

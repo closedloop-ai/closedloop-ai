@@ -5,32 +5,37 @@ import {
   SessionDetailProviderError,
 } from "./agent-session-detail-states";
 
+// ISS-5451: the session-detail loading / not-found / provider-error states,
+// isolated.
+// These are the three states `/visual-qa` keeps finding bugs in, and they were
+// the only part of the detail route with no way to see them without forcing a
+// failing read. The pair that matters most is {@link NotFound} against
+// {@link ProviderError}: both are empty screens with a back link, but they make
+// opposite claims. "Session not found" says the record is gone; "Session
+// unavailable" says the record exists and the read failed. Showing the wrong one
+// tells a user to stop looking for a session that is fine, so they are adjacent
+// here on purpose.
+// ISS-5008: every state carries the `Session` page heading. The loaded detail
+// owns its own `<h1>`, but that heading sits below all three of these
+// early-returns, so without this the page shipped no heading at all on first
+// load, on a 404, and during an outage. The heading is visible in each story.
+// The route picks between the two error states with
+// `classifySessionDetailError`, which maps a 404 to NotPresent and everything
+// else — gateway down, worker died, 5xx — to ProviderError.
+// No `parameters.appCore` here: all three states are pure presentational
+// compositions of `PageHeading`, `Skeleton`, `EmptyState` and `Link`, and the
+// only context any of them reads is the navigation port the preview already
+// mounts globally (ISS-5665).
 /**
- * ISS-5451: the session-detail loading / not-found / provider-error states,
- * isolated.
- *
- * These are the three states `/visual-qa` keeps finding bugs in, and they were
- * the only part of the detail route with no way to see them without forcing a
- * failing read. The pair that matters most is {@link NotFound} against
- * {@link ProviderError}: both are empty screens with a back link, but they make
- * opposite claims. "Session not found" says the record is gone; "Session
- * unavailable" says the record exists and the read failed. Showing the wrong one
- * tells a user to stop looking for a session that is fine, so they are adjacent
- * here on purpose.
- *
- * ISS-5008: every state carries the `Session` page heading. The loaded detail
- * owns its own `<h1>`, but that heading sits below all three of these
- * early-returns, so without this the page shipped no heading at all on first
- * load, on a 404, and during an outage. The heading is visible in each story.
- *
- * The route picks between the two error states with
- * `classifySessionDetailError`, which maps a 404 to NotPresent and everything
- * else — gateway down, worker died, 5xx — to ProviderError.
- *
- * No `parameters.appCore` here: all three states are pure presentational
- * compositions of `PageHeading`, `Skeleton`, `EmptyState` and `Link`, and the
- * only context any of them reads is the navigation port the preview already
- * mounts globally (ISS-5665).
+ * The three screens a session detail page can show before it has a loaded
+ * session to display: a loading skeleton, a 'session not found' message for
+ * a genuinely missing session, and a 'session unavailable' message for a
+ * session that exists but couldn't be read right now. Use the right one
+ * deliberately, since 'not found' and 'unavailable' make opposite claims:
+ * one tells someone to stop looking for a session that's gone, the other
+ * tells them the record is fine and to try again. All three states carry the
+ * same page heading and a link back to the sessions list, so the page never
+ * renders headless while it's loading or failing.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Agent Session Detail States",

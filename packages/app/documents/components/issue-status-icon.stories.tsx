@@ -6,10 +6,18 @@ import { ISSUE_STATUS_LABELS } from "@repo/app/projects/lib/project-constants";
 import type { Meta, StoryObj } from "@storybook/react";
 import { IssueStatusIcon } from "./issue-status-icon";
 
+// One glyph per Issue delivery-lifecycle status. Issues follow a delivery
+// lifecycle (triage → backlog → todo → in progress → in review → done) distinct
+// from the Document authoring lifecycle. Documents use `DocumentStatusIcon`.
 /**
- * One glyph per Issue delivery-lifecycle status. Issues follow a delivery
- * lifecycle (triage → backlog → todo → in progress → in review → done) distinct
- * from the Document authoring lifecycle. Documents use `DocumentStatusIcon`.
+ * A small icon showing where an issue sits in its delivery lifecycle, from a
+ * dashed ring for Backlog through partially filled rings for In Progress and
+ * In Review, to a filled circle with a check, an exclamation mark, or an X
+ * for Done, Blocked, or Canceled. Triage gets its own icon too: a filled
+ * circle with a swap glyph, marking an issue that was triaged automatically
+ * rather than by a person. Use it anywhere you list issues and need a
+ * compact status indicator; documents follow a different lifecycle and use
+ * the separate Document Status Icon instead.
  */
 const meta = {
   title: "Composites/Documents/Issue Status Icon",

@@ -21,6 +21,14 @@ const projectRoutes: FixtureRoute[] = [
   },
 ];
 
+/**
+ * An inline editable block of text for a project's description. Click into
+ * it and it turns into a plain textarea with no separate edit button or
+ * dialog: press Enter to save, Shift+Enter for a new line, and Escape to
+ * back out. Reach for it instead of a form field when the description should
+ * read like ordinary page text until someone actually wants to change it. It
+ * also saves when you click away, and it allows an empty description.
+ */
 const meta: Meta<typeof EditableProjectDescription> = {
   title: "Composites/My Tasks/Editable Project Description",
   component: EditableProjectDescription,

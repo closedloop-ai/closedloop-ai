@@ -6,10 +6,18 @@ import { DOCUMENT_STATUS_LABELS } from "@repo/app/projects/lib/project-constants
 import type { Meta, StoryObj } from "@storybook/react";
 import { DocumentStatusIcon } from "./document-status-icon";
 
+// One glyph per Document lifecycle status (PRD/Implementation Plan/Template).
+// Documents progress through a filling ring, terminating in a filled ✕ for
+// Obsolete. Features use the separate `IssueStatusIcon`.
 /**
- * One glyph per Document lifecycle status (PRD/Implementation Plan/Template).
- * Documents progress through a filling ring, terminating in a filled ✕ for
- * Obsolete. Features use the separate `IssueStatusIcon`.
+ * A small icon showing where a document, like a PRD, plan, or template, is
+ * in its authoring lifecycle: an empty ring for Draft, a half-filled ring
+ * for In Review, a full ring for Approved, and a filled circle with a check,
+ * an exclamation mark, or an X for Executed, Changes Requested, or Obsolete.
+ * Use it anywhere you list documents and need a compact status indicator
+ * instead of a text label. Issues follow a different lifecycle and use the
+ * separate Issue Status Icon instead, since the two sets of states don't
+ * overlap.
  */
 const meta = {
   title: "Composites/Documents/Document Status Icon",

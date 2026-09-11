@@ -3,10 +3,17 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { fn } from "storybook/test";
 
+// Button-driven pagination built on the shadcn `Pagination` primitives:
+// Previous / numbered pages (with ellipses) / Next. Calls `onPageChange` with
+// the target zero-based page. Renders nothing for a single page.
 /**
- * Button-driven pagination built on the shadcn `Pagination` primitives:
- * Previous / numbered pages (with ellipses) / Next. Calls `onPageChange` with
- * the target zero-based page. Renders nothing for a single page.
+ * Page-turning controls for a list or table: a Previous button, a row of
+ * numbered pages with an ellipsis when there are too many to show at once,
+ * and a Next button. Use it for any paginated list where you're already
+ * tracking the current page yourself; it simply tells you, through
+ * onPageChange, which page someone wants to go to next. It renders nothing
+ * at all when there's only one page, so you can drop it in without an extra
+ * check.
  */
 const meta = {
   title: "Composites/Data Display/Table Pagination",

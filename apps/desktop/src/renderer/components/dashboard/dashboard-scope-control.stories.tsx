@@ -4,18 +4,23 @@ import {
 } from "@closedloop-ai/loops-api/insights";
 import { DashboardScopeControl } from "./dashboard-scope-control";
 
+// ISS-5112: the dashboard's Me / Organization scope toggle, in the three states
+// its two booleans produce.
+// `gated` is the one worth having a fixture for. It pins the DISPLAYED value to
+// Organization while the underlying `scope` state is still `Me`, which is the
+// right behaviour while the ask is on screen and a bug the moment it outlives
+// it: the cr-44060 regression was `scope` being cleared without `orgGated`,
+// leaving this control showing Organization over personal-scope data.
+// `analytics-range-toggle.stories.tsx` cannot cover this — it exercises the
+// generic primitive, and the gating is entirely this wrapper's.
 /**
- * ISS-5112: the dashboard's Me / Organization scope toggle, in the three states
- * its two booleans produce.
- *
- * `gated` is the one worth having a fixture for. It pins the DISPLAYED value to
- * Organization while the underlying `scope` state is still `Me`, which is the
- * right behaviour while the ask is on screen and a bug the moment it outlives
- * it: the cr-44060 regression was `scope` being cleared without `orgGated`,
- * leaving this control showing Organization over personal-scope data.
- *
- * `analytics-range-toggle.stories.tsx` cannot cover this — it exercises the
- * generic primitive, and the gating is entirely this wrapper's.
+ * A two option toggle for switching the dashboard between your own data and
+ * your organization's, labeled Me and Organization. It renders nothing at
+ * all when there's no organization to switch to, such as for a guest
+ * browsing without an account. In a gated state aimed at exactly that guest,
+ * the toggle visually stays on Organization even though the data underneath
+ * is still personal, so clicking it doesn't look like it silently reverted
+ * while a sign up prompt is on screen.
  */
 const meta = {
   title: "Composites/Insights/Scope Control",

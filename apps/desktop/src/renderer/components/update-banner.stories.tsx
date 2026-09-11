@@ -3,15 +3,24 @@ import { PackagedUpdateInstallBlockedReason } from "../../shared/packaged-update
 import { UpdateBanner } from "./UpdateBanner";
 import type { UpdateBannerState } from "./update-banner-state";
 
+// ISS-4841: the auto-update strip, one story per state.
+// The banner holds its own state and only ever moves through IPC-bridged window
+// events, so at runtime you see whichever state your machine happens to be in.
+// The read-only-volume block in particular needs an app running from a mounted
+// DMG, which nobody reproduces on purpose. Each story dispatches the
+// `desktop:update-status` event the preload bridge re-emits, so the canvas
+// drives the real reducer rather than a parallel mock of it.
 /**
- * ISS-4841: the auto-update strip, one story per state.
- *
- * The banner holds its own state and only ever moves through IPC-bridged window
- * events, so at runtime you see whichever state your machine happens to be in.
- * The read-only-volume block in particular needs an app running from a mounted
- * DMG, which nobody reproduces on purpose. Each story dispatches the
- * `desktop:update-status` event the preload bridge re-emits, so the canvas
- * drives the real reducer rather than a parallel mock of it.
+ * A thin strip below the page header that reports on app updates:
+ * downloading, ready to install, blocked, or failed. Once an update is
+ * downloaded it shows a Relaunch button that quits and restarts the app on
+ * the new version, and if the app cannot install itself because it is stuck
+ * in a read only location, it shows a warning with a Move and Update button
+ * instead. It listens for update events on its own and appears or disappears
+ * automatically, so nothing else in the app needs to trigger it. Only the
+ * failed state uses a destructive red tint; every other state uses the same
+ * muted tint as the rest of the banner stack so it does not compete with the
+ * page underneath it.
  */
 const meta = {
   title: "Composites/App Shell/Update Banner",

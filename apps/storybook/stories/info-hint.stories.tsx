@@ -1,13 +1,20 @@
 import { InfoHint } from "@repo/design-system/components/ui/primitives/info-hint";
 import type { Meta, StoryObj } from "@storybook/react";
 
+// `InfoHint` is the single interaction model behind every info-"ⓘ" affordance
+// (FEA-3819): hovering anywhere over the widened icon target — or focusing it by
+// keyboard — reveals the explainer, and moving away dismisses it. No click is
+// required; a click or touch tap pins it open as a secondary affordance. Because
+// it opens on hover/focus, hover (or Tab to) the icon in the canvas to see the
+// popover — it is not open at rest.
 /**
- * `InfoHint` is the single interaction model behind every info-"ⓘ" affordance
- * (FEA-3819): hovering anywhere over the widened icon target — or focusing it by
- * keyboard — reveals the explainer, and moving away dismisses it. No click is
- * required; a click or touch tap pins it open as a secondary affordance. Because
- * it opens on hover/focus, hover (or Tab to) the icon in the canvas to see the
- * popover — it is not open at rest.
+ * A small circled 'i' icon that reveals a short explainer in a popover when
+ * you hover over it or reach it with the keyboard, and hides again as soon
+ * as you move away. Click or tap it to pin the popover open instead, which
+ * matters on touch screens that have no hover at all. Use it beside a metric
+ * label or a chart title when a word or a number needs a one line
+ * definition, rather than wrapping the whole label in a tooltip that a
+ * keyboard user could never open.
  */
 const meta = {
   title: "Composites/Feedback & Status/Info Hint",

@@ -2,11 +2,19 @@ import type { GenerationStatus } from "@repo/api/src/types/document";
 import type { Meta, StoryObj } from "@storybook/react";
 import { ArtifactRunInFlight } from "./artifact-run-in-flight";
 
+// The state matrix that matters is not "panel vs banner" — it is what the copy
+// is allowed to claim. A queued run has not started, so it must not say it is
+// running, and a run whose Session has not materialized yet must not offer a
+// link that goes nowhere.
 /**
- * The state matrix that matters is not "panel vs banner" — it is what the copy
- * is allowed to claim. A queued run has not started, so it must not say it is
- * running, and a run whose Session has not materialized yet must not offer a
- * link that goes nowhere.
+ * Tells you a background AI run is in progress on an artifact, and for how
+ * long. It comes in two shapes: a banner that sits above existing content
+ * without hiding it, and a full panel for an artifact that has nothing else
+ * to show yet, both with a spinner, the kind of run underway, like 'Plan' or
+ * 'Execute', and a link to the session once one exists. The wording is
+ * careful on purpose: a run still queued behind an unapproved dependency
+ * says 'Queued', never that it's running, and the whole thing renders
+ * nothing once there's no active run to report.
  */
 const meta = {
   title: "Composites/Documents/Artifact Run In Flight",

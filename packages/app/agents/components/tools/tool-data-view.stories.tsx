@@ -1,6 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { ToolInputView, ToolResponseView } from "./tool-data-view";
 
+/**
+ * Two renderers that turn a tool's raw input or response into a view matched
+ * to that specific tool: a terminal block for a shell command, a diff for an
+ * edit, a match list for a search, and a generic key and value grid for
+ * anything else, including any MCP tool. Use these when you want just that
+ * formatted content on its own, without the collapsible card and status
+ * badge that Tool Call Block wraps around it. A response view expects the
+ * same shape a tool actually returns, such as the output text, error text,
+ * and exit code of a shell command.
+ */
 const meta = {
   title: "Composites/Sessions/Trace/Tool Data View",
   component: ToolInputView,

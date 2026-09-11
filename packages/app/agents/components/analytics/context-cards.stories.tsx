@@ -70,6 +70,17 @@ const neverSyncedTarget: AgentSessionLastSyncTarget = {
   },
 };
 
+/**
+ * A pair of cards that orient a reader before a raw sync table. The left
+ * card shows a Compute Target Freshness table: when each machine was last
+ * seen, when it last sent new data, and when its last sync attempt landed,
+ * with a machine that has never synced reading Never rather than a blank
+ * cell. The right card is plain text explaining that reconnecting a compute
+ * target backfills its history automatically, and that opening a session
+ * shows its full token usage and event timeline. Use it above the detailed
+ * sync table itself, as the explanation a first-time reader needs before the
+ * numbers make sense.
+ */
 const meta = {
   title: "Composites/Agents/Context Cards",
   component: ContextCards,

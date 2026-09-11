@@ -6,22 +6,30 @@ import { DEFAULT_SESSION_FACET_FILTERS } from "../../lib/session-filter-adapter"
 import { SessionGroupBy } from "../../lib/session-grouping";
 import { SessionsToolbar } from "./sessions-toolbar";
 
+// The Sessions toolbar's states, isolated (#4480).
+// ISS-5315 gave this bar the View menu's Group-by section, which is otherwise
+// only reachable through a live query on a full Sessions page. (It also gave it
+// a Refresh control with an idle/refreshing/disabled cycle; ISS-5975 retired
+// that control once ISS-5976 restored automatic freshness, so those three
+// stories went with it.) Its siblings in this directory (`sessions-table`,
+// `synced-sessions-table`, `sessions-summary-cards`,
+// `sessions-active-filters-bar`, `sessions-controls`) all carry a story; this
+// was the one that did not.
+// `AppCoreStoryProviders` mounts the auth / navigation / feature-flag / query
+// ports the toolbar's children read, so the Filter popover and the owner-name
+// resolver behave as they do in the shells rather than throwing on a missing
+// provider.
 /**
- * The Sessions toolbar's states, isolated (#4480).
- *
- * ISS-5315 gave this bar the View menu's Group-by section, which is otherwise
- * only reachable through a live query on a full Sessions page. (It also gave it
- * a Refresh control with an idle/refreshing/disabled cycle; ISS-5975 retired
- * that control once ISS-5976 restored automatic freshness, so those three
- * stories went with it.) Its siblings in this directory (`sessions-table`,
- * `synced-sessions-table`, `sessions-summary-cards`,
- * `sessions-active-filters-bar`, `sessions-controls`) all carry a story; this
- * was the one that did not.
- *
- * `AppCoreStoryProviders` mounts the auth / navigation / feature-flag / query
- * ports the toolbar's children read, so the Filter popover and the owner-name
- * resolver behave as they do in the shells rather than throwing on a missing
- * provider.
+ * A toolbar row for a sessions list: a date range control, a Filter button
+ * for facets like status or repository, and a View menu for showing and
+ * hiding columns. Reach for it instead of building your own filter and sort
+ * controls, since it is the exact same toolbar used on both the web Sessions
+ * page and its desktop equivalent, so the two never drift apart. Below the
+ * controls, a row of removable chips names every active filter so a narrowed
+ * down list never reads as a broken column. There is no refresh button here:
+ * the session list is expected to keep itself current on its own, and the
+ * Group by section in the View menu only appears when you wire up both its
+ * value and its change handler.
  */
 const meta: Meta<typeof SessionsToolbar> = {
   title: "Composites/Sessions/Listing/Sessions Toolbar",

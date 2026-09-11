@@ -52,6 +52,15 @@ const HUMAN: ActivityFeedActor = {
   id: DANA.id,
 };
 
+/**
+ * Shows who did something in an activity feed: an avatar and a name, side by
+ * side. A human shows their real name and profile picture once it's
+ * resolved; an AI agent or the system itself has no profile, so it falls
+ * back to a small icon and the word 'Agent' or 'System' instead. While a
+ * name is still loading it shows a skeleton in place of the avatar and text,
+ * and if a person's name can't be found at all, it says 'Unknown user'
+ * rather than guessing.
+ */
 const meta = {
   component: ActivityActor,
   argTypes: {

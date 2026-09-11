@@ -27,6 +27,15 @@ const failingItem: JudgeFeedbackItem = {
   metricName: "Implementation testability",
 };
 
+/**
+ * This card shows one automated judge's score on a document: a title, the
+ * score, and whether it passed or failed, with the border and background
+ * colored to match. Click the header to expand or collapse the written
+ * justification behind that score. Switch it into editable mode and the
+ * score becomes a number field you can correct by hand, complete with a
+ * saving spinner and space for a validation error if the new value is
+ * invalid.
+ */
 const meta = {
   title: "Composites/Documents/Judge Result Card View",
   component: JudgeResultCardView,

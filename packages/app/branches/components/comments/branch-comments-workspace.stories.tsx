@@ -21,6 +21,17 @@ import {
 } from "./branch-comments-rail";
 import { BranchCommentsWorkspace } from "./branch-comments-workspace";
 
+/**
+ * This is the comments panel that sits beside a branch: a list of threads,
+ * both pull request comments and comments tied to a session, a composer for
+ * replying or starting a new thread, and a header count of how many are
+ * showing. Reach for it instead of a generic comment list because it
+ * understands context: which tab you are on and which sessions are actually
+ * on screen decide which threads count, so the number shown can be lower
+ * than the branch's true total. Comments that came from the pull request
+ * provider itself are always read-only here; only threads created in this
+ * workspace can be edited or deleted.
+ */
 const meta = {
   component: BranchCommentsWorkspace,
   decorators: [

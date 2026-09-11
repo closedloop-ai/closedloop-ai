@@ -35,6 +35,18 @@ const LONG_WORKING_DIRECTORY =
 // packages/app/styles.css actually apply. Without that ancestor the rows render
 // unstyled and the truncation story has no fixed-width track to clip against.
 
+/**
+ * One label and value row in a session's Properties panel, such as
+ * Repository, Branch, or Session ID. The value can behave in different ways
+ * depending on what you pass it: a plain read only value, a button that
+ * copies the raw value to your clipboard, a link into another page in the
+ * app, or a value shown with a tooltip explaining why it's a placeholder
+ * rather than a real fact. Use it for any single fact about a session,
+ * instead of a raw label and text pair, so truncation, copying, and links
+ * all work the same way everywhere they appear. A value too wide for its
+ * column clips with an ellipsis and becomes keyboard focusable, so the full
+ * text is reachable by tooltip without needing a mouse.
+ */
 const meta = {
   title: "Composites/Sessions/Detail/Property Value",
   component: PropertyValue,

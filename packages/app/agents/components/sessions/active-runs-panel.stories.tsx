@@ -64,6 +64,16 @@ const stalled = createAgentSessionListItemFixture({
   lastActivityAt: new Date(now - ACTIVE_RUN_STALL_TIMEOUT_MS - 2 * 60 * 1000),
 });
 
+/**
+ * This is the card on the Sessions page showing which agent sessions are
+ * running right now, each with a live phase badge (working, waiting for
+ * input, or stalled) plus its running time and token count. Use it for a
+ * quick read on what is happening this second, as a companion to the full
+ * Sessions table, which is better suited to history and filtering. A session
+ * is marked stalled after it goes quiet for a set stretch of time, and the
+ * whole panel can be frozen at a fixed moment for review instead of ticking
+ * forward.
+ */
 const meta = {
   title: "Composites/Sessions/Listing/Active Runs Panel",
   component: ActiveRunsPanel,

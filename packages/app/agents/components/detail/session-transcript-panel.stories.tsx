@@ -213,18 +213,27 @@ function parsedTranscriptParameters(availability: TranscriptAvailability) {
   };
 }
 
+// ISS-5698: the transcript panel decides what a reader is told when there are
+// no rows, and the four answers it has to keep apart (still loading, nothing
+// recorded, not readable yet, never coming) are exactly the ones that collapse
+// into each other when nobody looks at them side by side. Every story below
+// pins one of those answers, or one of the two ways rows DO arrive: the parsed
+// cloud archive, and the desktop's local projection.
+// Each seeds its read through `parameters.appCore`: the descriptor response
+// under `agentSessionKeys.transcriptAccess`, and for the row-painting stories
+// the parsed result under `agentSessionKeys.transcriptFile`. Nothing here
+// touches the network.
 /**
- * ISS-5698: the transcript panel decides what a reader is told when there are
- * no rows, and the four answers it has to keep apart (still loading, nothing
- * recorded, not readable yet, never coming) are exactly the ones that collapse
- * into each other when nobody looks at them side by side. Every story below
- * pins one of those answers, or one of the two ways rows DO arrive: the parsed
- * cloud archive, and the desktop's local projection.
- *
- * Each seeds its read through `parameters.appCore`: the descriptor response
- * under `agentSessionKeys.transcriptAccess`, and for the row-painting stories
- * the parsed result under `agentSessionKeys.transcriptFile`. Nothing here
- * touches the network.
+ * This panel shows the actual back and forth of one session: human messages,
+ * assistant replies, and tool calls in order, with a switcher for subagent
+ * transcript files when a session has them. Reach for it to read what was
+ * actually said and done, rather than the activity timeline, which
+ * summarizes a session visually, or the activity breakdown, which only
+ * totals cost and time by phase. A transcript is not always ready to read:
+ * it can still be loading, never recorded, not yet available, or permanently
+ * gone, and the panel shows a different message for each rather than one
+ * generic "no transcript" state. A very large transcript may also need you
+ * to choose to load it in full instead of it loading on its own.
  */
 const meta = {
   title: "Surfaces/Session Transcript Panel",

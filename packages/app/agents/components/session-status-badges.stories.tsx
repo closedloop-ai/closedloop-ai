@@ -79,6 +79,17 @@ const SessionStatusBadgesGallery = () => (
   </TooltipProvider>
 );
 
+/**
+ * This shows the family of small colored pills used to label a session's or
+ * agent's current state, such as Active, Waiting, Inactive, or Failed,
+ * alongside separate pills naming the harness that ran it (Claude, Codex,
+ * Cursor, and others). The Active pill can also carry a pulsing ring on top
+ * of its usual color when that session's data is actively uploading to the
+ * cloud, so a run can visibly be both "Active" and "syncing" without needing
+ * a second badge. The "Unknown" and "Stale" pills are deliberately the
+ * quietest ones in the set and always carry an explanation on hover or
+ * focus, since a bare one-word hedge would leave a reader guessing.
+ */
 const meta = {
   title: "Composites/Sessions/Listing/Session Status Badges",
   component: SessionStatusBadgesGallery,

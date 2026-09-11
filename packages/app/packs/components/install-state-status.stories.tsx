@@ -2,6 +2,15 @@ import { PackInstallState } from "@repo/app/packs/lib/install-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { InstallStateStatus } from "./install-state-status";
 
+/**
+ * A small icon and label pair that shows exactly one install state for a
+ * pack: installed, not installed, updatable, converting, unsupported,
+ * offline, or failed. Use it any time you need to show an install state
+ * instead of building a custom badge or icon, so every packs surface in the
+ * product renders the same state the same way. The icon shape carries the
+ * meaning along with the words, so the status still reads if you can't tell
+ * the colors apart.
+ */
 const meta = {
   title: "Composites/Packs/Install State Status",
   component: InstallStateStatus,

@@ -87,6 +87,20 @@ const workspaceSource: BranchesDataSource = {
   pageData: () => Promise.reject(new Error("page data unused")),
 };
 
+/**
+ * The full pull request section of a branch's detail page: a dropdown to
+ * pick which pull request to look at when a branch has more than one,
+ * followed by the metric cards, cost to merge, lead time chart, delivered
+ * artifacts, checks and review status, and changed files, all scoped to that
+ * one pull request. Switching the dropdown swaps every one of those panels
+ * together, so nothing on screen can end up showing evidence from two
+ * different pull requests at once. Use it as the single assembled view of a
+ * branch's pull request evidence rather than wiring the individual panels
+ * together yourself. While a newly selected pull request's data is loading
+ * it shows a skeleton over the whole section, and if that data fails to load
+ * it shows an error banner while still leaving the branch level numbers
+ * visible.
+ */
 const meta = {
   title: "Composites/Branches/Branch Selected Pull Request Workspace",
   component: BranchSelectedPullRequestWorkspace,

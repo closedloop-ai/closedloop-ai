@@ -19,6 +19,17 @@ const STORY_BRANCH_ID = encodeBranchId({
 });
 type SessionDetailViewStoryArgs = Parameters<typeof SessionDetailView>[0];
 
+/**
+ * This is the desktop app's version of the session detail page: the same
+ * session record, timeline, and properties panel as the web surface, but
+ * wired to the desktop's own data, sign-in, and navigation instead of the
+ * web app's. Reach for this one specifically to see how session detail
+ * behaves inside the desktop shell, such as a linked document opening in the
+ * system browser instead of an in-app page. A link to a related document
+ * only becomes clickable once the desktop has loaded both its organization
+ * and the web address it is configured to point at; until then it shows as
+ * plain text rather than a broken link.
+ */
 const meta = {
   title: "Surfaces/Session Detail (Desktop Shell)",
   component: SessionDetailView,

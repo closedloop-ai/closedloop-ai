@@ -3,6 +3,14 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { fn } from "storybook/test";
 
+/**
+ * A button that opens a calendar in a popover for picking a single date,
+ * showing the chosen date formatted right on the button face until a new one
+ * is picked. Use it inline, in a table cell or a compact toolbar, where a
+ * full calendar grid would take up too much room, and turn on icon only mode
+ * to shrink the trigger down to a bare calendar glyph. A small clear control
+ * removes the selected date without opening the calendar at all.
+ */
 const meta = {
   title: "Composites/Inputs/Date Picker Popover",
   component: DatePickerPopover,

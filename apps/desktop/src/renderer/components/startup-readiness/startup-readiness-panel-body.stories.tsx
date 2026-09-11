@@ -49,21 +49,29 @@ const DRAINED_BACKLOG: CloudSyncBacklog = resolveCloudSyncBacklog({
 
 const ONLINE_CLOUD_STATUS: CloudStatus = { kind: CloudStatusKind.Online };
 
+// ISS-4715: the startup readiness panel, one story per reachable phase.
+// `StartupReadinessPanel` is the AppShell startup surface, but it is all polling
+// hooks, a reveal delay, a ready-hold timer, and a maintenance bridge, so
+// mounting it on a canvas would pin the wiring rather than the visuals.
+// `StartupReadinessPanelBody` is the presentational unit inside it, and
+// `buildStartupReadinessModel` is the pure function that decides what it says.
+// Each story feeds real signals through that derivation, so the headline, step
+// icons, and counts on the canvas are the ones the running app would produce,
+// not copies of them.
+// These phases are effectively unreachable on demand: they need a first launch
+// against a machine with real unimported history, and the needs-attention state
+// additionally needs a wedged or unverifiable cloud sync.
 /**
- * ISS-4715: the startup readiness panel, one story per reachable phase.
- *
- * `StartupReadinessPanel` is the AppShell startup surface, but it is all polling
- * hooks, a reveal delay, a ready-hold timer, and a maintenance bridge, so
- * mounting it on a canvas would pin the wiring rather than the visuals.
- * `StartupReadinessPanelBody` is the presentational unit inside it, and
- * `buildStartupReadinessModel` is the pure function that decides what it says.
- * Each story feeds real signals through that derivation, so the headline, step
- * icons, and counts on the canvas are the ones the running app would produce,
- * not copies of them.
- *
- * These phases are effectively unreachable on demand: they need a first launch
- * against a machine with real unimported history, and the needs-attention state
- * additionally needs a wedged or unverifiable cloud sync.
+ * The expandable status panel that appears at the top of the app while it
+ * prepares your local session history for the first time. It shows a
+ * headline, a progress bar, and a pause button when the work can be paused,
+ * and expanding it reveals a step by step checklist, a running count of
+ * history files processed, and how current your cloud sync is. Reach for it
+ * only when there is genuine multi step startup work to report: it is built
+ * to make one warning state stand out clearly rather than to celebrate
+ * success, so a finished run gets one checkmark and one green bar and
+ * nothing more. Most of its later states only happen on a real first launch
+ * with unimported history, so you will rarely see every stage in normal use.
  */
 const meta = {
   title: "Composites/App Shell/Startup Readiness Panel Body",

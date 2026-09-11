@@ -21,6 +21,14 @@ const options: ComputePreferenceOption[] = [
   },
 ];
 
+/**
+ * A card with a title, a description, and a set of radio options, each with
+ * its own icon and one-line explanation, for choosing where AI agent jobs
+ * run, such as in the cloud or on your local desktop. Use it for a single
+ * either-or setting where each choice needs a sentence of explanation, not
+ * just a label. While the current value is loading, the whole options list
+ * is replaced by a spinner rather than showing empty or stale radio buttons.
+ */
 const meta = {
   title: "Composites/Compute/Compute Preference Card",
   component: ComputePreferenceCard,

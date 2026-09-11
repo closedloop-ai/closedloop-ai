@@ -2,22 +2,27 @@ import type { ReactNode } from "react";
 import { StartupReadinessProgressBar } from "./startup-readiness-progress-bar";
 import { StartupReadinessPhase } from "./startup-readiness-state";
 
+// ISS-5115: the global startup progress bar, one row per state it can be in.
+// The bar is the whole point of this story: it is INDETERMINATE for every
+// in-flight phase (no `aria-valuenow`, because startup has no single true
+// percentage), a frozen warning-toned hatch when startup needs attention or the
+// user paused history processing, and a determinate 100 only at Ready. The
+// captions name the accessible NAME (from `aria-label`), not `aria-valuetext` —
+// the component deliberately omits valuetext, because ARIA only defines it
+// alongside an `aria-valuenow` an indeterminate bar has no honest way to
+// supply. So the canvas and the screen-reader story can be compared side by
+// side on the one channel that is actually guaranteed.
+// These phases are effectively unreachable on demand in the running app — they
+// need a first launch against a machine with real unimported history, and the
+// needs-attention state additionally needs a wedged or unverifiable cloud sync.
 /**
- * ISS-5115: the global startup progress bar, one row per state it can be in.
- *
- * The bar is the whole point of this story: it is INDETERMINATE for every
- * in-flight phase (no `aria-valuenow`, because startup has no single true
- * percentage), a frozen warning-toned hatch when startup needs attention or the
- * user paused history processing, and a determinate 100 only at Ready. The
- * captions name the accessible NAME (from `aria-label`), not `aria-valuetext` —
- * the component deliberately omits valuetext, because ARIA only defines it
- * alongside an `aria-valuenow` an indeterminate bar has no honest way to
- * supply. So the canvas and the screen-reader story can be compared side by
- * side on the one channel that is actually guaranteed.
- *
- * These phases are effectively unreachable on demand in the running app — they
- * need a first launch against a machine with real unimported history, and the
- * needs-attention state additionally needs a wedged or unverifiable cloud sync.
+ * The single progress bar at the top of the app that tracks overall startup
+ * rather than any one step. It sweeps continuously while real work is
+ * happening, since startup has no one true percentage to report, and
+ * switches to a still, hatched pattern when it is paused or stalled instead
+ * of showing a bar that misleadingly looks empty or full. It only fills in
+ * solid once startup is fully ready. Screen readers hear which stage it is
+ * in, but the bar never claims a percentage it cannot back up.
  */
 const meta = {
   title: "Composites/App Shell/Startup Readiness Progress Bar",

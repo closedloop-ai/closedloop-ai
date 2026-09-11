@@ -1,6 +1,17 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { PacksWorkspaceSkeleton } from "./packs-workspace-skeleton";
 
+/**
+ * A loading placeholder for the Packs workspace that mirrors the real layout
+ * before any data arrives: placeholder cards in the same grid, with a filter
+ * bar shaped like the real one above them. Use it while a pack catalog is
+ * still loading, instead of a spinner or a blank screen, so nothing jumps or
+ * reflows once the real cards and rail arrive in the same spots. Turn on the
+ * two column team layout for surfaces that show a team rail alongside the
+ * grid, or turn it off for a single column surface where cards fill the full
+ * width. You can also pass in the surface's real heading to render above the
+ * skeleton, so the page has a title from the very first paint.
+ */
 const meta = {
   title: "Composites/Packs/Packs Workspace Skeleton",
   component: PacksWorkspaceSkeleton,

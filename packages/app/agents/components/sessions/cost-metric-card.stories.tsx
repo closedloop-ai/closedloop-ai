@@ -16,29 +16,33 @@ import {
   SESSIONS_COST_METRIC_CARD_LABEL,
 } from "./cost-metric-card";
 
+// ISS-5451: the cost card's state matrix, isolated.
+// This card is the component ISS-5401 named for conflating an unavailable cost
+// with a genuine `$0`, and until now there was no way to see the two side by
+// side. The distinction is the whole point of the component, so the stories
+// below put `Unavailable` (`—`) and `GenuineZero` (`$0`) adjacent rather than
+// burying either in an args table: a reviewer should be able to tell at a glance
+// that the card never reports a confident zero for a cost it could not compute.
+// The delta chip is polarity-aware and cost is `LowerIsBetter`, so a RISING cost
+// is a regression (red) and a FALLING cost is an improvement (green) — the
+// inverse of most metrics. Both directions get a story because getting that
+// backwards is a silent, plausible-looking bug.
+// ISS-5842: the chip no longer prints a "better"/"worse" verdict beside the
+// figure, and all three tones — including neutral — now share one pill geometry.
+// {@link DeltaToneMatrix} is the canvas that proves the second half.
+// This card needs nothing from the app-core harness the preview mounts globally
+// (ISS-5665): it reads a static polarity const and a pure formatter, and its
+// only provider need — the info tooltip — is met by the preview's
+// `TooltipProvider`. So it declares no `parameters.appCore`.
 /**
- * ISS-5451: the cost card's state matrix, isolated.
- *
- * This card is the component ISS-5401 named for conflating an unavailable cost
- * with a genuine `$0`, and until now there was no way to see the two side by
- * side. The distinction is the whole point of the component, so the stories
- * below put `Unavailable` (`—`) and `GenuineZero` (`$0`) adjacent rather than
- * burying either in an args table: a reviewer should be able to tell at a glance
- * that the card never reports a confident zero for a cost it could not compute.
- *
- * The delta chip is polarity-aware and cost is `LowerIsBetter`, so a RISING cost
- * is a regression (red) and a FALLING cost is an improvement (green) — the
- * inverse of most metrics. Both directions get a story because getting that
- * backwards is a silent, plausible-looking bug.
- *
- * ISS-5842: the chip no longer prints a "better"/"worse" verdict beside the
- * figure, and all three tones — including neutral — now share one pill geometry.
- * {@link DeltaToneMatrix} is the canvas that proves the second half.
- *
- * This card needs nothing from the app-core harness the preview mounts globally
- * (ISS-5665): it reads a static polarity const and a pure formatter, and its
- * only provider need — the info tooltip — is met by the preview's
- * `TooltipProvider`. So it declares no `parameters.appCore`.
+ * This is the tile that shows a dollar cost figure, used on both the
+ * Sessions summary row and the organization dashboard. It shows a plain dash
+ * instead of "$0" whenever the cost could not actually be computed, so a
+ * session with no usage data never looks like it was confirmed to cost
+ * nothing. Because spending less is the good outcome here, a rising cost
+ * shows red as a regression and a falling cost shows green as an
+ * improvement, the reverse of most metric cards, and getting that backwards
+ * is the mistake this component exists to prevent.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Cost Metric Card",

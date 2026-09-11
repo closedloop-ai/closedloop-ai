@@ -11,6 +11,14 @@ const harnesses = Array.from(
  *  harnesses the catalog carries. */
 const harnessOptions = ["all", ...harnesses];
 
+/**
+ * A small toolbar for narrowing down a pack catalog: a text search box and a
+ * dropdown to filter by harness, sitting inside a titled card. Use it above
+ * a pack list or grid whenever someone needs to search or filter before
+ * opening a pack's detail or install flow. The title and description text
+ * are both configurable, so the same bar can be relabeled for different
+ * catalog contexts.
+ */
 const meta = {
   title: "Composites/Packs/Pack Filter Bar",
   component: PackFilterBar,

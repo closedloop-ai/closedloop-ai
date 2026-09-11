@@ -79,6 +79,19 @@ const NO_USERS_PARAMETERS = {
   appCore: { queryData: [[userKeys.organizationUsers(), []]] },
 };
 
+/**
+ * A rail beside a session's transcript listing every comment left on it,
+ * sortable newest or oldest first, each one showing the passage it was left
+ * on, its author, and any replies underneath. Clicking a comment jumps the
+ * transcript to the row it is anchored to, and an @ mention resolves to the
+ * org member's name, falling back to Unknown user if it cannot be matched.
+ * Reach for it whenever a trace needs a persistent comment thread running
+ * alongside it, rather than notes left some other way; it is built to still
+ * read clearly at its narrowest production width. An empty rail because
+ * there are genuinely no comments looks different from one where comments
+ * exist but could not be resolved for this reader, and the two are meant to
+ * stay visibly different.
+ */
 const meta = {
   title: "Composites/Sessions/Trace/Trace Comments Rail",
   component: TraceCommentsRail,

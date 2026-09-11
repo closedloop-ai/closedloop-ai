@@ -4,8 +4,13 @@ import { BotIcon, CalendarIcon, CircleDotIcon } from "lucide-react";
 import { useState } from "react";
 
 /**
- * A `Filter` button opening a dropdown of single-select radio submenus. Callers
- * build the `groups` from their own filter state; the menu is data-agnostic.
+ * A 'Filter' button that opens a dropdown of filter groups, each one a
+ * single-select list of options with its own icon. Use it when a table or
+ * list needs several independent filters, like status, date, or assignee,
+ * that can each hold one value at a time; picking an option applies it right
+ * away, with no separate apply step. It holds no filter state of its own:
+ * you pass in the groups and their current values, and it calls you back
+ * when someone changes a selection.
  */
 const meta = {
   title: "Composites/Data Display/Table Filter Menu",

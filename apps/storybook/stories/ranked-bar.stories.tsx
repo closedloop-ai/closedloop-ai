@@ -5,6 +5,16 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 
+/**
+ * One row in a ranked list: a label on the left, a value and percentage
+ * badge on the right, and a horizontal fill bar underneath showing that
+ * row's share of the total. Use it for top-N style lists, like top workflow
+ * transitions or top contributors, where the length of the bar carries
+ * meaning, rather than a plain table row. The percentage is clamped between
+ * 0 and 100, so a bad or missing number renders as an empty bar instead of
+ * breaking the layout, and a flat presentation drops its own border and
+ * background for use inside a card that already has one.
+ */
 const meta = {
   title: "Composites/Charts/Ranked Bar",
   component: RankedBar,

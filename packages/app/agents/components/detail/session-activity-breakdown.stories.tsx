@@ -173,6 +173,16 @@ const withPhaseConfidenceDisclosure: Decorator = (Story) => (
   </FeatureFlagAdapterProvider>
 );
 
+/**
+ * This panel breaks one agent session down by phase, such as review,
+ * implement, validate, and idle, showing each phase's tokens, cost,
+ * duration, and a proportional bar. Reach for it when you want to see where
+ * a session's time and money went, rather than the session timeline, which
+ * shows events in order rather than totals by phase. When a phase's cost
+ * could not be worked out, it says so plainly instead of showing a column of
+ * zero dollars, and any spend or time the system could not assign to a phase
+ * is shown as its own line rather than hidden.
+ */
 const meta = {
   title: "Surfaces/Session Activity Breakdown",
   component: SessionActivityBreakdown,

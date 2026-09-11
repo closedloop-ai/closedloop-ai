@@ -526,6 +526,15 @@ function KanbanBoardCanvas({ stackBelow = false }: { stackBelow?: boolean }) {
   );
 }
 
+/**
+ * A multi-column board you can drag cards across, the way you would move a
+ * task from To Do to Done. Reach for it when work moves through a small set
+ * of named stages and dragging between them is the point: use a plain list
+ * or table when order and grouping do not matter. Each column can carry its
+ * own count, empty state, and footer, and on narrow screens the columns can
+ * stack into one scrollable list instead of scrolling sideways. The board
+ * does not set its own height, so whatever contains it has to.
+ */
 const meta = {
   title: "Composites/Layout/Kanban Board",
   component: KanbanBoardCanvas,

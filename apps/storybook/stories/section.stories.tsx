@@ -6,6 +6,14 @@ const SectionCanvas = (props: Parameters<typeof Section>[0]) => (
   <Section {...props} />
 );
 
+/**
+ * A card with a title at the top, an optional description beneath it, and a
+ * slot on the right for one or two header actions. Reach for it to group
+ * related content into a labeled block on a dashboard, settings page, or
+ * activity feed, instead of building that header layout by hand on top of a
+ * plain Card. It only supplies the structure: everything in the body is up
+ * to you.
+ */
 const meta = {
   title: "Composites/Layout/Section",
   component: SectionCanvas,

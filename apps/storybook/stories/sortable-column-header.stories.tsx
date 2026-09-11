@@ -90,6 +90,14 @@ function SortableColumnHeaderDemo({
   );
 }
 
+/**
+ * A clickable table column header with a small arrow that shows how the
+ * column is sorted: neutral, ascending, or descending. Click it to sort by
+ * that column; the first click sorts descending, and clicking the same
+ * header again flips the direction. Only the column currently being sorted
+ * shows a direction arrow, and the header also tells screen readers which
+ * way it's sorted, so that information isn't only visual.
+ */
 const meta = {
   title: "Composites/Data Display/Sortable Column Header",
   component: SortableColumnHeaderDemo,

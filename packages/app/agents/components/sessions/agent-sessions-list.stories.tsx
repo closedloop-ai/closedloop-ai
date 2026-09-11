@@ -7,29 +7,35 @@ import {
   populatedAgentSessionListFixtures,
 } from "./session-list-fixtures";
 
+// ISS-5451: the shared sessions-list body, isolated.
+// This component is the seam both shells route their query states through — the
+// web `/sessions` page and the desktop `SessionsView` each own filters,
+// pagination and hrefs, and hand the loading/empty/populated decision here. That
+// makes it the one place to check that the three states are mutually exclusive
+// and that none of them lies: loading is a skeleton (not an empty table),
+// an unavailable read is an error (not "no sessions"), and a filtered-away scope
+// says so rather than claiming the org has none.
+// The empty branch delegates to `SessionsEmptyState`, whose own story file
+// covers the reason matrix in more depth; the stories here exist to prove this
+// component ROUTES to the right one from the signals its hosts actually pass.
+// ISS-5697: the local `AppCoreStoryProviders` wrapper this file used to declare
+// is GONE. The preview's global decorator (`.storybook/preview.tsx`) mounts the
+// harness for every story, so the feature-flag port is already here and the
+// only decorator left below is layout. A story that needs a gated column pins
+// the flags as a PARAMETER —
+// `parameters: { appCore: { enabledFlags: ["…"] } }` — never by re-wrapping the
+// tree: a second harness replaces the preview's shared navigation port with a
+// private one (see `apps/storybook/__tests__/app-core-harness-single-mount.test.ts`).
 /**
- * ISS-5451: the shared sessions-list body, isolated.
- *
- * This component is the seam both shells route their query states through — the
- * web `/sessions` page and the desktop `SessionsView` each own filters,
- * pagination and hrefs, and hand the loading/empty/populated decision here. That
- * makes it the one place to check that the three states are mutually exclusive
- * and that none of them lies: loading is a skeleton (not an empty table),
- * an unavailable read is an error (not "no sessions"), and a filtered-away scope
- * says so rather than claiming the org has none.
- *
- * The empty branch delegates to `SessionsEmptyState`, whose own story file
- * covers the reason matrix in more depth; the stories here exist to prove this
- * component ROUTES to the right one from the signals its hosts actually pass.
- *
- * ISS-5697: the local `AppCoreStoryProviders` wrapper this file used to declare
- * is GONE. The preview's global decorator (`.storybook/preview.tsx`) mounts the
- * harness for every story, so the feature-flag port is already here and the
- * only decorator left below is layout. A story that needs a gated column pins
- * the flags as a PARAMETER —
- * `parameters: { appCore: { enabledFlags: ["…"] } }` — never by re-wrapping the
- * tree: a second harness replaces the preview's shared navigation port with a
- * private one (see `apps/storybook/__tests__/app-core-harness-single-mount.test.ts`).
+ * This is the shared body of the Sessions list: it decides, from the data it
+ * is given, whether to show a loading skeleton, an empty-state message, or
+ * the populated sessions table. Both the web Sessions page and the desktop
+ * app route their own filters and pagination through this one component, so
+ * the three states cannot disagree with each other, for example showing an
+ * empty table while data is still loading. When the list is empty it hands
+ * off to a separate empty-state component that explains the actual reason,
+ * whether that is a failed attempt to load the data, local data that has not
+ * finished loading, or filters that exclude every row.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Agent Sessions List",

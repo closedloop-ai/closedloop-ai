@@ -31,6 +31,16 @@ const UnderlineTabsCanvas = () => {
   );
 };
 
+/**
+ * A row of tabs where the active one is marked with an underline instead of
+ * a filled background, sitting on a full width border like a browser's tab
+ * strip. Reach for it on a page or panel header where the sections deserve
+ * equal visual weight, instead of the pill style Tabs when a heavier switch
+ * control would compete with the content below it. It is built on that same
+ * Tabs component underneath, so it manages state, keyboard navigation, and
+ * content panels the same way; the underline is only a style change on the
+ * tab list and its triggers.
+ */
 const meta = {
   title: "Composites/Navigation/Underline Tabs",
   component: UnderlineTabsCanvas,

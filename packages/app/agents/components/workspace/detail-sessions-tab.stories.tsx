@@ -180,6 +180,19 @@ const storyDecorator: Decorator = (Story) => (
   </PanelFrame>
 );
 
+/**
+ * The Sessions tab on an agent component's detail page: a table listing the
+ * sessions that have invoked this component, with an optional Version column
+ * showing which revision each session ran. Use it inside a component's
+ * detail view rather than the general Sessions list, since it's scoped to
+ * one component's usage history and caps how many rows it renders so a
+ * heavily used component can't freeze the page. When there are no rows to
+ * show, it picks from three different empty messages depending on what's
+ * actually known: genuinely zero uses, usage that exists but can't be listed
+ * individually, or a count that was never measured at all. Past the page
+ * limit, a footer notes how many sessions are shown against the real total,
+ * or against a floor like '50 of 50+' when the true total isn't known.
+ */
 const meta = {
   title: "Composites/Sessions/Detail/Detail Sessions Tab",
   component: DetailSessionsTab,

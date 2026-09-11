@@ -5,8 +5,13 @@ import { fn } from "storybook/test";
 import { TagChip, TagChips } from "./tag-chip";
 
 /**
- * First shared app-core component story (FEA-1510 / AC-001.4): renders under
- * the AppCoreStoryProviders harness — no Next.js, no Clerk, no live API.
+ * A small rounded pill showing one tag's name in the color assigned to it,
+ * such as red for urgent or blue for backend. Give it an onClick and it
+ * becomes a clickable button; give it an onRemove instead and it grows a
+ * small x for removing the tag; supply neither and it is just a label. The
+ * Tag Chips list exported alongside it lays out a whole set of these and
+ * collapses the overflow into a plus N chip once more tags would fit than
+ * the space allows.
  */
 const meta: Meta<typeof TagChip> = {
   title: "Composites/Tags/Tag Chip",

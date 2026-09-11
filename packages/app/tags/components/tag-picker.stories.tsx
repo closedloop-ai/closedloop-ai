@@ -17,8 +17,15 @@ const appliedTags: TagSummary[] = [
 ];
 
 /**
- * The picker's `useTags` query is satisfied from the seeded story cache, so
- * the open-popover states render without any network access.
+ * A button that opens a popover for applying and removing tags on one item,
+ * such as a session or a component: a search box filters the org's tags, a
+ * checkmark marks which ones are already applied, and there is an option to
+ * create a new tag on the spot. Reach for it anywhere someone needs to
+ * manage an item's tags themselves, rather than just display them, which is
+ * what Tag Chip is for. The org's tag list is only fetched once the popover
+ * actually opens, so nothing loads until someone clicks in. Creating,
+ * applying, and removing tags can each be turned off on their own, for a
+ * reader who should only see tags rather than manage them.
  */
 const meta: Meta<typeof TagPicker> = {
   title: "Composites/Tags/Tag Picker",

@@ -31,6 +31,16 @@ const baseSession: SessionTimelineSummarySession = {
   turns: 42,
 };
 
+/**
+ * A single line of three facts that trails the Session Timeline's heading:
+ * what the run cost, how many tokens it used, and how long it took. It
+ * reuses the exact calculations the session's Properties panel and metric
+ * cards use, so this strip can never disagree with the rest of the page
+ * about cost, tokens, or duration. A number that could not be worked out
+ * shows a dash with an explanation on hover, rather than a misleading zero,
+ * while a run that is genuinely free, such as one billed through a
+ * subscription, still shows a real $0.00.
+ */
 const meta: Meta<typeof SessionTimelineSummary> = {
   argTypes: {
     /*

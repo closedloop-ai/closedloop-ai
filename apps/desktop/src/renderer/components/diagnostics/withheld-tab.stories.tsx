@@ -1,14 +1,22 @@
 import type { DiagnosticsWithheldRow } from "../../../shared/diagnostics-contract";
 import { WithheldTab } from "./withheld-tab";
 
+// ISS-5266: the Diagnostics → Withheld tab, one story per state.
+// The tab exists to keep three answers apart — nothing is withheld, N sessions
+// are withheld, and we cannot tell you — so the states are worth seeing side by
+// side. In the running app it is behind a Labs toggle (default off) and only
+// reachable when an OpenCode store has actually failed to parse a root row,
+// which is not something you can arrange on demand.
 /**
- * ISS-5266: the Diagnostics → Withheld tab, one story per state.
- *
- * The tab exists to keep three answers apart — nothing is withheld, N sessions
- * are withheld, and we cannot tell you — so the states are worth seeing side by
- * side. In the running app it is behind a Labs toggle (default off) and only
- * reachable when an OpenCode store has actually failed to parse a root row,
- * which is not something you can arrange on demand.
+ * This diagnostics tab reports subagent sessions that could not be imported
+ * because their parent session failed to parse: a table of affected
+ * sessions, how many tokens are missing, and how many data stores have been
+ * checked. Reach for it to explain a shortfall you notice in session or
+ * token totals elsewhere in the product, since it exists specifically to
+ * separate "nothing is missing" from "we do not know yet". An empty result
+ * only reads as nothing withheld once at least one store has actually
+ * finished a check; before that, or on a build that cannot report this at
+ * all, it shows a distinct unknown message instead of a reassuring zero.
  */
 const meta = {
   title: "Surfaces/Withheld Tab",

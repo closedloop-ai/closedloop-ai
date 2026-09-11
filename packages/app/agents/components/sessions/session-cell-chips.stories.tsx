@@ -5,17 +5,25 @@ import {
   SessionModelChip,
 } from "./session-cell-chips";
 
+// ISS-6005: the Harness / Model / Autonomy column treatments, isolated — the
+// prototype-specified pills (`apps/prototypes/app/p/sessions/components/
+// session-cells.tsx`), on production's Radix tooltip mechanism.
+// The matrix IS the point: every autonomy tier (the calibrated High / Mixed /
+// Guided vocabulary the filter facet shares), every known harness, and one
+// model per provider family (Anthropic blue-primary dot, OpenAI green,
+// Google blue-info, unknown muted), side by side in one canvas so tone pairing
+// holds in both themes and a future change cannot quietly de-pill one cell
+// while its neighbours keep the treatment.
 /**
- * ISS-6005: the Harness / Model / Autonomy column treatments, isolated — the
- * prototype-specified pills (`apps/prototypes/app/p/sessions/components/
- * session-cells.tsx`), on production's Radix tooltip mechanism.
- *
- * The matrix IS the point: every autonomy tier (the calibrated High / Mixed /
- * Guided vocabulary the filter facet shares), every known harness, and one
- * model per provider family (Anthropic blue-primary dot, OpenAI green,
- * Google blue-info, unknown muted), side by side in one canvas so tone pairing
- * holds in both themes and a future change cannot quietly de-pill one cell
- * while its neighbours keep the treatment.
+ * These are the small pill treatments used in the Sessions table's Harness,
+ * Model, and Autonomy columns. The harness pill is a plain outlined label,
+ * the model pill adds a colored dot for its provider (Anthropic, OpenAI,
+ * Google, or unknown) plus a tooltip naming both, and the autonomy pill is
+ * colored by tier (High, Mixed, or Guided) with the exact score shown only
+ * in the tooltip, never in the pill itself. Use these specific pills rather
+ * than inventing a new badge style for a session attribute, since the filter
+ * options elsewhere on the page use this same wording and coloring and need
+ * to stay in sync with it.
  */
 const meta: Meta = {
   title: "Composites/Sessions/Listing/Session Cell Chips",

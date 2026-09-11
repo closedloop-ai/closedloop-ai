@@ -4,6 +4,17 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
 import { fn } from "storybook/test";
 
+/**
+ * A button that opens a small searchable popover for picking one person from
+ * a list, showing each person's avatar and name as you scroll or type to
+ * search. Use it whenever someone needs to assign or reassign a person to
+ * something, like an owner or an assignee field; an icon only mode drops the
+ * button down to a plain avatar sized icon for use inside a table cell. Once
+ * someone is selected you can clear the choice from the same list rather
+ * than needing a separate control. The list swaps to a loading message while
+ * the user directory is still being fetched, so it doesn't lie about having
+ * no matches.
+ */
 const meta = {
   title: "Composites/Overlays/User Select Popover",
   component: UserSelectPopover,

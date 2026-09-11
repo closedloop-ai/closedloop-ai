@@ -83,6 +83,16 @@ function say(sessionId: string, t: string): MergedTraceItem {
   };
 }
 
+/**
+ * One horizontal lane per session that ran on a branch, colored by who or
+ * what ran it, with solid segments marking the times that session was
+ * actually doing work. A shared playhead line can sweep across every lane at
+ * once, and clicking a segment scrubs the whole page to that moment. Use it
+ * to see which sessions overlapped and when each was truly active, as
+ * distinct from the PR activity timeline, which shows cost by hour rather
+ * than session-by-session activity. Gaps between segments are just empty
+ * space, there is no drawn marker for idle time.
+ */
 const meta = {
   title: "Composites/Branches/PR Session Swimlane",
   component: BranchPrSessionSwimlane,

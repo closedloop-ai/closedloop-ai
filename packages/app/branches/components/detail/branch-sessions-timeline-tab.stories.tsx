@@ -138,6 +138,18 @@ const timelineSource: BranchesDataSource = {
   pageData: () => Promise.reject(new Error("page data unused")),
 };
 
+/**
+ * The Sessions tab on a branch's detail page: an activity timeline of pull
+ * request events at the top, and below it the combined transcript from every
+ * agent session that worked on the branch, interleaved into one scrollable
+ * trace. A shared playhead links the two, so scrubbing the timeline jumps
+ * the transcript to that moment, and scrolling the transcript moves a marker
+ * back up on the timeline. Reach for it when you want to see what agents
+ * actually did and said during a branch's life, not just the resulting
+ * commits and pull request events. If the underlying trace only has partial
+ * data, a note names which sessions are covered instead of presenting an
+ * incomplete transcript as the whole story.
+ */
 const meta = {
   title: "Composites/Branches/Branch Sessions Timeline Tab",
   component: BranchSessionsTimelineTab,

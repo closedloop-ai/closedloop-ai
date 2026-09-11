@@ -54,15 +54,23 @@ function agents(count: number): SyncedAgentSessionAgent[] {
   );
 }
 
+// The LIVE session-detail transcript switcher (ISS-4677). It has a real matrix
+// of visual states — collapsed vs expanded, the pinned active file, the
+// reconciliation caption in both directions, and the muted/warning/unreachable
+// chip treatments — and every one of them is painful to reach by driving the
+// real session detail and cheap to hold still on a canvas.
+// ISS-5366 retired the `sessions-subagent-transcript-disclosure` gate, so the
+// disclosure is the switcher's only rendering and no story seeds a flag.
 /**
- * The LIVE session-detail transcript switcher (ISS-4677). It has a real matrix
- * of visual states — collapsed vs expanded, the pinned active file, the
- * reconciliation caption in both directions, and the muted/warning/unreachable
- * chip treatments — and every one of them is painful to reach by driving the
- * real session detail and cheap to hold still on a canvas.
- *
- * ISS-5366 retired the `sessions-subagent-transcript-disclosure` gate, so the
- * disclosure is the switcher's only rendering and no story seeds a flag.
+ * A row of tabs for switching between a session's transcript files: the main
+ * transcript, plus one per sub agent. Past a handful of sub agent files, the
+ * extra tabs collapse behind a disclosure so they do not push the transcript
+ * itself below the fold, while the main file and whichever one you are
+ * currently viewing always stay visible outside it. A caption states how
+ * many sub agent transcripts exist against how many actually made it into
+ * the archive, and switches to a warning color, rather than staying hidden,
+ * when any are still uploading or will never be captured. It only appears at
+ * all once a session has more than one transcript file to switch between.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Transcript File Switcher",
