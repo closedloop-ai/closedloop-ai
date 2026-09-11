@@ -1,11 +1,33 @@
 {
   "extends": "@repo/typescript-config/nextjs.json",
-  "compilerOptions": {},
+  "compilerOptions": {
+    // Matches `apps/desktop/tsconfig.renderer.json`. The renderer's stories are
+    // in this program now (see the include note below), and renderer code uses
+    // ES2023 array methods like `toReversed`.
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
   "include": [
     "next-env.d.ts",
     "next.config.ts",
     "**/*.ts",
     "**/*.tsx",
-    ".next/types/**/*.ts"
+    ".next/types/**/*.ts",
+    // The two story roots outside this app, so Storybook's component manifest
+    // can read their props and descriptions.
+    //
+    // Its docgen pass builds a TypeScript program from THIS config and then
+    // looks each component up in it. Design-system components were always fine:
+    // the stories here import them, so they arrive transitively. Nothing here
+    // imports `packages/app` or the desktop renderer, so their components were
+    // absent from the program entirely and 175 of them came back as
+    // "react-docgen-typescript found no component docs", shipping with no props
+    // and no description to the MCP tools that serve agents.
+    //
+    // Only the STORY files are listed, not every component. Each story imports
+    // the component it renders, which is enough to pull it in, and it keeps this
+    // program to the ~220 entry points Storybook actually indexes rather than
+    // the ~1,700 files in `packages/app`.
+    "../../packages/app/*/components/**/*.stories.tsx",
+    "../../apps/desktop/src/renderer/components/**/*.stories.tsx"
   ]
 }
