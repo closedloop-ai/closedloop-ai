@@ -12,6 +12,7 @@ import { mixedAgentSessionListFixtures } from "@repo/app/agents/components/sessi
 import { SyncedSessionsTable } from "@repo/app/agents/components/sessions/synced-sessions-table";
 import { SESSIONS_GLANCEABLE_COLUMNS } from "@repo/app/agents/hooks/use-sessions-view-state";
 import { makeTimeSeries } from "@repo/app/insights/components/insights-section-fixtures";
+import { AiImpactCard } from "@repo/app/insights/components/overview/ai-impact-card";
 import { DashboardCard } from "@repo/app/insights/components/overview/dashboard-card";
 import { DashboardRowContent } from "@repo/app/insights/components/overview/dashboard-rows";
 import {
@@ -21,6 +22,8 @@ import {
   DashboardRowTour,
 } from "@repo/app/insights/components/overview/dashboard-tiles";
 import type { InsightsSectionData } from "@repo/app/insights/components/tile-content";
+import type { DateRange } from "@repo/app/insights/lib/dashboard-range";
+import { GROWTH_LABEL } from "@repo/app/insights/lib/dashboard-range";
 import { InsightsKpiKey } from "@repo/app/insights/lib/kpi-polarity";
 import { PRIMARY_NAV_DESTINATIONS } from "@repo/app/shared/lib/primary-nav-destinations";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
@@ -220,9 +223,15 @@ type DashboardScreenProps = {
   sessionCount?: number;
   /** Which of the Recent Sessions card's three readings to render. */
   sessionsState?: SessionsState;
+  /**
+   * The dashboard's time window. It decides the KPI delta caption, which
+   * production derives from this rather than writing a fixed phrase.
+   */
+  dateRange?: DateRange;
 };
 
 const DashboardScreen = ({
+  dateRange = "7d",
   activePath = "/dashboard",
   description = DASHBOARD_COPY.description,
   heading = DASHBOARD_COPY.heading,
@@ -252,13 +261,23 @@ const DashboardScreen = ({
         {showMetrics ? (
           <DashboardRowContent
             autonomySeries={undefined}
-            deltaLabel="vs prior period"
+            deltaLabel={GROWTH_LABEL[dateRange]}
             gates={ROW_GATES}
             heatmap={undefined}
             modelSeries={undefined}
             row={STATS_ROW}
             sections={DASHBOARD_SECTIONS}
           />
+        ) : null}
+
+        {/* Real component: `AiImpactCard`, which production mounts directly
+            under the stats row whenever that row is not loading. It derives its
+            four figures from the same `InsightsSectionData` the tiles above
+            read, so it cannot disagree with them. */}
+        {showMetrics ? (
+          <div className="mt-5">
+            <AiImpactCard sections={DASHBOARD_SECTIONS} />
+          </div>
         ) : null}
 
         {/* Real components: the same `DashboardCard` + `SyncedSessionsTable`
@@ -303,11 +322,13 @@ const DashboardScreen = ({
 
         {/* Real component: `DashboardRowContent`'s "models" row, which wraps
             the real `ModelUsageChart` in the real `DashboardCard` chrome,
-            directly below Recent Sessions exactly as production orders it. */}
+            below Recent Sessions. Production can seat a heatmap row between
+            the two when that row is enabled; this surface does not mount one,
+            so the pair sits adjacent here. */}
         {showModelUsage ? (
           <DashboardRowContent
             autonomySeries={undefined}
-            deltaLabel="vs prior period"
+            deltaLabel={GROWTH_LABEL[dateRange]}
             gates={ROW_GATES}
             heatmap={undefined}
             modelSeries={MODEL_SPEND_SERIES}
@@ -359,6 +380,13 @@ const meta = {
       description: "The Model usage breakdown.",
       table: { category: "Composition" },
     },
+    dateRange: {
+      options: ["7d", "30d", "90d", "all"],
+      control: { type: "radio" },
+      description:
+        "The window the figures cover. It also sets the delta caption: WoW, MoM, QoQ, or all time.",
+      table: { category: "Content" },
+    },
     sessionsState: {
       options: SESSIONS_STATES,
       control: { type: "radio" },
@@ -368,6 +396,7 @@ const meta = {
     },
   },
   args: {
+    dateRange: "7d",
     activePath: "/dashboard",
     description: DASHBOARD_COPY.description,
     heading: DASHBOARD_COPY.heading,

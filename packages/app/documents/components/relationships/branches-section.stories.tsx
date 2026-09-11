@@ -31,6 +31,7 @@ import {
 import type { GenerationStatus } from "@repo/api/src/types/document";
 import { GitHubPRState } from "@repo/api/src/types/github";
 import { RunLoopCommand } from "@repo/api/src/types/loop";
+import { documentKeys } from "@repo/app/documents/hooks/document-keys";
 import { artifactLinkKeys } from "@repo/app/documents/hooks/use-artifact-links";
 import { ARTIFACT_RUN_ACTION_UNAVAILABLE_REASON_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
@@ -276,10 +277,30 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
+/**
+ * An empty pull request list for the document, seeded so the populated story is
+ * deterministic.
+ *
+ * `BranchesSection` runs a SECOND query beside the links one, gated on
+ * `enabled: isOpen && hasBranches`. The empty stories never trip that gate, so
+ * they were always stable; this populated story is the only one that does. Left
+ * unseeded it raced the fixture transport and failed roughly one run in six.
+ *
+ * Empty rather than populated on purpose: each branch link already carries its
+ * own `pullRequest`, which is what the rendered rows read. This query only
+ * supplies the by-branch lookup, and nothing in this story needs it to be full.
+ */
+const NO_DOCUMENT_PULL_REQUESTS = [
+  [...documentKeys.detail(DOCUMENT_ID), "pull-request"],
+  [],
+];
+
 /** Three branches at different points in their pull request lifecycle. */
 export const Default: Story = {
   parameters: {
-    appCore: { queryData: [POPULATED_BRANCH_LINKS] },
+    appCore: {
+      queryData: [POPULATED_BRANCH_LINKS, NO_DOCUMENT_PULL_REQUESTS],
+    },
   },
 };
 

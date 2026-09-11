@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import {
   mockCollidingPackViews,
   mockPackActivity,
@@ -10,6 +10,9 @@ import { PacksWorkspace } from "./packs-workspace";
 
 const SEARCH_PACKS_LABEL = /search packs/i;
 const POSTHOG_CARD_NAME = /posthog/i;
+// A pack the "posthog" query must filter OUT, which is what makes the search
+// assertion mean something.
+const SELF_LEARNING_CARD_NAME = /self.learning/i;
 
 /**
  * The searchable catalog of packs, the starting point for finding and
@@ -89,12 +92,22 @@ export const DesktopSolo: Story = {
   },
   play: async ({ args, canvasElement }) => {
     const canvas = within(canvasElement);
-    // No team rail in this mode, so the catalog grid is the only place
-    // "posthog" can appear, and search + selection is the core behavior.
+    // No team rail in this mode, so the catalog grid is the only place these
+    // names can appear.
+    //
+    // The non-matching card is asserted GONE before the click. Without that
+    // the test proved nothing about the search: the PostHog card is on screen
+    // before anything is typed, so clicking it would pass whether or not the
+    // query filtered the grid at all.
+    const other = await canvas.findByRole("button", {
+      name: SELF_LEARNING_CARD_NAME,
+    });
     await userEvent.type(
       await canvas.findByRole("textbox", { name: SEARCH_PACKS_LABEL }),
       "posthog"
     );
+    await waitFor(() => expect(other).not.toBeInTheDocument());
+
     await userEvent.click(
       await canvas.findByRole("button", { name: POSTHOG_CARD_NAME })
     );
