@@ -49,6 +49,17 @@ const transcriptTransportDecorator: Decorator = (Story, context) => (
 
 const FORCE_BUTTON_NAME = "Sync this transcript anyway";
 
+/**
+ * A single button, labeled Sync this transcript anyway, shown when a
+ * transcript failed to archive automatically because it was too large.
+ * Pressing it retries the upload directly, and what happens next depends on
+ * the result: success reloads the transcript in place, a large upload still
+ * in progress shows a muted note that it is on its way, a failed attempt
+ * shows a warning you can retry, and a permanent failure shows a dead end
+ * with no retry offered. It only exists on desktop, since retrying needs the
+ * original transcript file on that machine, and it renders nothing at all
+ * when there is no session to act on.
+ */
 const meta = {
   title: "Composites/Sessions/Trace/Transcript Force Archive Action",
   component: TranscriptForceArchiveAction,

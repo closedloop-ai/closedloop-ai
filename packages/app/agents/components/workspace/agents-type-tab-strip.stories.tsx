@@ -45,6 +45,16 @@ const PHONE_VIEWPORT_PX = 390;
 /** A comfortable desktop pane, where the whole strip fits. */
 const DESKTOP_VIEWPORT_PX = 1100;
 
+/**
+ * A row of filter tabs, All plus one segment per component type such as
+ * Agents, Commands, or Skills, that narrows the agents catalog down to just
+ * that kind. It measures the actual width of its row and, when the overflow
+ * option is turned on, tucks whatever will not fit behind a plus-count
+ * button that opens a menu naming the hidden types, so nothing is reachable
+ * only by scrolling blind. With that option off it renders every segment and
+ * lets the row scroll instead, which is the right choice when every filter
+ * should stay visible without a menu.
+ */
 const meta = {
   title: "Composites/Agents/Agents Type Tab Strip",
   component: AgentsTypeTabStrip,

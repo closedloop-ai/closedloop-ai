@@ -15,6 +15,16 @@ import { GaugeIcon, PlayIcon, SparklesIcon } from "lucide-react";
 
 const REASON_ID = "run-in-flight-reason";
 
+/**
+ * This is the note that explains why a run action, like Start Building, is
+ * greyed out in an artifact's Actions menu: a short line at the bottom of
+ * the menu says a run for that action already exists. The disabled item
+ * stays reachable by keyboard and screen reader, unlike a plain disabled
+ * button, so the explanation isn't only visible to someone hovering with a
+ * mouse. Use it only when an action is blocked by its own run already in
+ * progress. It says nothing about why any other item in the same menu might
+ * be disabled.
+ */
 const meta = {
   title: "Composites/Documents/Run Action Availability",
   component: RunInFlightReason,

@@ -76,6 +76,16 @@ const baseChecks: CheckResult[] = [
   },
 ];
 
+/**
+ * A grouped, categorized list of every individual check a compute target
+ * ran, things like Git, Claude Code, plugins, and MCP servers, each with a
+ * pass or fail badge and remediation instructions when it failed. Use it for
+ * the full itemized breakdown of a system check, and reach for Compute
+ * Target System Check instead when you only need the collapsed summary badge
+ * and a re-check button. Required and optional checks are shown in separate
+ * sections, so an unconfigured optional item, like an MCP server, is never
+ * mixed in with the checks that actually block a command.
+ */
 const meta = {
   title: "Composites/Compute/System Check Results",
   component: SystemCheckResults,

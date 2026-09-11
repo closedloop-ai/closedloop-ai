@@ -29,23 +29,29 @@ const SIGNED_OUT: DesktopAuthState = {
   organizationId: null,
 };
 
+// ISS-5112 (PLN-1600 Step F) — the landing's "Already have an account? Sign in"
+// door.
+// This is the composition nothing else renders. `account-dialog.stories.tsx`
+// exercises `DesktopOnboardingFlow` only in its default sign-UP wording, and
+// `guest-landing-gate.test.tsx` mocks the flow out entirely (a stub that echoes
+// `authCopy.heading` and the footer), so both the copy override and the layout
+// around it were unrendered anywhere before this fixture: mark over a detached
+// card, the real auth methods, and the ghost Back inside the card rather than
+// floating under it.
+// The REAL flow over a real `DesktopAuthProvider`, with only the preload bridge
+// faked — same approach as the account dialog's stories, so the canvas shows
+// what the packaged app runs rather than a lookalike. `beginDesktopSignIn`
+// never settles, which is the honest fixture: pressing a method in Storybook
+// would otherwise pretend a system-browser OAuth round-trip happened.
 /**
- * ISS-5112 (PLN-1600 Step F) — the landing's "Already have an account? Sign in"
- * door.
- *
- * This is the composition nothing else renders. `account-dialog.stories.tsx`
- * exercises `DesktopOnboardingFlow` only in its default sign-UP wording, and
- * `guest-landing-gate.test.tsx` mocks the flow out entirely (a stub that echoes
- * `authCopy.heading` and the footer), so both the copy override and the layout
- * around it were unrendered anywhere before this fixture: mark over a detached
- * card, the real auth methods, and the ghost Back inside the card rather than
- * floating under it.
- *
- * The REAL flow over a real `DesktopAuthProvider`, with only the preload bridge
- * faked — same approach as the account dialog's stories, so the canvas shows
- * what the packaged app runs rather than a lookalike. `beginDesktopSignIn`
- * never settles, which is the honest fixture: pressing a method in Storybook
- * would otherwise pretend a system-browser OAuth round-trip happened.
+ * The sign in screen behind the guest landing's already have an account
+ * link: a full window taken over by the real GitHub and Google sign in flow,
+ * with the brand mark above it and a Back button as the only way out. Unlike
+ * that same flow inside the account dialog, this version drops the email
+ * option and supplies its own card and back control, since there is no
+ * dialog chrome or Escape key to fall back on here. It runs the real
+ * authentication handoff, including the sync consent step after a successful
+ * sign in, rather than standing in for it.
  */
 const meta = {
   title: "Composites/Onboarding/Guest Landing Sign In",

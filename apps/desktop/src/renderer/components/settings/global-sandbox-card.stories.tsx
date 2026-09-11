@@ -22,6 +22,17 @@ type SandboxApiScenario = {
   inspect: (path: string) => SandboxInspectResult;
 };
 
+/**
+ * A settings form for the one folder your AI agents are allowed to read and
+ * write in on this machine: a text field, a Browse button that opens a
+ * folder picker, and inline warnings about risky or missing folders. Use it
+ * for the machine-wide default sandbox folder, a specific gateway profile
+ * can still point somewhere else and only inherits this value when it sets
+ * none of its own. While the saved setting is still loading, the field shows
+ * disabled with no placeholder text rather than an empty box that could be
+ * mistaken for a confirmed empty folder, and Save stays off until the path
+ * has changed and passed validation.
+ */
 const meta = {
   title: "Composites/Compute/Global Sandbox Section",
   component: GlobalSandboxSection,

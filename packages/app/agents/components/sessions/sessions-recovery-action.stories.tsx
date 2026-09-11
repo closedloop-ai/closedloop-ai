@@ -2,21 +2,26 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { SessionsRecoveryAction } from "./sessions-recovery-action";
 
+// ISS-5451: the Sessions-list recovery affordance, isolated.
+// ISS-4534 reduced this to one honest action after three separate problems with
+// the previous "Go to Sessions" button: the label offered to take the user
+// somewhere they already stood, it was a strict superset of the Retry sitting
+// beside it, and a Cmd/Ctrl-click that opened the clean URL in a new tab ALSO
+// wiped the current tab's filters.
+// The label now states what it does — clear the filters and re-run the read —
+// and the filter-clearing side effect is gated behind `isModifiedClick`, so a
+// modified or non-primary click only lets the browser open `href` and leaves the
+// current tab's scope alone. That gate is behavioural rather than visual, so it
+// is covered by a unit test rather than a story; what the story is for is the
+// label, which is the part that lied.
 /**
- * ISS-5451: the Sessions-list recovery affordance, isolated.
- *
- * ISS-4534 reduced this to one honest action after three separate problems with
- * the previous "Go to Sessions" button: the label offered to take the user
- * somewhere they already stood, it was a strict superset of the Retry sitting
- * beside it, and a Cmd/Ctrl-click that opened the clean URL in a new tab ALSO
- * wiped the current tab's filters.
- *
- * The label now states what it does — clear the filters and re-run the read —
- * and the filter-clearing side effect is gated behind `isModifiedClick`, so a
- * modified or non-primary click only lets the browser open `href` and leaves the
- * current tab's scope alone. That gate is behavioural rather than visual, so it
- * is covered by a unit test rather than a story; what the story is for is the
- * label, which is the part that lied.
+ * This is the single button shown on a failed Sessions list, labeled "Clear
+ * filters and reload." It is deliberately the only action on that card,
+ * since clearing the filters and reloading already covers everything a
+ * separate retry button would do. Holding Cmd, Ctrl, or another modifier
+ * while clicking opens the clean sessions link in a new tab without touching
+ * the filters in the current one, so opening a second tab never costs you
+ * your place in the first.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Recovery Action",

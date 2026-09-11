@@ -18,28 +18,36 @@ import { ConnectionStatusSection } from "./connection-status-section";
 
 const STORY_GATEWAY_PORT = 41_234;
 
+// ISS-5310 (wongk story review on PR #4484): the gateway health rollup that used
+// to sit behind the Labs flag as `GatewayHealthCard` now renders here
+// unconditionally, as the first cell of Connection Status — because behind an
+// off-by-default gate the one rollup you want when the desktop will not connect
+// was invisible to exactly the person who needs it.
+// That makes three new states reachable on this card (Connected / Needs
+// Attention / Offline) plus two reworked formatters, and every one of them is
+// hard to force from a running app: you would have to actually kill the local
+// gateway, or half-kill it into reachable-but-unhealthy, to see two of the
+// three. The section is fully prop-driven, so a canvas can hold all of them side
+// by side.
+// TONE NOTE — do not "fix" this by coloring the labels. `--success` /
+// `--warning` / `--destructive` are fill colors: as text on this card they
+// measure 3.18 / 1.71 / 3.91, all under WCAG 1.4.3's 4.5:1 for normal text. The
+// tone deliberately rides an `aria-hidden` dot while the label keeps the card
+// foreground and names the state in words. The sibling render test
+// (`settings-panel-labs-gateway-health`) runs in jsdom with no Tailwind loaded
+// and is structurally blind to contrast, so this canvas is where that stays
+// checkable.
 /**
- * ISS-5310 (wongk story review on PR #4484): the gateway health rollup that used
- * to sit behind the Labs flag as `GatewayHealthCard` now renders here
- * unconditionally, as the first cell of Connection Status — because behind an
- * off-by-default gate the one rollup you want when the desktop will not connect
- * was invisible to exactly the person who needs it.
- *
- * That makes three new states reachable on this card (Connected / Needs
- * Attention / Offline) plus two reworked formatters, and every one of them is
- * hard to force from a running app: you would have to actually kill the local
- * gateway, or half-kill it into reachable-but-unhealthy, to see two of the
- * three. The section is fully prop-driven, so a canvas can hold all of them side
- * by side.
- *
- * TONE NOTE — do not "fix" this by coloring the labels. `--success` /
- * `--warning` / `--destructive` are fill colors: as text on this card they
- * measure 3.18 / 1.71 / 3.91, all under WCAG 1.4.3's 4.5:1 for normal text. The
- * tone deliberately rides an `aria-hidden` dot while the label keeps the card
- * foreground and names the state in words. The sibling render test
- * (`settings-panel-labs-gateway-health`) runs in jsdom with no Tailwind loaded
- * and is structurally blind to contrast, so this canvas is where that stays
- * checkable.
+ * A settings section showing whether the desktop app can actually reach the
+ * outside world: a gateway health rollup (Connected, Needs Attention, or
+ * Offline), the gateway's port, the cloud connection state, whether history
+ * has finished syncing, whether remote commands are paused, and the
+ * connection's security mode. Check it first whenever a remote session will
+ * not connect, since it is the one place all of those signals sit together
+ * in one grid instead of spread across separate panels. Each state is
+ * spelled out in words rather than only shown by color, because the tint
+ * used for success or warning does not have enough contrast to be read
+ * reliably as text on its own.
  */
 const meta = {
   title: "Composites/Settings/Connection Status Section",

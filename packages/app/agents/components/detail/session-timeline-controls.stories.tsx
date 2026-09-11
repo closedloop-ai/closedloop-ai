@@ -10,16 +10,26 @@ import {
   SessionTimelineScrubber,
 } from "./session-timeline-controls";
 
+// ISS-5819 — the Session Timeline's controls, isolated from the strip they act
+// on. Both are prop-driven with a real state matrix (four scales, four
+// groupings, and a scrubber whose whole meaning is its position within a span),
+// so they get their own stories rather than only being reachable through a
+// 20-day session fixture on the detail page.
+// Rendered LIVE, not with static props: a control that cannot be operated in
+// Storybook is a control nobody can check the focus ring, the keyboard path, or
+// the wrap behaviour of.
 /**
- * ISS-5819 — the Session Timeline's controls, isolated from the strip they act
- * on. Both are prop-driven with a real state matrix (four scales, four
- * groupings, and a scrubber whose whole meaning is its position within a span),
- * so they get their own stories rather than only being reachable through a
- * 20-day session fixture on the detail page.
- *
- * Rendered LIVE, not with static props: a control that cannot be operated in
- * Storybook is a control nobody can check the focus ring, the keyboard path, or
- * the wrap behaviour of.
+ * Above the session timeline sit two live controls: a toggle group for the
+ * time scale, from five minutes up to twelve hours, and a Group by dropdown
+ * that changes what the stacked bars are colored by. This canvas is where
+ * you check their keyboard behavior, focus order, and how the row wraps at
+ * narrow widths, since normally you would only reach these controls by
+ * loading a real multi day session. The same file also covers the position
+ * scrubber, a slider for jumping to any point in a long session, which only
+ * appears once a session runs past what one screen can show. When the chosen
+ * scale is finer than the data was actually recorded at, a note beside the
+ * toggle explains that the bars are spread evenly across a coarser
+ * measurement rather than individually measured.
  */
 const meta: Meta<typeof SessionTimelineControls> = {
   /*

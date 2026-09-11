@@ -80,6 +80,16 @@ const COMPLETE_HISTORY_DETAIL = makeDetail({
   versions: [revision(0, true), revision(1, false)],
 });
 
+/**
+ * The full page for one agent component, such as a subagent, a command, or a
+ * skill: a header with its icon and name, a grid of metric cards, a
+ * collapsible Properties panel with details like its source and harness, and
+ * tabs for that component's Sessions, Branches, and Evidence. A read only
+ * Prompt panel also shows up for the kinds of component that have one, like
+ * Subagent, Command, and Skill. When the server has capped how much revision
+ * history it will return, a caption says so, but only when a cap actually
+ * applies and a version selector is also on screen to make sense of it.
+ */
 const meta: Meta<typeof AgentDetail> = {
   title: "Surfaces/Agent Detail",
   component: AgentDetail,

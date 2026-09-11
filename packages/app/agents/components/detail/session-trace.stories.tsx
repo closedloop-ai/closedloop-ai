@@ -44,20 +44,27 @@ const staffDecorator: Decorator = (Story) => (
   </ParsingBugFlagProvider>
 );
 
+// ISS-5698: the Session Trace, on its own.
+// It is the densest component on the session detail and the one carrying the
+// most state, and until now the only way to see any of it was to load a real
+// session that happened to contain the shape you wanted. That is why its
+// degraded branches (a tool card with nothing to expand into, a turn whose cost
+// was never measured, a producer-flagged turn) went unlooked-at. Each story
+// below pins one of those branches with a fixture that reaches it deliberately.
+// The trace takes its rows as a prop and mounts no queries, so nothing here
+// seeds the app-core harness. The interaction stories rely only on the API port
+// the preview already provides, which is what resolves the composer's @-mention
+// list to an empty set.
 /**
- * ISS-5698: the Session Trace, on its own.
- *
- * It is the densest component on the session detail and the one carrying the
- * most state, and until now the only way to see any of it was to load a real
- * session that happened to contain the shape you wanted. That is why its
- * degraded branches (a tool card with nothing to expand into, a turn whose cost
- * was never measured, a producer-flagged turn) went unlooked-at. Each story
- * below pins one of those branches with a fixture that reaches it deliberately.
- *
- * The trace takes its rows as a prop and mounts no queries, so nothing here
- * seeds the app-core harness. The interaction stories rely only on the API port
- * the preview already provides, which is what resolves the composer's @-mention
- * list to an empty set.
+ * This is the actual transcript for a session: a scrolling list of turns
+ * covering user prompts, assistant replies, a reasoning disclosure, tool
+ * call cards, system events, and collapsed sub agent runs. Reach for it when
+ * you need to show or review the full back and forth of a run rather than a
+ * summary of it; a tool card holding a failed call opens itself
+ * automatically so a failure is never one click away from the reader. It can
+ * render a session thousands of rows long without slowing down, by only
+ * drawing the rows currently on screen, and it also lets a reader select a
+ * passage of text to attach a comment to it.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Session Trace",

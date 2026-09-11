@@ -12,20 +12,28 @@ const PENDING_METHOD_OPTIONS = [null, "github", "google", "email"] as const;
 /** The native `method` values a host adapter can hand the email form. */
 const NATIVE_METHOD_OPTIONS = ["get", "post", "dialog"] as const;
 
+// The sign-in method chooser itself, shared by desktop onboarding, web sign-in,
+// and Settings → Account. Every surface that asks "how do you want to sign in?"
+// renders this one component, so its hierarchy is a cross-surface contract:
+// GitHub is the single filled primary, Google is de-emphasized to outline, and
+// email is a secondary Continue (PRD-532 §5.2).
+// Worth seeing as a matrix because the states differ by which controls EXIST,
+// not by copy, and each one is owned by a different host. Nothing else renders
+// the two-method form in isolation: the composed stories that mount it
+// (`account-dialog`, `guest-landing-sign-in`) both go through
+// `DesktopOnboardingFlow` with `showEmail={false}`, so before this file the
+// default three-method state — the one `desktop-account-tab` and the
+// first-launch overlay actually ship — appeared in no story at all.
 /**
- * The sign-in method chooser itself, shared by desktop onboarding, web sign-in,
- * and Settings → Account. Every surface that asks "how do you want to sign in?"
- * renders this one component, so its hierarchy is a cross-surface contract:
- * GitHub is the single filled primary, Google is de-emphasized to outline, and
- * email is a secondary Continue (PRD-532 §5.2).
- *
- * Worth seeing as a matrix because the states differ by which controls EXIST,
- * not by copy, and each one is owned by a different host. Nothing else renders
- * the two-method form in isolation: the composed stories that mount it
- * (`account-dialog`, `guest-landing-sign-in`) both go through
- * `DesktopOnboardingFlow` with `showEmail={false}`, so before this file the
- * default three-method state — the one `desktop-account-tab` and the
- * first-launch overlay actually ship — appeared in no story at all.
+ * The sign in method picker: a filled Continue with GitHub button, an
+ * outlined Continue with Google button below it, and an optional email field
+ * with its own Continue button. It is the one chooser shared by desktop
+ * onboarding, web sign in, and Settings, so wherever someone is asked how
+ * they want to sign in, GitHub, Google, and email look and rank the same
+ * way. It does not run the sign in itself: a host wires each button to a
+ * real flow and reports back which method is currently running, so this
+ * component can show a spinner and disable the rest. The email option can be
+ * hidden entirely for a surface that only offers GitHub and Google.
  */
 const meta: Meta<typeof AuthMethods> = {
   args: {

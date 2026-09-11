@@ -86,6 +86,16 @@ function detail(
   };
 }
 
+/**
+ * A row of stacked bars, one per clock hour across a branch's life, each bar
+ * split by which person's work generated the cost that hour and sized by how
+ * much they spent. Hovering a bar shows the hour's total cost and a
+ * breakdown by person and token type. Use it to see when and by whom money
+ * was spent on a branch, rather than the session swimlane, which shows when
+ * sessions were actually running, not what they cost. An hour still gets a
+ * bar even when its cost has not been attributed yet, so the timeline's
+ * playhead never appears to float over a false gap.
+ */
 const meta = {
   title: "Composites/Branches/PR Activity Timeline",
   component: BranchPrActivityTimeline,

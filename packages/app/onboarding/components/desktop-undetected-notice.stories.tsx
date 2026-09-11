@@ -5,19 +5,27 @@ import {
   DesktopUndetectedNotice,
 } from "./desktop-undetected-notice";
 
+// The ISS-5247 not-detected surface, in every state the onboarding desktop step
+// can put it in.
+// These are worth seeing side by side because the distinction between them is
+// the whole point of the component and is invisible in any single screenshot:
+// two of these states are still *looking*, and two are an *answer*. Driving
+// them by hand needs a real desktop-absent machine plus a full twelve-sweep
+// poll budget to run out, so the matrix is easy to regress without noticing.
+// The pairing that matters is Watching versus GaveUp. They are both "we have
+// not found it", but only GaveUp is entitled to say so — a probe that is still
+// running must never render as a proven negative it has not established yet.
 /**
- * The ISS-5247 not-detected surface, in every state the onboarding desktop step
- * can put it in.
- *
- * These are worth seeing side by side because the distinction between them is
- * the whole point of the component and is invisible in any single screenshot:
- * two of these states are still *looking*, and two are an *answer*. Driving
- * them by hand needs a real desktop-absent machine plus a full twelve-sweep
- * poll budget to run out, so the matrix is easy to regress without noticing.
- *
- * The pairing that matters is Watching versus GaveUp. They are both "we have
- * not found it", but only GaveUp is entitled to say so — a probe that is still
- * running must never render as a proven negative it has not established yet.
+ * The notice shown on the desktop download step when the app cannot find
+ * Closedloop Desktop installed on your machine yet. While it is still
+ * polling in the background it shows a quiet looking for it strip with a
+ * spinner; once the poll budget runs out, or a manual recheck also comes up
+ * empty, it switches to an alert with a Check again button. Those two states
+ * look similar but mean different things: a probe that is still running
+ * never gets to claim it found nothing, so the alert only appears once a
+ * check has actually finished. It is fully driven by props, so the parent
+ * owns the polling and the timing, and this component only renders whatever
+ * state it is told.
  */
 const meta: Meta<typeof DesktopUndetectedNotice> = {
   args: {

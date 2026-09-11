@@ -268,6 +268,17 @@ function FilterPopoverDemo({
   return <FilterPopover controller={controller} viewModel={viewModel} />;
 }
 
+/**
+ * A Filter button that opens a menu of filter categories such as assignee,
+ * status, priority, dates, and tags, each expanding into its own submenu of
+ * checkable options, with a badge on the button counting how many filters
+ * are active. Use it as the way people add or change table filters, Active
+ * Filters Bar is the separate row of chips that shows what is already
+ * applied. It can render two different menu shapes depending on what the
+ * table hands it, either a fixed set of categories or a fully generic list
+ * of facet groups, and an optional text search field inside the menu works
+ * independently of the checkbox filters.
+ */
 const meta = {
   title: "Composites/Data Display/Filter Popover",
   component: FilterPopoverDemo,

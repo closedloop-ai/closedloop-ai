@@ -3,6 +3,15 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { CheckCheck } from "lucide-react";
 import { fn } from "storybook/test";
 
+/**
+ * Sits at the bottom of a comment thread and shows a single button, such as
+ * Resolve Conversation, with an optional icon in front of the label. Reach
+ * for it to close out the action row under a discussion instead of dropping
+ * a bare button in, since it adds the border and shaded background that
+ * visually separate the action from the comments above it. While the action
+ * it triggers is still in flight, the button disables itself so it cannot be
+ * clicked twice.
+ */
 const meta = {
   title: "Composites/Actions/Comment Thread Action Footer",
   component: CommentThreadActionFooter,

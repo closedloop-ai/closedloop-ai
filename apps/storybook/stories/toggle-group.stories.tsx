@@ -7,7 +7,13 @@ import { Bold, Italic, Underline } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * A set of two-state buttons that can be toggled on or off.
+ * A row, or column, of buttons that act as one control, like a text
+ * formatting toolbar with bold, italic, and underline. Set it to single
+ * selection when only one button can be pressed at a time, such as choosing
+ * a view mode, and to multiple when several can stay active together, like
+ * independent style toggles. Reach for it instead of a plain button group
+ * whenever the pressed state itself is the value you care about, not just
+ * the click.
  */
 const meta: Meta<typeof ToggleGroup> = {
   title: "Composites/Inputs/Toggle Group",

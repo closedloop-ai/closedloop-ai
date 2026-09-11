@@ -15,6 +15,18 @@ const storyApiRoutes: FixtureRoute[] = [
   },
 ];
 
+/**
+ * A card listing recent updates across a person's agent sessions: each row
+ * shows the session's name, a status badge, a short summary, and how long
+ * ago it happened. Use it as a quick activity digest instead of sending
+ * someone to the full sessions list, since it only ever shows recent
+ * movement rather than every session ever run. Each row's name links to that
+ * session's detail page when a link builder is supplied, and falls back to
+ * plain text when it isn't. The feed shows a loading skeleton while sessions
+ * are still loading, a plain 'temporarily unavailable' message if the fetch
+ * fails, and an honest empty state when there's genuinely no synced activity
+ * yet.
+ */
 const meta: Meta<typeof AgentSessionActivityFeed> = {
   component: AgentSessionActivityFeed,
   tags: ["autodocs"],

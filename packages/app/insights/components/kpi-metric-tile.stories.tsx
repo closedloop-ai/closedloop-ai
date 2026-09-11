@@ -177,6 +177,16 @@ const NoComparisonReasonsCanvas = () => (
   </div>
 );
 
+/**
+ * A dashboard tile showing one KPI's current value, a short description, and
+ * a trend arrow with a percent change from the prior period. That percent
+ * change is colored to say whether it's good or bad for this specific
+ * metric, since a rising cost is bad while a rising count of merged pull
+ * requests is good. Hovering the tile reveals pin, edit, resize, and drag
+ * controls for rearranging the dashboard, which otherwise stay out of the
+ * way. A metric with no prior period to compare against shows the 'No
+ * comparison' placeholder chip instead of a percentage.
+ */
 const meta = {
   title: "Composites/Insights/KPI Metric Tile",
   component: PinnedKpiMetricTileCanvas,

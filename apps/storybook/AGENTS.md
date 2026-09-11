@@ -10,3 +10,10 @@ Consequences worth stating once:
 
 - `packages/design-system` is not a scan glob. A story for a design-system component goes under `apps/storybook/stories/`.
 - `packages/app/*/lib/` is not a scan glob — only `packages/app/*/components/**`.
+
+## What a story must carry
+
+- **A title** of the form `<Level>/<Group>/<Component>`, where Level is `Foundations`, `Primitives`, `Composites` or `Surfaces`. `TAXONOMY.md` has the group vocabulary and how to classify something new. `validate:catalog` fails the build on a title outside it, or on two files claiming the same title.
+- **`tags: ["autodocs"]`**, which is what generates the Docs page.
+- **A description**: a comment directly above `const meta`. It becomes the paragraph at the top of the Docs page AND the text the component manifest hands to an agent asking what the component is. `WRITING.md` is the standard. Plain English, written for designers and product people as much as for engineers, not a ticket summary.
+- **A first story that shows the component working.** Storybook orders stories by export order and lands on the first one, so a file that opens on `Loading` or `Error` shows a broken state as the component's face. Put the representative story first and name it `Default` unless there is a reason not to.

@@ -9,30 +9,34 @@ import { GuestSignupProvider } from "../onboarding/guest-signup-provider";
 import { assertTextAbsent, waitForText } from "../story-text-assertions";
 import { Sidebar } from "./Sidebar";
 
+// ISS-5112 (PLN-1600 Step D, wongk story review on PR #4560): the sidebar
+// footer's identity slot, signed in and as a guest.
+// `guest-pre-auth-chrome.test.tsx` already pins the CORRECTNESS in both
+// directions — a guest never sees an organization name or the "Account"
+// fallback, and a signed-in device never reads "Guest". What it cannot pin is
+// what the swap LOOKS like, and this PR changed exactly that: the guest slot
+// went from a dashed-border box to an `Avatar` fallback, because a dashed
+// outline means "nothing here yet" in this product and a guest is a person, not
+// a missing thing. That change was made on review and shipped without anyone
+// seeing it rendered.
+// Worth a permanent fixture rather than a one-off look, because this state is
+// expensive to reach in the running app FOREVER: it needs the guest-onboarding
+// Labs flag on AND a signed-out session, so nobody stumbles into it.
+// The two stories are meant to be read as a pair — the leak this footer must
+// never spring is an organization name reaching a signed-out guest, and the two
+// canvases put the two treatments side by side.
+// Unlike `dashboard-header-actions`, a canvas is FAITHFUL here: the sidebar is
+// fixed-width, so nothing about this depends on the page container the way the
+// dashboard's wrapping title row does.
 /**
- * ISS-5112 (PLN-1600 Step D, wongk story review on PR #4560): the sidebar
- * footer's identity slot, signed in and as a guest.
- *
- * `guest-pre-auth-chrome.test.tsx` already pins the CORRECTNESS in both
- * directions — a guest never sees an organization name or the "Account"
- * fallback, and a signed-in device never reads "Guest". What it cannot pin is
- * what the swap LOOKS like, and this PR changed exactly that: the guest slot
- * went from a dashed-border box to an `Avatar` fallback, because a dashed
- * outline means "nothing here yet" in this product and a guest is a person, not
- * a missing thing. That change was made on review and shipped without anyone
- * seeing it rendered.
- *
- * Worth a permanent fixture rather than a one-off look, because this state is
- * expensive to reach in the running app FOREVER: it needs the guest-onboarding
- * Labs flag on AND a signed-out session, so nobody stumbles into it.
- *
- * The two stories are meant to be read as a pair — the leak this footer must
- * never spring is an organization name reaching a signed-out guest, and the two
- * canvases put the two treatments side by side.
- *
- * Unlike `dashboard-header-actions`, a canvas is FAITHFUL here: the sidebar is
- * fixed-width, so nothing about this depends on the page container the way the
- * dashboard's wrapping title row does.
+ * The identity control at the bottom of the desktop sidebar that opens the
+ * account menu: Settings, Diagnostics, and the theme switcher. When you are
+ * signed into an organization it shows an avatar with the Closedloop mark
+ * plus your organization's name. When you are browsing as a guest it shows a
+ * plain, empty avatar and the word 'Guest' instead, so a guest is never
+ * shown an organization name that is not theirs. This is the only place
+ * Settings and Diagnostics live in the app, so even a guest still needs it
+ * to reach the toggle that turns guest mode itself on or off.
  */
 const meta = {
   title: "Composites/App Shell/Sidebar Account Footer",

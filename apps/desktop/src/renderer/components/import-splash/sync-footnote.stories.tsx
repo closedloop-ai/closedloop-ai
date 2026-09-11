@@ -14,26 +14,33 @@ import {
   type TranscriptSyncStatusRead,
 } from "./sync-footnote-state";
 
+// ISS-4716 / ISS-5348: the import-splash footer's sync line, every state at once.
+// This line replaced a hardcoded "Computed on this device · 0 bytes uploaded"
+// that rendered identically under every sync tier — it could not tell a user who
+// had never connected apart from one whose uploads were dead-lettering. What
+// replaced it is a ten-state matrix with ten icons, ten strings, a skeleton, and
+// exactly one coloured tone, and until this file existed nothing mounted it, so
+// nobody could eyeball the tone and copy consistency the whole ticket is about.
+// Two things the canvas is here to make visible:
+// 1. **Only a genuine problem is coloured, and no state is green.** A success
+//    tone is what made the original copy read as a privacy guarantee it had not
+//    earned. `Failed` is the single warning row, and its icon carries the tone
+//    too — a warning string beside a muted alert triangle reads as a mistake.
+// 2. **Two states render no text at all.** `Loading` is a skeleton sized to the
+//    settled row so the read landing does not shift the splash, and
+//    `Unavailable` renders nothing: a failed read is a fact about us, not an
+//    answer about the user's uploads.
 /**
- * ISS-4716 / ISS-5348: the import-splash footer's sync line, every state at once.
- *
- * This line replaced a hardcoded "Computed on this device · 0 bytes uploaded"
- * that rendered identically under every sync tier — it could not tell a user who
- * had never connected apart from one whose uploads were dead-lettering. What
- * replaced it is a ten-state matrix with ten icons, ten strings, a skeleton, and
- * exactly one coloured tone, and until this file existed nothing mounted it, so
- * nobody could eyeball the tone and copy consistency the whole ticket is about.
- *
- * Two things the canvas is here to make visible:
- *
- * 1. **Only a genuine problem is coloured, and no state is green.** A success
- *    tone is what made the original copy read as a privacy guarantee it had not
- *    earned. `Failed` is the single warning row, and its icon carries the tone
- *    too — a warning string beside a muted alert triangle reads as a mistake.
- * 2. **Two states render no text at all.** `Loading` is a skeleton sized to the
- *    settled row so the read landing does not shift the splash, and
- *    `Unavailable` renders nothing: a failed read is a fact about us, not an
- *    answer about the user's uploads.
+ * A small line in the import splash screen's footer that reports whether
+ * your transcripts have finished syncing. It pairs an icon with a short
+ * label such as 'Transcripts queued to upload' or 'Some transcripts couldn't
+ * be uploaded', and only turns a warning color when there is a genuine
+ * problem, never a reassuring green one. Use it anywhere you need an honest
+ * one line sync status instead of a spinner: it never shows a byte count or
+ * claims a transfer finished successfully, since there is no reliable way to
+ * measure that. While the status is still loading it shows a skeleton in
+ * place of text, and if the read fails outright it shows nothing rather than
+ * guessing.
  */
 const meta = {
   title: "Composites/App Shell/Import Splash Sync Footnote",

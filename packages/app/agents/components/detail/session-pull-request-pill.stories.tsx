@@ -34,6 +34,15 @@ function PullRequestPillFrame({ children }: Readonly<{ children: ReactNode }>) {
   );
 }
 
+/**
+ * This is a small pill showing a pull request's number and status inside a
+ * session's detail properties. When the session's repository and PR number
+ * are both known, the pill is a real link that opens the pull request on
+ * GitHub; when either piece is missing, it stays an inert, muted label whose
+ * tooltip explains why it cannot be opened. A very long PR title is
+ * shortened in the tooltip so one long subject line cannot take over the
+ * whole popup.
+ */
 const meta = {
   title: "Composites/Sessions/Detail/Session Pull Request Pill",
   component: PullRequestPill,

@@ -15,21 +15,30 @@ function limit(utilization: number, resetsAt: string | null = RESETS_AT) {
   return { utilization, resetsAt } satisfies RateLimit;
 }
 
+// PRD-538 R6 (ISS-5354): one usage meter, across the urgency scale it colours
+// itself by.
+// The scale is the one signal a user near their cap actually reads, and it is
+// the hardest thing here to see any other way: the rendered text is identical at
+// 74% and at 91%, so a DOM assertion has to reach for a class name, and
+// reproducing it live needs an account genuinely sitting near its ceiling. A
+// canvas with every band on it at once turns "did the colour still change" into
+// a glance (wongk, PR #4572).
+// `showResetDateTime` gets a canvas for the same reason. The drawer turns it on
+// and the sidebar leaves it off, so the two renderings of the same reset moment
+// only ever appear in different places in the real app and can drift apart
+// without either one looking wrong on its own.
 /**
- * PRD-538 R6 (ISS-5354): one usage meter, across the urgency scale it colours
- * itself by.
- *
- * The scale is the one signal a user near their cap actually reads, and it is
- * the hardest thing here to see any other way: the rendered text is identical at
- * 74% and at 91%, so a DOM assertion has to reach for a class name, and
- * reproducing it live needs an account genuinely sitting near its ceiling. A
- * canvas with every band on it at once turns "did the colour still change" into
- * a glance (wongk, PR #4572).
- *
- * `showResetDateTime` gets a canvas for the same reason. The drawer turns it on
- * and the sidebar leaves it off, so the two renderings of the same reset moment
- * only ever appear in different places in the real app and can drift apart
- * without either one looking wrong on its own.
+ * A labeled usage meter for a session limit or quota: a title, the percent
+ * used as text, and a progress bar underneath, with a line noting when the
+ * window resets. Use it any time someone needs to watch a limit approaching
+ * its ceiling, since the bar itself changes color as usage climbs: neutral
+ * most of the time, amber past 75 percent, and red past 90, so the risk of
+ * being cut off reads at a glance. When the usage figure isn't a real
+ * measurement, the bar shows a hatched pattern instead of an empty or full
+ * track, so an unmeasured amount is never mistaken for a genuine zero. An
+ * exact reset date and time can appear next to the relative label too,
+ * though only in wider spots like a drawer, since it would wrap in a narrow
+ * sidebar.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Limit Bar",

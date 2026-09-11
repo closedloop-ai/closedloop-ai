@@ -7,16 +7,23 @@ import {
 } from "./session-measured-properties";
 import { SessionPropertiesFrame } from "./session-properties-story-frame";
 
+// ISS-5565. These three rows were promoted out of `agent-session-detail-view.tsx`
+// in the same change, which is the moment their state matrix stops being covered
+// by the parent's single-shape fixture — so they get isolated stories.
+// The matrix that matters here is exactly the one the fix is about: **absent vs.
+// measured-zero**. Those two states differ by one glyph, they sit in the same
+// value track, and a test asserting `"—"` proves the string but not that the
+// dash reads as "we don't know" rather than as a squashed value. Each pair below
+// is deliberately adjacent so the difference is visible rather than inferred.
 /**
- * ISS-5565. These three rows were promoted out of `agent-session-detail-view.tsx`
- * in the same change, which is the moment their state matrix stops being covered
- * by the parent's single-shape fixture — so they get isolated stories.
- *
- * The matrix that matters here is exactly the one the fix is about: **absent vs.
- * measured-zero**. Those two states differ by one glyph, they sit in the same
- * value track, and a test asserting `"—"` proves the string but not that the
- * dash reads as "we don't know" rather than as a squashed value. Each pair below
- * is deliberately adjacent so the difference is visible rather than inferred.
+ * These are the rows in a session's detail panel that show counted values:
+ * how autonomous the run was, how many tokens it used, and how much work it
+ * did across turns, tool calls, and steering. Reach for these when a value
+ * needs to distinguish "genuinely never measured" from "measured and happens
+ * to be zero," since both would otherwise look like a plain zero or dash.
+ * Each row collapses to one dash for the whole line when nothing at all was
+ * recorded, rather than a separate dash for every missing number, with the
+ * reason available on hover or keyboard focus.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Measured Properties",

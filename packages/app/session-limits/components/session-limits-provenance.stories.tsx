@@ -17,20 +17,26 @@ function provenance(
   return { fetchedAt, source };
 }
 
+// PRD-538 R6 (ISS-5354): the detail drawer's provenance footer, across the
+// states it swaps wording for.
+// It renders inside `DrawerContent`, which does not mount until the drawer
+// opens, so the sibling nav story never reaches it. The stale path is the one
+// worth looking at and the one hardest to reach any other way: producing it in
+// the running app means waiting past the five-minute display horizon or moving
+// the clock (wongk, PR #4572).
+// The two wordings are not cosmetic variants. Fresh leads with a duration and
+// puts the instant behind it; stale drops the duration entirely and states the
+// capture time, because a duration keeps drifting while the drawer sits open and
+// a snapshot that stopped refreshing must read as "the figures are from THEN".
 /**
- * PRD-538 R6 (ISS-5354): the detail drawer's provenance footer, across the
- * states it swaps wording for.
- *
- * It renders inside `DrawerContent`, which does not mount until the drawer
- * opens, so the sibling nav story never reaches it. The stale path is the one
- * worth looking at and the one hardest to reach any other way: producing it in
- * the running app means waiting past the five-minute display horizon or moving
- * the clock (wongk, PR #4572).
- *
- * The two wordings are not cosmetic variants. Fresh leads with a duration and
- * puts the instant behind it; stale drops the duration entirely and states the
- * capture time, because a duration keeps drifting while the drawer sits open and
- * a snapshot that stopped refreshing must read as "the figures are from THEN".
+ * This shows a short line under a session's usage limits panel saying how
+ * fresh the numbers are, for example "Updated 3m ago" with the exact time in
+ * parentheses. Hover or focus it to see where the data came from, when that
+ * is known. Once the data is more than a few minutes old, the wording
+ * switches to a plain "As of <time>" instead of a relative duration, since a
+ * ticking "X ago" label would keep drifting while the panel stays open. It
+ * renders nothing at all when there is no capture time to report, rather
+ * than showing an empty or misleading footer.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Limits Provenance",

@@ -12,6 +12,17 @@ import {
   type BranchCommentThread,
 } from "./branch-comments-model";
 
+/**
+ * One comment thread on a branch: an author, a timestamp, the comment body,
+ * any replies, and buttons to edit, delete, or reply where you have
+ * permission. A comment either lives natively in Closedloop, where you can
+ * edit and reply to it, or is a mirrored GitHub review or issue comment,
+ * which shows where in the code it was left and a link back to view it on
+ * GitHub but cannot be edited here. If a comment is anchored to a specific
+ * point in a session transcript, a button lets you jump straight to that
+ * spot. Reach for it as one card inside a list of threads, such as the
+ * comments rail, rather than as a standalone piece.
+ */
 const meta = {
   component: BranchCommentCard,
   decorators: [

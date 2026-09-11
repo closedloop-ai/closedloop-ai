@@ -3,15 +3,23 @@ import { Button } from "@repo/design-system/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react";
 import { AuthTransitionPanel } from "./auth-transition-panel";
 
+// Every state here is reachable in the signed-out desktop connect flow
+// (PLN-1526). They are worth seeing side by side because the failure states are
+// the ones a user is actually stuck on, and they are the easiest to leave
+// half-designed — the flow reaches them only when something has already broken.
+// Note the 400ms reveal hold: each story renders empty for that long before it
+// fades in. That is the production behavior, not a loading artifact, and it is
+// why on a healthy hop most users never see these screens at all.
 /**
- * Every state here is reachable in the signed-out desktop connect flow
- * (PLN-1526). They are worth seeing side by side because the failure states are
- * the ones a user is actually stuck on, and they are the easiest to leave
- * half-designed — the flow reaches them only when something has already broken.
- *
- * Note the 400ms reveal hold: each story renders empty for that long before it
- * fades in. That is the production behavior, not a loading artifact, and it is
- * why on a healthy hop most users never see these screens at all.
+ * A short hold on, we are moving you screen shown while the desktop app
+ * hands off to GitHub or Google sign in and waits for the browser to hand
+ * control back. Reach for it for any waiting or failure screen in that
+ * connect flow instead of writing a new one, since it is the one shared
+ * version of that moment. It stays invisible for just under half a second,
+ * so a hop that finishes almost instantly never flashes a heading at you;
+ * only a genuinely slow hop shows the title, spinner, and brand mark. Give
+ * it an action for a screen that can go wrong, like a failed connection, and
+ * it shows that instead of the spinner.
  */
 const meta: Meta<typeof AuthTransitionPanel> = {
   args: {

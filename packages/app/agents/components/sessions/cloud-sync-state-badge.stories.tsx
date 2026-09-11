@@ -6,30 +6,34 @@ import { TranscriptDisposition } from "@repo/api/src/types/transcript-dispositio
 import type { Meta, StoryObj } from "@storybook/react";
 import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
 
+// ISS-5451: the per-row cloud-sync disclosure, isolated.
+// Three different gaps all reach `cloudSyncState: pending`, and ISS-4647 exists
+// because the original single "Local only" vocabulary described only the first
+// of them — telling a user their session was local-only while the row they were
+// looking at had been served FROM the cloud. The three pending stories below are
+// the correction, and they only make sense read together:
+// - {@link PendingLocalOnly} — the session itself is still in the outbox.
+// - {@link PendingTranscriptSyncing} — the session is in the cloud, only its
+//   transcript is behind.
+// - {@link PendingTranscriptFailed} — the session is in the cloud and the last
+//   transcript upload FAILED. #4150: the detail panel shows this as a
+//   destructive "Transcript upload failed" with a Retry, so the list must not
+//   reuse the in-flight "syncs automatically" copy and tell the user to relax.
+// {@link Synced} and {@link Absent} render NOTHING, deliberately — a "synced"
+// chip on every settled row would make the table a wall of redundant badges. The
+// stories are here so that absence is a reviewable, intentional state rather
+// than something a reader has to infer.
+// Each badge's tooltip carries copy the label alone cannot; the preview supplies
+// the `TooltipProvider`.
 /**
- * ISS-5451: the per-row cloud-sync disclosure, isolated.
- *
- * Three different gaps all reach `cloudSyncState: pending`, and ISS-4647 exists
- * because the original single "Local only" vocabulary described only the first
- * of them — telling a user their session was local-only while the row they were
- * looking at had been served FROM the cloud. The three pending stories below are
- * the correction, and they only make sense read together:
- *
- * - {@link PendingLocalOnly} — the session itself is still in the outbox.
- * - {@link PendingTranscriptSyncing} — the session is in the cloud, only its
- *   transcript is behind.
- * - {@link PendingTranscriptFailed} — the session is in the cloud and the last
- *   transcript upload FAILED. #4150: the detail panel shows this as a
- *   destructive "Transcript upload failed" with a Retry, so the list must not
- *   reuse the in-flight "syncs automatically" copy and tell the user to relax.
- *
- * {@link Synced} and {@link Absent} render NOTHING, deliberately — a "synced"
- * chip on every settled row would make the table a wall of redundant badges. The
- * stories are here so that absence is a reviewable, intentional state rather
- * than something a reader has to infer.
- *
- * Each badge's tooltip carries copy the label alone cannot; the preview supplies
- * the `TooltipProvider`.
+ * This is a small muted pill that appears next to a session row when its
+ * cloud copy might be behind, for example "Local only" or "Transcript still
+ * syncing." It only shows up for a row that is genuinely pending; a fully
+ * synced row shows nothing at all, so a table of already-synced sessions is
+ * not cluttered with redundant badges. It distinguishes a session that has
+ * not reached the cloud yet from one whose transcript upload is still in
+ * progress or has failed, since telling someone their data is "local only"
+ * when it is actually in the cloud waiting on one file would be misleading.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Cloud Sync State Badge",

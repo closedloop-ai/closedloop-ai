@@ -5,10 +5,20 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { createSessionTableRowFixture } from "./session-list-fixtures";
 import { SessionsTable, type SessionTableRow } from "./sessions-table";
 
+// Presentational sessions table. Callers map their own records to
+// `SessionTableRow` and supply `renderName` to wrap the name in their platform's
+// navigation element (a `<Link>` on the web, a `<button>` on desktop).
 /**
- * Presentational sessions table. Callers map their own records to
- * `SessionTableRow` and supply `renderName` to wrap the name in their platform's
- * navigation element (a `<Link>` on the web, a `<button>` on desktop).
+ * This is the table that lists agent sessions, shown as a data grid on wide
+ * screens and a stack of cards on narrow ones, with columns for things like
+ * status, owner, harness, and cost. Reach for it when you already have your
+ * session data shaped the way it expects and want full control over how each
+ * row links out. If you are working from raw session records instead, use
+ * the Synced Sessions Table, which builds those rows for you. You have to
+ * supply a small function that wraps the session name in your app's own link
+ * or button, since web and desktop navigate differently, and rows can be
+ * grouped by a dimension like model or harness, folding that column into a
+ * banded header instead.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Table",

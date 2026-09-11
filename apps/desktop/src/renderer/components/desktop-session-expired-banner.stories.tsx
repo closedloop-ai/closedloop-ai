@@ -6,14 +6,21 @@ import {
 import { DesktopAuthProvider } from "../shared-agent-sessions/desktop-auth-provider";
 import { DesktopSessionExpiredBanner } from "./desktop-session-expired-banner";
 
+// ISS-4841: the involuntary-sign-out recovery strip, one story per state.
+// `refresh_failed` is only reachable once a first-party session existed and then
+// stopped renewing, which is not a state you can walk into on purpose. The
+// stories install the narrow auth slice of `window.desktopApi` and mount the
+// REAL `DesktopAuthProvider` over it, so the canvas exercises the same bridge
+// the packaged app does rather than a hand-faked context.
 /**
- * ISS-4841: the involuntary-sign-out recovery strip, one story per state.
- *
- * `refresh_failed` is only reachable once a first-party session existed and then
- * stopped renewing, which is not a state you can walk into on purpose. The
- * stories install the narrow auth slice of `window.desktopApi` and mount the
- * REAL `DesktopAuthProvider` over it, so the canvas exercises the same bridge
- * the packaged app does rather than a hand-faked context.
+ * A thin red bar across the top of the desktop app that appears when your
+ * sign-in could no longer be renewed in the background, which quietly stops
+ * every cloud powered panel such as Insights or Branches from loading. It
+ * explains that your session expired and gives you a one-click Sign in
+ * button, which switches to a Cancel button while the sign-in is in
+ * progress. It stays hidden if you are already signed in, and it does not
+ * appear if you signed out on purpose, since that is a choice rather than a
+ * failure to recover from.
  */
 const meta = {
   title: "Composites/App Shell/Desktop Session Expired Banner",

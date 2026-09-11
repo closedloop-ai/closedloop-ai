@@ -78,6 +78,18 @@ const MATRIX: PackComponentInstallMatrix = {
   ],
 };
 
+/**
+ * A grid that shows, for one component, whether it's installed across every
+ * machine and every AI harness in your organization: one row per machine,
+ * one column per harness, with a summary card above tallying how many cells
+ * are installed, failed, or offline. Use it when you need the org wide view
+ * of a single component's rollout, rather than one person's own install
+ * status. Offline and failed machines stay visible and filterable rather
+ * than being hidden, so a machine that can't be reached still shows up as a
+ * problem instead of disappearing from the list. With no machines to show,
+ * it renders an honest empty message instead of a matrix that looks all
+ * green.
+ */
 const meta = {
   title: "Composites/Packs/Install Matrix",
   component: InstallMatrix,

@@ -21,21 +21,28 @@ const SYNC_LEVEL_OPTIONS: readonly SyncConsentLevel[] = [
   DataSyncLevelValue.Full,
 ];
 
+// The three-level consent radio group, on its own.
+// Extracted from `SyncConsent` (ISS-5489) so the post-auth takeover could put
+// the SAME per-level breakdown inside its own modal chrome. Promotion to an
+// exported module is what earns it a story: its states stop being covered by the
+// parent's single fixture the moment a second host renders it with different
+// arguments — which is exactly what the takeover does.
+// The axis worth seeing side by side is the PRE-SELECTION: onboarding starts on
+// the safe floor, the takeover starts on the widest level. The chip is no longer
+// part of that axis — ISS-5318 moved it into the shared card, so "Recommended"
+// sits on the most-permissive level in both stories no matter which one is
+// selected. Two hosts once passed two different words pointing at two different
+// levels; the prop that allowed it is gone.
 /**
- * The three-level consent radio group, on its own.
- *
- * Extracted from `SyncConsent` (ISS-5489) so the post-auth takeover could put
- * the SAME per-level breakdown inside its own modal chrome. Promotion to an
- * exported module is what earns it a story: its states stop being covered by the
- * parent's single fixture the moment a second host renders it with different
- * arguments — which is exactly what the takeover does.
- *
- * The axis worth seeing side by side is the PRE-SELECTION: onboarding starts on
- * the safe floor, the takeover starts on the widest level. The chip is no longer
- * part of that axis — ISS-5318 moved it into the shared card, so "Recommended"
- * sits on the most-permissive level in both stories no matter which one is
- * selected. Two hosts once passed two different words pointing at two different
- * levels; the prop that allowed it is gone.
+ * A group of three cards, one per data sync level: Off, Metadata, and Full,
+ * that someone picks between during onboarding or when joining an
+ * organization. Each card lists what stays on the device and what leaves it
+ * at that level, pulled from the same copy the desktop Settings page uses,
+ * so the two never describe the levels differently. Reach for it when you
+ * need just the picker: it carries no heading or confirm button of its own,
+ * since the two hosts that use it wrap it in different chrome. The level
+ * that starts selected differs by where it is shown: onboarding opens on the
+ * safest option, while joining an organization opens on the widest one.
  */
 const meta: Meta<typeof SyncLevelOptions> = {
   args: {

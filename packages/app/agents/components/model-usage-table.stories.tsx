@@ -1,6 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react";
 import { ModelUsageTable } from "./model-usage-table";
 
+/**
+ * A plain table breaking down usage by model: how many sessions used it, how
+ * many input, output, and cached tokens it processed, and what it cost. Each
+ * row is one model, already formatted into display strings, so this
+ * component only lays the data out. Its sibling, the User Usage Table, is
+ * the same shape but grouped by person instead of model; when there is
+ * nothing to show, this one renders a dedicated empty state rather than a
+ * table with no rows.
+ */
 const meta = {
   title: "Composites/Agents/Model Usage Table",
   component: ModelUsageTable,

@@ -10,7 +10,17 @@ import {
 
 const RESIZE_CONTROL_NAME = "Resize comments rail";
 
-/** Responsive shell matrix for the inline, right-sheet, and bottom-sheet rails. */
+/**
+ * The panel that holds branch comments beside a branch's detail page. On a
+ * wide screen it is an inline rail you can drag or use arrow keys to resize;
+ * on a narrower screen it becomes a sheet that slides in from the right, and
+ * on a phone it slides up from the bottom. Reach for it as the shell around
+ * a list of comment threads rather than rebuilding that responsive behavior
+ * yourself, since it also traps keyboard focus while open and returns focus
+ * to whatever button opened it once it closes. It renders whatever content
+ * it is given, so what is inside changes with which tab, branch details or
+ * the sessions timeline, is active.
+ */
 const meta = {
   title: "Composites/Branches/Comments Rail",
   component: BranchCommentsRail,

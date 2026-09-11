@@ -25,10 +25,19 @@ import { BranchPrStatusPanel } from "./branch-pr-status-panel";
 const HEAD_SHA = "b".repeat(40);
 const CHECKS_BUTTON_NAME = /checks/i;
 
+// Truthfulness matrix for selected-PR lifecycle, review, and check evidence.
+// The expanded partial story makes the required `*` disclosure and external
+// check-link geometry visible rather than leaving it to unit assertions.
 /**
- * Truthfulness matrix for selected-PR lifecycle, review, and check evidence.
- * The expanded partial story makes the required `*` disclosure and external
- * check-link geometry visible rather than leaving it to unit assertions.
+ * The 'Checks and review' panel on a branch's detail page, scoped to the
+ * pull request currently selected on that branch. It shows a lifecycle badge
+ * such as open, in review, merged, or blocked, the review decision if one
+ * exists, and a summary of CI checks that expands into a full list with
+ * links out to each one. Reach for it to see a pull request's live status at
+ * a glance without opening GitHub, especially the failing or pending count
+ * the summary badge is colored by. If GitHub only returned some of the
+ * expected checks, the counts carry an asterisk and a note saying only the
+ * verified checks are reflected.
  */
 const meta = {
   title: "Composites/Branches/Branch PR Status Panel",

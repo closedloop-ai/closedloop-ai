@@ -2,16 +2,20 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { MyTasksLoadFailedState } from "./my-tasks-load-failed-state";
 
+// ISS-4683 — the My Tasks degraded read state, on a canvas.
+// A failure state is only reachable in the product by breaking the network, so
+// it is the one nobody eyeballs again after it ships. That is exactly why it
+// earns a story: the icon tone, the retry affordance, and the two lines of copy
+// are checkable here in both themes without anyone unplugging anything.
+// It renders before either My Tasks view's empty branches, so a failed read can
+// never masquerade as "your queue is clear" (the FEA-3938 rule).
 /**
- * ISS-4683 — the My Tasks degraded read state, on a canvas.
- *
- * A failure state is only reachable in the product by breaking the network, so
- * it is the one nobody eyeballs again after it ships. That is exactly why it
- * earns a story: the icon tone, the retry affordance, and the two lines of copy
- * are checkable here in both themes without anyone unplugging anything.
- *
- * It renders before either My Tasks view's empty branches, so a failed read can
- * never masquerade as "your queue is clear" (the FEA-3938 rule).
+ * The message shown when My Tasks cannot load your assigned work: an icon, a
+ * short explanation, and a Try Again button. It is shared by both the list
+ * and the card views, so a failed load always tells the same story no matter
+ * which one you are looking at. It is checked for and shown before any empty
+ * queue message, so a broken connection is never mistaken for having nothing
+ * assigned.
  */
 const meta = {
   title: "Composites/My Tasks/Load Failed State",

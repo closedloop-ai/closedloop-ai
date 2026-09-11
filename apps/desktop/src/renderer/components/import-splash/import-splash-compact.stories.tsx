@@ -8,20 +8,26 @@ import {
   type ImportSplashInput,
 } from "./import-splash-state";
 
+// ISS-5258: the COLLAPSED first-launch import splash, one story per state it can
+// be collapsed into.
+// Same discipline as the sibling `Import Splash Body` stories: each canvas feeds
+// real signals through the real derivation (`deriveImportSplashState` then
+// `deriveImportSplashCompactState`), so what the row says here is what the
+// running app would say — not a copy of it.
+// The point of the matrix is the honesty contract. Collapsing costs the user
+// detail, never truth, so a paused import still reads "Import paused", a failed
+// one still reads "Import didn't finish" with a warning instead of a bar, and
+// the scan — which has no total yet — claims no count at all rather than
+// printing a fabricated 0%.
 /**
- * ISS-5258: the COLLAPSED first-launch import splash, one story per state it can
- * be collapsed into.
- *
- * Same discipline as the sibling `Import Splash Body` stories: each canvas feeds
- * real signals through the real derivation (`deriveImportSplashState` then
- * `deriveImportSplashCompactState`), so what the row says here is what the
- * running app would say — not a copy of it.
- *
- * The point of the matrix is the honesty contract. Collapsing costs the user
- * detail, never truth, so a paused import still reads "Import paused", a failed
- * one still reads "Import didn't finish" with a warning instead of a bar, and
- * the scan — which has no total yet — claims no count at all rather than
- * printing a fabricated 0%.
+ * The collapsed, one-line version of the first-launch import banner: a
+ * status sentence, a thin progress rail below it, and a handful of controls
+ * to pause, dismiss, or expand back to the full panel. Collapsing only hides
+ * detail, never changes the truth of what is happening, so a paused import
+ * still reads Import paused and a failed one still offers a way to continue
+ * rather than trapping you on a rail with no button. A phase with no known
+ * total, like scanning, shows an indeterminate hatched rail instead of a
+ * fabricated percentage.
  */
 const meta = {
   title: "Composites/App Shell/Import Splash Compact",

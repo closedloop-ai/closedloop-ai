@@ -4,23 +4,31 @@ import { DataSyncLevel } from "../../../shared/contracts";
 import { DESKTOP_SHOW_REDACTED_SYNC_LEVEL_FEATURE_FLAG_KEY } from "../../../shared/feature-flags";
 import { DataSyncTab } from "./data-sync-tab";
 
+// ISS-4779 (wongk story review on PR #4500): the closed-by-default gating of the
+// "Redacted sessions" option is a prop-driven visual state matrix, and exactly
+// the kind of thing a jsdom render test cannot pin — `visibleLevels` filters the
+// rendered radio set from two inputs (the show-Redacted Labs flag and the level
+// the user is already persisted on), so which options appear is a rendered
+// outcome, not a static list. The sibling render test
+// (`__tests__/data-sync-tab.test.tsx`) proves which option set is chosen; it
+// runs with no Tailwind loaded and is structurally blind to how the picker,
+// badges, and elevated affordance actually lay out.
+// Each story drives the same two seams the component and its unit test already
+// use — no new provider is invented: `window.desktopApi.getDataSyncLevel` seeds
+// the persisted level (installed synchronously before the tab mounts, so its
+// mount-time read resolves against the fixture), and `FeatureFlagAdapterProvider`
+// resolves the show-Redacted flag. `setDataSyncLevel` echoes the picked level so
+// Apply round-trips on the canvas the way the real IPC bridge does.
 /**
- * ISS-4779 (wongk story review on PR #4500): the closed-by-default gating of the
- * "Redacted sessions" option is a prop-driven visual state matrix, and exactly
- * the kind of thing a jsdom render test cannot pin — `visibleLevels` filters the
- * rendered radio set from two inputs (the show-Redacted Labs flag and the level
- * the user is already persisted on), so which options appear is a rendered
- * outcome, not a static list. The sibling render test
- * (`__tests__/data-sync-tab.test.tsx`) proves which option set is chosen; it
- * runs with no Tailwind loaded and is structurally blind to how the picker,
- * badges, and elevated affordance actually lay out.
- *
- * Each story drives the same two seams the component and its unit test already
- * use — no new provider is invented: `window.desktopApi.getDataSyncLevel` seeds
- * the persisted level (installed synchronously before the tab mounts, so its
- * mount-time read resolves against the fixture), and `FeatureFlagAdapterProvider`
- * resolves the show-Redacted flag. `setDataSyncLevel` echoes the picked level so
- * Apply round-trips on the canvas the way the real IPC bridge does.
+ * This is the settings screen where you choose how much session data your
+ * machine sends to the cloud: radio options from metadata only up to full
+ * transcripts, a badge showing your current level, and an Apply button that
+ * confirms whether you raised or lowered it. Reach for it as the one place
+ * this choice lives now, since it replaced several separate toggles for
+ * cloud connection, transcript syncing, and paused cloud commands. A
+ * "Redacted sessions" option is hidden by default behind a feature flag, but
+ * if you are already on that level it keeps showing for you, so turning the
+ * flag off never silently switches your setting out from under you.
  */
 const meta = {
   title: "Surfaces/Data Sync Tab",

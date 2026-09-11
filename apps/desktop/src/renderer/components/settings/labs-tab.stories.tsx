@@ -6,25 +6,30 @@ import {
 } from "../../../shared/feature-flags";
 import { LabsTab } from "./labs-tab";
 
+// ISS-5310 (wongk story review on PR #4484): `LabsTab` became its own exported
+// module in this change — matching the one-tab-per-file shape of
+// `data-sync-tab` and `desktop-account-tab` — so it is reachable from a canvas
+// for the first time. It was previously private inside `SettingsPanel.tsx`.
+// Everything the same change added here is visual and prop-driven, which is
+// exactly what a render test cannot pin: the per-`category` `Section` grouping
+// that replaced forty-one identical bordered rows in one card, the dependent row
+// NESTED under its parent with its switch DISABLED and a "Turn on X first."
+// note, and the "Requires restart" hint. `settings-panel-labs-gateway-health`
+// proves which outcome is chosen; it runs in jsdom with no Tailwind loaded and
+// so is structurally blind to how any of this actually lays out.
+// The flag LIST is not a prop — `LabsTab` renders the real `FEATURE_FLAGS`
+// registry (minus `hiddenFromLabs` entries), so these stories vary the one input
+// it does take, `settings`, and the categories on screen are whatever the
+// registry currently holds. Flag keys come from the exported registry constants
+// so a rename cannot silently leave a story asserting a dead key.
 /**
- * ISS-5310 (wongk story review on PR #4484): `LabsTab` became its own exported
- * module in this change — matching the one-tab-per-file shape of
- * `data-sync-tab` and `desktop-account-tab` — so it is reachable from a canvas
- * for the first time. It was previously private inside `SettingsPanel.tsx`.
- *
- * Everything the same change added here is visual and prop-driven, which is
- * exactly what a render test cannot pin: the per-`category` `Section` grouping
- * that replaced forty-one identical bordered rows in one card, the dependent row
- * NESTED under its parent with its switch DISABLED and a "Turn on X first."
- * note, and the "Requires restart" hint. `settings-panel-labs-gateway-health`
- * proves which outcome is chosen; it runs in jsdom with no Tailwind loaded and
- * so is structurally blind to how any of this actually lays out.
- *
- * The flag LIST is not a prop — `LabsTab` renders the real `FEATURE_FLAGS`
- * registry (minus `hiddenFromLabs` entries), so these stories vary the one input
- * it does take, `settings`, and the categories on screen are whatever the
- * registry currently holds. Flag keys come from the exported registry constants
- * so a rename cannot silently leave a story asserting a dead key.
+ * The Settings tab that lists every experimental feature as a toggle,
+ * grouped into labeled sections by category instead of one long list. A
+ * toggle that depends on another one is nested under its parent and stays
+ * disabled, with a note explaining what to turn on first, until that
+ * dependency is switched on. Reach for this tab to turn on an early feature
+ * before it ships broadly; the tab itself, including the button that opens
+ * it, only appears once the Labs setting is turned on.
  */
 const meta = {
   title: "Composites/Settings/Labs Tab",

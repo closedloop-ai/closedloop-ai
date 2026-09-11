@@ -21,6 +21,14 @@ const projectRoutes: FixtureRoute[] = [
   },
 ];
 
+/**
+ * An inline editable project title, styled to read like a heading rather
+ * than a form field until you click it. Reach for it instead of a labeled
+ * text input when a title should look like ordinary page content and switch
+ * to an editable field only on demand. Press Enter or click away to save and
+ * Escape to cancel; unlike the matching description field, this one will not
+ * let you save an empty title.
+ */
 const meta: Meta<typeof EditableProjectTitle> = {
   title: "Composites/My Tasks/Editable Project Title",
   component: EditableProjectTitle,

@@ -36,7 +36,13 @@ import { action } from "storybook/actions";
 const REFERENCE_DATE = new Date(2025, 5, 11);
 
 /**
- * A date field component that allows users to enter and edit date.
+ * A calendar grid for picking a single date, several dates, or a date range,
+ * styled to match the rest of the design system. Use it when the grid needs
+ * to sit on screen the whole time, inside a panel or a dialog, and reach for
+ * Date Picker Popover instead when it should stay tucked behind a button
+ * until someone opens it. Switching between single, multiple, and range
+ * selection also changes the shape of the value it expects, so a mode change
+ * has to come with a matching change to the selected value.
  */
 const meta = {
   title: "Composites/Inputs/Calendar",

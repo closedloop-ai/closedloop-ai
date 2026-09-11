@@ -2,14 +2,20 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { MyTasksRecencyEmptyState } from "./my-tasks-recency-empty-state";
 
+// FEA-1626 — the "your work aged out of the window" state.
+// Reaching this in the running app needs the recency flag on, an actually-empty
+// windowed result, and the chip still in force, so the copy and the escape hatch
+// are effectively unreviewable in situ. The story is where a regression in
+// either becomes visible: a user back from leave must read that their work is
+// still there, and must be able to get to it.
 /**
- * FEA-1626 — the "your work aged out of the window" state.
- *
- * Reaching this in the running app needs the recency flag on, an actually-empty
- * windowed result, and the chip still in force, so the copy and the escape hatch
- * are effectively unreviewable in situ. The story is where a regression in
- * either becomes visible: a user back from leave must read that their work is
- * still there, and must be able to get to it.
+ * The empty state for My Tasks when a recent work only time window is turned
+ * on and nothing in your queue falls inside it. It has its own icon,
+ * headline, and a Show All button that drops the window and re-checks your
+ * full history, because this is a different situation from an actually empty
+ * queue. Use it specifically for that case: someone back from time off with
+ * no recent activity still has assigned work, and this state says so instead
+ * of telling them their queue is clear.
  */
 const meta = {
   title: "Composites/My Tasks/Recency Empty State",

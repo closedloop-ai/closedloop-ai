@@ -4,11 +4,21 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { MemberInstallControl } from "./member-install-control";
 
+// The member's ACT affordance for one (machine × harness) cell (ISS-5125). The
+// matrix below is the whole contract: which install states earn a button, which
+// earn a spoken reason instead, and how a dispatch outcome reads next to a state
+// it deliberately does not overwrite.
 /**
- * The member's ACT affordance for one (machine × harness) cell (ISS-5125). The
- * matrix below is the whole contract: which install states earn a button, which
- * earn a spoken reason instead, and how a dispatch outcome reads next to a state
- * it deliberately does not overwrite.
+ * The install or retry button that appears next to one specific machine and
+ * harness combination in a member's own pack list. It shows exactly one
+ * thing at a time: a button when there's something to do, like installing or
+ * retrying a failed install; a short reason when the action is blocked, such
+ * as the machine being offline or an install already running; or nothing at
+ * all once the pack has settled into a state that needs no action. Reach for
+ * it whenever a member needs a way to act on that cell, not just read its
+ * status. After a click, the outcome of that click shows underneath as its
+ * own line, kept separate from the cell's real state, since what you clicked
+ * and what the machine has actually confirmed can briefly disagree.
  */
 const meta = {
   title: "Composites/Packs/Member Install Control",

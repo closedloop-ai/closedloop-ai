@@ -221,6 +221,19 @@ function SessionDetailPanelsActivity() {
   );
 }
 
+/**
+ * A set of building block panels that together make up an agent session's
+ * detail page: a metrics strip, a metadata list, a token and cost table by
+ * model, a tool invocation table, an error detail list, an agents section,
+ * and a timeline of grouped events. Use these instead of building a one off
+ * detail layout, since they share their look with every other place a
+ * session gets inspected, from token cost to which subagents ran. Each panel
+ * handles its own empty state, so a session with no errors, no tool calls,
+ * or no agents yet still renders a clear, honest message in that panel's
+ * slot rather than a hole in the page. A raw JSON panel is also included,
+ * for showing attribution or debug data that doesn't fit the more structured
+ * panels.
+ */
 const meta = {
   title: "Composites/Sessions/Detail/Session Detail Panels",
   component: SessionDetailPanelsOverview,

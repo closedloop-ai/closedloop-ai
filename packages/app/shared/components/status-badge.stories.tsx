@@ -71,6 +71,15 @@ function BadgeSection({
   );
 }
 
+/**
+ * A gallery of the badges that label a document's status, an issue's status
+ * or priority, and a Loop command, each colored to match what the value
+ * means, like green for done or red for blocked. Reach for the specific
+ * badge for its own vocabulary instead of building a one off colored badge
+ * by hand, so the same status keeps the same color everywhere it shows up. A
+ * value the badge doesn't recognize still renders, falling back to a neutral
+ * look and its raw label rather than disappearing.
+ */
 const meta = {
   title: "Composites/Feedback & Status/Status Badges",
   component: BadgeGallery,

@@ -2,6 +2,15 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { UserUsageTable } from "./user-usage-table";
 
+/**
+ * A table breaking down usage by person: sessions run, input and output
+ * tokens, and cost, one row per user. Clicking a name toggles that person as
+ * a filter elsewhere on the page rather than navigating away, and a Filtered
+ * badge appears on the row while it is active; a separate View sessions
+ * link, when present, does navigate to that person's sessions. It shares its
+ * layout with the Model Usage Table but groups by user instead of model, and
+ * shows its own empty state when there is no activity to show.
+ */
 const meta = {
   title: "Composites/Agents/User Usage Table",
   component: UserUsageTable,

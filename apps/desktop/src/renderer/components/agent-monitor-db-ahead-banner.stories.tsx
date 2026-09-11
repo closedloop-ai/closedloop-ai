@@ -3,22 +3,27 @@ import { AgentMonitorRuntimeStatusKind } from "../../shared/agent-monitor-status
 import { __resetRuntimeStatusPollForTests } from "../hooks/use-ingest-progress";
 import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
 
+// ISS-4841 (wongk review on PR #4186): the AppShell degraded-state banners are
+// the screens nobody lays eyes on again until they fire in the wild. This one is
+// the hardest to reach at runtime - it needs a local SQLite store written by a
+// NEWER Desktop build than the one you are running - so the canvas is the only
+// practical place to look at it.
+// Every branch of the banner is pinned here, including the four that render
+// nothing. A silent state is still a state: this banner claims the whole local
+// runtime is dead, so "stays quiet unless the runtime really is DB-ahead" is the
+// property most worth being able to see.
+// Follows the `settings/global-sandbox-card.stories.tsx` pattern: install the
+// narrow `window.desktopApi` slice the component reads (here, the shared
+// runtime-status poll's `getRuntimeStatus`) so Storybook renders the Electron
+// wrapper with no main process behind it.
 /**
- * ISS-4841 (wongk review on PR #4186): the AppShell degraded-state banners are
- * the screens nobody lays eyes on again until they fire in the wild. This one is
- * the hardest to reach at runtime - it needs a local SQLite store written by a
- * NEWER Desktop build than the one you are running - so the canvas is the only
- * practical place to look at it.
- *
- * Every branch of the banner is pinned here, including the four that render
- * nothing. A silent state is still a state: this banner claims the whole local
- * runtime is dead, so "stays quiet unless the runtime really is DB-ahead" is the
- * property most worth being able to see.
- *
- * Follows the `settings/global-sandbox-card.stories.tsx` pattern: install the
- * narrow `window.desktopApi` slice the component reads (here, the shared
- * runtime-status poll's `getRuntimeStatus`) so Storybook renders the Electron
- * wrapper with no main process behind it.
+ * A thin red bar across the top of the desktop app that appears only when
+ * the local database on disk was written by a newer version of the app than
+ * the one currently running. It tells you that agent history and cloud sync
+ * are unavailable until you update, and gives you a single Check for updates
+ * button to do that. In every other state, including a normal failure that
+ * is not caused by a version mismatch, it renders nothing at all, so seeing
+ * it on screen always means this exact cause.
  */
 const meta = {
   title: "Composites/App Shell/Agent Monitor DB Ahead Banner",

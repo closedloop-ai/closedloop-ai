@@ -40,6 +40,14 @@ const PARTIAL_TOTAL = resolveMyTasksRangeReadout({
   unit: MyTasksPagedUnit.TopLevelTasks,
 });
 
+/**
+ * The pager at the bottom of a My Tasks list or board: page controls plus a
+ * line of text stating the range you are looking at, like 1 to 20 of 84.
+ * Reach for it specifically on My Tasks screens, since it shares its wording
+ * with both the list and card views so the two never describe the same queue
+ * differently. It can also show a second line noting that the count above it
+ * is a lower bound, for when some rows had to be left out.
+ */
 const meta = {
   title: "Composites/My Tasks/Pagination Footer",
   component: MyTasksPaginationFooter,

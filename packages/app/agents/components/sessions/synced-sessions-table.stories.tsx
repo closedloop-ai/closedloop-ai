@@ -17,6 +17,17 @@ import {
 import { SessionsRecoveryAction } from "./sessions-recovery-action";
 import { SyncedSessionsTable } from "./synced-sessions-table";
 
+/**
+ * A ready made version of the sessions table that takes real session list
+ * items straight from the API, rather than rows you have already shaped, and
+ * does the mapping for you: building each session's link, resolving its
+ * linked project and issue chips, and folding in its live sync status. Use
+ * it whenever your data is the actual session records the server returns,
+ * and drop down to the plain Sessions Table only when you need to shape the
+ * rows yourself. It also owns the empty state shown when a list comes back
+ * with nothing in it, including the specific message shown when filters are
+ * the reason.
+ */
 const meta = {
   title: "Composites/Sessions/Listing/Synced Sessions Table",
   component: SyncedSessionsTable,

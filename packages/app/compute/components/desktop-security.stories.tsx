@@ -44,6 +44,15 @@ function DesktopSecurityStory() {
   );
 }
 
+/**
+ * A small badge showing a compute target's security state, such as
+ * protected, update required, or unavailable, shown next to a button for
+ * downloading the desktop update that fixes it. Use the two together
+ * wherever a target's security status appears, so a reader sees both the
+ * problem and the one-click fix in the same place. The download button
+ * disables itself and shows a spinner, or reads Download unavailable,
+ * whenever there is no download link yet, rather than linking nowhere.
+ */
 const meta = {
   title: "Composites/Compute/Desktop Security",
   component: DesktopSecurityStory,

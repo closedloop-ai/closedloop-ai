@@ -164,6 +164,16 @@ const storyDecorator: Decorator = (Story) => (
   </PanelFrame>
 );
 
+/**
+ * A capped list of exact invocation records for one component: where in the
+ * code it was called from, what kind of call it was, and when. Long file
+ * paths are shortened to their portable tail with a copy button beside them,
+ * and any record the system could not confidently attribute shows as
+ * unmatched or ambiguous rather than being force-fit onto a component. When
+ * there are more records than the list can show, the count at the top reads
+ * as a floor, such as 60+, instead of a false exact number, and a component
+ * with no evidence shows a plain message instead of an empty table.
+ */
 const meta = {
   title: "Composites/Agents/Invocation Evidence List",
   component: InvocationEvidenceList,

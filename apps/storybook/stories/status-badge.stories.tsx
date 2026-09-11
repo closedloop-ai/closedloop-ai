@@ -102,6 +102,16 @@ const ToneBadgeGallery = () => (
   </div>
 );
 
+/**
+ * A small pill for showing a state, in one of seven tones such as success,
+ * warning, or danger, each carrying a colored dot so the meaning survives
+ * even for someone who can't tell the colors apart. Use the dot on its own
+ * when you need just a liveness mark with no label, and drop the dot only on
+ * a pill that's counting something rather than naming a state, like an
+ * overflow '+2' chip. A pulsing ring around the whole pill marks something
+ * actively in progress, such as an upload still running, and should replace
+ * the dot's own pulse rather than run alongside it.
+ */
 const meta = {
   title: "Composites/Feedback & Status/Status Badge",
   component: ToneBadgeGallery,

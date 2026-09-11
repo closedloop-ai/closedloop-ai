@@ -39,6 +39,15 @@ const judgeItems: JudgeFeedbackItem[] = [
   },
 ];
 
+/**
+ * A collapsible 'Evaluation' section showing how an artifact scored against
+ * its automated LLM judges: a progress bar and an 'X of Y judges accepted'
+ * count once results are in. Before results exist, it shows one of two plain
+ * messages instead of an empty bar: that it's waiting on judges, or that
+ * none have run yet. The list of individual judge results below the bar is
+ * passed in from outside, so this component only owns the summary, not the
+ * per-judge cards.
+ */
 const meta = {
   title: "Composites/Documents/Evaluation Section View",
   component: EvaluationSectionView,

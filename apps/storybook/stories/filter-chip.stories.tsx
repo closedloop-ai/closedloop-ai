@@ -86,6 +86,15 @@ function InteractiveFilterChipSet() {
   );
 }
 
+/**
+ * A small pill showing one active filter's label with an x button to remove
+ * it. Given extra content, clicking the label opens a dropdown to change the
+ * selection instead of just displaying it. Use it as the single
+ * removable-filter building block, Active Filters Bar arranges a whole row
+ * of these automatically from a table's filter state. Long labels truncate
+ * rather than wrap, and the label and the remove button are separate click
+ * targets, so removing a filter never accidentally opens its dropdown.
+ */
 const meta = {
   title: "Composites/Data Display/Filter Chip",
   component: FilterChip,

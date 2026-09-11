@@ -104,6 +104,17 @@ function DerivedStrip() {
 // input, and a docs page renders them all at the docs container's own width. All
 // six would come out identical, showing none of the tiers they exist to pin.
 // `activity-bucket-tooltip.stories.tsx` omits the tag for the same kind of reason.
+/**
+ * Lines up a row of metric cards, like the Sessions page's Sessions, Tokens,
+ * and Cost summary bar, so they read as one strip instead of a hand built
+ * row. Reach for it whenever you are showing a handful of key numbers side
+ * by side and want them to size and space themselves consistently. It
+ * automatically tightens each card's padding when the row gets narrow, and
+ * keeps every card's label lined up on the same baseline so a longer label
+ * on one card does not push its number out of line with its neighbors. It
+ * can also wrap into a two column grid on narrow screens instead of
+ * scrolling sideways.
+ */
 const meta = {
   title: "Composites/Layout/Summary Card Row",
   component: SummaryCardRow,

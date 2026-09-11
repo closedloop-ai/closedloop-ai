@@ -14,21 +14,26 @@ import type { ReactNode } from "react";
 const NOW = new Date("2026-07-19T12:00:00.000Z");
 const TIME_ZONE = "UTC";
 
+// PRD-538 R6 (ISS-5354): the sidebar-footer session-limit summary, across the
+// states it must keep apart.
+// The unit tests prove WHICH state is chosen; they cannot prove that the three
+// non-data states look different from each other, and that is the whole claim
+// here. The failure this feature is most exposed to is a bar that renders empty
+// because nothing was fetched and reads exactly like a real 0% — so the loading
+// skeleton, the stale caveat, and a measured zero are all on this canvas
+// together, where a regression that collapsed any two of them would be visible
+// at a glance rather than shipping silently.
+// Rendered in a sidebar-width column with the sidebar's own background, because
+// these bars only ever appear ~14rem wide and a component that looks balanced at
+// page width can still wrap its reset line in the only place it actually ships.
 /**
- * PRD-538 R6 (ISS-5354): the sidebar-footer session-limit summary, across the
- * states it must keep apart.
- *
- * The unit tests prove WHICH state is chosen; they cannot prove that the three
- * non-data states look different from each other, and that is the whole claim
- * here. The failure this feature is most exposed to is a bar that renders empty
- * because nothing was fetched and reads exactly like a real 0% — so the loading
- * skeleton, the stale caveat, and a measured zero are all on this canvas
- * together, where a regression that collapsed any two of them would be visible
- * at a glance rather than shipping silently.
- *
- * Rendered in a sidebar-width column with the sidebar's own background, because
- * these bars only ever appear ~14rem wide and a component that looks balanced at
- * page width can still wrap its reset line in the only place it actually ships.
+ * A compact usage summary in the sidebar footer that shows how much of your
+ * Claude subscription you have used, as one or two small progress bars.
+ * Click it to open a drawer with the full breakdown of each limit. It has
+ * three distinct states for when there is nothing to show: a skeleton while
+ * the numbers are loading, nothing at all when your device has no way to
+ * read your usage, and a dated note when the numbers are older than
+ * expected, so a real zero percent is never mistaken for missing data.
  */
 const meta = {
   title: "Composites/App Shell/Session Limits Nav",

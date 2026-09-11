@@ -3,6 +3,15 @@ import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { FolderSearchIcon } from "lucide-react";
 
+/**
+ * This shows the same empty state block dressed in real product copy: no
+ * related artifacts yet, and no favorites yet, each pairing an icon, a
+ * title, a description, and a call to action button. Look here when writing
+ * the wording for a new empty state, since it shows how a title,
+ * description, and button actually read together rather than in the
+ * abstract. Drop the button entirely when there's nothing useful to send
+ * someone to do next, and the layout adjusts to fill the space on its own.
+ */
 const meta = {
   title: "Composites/Feedback & Status/Empty State App Example",
   component: EmptyState,

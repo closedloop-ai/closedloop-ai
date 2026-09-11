@@ -27,7 +27,8 @@ held to parity, and anything that genuinely differs under the Electron shell get
 variant that names the difference.
 
 `TAXONOMY.md` has the group vocabulary, the judgment calls behind it, and how to
-classify something new. Read it before adding a story.
+classify something new. `WRITING.md` is the standard for the description that sits
+at the top of each Docs page. Read both before adding a story.
 
 ## What changed: this now runs on Vite
 

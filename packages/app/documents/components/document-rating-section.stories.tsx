@@ -33,6 +33,15 @@ function InteractiveDocumentRatingSection() {
   );
 }
 
+/**
+ * A star rating control for a document, with the average score and number of
+ * ratings shown underneath. Picking a star reveals a comment box so you can
+ * add optional feedback along with your rating, up to 500 characters, with
+ * Save and Cancel buttons that stay disabled until there's something new to
+ * save. If your existing rating was made on an older version of the
+ * document, it shows a warning noting which version you rated and which
+ * version is current now.
+ */
 const meta = {
   title: "Composites/Documents/Document Rating Section",
   component: DocumentRatingSection,

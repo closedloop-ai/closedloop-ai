@@ -129,6 +129,19 @@ const COLLAPSED_COST_PRESENTATION = resolveCostCardPresentation(
 /** The caption every card in these stories carries, so only the slot varies. */
 const IN_RANGE_DETAIL = "in the active filter set";
 
+/**
+ * This decides what appears in a summary card's small delta area beneath its
+ * main number: a colored chip showing the percentage change from the prior
+ * period, plain "No prior period" text, a neutral "No comparison" pill, or
+ * nothing at all. Reach for this whenever a metric card needs to compare
+ * against an earlier period, since it keeps separate cards like Sessions,
+ * Total Tokens, and Cost from disagreeing about when a comparison is honest
+ * to show, for example while a card is still loading or is showing local
+ * fallback numbers instead of the real cloud figures. A card confirmed to
+ * have no comparable data drops the delta area entirely rather than showing
+ * "No prior period," since that wording would wrongly imply a comparison was
+ * attempted.
+ */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Summary Delta Slots",
   component: SessionsDeltaSlotCard,

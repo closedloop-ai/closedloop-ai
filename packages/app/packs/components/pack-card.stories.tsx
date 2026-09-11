@@ -4,6 +4,16 @@ import { mockPackViews } from "../lib/pack-view-mock";
 import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PackCard } from "./pack-card";
 
+/**
+ * A catalog card for one pack: its name, publisher, star rating, and a short
+ * description, with a button at the bottom to install it, open it on GitHub,
+ * or show a checkmark if it's already installed. Click anywhere on the card
+ * to open the pack's full detail view. Use it to browse a catalog of packs
+ * rather than a plain list, since the rating and install state are visible
+ * at a glance. A trending badge and a small stack of teammates' avatars can
+ * also appear on it, but only when the surface decides a pack is genuinely
+ * worth calling out or team usage is relevant to show.
+ */
 const meta = {
   title: "Composites/Packs/Pack Card",
   component: PackCard,

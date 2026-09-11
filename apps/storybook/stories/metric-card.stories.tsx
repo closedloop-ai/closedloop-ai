@@ -11,6 +11,19 @@ import {
 } from "@repo/design-system/components/ui/primitives/metric-polarity";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * A small card for one number: a label, a large value, and underneath it a
+ * signed change chip showing a rise or fall as a percentage, plus an
+ * optional trend caption or sparkline. Use it for a single headline metric
+ * in a dashboard or summary row, especially one with a meaningful
+ * period-over-period comparison, a table or a ranked bar list fits better
+ * when there are many rows to show at once. You must tell it whether a rise
+ * in this particular metric is good or bad, since for something like spend
+ * or latency a rise is actually bad, otherwise it cannot choose the chip's
+ * color correctly. When there is no value yet it shows a muted No data label
+ * instead of a number, and it can also render as a dimmed placeholder card
+ * while real data is still loading.
+ */
 const meta = {
   title: "Composites/Data Display/Metric Card",
   component: MetricCard,

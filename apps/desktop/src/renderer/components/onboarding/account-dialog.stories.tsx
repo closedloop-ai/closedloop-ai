@@ -10,14 +10,22 @@ import { DesktopAuthProvider } from "../../shared-agent-sessions/desktop-auth-pr
 import { AccountDialog } from "./account-dialog";
 import { GuestSignupIntent } from "./guest-signup-provider";
 
+// ISS-5112: the states a guest can be looking at when the first-launch tour
+// ends — the offer, the sign-in methods behind it, and both of the setup steps
+// a completed sign-in can land on.
+// Every scenario mounts the actual `DesktopOnboardingFlow` over the REAL
+// `DesktopAuthProvider`, with only the preload bridge faked, so the canvas shows
+// the flow the packaged app runs rather than a lookalike.
 /**
- * ISS-5112: the states a guest can be looking at when the first-launch tour
- * ends — the offer, the sign-in methods behind it, and both of the setup steps
- * a completed sign-in can land on.
- *
- * Every scenario mounts the actual `DesktopOnboardingFlow` over the REAL
- * `DesktopAuthProvider`, with only the preload bridge faked, so the canvas shows
- * the flow the packaged app runs rather than a lookalike.
+ * The dialog a guest sees when the desktop app's first run tour ends: a
+ * pitch for an account with a Sign Up button, a Not now button, and a link
+ * for someone who already has one. Both buttons open the same real sign in
+ * flow in the system browser rather than a second in app flow. For a few
+ * entry points that already made the case for signing up elsewhere, it skips
+ * the pitch and opens straight to a signing you up spinner instead, so
+ * nobody sees the same argument twice. Closing it any way, including Escape
+ * or clicking outside, always leaves the guest in the app with what they
+ * already had.
  */
 const meta = {
   title: "Composites/Onboarding/Account Dialog",

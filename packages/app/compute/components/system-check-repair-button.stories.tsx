@@ -5,11 +5,19 @@ import type { ReactNode } from "react";
 import { fn } from "storybook/test";
 import { SystemCheckRepairButton } from "./system-check-repair";
 
+// The Repair control, separate from the panel that narrates a run
+// (`System Check Repair Panel`). Everything it does is decided by props, so the
+// states below are the whole matrix: offered or not, mid-run, blocked by a
+// concurrent check, and the two treatments the two host surfaces ask for.
 /**
- * The Repair control, separate from the panel that narrates a run
- * (`System Check Repair Panel`). Everything it does is decided by props, so the
- * states below are the whole matrix: offered or not, mid-run, blocked by a
- * concurrent check, and the two treatments the two host surfaces ask for.
+ * A button reading Repair, or Repair N failures, that starts an automatic
+ * fix for whatever a compute target's check found wrong, showing a spinner
+ * while it works. Use it beside a system check's results whenever the
+ * gateway reports something it can actually fix, and use System Check Repair
+ * Panel to show what that repair run actually did. It renders nothing at all
+ * when there is nothing repairable or the gateway is too old to support it,
+ * and it disables itself while an unrelated re-check is already running so
+ * the two never race each other.
  */
 const meta = {
   title: "Composites/Compute/System Check Repair Button",

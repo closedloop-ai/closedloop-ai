@@ -30,6 +30,14 @@ const emptySnapshot: ArtifactRepositorySnapshot = {
   repositories: [],
 };
 
+/**
+ * A read-only list of the code repositories an artifact was built against,
+ * with the primary repository marked and always listed first. It renders two
+ * ways: a row of small pills for a compact metadata bar, or a stacked list
+ * with a heading for a sidebar or detail panel. Each entry can show a branch
+ * or ref name as secondary text next to the repository name, and if there
+ * are no repositories at all, it just says so.
+ */
 const meta = {
   title: "Composites/Documents/Artifact Repositories Summary",
   component: ArtifactRepositoriesSummary,

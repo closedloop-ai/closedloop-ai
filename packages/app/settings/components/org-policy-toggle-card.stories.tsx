@@ -28,6 +28,17 @@ const idleSaveState = {
   saveAlert: null,
 };
 
+/**
+ * A settings card with a single on or off switch for an org level privacy
+ * policy, such as whether session transcripts sync to the cloud, built to
+ * take its own title and description as props. Because these policies come
+ * from an optional part of the API, the card also has loading, error, and
+ * status unknown versions, for when the server genuinely cannot say what the
+ * setting is, rather than the card guessing it is off. While a change is
+ * saving, the switch holds the value you just requested and stays locked
+ * until the server confirms it, and a failed save shows an inline alert
+ * without quietly flipping the switch back.
+ */
 const meta = {
   title: "Composites/Settings/Org Policy Toggle Card",
   component: OrgPolicyEditableCard,
