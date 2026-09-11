@@ -117,9 +117,13 @@ curl -s -u closedloop:<password> \
 }
 ```
 
-309 of the 335 carry a description, and 290 carry full prop data, 1,632 props in
-total. The 26 without are components defined inside their own story file, so
-there is nothing to read props from.
+312 of the 335 carry a description, and 293 carry full prop data, 1,647 props in
+total. The rest are components defined inside their own story file, so there is
+nothing to read props from.
+
+Those figures move whenever a component is added or wired up, so treat them as a
+sense of scale rather than a contract. `manifests/components.json` is the source
+of truth; count it if you need the number.
 
 The story index sits next to it at `/index.json`, which maps every story id to
 its title and file.

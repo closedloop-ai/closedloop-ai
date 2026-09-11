@@ -68,6 +68,11 @@ const ALL_STATUSES: StatusIconStatus[] = [
   "executed",
   "complete",
   "wont-do",
+  // The muted neutral marker the component falls back to for a status it does
+  // not recognise. It is a real member of `StatusIconStatus` and it is in the
+  // Controls options, so a matrix that claims to show every status owes it a
+  // swatch too.
+  "decorative",
 ];
 
 /**

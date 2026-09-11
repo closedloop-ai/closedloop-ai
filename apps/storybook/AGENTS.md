@@ -28,4 +28,21 @@ components rather than lookalikes.
 `MCP.md` covers connecting an agent, either to the local MCP server while you
 work or to the hosted component manifest at
 `https://storybook.preview.closedloop-stage.ai/manifests/components.json`, which
-carries 309 descriptions and 1,632 props and needs no dev server.
+carries descriptions and prop data for most of the catalog and needs no dev
+server.
+
+## Stories that fetch
+
+A story whose component runs a query must SEED that query, in
+`parameters.appCore` (`queryData` for a cache entry, `apiRoutes` for a fixture
+route). An unseeded query does not fail cleanly. It races the fixture transport,
+so the story passes most runs and fails perhaps one in six, which reads as "CI is
+flaky" rather than as a bug in the story.
+
+Three separate stories have been fixed for exactly this. The trap is that a
+component often runs MORE than one query, and the second is easy to miss:
+`BranchesSection` gates its pull-request query on `isOpen && hasBranches`, so
+every empty-state story was stable and only the populated one was flaky.
+
+Before adding a story for a populated state, read the component for every hook it
+calls, not just the obvious one.
