@@ -106,6 +106,12 @@ function LevelRow({ name, what }: Readonly<{ name: string; what: string }>) {
  *
  * Deliberately has no `autodocs` tag. A landing page does not want a Docs tab
  * and a story as two separate sidebar entries; it wants to be one page.
+ *
+ * Its one story is named for the component rather than `Default`, which is the
+ * house rule everywhere else (see AGENTS.md). Storybook hoists a lone story
+ * whose name matches its component into a single sidebar leaf, so the page is
+ * one click instead of a folder you expand to find `Default` inside. Worth the
+ * exception on the two pages that are the front door.
  */
 const meta = {
   title: "Start Here/Introduction",
@@ -121,4 +127,4 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Introduction: Story = {};
