@@ -11,16 +11,9 @@ import { CommandSeparator } from "cmdk";
 import { fn } from "storybook/test";
 
 /**
- * A searchable list of items with a text box at the top: type to filter,
- * then use the arrow keys and Enter to pick one. Reach for it whenever
- * people need to find one item out of many by typing rather than scrolling,
- * most often as a command palette opened with a keyboard shortcut, but also
- * as the list inside a search dropdown or combobox. Filtering, ranking, and
- * keyboard navigation are built in, but grouping items into sections and
- * showing an empty results message are both left for you to add. Hand it a
- * list you have already filtered or ranked yourself and turn off its built
- * in filtering, or its own text matching will filter your list a second
- * time.
+ * A searchable list you type into and navigate with arrow keys, for finding
+ * one item among many, whether as a command palette, a search dropdown, or a
+ * combobox.
  */
 const meta = {
   title: "Composites/Overlays/Command",

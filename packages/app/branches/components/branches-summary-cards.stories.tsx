@@ -13,17 +13,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * The row of KPI cards above the Branches list: AI spend, lines changed per
- * dollar, active branches, merge rate, and median pull request size, each
- * with an info tooltip explaining exactly what it measures. Every card is
- * computed from your local, filtered view of branches, so the numbers that
- * do not need GitHub stay visible even without a GitHub connection, while a
- * metric that genuinely needs GitHub shows a 'Connect GitHub' prompt instead
- * of a made up number. Reach for it as the summary strip on the Branches
- * list page; the same metrics get their own dedicated cards on a single
- * branch's detail page. Each card can independently show a muted 'no data'
- * state with its own reason, so seeing several side by side does not mean
- * the page failed to load.
+ * The row of KPI cards above the Branches list, computed from your filtered
+ * local view so most stay visible without a GitHub connection.
  */
 const meta = {
   title: "Composites/Branches/Branches Summary Cards",

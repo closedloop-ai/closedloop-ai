@@ -35,14 +35,9 @@ import {
 // only provider need — the info tooltip — is met by the preview's
 // `TooltipProvider`. So it declares no `parameters.appCore`.
 /**
- * This is the tile that shows a dollar cost figure, used on both the
- * Sessions summary row and the organization dashboard. It shows a plain dash
- * instead of "$0" whenever the cost could not actually be computed, so a
- * session with no usage data never looks like it was confirmed to cost
- * nothing. Because spending less is the good outcome here, a rising cost
- * shows red as a regression and a falling cost shows green as an
- * improvement, the reverse of most metric cards, and getting that backwards
- * is the mistake this component exists to prevent.
+ * The tile showing a dollar cost figure, coloring a rising cost red and a
+ * falling one green, the reverse of most metric cards, since spending less
+ * is the good outcome here.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Cost Metric Card",

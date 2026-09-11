@@ -39,15 +39,9 @@ const group: SessionEventGroup = {
 };
 
 /**
- * A collapsible row for one step in a session's activity log: its title,
- * which tool ran, when it happened, and a status badge, with a chevron to
- * expand and see every event inside that step in full detail. Use it to list
- * a session's timeline instead of showing every raw event flat, since
- * related events, like a tool call and its result, are grouped under one row
- * rather than shown as two disconnected lines. A row that groups more than
- * one event gets a colored left border and an event count, so a multi-event
- * group is visually distinct from a single simple action before you even
- * expand it.
+ * A collapsible row for one step in a session's activity log, grouping
+ * related events like a tool call and its result under one row instead of
+ * listing every raw event flat.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Event Group Row",

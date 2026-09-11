@@ -8,13 +8,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 // it opens on hover/focus, hover (or Tab to) the icon in the canvas to see the
 // popover — it is not open at rest.
 /**
- * A small circled 'i' icon that reveals a short explainer in a popover when
- * you hover over it or reach it with the keyboard, and hides again as soon
- * as you move away. Click or tap it to pin the popover open instead, which
- * matters on touch screens that have no hover at all. Use it beside a metric
- * label or a chart title when a word or a number needs a one line
- * definition, rather than wrapping the whole label in a tooltip that a
- * keyboard user could never open.
+ * A small circled i icon revealing a short explainer on hover or focus, and
+ * pinned open on tap, for labeling a metric or chart title in one line.
  */
 const meta = {
   title: "Composites/Feedback & Status/Info Hint",

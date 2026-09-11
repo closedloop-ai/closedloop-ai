@@ -82,13 +82,9 @@ const PillNoComparisonCanvas = () => (
 );
 
 /**
- * A small 'No comparison' chip that fills the spot where a KPI card would
- * normally show its change from the prior period. It appears instead of
- * leaving that spot blank, so a metric with nothing to compare against
- * doesn't look like a card that failed to load. Focus or hover it to read
- * the specific reason, such as too short a range or a metric that never
- * computes a comparison at all. The chip itself always reads the same; only
- * the reason underneath changes.
+ * A small No comparison chip filling the spot where a KPI card would show
+ * its change, so a metric with nothing to compare doesn't look like it
+ * failed to load.
  */
 const meta = {
   title: "Composites/Insights/KPI Delta Placeholder",

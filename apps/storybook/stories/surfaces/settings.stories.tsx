@@ -209,13 +209,9 @@ const SettingsScreen = ({
 );
 
 /**
- * This is the organization settings screen: tabs for General, Members,
- * Integrations, and Billing, a table of members with their roles, and a set
- * of preference rows with switches. Reach for it to see the overall shape of
- * account and organization configuration, separate from a single feature's
- * own settings, like the data sync controls. Only a few of these tabs are
- * wired up with real content here, so treat it as a layout reference rather
- * than the live settings experience.
+ * The organization settings screen, showing the overall shape of account and
+ * org configuration separate from a single feature's own settings, like data
+ * sync.
  */
 const meta = {
   title: "Surfaces/Settings",

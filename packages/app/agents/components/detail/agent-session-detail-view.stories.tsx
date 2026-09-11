@@ -34,15 +34,9 @@ const detailViewDecorator: Decorator = (Story) => (
 );
 
 /**
- * This is the full page for one agent session: an activity timeline with
- * bars and a scrubber you can drag, a rail of event markers, a properties
- * panel, and an optional side rail of comments tied to points in the
- * session. Reach for it for the complete record of a single session, rather
- * than the Sessions list, which shows many sessions at once, or Session
- * Activity Breakdown, which only rolls costs up by phase. It renders
- * whatever data, loading state, or error it is handed rather than fetching
- * anything itself, and loading, error, and not-found each get their own
- * message instead of sharing one generic state.
+ * The full page for one agent session, the complete record rather than the
+ * Sessions list's many sessions at once or Session Activity Breakdown's
+ * phase-only totals.
  */
 const meta: Meta<typeof AgentSessionDetailView> = {
   title: "Surfaces/Session Detail",

@@ -2,12 +2,9 @@ import { DocumentActivitySection } from "@repo/app/documents/components/document
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A collapsible 'Activity' section showing when a document was created, who
- * created it, and when it was last updated. Use it as a simple metadata
- * footer on a document's detail page, wherever you don't need the fuller
- * change history a full activity feed would show. When no creator is known,
- * it falls back to a plain label like 'Unknown user' instead of leaving the
- * line blank.
+ * A collapsible Activity section showing when a document was created, by
+ * whom, and when it was last updated, a simple metadata footer rather than a
+ * fuller history feed.
  */
 const meta = {
   title: "Composites/Documents/Document Activity Section",

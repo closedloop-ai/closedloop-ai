@@ -234,14 +234,8 @@ const DashboardScreen = ({
 );
 
 /**
- * This is the landing screen after signing in: a heading, four metric cards
- * for agent sessions, merge rate, median pull request size, and spend, a
- * recent sessions table, and a model usage breakdown with progress bars.
- * Reach for it to see an organization's overall activity at a glance, rather
- * than drilling into one session or branch. Each metric card carries a short
- * note on what it counts and how it is worked out, and turning the session
- * count down to zero leaves an empty table with no message yet written for
- * that case.
+ * The landing screen after signing in, showing an organization's overall
+ * activity at a glance rather than drilling into one session or branch.
  */
 const meta = {
   title: "Surfaces/Dashboard",

@@ -9,17 +9,9 @@ import { memberInstallCellKey } from "./member-targets-block";
 import { PackDetail } from "./pack-detail";
 
 /**
- * This is the full detail page for one pack: a bundle of ready-made agents,
- * skills, commands, and other add-ons that installs into a coding harness
- * like Claude Code or Codex. It shows a header with star rating, publisher,
- * and supported-harness badges, a row of metric cards, and tabs for
- * Contents, Team usage, Performance, Distribution, and an install matrix.
- * Reach for it when you need everything about a single pack, including
- * installing or removing it per harness, rather than Packs Workspace, which
- * is for browsing many packs at once. Controls like the install buttons or
- * withdrawing a distribution only appear when the page around it supplies
- * the matching handler, so what you can do here depends on where it is
- * mounted.
+ * The full detail page for one pack of ready-made agents, skills and
+ * commands, covering everything about installing it, unlike Packs Workspace
+ * which browses many packs at once.
  */
 const meta = {
   title: "Surfaces/Pack Detail",

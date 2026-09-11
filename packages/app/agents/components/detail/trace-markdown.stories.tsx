@@ -106,14 +106,8 @@ const UNBREAKABLE_TOKENS = [
 ].join("\n");
 
 /**
- * Renders the markdown inside a session trace message: headings, lists,
- * tables, blockquotes, emphasis, and both inline and fenced code. Its one
- * job on top of ordinary markdown is turning a reference like #12 into a
- * working button that jumps the reader to that row, while the same
- * characters typed inside a code sample are left alone as plain text. It is
- * built specifically for trace messages and depends on styling from its
- * container, so use the design system's general markdown component for
- * markdown anywhere else.
+ * Renders the markdown inside a session trace message, turning a reference
+ * like #12 into a working link, built specifically for trace text.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Trace Markdown",

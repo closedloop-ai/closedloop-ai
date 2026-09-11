@@ -19,16 +19,8 @@ import {
 // `PageFallback` is included as the baseline these replace — the bare centered
 // "Loading..." on an otherwise blank body that a cold detail open used to show.
 /**
- * The placeholder shown for a split second while a session, branch, or
- * component detail page is still loading its code. It is a skeleton block
- * sized and positioned to match that page's own loading state exactly, so
- * the screen goes straight from skeleton to real content instead of flashing
- * from blank to skeleton to content. Which shape you get depends on the
- * route: session and branch detail share one layout, component detail uses a
- * different centered one, and every other route falls back to a plain
- * centered loading message. Screen readers hear which page is loading even
- * though no loading text is visible on screen, since visible text that then
- * disappears would cause the exact flash this is built to avoid.
+ * The loading placeholder shown while a page's code loads, sized to match
+ * that page's own skeleton so the screen never flashes between states.
  */
 const meta = {
   title: "Composites/App Shell/Route Fallbacks",

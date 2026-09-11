@@ -43,14 +43,9 @@ const results: SearchHit[] = [
 ];
 
 /**
- * The results list for a search across every kind of content in the app: a
- * row of type filters at the top, then a list of matches, each with a
- * highlighted snippet of the text that matched and a link into it. Use it
- * wherever someone searches across documents, issues, and other artifacts at
- * once rather than within a single type; it handles its own loading, empty,
- * and error states, including a specific message when the search itself was
- * malformed. Some surfaces, like the mobile search sheet, can hide the
- * filter chips or the 'applied filters' row when there isn't room for both.
+ * The results list for a search across every kind of content in the app at
+ * once, with type filters and highlighted snippets, rather than searching
+ * within a single type.
  */
 const meta = {
   title: "Composites/Data Display/Unified Search Results",

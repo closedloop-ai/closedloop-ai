@@ -9,13 +9,8 @@ import { MyTasksRecencyEmptyState } from "./my-tasks-recency-empty-state";
 // either becomes visible: a user back from leave must read that their work is
 // still there, and must be able to get to it.
 /**
- * The empty state for My Tasks when a recent work only time window is turned
- * on and nothing in your queue falls inside it. It has its own icon,
- * headline, and a Show All button that drops the window and re-checks your
- * full history, because this is a different situation from an actually empty
- * queue. Use it specifically for that case: someone back from time off with
- * no recent activity still has assigned work, and this state says so instead
- * of telling them their queue is clear.
+ * The empty state for My Tasks when a recent activity time window hides
+ * everything in your queue, with a Show All button to drop the window.
  */
 const meta = {
   title: "Composites/My Tasks/Recency Empty State",

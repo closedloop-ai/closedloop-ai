@@ -86,13 +86,9 @@ function InteractiveAttachmentList({
 }
 
 /**
- * A wrapping row of small file chips for anything attached to an artifact:
- * an image shows as a thumbnail you can click to open full-size, while other
- * files, like PDFs or text documents, show a file icon and a clickable
- * filename that downloads them. Use it anywhere you need to show a handful
- * of attached files inline rather than in a separate list or table. Download
- * and delete buttons are hidden until you hover a chip by default, though a
- * surface built for touch can keep them visible all the time.
+ * A wrapping row of file chips for anything attached to an artifact, images
+ * as clickable thumbnails and other files as an icon and filename you can
+ * download.
  */
 const meta = {
   title: "Composites/Documents/Attachment List",

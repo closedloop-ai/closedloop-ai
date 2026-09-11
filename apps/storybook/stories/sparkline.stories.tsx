@@ -2,14 +2,8 @@ import { Sparkline } from "@repo/design-system/components/ui/primitives/sparklin
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A tiny plain line drawn from a list of numbers, with no axis, label or
- * hover behavior. Use it for a glance-only trend inside a table cell or a
- * compact stat, where even a tooltip would be too much; reach for the Line
- * Chart primitive instead when readers need to hover a point for its value,
- * or Time Series Area Chart for a full chart with axes and a legend. It is
- * hidden from screen readers by design, since it carries no label of its
- * own, and it renders nothing at all when fewer than two valid points remain
- * after non-numeric values are dropped.
+ * A tiny line for a glance only trend in a table cell or stat, without the
+ * axes and hover a Line Chart or Time Series Area Chart give you.
  */
 const meta = {
   title: "Primitives/Charts/Sparkline",

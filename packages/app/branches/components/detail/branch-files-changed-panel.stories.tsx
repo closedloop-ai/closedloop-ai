@@ -48,15 +48,8 @@ const diffRoutes = [
 // known-zero, incomplete, and unavailable states visually distinct and make
 // the immutable inline-diff interaction reviewable without a live API.
 /**
- * The 'Files changed' list on a branch's detail page, scoped to the pull
- * request currently selected on that branch. Each row is a file path with
- * its added and deleted line counts, and clicking a row expands an inline
- * diff pulled from GitHub, one file at a time. Use it when you need to
- * review exactly what a pull request touched without leaving the branch
- * page, rather than relying on the summary counts alone. If GitHub only
- * returned part of the file list, the header marks the totals with an
- * asterisk and explains why, and if the read fails outright it shows a Retry
- * button instead of a file list.
+ * The Files Changed list on a branch's detail page, expanding an inline diff
+ * per file so you can review a pull request without leaving the page.
  */
 const meta = {
   title: "Composites/Branches/Branch Files Changed Panel",

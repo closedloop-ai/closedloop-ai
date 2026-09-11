@@ -140,14 +140,9 @@ function TraceFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 /**
- * A collapsed one line summary for a sub agent a session delegated work to:
- * its name and type, an event count, and a compact duration and cost line,
- * with the full transcript hidden behind a click. Use it inside a session's
- * trace so a delegated run does not expand the trace by a whole extra
- * transcript until someone asks to see it. A sub agent with no transcript
- * behind it, like one on a branch's merged trace, renders as a plain static
- * line with no chevron and nothing to click, and its cost is attributed by
- * time overlap rather than measured directly, which a hover title explains.
+ * A collapsed one line summary for a sub agent a session delegated to, its
+ * name, event count, duration and cost, so it doesn't expand the trace until
+ * clicked.
  */
 const meta = {
   title: "Primitives/Data Display/Session Trace Subagent",

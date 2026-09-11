@@ -2,13 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ToolResultBlock } from "./tool-result-block";
 
 /**
- * A collapsible block for a single tool result on its own, with no call to
- * pair it with: a header shows a pass or fail icon and how many lines the
- * output has, and opening it reveals the raw output as plain monospace text.
- * Reach for it when all you have is a result and not the tool call that
- * produced it, since it makes no attempt to format the content the way Tool
- * Call Block does for a matched call and result. An error result turns the
- * whole block red, and a successful one turns it green.
+ * A collapsible block for a tool result on its own, with no matching call,
+ * unlike the formatted pairing Tool Call Block provides.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Tool Result Block",

@@ -15,13 +15,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 // page navigation. For the higher-level, page-state-driven component, see
 // `Table Pagination`.
 /**
- * A page navigation strip built from separate pieces: a previous link,
- * numbered page links, an ellipsis for skipped pages, and a next link. Reach
- * for this only when you need to assemble a custom pager from raw parts; for
- * an ordinary paginated list, use Table Pagination instead, since it tracks
- * the current page and builds the whole strip for you. Nothing here decides
- * which page is active or moves you between pages: you wire up the clicks
- * and the active state yourself.
+ * A page navigation strip of raw pieces, a previous link, numbered pages,
+ * and a next link, for a custom pager rather than Table Pagination, which
+ * builds it for you.
  */
 const meta = {
   title: "Composites/Data Display/Pagination",

@@ -3,15 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A modal built specifically for delete actions: the heading reads 'Delete'
- * plus whatever you're removing, and the body warns that the action can't be
- * undone. Use it instead of a general purpose confirmation dialog whenever
- * the action is a delete, since the wording and destructive styling are
- * already built in. You can swap in custom body copy when the default
- * warning would be misleading, for example when deleting a record only
- * removes it from ClosedLoop and not a linked GitHub pull request. Like a
- * plain confirmation dialog, it stays open if the delete fails so the person
- * can try again.
+ * A modal built specifically for delete actions, with the heading and
+ * destructive styling already set, so you reach for it instead of a general
+ * confirmation dialog.
  */
 const meta = {
   title: "Composites/Overlays/Delete Confirmation Dialog",

@@ -3,13 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A sliding toggle that switches a single setting between on and off, with
- * the thumb moving to one side or the other to show the current state. Use
- * it for a setting that takes effect right away, like turning a feature on,
- * rather than Checkbox, which is the better choice for selecting several
- * items in a list or agreeing to a term before a form submits. It renders a
- * hidden input behind the scenes, so you can give it a name and value for
- * form submission even though nothing on screen looks like a text field.
+ * A sliding toggle that switches a setting between on and off immediately,
+ * used instead of Checkbox, which suits selecting several items or agreeing
+ * to a term before submitting.
  */
 const meta: Meta<typeof Switch> = {
   title: "Primitives/Inputs/Switch",

@@ -9,13 +9,9 @@ import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PacksWorkspace } from "./packs-workspace";
 
 /**
- * This is the searchable catalog of packs: a filter bar for search,
- * category, and sort order, a grid of pack cards, a detail panel that opens
- * when you pick one, and a rail showing team activity. Reach for it as the
- * starting point for finding and installing a pack, rather than Pack Detail,
- * which only shows one pack you have already selected. Search also matches
- * the small qualifier text shown on cards that share a name, so typing what
- * you read on a card still finds it instead of coming up empty.
+ * The searchable catalog of packs, the starting point for finding and
+ * installing one, unlike Pack Detail which only shows a pack you've already
+ * selected.
  */
 const meta = {
   title: "Surfaces/Packs Workspace",

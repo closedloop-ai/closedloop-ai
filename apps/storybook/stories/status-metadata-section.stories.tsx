@@ -41,12 +41,7 @@ const options = [
 
 /**
  * A small panel pairing a status dropdown with an assignee picker, the two
- * fields most issues and documents need together. Use the vertical layout
- * for a sidebar or detail panel, and the horizontal layout for a compact
- * metadata bar that has to sit on one line. You supply the list of statuses,
- * their icons, and the pool of people who can be assigned; picking a status
- * outside that list leaves the field showing empty rather than the raw
- * value.
+ * fields most issues and documents need together.
  */
 const meta = {
   title: "Composites/Inputs/Status Metadata Section",

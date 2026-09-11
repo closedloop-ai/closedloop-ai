@@ -36,13 +36,9 @@ const detailScopeDecorator: Decorator = (Story) => (
 );
 
 /**
- * This is the collapsible panel on a session's detail page listing
- * everything known about that session: status, owner, harness, repository,
- * tokens, model, branch, pull requests, linked documents, cost, and more. It
- * starts collapsed as a compact one-line strip and expands into a full grid
- * when you click the header. A value that was never resolved, like an
- * unknown repository, renders muted instead of looking like a real value
- * sitting next to the others.
+ * The collapsible panel on a session's detail page listing everything known
+ * about it, starting as a compact one line strip and expanding into a full
+ * grid when clicked.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Properties Panel",

@@ -12,14 +12,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A panel that slides in from an edge of the screen, usually the bottom, and
- * can be dragged closed by hand the way a native mobile sheet would be.
- * Reach for it over the Sheet or Dialog when the surface should feel touch
- * friendly and draggable, particularly on small screens; the Sheet covers
- * the same side panel role without the drag gesture. It can slide in from
- * any of the four edges, and you can restrict dragging to just its handle,
- * scale the page behind it as it opens, or turn off dismissing it by drag,
- * tap outside or Escape entirely.
+ * A panel that slides in from a screen edge and can be dragged closed like a
+ * native mobile sheet, best for touch friendly surfaces where the Sheet's
+ * lack of a drag gesture won't do.
  */
 const meta: Meta<typeof Drawer> = {
   title: "Primitives/Overlays/Drawer",

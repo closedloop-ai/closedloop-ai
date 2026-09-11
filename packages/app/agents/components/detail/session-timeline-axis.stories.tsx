@@ -28,13 +28,8 @@ function TimelineAxisFrame({ children }: Readonly<{ children: ReactNode }>) {
 }
 
 /**
- * The row of three labels under the Session Timeline's bars: a start time on
- * the left, the total span in the middle, and an end time on the right. It
- * only makes sense paired with Session Timeline Bars and Session Timeline
- * Dot Rail, the other two rows of the same strip; on its own it is just the
- * tick labels, not a chart. When no end time can be resolved, both ticks
- * disappear rather than showing one real time next to a blank, so the row
- * never implies a duration it cannot actually measure.
+ * The start, span and end time labels under the Session Timeline's bars,
+ * meant to pair with the Bars and Dot Rail rows rather than stand alone.
  */
 const meta = {
   title: "Primitives/Charts/Session Timeline Axis",

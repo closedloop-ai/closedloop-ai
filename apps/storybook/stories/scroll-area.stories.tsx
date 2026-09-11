@@ -2,14 +2,9 @@ import { ScrollArea } from "@repo/design-system/components/ui/scroll-area";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A scrollable region with the browser's own scrollbar replaced by one
- * styled to match the design system, so scrolling looks the same across
- * browsers and operating systems. Use it instead of a plain scrolling div
- * whenever a mismatched, unstyled native scrollbar would stand out against
- * the rest of the interface. The type prop controls when the scrollbar
- * shows: always visible, only on hover, only while actively scrolling, or
- * the browser's own default behaviour, and scrollbars can be set to
- * vertical, horizontal or both axes.
+ * A scrollable region with the browser's native scrollbar replaced by one
+ * styled to match the design system, used instead of a plain scrolling div
+ * with a mismatched scrollbar.
  */
 const meta = {
   title: "Primitives/Layout/Scroll Area",

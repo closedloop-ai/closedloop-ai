@@ -12,14 +12,8 @@ import { OverviewMetric } from "./overview-metric";
 // checked, since a test asserting the class name proves nothing about whether
 // the row still reads as a row.
 /**
- * Shows one headline number inside a metrics summary: a small uppercase
- * label on top, a large value in the middle, and a muted caption underneath
- * explaining what the number covers. Use it when you need several of these
- * stat tiles lined up in a row and want them all to share one baseline,
- * rather than building a one off metric block for each. The value always
- * stays on a single line and truncates rather than wrapping, with the full
- * figure still reachable on hover, and a missing number should show the
- * honest placeholder rather than a fabricated zero.
+ * One headline number in a metrics summary, a label, a big value and a
+ * caption, used when you want several stat tiles to share one baseline.
  */
 const meta: Meta<typeof OverviewMetric> = {
   title: "Primitives/Data Display/Overview Metric",

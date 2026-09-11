@@ -29,14 +29,9 @@ function provenance(
 // capture time, because a duration keeps drifting while the drawer sits open and
 // a snapshot that stopped refreshing must read as "the figures are from THEN".
 /**
- * This shows a short line under a session's usage limits panel saying how
- * fresh the numbers are, for example "Updated 3m ago" with the exact time in
- * parentheses. Hover or focus it to see where the data came from, when that
- * is known. Once the data is more than a few minutes old, the wording
- * switches to a plain "As of <time>" instead of a relative duration, since a
- * ticking "X ago" label would keep drifting while the panel stays open. It
- * renders nothing at all when there is no capture time to report, rather
- * than showing an empty or misleading footer.
+ * The line under a session's usage limits panel showing how fresh the
+ * numbers are, switching from a ticking Updated X ago to a plain As of time
+ * before it starts drifting.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Limits Provenance",

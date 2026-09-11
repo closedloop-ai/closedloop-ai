@@ -15,16 +15,8 @@ import { SessionCostCell } from "./session-cost-cell";
 // where the `tabular-nums` decimal alignment — the thing a centred pill defeated
 // — either reads or does not.
 /**
- * This renders one Cost cell in the Sessions table: a plain right-aligned
- * dollar figure, or a dash when there is nothing to price. It deliberately
- * renders as plain text rather than a badge, because a cost is just a
- * number, not a status, and wrapping it in a badge was eating into the
- * column's width and clipping large figures. A figure that carries an
- * explanation, like a subscription-covered cost, is still reachable by
- * keyboard through a focusable tooltip trigger. The label itself is never
- * shortened with an ellipsis, though: a clipped currency figure would read
- * as a smaller number, so an oversized value is left to overflow its cell
- * whole instead.
+ * The Cost cell in the Sessions table, rendered as plain text rather than a
+ * badge because a cost is a number, not a status.
  */
 const meta: Meta<typeof SessionCostCell> = {
   component: SessionCostCell,

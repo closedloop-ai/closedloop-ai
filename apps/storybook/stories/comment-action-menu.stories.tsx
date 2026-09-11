@@ -47,12 +47,9 @@ function CommentActionMenuStory({
 }
 
 /**
- * The dropdown that opens from the small ellipsis button on a comment, with
- * actions like Edit, Delete, and Copy Link. Resolve and Chat About This only
- * appear when the surface hosting the comment actually supports them, so the
- * same menu fits a plain comment thread and a richer one without extra
- * setup. Edit and Delete can each be turned off independently, for example
- * when someone else's comment should stay visible but not be editable.
+ * The dropdown menu from a comment's ellipsis button, with actions like
+ * Edit, Delete, and Copy Link, plus Resolve and Chat About This when the
+ * hosting surface supports them.
  */
 const meta = {
   title: "Composites/Overlays/Comment Action Menu",

@@ -28,15 +28,8 @@ import { fn } from "storybook/test";
 // `BranchesToolbar` drives Filter (status/owner/repository) + View (group by /
 // columns), and column headers drive sorting.
 /**
- * The main data table on the Branches page: one row per branch, with columns
- * for owner, repository, status, last activity, linked sessions, lines
- * changed, pull request, and CI checks. Columns can be reordered, resized,
- * shown, or hidden, and most are sortable by clicking their header. Reach
- * for it as the grid itself; pair it with the Branches toolbar for filtering
- * and column visibility, since the table only renders whatever rows and
- * columns it is handed. When GitHub has not enriched a row yet, cells for
- * things like checks or pull request status show a plain empty state rather
- * than a guessed value.
+ * The main Branches table with reorderable, sortable columns, pairing with
+ * the toolbar for filtering rather than handling that itself.
  */
 const meta = {
   title: "Composites/Branches/Branches Table",

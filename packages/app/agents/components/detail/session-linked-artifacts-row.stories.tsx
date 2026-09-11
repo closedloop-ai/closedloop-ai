@@ -124,14 +124,9 @@ function buildArtifactHref(artifact: SessionLinkedArtifact): string | null {
 // own single-column min drives the width — no hard-coded pixel value needed.
 
 /**
- * This renders the list of linked issues, requirement docs, and
- * implementation plans for a session as small clickable pills inside the
- * session detail properties panel. It shows up to six pills; anything beyond
- * that collapses into a "+N" button that opens a popover listing the rest,
- * so a session referenced in a dozen documents does not take over the row. A
- * pill without a working link, because the destination has not resolved yet,
- * still names what it is, it just is not clickable. The whole row disappears
- * when a session has no linked artifacts.
+ * The row of linked issues, requirement docs, and plans for a session, shown
+ * as clickable pills that collapse into a plus N button once there are more
+ * than six.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Linked Artifacts Row",

@@ -117,15 +117,9 @@ const SELECTION_ACTOR = { name: "claude-opus-4", human: null };
 const SELECTION_ROW_ATTRIBUTE = "[data-trace-text-row]";
 
 /**
- * Renders one turn of a session trace: plain text becomes markdown, and any
- * raw harness tags in it, like a tool's stdout or a system reminder, fold
- * into small collapsible chips instead of dumping their markup into the
- * transcript. Use it for trace turns specifically rather than Markdown
- * Content, since it also knows how to highlight the exact words a trace
- * comment is anchored to, even when that span starts in plain text and ends
- * inside bold text. Tags nested inside other tags fold correctly rather than
- * leaking their raw opening bracket, and a highlight anchor that no longer
- * matches the current text is shown unmarked rather than in the wrong place.
+ * Renders one session trace turn as markdown with raw harness tags folded
+ * into small chips, used instead of Markdown Content for trace turns
+ * specifically.
  */
 const meta = {
   title: "Primitives/Content/Trace Message Body",

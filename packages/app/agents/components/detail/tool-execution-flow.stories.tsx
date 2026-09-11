@@ -43,17 +43,8 @@ const UNATTRIBUTED_LANE = "Unattributed telemetry";
 const NARROW_COLUMN_PX = 320;
 
 /**
- * A horizontal timeline of a session's tool calls, with one lane per agent,
- * indented for sub agents, plus a trailing lane for any tool event that
- * cannot be tied to an agent. Each call is a dot placed by when it happened
- * within the session's own tool window, colored by the tool's name, with a
- * failed call always shown in red and a hover tooltip giving the details.
- * Reach for it when you want to see the rhythm and spread of tool activity
- * across agents at a glance, rather than reading the full trace turn by
- * turn. Watch the count printed at the end of each lane: if every call
- * happened in the same instant, or a timestamp cannot be read, every dot
- * lands in the middle of the track, and the count is what tells you the lane
- * is not actually idle.
+ * A horizontal timeline of a session's tool calls by agent, for seeing the
+ * rhythm and spread of activity rather than reading the full trace.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Tool Execution Flow",

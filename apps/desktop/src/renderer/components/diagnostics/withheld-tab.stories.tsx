@@ -8,15 +8,9 @@ import { WithheldTab } from "./withheld-tab";
 // reachable when an OpenCode store has actually failed to parse a root row,
 // which is not something you can arrange on demand.
 /**
- * This diagnostics tab reports subagent sessions that could not be imported
- * because their parent session failed to parse: a table of affected
- * sessions, how many tokens are missing, and how many data stores have been
- * checked. Reach for it to explain a shortfall you notice in session or
- * token totals elsewhere in the product, since it exists specifically to
- * separate "nothing is missing" from "we do not know yet". An empty result
- * only reads as nothing withheld once at least one store has actually
- * finished a check; before that, or on a build that cannot report this at
- * all, it shows a distinct unknown message instead of a reassuring zero.
+ * A diagnostics tab reporting subagent sessions withheld because their
+ * parent failed to parse, explaining shortfalls elsewhere by separating
+ * nothing missing from not yet known.
  */
 const meta = {
   title: "Surfaces/Withheld Tab",

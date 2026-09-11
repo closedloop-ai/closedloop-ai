@@ -10,12 +10,8 @@ import { MyTasksLoadFailedState } from "./my-tasks-load-failed-state";
 // It renders before either My Tasks view's empty branches, so a failed read can
 // never masquerade as "your queue is clear" (the FEA-3938 rule).
 /**
- * The message shown when My Tasks cannot load your assigned work: an icon, a
- * short explanation, and a Try Again button. It is shared by both the list
- * and the card views, so a failed load always tells the same story no matter
- * which one you are looking at. It is checked for and shown before any empty
- * queue message, so a broken connection is never mistaken for having nothing
- * assigned.
+ * The message shown when My Tasks cannot load your assigned work, shared by
+ * both list and card views so a failed load always tells the same story.
  */
 const meta = {
   title: "Composites/My Tasks/Load Failed State",

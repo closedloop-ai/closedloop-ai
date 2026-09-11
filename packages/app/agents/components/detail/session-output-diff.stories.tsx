@@ -23,15 +23,9 @@ import { SessionPropertiesFrame } from "./session-properties-story-frame";
 // shipped `.sd3-props` frame, because the colour tokens and the value track are
 // defined by that ancestry — a row rendered bare is a row rendered unstyled.
 /**
- * The value for a session's "Lines changed" row, rendered as one of three
- * shapes depending on which number best describes what the session actually
- * delivered. A real added and removed split, whether it is the session's own
- * changes or a whole branch's total, keeps the familiar green add and red
- * remove colouring; a combined pull request total renders in plain text
- * instead, since it has no honest per side breakdown to colour that way.
- * Each shape also carries its own caption, in session, branch total, or in
- * PRs, so you always know which scope the number is measuring rather than
- * guessing from a bare figure.
+ * The value for a session's Lines Changed row, shown as a real added and
+ * removed split when possible, or plain text for a pull request's combined
+ * total.
  */
 
 const meta = {

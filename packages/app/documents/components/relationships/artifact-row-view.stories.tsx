@@ -16,14 +16,9 @@ import { fn } from "storybook/test";
 import { ArtifactRowView } from "./artifact-row-view";
 
 /**
- * One row in a list of linked artifacts: a type icon, a short slug, a status
- * icon with a tooltip, the title as a link, and, on the right, an assignee,
- * a priority icon, and a menu for viewing or detaching the link. Use it for
- * a flat or nested list of related documents and issues; a row can indent
- * itself with a small corner arrow to show it's nested under another one.
- * The whole row links through to the artifact when you supply one; without a
- * link, the title renders as plain text and the 'view' menu item is disabled
- * rather than hidden.
+ * One row in a list of linked artifacts, a type icon, status, title link,
+ * assignee, and priority, able to indent itself to show it's nested under
+ * another row.
  */
 const meta = {
   title: "Composites/Documents/Artifact Row View",

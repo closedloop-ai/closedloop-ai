@@ -221,15 +221,9 @@ const TYPE_PRESENTATION_COMPONENTS: AgentComponent[] = [
 ];
 
 /**
- * The sortable inventory table listing every agent component your team has
- * discovered: agents, subagents, commands, skills, and the rest, one row
- * each. Columns cover where it came from, which harness runs it, and a
- * metric comparing code changed to dollars spent, alongside counts for
- * invocations, sessions, and versions, with the numeric columns lined up so
- * a reader can compare digits at a glance. On a narrow screen it switches
- * automatically to a stacked card layout instead of a grid, and a component
- * that has never been invoked shows a dash rather than a zero, since the two
- * mean different things.
+ * Lists every agent component your team has discovered, with where it came
+ * from, cost against code changed, and a dash instead of zero for one never
+ * invoked.
  */
 const meta = {
   title: "Composites/Agents/Agents Table",

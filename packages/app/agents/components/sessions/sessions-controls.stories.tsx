@@ -9,13 +9,8 @@ import { useState } from "react";
 import { SessionsControls } from "./sessions-controls";
 
 /**
- * This is the toolbar above the Sessions table combining a search box, a
- * directory picker, a sort control, harness and status filter pills, and a
- * pager showing how many results are being shown. Any control whose change
- * handler is left unwired simply becomes read-only, so the same component
- * can present a fully interactive toolbar or a static snapshot depending on
- * what the page passes in. The result count falls back to a generic "N
- * sessions" label when the page does not supply its own count text.
+ * The toolbar above the Sessions table combining search, a directory picker,
+ * sorting, filter pills, and a result count in one row.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Controls",

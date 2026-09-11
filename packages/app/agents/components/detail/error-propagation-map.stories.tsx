@@ -42,17 +42,8 @@ const ALL_CLEAR_HEADLINE = "No errors in this session";
 const NARROW_COLUMN_PX = 320;
 
 /**
- * A tree of the agents in one session, shaped like the delegation chain but
- * colored to show where something went wrong. A node with its own errors
- * gets a red border, a node whose descendants had errors fades partway, and
- * a node untouched by any error nearby fades further still; an all-clear
- * session shows a plain checkmark instead of the tree. Reach for this
- * instead of the plain orchestration graph when you specifically need to
- * trace how a failure spread through a chain of agents, since the
- * orchestration graph does not carry error state at all. An agent can show
- * as failed even with zero logged error events, and any error that cannot be
- * tied to a specific agent still appears, in a separate unattributed section
- * at the bottom.
+ * Colors a session's delegation tree by where errors occurred and spread,
+ * for tracing failures in a way the plain orchestration graph cannot.
  */
 const meta = {
   title: "Composites/Agents/Error Propagation Map",

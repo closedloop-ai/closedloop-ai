@@ -85,14 +85,8 @@ const storyDecorator: Decorator = (Story) => (
 
 /**
  * The Branches tab on a component's detail page, listing every branch that
- * references that agent component, most recently active first. It uses the
- * same shared branches table found elsewhere in the app, with an extra
- * Version column showing which revision of the component ran on each branch,
- * when that can be determined. Reach for it inside a component's detail view
- * specifically: it caps the list at one page of rows and adds a note when
- * there are more branches than it can show, so a heavily used component does
- * not freeze the page. If no branch data is available for this data source,
- * it says so rather than claiming zero branches exist.
+ * references it, most recently active first, capped to one page so it never
+ * freezes.
  */
 const meta = {
   title: "Composites/Branches/Detail Branches Tab",

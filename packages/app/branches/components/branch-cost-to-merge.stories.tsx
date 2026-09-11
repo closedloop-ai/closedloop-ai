@@ -12,14 +12,8 @@ import {
 } from "./branch-story-metric-fixtures";
 
 /**
- * A horizontal bar split into Build, Review and Rework segments sized by
- * dollar cost, with a row underneath spelling out each phase's time, cost
- * and share of the total. Use it on a branch's detail page to show where its
- * spend went; it is the cost counterpart to Branch Lead Time Waterfall,
- * which measures the same three phases in elapsed time instead of dollars.
- * When the underlying cost data is only partly available it still renders,
- * marked with an asterisk and a footnote, and it falls back to a plain
- * message instead of a bar when no cost evidence exists at all.
+ * A bar split into Build, Review, and Rework segments by dollar cost, the
+ * cost counterpart to the Branch Lead Time Waterfall.
  */
 const meta = {
   title: "Primitives/Charts/Branch Cost to Merge",

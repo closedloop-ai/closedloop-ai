@@ -9,14 +9,9 @@ import { ComputeTargetSyncTable } from "./compute-target-sync-table";
 // could withhold it, which meant the column could render for some rows and not
 // others; there is now one column set, so `Default` is the only shape.
 /**
- * A table listing every compute target with its owner, online status, and
- * three separate timestamps: when the cloud last accepted a sync, when the
- * target last actually had new session data to send, and when it was last
- * seen at all. Use it when you need to tell a machine that is connected and
- * syncing fine apart from one that simply has had nothing new to send in
- * days, which a single last-synced timestamp cannot show. All three
- * timestamp columns always appear, even for a target that has never synced,
- * where the cell just reads Never.
+ * A table of every compute target's owner, online status, and three sync
+ * timestamps, so a machine with simply nothing new to send isn't mistaken
+ * for a broken one.
  */
 const meta = {
   title: "Composites/Compute/Compute Target Sync Table",

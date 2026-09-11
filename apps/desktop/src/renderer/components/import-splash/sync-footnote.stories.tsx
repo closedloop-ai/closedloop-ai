@@ -31,16 +31,9 @@ import {
 //    `Unavailable` renders nothing: a failed read is a fact about us, not an
 //    answer about the user's uploads.
 /**
- * A small line in the import splash screen's footer that reports whether
- * your transcripts have finished syncing. It pairs an icon with a short
- * label such as 'Transcripts queued to upload' or 'Some transcripts couldn't
- * be uploaded', and only turns a warning color when there is a genuine
- * problem, never a reassuring green one. Use it anywhere you need an honest
- * one line sync status instead of a spinner: it never shows a byte count or
- * claims a transfer finished successfully, since there is no reliable way to
- * measure that. While the status is still loading it shows a skeleton in
- * place of text, and if the read fails outright it shows nothing rather than
- * guessing.
+ * A one line footer in the import splash reporting honest transcript sync
+ * status, never a fabricated byte count or a spinner standing in for the
+ * truth.
  */
 const meta = {
   title: "Composites/App Shell/Import Splash Sync Footnote",

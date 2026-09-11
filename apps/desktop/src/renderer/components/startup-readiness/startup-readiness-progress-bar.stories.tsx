@@ -16,13 +16,8 @@ import { StartupReadinessPhase } from "./startup-readiness-state";
 // need a first launch against a machine with real unimported history, and the
 // needs-attention state additionally needs a wedged or unverifiable cloud sync.
 /**
- * The single progress bar at the top of the app that tracks overall startup
- * rather than any one step. It sweeps continuously while real work is
- * happening, since startup has no one true percentage to report, and
- * switches to a still, hatched pattern when it is paused or stalled instead
- * of showing a bar that misleadingly looks empty or full. It only fills in
- * solid once startup is fully ready. Screen readers hear which stage it is
- * in, but the bar never claims a percentage it cannot back up.
+ * The single progress bar tracking overall startup, sweeping continuously
+ * since there is no true percentage until it fills solid once ready.
  */
 const meta = {
   title: "Composites/App Shell/Startup Readiness Progress Bar",

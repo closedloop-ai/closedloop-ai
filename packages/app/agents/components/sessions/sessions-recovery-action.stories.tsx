@@ -15,13 +15,8 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
 // is covered by a unit test rather than a story; what the story is for is the
 // label, which is the part that lied.
 /**
- * This is the single button shown on a failed Sessions list, labeled "Clear
- * filters and reload." It is deliberately the only action on that card,
- * since clearing the filters and reloading already covers everything a
- * separate retry button would do. Holding Cmd, Ctrl, or another modifier
- * while clicking opens the clean sessions link in a new tab without touching
- * the filters in the current one, so opening a second tab never costs you
- * your place in the first.
+ * The single Clear filters and reload button shown on a failed Sessions
+ * list, since that one action covers what a separate retry would do.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Recovery Action",

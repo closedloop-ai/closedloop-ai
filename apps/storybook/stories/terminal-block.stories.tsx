@@ -2,13 +2,9 @@ import { TerminalBlock } from "@repo/design-system/components/ui/primitives/term
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A dark panel styled like a terminal window, showing a command line under
- * an optional comment and a copy button in the header. Reach for it instead
- * of Code Block when you are showing a shell command or its stdout or stderr
- * output rather than source code: setting the stream to stderr tints the
- * output red and relabels the header. Pass raw text directly to replace the
- * command-and-description pair entirely, for example to show a block of
- * command output.
+ * A dark terminal-style panel for a shell command and its output, used
+ * instead of Code Block when you're showing a shell session, not source
+ * code.
  */
 const meta = {
   title: "Primitives/Content/Terminal Block",

@@ -50,15 +50,8 @@ const UNAVAILABLE_DURATION = "—";
 const NARROW_VIEWPORT_PX = 380;
 
 /**
- * A table listing every agent in a session with its status, how long it ran,
- * how many tools it used, and how many errors and events it logged, indented
- * to show which agents delegated to which. A summary legend above the table
- * counts how many agents completed, failed, or landed in some other state,
- * so a live session can honestly show zero completions without looking like
- * missing data. An agent whose start or end time was never recorded shows a
- * dash in the Duration column rather than a false 0ms, and the table scrolls
- * horizontally instead of collapsing on narrow screens, since its columns do
- * not fit a phone width.
+ * Lists every agent in a session with status, duration, and errors, indented
+ * by delegation, with a dash instead of a false zero for missing timestamps.
  */
 const meta = {
   title: "Composites/Agents/Subagent Effectiveness Panel",

@@ -2,14 +2,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { PrDescriptionMarkdown } from "./pr-comment-markdown";
 
 /**
- * Renders a GitHub pull request's description as formatted text: headings,
- * links, and images. Use it specifically for the PR description rather than
- * a review comment, since it renders images as plain links and demotes
- * headings so a PR's own formatting never competes visually with the page
- * around it. Raw HTML in the text stays inert, links using javascript: or
- * data: are dropped, and every image, even one written as a raw HTML tag,
- * shows as a plain external link instead of loading a picture, so nothing in
- * an untrusted description can run code or quietly fetch content.
+ * Renders a GitHub pull request's description as formatted text rather than
+ * a review comment, kept safe so nothing untrusted in it can run code or
+ * load content.
  */
 const meta = {
   title: "Composites/Branches/PR Description Markdown",

@@ -5,15 +5,9 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A horizontal bar that fills from left to right to show how much of a task
- * is done. Pass a numeric value for a measurable amount, or leave it unset
- * for an indeterminate task: it renders as a diagonal hatch with a moving
- * sheen rather than a filled edge, so it never implies a percentage you do
- * not actually have. Use the tone prop to recolour the whole bar for a
- * status meaning like warning or success, instead of overriding the fill
- * colour by hand at the call site. Freeze an indeterminate bar that has
- * stalled with the paused prop, which keeps the hatch but stops the sheen,
- * so it reads as held rather than reset to zero.
+ * A horizontal bar showing how much of a task is done, or an indeterminate
+ * hatch pattern when there is no percentage to show, with a tone prop to
+ * recolour it for status.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Progress",

@@ -317,14 +317,9 @@ const StoryFrame = ({ children }: { children: ReactNode }) => (
 );
 
 /**
- * This page shows everything about one branch of agent work: a header with
- * the branch name and status, tabs for branch details and for a session
- * timeline, a properties panel, and a comments toggle that opens a rail of
- * pull request and session comments. Reach for it when you need the full
- * record of a single branch, not just one session inside it, including pull
- * request status, changed files, and the sequence of sessions that touched
- * it. It is a display-only page: it shows whatever data, loading state, or
- * error it is handed, and does not fetch anything itself.
+ * The full record of one branch of agent work, covering pull request status,
+ * changed files and the sequence of sessions that touched it, not just a
+ * single session.
  */
 const meta = {
   title: "Surfaces/Branch Detail Page",

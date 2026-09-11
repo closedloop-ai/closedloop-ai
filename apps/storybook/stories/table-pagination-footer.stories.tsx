@@ -8,14 +8,9 @@ import { fn } from "storybook/test";
 // control. Used by My Tasks, Sessions, Branches, and the desktop list views so
 // one queue reads the same way on every surface.
 /**
- * The footer strip that sits under a paginated table: an optional 'Showing
- * 1-25 of 240 tasks' readout on one side and the page-turning control on the
- * other, with an optional page size dropdown next to the readout. Use it for
- * any list surface that needs pagination, since it's the one footer shared
- * by task lists, session lists, and branch lists, so a queue reads the same
- * way everywhere it appears. The readout is announced to screen readers when
- * the page changes, but only if you supply one: a surface with no honest
- * total to report should leave it out rather than show an empty strip.
+ * The footer strip under a paginated table, a Showing X of Y readout on one
+ * side and page-turning controls on the other, shared across task, session,
+ * and branch lists.
  */
 const meta = {
   title: "Composites/Data Display/Table Pagination Footer",

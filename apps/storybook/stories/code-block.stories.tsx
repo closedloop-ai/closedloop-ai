@@ -2,13 +2,9 @@ import { CodeBlock } from "@repo/design-system/components/ui/primitives/code-blo
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A dark panel that shows a snippet of code with a filename or label in the
- * header and a copy button. Reach for it over Terminal Block when you are
- * showing source code rather than a shell session: it can number lines and
- * it comes in three tones (default, danger, success) so you can tint a
- * removed or added snippet without extra markup. Line numbers appear
- * automatically once a snippet reaches four lines, and a compact mode drops
- * the header entirely for inline use inside markdown.
+ * A dark code snippet panel with a filename header and copy button, used
+ * instead of Terminal Block when you're showing source code, not a shell
+ * session.
  */
 const meta = {
   title: "Primitives/Content/Code Block",

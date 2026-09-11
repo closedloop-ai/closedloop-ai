@@ -85,13 +85,9 @@ const storyApiRoutes: FixtureRoute[] = [
 ];
 
 /**
- * This is the usage and cost analytics screen: filters for date range,
- * coding harness, project, team, user, and status, sitting above summary
- * metrics and breakdown tables by model, user, repository, and tool. Reach
- * for it when you need to analyze spend and usage patterns across many
- * sessions, rather than one session's own cost breakdown. Cost is reported
- * as two separate figures, API usage and subscription usage, rather than one
- * blended total, because the two are priced differently.
+ * The usage and cost analytics screen for spend and usage patterns across
+ * many sessions rather than one session's own breakdown, reporting API and
+ * subscription usage separately.
  */
 const meta: Meta<typeof AgentTelemetryAnalytics> = {
   component: AgentTelemetryAnalytics,

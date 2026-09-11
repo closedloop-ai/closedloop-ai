@@ -13,14 +13,9 @@ import { DesktopSessionExpiredBanner } from "./desktop-session-expired-banner";
 // REAL `DesktopAuthProvider` over it, so the canvas exercises the same bridge
 // the packaged app does rather than a hand-faked context.
 /**
- * A thin red bar across the top of the desktop app that appears when your
- * sign-in could no longer be renewed in the background, which quietly stops
- * every cloud powered panel such as Insights or Branches from loading. It
- * explains that your session expired and gives you a one-click Sign in
- * button, which switches to a Cancel button while the sign-in is in
- * progress. It stays hidden if you are already signed in, and it does not
- * appear if you signed out on purpose, since that is a choice rather than a
- * failure to recover from.
+ * A red banner telling you your sign in expired and cloud panels have
+ * stopped loading, appearing only when that happened rather than a
+ * deliberate sign out.
  */
 const meta = {
   title: "Composites/App Shell/Desktop Session Expired Banner",

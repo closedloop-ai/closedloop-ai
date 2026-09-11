@@ -18,15 +18,9 @@ import {
 // launch against a machine with real unimported sessions, and the Failed phase
 // also needs the import to wedge for two minutes.
 /**
- * The expanded panel shown the first time the app launches and it is
- * importing your existing coding sessions, with a step tracker moving
- * through scan, import, compute, and ready, and an activity area underneath
- * that changes to match whichever step is active. A finished import that
- * quarantined some source files reports that count as a partial success
- * rather than a failure, and even a stalled import lets you continue into
- * the dashboard with whatever did import. It has a matching collapsed row,
- * Import Splash Compact, for when someone wants the import running in the
- * background without the full panel on screen.
+ * The expanded first launch panel tracking your session import through each
+ * step, letting you continue into the dashboard even if it stalls or
+ * partially fails.
  */
 const meta = {
   title: "Composites/App Shell/Import Splash Body",

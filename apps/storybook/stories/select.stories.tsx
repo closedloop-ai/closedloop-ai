@@ -12,13 +12,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A button that opens a dropdown list of options to choose from, showing
- * only the current selection until you open it. Reach for it instead of
- * Radio Group when there are more options than you want visible at once,
- * since the list stays collapsed until someone opens it. Options can be
- * grouped under headings and separated with dividers, and an individual
- * option can be disabled while staying visible in the list, so someone can
- * see a choice exists even if it is not available right now.
+ * A button that opens a dropdown list of options, showing only the current
+ * selection until opened, used instead of Radio Group when there are more
+ * options than should stay visible.
  */
 const meta: Meta<typeof Select> = {
   title: "Primitives/Inputs/Select",

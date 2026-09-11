@@ -21,14 +21,9 @@ const scrollSections = [
 ] as const;
 
 /**
- * A container for an item's metadata fields, like status, owner, and tags,
- * shown either as a bordered sidebar rail with a heading and stacked,
- * separator-divided sections, or as a compact horizontal strip of the same
- * fields. Use the sidebar version for a detail page's side rail, the bar
- * version when the same fields need to sit inline above content instead of
- * beside it, and the tabbed version when there are enough fields to split
- * across tabs rather than one long scroll. The bar variant ignores the title
- * entirely, since it is meant to sit inline without its own heading.
+ * A container for an item's metadata fields like status, owner, and tags,
+ * shown as a sidebar rail, an inline horizontal strip, or split across tabs
+ * depending on the page.
  */
 const meta = {
   title: "Composites/Data Display/Metadata Panel",

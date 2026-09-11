@@ -6,13 +6,9 @@ import {
 } from "./trace-harness-tags";
 
 /**
- * A collapsible chip that hides a chunk of raw harness output, like captured
- * command output or a system reminder, behind a click inside a session's
- * trace. The head shows a friendly label, "Command output" rather than the
- * raw tag name, and only reveals the folded text once someone clicks it
- * open. An empty payload still shows the chip with nothing to expand into,
- * and an unrecognised tag falls back to showing its raw name on the head
- * instead of a friendly one.
+ * A collapsible chip that hides raw harness output, like captured command
+ * output, behind a click inside a session's trace, showing a friendly label
+ * instead of the raw tag name.
  */
 const meta = {
   title: "Primitives/Data Display/Trace Tag Chip",

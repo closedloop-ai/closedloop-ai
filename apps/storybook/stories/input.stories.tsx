@@ -3,13 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A single-line text box for typing a value into a form, such as an email
- * address, a password or a search term. The type prop switches the keyboard
- * and built-in browser behaviour, for example showing a reveal toggle for
- * passwords or a numeric keypad on mobile for numbers. Reach for Textarea
- * instead when someone needs to type more than a line or two. Pair it with a
- * Label rather than relying on placeholder text alone, since a placeholder
- * disappears the moment someone starts typing.
+ * A single line text box for typing a value like an email or password, with
+ * the type prop switching keyboard behaviour, used instead of Textarea for
+ * short entries.
  */
 const meta = {
   title: "Primitives/Inputs/Input",

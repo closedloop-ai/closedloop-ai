@@ -5,13 +5,8 @@ import { SearchXIcon } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * A centered placeholder for a screen or panel that has nothing to show: an
- * icon, a title, an optional description, and an optional button underneath
- * for what to do next. Use the compact size when it sits inside a card or
- * panel next to other content, and the default size when the empty state
- * fills the whole page on its own. Promote the title to a real heading only
- * when the empty state is the entire page, since otherwise it's invisible to
- * anyone navigating by headings.
+ * A centered placeholder for a screen or panel with nothing to show, pairing
+ * an icon and title with an optional description and next step button.
  */
 const meta = {
   title: "Composites/Feedback & Status/Empty State",

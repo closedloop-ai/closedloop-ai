@@ -15,13 +15,9 @@ import { LoopStatusBadge } from "./loop-status-badge";
 // dropping `enabledFlags` entirely renders the flag-OFF label and the sweep
 // stays green. Without this assertion the parameter migration is unverified.
 /**
- * A small coloured badge showing where a work loop stands: running,
- * completed or failed. It is a specialised version of the shared Status
- * Badges family, wired specifically to loop runs rather than documents or
- * issues, and on a failed run it can show a plain-language error message
- * instead of a raw error code. If a run failed with an error code this badge
- * does not recognise, it still renders in the failed colour with a generic
- * explanation rather than showing nothing.
+ * A small coloured badge showing whether a work loop is running, completed,
+ * or failed, wired specifically to loop runs rather than documents or
+ * issues.
  */
 const meta: Meta<typeof LoopStatusBadge> = {
   title: "Primitives/Feedback & Status/Loop Status Badge",

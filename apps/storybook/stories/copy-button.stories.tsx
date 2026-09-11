@@ -2,11 +2,8 @@ import { CopyButton } from "@repo/design-system/components/ui/primitives/copy-bu
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A small ghost button that copies a piece of text to the clipboard when you
- * click it. The icon and label switch to a checkmark and the word Copied for
- * a moment, so you get confirmation without a separate toast. Use it next to
- * short values like a command, an ID, or a path that someone would otherwise
- * have to select and copy by hand.
+ * A small ghost button that copies a value like a command, ID, or path to
+ * the clipboard, flashing a checkmark and Copied for confirmation.
  */
 const meta = {
   title: "Composites/Actions/Copy Button",

@@ -49,15 +49,9 @@ const savedViews: BranchesToolbarProps["savedViews"] = {
 };
 
 /**
- * The control bar above the Branches table: a date range picker, a Filter
- * button for status and repository facets, and a View menu for showing,
- * hiding, and reordering columns. When named saved views are turned on for a
- * surface, a switcher for creating, renaming, and deleting them appears on
- * the left as well. Reach for it as the paired toolbar for the branches
- * table and its summary cards, since changing the date range here also
- * drives what those cards summarize. A small badge can show whether the
- * current rows came from local data, the cloud, or a fallback, with a short
- * note explaining why, so a data gap is not mistaken for a bug.
+ * The control bar above the Branches table for date range, filters, and
+ * column visibility, with a badge noting whether rows came from local data
+ * or the cloud.
  */
 const meta = {
   title: "Composites/Branches/Branches Toolbar",

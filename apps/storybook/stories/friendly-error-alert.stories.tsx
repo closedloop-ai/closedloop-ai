@@ -3,14 +3,9 @@ import { mockFriendlyError } from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Turns a raw error from a loop or gateway failure into a readable alert: a
- * plain-language title and description, plus a bulleted list of steps you
- * can try. Use it instead of building an Alert by hand whenever you are
- * showing a backend failure to someone who is not an engineer, since it maps
- * the error into friendly copy for you rather than leaving you to write that
- * copy at each call site. The original error message is still available, but
- * only inside a collapsed "Technical details" section, so it never clutters
- * the main message.
+ * Turns a raw error from a loop or gateway failure into a plain language
+ * alert with steps to try, used instead of hand building an Alert for a
+ * backend failure shown to non engineers.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Friendly Error Alert",

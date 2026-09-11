@@ -16,16 +16,9 @@ import {
 // not found it", but only GaveUp is entitled to say so — a probe that is still
 // running must never render as a proven negative it has not established yet.
 /**
- * The notice shown on the desktop download step when the app cannot find
- * Closedloop Desktop installed on your machine yet. While it is still
- * polling in the background it shows a quiet looking for it strip with a
- * spinner; once the poll budget runs out, or a manual recheck also comes up
- * empty, it switches to an alert with a Check again button. Those two states
- * look similar but mean different things: a probe that is still running
- * never gets to claim it found nothing, so the alert only appears once a
- * check has actually finished. It is fully driven by props, so the parent
- * owns the polling and the timing, and this component only renders whatever
- * state it is told.
+ * The notice shown when the desktop app can't find Closedloop Desktop
+ * installed yet, a quiet polling strip that becomes a Check again alert once
+ * checks are exhausted.
  */
 const meta: Meta<typeof DesktopUndetectedNotice> = {
   args: {

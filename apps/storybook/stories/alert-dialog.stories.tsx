@@ -13,12 +13,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A modal dialog that interrupts you to confirm or cancel a specific action,
- * like deleting an account, rather than one you can idly dismiss. Reach for
- * it over the plain Dialog when someone must actually answer: it has no
- * close button, and clicking outside it does nothing. Its footer typically
- * holds one confirming action and one cancel action, framed to state the
- * consequence up front.
+ * A modal that forces you to confirm or cancel an action like deleting an
+ * account, with no close button and no dismissing it by clicking outside,
+ * unlike a plain Dialog.
  */
 const meta: Meta<typeof AlertDialog> = {
   title: "Composites/Overlays/Alert Dialog",

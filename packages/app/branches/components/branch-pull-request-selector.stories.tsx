@@ -15,14 +15,9 @@ const completeCollection = makeCollection(
 );
 
 /**
- * A dropdown labeled Pull request that switches between the pull requests
- * tied to a branch, each option showing its number, title, repository, and
- * whether it is open, draft, merged, or closed. Use it on any panel about a
- * specific PR, since a branch can have more than one in its history and
- * someone needs a way to pick which one they are looking at. When GitHub's
- * history could not be fully verified, or more than one PR looks active, a
- * helper line appears under the dropdown explaining why instead of silently
- * guessing.
+ * A dropdown for switching between the pull requests tied to a branch, since
+ * a branch can have more than one and someone needs a way to pick which
+ * they're looking at.
  */
 const meta = {
   title: "Composites/Branches/Pull Request Selector",

@@ -25,15 +25,9 @@ const NATIVE_METHOD_OPTIONS = ["get", "post", "dialog"] as const;
 // default three-method state — the one `desktop-account-tab` and the
 // first-launch overlay actually ship — appeared in no story at all.
 /**
- * The sign in method picker: a filled Continue with GitHub button, an
- * outlined Continue with Google button below it, and an optional email field
- * with its own Continue button. It is the one chooser shared by desktop
- * onboarding, web sign in, and Settings, so wherever someone is asked how
- * they want to sign in, GitHub, Google, and email look and rank the same
- * way. It does not run the sign in itself: a host wires each button to a
- * real flow and reports back which method is currently running, so this
- * component can show a spinner and disable the rest. The email option can be
- * hidden entirely for a surface that only offers GitHub and Google.
+ * The sign in method picker, GitHub, Google, and an optional email field,
+ * shared by desktop onboarding, web sign in, and Settings so it looks the
+ * same everywhere.
  */
 const meta: Meta<typeof AuthMethods> = {
   args: {

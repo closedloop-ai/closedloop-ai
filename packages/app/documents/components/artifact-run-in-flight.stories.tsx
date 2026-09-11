@@ -7,14 +7,9 @@ import { ArtifactRunInFlight } from "./artifact-run-in-flight";
 // running, and a run whose Session has not materialized yet must not offer a
 // link that goes nowhere.
 /**
- * Tells you a background AI run is in progress on an artifact, and for how
- * long. It comes in two shapes: a banner that sits above existing content
- * without hiding it, and a full panel for an artifact that has nothing else
- * to show yet, both with a spinner, the kind of run underway, like 'Plan' or
- * 'Execute', and a link to the session once one exists. The wording is
- * careful on purpose: a run still queued behind an unapproved dependency
- * says 'Queued', never that it's running, and the whole thing renders
- * nothing once there's no active run to report.
+ * Tells you a background AI run is in progress on an artifact and for how
+ * long, as a banner above existing content or a full panel when there's
+ * nothing else to show yet.
  */
 const meta = {
   title: "Composites/Documents/Artifact Run In Flight",

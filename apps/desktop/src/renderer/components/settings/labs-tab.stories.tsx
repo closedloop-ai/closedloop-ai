@@ -23,13 +23,8 @@ import { LabsTab } from "./labs-tab";
 // registry currently holds. Flag keys come from the exported registry constants
 // so a rename cannot silently leave a story asserting a dead key.
 /**
- * The Settings tab that lists every experimental feature as a toggle,
- * grouped into labeled sections by category instead of one long list. A
- * toggle that depends on another one is nested under its parent and stays
- * disabled, with a note explaining what to turn on first, until that
- * dependency is switched on. Reach for this tab to turn on an early feature
- * before it ships broadly; the tab itself, including the button that opens
- * it, only appears once the Labs setting is turned on.
+ * The Settings tab listing every experimental feature as a toggle, grouped
+ * by category, for turning on an early feature before it ships broadly.
  */
 const meta = {
   title: "Composites/Settings/Labs Tab",

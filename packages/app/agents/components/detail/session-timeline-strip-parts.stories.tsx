@@ -25,14 +25,9 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 // portals to `document.body` at `position: fixed`, so a docs page rendering
 // every story at once would stack them all on the same viewport coordinates.
 /**
- * The hover card for one dot on the Session Timeline's event rail, listing
- * the events, such as prompts, commits or failures, that happened in that
- * moment with their time and a short label. Reach for it only within that
- * timeline; it is the event rail's counterpart to the Activity Bucket
- * Tooltip, which is the hover card for the timeline's cost bars instead of
- * its event dots. A count like '4 events' only appears once more than one
- * event sits behind the dot, so a single event never gets mislabeled as a
- * count of one.
+ * The hover card for a dot on the Session Timeline's event rail, listing the
+ * events at that moment, the counterpart to the Activity Bucket Tooltip's
+ * cost bars instead of dots.
  */
 const meta = {
   title: "Primitives/Overlays/Session Timeline Event Dot Tooltip",

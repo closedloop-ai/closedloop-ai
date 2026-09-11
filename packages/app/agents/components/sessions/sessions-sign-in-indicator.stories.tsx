@@ -18,12 +18,7 @@ import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
 /**
  * The card shown in place of a metric when you are not signed in to a cloud
  * session, explaining why the number is missing and offering a sign in
- * button. Set banner to true to show the wider version above a whole row of
- * cards instead of a caption on a single card. If the surface has no sign-in
- * action to offer, such as a page that is already authenticated, it quietly
- * drops the button and shows the explanation as plain text. If a sign-in
- * attempt fails, it shows the error message and keeps the button in place as
- * a retry.
+ * button.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Sessions Sign In Indicator",

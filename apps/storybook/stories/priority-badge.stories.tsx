@@ -2,12 +2,9 @@ import { PriorityBadge } from "@repo/design-system/components/ui/priority-badge"
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Shows a project's priority level as a small rounded pill carrying both a
- * colour and a text label: Low, Medium, High or Urgent. Use it wherever
- * priority needs to read as a word in a list or table row; reach for
- * Priority Icon instead when the row is too tight for text and a compact
- * glyph will do. Urgent renders bolder than the other three levels, so it
- * still stands out for a reader who cannot rely on colour alone.
+ * A project's priority level as a colored pill with a text label, used
+ * instead of Priority Icon when the row has room for words, not just a
+ * glyph.
  */
 const meta = {
   title: "Primitives/Data Display/Priority Badge",

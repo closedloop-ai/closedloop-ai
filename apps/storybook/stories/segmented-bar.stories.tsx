@@ -14,15 +14,8 @@ const SegmentedBarCanvas = (props: Parameters<typeof SegmentedBar>[0]) => (
 );
 
 /**
- * A single horizontal bar split into colored segments by value, with a
- * legend underneath listing each segment's label, formatted value and share
- * of the total. Use it to show how one total breaks down into its parts in a
- * compact strip. Reach for Category Bar Chart instead when you are comparing
- * separate totals side by side rather than showing the makeup of one, and
- * Donut Chart when a ring reads better than a bar in your layout. The total
- * you pass in is the denominator every percentage is measured against, and
- * it does not have to equal the sum of the segments, so the bar can visibly
- * fall short of full width.
+ * A single bar split into colored segments by value, showing how one total
+ * breaks down into its parts in a compact strip.
  */
 const meta = {
   title: "Primitives/Charts/Segmented Bar",

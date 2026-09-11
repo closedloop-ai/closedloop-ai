@@ -20,15 +20,9 @@ import { Mail, Plus, PlusCircle, Search, UserPlus } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * A menu of actions or options that opens from a button, built from items,
- * checkboxes, radio groups and nested submenus. Reach for it whenever you
- * need a structured list of choices behind a trigger; reach for the Popover
- * instead when what opens is free-form content rather than a list of
- * actions, and reach for a Tooltip when it only needs to show information on
- * hover. It blocks interaction with the rest of the page by default while it
- * is open, and several of this system's other menus, like the table view and
- * column menus, are built on top of it rather than being separate
- * primitives.
+ * A menu of actions or options behind a trigger button, for structured
+ * choices rather than the free-form content of a Popover or the hover-only
+ * hint of a Tooltip.
  */
 const meta: Meta<typeof DropdownMenu> = {
   title: "Primitives/Overlays/Dropdown Menu",

@@ -6,12 +6,9 @@ import { DocumentTypeBadge } from "@repo/app/documents/components/document-type-
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A small label with an icon showing what kind of document something is,
- * like a PRD or an implementation plan. It comes in two looks: a tinted
- * 'pill' for a colorful summary view, and a plain outlined 'compact' badge
- * that matches a button's styling for a denser list. An unrecognized type
- * still renders, falling back to a question-mark icon and a neutral gray
- * rather than breaking or showing nothing.
+ * A small labeled icon showing what kind of document something is, as a
+ * tinted pill for a colorful view or a plain outlined badge for a denser
+ * list.
  */
 const meta = {
   title: "Composites/Documents/Document Type Badge",

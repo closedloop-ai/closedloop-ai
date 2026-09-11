@@ -175,14 +175,8 @@ function ComputeTargetSystemCheckDemo({
 
 /**
  * A collapsible panel showing whether a compute target passed its required
- * checks, like having Git and Claude Code installed, with a status badge, a
- * summary line, a re-check button, and an optional repair button. Use it
- * wherever a target's health needs checking and possibly fixing in place,
- * rather than just showing whether it is online. Failing required checks and
- * failing optional checks, such as an unconfigured MCP server, are counted
- * separately, so an optional gap is never reported as something that
- * actually blocks a command, and starting a repair opens the panel even if
- * it had been collapsed.
+ * checks, with a status badge, a summary, and buttons to re-check or repair
+ * issues in place.
  */
 const meta = {
   title: "Composites/Compute/Compute Target System Check",

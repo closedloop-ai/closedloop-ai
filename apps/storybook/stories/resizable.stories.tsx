@@ -7,13 +7,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * Splits an area into panels separated by draggable handles, so someone can
- * drag a handle to resize the panels on either side of it. Nest panel groups
- * inside one another, as in the story's second panel, to build split layouts
- * more complex than a single row or column. Give it an autoSaveId to
- * remember the sizes a person dragged to across page reloads, and each
- * handle is keyboard operable: focus it and press an arrow key to resize by
- * a set percentage.
+ * Splits an area into panels separated by draggable handles so someone can
+ * drag a handle to resize the panels on either side of it.
  */
 const meta: Meta<typeof ResizablePanelGroup> = {
   title: "Primitives/Layout/Resizable Panel Group",

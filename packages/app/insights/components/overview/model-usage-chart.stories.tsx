@@ -120,14 +120,8 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 /**
- * A dashboard card charting spend or token usage over time, broken down by
- * AI model, with toggles to switch between dollar and token views and
- * between grouping by model or by provider. Once there are more than ten
- * models, the smallest ones fold into a single grey 'Other models' band
- * instead of cluttering the legend with colors nobody could tell apart
- * anyway. It shows a skeleton while data is still loading, and a distinct
- * message if usage data has arrived but token counts specifically never did,
- * rather than quietly falling back to the dollar figures.
+ * A dashboard card charting AI spend or token usage over time by model or
+ * provider, folding the smallest models into one Other models band past ten.
  */
 const meta = {
   title: "Composites/Insights/Model Usage Chart",

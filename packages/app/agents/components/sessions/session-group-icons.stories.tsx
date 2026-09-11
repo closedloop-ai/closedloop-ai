@@ -28,14 +28,9 @@ import { createSessionTableRowFixture } from "./session-list-fixtures";
 // distinguishable from each other at 16px in a muted band header, which is the
 // question a reader has when they scan a banded list.
 /**
- * The small icon shown inside a collapsible band header when a session list
- * is grouped, one glyph per grouping field: a dot for status, a robot for
- * harness, and a person for owner. Use it wherever sessions are grouped so a
- * band reads at a glance without repeating the field name in words, and pick
- * the icon for the field you are grouping by rather than inventing a new
- * one. Grouping by nothing shows no icon at all, and the header itself never
- * shows a row count here, since a grouped list is usually only a page of a
- * larger set and a number would read as the full total.
+ * The small glyph in a grouped session list's band header, one icon per
+ * grouping field, so a band reads at a glance without repeating the field
+ * name.
  */
 const meta = {
   title: "Primitives/Content/Session Group Icons",

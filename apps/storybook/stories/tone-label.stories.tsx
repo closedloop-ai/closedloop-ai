@@ -8,13 +8,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 // "Manual" on every row, a Type that is "Tool" on every row) as a plain colored
 // string. The color comes from the same `variant` vocabulary the badge uses.
 /**
- * A plain coloured word or short phrase, with no fill, border, or padding
- * around it, just text in a colour. Reach for it instead of Badge or Chip
- * when a value barely varies from row to row, like a Type column that reads
- * "Tool" almost every time: boxing that in a filled badge only adds clutter,
- * while a plain coloured word still carries the meaning. It draws its colour
- * from the exact same palette Badge and Chip use, so switching a value from
- * a label to a full badge never introduces a new colour to keep in sync.
+ * A plain coloured word with no fill or border, useful instead of Badge or
+ * Chip when a value barely changes from row to row, like a Type column
+ * reading the same word almost every time.
  */
 const meta = {
   title: "Primitives/Data Display/Tone Label",

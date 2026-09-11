@@ -44,14 +44,9 @@ const SIGNED_OUT: DesktopAuthState = {
 // never settles, which is the honest fixture: pressing a method in Storybook
 // would otherwise pretend a system-browser OAuth round-trip happened.
 /**
- * The sign in screen behind the guest landing's already have an account
- * link: a full window taken over by the real GitHub and Google sign in flow,
- * with the brand mark above it and a Back button as the only way out. Unlike
- * that same flow inside the account dialog, this version drops the email
- * option and supplies its own card and back control, since there is no
- * dialog chrome or Escape key to fall back on here. It runs the real
- * authentication handoff, including the sync consent step after a successful
- * sign in, rather than standing in for it.
+ * The full screen GitHub and Google sign in flow behind the guest landing's
+ * already have an account link, with its own back button since there's no
+ * dialog chrome here.
  */
 const meta = {
   title: "Composites/Onboarding/Guest Landing Sign In",

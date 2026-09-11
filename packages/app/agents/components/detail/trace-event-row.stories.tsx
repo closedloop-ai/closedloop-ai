@@ -33,14 +33,8 @@ function eventGroup(
 }
 
 /**
- * One row in a session's trace timeline: a small coloured dot for a pass or
- * fail signal, the event text, and a timestamp, centred as a quiet separator
- * between turns. Give it a jump handler and the whole row becomes clickable,
- * letting a reader jump to that point in the transcript from elsewhere on
- * the page. When the event text contains raw harness output, like captured
- * command output, the row instead renders left aligned as a collapsible chip
- * rather than a clickable separator, since nesting one clickable element
- * inside another is not valid.
+ * A row in a session's trace timeline showing a pass or fail dot, the event
+ * text, and a timestamp, clickable to jump to that point in the transcript.
  */
 const meta = {
   title: "Primitives/Data Display/Trace Event Row",

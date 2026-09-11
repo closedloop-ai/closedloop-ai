@@ -244,15 +244,9 @@ const LoginScreen = ({
 );
 
 /**
- * This is the full sign-in screen: a wordmark and headline over a card with
- * one filled "Continue with GitHub" button, an optional Google button and
- * email field below a divider, and a product screenshot on a gradient panel
- * on wide screens. Reach for it to see the visual hierarchy of the sign-in
- * options rather than just the card on its own: GitHub is presented as the
- * one primary path in, with Google and email deliberately secondary. It does
- * not run real sign-in, and the order the buttons appear in on the live site
- * is controlled elsewhere, so production can show a different order than
- * this screen does.
+ * The full sign-in screen showing GitHub as the one primary path in, with
+ * Google and email deliberately secondary, rather than just the sign-in card
+ * on its own.
  */
 const meta = {
   title: "Surfaces/Login",

@@ -10,12 +10,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { SunMoonIcon } from "lucide-react";
 
 /**
- * A ready-made submenu for switching between light, dark and system color
- * themes, meant to be dropped inside an existing dropdown menu's content
- * rather than opened on its own. Reach for it instead of building a theme
- * switcher from scratch anywhere a settings or account menu already exists.
- * Its trigger icon changes to match whichever theme is active, sun, moon or
- * monitor, unless you fix it to one icon yourself.
+ * A ready-made submenu for switching light, dark and system themes, meant to
+ * drop inside an existing dropdown menu instead of building a theme switcher
+ * from scratch.
  */
 const meta = {
   title: "Primitives/Navigation/Theme Submenu",
