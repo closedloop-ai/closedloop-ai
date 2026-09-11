@@ -46,14 +46,8 @@ const SPLIT_TOKEN_USAGE: SyncedAgentSessionTokenUsage[] = [
 ];
 
 /**
- * Two rows for a session's details panel that decide for themselves whether
- * to appear at all. The Cache Write row splits a session's cache creation
- * tokens into their five minute and one hour buckets, and the Sync row
- * reports whether the session's transcript has uploaded, is still syncing,
- * or failed for good. Reach for this pattern instead of a plain property row
- * whenever the underlying data may be entirely absent: both rows render
- * nothing rather than an empty or zeroed out line when a session has nothing
- * to report.
+ * Two session detail rows, Cache Write and Sync, that decide for themselves
+ * whether to appear at all rather than showing an empty or zeroed out line.
  */
 const meta = {
   title: "Primitives/Data Display/Session Flagged Properties",

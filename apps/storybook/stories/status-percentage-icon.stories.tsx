@@ -4,14 +4,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
 
 /**
- * A small circular icon showing an exact completion percentage from 0 to
- * 100, turning into a solid green circle with a check mark once it reaches
- * 100. Use it instead of Status Icon when you have a real number rather than
- * a named phase like "in review". Pass null instead of a number to render a
- * plain dash rather than an empty ring, because a project with nothing to
- * measure is not the same as one sitting at zero percent; a label is
- * required in that case, since the icon alone cannot say what population is
- * empty. Add thinking to show a spinner while the value keeps changing.
+ * A small circular icon showing an exact completion percentage, turning into
+ * a solid green check once it reaches 100, used instead of Status Icon when
+ * you have a real number.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Status Percentage Icon",

@@ -38,16 +38,8 @@ const STORY_GATEWAY_PORT = 41_234;
 // and is structurally blind to contrast, so this canvas is where that stays
 // checkable.
 /**
- * A settings section showing whether the desktop app can actually reach the
- * outside world: a gateway health rollup (Connected, Needs Attention, or
- * Offline), the gateway's port, the cloud connection state, whether history
- * has finished syncing, whether remote commands are paused, and the
- * connection's security mode. Check it first whenever a remote session will
- * not connect, since it is the one place all of those signals sit together
- * in one grid instead of spread across separate panels. Each state is
- * spelled out in words rather than only shown by color, because the tint
- * used for success or warning does not have enough contrast to be read
- * reliably as text on its own.
+ * The settings section showing whether the desktop app can reach the outside
+ * world, the first place to check when a remote session will not connect.
  */
 const meta = {
   title: "Composites/Settings/Connection Status Section",

@@ -20,15 +20,9 @@ import { DataSyncTab } from "./data-sync-tab";
 // resolves the show-Redacted flag. `setDataSyncLevel` echoes the picked level so
 // Apply round-trips on the canvas the way the real IPC bridge does.
 /**
- * This is the settings screen where you choose how much session data your
- * machine sends to the cloud: radio options from metadata only up to full
- * transcripts, a badge showing your current level, and an Apply button that
- * confirms whether you raised or lowered it. Reach for it as the one place
- * this choice lives now, since it replaced several separate toggles for
- * cloud connection, transcript syncing, and paused cloud commands. A
- * "Redacted sessions" option is hidden by default behind a feature flag, but
- * if you are already on that level it keeps showing for you, so turning the
- * flag off never silently switches your setting out from under you.
+ * The settings screen for choosing how much session data your machine sends
+ * to the cloud, now the one place for that choice instead of several
+ * separate toggles.
  */
 const meta = {
   title: "Surfaces/Data Sync Tab",

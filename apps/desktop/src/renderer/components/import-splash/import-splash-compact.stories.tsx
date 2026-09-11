@@ -20,14 +20,9 @@ import {
 // the scan — which has no total yet — claims no count at all rather than
 // printing a fabricated 0%.
 /**
- * The collapsed, one-line version of the first-launch import banner: a
- * status sentence, a thin progress rail below it, and a handful of controls
- * to pause, dismiss, or expand back to the full panel. Collapsing only hides
- * detail, never changes the truth of what is happening, so a paused import
- * still reads Import paused and a failed one still offers a way to continue
- * rather than trapping you on a rail with no button. A phase with no known
- * total, like scanning, shows an indeterminate hatched rail instead of a
- * fabricated percentage.
+ * The collapsed, one line version of the first launch import banner, with a
+ * progress rail and controls to pause, dismiss, or expand back to the full
+ * panel.
  */
 const meta = {
   title: "Composites/App Shell/Import Splash Compact",

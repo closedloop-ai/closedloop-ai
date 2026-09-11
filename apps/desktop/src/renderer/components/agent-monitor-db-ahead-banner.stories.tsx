@@ -17,13 +17,9 @@ import { AgentMonitorDbAheadBanner } from "./agent-monitor-db-ahead-banner";
 // runtime-status poll's `getRuntimeStatus`) so Storybook renders the Electron
 // wrapper with no main process behind it.
 /**
- * A thin red bar across the top of the desktop app that appears only when
- * the local database on disk was written by a newer version of the app than
- * the one currently running. It tells you that agent history and cloud sync
- * are unavailable until you update, and gives you a single Check for updates
- * button to do that. In every other state, including a normal failure that
- * is not caused by a version mismatch, it renders nothing at all, so seeing
- * it on screen always means this exact cause.
+ * A red banner that appears only when your local database was written by a
+ * newer app version, warning that history and sync are unavailable until you
+ * update.
  */
 const meta = {
   title: "Composites/App Shell/Agent Monitor DB Ahead Banner",

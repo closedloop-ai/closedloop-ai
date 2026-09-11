@@ -46,15 +46,9 @@ function cardsOf(count: number): DocumentRowData[] {
 }
 
 /**
- * The container that decides what the My Tasks board actually shows: the
- * kanban board itself, a loading placeholder, a could not load message, an
- * empty queue message, or a message that this page has nothing to show
- * because of a search or filter. Reach for it as the top of the My Tasks
- * card view instead of rebuilding that state logic, since the list view
- * shares this exact handling. It always checks for a failed load before
- * checking for an empty queue, so a broken connection can never look like
- * you have nothing to do, and it adds a pagination footer once a page has
- * actually loaded.
+ * The container deciding what the My Tasks board shows: the kanban board, a
+ * loading state, an error, an empty queue, or a no results from filters
+ * message.
  */
 const meta = {
   title: "Composites/My Tasks/Card View",

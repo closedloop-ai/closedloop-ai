@@ -246,14 +246,9 @@ function SurfaceChip({ label }: { label: string }) {
 }
 
 /**
- * A row of removable chips, one per active table filter such as status,
- * assignee, or priority, plus an Add filter button and a Clear all button.
- * Use it above a filterable table so people can see and remove filters at a
- * glance, while Filter Popover is the single button that adds those filters
- * in the first place. Clicking a chip's label reopens that filter's own
- * picker so the selection can change without removing and re-adding it, and
- * the add and clear controls can be hidden entirely for a bar that only
- * shows filters a page manages on its own.
+ * A row of removable chips for each active table filter, with Add and Clear
+ * all buttons, while Filter Popover is the single button that adds those
+ * filters.
  */
 const meta = {
   title: "Composites/Data Display/Active Filters Bar",

@@ -59,14 +59,8 @@ function withSpendOutcomeFlag(children: ReactNode) {
 }
 
 /**
- * A dialog for adding a metric tile to a dashboard, or editing one that's
- * already pinned: pick a metric, choose how to group it, and watch a live
- * preview of the chart before saving. Its heading and buttons switch between
- * Add metric and Edit widget depending on whether the tile you opened it on
- * is already pinned, and only a pinned tile gets a Remove option. If the
- * chosen metric needs a data source that isn't connected yet, such as
- * GitHub, the preview swaps to a connect prompt instead of drawing an empty
- * chart.
+ * A dialog for adding or editing a dashboard metric tile, letting you pick a
+ * metric, choose how to group it, and preview the chart before saving.
  */
 const meta = {
   title: "Composites/Insights/Metric Picker",

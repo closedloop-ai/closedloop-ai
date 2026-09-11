@@ -12,15 +12,9 @@ import type { ReactNode } from "react";
 // for a population with nothing to measure. Domain status-icon components
 // compose these to render their own status vocabularies.
 /**
- * The three raw shapes every status icon in this system is built from.
- * StatusRing draws a partial or full circular arc for anything measured as a
- * percentage, FilledStatusCircle draws a solid circle with a check, cross,
- * swap or exclamation mark in the middle for a state that is finished rather
- * than in progress, and StatusDash draws a plain dash in the same size slot
- * for a state with nothing to measure at all, which is different from a real
- * zero percent. Reach for Status Icon or Status Percentage Icon instead of
- * these directly, unless you are building a new status vocabulary of your
- * own.
+ * The three raw shapes every status icon is built from: a partial arc for a
+ * percentage, a filled circle for a finished state, and a dash for nothing
+ * to measure at all.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Status Icon Primitives",

@@ -33,13 +33,8 @@ function limits(overrides: Partial<SessionLimits> = {}): SessionLimits {
 // duplicating the all-models week, extra usage appearing at $0, the empty state
 // arriving as a bare drawer (wongk, PR #4572).
 /**
- * The full list of usage bars inside the session limits drawer: one row for
- * each rate-limit window your plan has, such as the five hour window, the
- * weekly window, and any per-model weekly windows, plus extra usage credits
- * if you have them. Which rows appear depends entirely on your plan, so the
- * set of bars you see is not fixed from account to account. It is read-only,
- * with no controls of its own, and when your plan has nothing to show it
- * renders a sentence explaining why rather than leaving the drawer empty.
+ * The full list of usage bars in the session limits drawer, one row per rate
+ * limit window your plan has, read only and shaped entirely by your plan.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Session Limits Detail",

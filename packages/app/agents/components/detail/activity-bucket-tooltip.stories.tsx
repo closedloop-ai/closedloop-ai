@@ -34,17 +34,9 @@ import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 // One story per canvas is the only way each is actually legible —
 // `agent-session-detail-view.stories.tsx` omits the tag for the same reason.
 /**
- * The hover card for one bar in the Session Timeline's cost strip, showing
- * that time slice's total cost, a table breaking it down by AI model, and
- * how many events and tool calls happened in it. Reach for it only as part
- * of that timeline; it is not a general purpose tooltip, and the nearby
- * Session Timeline Event Dot Tooltip is the equivalent card for the strip's
- * event dots rather than its cost bars. When a slice billed nothing it says
- * so in a sentence instead of showing a table of zeros, and when the strip's
- * cost was estimated rather than actually measured it drops the dollar
- * figures entirely rather than showing a number it cannot stand behind. It
- * can also switch to a two column table grouped by whatever dimension, such
- * as model or activity phase, the timeline is currently grouped by.
+ * The hover card for a bar in the Session Timeline's cost strip, breaking a
+ * slice's cost down by model, the counterpart to the Event Dot Tooltip's
+ * event dots.
  */
 const meta = {
   title: "Primitives/Overlays/Activity Bucket Tooltip",

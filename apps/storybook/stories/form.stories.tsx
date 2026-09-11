@@ -14,12 +14,9 @@ import { action } from "storybook/actions";
 import { z } from "zod";
 
 /**
- * A set of building blocks for a form: a label, the input itself, helper
- * text underneath, and an error message that only shows up once a field
- * fails validation. It connects to React Hook Form and Zod under the hood,
- * so a field's label, description, and error state stay linked without you
- * wiring up ids by hand. It only supplies the structure. You still bring
- * your own input or other control, and your own validation rules.
+ * A set of building blocks, a label, an input, helper text, and an error
+ * message, connected to React Hook Form and Zod so a field's states stay
+ * linked.
  */
 const meta: Meta<typeof Form> = {
   title: "Composites/Inputs/Form",

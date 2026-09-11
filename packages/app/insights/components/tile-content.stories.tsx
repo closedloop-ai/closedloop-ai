@@ -38,13 +38,8 @@ const updatedSections = makeDeliverySections([
 ]);
 
 /**
- * This draws the actual chart inside a dashboard tile: a time series, bar
- * chart, heatmap, donut, or table, chosen by the tile's own descriptor
- * rather than a prop you set directly. Hand it the data for each insights
- * section and it picks the right chart type and renders it; a section that
- * hasn't arrived yet shows a skeleton instead of an empty chart. On some bar
- * tiles, like merged pull requests by repository, clicking a bar reveals a
- * segment breakdown for just that bar instead of changing the whole chart.
+ * The chart inside a dashboard tile, a time series, bar chart, heatmap,
+ * donut, or table, chosen automatically by the tile's own data descriptor.
  */
 const meta = {
   title: "Composites/Insights/Tile Content",

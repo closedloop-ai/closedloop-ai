@@ -58,16 +58,8 @@ function honestUsageFixture(
 }
 
 /**
- * This is the strip of metric cards above the Sessions table: Sessions,
- * Total Tokens, Cost, PRs Shipped, and Lines of Code per Dollar. Each card
- * manages its own state: the first three always show a real number and never
- * ask you to sign in, while the two pull-request cards need a signed-in
- * cloud session and show a neutral dash with no call to action when you are
- * signed in but the value simply is not available. Use this over building
- * individual metric cards by hand, since it already handles loading
- * skeletons, a local-data fallback for when the cloud data fails to load,
- * and period-over-period comparison chips consistently across every card in
- * the row.
+ * The strip of metric cards above the Sessions table, like Sessions, Total
+ * Tokens, and Cost, handling loading and fallbacks consistently.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Summary Cards",

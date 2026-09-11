@@ -33,14 +33,9 @@ const agent: SessionAgent = {
 };
 
 /**
- * A card summarizing one agent in a running or finished session: its name,
- * what it is working on, the tool it last used, its model, and what it has
- * cost so far. The icon and border color show whether it is the main agent
- * or a subagent, and whether it is currently working or waiting, and a
- * selected card gets a highlighted ring and tint to match the pattern used
- * elsewhere for a selected row. Unlike the orchestration graph or the
- * subagent table, this card stands alone rather than showing an agent's
- * place in a delegation tree.
+ * Summarizes one agent in a session, its status and cost, standing alone
+ * rather than showing its place in a delegation tree like the orchestration
+ * graph does.
  */
 const meta = {
   title: "Composites/Agents/Agent Card",

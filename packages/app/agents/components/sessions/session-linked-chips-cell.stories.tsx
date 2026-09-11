@@ -14,15 +14,9 @@ import { SessionLinkedChipsCell } from "./session-linked-chips-cell";
 // could not resolve a destination. Both are here, because both are the cases the
 // grid itself makes hard to see.
 /**
- * This is the shared cell used for both the "Owning project" and "Linked
- * issues" columns in the Sessions table, rendering one or more small linked
- * pills with a leading icon. When there are more chips than the column can
- * fit, the extra ones collapse behind a "+N" button that opens a popover
- * listing them, reachable by keyboard and touch, not only by hovering. A
- * chip whose destination could not be resolved still shows its label; it
- * just is not clickable. In the narrower card layout below the table's
- * breakpoint, the cell instead shows every chip and wraps, rather than
- * hiding any behind the overflow button.
+ * The shared cell for the Sessions table's Owning Project and Linked Issues
+ * columns, collapsing extra pills behind a plus N popover you can reach by
+ * keyboard too.
  */
 const meta: Meta<typeof SessionLinkedChipsCell> = {
   component: SessionLinkedChipsCell,

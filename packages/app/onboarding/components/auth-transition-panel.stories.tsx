@@ -11,15 +11,9 @@ import { AuthTransitionPanel } from "./auth-transition-panel";
 // fades in. That is the production behavior, not a loading artifact, and it is
 // why on a healthy hop most users never see these screens at all.
 /**
- * A short hold on, we are moving you screen shown while the desktop app
- * hands off to GitHub or Google sign in and waits for the browser to hand
- * control back. Reach for it for any waiting or failure screen in that
- * connect flow instead of writing a new one, since it is the one shared
- * version of that moment. It stays invisible for just under half a second,
- * so a hop that finishes almost instantly never flashes a heading at you;
- * only a genuinely slow hop shows the title, spinner, and brand mark. Give
- * it an action for a screen that can go wrong, like a failed connection, and
- * it shows that instead of the spinner.
+ * A brief moving you screen shown while the desktop app hands off to GitHub
+ * or Google sign in, staying invisible unless the hop actually takes a
+ * moment.
  */
 const meta: Meta<typeof AuthTransitionPanel> = {
   args: {

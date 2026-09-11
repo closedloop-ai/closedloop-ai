@@ -85,13 +85,8 @@ const SessionSyncStatusBadgeGallery = () => (
 );
 
 /**
- * This is the small colored badge that flags a session row whose transcript
- * upload needs attention, such as "Syncing," "Sync failed," or "Stale." It
- * only appears for a row that genuinely needs a look; a healthy, fully
- * synced session shows nothing here, since a busy list should highlight
- * exceptions rather than repeat a badge on every row. It also renders
- * nothing when the underlying data is missing, so absence here never implies
- * a problem that was never checked.
+ * A small colored badge that flags a session row needing attention, like
+ * Syncing or Sync failed, and stays hidden when everything is healthy.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Session Sync Status Badge",

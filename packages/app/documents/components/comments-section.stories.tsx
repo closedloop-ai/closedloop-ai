@@ -89,13 +89,9 @@ const resolvedThread: CommentThreadItem = {
 };
 
 /**
- * A collapsible 'Comments' section on a document: open discussion threads at
- * the top, a link to show or hide resolved ones, and a composer at the
- * bottom for starting a new thread. Use it for artifact-level feedback and
- * discussion, complete with @mentions, replies, and a resolve or reopen
- * button on each thread for whoever started or replied to it. It shows
- * skeleton rows while the first load is in flight, so it never claims there
- * are no comments before it actually knows that.
+ * A collapsible Comments section on a document with open threads, a toggle
+ * for resolved ones, and a composer for starting a new discussion with
+ * mentions and replies.
  */
 const meta = {
   title: "Composites/Documents/Comments Section",

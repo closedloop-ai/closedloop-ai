@@ -15,14 +15,9 @@ const SIGN_IN_LABEL = "Sign in";
 // storage keys, auth, the sign-in step — and has its own suites. This component
 // takes two callbacks and nothing else, which is what makes it storyable at all.
 /**
- * The very first screen a freshly installed desktop app shows: a full window
- * hero with a headline, a short line beneath it, a Get Started button, and a
- * smaller Sign in link for someone who already has an account. Get Started
- * drops you straight into the app with no account at all; Sign in is a real,
- * separate authentication step, not the same door with a different label.
- * There is only one state to design for, since the screen has no data behind
- * it, so what actually needs checking is whether the headline reads well
- * across the range of window sizes the desktop app runs at.
+ * The first screen a freshly installed desktop app shows, with Get Started
+ * dropping you in with no account and a separate Sign in link for real
+ * authentication.
  */
 const meta = {
   title: "Composites/Onboarding/Guest Landing",

@@ -53,14 +53,9 @@ function SidebarCollapsibleSectionDemo(
 }
 
 /**
- * A collapsible group of sidebar navigation items, with the group's label
- * doubling as the toggle and a chevron that rotates to show open or closed.
- * Reach for it inside a sidebar instead of the generic Collapsible Section,
- * since it already carries the sidebar's own spacing and label styling, and
- * it can take an optional trailing action, like an add button, next to the
- * label. Give it a persistenceKey to remember whether someone left the
- * section open or closed the next time they load the app, and leave it out
- * for a section that should always start at its defaultOpen state.
+ * A collapsible group of sidebar navigation items whose label doubles as the
+ * toggle, used inside a sidebar instead of the generic Collapsible Section
+ * for matching spacing and styling.
  */
 const meta = {
   title: "Primitives/Layout/Sidebar Collapsible Section",

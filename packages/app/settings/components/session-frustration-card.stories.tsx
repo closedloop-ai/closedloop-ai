@@ -7,14 +7,8 @@ import {
 } from "./session-frustration-card";
 
 /**
- * A settings card with one switch: whether ClosedLoop scores sessions for
- * frustration signals, like repeated corrections and error spikes, and shows
- * the trend on the Insights dashboard. It is off by default, since the score
- * comes from reading prompt content, so an org has to opt in deliberately.
- * Unlike the general Org Policy Toggle Card, this one is built for this
- * single setting only, with its own separate loading state rather than a
- * built in one. The switch locks while a change is saving and shows an
- * inline alert, without moving on its own, if the save fails.
+ * The settings switch for whether ClosedLoop scores sessions for frustration
+ * signals, off by default since it reads prompt content.
  */
 const meta = {
   title: "Composites/Settings/Session Frustration Card",

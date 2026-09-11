@@ -8,15 +8,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 // In-progress and in-review show an inner filled circle matching the
 // outer arc color. Supports a "thinking" spinner overlay for AI processing.
 /**
- * A small circular icon that shows a named phase of work, such as backlog,
- * in progress, in review or complete, drawn as a ring that fills further the
- * closer the phase is to done. Reach for it instead of Status Percentage
- * Icon when the states are a fixed set of named stages rather than an
- * arbitrary number, and instead of a text badge when you need something that
- * reads at a glance in a dense list or table. Add thinking to overlay a
- * spinning arc for work an AI agent is actively doing; it is ignored on the
- * two finished states, complete and won't do. A status this icon does not
- * recognise falls back to a plain grey ring instead of breaking.
+ * A small circular icon showing a named phase of work, like backlog or in
+ * review, as a ring that fills closer to done, used instead of a text badge
+ * in a dense list or table.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Status Icon",

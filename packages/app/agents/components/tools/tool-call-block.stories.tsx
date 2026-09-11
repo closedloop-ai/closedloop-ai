@@ -8,16 +8,8 @@ const toolUse = assistantMessage.blocks?.find(
 );
 
 /**
- * A collapsible card for one tool call and its result together: a colored
- * icon and label identify the tool, such as a shell command, a file edit, or
- * a search, a one line summary shows the file path or command at a glance,
- * and a small badge marks it complete or errored. Opening the card formats
- * the input and result to match the tool, for example a terminal block for a
- * shell command or a red and green diff for an edit. Reach for it when you
- * want the whole call, in and out, as one unit; use Tool Result Block
- * instead if you only have a result and no matching call, or Tool Data View
- * if you want just the formatted input or response without the surrounding
- * card.
+ * A collapsible card pairing one tool call with its result, for when you
+ * want the whole call, in and out, as a single unit.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Tool Call Block",

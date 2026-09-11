@@ -20,14 +20,9 @@ const EVENT_TIMESTAMP_LABEL = EVENT_TIMESTAMP.toLocaleString("en-US", {
 });
 
 /**
- * A stack of temporary notification cards that appear in a corner of the
- * screen to confirm something just happened, each carrying its own icon for
- * success, info, warning, error or a loading state. You trigger a toast from
- * anywhere in the code with a single function call rather than wrapping it
- * around any particular element, which is what sets it apart from a tooltip
- * or popover that has to be attached to a trigger. Toasts collapse into a
- * stack and expand on request, can be swiped away, and automatically match
- * the app's light or dark theme.
+ * A stack of toast notifications you trigger from anywhere in the code with
+ * one function call, unlike a tooltip or popover that must attach to a
+ * trigger element.
  */
 const meta: Meta<typeof Toaster> = {
   title: "Primitives/Overlays/Sonner",

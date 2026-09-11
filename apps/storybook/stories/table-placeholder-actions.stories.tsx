@@ -5,13 +5,9 @@ import { CircleDotIcon } from "lucide-react";
 import { useState } from "react";
 
 /**
- * A row of toolbar buttons, Sort, Group, Options, and an optional 'New'
- * button, shown dimmed and disabled with a tooltip explaining they aren't
- * wired up yet. Use it on a table or list that's adopting a new toolbar
- * design before the underlying actions exist, so the layout is visible
- * without pretending the buttons work. Pass a real, working control, such as
- * a filter menu, through the leading slot if part of the toolbar is already
- * functional.
+ * A row of toolbar buttons like Sort, Group, and Options shown dimmed and
+ * disabled, for a table adopting a new toolbar design before the underlying
+ * actions actually exist.
  */
 const meta = {
   title: "Composites/Data Display/Table Placeholder Actions",

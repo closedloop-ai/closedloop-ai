@@ -224,16 +224,9 @@ function parsedTranscriptParameters(availability: TranscriptAvailability) {
 // the parsed result under `agentSessionKeys.transcriptFile`. Nothing here
 // touches the network.
 /**
- * This panel shows the actual back and forth of one session: human messages,
- * assistant replies, and tool calls in order, with a switcher for subagent
- * transcript files when a session has them. Reach for it to read what was
- * actually said and done, rather than the activity timeline, which
- * summarizes a session visually, or the activity breakdown, which only
- * totals cost and time by phase. A transcript is not always ready to read:
- * it can still be loading, never recorded, not yet available, or permanently
- * gone, and the panel shows a different message for each rather than one
- * generic "no transcript" state. A very large transcript may also need you
- * to choose to load it in full instead of it loading on its own.
+ * Shows the actual back and forth of one session's messages and tool calls,
+ * for reading what was said and done rather than the timeline's visual
+ * summary or the breakdown's phase totals.
  */
 const meta = {
   title: "Surfaces/Session Transcript Panel",

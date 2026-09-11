@@ -16,15 +16,8 @@ import { PageShell } from "./layout/page-shell";
 // is the closest sibling — and the baseline this hold state deliberately is
 // not (a bare centered "Loading...").
 /**
- * What a page shows when it sits behind an experimental Labs feature that is
- * not turned on for you, or is still checking. One surface is an empty state
- * that names the page, says it is turned off, and gives you a button that
- * goes to the actual control that turns it back on, whether that is in
- * Settings or the application menu. The other is a loading skeleton shown
- * inside the same page layout while the app is still checking, so the page
- * never flashes from blank to content. Reach for these instead of a generic
- * loading or not found screen: they always point at the real way back in, so
- * a stale bookmark never leaves you stuck looking at the wrong switch.
+ * What a gated Labs page shows while off or still checking, pointing you to
+ * the real setting that turns it on instead of a generic not found screen.
  */
 const meta = {
   title: "Composites/App Shell/Labs Gate Surfaces",

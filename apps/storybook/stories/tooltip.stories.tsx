@@ -9,14 +9,9 @@ import { Plus } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * A small hint that appears next to an element when you hover over it or
- * move keyboard focus to it, typically just a word or two of label text.
- * Reach for it for a quick explanation of an icon-only button or similar
- * control; reach for the Popover instead once the content needs more than a
- * line of text or something a person can click and interact with. It can
- * open on any of the four sides, flips to the opposite side automatically if
- * the preferred one would run off the viewport, and its pointing arrow can
- * be hidden for a plainer, more popover-like card.
+ * A small hover or focus hint of a word or two, good for explaining an
+ * icon-only button, and reach for the Popover instead once the content needs
+ * more than a line of text.
  */
 const meta: Meta<typeof TooltipContent> = {
   title: "Primitives/Overlays/Tooltip",

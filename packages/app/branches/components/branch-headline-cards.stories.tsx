@@ -8,15 +8,9 @@ import { BranchHeadlineCards } from "./branch-headline-cards";
 import { completeMetrics } from "./branch-story-metric-fixtures";
 
 /**
- * Three fixed metric cards at the top of a branch's detail page: lines of
- * code changed per dollar spent, lead time from first code push to merge,
- * and how long the branch ran before it was closed without merging. Each
- * card carries a small info tooltip explaining exactly what it measures and
- * how it is calculated, since these numbers get scrutinized. When a metric
- * cannot be calculated, the card says why, such as 'not applicable' for a
- * branch that never merged, rather than showing a blank or a zero. A value
- * built from incomplete evidence carries an asterisk and a note explaining
- * that, instead of passing off a partial number as a complete one.
+ * Three fixed metric cards atop a branch's detail page for cost per line,
+ * lead time, and time open before closing unmerged, explaining any that
+ * don't apply.
  */
 const meta = {
   title: "Composites/Branches/Branch Headline Cards",

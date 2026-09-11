@@ -3,12 +3,8 @@ import { fn } from "storybook/test";
 import { RenameDialog } from "./rename-dialog";
 
 /**
- * A small dialog for renaming a document, with separate fields for the
- * display title and the file name. Use it anywhere someone needs to rename a
- * document without navigating away from what they're doing. It only closes
- * once the rename actually succeeds; if the save fails, the dialog stays
- * open with the fields still filled in so they can fix the name and try
- * again.
+ * A small dialog for renaming a document's title and file name without
+ * leaving what you're doing, staying open with your edits if the save fails.
  */
 const meta = {
   title: "Composites/Documents/Rename Dialog",

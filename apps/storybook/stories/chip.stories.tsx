@@ -3,12 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { GitPullRequest, Play, Sparkles } from "lucide-react";
 
 /**
- * A small pill that can carry an icon and text together, in three sizes, and
- * can optionally act like a button with hover and focus states. Reach for it
- * over Badge when you need an icon inside the label, a size other than the
- * default, or a pill that responds to clicks, such as a linked pull request
- * reference. It has fewer colour variants than Badge, since it is built for
- * tags and lightweight actions rather than a full set of status meanings.
+ * A small pill carrying an icon and text that can act like a button, used
+ * instead of Badge when you need an icon, a size, or a clickable pill.
  */
 const meta = {
   title: "Primitives/Data Display/Chip",

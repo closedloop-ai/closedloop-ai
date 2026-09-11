@@ -2,12 +2,8 @@ import { PriorityIcon } from "@repo/design-system/components/ui/priority-icon";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Draws a small signal bar icon for a priority level: one bar lit for Low,
- * two for Medium, three for High. Urgent swaps the bars for a solid filled
- * rectangle with an exclamation mark, so it reads as its own shape rather
- * than just more bars. Use it in a tight spot like a table cell or list row
- * where Priority Badge's text label would not fit; its size is set in
- * pixels, and it takes its colour from the surrounding text.
+ * A small signal bar icon for a priority level, used instead of Priority
+ * Badge in a tight spot like a table cell where its text label wouldn't fit.
  */
 const meta = {
   title: "Primitives/Data Display/Priority Icon",

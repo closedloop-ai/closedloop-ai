@@ -65,7 +65,13 @@ const LONG_DASH = /[—–]/;
 const PROCESS_WORDS =
   /\b(?:isolated|extracted|refactored|deprecated in favou?r|this used to|now that)\b/i;
 /** Short enough that it cannot have answered "when would I reach for this". */
-const MIN_LENGTH = 80;
+const MIN_LENGTH = 50;
+/**
+ * Long enough to be a wall. These ran to 3.3 sentences and about seven lines on
+ * screen, which pushed the controls below the fold on every Docs page. The brief
+ * is the name and why it exists, which is one sentence.
+ */
+const MAX_LENGTH = 190;
 /** Hoisted per useTopLevelRegex: this runs once per line of every description. */
 const COMMENT_MARKER = /^\s*\*\s?/;
 
@@ -124,6 +130,19 @@ describe("every component explains itself", () => {
     expect(
       missing,
       "A component with no comment above `const meta` renders a Docs page with a props table and no explanation, and hands an agent nothing to go on. See WRITING.md."
+    ).toEqual([]);
+  });
+
+  it("keeps it to one sentence", () => {
+    const tooLong = described
+      .filter((entry) => entry.description.length > MAX_LENGTH)
+      .map(
+        (entry) =>
+          `${entry.title} (${entry.description.length} chars): "${entry.description.slice(0, 60)}..."`
+      );
+    expect(
+      tooLong,
+      `Over ${MAX_LENGTH} characters is a paragraph, and it pushes the controls off the screen. Say what it is and why you would pick it, then stop. See WRITING.md.`
     ).toEqual([]);
   });
 

@@ -14,13 +14,8 @@ import { DashboardScopeControl } from "./dashboard-scope-control";
 // `analytics-range-toggle.stories.tsx` cannot cover this — it exercises the
 // generic primitive, and the gating is entirely this wrapper's.
 /**
- * A two option toggle for switching the dashboard between your own data and
- * your organization's, labeled Me and Organization. It renders nothing at
- * all when there's no organization to switch to, such as for a guest
- * browsing without an account. In a gated state aimed at exactly that guest,
- * the toggle visually stays on Organization even though the data underneath
- * is still personal, so clicking it doesn't look like it silently reverted
- * while a sign up prompt is on screen.
+ * A two option toggle switching the dashboard between your own data and your
+ * organization's, hidden entirely when there's no organization to switch to.
  */
 const meta = {
   title: "Composites/Insights/Scope Control",

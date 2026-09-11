@@ -22,13 +22,8 @@ function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
 }
 
 /**
- * A text box for writing a comment, with Cancel and submit buttons in a
- * footer row underneath, plus room on the left for optional icons like
- * attach or mention. The same component handles composing a new comment,
- * replying to one, and editing an existing comment, changed only by its
- * labels and starting text. It can track its own draft or let you control
- * the value yourself, and a pending state disables the buttons without
- * clearing what someone typed, so a failed submit never loses their draft.
+ * A text box for writing, replying to, or editing a comment, with Cancel and
+ * submit buttons, that never loses your draft if a submission fails.
  */
 const meta = {
   title: "Composites/Inputs/Comment Composer",

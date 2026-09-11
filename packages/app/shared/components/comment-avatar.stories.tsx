@@ -3,13 +3,8 @@ import { CommentAvatar } from "@repo/app/shared/components/comment-avatar";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A small square avatar shown beside a pull request comment: a person's
- * photo, their initials when there is no photo, or a bot icon for automated
- * comments. It comes in three sizes, so it can shrink to fit a compact reply
- * row or sit larger on a full comment card. Reach for it anywhere a pull
- * request comment's author needs a face, rather than the design system's
- * general round Avatar, since this one is square and knows how to render a
- * bot distinctly.
+ * A small square avatar for a pull request comment's author, including a bot
+ * icon, used instead of the design system's general round Avatar.
  */
 const meta = {
   title: "Composites/Branches/Comment Avatar",

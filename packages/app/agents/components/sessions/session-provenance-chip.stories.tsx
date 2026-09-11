@@ -10,12 +10,8 @@ import { SessionProvenanceChip } from "./session-provenance-chip";
 // carries no badge at all. That absence is the design, and without a story for
 // it a reader has to guess whether a missing chip is intentional or a bug.
 /**
- * A small muted chip that marks a session as automated: Agent for one an AI
- * agent started, Bot for one an automated process like a dependency bot
- * started. It mirrors the same chip used on the Branches list, so a session
- * and the branch it produced label their origin the same way. A human
- * started session, or one with no known origin, renders no chip at all; the
- * absence is deliberate, not a missing state.
+ * A small muted chip marking a session as automated, Agent or Bot, matching
+ * the same chip the Branches list uses for the branch it produced.
  */
 const meta = {
   title: "Primitives/Data Display/Session Provenance Chip",

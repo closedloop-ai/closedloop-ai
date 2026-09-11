@@ -27,17 +27,28 @@ came from, and cannot read the source to fill in the gaps.
 
 ## What to write
 
-Two to four sentences, answering in this order:
+**One sentence.** Roughly 100 to 170 characters, and never more than 190.
 
-1. **What it does.** Concretely. What does a person see on screen?
-2. **When to reach for it**, especially instead of the nearest similar thing.
-   This is the sentence that earns its place. A prop table can tell you what a
-   component accepts; only prose can tell you when it is the right choice.
-3. **Anything that would surprise you.** A limit, a rule, a state it does not
-   handle, a place it deliberately behaves differently.
+It says what the thing is and why you would reach for it, ideally naming the
+nearest similar component as the contrast. That contrast is the most useful
+thing you can write, because it is the one question a reader actually has:
+*"there are three things that look like this, why would I pick this one?"*
 
-If the component is genuinely obvious and has no near neighbour, two sentences
-is a finished description. Do not pad it.
+> A side panel that slides in from a screen edge for filters or details,
+> without interrupting the page the way a Dialog does.
+
+That is the whole description. The prop table underneath covers the rest, and
+every story below it is named for the state it shows.
+
+### Why one sentence
+
+An earlier pass wrote three or four. It averaged 543 characters, about seven
+lines on screen, which pushed the controls below the fold on every Docs page.
+Accurate, and nobody read it. A description that is skipped documents nothing.
+
+So the gotchas, the edge cases and the "it also does X" all come out. If a
+caveat genuinely has to be seen, it belongs on the story that shows it, not on
+the page header.
 
 ## Plain English
 
@@ -63,7 +74,7 @@ Everyone reads this, not just engineering.
   component is has nothing to do with where its code sits.
 - **Do not describe each story.** Stories carry their own comments.
 
-## The two failure modes already in this repo
+## The three failure modes already in this repo
 
 **The tautology.** 62 components carry shadcn's stock text:
 
@@ -79,6 +90,11 @@ tells an agent nothing it could use to choose between four similar components.
 Written for the engineer who filed the ticket. A reader does not know what 5451
 was, and "isolated" describes a refactor rather than a purpose.
 
+**The wall.** Three or four accurate sentences that nobody finishes, and that
+push the controls off the screen. This one is the easiest to write by accident,
+because every sentence in it is true and worth saying. It is still wrong. Say the
+one thing, and stop.
+
 ## Worked example
 
 Take a status badge. There are several in this system, which is exactly when a
@@ -88,12 +104,12 @@ Too little:
 
 > Shows a status.
 
-Too much, and aimed at the wrong reader:
+Aimed at the wrong reader:
 
 > ISS-4823: the tone-driven badge, extracted from the dashboard so the variant
 > system owns its colours rather than each call site restyling it.
 
-About right:
+Accurate, and too long to read:
 
 > A small coloured label for a state like success, warning or error. Pick it by
 > what the state means rather than by the colour you want, and the design system
@@ -101,14 +117,19 @@ About right:
 > beside the fill, so the meaning still comes through for someone who cannot
 > distinguish the colours.
 
-Three sentences. A designer knows when to use it, an engineer knows not to
-override the colour, and nobody had to read the source.
+About right:
+
+> A small coloured label for a state like success or error, picked by what the
+> state means so the colour stays consistent everywhere it appears.
 
 ## Checking your work
 
 Read it out loud. If it sounds like a changelog entry, a ticket title, or a
 sentence that could describe forty other components, rewrite it.
 
-Then ask the question the reader actually has: *"there are three things that
-look like this, why would I pick this one?"* If your description does not answer
-that, it is not finished.
+Then two checks:
+
+1. Is it one sentence, under 190 characters? `stories-have-descriptions.test.ts`
+   fails the build if not.
+2. Does it answer *"there are three things that look like this, why would I pick
+   this one?"* If not, it is not finished, however accurate it is.

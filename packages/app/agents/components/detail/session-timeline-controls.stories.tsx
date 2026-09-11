@@ -19,17 +19,8 @@ import {
 // Storybook is a control nobody can check the focus ring, the keyboard path, or
 // the wrap behaviour of.
 /**
- * Above the session timeline sit two live controls: a toggle group for the
- * time scale, from five minutes up to twelve hours, and a Group by dropdown
- * that changes what the stacked bars are colored by. This canvas is where
- * you check their keyboard behavior, focus order, and how the row wraps at
- * narrow widths, since normally you would only reach these controls by
- * loading a real multi day session. The same file also covers the position
- * scrubber, a slider for jumping to any point in a long session, which only
- * appears once a session runs past what one screen can show. When the chosen
- * scale is finer than the data was actually recorded at, a note beside the
- * toggle explains that the bars are spread evenly across a coarser
- * measurement rather than individually measured.
+ * The time scale toggle and Group by dropdown above the session timeline,
+ * plus the position scrubber for jumping through a long session.
  */
 const meta: Meta<typeof SessionTimelineControls> = {
   /*

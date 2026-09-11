@@ -48,14 +48,8 @@ const NARROW_VIEWPORT_PX = 360;
 
 /**
  * A card with four tabs, Effectiveness, Orchestration, Tool Flow, and Error
- * Map, that switch between different breakdowns of one agent session's
- * activity. Use it as the single home for session level analytics instead of
- * separate cards, since the tabs share one strip and stay in sync with the
- * page's URL so a link to a specific tab reopens on the right one. The whole
- * card disappears when a session has no agents and no tool or error events
- * worth analyzing, rather than showing four empty tabs with nothing to say.
- * On narrow screens the tab strip scrolls sideways instead of wrapping, so
- * the tab labels never get cut off or shrunk.
+ * Map, giving session analytics one home instead of scattering the
+ * breakdowns across separate cards.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Agent Session Detail Analytics Tabs",

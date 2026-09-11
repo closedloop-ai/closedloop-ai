@@ -21,14 +21,9 @@ const greenAndRed: MergedTraceItem[] = [
 ];
 
 /**
- * A thin strip of colored dots layered over the branch activity timeline,
- * one dot per event: blue for a person's action, green for a commit, pull
- * request, or merge, and red for a failure or limit. Use it to mark exact
- * moments on the timeline rather than to show volume of work, which is what
- * the bars underneath are for. Clicking a dot jumps the shared playhead to
- * that moment and opens a small tooltip describing it. Dots outside the
- * timeline's currently visible hours are hidden, and a dot with no matching
- * trace row is just a static marker.
+ * A thin strip of colored dots over the branch timeline marking exact
+ * moments like actions, commits, or failures, rather than the volume of work
+ * the bars underneath show.
  */
 const meta = {
   title: "Composites/Branches/Event Dot Rail",

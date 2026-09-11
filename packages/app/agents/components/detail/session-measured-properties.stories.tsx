@@ -16,14 +16,9 @@ import { SessionPropertiesFrame } from "./session-properties-story-frame";
 // dash reads as "we don't know" rather than as a squashed value. Each pair below
 // is deliberately adjacent so the difference is visible rather than inferred.
 /**
- * These are the rows in a session's detail panel that show counted values:
- * how autonomous the run was, how many tokens it used, and how much work it
- * did across turns, tool calls, and steering. Reach for these when a value
- * needs to distinguish "genuinely never measured" from "measured and happens
- * to be zero," since both would otherwise look like a plain zero or dash.
- * Each row collapses to one dash for the whole line when nothing at all was
- * recorded, rather than a separate dash for every missing number, with the
- * reason available on hover or keyboard focus.
+ * The rows in a session's detail panel showing counted values like autonomy
+ * and tokens used, built to tell a genuinely unmeasured value apart from one
+ * measured as zero.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Measured Properties",

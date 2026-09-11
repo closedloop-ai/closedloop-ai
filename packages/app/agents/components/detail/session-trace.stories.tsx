@@ -56,15 +56,8 @@ const staffDecorator: Decorator = (Story) => (
 // the preview already provides, which is what resolves the composer's @-mention
 // list to an empty set.
 /**
- * This is the actual transcript for a session: a scrolling list of turns
- * covering user prompts, assistant replies, a reasoning disclosure, tool
- * call cards, system events, and collapsed sub agent runs. Reach for it when
- * you need to show or review the full back and forth of a run rather than a
- * summary of it; a tool card holding a failed call opens itself
- * automatically so a failure is never one click away from the reader. It can
- * render a session thousands of rows long without slowing down, by only
- * drawing the rows currently on screen, and it also lets a reader select a
- * passage of text to attach a comment to it.
+ * The full scrolling transcript of a session's turns, tool calls, and
+ * reasoning, for the whole back and forth rather than a summary.
  */
 const meta = {
   title: "Composites/Sessions/Trace/Session Trace",

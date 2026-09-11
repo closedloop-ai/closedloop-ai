@@ -4,13 +4,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A dialog shown when you are about to continue a run on a different compute
- * device than the one it last finished on. It explains the mismatch and
- * offers two ways forward, either keep going on the original device or
- * switch to the preferred one, plus a plain cancel, and it warns that
- * switching will not carry the current state over. Reach for it specifically
- * for this backend mismatch situation; it is not a generic two choice
- * confirmation dialog.
+ * A dialog for continuing a run on a different device than it last finished
+ * on, letting you keep going on the original, switch and lose the current
+ * state, or cancel.
  */
 const meta = {
   title: "Composites/Overlays/Backend Mismatch Modal",

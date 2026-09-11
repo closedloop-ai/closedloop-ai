@@ -16,17 +16,9 @@ import { fn } from "storybook/test";
 // header cell, so hovering the row — not just the button — is what reveals it,
 // exactly as in the grid.
 /**
- * The small options button that appears in one column's header inside a data
- * grid, opening a menu for sorting, filtering, grouping or moving that
- * column. It stays invisible until you hover or keyboard focus that header
- * cell, so a resting grid reads as plain column labels rather than a row of
- * buttons, and it stays visible while its own menu is open. Reach for it
- * inside a grid header rather than the Table View Menu, which controls the
- * whole table's columns and grouping from one toolbar button instead of one
- * column at a time. It only ever shows the actions that column was actually
- * wired for, and clicking the column label still does the sorting on its
- * own, so sort rides along in the menu rather than being the reason the menu
- * opens.
+ * The options button in one column's header for sorting, filtering, grouping
+ * or moving that column, handling one column at a time rather than the whole
+ * table like the Table View Menu.
  */
 const meta = {
   title: "Primitives/Overlays/Table Grid Column Menu",

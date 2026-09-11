@@ -205,14 +205,9 @@ const storyDecorator: Decorator = (Story) => (
 );
 
 /**
- * A stacked area chart of one component's token or dollar usage over time,
- * split by model or by provider depending on the toggle above it. Vertical
- * markers on the timeline mark when each version of the component was
- * created and when it was first used, so you can read a usage change against
- * the release that likely caused it. Unlike the model and user usage tables,
- * which show a snapshot total, this chart shows the trend day by day; while
- * data loads it shows a skeleton, and its empty message changes depending on
- * whether the component has ever had any usage at all.
+ * A stacked area chart of usage over time by model or provider, marked with
+ * release dates, showing the daily trend where the usage tables show only a
+ * snapshot.
  */
 const meta = {
   title: "Composites/Agents/Token Trend Chart",

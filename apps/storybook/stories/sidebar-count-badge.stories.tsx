@@ -2,13 +2,8 @@ import { SidebarCountBadge } from "@repo/design-system/components/ui/sidebar-cou
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A small round pill showing a count next to a sidebar item, like the number
- * of open sessions in a list. Set a max and a count above that cap displays
- * capped, for example "9+", instead of crowding the pill with a large
- * number, while the true count is still announced to screen readers through
- * the label you supply. Pass a label whenever the bare number would not make
- * sense read aloud on its own; without one, the badge stays a plain visual
- * number.
+ * A small round pill showing a count next to a sidebar item, capped at a max
+ * like 9+ instead of crowding the pill with a large number.
  */
 const meta = {
   title: "Primitives/Data Display/Sidebar Count Badge",

@@ -120,17 +120,9 @@ function TableGridHeaderHandlesDemo({
 }
 
 /**
- * Shows the two grips a data column can carry in a table's header row: a
- * drag handle to the left of the label for reordering columns, and a resize
- * handle on the right edge for changing a column's width. Both only work
- * mounted inside Table Grid Header itself, since each is positioned against
- * that header cell and only appears when the header turns reordering or
- * resizing on for that column, so you will not use either one directly.
- * Toggle enhancedHeaderInteractions to compare the two presentations of the
- * resize grip: a narrow divider bar that only shows on hover, and a wider
- * hit area with a hairline that fades in as the pointer gets closer to it.
- * Both grips also work from the keyboard: focus one and use the arrow keys
- * to move or resize the column.
+ * The drag and resize grips a data column carries in a table's header row,
+ * used only mounted inside Table Grid Header since each is positioned
+ * against that header cell.
  */
 const meta = {
   title: "Primitives/Layout/Table Grid Header Handles",

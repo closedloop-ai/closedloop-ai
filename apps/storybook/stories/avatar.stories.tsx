@@ -6,11 +6,8 @@ import {
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * A round image used to represent a person, with a fallback (usually
- * initials) shown while the image loads or if it fails. The size comes from
- * the className you pass rather than a size prop, so match it to the row or
- * panel it sits in. It has no built-in status dot or tooltip; add those
- * around it if you need them.
+ * A round image representing a person with an initials fallback while it
+ * loads or fails, sized by the className you give it.
  */
 const meta: Meta<typeof Avatar> = {
   title: "Primitives/Data Display/Avatar",

@@ -73,15 +73,9 @@ const ProjectDataTable = (props: ProjectDataTableProps) => (
 );
 
 /**
- * A full-featured table with a search box, a filter dropdown, sorting, and
- * pagination built in, all driven from a plain array of rows and column
- * definitions. Reach for it over the plain Table when you need those
- * controls out of the box, and over Grid Table when you do not need
- * resizable or draggable columns, row grouping, or a card layout on narrow
- * screens. Sorting a column header takes over from any sort dropdown you
- * configured rather than the two combining, and the pager disappears
- * entirely once every row fits on one page instead of showing a disabled
- * control.
+ * A full table with search, filtering, sorting and pagination built in, used
+ * instead of Table for those controls, or Grid Table when you don't need
+ * resizable columns.
  */
 const meta = {
   title: "Primitives/Data Display/Data Table",

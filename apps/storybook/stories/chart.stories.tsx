@@ -98,13 +98,8 @@ const texturedSeriesConfig = {
 } satisfies ChartConfig;
 
 /**
- * The shared frame every chart in this system is built inside: it supplies
- * the container's sizing, a consistent hover tooltip, and a legend you can
- * click to hide a series. You will rarely reach for this directly. It is the
- * foundation Category Bar Chart, Donut Chart and Time Series Area Chart are
- * built on, and you would only compose it yourself for a chart shape none of
- * those already cover. The legend can hide a series but never lets you hide
- * the last visible one, so a chart can never go fully blank.
+ * The shared frame every chart in this system is built inside, rarely
+ * reached for directly except for a chart shape none of the others cover.
  */
 const meta = {
   title: "Primitives/Charts/Chart",

@@ -53,13 +53,9 @@ const HUMAN: ActivityFeedActor = {
 };
 
 /**
- * Shows who did something in an activity feed: an avatar and a name, side by
- * side. A human shows their real name and profile picture once it's
- * resolved; an AI agent or the system itself has no profile, so it falls
- * back to a small icon and the word 'Agent' or 'System' instead. While a
- * name is still loading it shows a skeleton in place of the avatar and text,
- * and if a person's name can't be found at all, it says 'Unknown user'
- * rather than guessing.
+ * Shows who did something in an activity feed, a person's real name and
+ * photo once resolved, or an icon reading Agent or System when there's no
+ * profile to show.
  */
 const meta = {
   component: ActivityActor,

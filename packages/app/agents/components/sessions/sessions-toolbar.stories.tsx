@@ -20,16 +20,8 @@ import { SessionsToolbar } from "./sessions-toolbar";
 // resolver behave as they do in the shells rather than throwing on a missing
 // provider.
 /**
- * A toolbar row for a sessions list: a date range control, a Filter button
- * for facets like status or repository, and a View menu for showing and
- * hiding columns. Reach for it instead of building your own filter and sort
- * controls, since it is the exact same toolbar used on both the web Sessions
- * page and its desktop equivalent, so the two never drift apart. Below the
- * controls, a row of removable chips names every active filter so a narrowed
- * down list never reads as a broken column. There is no refresh button here:
- * the session list is expected to keep itself current on its own, and the
- * Group by section in the View menu only appears when you wire up both its
- * value and its change handler.
+ * The toolbar for a sessions list combining date range, filters, and a view
+ * menu, shared identically between the web and desktop apps.
  */
 const meta: Meta<typeof SessionsToolbar> = {
   title: "Composites/Sessions/Listing/Sessions Toolbar",

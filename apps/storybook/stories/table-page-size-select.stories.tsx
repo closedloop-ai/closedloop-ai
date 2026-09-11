@@ -18,15 +18,8 @@ import { fn } from "storybook/test";
 // page" caption: the strip is dense, and the trigger carries the accessible name
 // for assistive tech (WCAG 4.1.2).
 /**
- * A small dropdown that lets someone choose how many rows show per page in a
- * paginated table, labelled directly with the option text, like "25 / page".
- * Use it inside a table's pagination footer instead of building a one-off
- * page size control, since every list in the product shares the same 25, 50,
- * 100 ladder and the matching "1 to 25 of 240" range readout that sits
- * beside it. A surface with rows that are expensive to render can pass a
- * shorter list of choices, and the trigger still carries its own accessible
- * name for screen readers even though the visible text never spells out
- * "rows per page".
+ * A small dropdown for choosing how many rows show per page in a paginated
+ * table, sharing the same 25, 50, 100 ladder every list in the product uses.
  */
 const meta = {
   title: "Primitives/Inputs/Table Page Size Select",

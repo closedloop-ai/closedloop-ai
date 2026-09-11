@@ -27,15 +27,9 @@ import {
 // tree: a second harness replaces the preview's shared navigation port with a
 // private one (see `apps/storybook/__tests__/app-core-harness-single-mount.test.ts`).
 /**
- * This is the shared body of the Sessions list: it decides, from the data it
- * is given, whether to show a loading skeleton, an empty-state message, or
- * the populated sessions table. Both the web Sessions page and the desktop
- * app route their own filters and pagination through this one component, so
- * the three states cannot disagree with each other, for example showing an
- * empty table while data is still loading. When the list is empty it hands
- * off to a separate empty-state component that explains the actual reason,
- * whether that is a failed attempt to load the data, local data that has not
- * finished loading, or filters that exclude every row.
+ * The shared body of the Sessions list, deciding whether to show a loading
+ * skeleton, an empty state, or the table, so web and desktop can never
+ * disagree on which.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Agent Sessions List",

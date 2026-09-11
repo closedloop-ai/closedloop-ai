@@ -2,12 +2,9 @@ import { ModeToggle } from "@repo/design-system/components/ui/mode-toggle";
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * An icon button showing a sun or moon that opens a small menu with Light,
- * Dark and System choices for the app's colour theme. Place it wherever
- * someone can change how the app looks, typically in a header or sidebar. It
- * renders a plain, unanimated sun icon until the page has fully loaded in
- * the browser, which avoids a flash where the icon briefly shows the wrong
- * theme before settling on the right one.
+ * An icon button that opens a menu for Light, Dark and System color themes,
+ * rendering a plain sun icon at first load to avoid a flash of the wrong
+ * theme.
  */
 const meta = {
   title: "Primitives/Navigation/Mode Toggle",

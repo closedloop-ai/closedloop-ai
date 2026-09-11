@@ -143,13 +143,9 @@ function Row({
 }
 
 /**
- * A small badge that names where the numbers on screen actually came from:
- * your own device, the synced cloud workspace, or a degraded fallback when
- * neither could be reached. Hover it to read why that source is in play
- * right now, such as your history still uploading, and whether anything
- * might be missing as a result. Pass it nothing extra and it just names the
- * store; an unrecognized or missing source renders nothing at all rather
- * than guessing which one it was.
+ * A small badge naming where the numbers on screen actually came from, your
+ * device, the synced cloud workspace, or a degraded fallback, with why on
+ * hover.
  */
 const meta = {
   title: "Composites/Feedback & Status/Read Source Badge",

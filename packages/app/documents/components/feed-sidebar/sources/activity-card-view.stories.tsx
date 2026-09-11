@@ -62,14 +62,9 @@ const LONG_TITLE =
   "Add session-quality signals to the branch rollup so a reviewer can see PR metrics without opening GitHub";
 
 /**
- * One row in an activity feed: who did it and when at the top, a
- * plain-language sentence describing the change below that, and, if the
- * change replaced one value with another, two small pills joined by an arrow
- * showing the before and after. Use it for any feed that logs a history of
- * changes to something, like renames or status updates, where showing the
- * specific old and new value matters more than a generic 'field updated'
- * message. The before value is shown struck through, and a long value is cut
- * off with an ellipsis inside its pill rather than wrapping the row.
+ * One row in an activity feed, who did it and when, a plain-language
+ * description of the change, and, for a value swap, before and after pills
+ * joined by an arrow.
  */
 const meta = {
   component: ActivityCardView,

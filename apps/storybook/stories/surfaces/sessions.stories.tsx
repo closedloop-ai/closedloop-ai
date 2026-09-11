@@ -245,13 +245,9 @@ const SessionsSurface = ({
 };
 
 /**
- * This is the main sessions listing page: a toolbar, four summary cards, a
- * sortable table of past agent sessions, and pagination underneath. Reach
- * for it to browse or filter every session across an organization, rather
- * than Session Detail, which shows one session in full. It can appear in
- * five distinct states, such as loading, no results for the current filters,
- * or no agent connected yet, and each gets its own message instead of one
- * generic empty screen.
+ * The main sessions listing page for browsing or filtering every session
+ * across an organization, rather than Session Detail which shows just one in
+ * full.
  */
 const meta = {
   title: "Surfaces/Sessions",

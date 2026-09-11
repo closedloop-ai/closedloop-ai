@@ -29,14 +29,8 @@ import { Sidebar } from "./Sidebar";
 // fixed-width, so nothing about this depends on the page container the way the
 // dashboard's wrapping title row does.
 /**
- * The identity control at the bottom of the desktop sidebar that opens the
- * account menu: Settings, Diagnostics, and the theme switcher. When you are
- * signed into an organization it shows an avatar with the Closedloop mark
- * plus your organization's name. When you are browsing as a guest it shows a
- * plain, empty avatar and the word 'Guest' instead, so a guest is never
- * shown an organization name that is not theirs. This is the only place
- * Settings and Diagnostics live in the app, so even a guest still needs it
- * to reach the toggle that turns guest mode itself on or off.
+ * The identity control at the bottom of the sidebar that opens the account
+ * menu, the only place Settings and Diagnostics live in the app.
  */
 const meta = {
   title: "Composites/App Shell/Sidebar Account Footer",

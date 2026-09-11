@@ -2,12 +2,9 @@ import { MatchList } from "@repo/design-system/components/ui/primitives/match-li
 import type { Meta, StoryObj } from "@storybook/react";
 
 /**
- * Shows a list of search hits, grep style: each entry carries a file path, a
- * line number, and the matching line of text, inside a bordered card with a
- * search icon. Use it to display the results of a text or code search,
- * rather than Key Value Grid, which is built for a single record's fields. A
- * match can leave out its file or line number, in which case that piece is
- * simply dropped from the row instead of shown blank.
+ * A list of grep-style search hits, each with a file path, line number and
+ * matching text, used instead of Key Value Grid, built for a single record's
+ * fields.
  */
 const meta = {
   title: "Primitives/Data Display/Match List",

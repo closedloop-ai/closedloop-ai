@@ -22,16 +22,8 @@ const weeks: AnalyticsHeatmapWeek[] = Array.from(
 );
 
 /**
- * A calendar-style grid of small squares, one per day, shaded darker as that
- * day's activity gets higher, in the style of GitHub's contribution graph.
- * Use it to show a long stretch of daily activity at a glance; reach for
- * Time Series Area Chart or Line Chart instead when readers need to read
- * exact values or compare a trend over time, since a heatmap trades
- * precision for pattern-spotting. The color ramp tints from a single
- * design-system color you choose, so one instance can read green for
- * contributions while another reads the default brand color, and every cell
- * carries its own accessible label and tooltip for keyboard and
- * screen-reader users.
+ * A calendar style grid shaded darker as daily activity rises, in the style
+ * of GitHub's contribution graph, trading precision for pattern spotting.
  */
 const meta = {
   title: "Primitives/Charts/Activity Heatmap",

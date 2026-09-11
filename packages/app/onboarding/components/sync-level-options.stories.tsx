@@ -34,15 +34,9 @@ const SYNC_LEVEL_OPTIONS: readonly SyncConsentLevel[] = [
 // selected. Two hosts once passed two different words pointing at two different
 // levels; the prop that allowed it is gone.
 /**
- * A group of three cards, one per data sync level: Off, Metadata, and Full,
- * that someone picks between during onboarding or when joining an
- * organization. Each card lists what stays on the device and what leaves it
- * at that level, pulled from the same copy the desktop Settings page uses,
- * so the two never describe the levels differently. Reach for it when you
- * need just the picker: it carries no heading or confirm button of its own,
- * since the two hosts that use it wrap it in different chrome. The level
- * that starts selected differs by where it is shown: onboarding opens on the
- * safest option, while joining an organization opens on the widest one.
+ * Three cards for choosing a data sync level, Off, Metadata, or Full, with
+ * no heading or confirm button since onboarding and joining an organization
+ * each wrap it differently.
  */
 const meta: Meta<typeof SyncLevelOptions> = {
   args: {

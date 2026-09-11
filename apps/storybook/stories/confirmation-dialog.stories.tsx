@@ -3,13 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A modal that asks someone to confirm an action before it happens: a title,
- * a description, and Cancel and Confirm buttons. It shows as a full dialog
- * on desktop and slides up as a sheet on narrow screens, so the same
- * component works everywhere. Reach for it any time an action needs a yes or
- * no before it runs, and switch the confirm button to the destructive
- * variant when that action can't be undone. If the confirm action fails, the
- * dialog stays open so someone can try again instead of silently closing.
+ * A modal asking someone to confirm an action before it runs, shown as a
+ * full dialog on desktop and a slide up sheet on narrow screens, for any
+ * action needing a yes or no.
  */
 const meta = {
   title: "Composites/Overlays/Confirmation Dialog",

@@ -20,14 +20,8 @@ import { DashboardCutoverStatus } from "./dashboard-cutover-status";
 // two are the same kind of statement about work in progress and only one of
 // them is ever on screen at a time.
 /**
- * A small muted status line in the desktop dashboard header telling you that
- * local history is still uploading to the cloud, with a live count of items
- * left. It shares its look with the scan status line next to it, but the two
- * never show at once: this one only appears during the upload drain that
- * follows a first-run sync, never during the scan itself. It also hides
- * itself when you are offline or once the cutover has already finished. When
- * the remaining count cannot be measured it says nothing about size rather
- * than falsely reporting zero left.
+ * A muted status line in the desktop dashboard header showing a live count
+ * of local history still uploading to the cloud after a first run sync.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Cutover Status",

@@ -22,17 +22,8 @@ import { SessionsRecoveryAction } from "./sessions-recovery-action";
 // {@link Errored} against {@link Syncing}: same `isUnavailable: true`, opposite
 // tone, because one is a breakage and the other is just not-yet.
 /**
- * This is what the Sessions list shows instead of a table when there are no
- * rows to display, and it always names the actual reason rather than one
- * generic "No sessions found" message. A failed data load shows an error
- * message with a retry action, a source that has not finished loading shows
- * a quiet "getting ready" message with no error styling, filtered-out
- * results offer a "Clear filters" button, and a genuinely empty organization
- * gets either plain "nothing yet" copy or a prompt to connect an agent,
- * depending on whether one has ever connected. Which of these shows is
- * worked out automatically from the underlying signals, so it cannot
- * accidentally show the friendly empty message over data that actually
- * failed to load.
+ * What the Sessions list shows instead of a table when there are no rows,
+ * always naming the actual reason rather than one generic message.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Empty State",

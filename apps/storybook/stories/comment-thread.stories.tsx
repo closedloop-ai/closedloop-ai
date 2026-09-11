@@ -137,14 +137,8 @@ function CommentThreadStory() {
 }
 
 /**
- * The building blocks for one comment conversation: a card with a banner, an
- * optional quoted anchor, the lead comment with its avatar and actions, a
- * set of indented replies, and a footer to collapse it back down. Use these
- * pieces together when you need a full, expanded discussion thread rather
- * than the one-line summary a Collapsed Comment Row gives you. Each piece is
- * exported separately so a caller can leave out what does not apply, such as
- * the anchor preview on a comment that is not tied to a specific line of
- * text.
+ * The pieces for one full, expanded comment discussion, used instead of the
+ * one-line summary a Collapsed Comment Row gives you.
  */
 const meta = {
   title: "Primitives/Content/Comment Thread",

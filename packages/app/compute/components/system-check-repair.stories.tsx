@@ -6,13 +6,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { SystemCheckRepairPanel } from "./system-check-repair";
 
 /**
- * A short report of what one repair run did: each fix it attempted, a status
- * badge for succeeded, failed, or skipped, and a one-line explanation. Use
- * it right after a repair starts, to narrate that specific run, not as a
- * lasting summary of a target's health, which belongs in System Check
- * Results. It shows nothing until a repair has actually started, produced a
- * step, or failed, and a step marked skipped always carries a reason, such
- * as an earlier step that has to succeed first.
+ * A short report narrating one repair run, each fix attempted with its
+ * status, rather than a lasting summary of a target's health, which belongs
+ * in System Check Results.
  */
 const meta: Meta<typeof SystemCheckRepairPanel> = {
   title: "Composites/Compute/System Check Repair Panel",

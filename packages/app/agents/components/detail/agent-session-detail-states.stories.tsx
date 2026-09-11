@@ -27,15 +27,9 @@ import {
 // only context any of them reads is the navigation port the preview already
 // mounts globally (ISS-5665).
 /**
- * The three screens a session detail page can show before it has a loaded
- * session to display: a loading skeleton, a 'session not found' message for
- * a genuinely missing session, and a 'session unavailable' message for a
- * session that exists but couldn't be read right now. Use the right one
- * deliberately, since 'not found' and 'unavailable' make opposite claims:
- * one tells someone to stop looking for a session that's gone, the other
- * tells them the record is fine and to try again. All three states carry the
- * same page heading and a link back to the sessions list, so the page never
- * renders headless while it's loading or failing.
+ * The three screens a session detail page shows before it has data, a
+ * loading skeleton, a not found message, and an unavailable message, since
+ * those two make opposite claims.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Agent Session Detail States",

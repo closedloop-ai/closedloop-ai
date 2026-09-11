@@ -3,14 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { Loader2, Mail } from "lucide-react";
 
 /**
- * A clickable control for triggering an action, like submitting a form,
- * opening a dialog or running a command. Reach for it when the action fires
- * once and nothing needs to be remembered; use Toggle instead when the
- * control needs to stay pressed, like a formatting button that stays
- * highlighted after you click it. Six variants range from a filled primary
- * action down to a plain text link, and the linkForeground variant looks
- * like a link but keeps the surrounding text color, for a link meant to read
- * as part of a sentence rather than a separate call to action.
+ * A clickable control for triggering a one-time action, like submitting a
+ * form, versus Toggle for a control that stays pressed.
  */
 const meta = {
   title: "Primitives/Actions/Button",

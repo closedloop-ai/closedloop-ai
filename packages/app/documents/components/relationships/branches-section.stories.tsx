@@ -59,12 +59,9 @@ const EXECUTE_RUNNING: GenerationStatus = {
 };
 
 /**
- * A collapsible 'Build' panel on a document that lists the code branches
- * built from it, each with a pull request status label and a menu to unlink
- * it. When no branch exists yet, it offers a 'Start Building' button to kick
- * one off, or a way to attach an existing pull request instead. The 'Start
- * Building' button disables itself while a build is already running, and
- * only explains why when a separate setting turns that message on.
+ * A collapsible Build panel listing the code branches built from a document,
+ * each with a pull request status and a menu to unlink it, or a button to
+ * start one.
  */
 const meta = {
   title: "Composites/Documents/Branches Section",

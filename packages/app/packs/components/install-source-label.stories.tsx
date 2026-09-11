@@ -3,14 +3,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { InstallSourceLabel } from "./install-source-label";
 
 /**
- * A small plain text label that explains how a pack ended up installed:
- * pushed by your organization, something you opted into, something you
- * installed yourself, or a required install you can't remove. It always
- * renders in the same muted tone no matter which source it names, because
- * provenance is background information, not a status that needs action. Use
- * it instead of a colored badge or icon whenever you want to show where
- * something came from without implying it needs attention. Hovering or
- * focusing it reveals the fuller explanation as a tooltip.
+ * A plain text label naming how a pack got installed, org pushed, opted in,
+ * self installed, or required, kept muted since provenance isn't a status
+ * that needs action.
  */
 const meta = {
   title: "Composites/Packs/Install Source Label",

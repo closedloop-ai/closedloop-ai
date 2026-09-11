@@ -46,14 +46,9 @@ const checks: CheckResult[] = [
 ];
 
 /**
- * A summary card for one registered machine that can run jobs: its name, an
- * online or offline badge, a security badge, a share-with-team toggle, and
- * room underneath for extra actions and a system check panel. Use it as the
- * tile for a single compute target in a list, it is a shell that other
- * pieces, like the security badge and system check, plug into rather than a
- * component that draws status on its own. Everything past the name, badge,
- * and share toggle is optional, so the card can render with nothing else
- * attached.
+ * A summary card for one registered machine that can run jobs, a shell other
+ * pieces like the security badge and system check plug into rather than
+ * drawing status itself.
  */
 const meta = {
   title: "Composites/Compute/Compute Target Card",

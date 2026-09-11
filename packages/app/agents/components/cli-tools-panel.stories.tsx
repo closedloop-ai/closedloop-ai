@@ -24,13 +24,8 @@ function CliToolsPanelStory() {
 }
 
 /**
- * A grid of cards, one per command line tool the app can detect, each
- * showing its name, a status badge such as Detected, Not found, or Invalid
- * path, and an input where you can type or correct the path to that tool.
- * Save and Reset buttons sit beside the input, and a short hint line
- * explains what the current status means. Reach for it wherever someone
- * needs to point the app at a coding tool manually, because automatic
- * detection does not always find a tool installed somewhere unusual.
+ * A grid of cards for each command line tool the app detects, letting you
+ * correct its path manually when automatic detection misses it.
  */
 const meta = {
   title: "Composites/Agents/Cli Tools Panel",

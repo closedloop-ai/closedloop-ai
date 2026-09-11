@@ -21,12 +21,8 @@ const harnessActor: TurnActor = {
 const actorDomain = buildActorColorDomain(["Kaiti", "claude"]);
 
 /**
- * A small round avatar with initials, colored to match one specific person
- * or AI harness, shown beside their turns in a session trace. Use it
- * anywhere a trace needs to show who said or did something, so a given actor
- * reads as the same color everywhere on the page. If an actor has no name,
- * it falls back to showing the harness, such as claude, instead of appearing
- * blank.
+ * A small round avatar colored to match one person or AI harness, so a given
+ * actor reads as the same color everywhere in a session trace.
  */
 const meta = {
   title: "Composites/Branches/Trace Actor Avatar",

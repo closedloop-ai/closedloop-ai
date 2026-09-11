@@ -21,14 +21,9 @@ const timeoutError = new ApiError(
 );
 
 /**
- * The shared empty state shown when a pack catalog fails to load, instead of
- * a blank list or a technical error message. It tells two different failures
- * apart: a server that actively answered with an error, and a client that
- * simply gave up waiting on a slow response, each with its own title and
- * icon. Use it any time a packs list can fail to load, rather than writing a
- * new error state per surface. When there's somewhere to retry from, a retry
- * button appears; when there isn't, the state renders without one rather
- * than offering a button that does nothing.
+ * The shared empty state for a pack catalog that fails to load,
+ * distinguishing a server error from a client that gave up waiting, with a
+ * retry button only when one applies.
  */
 const meta = {
   title: "Composites/Packs/Packs Load Failed",

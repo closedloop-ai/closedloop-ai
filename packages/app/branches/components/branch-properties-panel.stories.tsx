@@ -10,14 +10,9 @@ const LONG_REPOSITORY_NAME =
 const PROPERTIES_RE = /Properties/;
 
 /**
- * A collapsible panel of key facts about a branch: status, branch name,
- * lines changed, repository, and session count, laid out as a label and
- * value grid. Collapsed, it shows a compact preview of just the status and
- * branch name so the panel takes little space until someone opens it; use it
- * wherever a branch detail view needs its core metadata without a full page
- * of prose. Long branch and repository names truncate with the full value
- * available on hover, and any field without data yet, such as changed lines
- * before enrichment runs, shows a plain dash instead of a fabricated number.
+ * A collapsible panel of a branch's key facts, status, name, lines changed,
+ * repository and session count, collapsing to a compact status and name
+ * preview.
  */
 const meta = {
   title: "Primitives/Data Display/Branch Properties Panel",

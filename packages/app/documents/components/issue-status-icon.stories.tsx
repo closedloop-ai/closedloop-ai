@@ -10,14 +10,9 @@ import { IssueStatusIcon } from "./issue-status-icon";
 // lifecycle (triage → backlog → todo → in progress → in review → done) distinct
 // from the Document authoring lifecycle. Documents use `DocumentStatusIcon`.
 /**
- * A small icon showing where an issue sits in its delivery lifecycle, from a
- * dashed ring for Backlog through partially filled rings for In Progress and
- * In Review, to a filled circle with a check, an exclamation mark, or an X
- * for Done, Blocked, or Canceled. Triage gets its own icon too: a filled
- * circle with a swap glyph, marking an issue that was triaged automatically
- * rather than by a person. Use it anywhere you list issues and need a
- * compact status indicator; documents follow a different lifecycle and use
- * the separate Document Status Icon instead.
+ * A compact icon marking where an issue sits in its delivery lifecycle, used
+ * instead of a text label wherever issues are listed, distinct from the
+ * Document Status Icon.
  */
 const meta = {
   title: "Composites/Documents/Issue Status Icon",

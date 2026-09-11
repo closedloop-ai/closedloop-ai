@@ -93,14 +93,8 @@ const MANY_FACET_FILTERS: SessionFacetFilters = {
 };
 
 /**
- * This is the row of removable chips above the Sessions table that appears
- * whenever any filter is active, one chip per selected value (status, owner,
- * harness, model, cost, project, and more) plus a "Clear all" button. Use it
- * so a filtered view never looks like a broken or incomplete table: without
- * it, a session list narrowed to just errored runs would look like the
- * organization simply has no other sessions. When many filters are active at
- * once, the row caps its height and scrolls internally instead of wrapping
- * to several lines and pushing the table down the page.
+ * Removable chips above the Sessions table showing every active filter, so a
+ * narrowed down list never looks like a broken or empty table.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Active Filters Bar",

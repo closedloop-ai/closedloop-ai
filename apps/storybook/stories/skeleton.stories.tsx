@@ -3,11 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 
 /**
  * A muted, pulsing rectangle that stands in for content while it loads,
- * sized with your own classes to match whatever it is replacing, such as an
- * avatar circle or a line of text. Use several together to sketch the
- * outline of a card or list before its real content arrives. Unlike Page
- * Loading Spinner, it previews the shape of what is coming rather than just
- * signalling that something, somewhere, is happening.
+ * sized to match whatever it replaces, previewing the shape of what is
+ * coming rather than just signalling activity.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Skeleton",

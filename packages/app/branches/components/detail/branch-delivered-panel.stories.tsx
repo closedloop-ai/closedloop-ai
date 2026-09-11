@@ -10,16 +10,8 @@ import { BranchDeliveredPanel } from "./branch-delivered-panel";
 const HEAD_SHA = "b".repeat(40);
 
 /**
- * The 'What was delivered' section of a branch's detail page, showing two
- * boxes: the Closedloop documents or issues the branch says it implements,
- * and the pull request tied to that work, with its title, state, and full
- * description. Each linked document links straight through to its own record
- * when the app can resolve it, and a long pull request description clamps to
- * a short preview until you click to expand it. Reach for it on a single
- * branch's detail page, not on a list view: it needs one branch's full
- * detail data and shows exactly one pull request at a time. If no artifacts
- * were detected or none were linked, it says so plainly instead of leaving
- * the section blank.
+ * The What Was Delivered section of a branch's detail page, linking the
+ * documents it implements to the pull request that ties the work together.
  */
 const meta = {
   title: "Composites/Branches/Branch Delivered Panel",

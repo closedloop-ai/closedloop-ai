@@ -7,13 +7,9 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A floating panel of custom content that opens near a button you click, for
- * anything richer than a menu of actions or a plain hover hint. Reach for
- * the Dropdown Menu instead when the content is really a list of choices,
- * and reach for a Tooltip instead when it should only appear on hover and
- * never be interacted with. Unlike a dialog it does not block the rest of
- * the page by default, so you can still work outside it while it is open,
- * though you can turn that on if the content needs full attention.
+ * A floating panel of custom content that opens near a clicked button, for
+ * anything richer than a Dropdown Menu's list of choices or a Tooltip's
+ * hover-only hint.
  */
 const meta: Meta<typeof Popover> = {
   title: "Primitives/Overlays/Popover",

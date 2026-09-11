@@ -26,14 +26,9 @@ import { CloudSyncStateBadge } from "./cloud-sync-state-badge";
 // Each badge's tooltip carries copy the label alone cannot; the preview supplies
 // the `TooltipProvider`.
 /**
- * This is a small muted pill that appears next to a session row when its
- * cloud copy might be behind, for example "Local only" or "Transcript still
- * syncing." It only shows up for a row that is genuinely pending; a fully
- * synced row shows nothing at all, so a table of already-synced sessions is
- * not cluttered with redundant badges. It distinguishes a session that has
- * not reached the cloud yet from one whose transcript upload is still in
- * progress or has failed, since telling someone their data is "local only"
- * when it is actually in the cloud waiting on one file would be misleading.
+ * A small muted pill next to a session row whose cloud copy might be behind,
+ * like Local only or Transcript still syncing, shown only when that row is
+ * genuinely pending.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Cloud Sync State Badge",

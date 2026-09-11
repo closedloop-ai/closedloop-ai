@@ -79,12 +79,9 @@ const favoriteRoutes: FixtureRoute[] = [
 ];
 
 /**
- * A small star-shaped button that toggles whether something is one of your
- * favorites: outlined when it isn't, filled yellow when it is. Use it
- * anywhere you list or open an item and want a quick way to mark it for easy
- * access later, without opening a full settings panel. Clicking it doesn't
- * trigger whatever link or card it's sitting on top of, so it's safe to
- * place inside a clickable row.
+ * A star button that toggles whether something is one of your favorites, for
+ * marking an item for easy access later without opening a full settings
+ * panel.
  */
 const meta: Meta<typeof FavoriteButton> = {
   title: "Composites/Documents/Artifact Favorite Button",

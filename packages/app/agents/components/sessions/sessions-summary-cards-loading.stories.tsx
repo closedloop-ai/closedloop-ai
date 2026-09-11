@@ -46,14 +46,8 @@ const LOADING_DETAIL = "Loading…";
 const IMPORTING_HISTORY_DETAIL = "Importing your history";
 
 /**
- * This is the placeholder shown in place of the Sessions summary cards while
- * their data is still loading. It renders five real metric cards already
- * labeled with their final names, each one just shimmering where its value
- * would go, rather than five plain grey rectangles, so the row settles into
- * its final layout with no visible jump once the data arrives. Use it
- * instead of a generic skeleton block specifically because the reserved
- * height always matches the real card's height at whatever density the page
- * is showing, with nothing left to keep in sync by hand.
+ * The loading placeholder for the Sessions summary cards, shimmering in the
+ * real card layout so nothing jumps once the data arrives.
  */
 const meta = {
   title: "Composites/Sessions/Listing/Sessions Summary Cards Loading",

@@ -41,13 +41,8 @@ function VersionActionsToolbarDemo({
 }
 
 /**
- * A row of buttons for working with a document version: an optional comment
- * count toggle, a Restore Version button, and a Publish button that reads
- * Publishing while the save is running. The comment toggle only shows up
- * when there are open threads to reveal, and Restore stays disabled while a
- * restore is already in progress or the version simply can't be restored.
- * Publish stays disabled until there's actually something unsaved to
- * publish.
+ * A toolbar for working with a document version: an optional comment count
+ * toggle, a Restore Version button, and a Publish button.
  */
 const meta = {
   title: "Composites/Documents/Version Actions Toolbar",

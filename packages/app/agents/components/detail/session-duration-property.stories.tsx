@@ -11,17 +11,9 @@ const STARTED_AT = "2026-07-30T10:00:00.000Z";
 const ENDED_AT = "2026-07-30T14:54:00.000Z";
 
 /**
- * The Duration row in a session's Properties panel: one plain number, like
- * '4h 54m', showing how long the session ran from start to end, or from
- * start to now if it's still running. It reads the same start to end rule
- * every other Duration cell in the product uses, so this row can never
- * disagree with the number shown for the same session in the sessions list
- * or on a duration card elsewhere on the page. While a session is actively
- * running, the number keeps ticking upward on its own rather than freezing
- * at the moment the page loaded. When nothing can be measured, such as a
- * session with no end time recorded, the row shows an empty dash with the
- * reason available on hover and to screen readers, instead of guessing or
- * showing a fabricated zero.
+ * The Duration row in a session's Properties panel, ticking upward while the
+ * session runs and matching the same start to end rule every duration figure
+ * in the product uses.
  */
 const meta = {
   title: "Composites/Sessions/Detail/Session Duration Property",

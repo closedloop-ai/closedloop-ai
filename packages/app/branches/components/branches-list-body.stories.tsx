@@ -8,15 +8,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * Decides what the Branches list shows: loading text, one of several empty
- * states, or the actual table of branches. It picks between 'no branches at
- * all', 'nothing matches your current filters and time window', and 'the
- * list failed to load', each with its own message and, where it makes sense,
- * a way to fix it, such as a button to widen the time window or retry the
- * request. Reach for it as the outer wrapper around the branches table
- * rather than rendering the table directly, so every caller gets the same
- * set of empty and error states instead of reinventing them. Once there are
- * rows to show, it hands off entirely to the branches table itself.
+ * The outer wrapper around the branches table that picks the right loading,
+ * empty, or error state instead of leaving every caller to reinvent them.
  */
 const meta = {
   title: "Composites/Branches/Branches List Body",

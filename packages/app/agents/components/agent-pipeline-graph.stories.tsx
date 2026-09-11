@@ -10,14 +10,8 @@ const AgentPipelineGraphCanvas = () => (
 );
 
 /**
- * A node-and-line diagram showing which agent types hand work to which
- * others and how often, with its own heading and caption built in above the
- * diagram. It is a ready-made dashboard tile built on the generic Graph
- * primitive: reach for Graph directly when you need a node-link diagram for
- * other data, and for Sankey Graph when the relative volume flowing between
- * stages matters more than the individual connections. It always renders the
- * same "Agent Collaboration Network" title and description, so it is not
- * meant to be relabeled or reused for a different dataset.
+ * A ready made dashboard tile showing which agent types hand work to which
+ * others, built on the generic Graph primitive.
  */
 const meta = {
   title: "Primitives/Charts/Agent Pipeline Graph",

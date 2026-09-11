@@ -3,12 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A multi-line box for typing longer freeform text, like a message or a
- * comment, as opposed to Input, which only holds a single line. The rows
- * prop sets how many lines are visible before the field starts scrolling,
- * and disabled, read-only and required states work the same way they do on
- * any other form field. Pair it with a label to say what the text is for,
- * since the field carries no caption of its own.
+ * A multi line box for typing longer freeform text, like a message or
+ * comment, used instead of Input, which only holds a single line.
  */
 const meta = {
   title: "Primitives/Inputs/Textarea",

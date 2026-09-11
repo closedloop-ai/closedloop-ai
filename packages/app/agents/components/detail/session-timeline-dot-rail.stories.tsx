@@ -39,15 +39,8 @@ const STAGE_DETAIL_WIDTH_PX = 936;
 const JUMP_TO_DOT_NAME = /^Jump to /;
 
 /**
- * A row of small colored dots on the Session Timeline marking discrete
- * events, such as prompts, commits, pull requests and failures, across three
- * lanes: steering, commits and PRs, and failures and limits. It is the third
- * row of the same strip as Session Timeline Axis and Session Timeline Bars,
- * and it is where you look for events that carry no cost, since the bars
- * only encode spend. A dot with no matching transcript row loses its click
- * affordance and its hover growth entirely, rather than looking clickable
- * and failing silently, so a dot you cannot click always looks different
- * from one you can.
+ * The row of colored dots on the Session Timeline marking events like
+ * prompts, commits and failures, the events the cost bars can't show.
  */
 const meta = {
   title: "Primitives/Charts/Session Timeline Dot Rail",
