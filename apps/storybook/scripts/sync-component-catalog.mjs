@@ -32,7 +32,7 @@ const desktopRendererRoot = path.join(
 // the component is — the exact split the taxonomy removed. A component moving
 // between packages must not change how it is catalogued.
 const canonicalStorybookRoots = [
-  "Catalog",
+  "Start Here",
   "Foundations",
   "Primitives",
   "Composites",
@@ -478,7 +478,7 @@ function renderCatalogSource({
 
 export type StorybookCatalogSection = Exclude<
   (typeof canonicalStorybookRoots)[number],
-  "Catalog"
+  "Start Here"
 >;
 
 export type StorybookCatalogEntry = {

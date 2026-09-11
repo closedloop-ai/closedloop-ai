@@ -1,8 +1,8 @@
-export const canonicalStorybookRoots = ["Catalog","Foundations","Primitives","Composites","Surfaces"] as const;
+export const canonicalStorybookRoots = ["Start Here","Foundations","Primitives","Composites","Surfaces"] as const;
 
 export type StorybookCatalogSection = Exclude<
   (typeof canonicalStorybookRoots)[number],
-  "Catalog"
+  "Start Here"
 >;
 
 export type StorybookCatalogEntry = {

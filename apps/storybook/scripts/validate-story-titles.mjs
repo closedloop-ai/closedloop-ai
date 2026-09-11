@@ -164,10 +164,10 @@ for (const storyFile of collectAllStoryFiles()) {
   existingClaim.push(relativePath);
   storyFilesByTitle.set(titleMatch[1], existingClaim);
 
-  // `Catalog` is the inventory page itself, which indexes the other four levels
+  // `Start Here` is the landing page, which introduces the other four levels
   // rather than sitting in one. It is the only title outside them.
   const level = titleMatch[1].split("/")[0];
-  if (!(atomicLevels.has(level) || level === "Catalog")) {
+  if (!(atomicLevels.has(level) || level === "Start Here")) {
     console.error(
       `Story ${relativePath} has title "${titleMatch[1]}" — every story must be titled "<Level>/<Group>/<Component>" where Level is one of ${[...atomicLevels].join(", ")}. See apps/storybook/TAXONOMY.md.`
     );
