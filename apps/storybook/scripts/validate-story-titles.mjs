@@ -24,11 +24,14 @@ const storiesDir = path.join(repoRoot, "apps/storybook/stories");
 // - chart-colors: showcase of the --chart-* palette tokens; the source
 //   (chart-colors.ts) is a token helper, not a .tsx component surface, so the
 //   catalog (which only walks .tsx files) has no entry to map it to.
+// - introduction / catalog: the two Start Here pages. They document the system
+//   rather than being part of it, so they have no component to catalog.
 const ignoredStoryIds = new Set([
   "agent-monitor",
   "catalog",
   "chart-colors",
   "empty-state-app",
+  "introduction",
   "pagination",
   "sidebar-nav-link-item",
   "sidebar-section-header",

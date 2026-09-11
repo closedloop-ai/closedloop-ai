@@ -46,8 +46,9 @@ const preview: Preview = {
     options: {
       // Atomic-design reading order, top to bottom: tokens first, then the
       // primitives built from them, then the feature slices built from those,
-      // then the desktop shell, and finally whole assembled screens. Catalog
-      // sits above everything as the browsable index into the rest.
+      // then the desktop shell, and finally whole assembled screens. Start Here
+      // sits above everything: Introduction explains the levels, Catalog is the
+      // browsable index into the rest.
       storySort: {
         // NOTE: the nine element kinds are written out twice, once under
         // Primitives and once under Composites. They cannot be hoisted into a
@@ -69,6 +70,8 @@ const preview: Preview = {
         // differs on the desktop shell says so in its own name.
         order: [
           "Start Here",
+          // The prose half first, then the generated index of everything.
+          ["Introduction", "Catalog"],
           "Foundations",
           ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Primitives",
