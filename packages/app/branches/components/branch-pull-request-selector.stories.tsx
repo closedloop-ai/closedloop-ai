@@ -7,12 +7,15 @@ import {
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 import { BranchPullRequestSelector } from "./branch-pull-request-selector";
 
 const completeCollection = makeCollection(
   BranchAssociatedPullRequestCompletenessState.Complete
 );
+
+/** Matches the merged PR option's accessible name, #4401. */
+const MERGED_PR_OPTION_NAME = /4401/;
 
 /**
  * A dropdown for switching between the pull requests tied to a branch, since
@@ -41,7 +44,21 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Complete: Story = {};
+export const Complete: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      canvas.getByRole("combobox", { name: "Pull request" })
+    );
+    await userEvent.click(
+      await screen.findByRole("option", { name: MERGED_PR_OPTION_NAME })
+    );
+    await expect(args.onChange).toHaveBeenCalledWith({
+      repositoryFullName: "closedloop-ai/symphony-alpha",
+      pullRequestNumber: 4401,
+    });
+  },
+};
 
 export const Incomplete: Story = {
   args: {

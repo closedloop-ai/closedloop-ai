@@ -1,6 +1,6 @@
 import type { MergedTraceItem } from "@repo/api/src/types/branch-trace";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { BranchEventDotRail } from "./branch-event-dot-rail";
 
 function ev(dot: "g" | "b" | "r", text: string, t: string): MergedTraceItem {
@@ -72,6 +72,13 @@ type Story = StoryObj<typeof meta>;
 
 export const GreenOnly: Story = {
   args: { traceItems: greenOnly, githubConnected: true },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "PR opened" })
+    );
+    await expect(args.onScrubRow).toHaveBeenCalledWith(0);
+  },
 };
 
 export const GreenAndRed: Story = {

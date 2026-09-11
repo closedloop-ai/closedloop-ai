@@ -2,7 +2,7 @@ import type { ActivityBucket } from "@repo/api/src/types/agent-session";
 import type { TimelineStackSegment } from "@repo/app/agents/lib/session-timeline-stacks";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { BucketJumpBlock, getBucketCost } from "./activity-bucket-rendering";
 import { buildBucketAccessibleCosts } from "./session-timeline-bar-labels";
 import { SessionTimelineBars } from "./session-timeline-bars";
@@ -36,6 +36,9 @@ import { SessionTimelineBars } from "./session-timeline-bars";
 
 /** The strip measured on the real session-detail panel at a 1440px window. */
 const STAGE_DETAIL_WIDTH_PX = 936;
+
+/** Matches the accessible name of the index-0 bar's jump button, in {@link Default}. */
+const FIRST_BAR_NAME = /jump to activity bucket 0m/i;
 
 function makeBucket(
   index: number,
@@ -201,6 +204,12 @@ export const Default: Story = {
       </BarRowStage>
     ),
   ],
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const bar = await canvas.findByRole("button", { name: FIRST_BAR_NAME });
+    await userEvent.click(bar);
+    await expect(args.onJump).toHaveBeenCalledWith(0);
+  },
 };
 
 /**

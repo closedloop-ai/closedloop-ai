@@ -4,11 +4,14 @@ import {
   HealthCheckRepairAction,
 } from "@repo/api/src/types/compute-target";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, within } from "storybook/test";
 import { SystemCheckResults } from "./system-check-results";
 
 const CLAUDE_CLI_REMEDIATION =
   "Update binary path in Settings, or clear the override";
+
+/** Matches the plugin-code row's structured remediation link. */
+const PLUGIN_REMEDIATION_LINK_NAME = /update closedloop plugins manually/i;
 
 const CLOSEDLOOP_PLUGIN_LABELS: [string, string][] = [
   ["code", "Symphony Plugin"],
@@ -126,7 +129,15 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("link", { name: PLUGIN_REMEDIATION_LINK_NAME })
+    ).toBeInTheDocument();
+    await expect(args.onStructuredRemediationViewed).toHaveBeenCalled();
+  },
+};
 
 export const Loading: Story = {
   args: {

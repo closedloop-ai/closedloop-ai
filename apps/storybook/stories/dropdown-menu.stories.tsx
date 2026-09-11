@@ -17,7 +17,7 @@ import {
 } from "@repo/design-system/components/ui/dropdown-menu";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Mail, Plus, PlusCircle, Search, UserPlus } from "lucide-react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 /**
  * A menu of actions or options behind a trigger button, for structured
@@ -81,7 +81,20 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the dropdown menu.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await userEvent.click(canvas.getByRole("button", { name: "Open" }));
+
+    // DropdownMenuContent renders through a portal, so it lands outside
+    // canvasElement and has to be found on the document instead.
+    await expect(
+      await screen.findByRole("menuitem", { name: "Profile" })
+    ).toBeVisible();
+    await expect(args.onOpenChange).toHaveBeenCalledWith(true);
+  },
+};
 
 /**
  * A dropdown menu with shortcuts.

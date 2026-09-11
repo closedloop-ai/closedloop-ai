@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 import type { FixtureRoute } from "../../../shared/storybook/fixture-fetch";
 import {
   createAgentSessionAnalyticsFixture,
@@ -149,6 +149,20 @@ export const Org: Story = {
     organizationFiltersEnabled: true,
     queryState,
     renderExtraColumn: () => <a href="/org-test/features/FEA-1702">View</a>,
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The monitoring toolbar (date range / harness / status) renders above the
+    // data table regardless of the fixture fetch, so it is safe to drive before
+    // anything async settles.
+    await userEvent.click(
+      canvas.getByRole("combobox", { name: "Session status" })
+    );
+    const options = await screen.findAllByRole("option");
+    await userEvent.click(options[1]);
+    await expect(args.onQueryStateChange).toHaveBeenCalledWith(
+      expect.objectContaining({ page: 0 })
+    );
   },
 };
 

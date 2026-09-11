@@ -10,7 +10,7 @@ import {
   AlertDialogTrigger,
 } from "@repo/design-system/components/ui/alert-dialog";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 /**
  * A modal that forces you to confirm or cancel an action like deleting an
@@ -70,4 +70,19 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the alert dialog.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Open" }));
+
+    const dialog = await screen.findByRole("alertdialog");
+    await expect(
+      within(dialog).getByText("Are you sure absolutely sure?")
+    ).toBeVisible();
+
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel" })
+    );
+    await expect(args.onOpenChange).toHaveBeenCalledWith(false);
+  },
+};

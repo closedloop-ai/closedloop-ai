@@ -8,7 +8,7 @@ import { createStaticFeatureFlagAdapter } from "@repo/app/shared/feature-flags/s
 import { INSIGHTS_SPEND_OUTCOME_FEATURE_FLAG_KEY } from "@repo/app/shared/lib/feature-flags";
 import type { Meta, StoryObj } from "@storybook/react";
 import type { ReactNode } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent } from "storybook/test";
 import {
   makeAgentsSections,
   makeDeliverySections,
@@ -132,7 +132,13 @@ type Story = StoryObj<typeof meta>;
  * The add-a-metric dialog as it opens: "Add metric" heading, no Remove action,
  * and the first metric of the first available section pre-selected.
  */
-export const AddMetric: Story = {};
+export const AddMetric: Story = {
+  play: async ({ args }) => {
+    await userEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await expect(args.onPinTile).toHaveBeenCalled();
+    await expect(args.onOpenChange).toHaveBeenCalledWith(false);
+  },
+};
 
 /**
  * ISS-4463, flag OFF — the picker's half of the gate.

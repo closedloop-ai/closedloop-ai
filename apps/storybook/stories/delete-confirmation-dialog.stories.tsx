@@ -1,6 +1,6 @@
 import { DeleteConfirmationDialog } from "@repo/app/shared/components/delete-confirmation-dialog";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent } from "storybook/test";
 
 /**
  * A modal built specifically for delete actions, with the heading and
@@ -44,4 +44,14 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args }) => {
+    // The dialog renders through a Dialog/Sheet portal, outside canvasElement,
+    // so the buttons are queried from `screen` rather than `within`.
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Delete" })
+    );
+    await expect(args.onConfirm).toHaveBeenCalled();
+    await expect(args.onOpenChange).toHaveBeenCalledWith(false);
+  },
+};

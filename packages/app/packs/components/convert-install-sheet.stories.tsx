@@ -4,7 +4,7 @@ import { ConvertInstallState } from "@repo/api/src/types/convert-install";
 import { ConversionSupport } from "@repo/api/src/types/harness-conversion";
 import { HarnessName } from "@repo/crewd/model";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent } from "storybook/test";
 import {
   ConvertInstallSheet,
   type ConvertInstallTarget,
@@ -94,7 +94,17 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Clean: Story = {};
+export const Clean: Story = {
+  play: async ({ args }) => {
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Convert and install" })
+    );
+    await expect(args.onConvertInstall).toHaveBeenCalledWith(cleanTarget);
+    await expect(
+      await screen.findByRole("button", { name: "Done" })
+    ).toBeVisible();
+  },
+};
 
 export const Partial: Story = {
   args: { target: partialTarget },

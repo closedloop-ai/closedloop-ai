@@ -1,6 +1,6 @@
 import { packs } from "@repo/app/agents/lib/session-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { PackFilterBar } from "./pack-filter-bar";
 
 const harnesses = Array.from(
@@ -44,4 +44,13 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(
+      canvas.getByRole("textbox", { name: "Search packs" }),
+      "s"
+    );
+    await expect(args.onQueryChange).toHaveBeenCalled();
+  },
+};

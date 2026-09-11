@@ -1,6 +1,6 @@
 import { AnalyticsRangeToggle } from "@repo/design-system/components/ui/analytics-range-toggle";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 const rangeOptions = [
   { label: "7d", value: "7d" },
@@ -47,4 +47,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // `type="single"` makes the underlying Radix ToggleGroup use roving
+    // radiogroup semantics, so each segment is a radio rather than a button.
+    const sevenDay = canvas.getByRole("radio", { name: "7d" });
+
+    await userEvent.click(sevenDay);
+
+    await expect(args.onValueChange).toHaveBeenCalledWith("7d");
+  },
+};

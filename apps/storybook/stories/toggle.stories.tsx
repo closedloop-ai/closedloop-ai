@@ -1,7 +1,7 @@
 import { Toggle } from "@repo/design-system/components/ui/toggle";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Bold, Italic } from "lucide-react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A pressable button that stays on or off with a shaded background, for a
@@ -52,7 +52,19 @@ type Story = StoryObj<typeof Toggle>;
 /**
  * The default form of the toggle.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("button", { name: "Toggle bold" });
+
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(toggle);
+
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(args.onPressedChange).toHaveBeenCalledWith(true);
+  },
+};
 
 /**
  * Use the `outline` variant for a distinct outline, emphasizing the boundary

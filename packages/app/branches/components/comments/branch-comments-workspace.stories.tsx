@@ -8,7 +8,7 @@ import {
 } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useRef, useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import {
   BranchCommentSource,
   BranchCommentsTab,
@@ -99,6 +99,18 @@ type Story = StoryObj<typeof meta>;
 export const Details: Story = {
   args: makeArgs(),
   render: (args) => <WorkspaceStory args={args} />,
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const composer = await canvas.findByRole("textbox", {
+      name: "Comment on Branch trace, line 42",
+    });
+    await userEvent.type(composer, "Confirmed on my end too.");
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+
+    await expect(args.onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ body: "Confirmed on my end too." })
+    );
+  },
 };
 
 export const DetailsWithBoundedProviderEvidence: Story = {

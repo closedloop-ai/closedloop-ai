@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { PackInstallState } from "../lib/install-state";
 import { MemberInstallDispatchTone } from "../lib/member-install-dispatch-copy";
 import type { PackComponentInstallMatrix } from "../lib/pack-install-matrix";
@@ -7,6 +8,9 @@ import { mockPackViews } from "../lib/pack-view-mock";
 import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { memberInstallCellKey } from "./member-targets-block";
 import { PackDetail } from "./pack-detail";
+
+/** Matches the desk-tower row's install-action button, the retryable one. */
+const DESK_TOWER_INSTALL_ACTION_NAME = /release-captain on desk-tower/i;
 
 /**
  * The full detail page for one pack of ready-made agents, skills and
@@ -132,10 +136,10 @@ export const WebMemberInstall: Story = {
     context: createPacksContext(PacksMode.WebMember),
     pack: memberPack,
     memberTargetsInstall: {
-      onInstall: () => {
-        // Storybook is presentational: the dispatch itself belongs to
-        // `useMemberTargetsInstall`, which has its own tests.
-      },
+      // A spy so the story can prove the click reaches the dispatch, rather
+      // than just that it doesn't throw. The real dispatch itself belongs to
+      // `useMemberTargetsInstall`, which has its own tests.
+      onInstall: fn(),
       // mbp-laptop is mid-dispatch…
       pendingCellKeys: [memberInstallCellKey("target-1", MEMBER_HARNESS)],
       // …while desk-tower already carries a settled, retryable failure and
@@ -150,6 +154,16 @@ export const WebMemberInstall: Story = {
         },
       },
     },
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // desk-tower is the retryable row: its button is enabled, unlike
+    // mbp-laptop's (mid-dispatch, disabled).
+    const retryButton = await canvas.findByRole("button", {
+      name: DESK_TOWER_INSTALL_ACTION_NAME,
+    });
+    await userEvent.click(retryButton);
+    await expect(args.memberTargetsInstall?.onInstall).toHaveBeenCalled();
   },
 };
 

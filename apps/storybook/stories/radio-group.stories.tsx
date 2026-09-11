@@ -3,7 +3,7 @@ import {
   RadioGroupItem,
 } from "@repo/design-system/components/ui/radio-group";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A set of round buttons where picking one clears whichever was picked
@@ -79,4 +79,11 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the radio group.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("radio", { name: "Default" }));
+    await expect(args.onValueChange).toHaveBeenCalledWith("default");
+    await expect(canvas.getByRole("radio", { name: "Default" })).toBeChecked();
+  },
+};

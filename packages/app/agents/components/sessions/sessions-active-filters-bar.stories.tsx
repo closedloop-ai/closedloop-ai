@@ -3,7 +3,7 @@ import { AgentSessionViewerScope } from "@repo/api/src/types/agent-session";
 import { SESSION_STATUS } from "@repo/api/src/types/session-status";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import {
   DEFAULT_SESSION_FACET_FILTERS,
   type SessionFacetFilters,
@@ -121,7 +121,36 @@ const meta = {
     onClearAll: { control: false, table: { category: "Events" } },
     onRemoveScopeUser: { control: false, table: { category: "Events" } },
   },
-  parameters: { layout: "padded" },
+  parameters: {
+    layout: "padded",
+    appCore: {
+      // Seeds `/projects` so the chip row resolves project names against a
+      // known list instead of an unmatched fetch.
+      //
+      // Without this the `ProjectFilterOutOfRange` story was intermittently
+      // flaky, failing roughly one run in six. `useSessionProjectNameResolver`
+      // asks for the project list whenever a selected id has no name in the
+      // usage window, which is exactly what that story sets up. No route
+      // answered `/projects`, so the fixture fetch returned its unmatched
+      // envelope: truthy, but not an array, so the resolver's `if (!projects)`
+      // guard let it through and the `for...of` threw "projects is not
+      // iterable". Whether it threw at all depended on whether the query had
+      // settled before the assertion ran, which is what made it intermittent.
+      //
+      // The list deliberately does NOT contain the story's out-of-range id.
+      // That is the case the story exists to show: an id with no project
+      // behind it still renders a chip, using the raw id.
+      apiRoutes: [
+        {
+          method: "GET",
+          path: "/projects",
+          respond: () => [
+            { id: PROJECT_ID, name: "Session telemetry", slug: "telemetry" },
+          ],
+        },
+      ],
+    },
+  },
   // The chip labels resolve owner names through an auth-aware hook, so this bar
   // needs the app-core ports mounted. Without them every story in this file
   // throws "Auth hooks require an <AuthAdapterProvider> ancestor" on mount.
@@ -136,6 +165,8 @@ const meta = {
 
 export default meta;
 type Story = StoryObj<typeof meta>;
+
+const REMOVE_CHIP_BUTTON_NAME = /remove/i;
 
 function InteractiveBar({
   initial,
@@ -169,6 +200,20 @@ export const SingleChip: Story = {
       }}
     />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      canvas.getByRole("button", { name: REMOVE_CHIP_BUTTON_NAME })
+    );
+    // Removing the only active facet leaves no chips, so the whole row (chip
+    // AND Clear all) renders nothing rather than an empty shell.
+    await expect(
+      canvas.queryByRole("button", { name: REMOVE_CHIP_BUTTON_NAME })
+    ).not.toBeInTheDocument();
+    await expect(
+      canvas.queryByRole("button", { name: "Clear all" })
+    ).not.toBeInTheDocument();
+  },
 };
 
 // Two facets: shows the facet-then-selection order and the per-facet remove.

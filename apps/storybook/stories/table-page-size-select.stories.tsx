@@ -6,7 +6,7 @@ import {
 } from "@repo/design-system/components/ui/table-page-size-select";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 // The rows-per-page control that sits at the left of `TablePaginationFooter`
 // (FEA-4199), and the range readout derived beside it.
@@ -70,6 +70,18 @@ export const Default: Story = {
         </p>
       </div>
     );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("combobox", { name: "Rows per page" });
+    await expect(trigger).toHaveTextContent("25 / page");
+
+    await userEvent.click(trigger);
+    await userEvent.click(
+      await screen.findByRole("option", { name: "50 / page" })
+    );
+
+    await expect(trigger).toHaveTextContent("50 / page");
   },
 };
 

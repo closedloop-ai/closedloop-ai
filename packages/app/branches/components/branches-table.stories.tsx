@@ -21,7 +21,7 @@ import {
 import type { SortDirection } from "@repo/design-system/components/ui/sortable-column-header";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useMemo } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 // Presentational branches table shared by the web `/branches` page and the
 // desktop Branches view. Callers supply display-ready `BranchRow` items;
@@ -116,6 +116,13 @@ export const Default: Story = {
       <BranchesTable {...args} />
     </main>
   ),
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Repository" })
+    );
+    await expect(args.onSort).toHaveBeenCalledWith("repo", "desc");
+  },
 };
 
 const APPROVED_ROW: BranchRow = {

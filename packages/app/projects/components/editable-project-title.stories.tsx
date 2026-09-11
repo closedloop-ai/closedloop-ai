@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { FixtureRoute } from "../../shared/storybook/fixture-fetch";
 import { EditableProjectTitle } from "./editable-project-title";
 
@@ -51,7 +51,20 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox", { name: "Project title" });
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "Q4 Roadmap");
+    await userEvent.tab();
+
+    await waitFor(() =>
+      expect(args.onTitleChange).toHaveBeenCalledWith("Q4 Roadmap")
+    );
+  },
+};
 
 export const Untitled: Story = {
   args: { initialTitle: "" },

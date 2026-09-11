@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent } from "storybook/test";
 import { RenameDialog } from "./rename-dialog";
 
 /**
@@ -49,7 +49,20 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args }) => {
+    // The dialog renders through a Radix Dialog portal, outside the story
+    // canvas, so this queries the whole screen rather than canvasElement.
+    const titleField = await screen.findByLabelText("Title");
+    await userEvent.clear(titleField);
+    await userEvent.type(titleField, "Renamed Plan");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await expect(args.onRename).toHaveBeenCalledWith(
+      "Renamed Plan",
+      "implementation-plan.md"
+    );
+  },
+};
 
 export const Saving: Story = {
   args: { isPending: true },

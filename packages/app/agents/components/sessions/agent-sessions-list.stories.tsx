@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { SessionGroupBy } from "../../lib/session-grouping";
 import { AgentSessionsListContent } from "./agent-sessions-list";
 import {
@@ -26,6 +26,9 @@ import {
 // `parameters: { appCore: { enabledFlags: ["…"] } }` — never by re-wrapping the
 // tree: a second harness replaces the preview's shared navigation port with a
 // private one (see `apps/storybook/__tests__/app-core-harness-single-mount.test.ts`).
+/** Matches the accessible name of the errored empty state's Retry button. */
+const RETRY_BUTTON_NAME = /retry/i;
+
 /**
  * The shared body of the Sessions list, deciding whether to show a loading
  * skeleton, an empty state, or the table, so web and desktop can never
@@ -162,6 +165,13 @@ export const EmptyUnavailable: Story = {
     items: [],
     emptySignals: { isUnavailable: true, hasActiveFilters: false },
     onRetry: fn(),
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: RETRY_BUTTON_NAME })
+    );
+    await expect(args.onRetry).toHaveBeenCalled();
   },
 };
 

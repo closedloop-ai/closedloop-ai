@@ -5,7 +5,7 @@ import {
   SearchEntityType,
 } from "@repo/api/src/types/search-entity-kind";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { UnifiedSearchResults } from "./unified-search-results";
 
 const results: SearchHit[] = [
@@ -89,7 +89,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** A settled query with hits: the facet strip, then one row per ranked hit. */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const typeFacets = within(
+      canvas.getByRole("group", { name: "Filter results by type" })
+    );
+    await userEvent.click(typeFacets.getAllByRole("button")[0]);
+    await expect(args.onToggleType).toHaveBeenCalledTimes(1);
+  },
+};
 
 /** The `/search` page's shape — its query bar owns kind filtering, so the
  * in-list facet strip and the active-facet chips are both suppressed there. */

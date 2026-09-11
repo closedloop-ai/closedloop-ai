@@ -1,7 +1,7 @@
 import { ColumnOptionsMenu } from "@repo/design-system/components/ui/table-grid-column-menu";
 import type { Meta, StoryObj } from "@storybook/react";
 import { type ReactNode, useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 // The per-column options menu `TableGridHeader` grows under GridTable v2.
 // The point of this story is the TRIGGER's state machine, which is invisible in
@@ -111,6 +111,18 @@ export const FullMenu: Story = {
         </p>
       </div>
     );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Owner column options" })
+    );
+    await userEvent.click(
+      await screen.findByRole("menuitem", { name: "Filter" })
+    );
+    // "Last action: " and the value live in separate nodes, so this matches
+    // the value node directly rather than the combined text.
+    await expect(canvas.getByText("filter owner")).toBeVisible();
   },
 };
 

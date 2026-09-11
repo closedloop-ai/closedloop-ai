@@ -2,7 +2,7 @@ import { StatusIcon } from "@repo/design-system/components/ui/status-icon";
 import { StatusMetadataSection } from "@repo/design-system/components/ui/status-metadata-section";
 import type { User } from "@repo/design-system/components/ui/user-select-popover";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 // `User` requires `name` — `UserSelectPopover` renders it and derives the avatar
 // fallback from it via `getInitials(value.name)`. This fixture previously carried
@@ -20,6 +20,8 @@ const users: User[] = [
     email: "annie@closedloop.ai",
   },
 ];
+
+const DONE_OPTION_NAME = /done/i;
 
 const options = [
   {
@@ -86,7 +88,16 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Vertical: Story = {};
+export const Vertical: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox", { name: "Status" }));
+    await userEvent.click(
+      await screen.findByRole("option", { name: DONE_OPTION_NAME })
+    );
+    await expect(args.onStatusChange).toHaveBeenCalledWith("done");
+  },
+};
 
 export const Horizontal: Story = {
   args: {
