@@ -32,7 +32,14 @@ const meta: Meta<typeof Checkbox> = {
     onCheckedChange: fn(),
   },
   render: (args) => (
-    <div className="flex space-x-2">
+    // `items-center` is load-bearing, and this story shipped without it. A bare
+    // `flex` row is `align-items: stretch`, so the 16px box and the
+    // `leading-none` label both start at the top and the text sits about a pixel
+    // above the box's centre. Every one of the 11 places production pairs a
+    // Checkbox with a label uses `flex items-center gap-*` (the twelfth,
+    // `findings-triage-list`, uses `items-start` on purpose for multi-line
+    // findings), so the story was showing an alignment the product never renders.
+    <div className="flex items-center gap-2">
       <Checkbox {...args} />
       <label
         className="font-medium text-sm leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-50"
