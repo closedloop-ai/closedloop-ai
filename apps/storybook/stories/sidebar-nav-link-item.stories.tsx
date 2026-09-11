@@ -70,6 +70,16 @@ function SidebarNavLinkItemDemo() {
   );
 }
 
+/**
+ * A single clickable row in a sidebar: an icon, a title, and optional
+ * trailing content like a count badge or a small label. Set isActive to
+ * highlight the current destination, and disabled to show the row without
+ * letting it navigate anywhere. Use it for individual sidebar destinations,
+ * and group several of them under a shared, collapsible label with Sidebar
+ * Collapsible Section instead. When the sidebar is collapsed to icons only,
+ * hovering or focusing a row shows the tooltip text you pass in, so the
+ * destination stays identifiable without its title.
+ */
 const meta = {
   title: "Primitives/Navigation/Sidebar Nav Link Item",
   component: SidebarNavLinkItemDemo,

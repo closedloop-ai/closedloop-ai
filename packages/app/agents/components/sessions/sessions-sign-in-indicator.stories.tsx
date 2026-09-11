@@ -2,23 +2,28 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 import { SessionsSignInIndicator } from "./sessions-sign-in-indicator";
 
+// ISS-5451: the signed-out affordance for cloud-only Sessions KPI cards.
+// FEA-3574. The CTA is surface-injected: the desktop shell passes its browser
+// OAuth `beginSignIn` IPC, and a surface with no sign-in action omits the
+// handler — so {@link InformationalOnly} is a real production state, not a
+// degenerate one, and it needs to still read as an explanation rather than a
+// broken button.
+// {@link WithSignInError} is the state FEA-3574's review added: a failed
+// `beginSignIn` must not leave the card silently unchanged, so the error renders
+// in the destructive tone and the CTA stands as the retry.
+// FEA-4037 added {@link Banner} — one horizontal ask above the whole KPI row
+// instead of a per-card caption. Its copy is deliberately different (it names
+// the ask once and lets the card labels below do the naming), so the two
+// variants are shown together to keep that distinction visible.
 /**
- * ISS-5451: the signed-out affordance for cloud-only Sessions KPI cards.
- *
- * FEA-3574. The CTA is surface-injected: the desktop shell passes its browser
- * OAuth `beginSignIn` IPC, and a surface with no sign-in action omits the
- * handler — so {@link InformationalOnly} is a real production state, not a
- * degenerate one, and it needs to still read as an explanation rather than a
- * broken button.
- *
- * {@link WithSignInError} is the state FEA-3574's review added: a failed
- * `beginSignIn` must not leave the card silently unchanged, so the error renders
- * in the destructive tone and the CTA stands as the retry.
- *
- * FEA-4037 added {@link Banner} — one horizontal ask above the whole KPI row
- * instead of a per-card caption. Its copy is deliberately different (it names
- * the ask once and lets the card labels below do the naming), so the two
- * variants are shown together to keep that distinction visible.
+ * The card shown in place of a metric when you are not signed in to a cloud
+ * session, explaining why the number is missing and offering a sign in
+ * button. Set banner to true to show the wider version above a whole row of
+ * cards instead of a caption on a single card. If the surface has no sign-in
+ * action to offer, such as a page that is already authenticated, it quietly
+ * drops the button and shows the explanation as plain text. If a sign-in
+ * attempt fails, it shows the error message and keeps the button in place as
+ * a retry.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Sessions Sign In Indicator",

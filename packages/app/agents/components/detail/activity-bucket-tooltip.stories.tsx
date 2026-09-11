@@ -9,34 +9,42 @@ import { BucketJumpBlock } from "./activity-bucket-rendering";
 import { ActivityBucketTooltip } from "./activity-bucket-tooltip";
 import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 
+// ISS-5563 review (krisw-story-reviewer). The header/rows precision mismatch this
+// card carries — a `$0.0042` total sitting over a table whose every cell read
+// `$0.00` — was caught in review twice before it landed, because the only thing
+// asserting it was a pair of formatter unit tests that each passed in isolation.
+// The agreement is between TWO figures rendered inches apart, so it is a thing to
+// LOOK at, and the populated `AgentSessionDetailView` story cannot serve: you
+// would have to hover exactly the right bar, and its fixture never reaches the
+// sub-cent or idle edges at all.
+// The stories below are that state matrix, one scenario each. Three answer the
+// MEASURED strip: {@link Idle} (no tokens billed), {@link PricedMultiModel} (the
+// ordinary magnitude, where the cent floor on the rows is correct), and
+// {@link SubCentBucket} (the regression itself).
+// ISS-5566 adds a second axis — whether the strip's money was measured at all —
+// and the same argument carries: {@link UnmeasuredPriced} and
+// {@link UnmeasuredIdle} are branches of `costUnmeasured` that the populated
+// parent-view story cannot reach without hovering exactly the right bar. They
+// are two stories rather than one because a synthesized bucket at zero cost
+// still carries a real observation (`total === 0`) and must not be answered with
+// the priced branch's "wasn't recorded".
+// No `autodocs` tag: `ActivityBucketTooltip` portals to `document.body` at
+// `position: fixed` (`ViewportTooltipPortal`), so a docs page rendering every
+// story at once would stack every card on the same viewport coordinates.
+// One story per canvas is the only way each is actually legible —
+// `agent-session-detail-view.stories.tsx` omits the tag for the same reason.
 /**
- * ISS-5563 review (krisw-story-reviewer). The header/rows precision mismatch this
- * card carries — a `$0.0042` total sitting over a table whose every cell read
- * `$0.00` — was caught in review twice before it landed, because the only thing
- * asserting it was a pair of formatter unit tests that each passed in isolation.
- * The agreement is between TWO figures rendered inches apart, so it is a thing to
- * LOOK at, and the populated `AgentSessionDetailView` story cannot serve: you
- * would have to hover exactly the right bar, and its fixture never reaches the
- * sub-cent or idle edges at all.
- *
- * The stories below are that state matrix, one scenario each. Three answer the
- * MEASURED strip: {@link Idle} (no tokens billed), {@link PricedMultiModel} (the
- * ordinary magnitude, where the cent floor on the rows is correct), and
- * {@link SubCentBucket} (the regression itself).
- *
- * ISS-5566 adds a second axis — whether the strip's money was measured at all —
- * and the same argument carries: {@link UnmeasuredPriced} and
- * {@link UnmeasuredIdle} are branches of `costUnmeasured` that the populated
- * parent-view story cannot reach without hovering exactly the right bar. They
- * are two stories rather than one because a synthesized bucket at zero cost
- * still carries a real observation (`total === 0`) and must not be answered with
- * the priced branch's "wasn't recorded".
- *
- * No `autodocs` tag: `ActivityBucketTooltip` portals to `document.body` at
- * `position: fixed` (`ViewportTooltipPortal`), so a docs page rendering every
- * story at once would stack every card on the same viewport coordinates.
- * One story per canvas is the only way each is actually legible —
- * `agent-session-detail-view.stories.tsx` omits the tag for the same reason.
+ * The hover card for one bar in the Session Timeline's cost strip, showing
+ * that time slice's total cost, a table breaking it down by AI model, and
+ * how many events and tool calls happened in it. Reach for it only as part
+ * of that timeline; it is not a general purpose tooltip, and the nearby
+ * Session Timeline Event Dot Tooltip is the equivalent card for the strip's
+ * event dots rather than its cost bars. When a slice billed nothing it says
+ * so in a sentence instead of showing a table of zeros, and when the strip's
+ * cost was estimated rather than actually measured it drops the dollar
+ * figures entirely rather than showing a number it cannot stand behind. It
+ * can also switch to a two column table grouped by whatever dimension, such
+ * as model or activity phase, the timeline is currently grouped by.
  */
 const meta = {
   title: "Primitives/Overlays/Activity Bucket Tooltip",

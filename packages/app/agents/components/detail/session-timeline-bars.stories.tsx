@@ -122,6 +122,18 @@ function BarRowStage({
   );
 }
 
+/**
+ * The row of clickable bars in the Session Timeline, one per time bucket,
+ * with each bar's height set by cost and its fill split into cache, output
+ * and input segments. Pair it with Session Timeline Axis above it and
+ * Session Timeline Dot Rail below it; together the three rows make up the
+ * full Session Timeline, and this is the one that shows where the money and
+ * time actually went. Clicking a bar jumps to that point in the transcript,
+ * but a bar can be disabled with a stated reason, such as no matching
+ * transcript turn, instead of silently doing nothing, and unread time at the
+ * end of a session renders as a plain wash rather than the usual idle
+ * pattern.
+ */
 const meta = {
   title: "Primitives/Charts/Session Timeline Bars",
   component: SessionTimelineBars,

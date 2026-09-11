@@ -23,17 +23,23 @@ function limits(overrides: Partial<SessionLimits> = {}): SessionLimits {
   };
 }
 
+// PRD-538 R6 (ISS-5354): the drawer's contents, across the plan shapes it has
+// to render.
+// It lives inside `DrawerContent`, which does not mount until the drawer opens,
+// so none of the sibling nav stories reach it — the skeleton and the stale
+// caveat get covered there only because they sit in the closed trigger. Which
+// rows exist is entirely plan-driven, and the row set is the thing most likely
+// to look wrong without being wrong in a unit assertion: a per-model week
+// duplicating the all-models week, extra usage appearing at $0, the empty state
+// arriving as a bare drawer (wongk, PR #4572).
 /**
- * PRD-538 R6 (ISS-5354): the drawer's contents, across the plan shapes it has
- * to render.
- *
- * It lives inside `DrawerContent`, which does not mount until the drawer opens,
- * so none of the sibling nav stories reach it — the skeleton and the stale
- * caveat get covered there only because they sit in the closed trigger. Which
- * rows exist is entirely plan-driven, and the row set is the thing most likely
- * to look wrong without being wrong in a unit assertion: a per-model week
- * duplicating the all-models week, extra usage appearing at $0, the empty state
- * arriving as a bare drawer (wongk, PR #4572).
+ * The full list of usage bars inside the session limits drawer: one row for
+ * each rate-limit window your plan has, such as the five hour window, the
+ * weekly window, and any per-model weekly windows, plus extra usage credits
+ * if you have them. Which rows appear depends entirely on your plan, so the
+ * set of bars you see is not fixed from account to account. It is read-only,
+ * with no controls of its own, and when your plan has nothing to show it
+ * renders a sentence explaining why rather than leaving the drawer empty.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Session Limits Detail",

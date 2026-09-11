@@ -28,6 +28,17 @@ const comparison = {
   ],
 };
 
+/**
+ * A stacked area chart over a date axis, with one colored band per series,
+ * an optional dashed comparison line, and vertical markers for events like a
+ * new version going live. Reach for it for a full multi-series trend with
+ * axes, a tooltip and a legend you can click to hide a series. Use the Line
+ * Chart primitive or Sparkline instead for a small single-series trend that
+ * doesn't need any of that. Past a set number of series it stops giving each
+ * one its own color and folds the rest into one "Other" band, since a
+ * categorical palette can only keep so many colors visually distinct at
+ * once.
+ */
 const meta = {
   title: "Primitives/Charts/Time Series Area Chart",
   component: TimeSeriesAreaChart,

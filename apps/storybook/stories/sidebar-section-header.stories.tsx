@@ -58,6 +58,17 @@ function SidebarSectionHeaderDemo() {
   );
 }
 
+/**
+ * A label row for one section of a sidebar, with the section name on the
+ * left and room for a small button or icon on the right, such as an add
+ * action or an expand and collapse chevron. Use it when you are building a
+ * sidebar section yourself and need control over what sits next to the
+ * title. If you just need a standard section that expands and collapses,
+ * reach for the Sidebar Collapsible Section instead, which builds a header
+ * like this one in automatically. Long titles truncate rather than wrap, and
+ * the header does not manage any open or closed state itself, so whatever
+ * action you place there has to handle that.
+ */
 const meta = {
   title: "Primitives/Navigation/Sidebar Section Header",
   component: SidebarSectionHeaderDemo,

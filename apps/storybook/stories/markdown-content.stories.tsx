@@ -14,6 +14,16 @@ const text = [
   "}",
 ].join("\n");
 
+/**
+ * Renders a block of markdown text as formatted HTML: headings, lists, and
+ * fenced code blocks all get proper styling, and multi-line code renders
+ * through the same Code Block component used elsewhere. Use it any time you
+ * are given raw markdown to display, such as an AI-written summary or a
+ * comment body, rather than hand-building headings and paragraphs. A dense
+ * mode tightens the spacing and shrinks the type for compact panels, and you
+ * can choose whether raw HTML tags in the source are rendered or silently
+ * dropped.
+ */
 const meta = {
   title: "Primitives/Content/Markdown Content",
   component: MarkdownContent,

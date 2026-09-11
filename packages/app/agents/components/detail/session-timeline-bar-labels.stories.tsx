@@ -49,6 +49,17 @@ import {
  * carry a fabricated input beside the real one. The catalog maps this file by
  * its stem, not by this field.
  */
+/**
+ * The row of dollar figures printed above the Session Timeline's bars, one
+ * label per bucket, spelling out exactly what a bar's height only implies.
+ * It sits between Session Timeline Axis and the bars themselves, and it only
+ * labels the buckets that have room for it; on a long, dense session it may
+ * print just the single highest-cost figure and leave the rest to a bar's
+ * own hover tooltip. It measures its own width before deciding what to
+ * print, and on a session whose costs were estimated rather than measured it
+ * stays blank entirely rather than publishing a number nobody can stand
+ * behind.
+ */
 const meta = {
   title: "Primitives/Charts/Session Timeline Cost Rail",
   tags: ["autodocs"],

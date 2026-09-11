@@ -4,6 +4,15 @@ import {
   SystemCheckStatusTone,
 } from "./system-check-status-badge";
 
+/**
+ * A small pill-shaped badge with custom text, used at the end of a system
+ * check row or a repair step to show its outcome, such as "Enabled" or
+ * "Setup required". It is shared between the system check list and the
+ * repair panel specifically so the same outcome never gets two different
+ * looks in the two places it appears. The label text and the tone (success,
+ * warning, danger or neutral) are set independently, so you write the exact
+ * wording yourself instead of picking from a fixed list of states.
+ */
 const meta: Meta<typeof SystemCheckStatusBadge> = {
   title: "Primitives/Feedback & Status/System Check Status Badge",
   component: SystemCheckStatusBadge,

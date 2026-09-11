@@ -25,6 +25,17 @@ const partialOutcomeColors: Record<string, string> = Object.fromEntries(
     .map((bucket) => [bucket.key, SPEND_OUTCOME_COLORS[bucket.key]])
 );
 
+/**
+ * A ring divided into colored slices sized by value, with a legend listing
+ * each slice's label and, optionally, its share of the total as a
+ * percentage. Reach for it when you want a part-to-whole relationship read
+ * at a glance; use Category Bar Chart or Segmented Bar instead when readers
+ * need to compare two similar-sized values precisely, since a ring makes
+ * that harder than a bar does. Slices can also carry a texture pattern on
+ * top of their color, so someone who cannot distinguish the colors can still
+ * tell two slices apart, and a category missing from a fixed color map falls
+ * back to the default palette instead of disappearing.
+ */
 const meta = {
   title: "Primitives/Charts/Donut Chart",
   component: DonutChart,

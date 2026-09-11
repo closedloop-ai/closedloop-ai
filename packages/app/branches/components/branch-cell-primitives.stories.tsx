@@ -10,6 +10,15 @@ import { BranchPRBadge } from "./branch-pr-badge";
  */
 // A composite showcase of three primitives — no single `component` binding, so
 // the render-only stories don't inherit one primitive's required args.
+/**
+ * Three small display pieces for a branch's numbers: a pull request Chip
+ * that changes colour by PR state, a behind and ahead count with arrows, and
+ * a proportional bar of additions and deletions. Use these together in a
+ * branch list row or a branch detail panel rather than building the same PR
+ * badge or change bar twice, since both surfaces share these exact pieces.
+ * Each one falls back to a plain empty-value dash when its data has not been
+ * enriched yet, rather than showing a fabricated zero.
+ */
 const meta = {
   title: "Primitives/Data Display/Branch Cell Primitives",
   tags: ["autodocs"],

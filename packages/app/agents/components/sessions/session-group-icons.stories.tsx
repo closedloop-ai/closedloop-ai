@@ -14,22 +14,28 @@ import {
 import { SESSION_GROUP_ICONS } from "./session-group-icons";
 import { createSessionTableRowFixture } from "./session-list-fixtures";
 
+// ISS-5698: the "Group by" band-header icon map, rendered where it is actually
+// consumed.
+// `SESSION_GROUP_ICONS` is a `Record<SessionGroupBy, ReactNode>`, not a
+// component, so there is nothing to mount on its own. The thing that reads it is
+// `GridTable`'s `groupIcon`, which hands it straight to `GroupSectionHeader`, so
+// that catalog component is what these stories mount, with the map supplying the
+// `icon` slot exactly as `sessions-table.tsx` does
+// (`groupIcon={SESSION_GROUP_ICONS[groupBy]}`).
+// The map's whole job is that ONE dimension gets ONE glyph on both the web
+// Sessions table and the shared synced table. A unit test can assert three keys
+// exist. Only a render answers whether the three glyphs are actually
+// distinguishable from each other at 16px in a muted band header, which is the
+// question a reader has when they scan a banded list.
 /**
- * ISS-5698: the "Group by" band-header icon map, rendered where it is actually
- * consumed.
- *
- * `SESSION_GROUP_ICONS` is a `Record<SessionGroupBy, ReactNode>`, not a
- * component, so there is nothing to mount on its own. The thing that reads it is
- * `GridTable`'s `groupIcon`, which hands it straight to `GroupSectionHeader`, so
- * that catalog component is what these stories mount, with the map supplying the
- * `icon` slot exactly as `sessions-table.tsx` does
- * (`groupIcon={SESSION_GROUP_ICONS[groupBy]}`).
- *
- * The map's whole job is that ONE dimension gets ONE glyph on both the web
- * Sessions table and the shared synced table. A unit test can assert three keys
- * exist. Only a render answers whether the three glyphs are actually
- * distinguishable from each other at 16px in a muted band header, which is the
- * question a reader has when they scan a banded list.
+ * The small icon shown inside a collapsible band header when a session list
+ * is grouped, one glyph per grouping field: a dot for status, a robot for
+ * harness, and a person for owner. Use it wherever sessions are grouped so a
+ * band reads at a glance without repeating the field name in words, and pick
+ * the icon for the field you are grouping by rather than inventing a new
+ * one. Grouping by nothing shows no icon at all, and the header itself never
+ * shows a row count here, since a grouped list is usually only a page of a
+ * larger set and a number would read as the full total.
  */
 const meta = {
   title: "Primitives/Content/Session Group Icons",

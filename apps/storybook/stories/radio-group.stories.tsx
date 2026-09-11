@@ -6,8 +6,14 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A set of checkable buttons—known as radio buttons—where no more than one of
- * the buttons can be checked at a time.
+ * A set of round buttons where picking one automatically clears whichever
+ * one was picked before, so only a single choice is ever active. Use it
+ * instead of Select when there are only a few options and you want all of
+ * them visible at once, and instead of a row of Checkboxes when the choices
+ * are mutually exclusive rather than independent. Arrow keys move focus
+ * between the items as one unit rather than tabbing through them
+ * individually, and you supply your own labels next to each item, since the
+ * group renders no text of its own.
  */
 const meta: Meta<typeof RadioGroup> = {
   title: "Primitives/Inputs/Radio Group",

@@ -5,6 +5,15 @@ import { useState } from "react";
 import { fn } from "storybook/test";
 import { TagColorPicker } from "./tag-color-picker";
 
+/**
+ * A round color swatch button that opens a popover grid of preset colors,
+ * and clicking one sets a tag's color and closes the picker. Reach for it
+ * wherever a tag needs a color, rather than Select, since it shows every
+ * choice as an actual swatch instead of a list of names. The palette is
+ * fixed to a set list of named colors: there is no field for a custom value,
+ * and the trigger itself is filled with the currently chosen color so you
+ * can see it without opening the popover.
+ */
 const meta: Meta<typeof TagColorPicker> = {
   title: "Primitives/Inputs/Tag Color Picker",
   component: TagColorPicker,

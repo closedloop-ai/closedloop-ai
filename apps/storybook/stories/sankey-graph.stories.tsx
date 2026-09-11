@@ -2,6 +2,17 @@ import { workflowData } from "@repo/app/agents/lib/session-mock-data";
 import { SankeyGraph } from "@repo/design-system/components/ui/primitives/sankey-graph";
 import type { Meta, StoryObj } from "@storybook/react";
 
+/**
+ * A flow diagram where nodes are connected by ribbons whose thickness shows
+ * how much value moves between them, read left to right. Reach for it when
+ * the relative size of each flow matters more than any single connection;
+ * use Graph instead for a general node-link diagram, and Agent Pipeline
+ * Graph for the pre-built agent-handoff version of that. Node totals are
+ * supplied separately from the flows, so a node's label and its tooltip
+ * share come from your own totals rather than being recalculated from the
+ * ribbons, and any id missing from the color map falls back to a small set
+ * of built-in tool colors.
+ */
 const meta = {
   title: "Primitives/Charts/Sankey Graph",
   component: SankeyGraph,

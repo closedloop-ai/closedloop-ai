@@ -10,7 +10,12 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { ArrowRightSquare } from "lucide-react";
 
 /**
- * Displays the path to the current resource using a hierarchy of links.
+ * A row of links showing the path from the top level down to the page you
+ * are on, with each step separated by a small arrow. The last item, the
+ * current page, renders as plain text rather than a link, since a link that
+ * points to the page you are already on gives a screen reader nothing useful
+ * to click. Swap in a custom icon for the separator, as in the story's
+ * second example, when the default arrow does not fit the surface.
  */
 const meta = {
   title: "Primitives/Navigation/Breadcrumb",

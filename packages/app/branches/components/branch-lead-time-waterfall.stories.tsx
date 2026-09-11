@@ -11,6 +11,17 @@ import {
   completeSelectedPullRequest,
 } from "./branch-story-metric-fixtures";
 
+/**
+ * A single horizontal bar tracing one pull request from its first pushed
+ * code to merged or closed, split into colored Build, Review and Rework
+ * segments with any idle waiting time shown as gaps and a marker for when
+ * the PR was opened. Use it to see how a branch's time was actually spent
+ * across its lifecycle; it is the time counterpart to Branch Cost to Merge,
+ * which shows the same three phases measured in dollars instead of elapsed
+ * time. It covers only the selected cycle up to its terminal point, not the
+ * branch's whole history, and it falls back to a plain message when the
+ * underlying evidence is missing.
+ */
 const meta = {
   title: "Primitives/Charts/Branch Lead Time Waterfall",
   component: BranchLeadTimeWaterfall,

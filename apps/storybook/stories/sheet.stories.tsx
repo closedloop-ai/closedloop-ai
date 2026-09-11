@@ -12,8 +12,14 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * Extends the Dialog component to display content that complements the main
- * content of the screen.
+ * A panel that slides in from an edge of the screen and sits alongside the
+ * page's content rather than replacing it, commonly used for filters,
+ * details or settings that complement what is behind them. Reach for it
+ * instead of the Dialog when the content belongs beside the page rather than
+ * interrupting it, and instead of the Drawer when you don't need the
+ * drag-to-dismiss gesture that drawer has. It can open from any of the four
+ * edges, defaulting to the right, and you can hide its built-in close button
+ * for a sheet that carries its own dismiss control.
  */
 const meta: Meta<typeof SheetContent> = {
   title: "Primitives/Overlays/Sheet",

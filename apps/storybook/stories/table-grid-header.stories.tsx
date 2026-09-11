@@ -116,6 +116,19 @@ function TableGridHeaderDemo({
   );
 }
 
+/**
+ * The header row for a table built from styled grid rows rather than a real
+ * HTML table: column labels with optional sort buttons, a select all
+ * checkbox, per column help tooltips, and drag or resize handles, laid out
+ * to line up with the columns in the rows beneath it. Use it whenever your
+ * table body is a set of grid rows instead of actual table rows, since this
+ * renders as a styled div with table roles applied for screen readers rather
+ * than a real table header. Clicking an unsorted column starts it sorted in
+ * descending order, and only one column can be sorted at a time; set the
+ * column's alignment option to line a numeric label and its sort arrow up
+ * over the digits, since a plain class name is silently ignored on a
+ * sortable column.
+ */
 const meta = {
   title: "Primitives/Data Display/Table Grid Header",
   component: TableGridHeaderDemo,

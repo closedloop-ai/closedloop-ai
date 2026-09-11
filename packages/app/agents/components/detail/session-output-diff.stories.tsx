@@ -6,26 +6,32 @@ import { PropertyValue } from "./property-values";
 import { SessionOutputDiff } from "./session-output-diff";
 import { SessionPropertiesFrame } from "./session-properties-story-frame";
 
+// ISS-5698: the Properties pane's "Lines changed" value, isolated.
+// `sessionOutputDiffDisplay` resolves one of THREE scopes and the unit tests
+// already pin which one wins for a given session. What they cannot pin is the
+// thing this row was redesigned around: the three shapes have to be
+// distinguishable ON SIGHT, because the number itself is the same kind of number
+// in all three and only the treatment says which question it answers.
+// Two rules carry that, and both are visual:
+//  - a per-side split keeps the honest green/red, and the single combined
+//    added+removed roll-up does NOT — the green means "added" everywhere else in
+//    this pane, and wearing it would mis-teach a combined figure as an addition;
+//  - every shape carries a qualifier ("in session" / "branch total" / "in PRs"),
+//    so "no caption" is never itself a hidden signal a reader has to learn.
+// Read the stories in order and that is exactly what you are checking. Each one
+// mounts the shared fixture through the production `PropertyValue` row inside the
+// shipped `.sd3-props` frame, because the colour tokens and the value track are
+// defined by that ancestry — a row rendered bare is a row rendered unstyled.
 /**
- * ISS-5698: the Properties pane's "Lines changed" value, isolated.
- *
- * `sessionOutputDiffDisplay` resolves one of THREE scopes and the unit tests
- * already pin which one wins for a given session. What they cannot pin is the
- * thing this row was redesigned around: the three shapes have to be
- * distinguishable ON SIGHT, because the number itself is the same kind of number
- * in all three and only the treatment says which question it answers.
- *
- * Two rules carry that, and both are visual:
- *  - a per-side split keeps the honest green/red, and the single combined
- *    added+removed roll-up does NOT — the green means "added" everywhere else in
- *    this pane, and wearing it would mis-teach a combined figure as an addition;
- *  - every shape carries a qualifier ("in session" / "branch total" / "in PRs"),
- *    so "no caption" is never itself a hidden signal a reader has to learn.
- *
- * Read the stories in order and that is exactly what you are checking. Each one
- * mounts the shared fixture through the production `PropertyValue` row inside the
- * shipped `.sd3-props` frame, because the colour tokens and the value track are
- * defined by that ancestry — a row rendered bare is a row rendered unstyled.
+ * The value for a session's "Lines changed" row, rendered as one of three
+ * shapes depending on which number best describes what the session actually
+ * delivered. A real added and removed split, whether it is the session's own
+ * changes or a whole branch's total, keeps the familiar green add and red
+ * remove colouring; a combined pull request total renders in plain text
+ * instead, since it has no honest per side breakdown to colour that way.
+ * Each shape also carries its own caption, in session, branch total, or in
+ * PRs, so you always know which scope the number is measuring rather than
+ * guessing from a bare figure.
  */
 
 const meta = {

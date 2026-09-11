@@ -12,8 +12,15 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { fn } from "storybook/test";
 
 /**
- * A window overlaid on either the primary window or another dialog window,
- * rendering the content underneath inert.
+ * A centered window that appears over the page and makes everything behind
+ * it unusable until you close it, typically used to ask a question or show a
+ * short form. Reach for it for general purpose modal content; use the Sheet
+ * instead when the content should slide in from an edge of the screen
+ * alongside the page rather than interrupt it, and use Alert Dialog instead
+ * when the action needs a forced yes or no with no casual dismissal. A
+ * dialog can be stacked on top of another open dialog, and it can be handed
+ * full control over its own open and closed state if a trigger button is not
+ * the right way to open it.
  */
 const meta: Meta<typeof Dialog> = {
   title: "Primitives/Overlays/Dialog",

@@ -2,6 +2,15 @@ import { BranchCommentsState } from "@repo/api/src/types/branch";
 import type { Meta, StoryObj } from "@storybook/react";
 import { BranchProviderAvailability } from "./branch-provider-availability";
 
+/**
+ * A small muted list of caveats shown above a branch's GitHub comments,
+ * explaining when what you are looking at is stale, capped by GitHub, or
+ * missing some comments. Reach for it instead of an Alert or an error state,
+ * because none of these are failures: the comments loaded fine, they are
+ * just incomplete or out of date in a specific, disclosed way. More than one
+ * caveat can be true at once, so it can show several lines together, and it
+ * renders nothing at all when none of them apply.
+ */
 const meta = {
   component: BranchProviderAvailability,
   decorators: [

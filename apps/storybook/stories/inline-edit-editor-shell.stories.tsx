@@ -53,6 +53,15 @@ function InlineEditEditorShellDemo({
   );
 }
 
+/**
+ * Wraps a piece of inline-editable content and shows its editing toolbar
+ * only while that content is in edit mode. Reach for it when a block of text
+ * switches between a plain read view and an in-place editor, rather than
+ * opening a separate Dialog or Sheet to edit it elsewhere. It never scrolls
+ * or clips its own content: however long the body gets, the shell grows to
+ * fit and lets the page around it do the scrolling. It also draws no border
+ * of its own, so whatever sits below it needs to supply that boundary.
+ */
 const meta = {
   title: "Primitives/Layout/Inline Edit Editor Shell",
   component: InlineEditEditorShellDemo,

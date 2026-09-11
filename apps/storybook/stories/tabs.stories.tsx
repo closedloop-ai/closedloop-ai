@@ -9,8 +9,14 @@ import { useState } from "react";
 import { fn } from "storybook/test";
 
 /**
- * A set of layered sections of content—known as tab panels—that are displayed
- * one at a time.
+ * A row of buttons that switch between panels of content, showing one panel
+ * at a time, with the active tab filled in solid. Use it as the default
+ * choice for switching sections of a page or panel; reach for Underline Tabs
+ * instead when the tabs sit on a full width header and you want a lighter
+ * mark under the active one rather than a filled pill. It also works stacked
+ * vertically and right to left, and you can choose whether arrowing onto a
+ * tab selects it right away or waits for you to press Enter or Space. A tab
+ * can be individually disabled, which skips it during keyboard navigation.
  */
 const meta: Meta<typeof Tabs> = {
   title: "Primitives/Navigation/Tabs",

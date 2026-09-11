@@ -5,30 +5,34 @@ import type { ActivityMarker } from "./session-timeline-axis";
 import { EventDotTooltip } from "./session-timeline-strip-parts";
 import { getTooltipAnchor, type TooltipAnchor } from "./viewport-tooltip";
 
+// The Session Timeline's PER-DOT event card.
+// ISS-5819 (#4753 review, krisw-story-reviewer): `EventDotTooltip` was promoted
+// to an exported module in this PR, and its opposite number two files over
+// (`ActivityBucketTooltip`) has carried its own story file since ISS-5563 for
+// exactly the reasons that apply here — the card is reachable in the real strip
+// only by hovering one 6px dot, and the populated parent-view story documents
+// the rail's hover STATE without ever rendering the card's contents.
+// What each story is for:
+// - {@link SingleEvent} — the common case, and the one that pins the ABSENCE of
+//   the count line: "N events" appears only past one, so a card that always
+//   printed it would read "1 events" and go unnoticed in a screenshot.
+// - {@link MultipleEvents} — the count line present, and the list's own rhythm
+//   with several rows in one lane.
+// - {@link LongMixedList} — the wrapping and overflow question, which is the
+//   only thing here that cannot be judged from the markup: long labels of mixed
+//   kinds in one card, at the width the real surface gives it.
+// No `autodocs` tag, matching `activity-bucket-tooltip.stories.tsx`: this card
+// portals to `document.body` at `position: fixed`, so a docs page rendering
+// every story at once would stack them all on the same viewport coordinates.
 /**
- * The Session Timeline's PER-DOT event card.
- *
- * ISS-5819 (#4753 review, krisw-story-reviewer): `EventDotTooltip` was promoted
- * to an exported module in this PR, and its opposite number two files over
- * (`ActivityBucketTooltip`) has carried its own story file since ISS-5563 for
- * exactly the reasons that apply here — the card is reachable in the real strip
- * only by hovering one 6px dot, and the populated parent-view story documents
- * the rail's hover STATE without ever rendering the card's contents.
- *
- * What each story is for:
- *
- * - {@link SingleEvent} — the common case, and the one that pins the ABSENCE of
- *   the count line: "N events" appears only past one, so a card that always
- *   printed it would read "1 events" and go unnoticed in a screenshot.
- * - {@link MultipleEvents} — the count line present, and the list's own rhythm
- *   with several rows in one lane.
- * - {@link LongMixedList} — the wrapping and overflow question, which is the
- *   only thing here that cannot be judged from the markup: long labels of mixed
- *   kinds in one card, at the width the real surface gives it.
- *
- * No `autodocs` tag, matching `activity-bucket-tooltip.stories.tsx`: this card
- * portals to `document.body` at `position: fixed`, so a docs page rendering
- * every story at once would stack them all on the same viewport coordinates.
+ * The hover card for one dot on the Session Timeline's event rail, listing
+ * the events, such as prompts, commits or failures, that happened in that
+ * moment with their time and a short label. Reach for it only within that
+ * timeline; it is the event rail's counterpart to the Activity Bucket
+ * Tooltip, which is the hover card for the timeline's cost bars instead of
+ * its event dots. A count like '4 events' only appears once more than one
+ * event sits behind the dot, so a single event never gets mislabeled as a
+ * count of one.
  */
 const meta = {
   title: "Primitives/Overlays/Session Timeline Event Dot Tooltip",

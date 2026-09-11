@@ -22,6 +22,16 @@ function buildTool(overrides: Partial<ToolItem> = {}): ToolItem {
   };
 }
 
+/**
+ * The expanded panel under a tool-call row in a session trace, showing the
+ * command, its output, and a status and duration line when they are
+ * available. Use it only for that one row's detail view; it is not a general
+ * code or output display. When nothing is available it never claims the call
+ * had no detail: it shows one of several honest messages depending on why,
+ * such as the detail being redacted, unavailable in this response, or
+ * unparseable, so a reader never mistakes a cloud-archived call for one that
+ * ran with nothing to show.
+ */
 const meta = {
   title: "Primitives/Content/Session Trace Tool Row Detail",
   component: SessionTraceToolRowDetail,

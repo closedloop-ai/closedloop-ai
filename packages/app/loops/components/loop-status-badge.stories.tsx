@@ -4,18 +4,24 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { expect, within } from "storybook/test";
 import { LoopStatusBadge } from "./loop-status-badge";
 
+// Co-located story for the migrated app-core component (FEA-1510 / AC-001.4).
+// The `ghost-loop-ux` flag is enabled through the harness's injected
+// feature-flag port (no analytics SDK), so the Failed variant renders its
+// friendly error label.
+// ISS-5697: the flag rides `parameters.appCore` rather than a per-story
+// `AppCoreStoryProviders` wrapper, since ISS-5665 (#4686) mounts that harness
+// globally in `.storybook/preview.tsx`. {@link Failed} asserts the flag-ON
+// label in a `play`, because the all-stories sweep only proves a story MOUNTS —
+// dropping `enabledFlags` entirely renders the flag-OFF label and the sweep
+// stays green. Without this assertion the parameter migration is unverified.
 /**
- * Co-located story for the migrated app-core component (FEA-1510 / AC-001.4).
- * The `ghost-loop-ux` flag is enabled through the harness's injected
- * feature-flag port (no analytics SDK), so the Failed variant renders its
- * friendly error label.
- *
- * ISS-5697: the flag rides `parameters.appCore` rather than a per-story
- * `AppCoreStoryProviders` wrapper, since ISS-5665 (#4686) mounts that harness
- * globally in `.storybook/preview.tsx`. {@link Failed} asserts the flag-ON
- * label in a `play`, because the all-stories sweep only proves a story MOUNTS —
- * dropping `enabledFlags` entirely renders the flag-OFF label and the sweep
- * stays green. Without this assertion the parameter migration is unverified.
+ * A small coloured badge showing where a work loop stands: running,
+ * completed or failed. It is a specialised version of the shared Status
+ * Badges family, wired specifically to loop runs rather than documents or
+ * issues, and on a failed run it can show a plain-language error message
+ * instead of a raw error code. If a run failed with an error code this badge
+ * does not recognise, it still renders in the failed colour with a generic
+ * explanation rather than showing nothing.
  */
 const meta: Meta<typeof LoopStatusBadge> = {
   title: "Primitives/Feedback & Status/Loop Status Badge",

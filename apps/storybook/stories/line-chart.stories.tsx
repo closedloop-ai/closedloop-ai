@@ -29,6 +29,16 @@ const LineChartCanvas = ({
   </div>
 );
 
+/**
+ * A small filled line chart that plots a labeled series of points, with a
+ * shaded area under the line and a dot you can hover for each point's exact
+ * value. Reach for it for a compact trend inside a card or panel. Use
+ * Sparkline instead when you don't need hoverable dots or any accessible
+ * label at all, and use Time Series Area Chart when you have more than one
+ * series or need a full axis and legend. It renders a plain "No data"
+ * message when given an empty series, and its color prop controls both the
+ * line and the gradient fill beneath it.
+ */
 const meta = {
   title: "Primitives/Charts/Line Chart",
   component: LineChartCanvas,

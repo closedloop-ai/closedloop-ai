@@ -3,22 +3,30 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { type ReactNode, useState } from "react";
 import { fn } from "storybook/test";
 
+// The per-column options menu `TableGridHeader` grows under GridTable v2.
+// The point of this story is the TRIGGER's state machine, which is invisible in
+// a composed grid and has been lost by a from-scratch re-derivation before:
+//  - at rest it is `opacity-0` — the header row reads as labels, not controls;
+//  - it reveals on hover of the enclosing header (`group/header`);
+//  - it reveals on KEYBOARD focus too (`focus-visible`), or the control is
+//    mouse-only and a keyboard user focuses an invisible button (WCAG 2.4.7);
+//  - it STAYS visible while its own menu is open (`data-[state=open]`), or it
+//    fades out the moment the pointer moves onto the popup it just opened.
+// Each story below mounts the trigger inside a `group/header` host that mimics a
+// header cell, so hovering the row — not just the button — is what reveals it,
+// exactly as in the grid.
 /**
- * The per-column options menu `TableGridHeader` grows under GridTable v2.
- *
- * The point of this story is the TRIGGER's state machine, which is invisible in
- * a composed grid and has been lost by a from-scratch re-derivation before:
- *
- *  - at rest it is `opacity-0` — the header row reads as labels, not controls;
- *  - it reveals on hover of the enclosing header (`group/header`);
- *  - it reveals on KEYBOARD focus too (`focus-visible`), or the control is
- *    mouse-only and a keyboard user focuses an invisible button (WCAG 2.4.7);
- *  - it STAYS visible while its own menu is open (`data-[state=open]`), or it
- *    fades out the moment the pointer moves onto the popup it just opened.
- *
- * Each story below mounts the trigger inside a `group/header` host that mimics a
- * header cell, so hovering the row — not just the button — is what reveals it,
- * exactly as in the grid.
+ * The small options button that appears in one column's header inside a data
+ * grid, opening a menu for sorting, filtering, grouping or moving that
+ * column. It stays invisible until you hover or keyboard focus that header
+ * cell, so a resting grid reads as plain column labels rather than a row of
+ * buttons, and it stays visible while its own menu is open. Reach for it
+ * inside a grid header rather than the Table View Menu, which controls the
+ * whole table's columns and grouping from one toolbar button instead of one
+ * column at a time. It only ever shows the actions that column was actually
+ * wired for, and clicking the column label still does the sorting on its
+ * own, so sort rides along in the menu rather than being the reason the menu
+ * opens.
  */
 const meta = {
   title: "Primitives/Overlays/Table Grid Column Menu",

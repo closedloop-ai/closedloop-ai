@@ -25,7 +25,12 @@ const notifications = [
 ];
 
 /**
- * Displays a card with header, content, and footer.
+ * A bordered, rounded container that groups related content, built from
+ * separate header, content and footer pieces you compose together as needed.
+ * Use it to group a self-contained block of information, like a notification
+ * list or a settings panel, rather than as a general page wrapper. It has no
+ * built-in title, scroll, or collapse behaviour: add those yourself with
+ * something like Section Header or Scroll Area when you need them.
  */
 const meta = {
   title: "Primitives/Layout/Card",

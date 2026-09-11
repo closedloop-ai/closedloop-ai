@@ -4,11 +4,19 @@ import {
 } from "@repo/design-system/components/ui/brand-icons";
 import type { Meta, StoryObj } from "@storybook/react";
 
+// Third-party brand marks (Google, GitHub) that lucide-react does not ship an
+// accurate glyph for. Generic, project-agnostic logos shared by every sign-in
+// surface — one canonical SVG each. Default to 16px; pass width/height or
+// className to resize.
 /**
- * Third-party brand marks (Google, GitHub) that lucide-react does not ship an
- * accurate glyph for. Generic, project-agnostic logos shared by every sign-in
- * surface — one canonical SVG each. Default to 16px; pass width/height or
- * className to resize.
+ * Two logo components, a multi-color Google "G" and a solid GitHub mark, for
+ * anywhere a sign-in button needs a recognizable brand icon. Reach for these
+ * instead of an icon library's glyph when you need the official look: the
+ * common icon library's GitHub icon is a hollow outline that reads as empty
+ * on a filled button, and it has no accurate Google logo at all. Each one
+ * defaults to 16 pixels and accepts the usual width, height or className
+ * props to resize, so there is no separate small or large version to pick
+ * between.
  */
 const meta = {
   title: "Primitives/Content/Brand Icons",

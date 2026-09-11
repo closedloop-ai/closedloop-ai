@@ -126,6 +126,16 @@ function FeedRailStory({ mode }: { mode?: FeedRailMode }) {
   );
 }
 
+/**
+ * A panel that shows a page's comment feed and, when available, a chat tab,
+ * and it adapts its own shape to the screen: a resizable strip beside the
+ * page on a wide screen, a fixed-width overlay with a click-to-close scrim
+ * on a medium one, and a bottom sheet on a phone. Use it specifically for
+ * feed and chat content tied to a page. For a generic side panel or overlay,
+ * reach for Sheet or a Drawer instead. You can force one of the three
+ * layouts with the mode prop, which is mainly useful for tests and stories,
+ * and only the wide, inline layout gets a draggable edge for resizing.
+ */
 const meta = {
   title: "Primitives/Layout/Feed Rail",
   component: FeedRailStory,

@@ -4,7 +4,14 @@ import { Bold, Italic } from "lucide-react";
 import { fn } from "storybook/test";
 
 /**
- * A two-state button that can be either on or off.
+ * A pressable button that stays either on or off, showing its state with a
+ * shaded background instead of a checkmark or switch. Use it for a
+ * self-contained setting that toggles itself, like a bold or italic button
+ * in a toolbar; reach for Button instead when a click fires a one-time
+ * action, and use a checkbox or switch when the state belongs to a form
+ * rather than a toolbar. It needs its own aria-label when its content is
+ * just an icon, since there is no visible text to announce whether it is
+ * pressed.
  */
 const meta: Meta<typeof Toggle> = {
   title: "Primitives/Actions/Toggle",

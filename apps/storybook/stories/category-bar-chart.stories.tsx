@@ -19,6 +19,17 @@ const timeBucketData = [
   { key: "2027-02-01", label: "02/01", value: 27 },
 ];
 
+/**
+ * A bar chart with one bar per category, laid out vertically by default or
+ * horizontally when the labels are long, with an optional value printed
+ * right on each bar. Reach for it when you are comparing separate categories
+ * against each other. Use Segmented Bar instead when the categories are
+ * parts of one whole shown as a single bar, and Donut Chart when that same
+ * whole-to-part relationship reads better as a ring. Colors normally come
+ * from an index-based palette, but you can pass a fixed key-to-color map for
+ * categories with real meaning, like an error state that should always
+ * render the same red no matter where it falls in the data.
+ */
 const meta = {
   title: "Primitives/Charts/Category Bar Chart",
   component: CategoryBarChart,

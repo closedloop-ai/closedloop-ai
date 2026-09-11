@@ -5,6 +5,15 @@ import {
 } from "@repo/api/src/types/branch";
 import { DesktopCloudHydrationStatus } from "../../shared-branches/desktop-cloud-hydration-status";
 
+/**
+ * A banner for the desktop branches list that explains why the GitHub data
+ * on screen might be out of date. It looks at every row's cloud sync state:
+ * if any row failed to refresh, it shows an error toned banner, and if any
+ * row is merely stale, it shows a warning toned one instead, always making
+ * clear that the local branch data underneath is still visible. It renders
+ * nothing when every row's cloud data is fresh, and a single failed row
+ * takes priority over the rest even when most rows are just stale.
+ */
 const meta = {
   title: "Primitives/Feedback & Status/Cloud Hydration Status",
   component: DesktopCloudHydrationStatus,

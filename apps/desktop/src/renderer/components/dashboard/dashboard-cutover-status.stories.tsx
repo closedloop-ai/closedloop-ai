@@ -6,23 +6,28 @@ import {
 } from "../../shared-agent-sessions/desktop-app-core-mode";
 import { DashboardCutoverStatus } from "./dashboard-cutover-status";
 
+// ISS-5477: the visible half of the read-source hold — the dashboard header's
+// "we are still uploading, here is how much is left" line.
+// Worth fixtures because this only appears during a live first-run sync drain,
+// which is a narrow window to catch in the running app, and because its whole
+// job is a count: a garbled or missing remainder is the regression, and the
+// unit test asserts the show/hide branches rather than the rendered text.
+// The `cutover` prop is the story/test seam over the
+// `DesktopAppCoreProvider`-injected decision (same convention as
+// `agents-view.tsx`'s `dataSource`), so each branch can be pinned directly.
+// Shares its shape deliberately with `ScanStatus` in `dashboard-header-actions`
+// — same row, same muted mono, same pulse dot, same live region — because the
+// two are the same kind of statement about work in progress and only one of
+// them is ever on screen at a time.
 /**
- * ISS-5477: the visible half of the read-source hold — the dashboard header's
- * "we are still uploading, here is how much is left" line.
- *
- * Worth fixtures because this only appears during a live first-run sync drain,
- * which is a narrow window to catch in the running app, and because its whole
- * job is a count: a garbled or missing remainder is the regression, and the
- * unit test asserts the show/hide branches rather than the rendered text.
- *
- * The `cutover` prop is the story/test seam over the
- * `DesktopAppCoreProvider`-injected decision (same convention as
- * `agents-view.tsx`'s `dataSource`), so each branch can be pinned directly.
- *
- * Shares its shape deliberately with `ScanStatus` in `dashboard-header-actions`
- * — same row, same muted mono, same pulse dot, same live region — because the
- * two are the same kind of statement about work in progress and only one of
- * them is ever on screen at a time.
+ * A small muted status line in the desktop dashboard header telling you that
+ * local history is still uploading to the cloud, with a live count of items
+ * left. It shares its look with the scan status line next to it, but the two
+ * never show at once: this one only appears during the upload drain that
+ * follows a first-run sync, never during the scan itself. It also hides
+ * itself when you are offline or once the cutover has already finished. When
+ * the remaining count cannot be measured it says nothing about size rather
+ * than falsely reporting zero left.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Cutover Status",

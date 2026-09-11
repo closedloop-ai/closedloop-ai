@@ -12,7 +12,14 @@ import {
 } from "lucide-react";
 
 /**
- * Displays a callout for user attention.
+ * A boxed callout with a bold title and a description underneath, plus an
+ * optional icon at the left edge, for a message that needs a reader's
+ * attention without blocking their work. Pick a variant, default,
+ * destructive, error, warning, info, or success, so the colour matches what
+ * you are actually telling them. It stays on screen with no dismiss button
+ * and no timeout; for a raw error object rather than hand written copy, use
+ * Friendly Error Alert instead, which turns the error into safe, readable
+ * text and tucks the technical detail behind a disclosure.
  */
 const meta = {
   title: "Primitives/Feedback & Status/Alert",
