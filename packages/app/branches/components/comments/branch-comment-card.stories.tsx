@@ -1,7 +1,7 @@
 import { BranchPrCommentKind } from "@repo/api/src/types/branch";
 import { TraceCommentTargetType } from "@repo/api/src/types/comment";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import {
   BranchCommentCard,
   BranchCommentComposerKind,
@@ -122,6 +122,16 @@ export const ThreadWithoutAnchor: Story = {
       ...makePlatformThread(),
       anchor: null,
     },
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Reply to comment" })
+    );
+    await expect(args.onOpenComposer).toHaveBeenCalledWith({
+      kind: BranchCommentComposerKind.Reply,
+      threadId: "platform-thread",
+    });
   },
 };
 

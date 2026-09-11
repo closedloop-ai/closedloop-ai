@@ -2,8 +2,11 @@ import { Button } from "@repo/design-system/components/ui/button";
 import type { Meta, StoryObj } from "@storybook/react";
 import { RefreshCw } from "lucide-react";
 import type { ReactNode } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { SystemCheckRepairButton } from "./system-check-repair";
+
+/** Matches the single-failure button's accessible name, "Repair 1 failure". */
+const REPAIR_ONE_FAILURE_NAME = /repair 1 failure/i;
 
 // The Repair control, separate from the panel that narrates a run
 // (`System Check Repair Panel`). Everything it does is decided by props, so the
@@ -40,7 +43,15 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** One repairable row, in the pre-loop dialog treatment: "Repair 1 failure". */
-export const Repairable: Story = {};
+export const Repairable: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: REPAIR_ONE_FAILURE_NAME })
+    );
+    await expect(args.onRepair).toHaveBeenCalled();
+  },
+};
 
 /** Several repairable rows, so the plural label is visible: "Repair 3 failures". */
 export const RepairableMultiple: Story = {

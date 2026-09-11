@@ -3,7 +3,9 @@ import { CommentComposer } from "@repo/design-system/components/ui/comment-compo
 import type { Meta, StoryObj } from "@storybook/react";
 import { AtSign, GithubIcon, Paperclip } from "lucide-react";
 import { type ComponentProps, useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
+
+const COMMENT_ON_PR_LABEL = /comment on this pr/i;
 
 function CommentComposerStory(args: ComponentProps<typeof CommentComposer>) {
   const [value, setValue] = useState(args.value ?? "");
@@ -128,6 +130,19 @@ export const Conversation: Story = {
     placeholder: "Comment on this PR…",
     submitLabel: "Comment",
     value: "This is ready for merge once the rollout copy is tightened.",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // This story's own wrapper owns `onSubmit` (it clears the draft on submit),
+    // so the visible outcome to assert is the draft clearing, not a spy call.
+    const textbox = await canvas.findByRole("textbox", {
+      name: COMMENT_ON_PR_LABEL,
+    });
+    await expect(textbox).toHaveValue(
+      "This is ready for merge once the rollout copy is tightened."
+    );
+    await userEvent.click(canvas.getByRole("button", { name: "Comment" }));
+    await expect(textbox).toHaveValue("");
   },
 };
 

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import {
   mockCollidingPackViews,
   mockPackActivity,
@@ -7,6 +7,9 @@ import {
 } from "../lib/pack-view-mock";
 import { createPacksContext, PacksMode } from "../lib/packs-context";
 import { PacksWorkspace } from "./packs-workspace";
+
+const SEARCH_PACKS_LABEL = /search packs/i;
+const POSTHOG_CARD_NAME = /posthog/i;
 
 /**
  * The searchable catalog of packs, the starting point for finding and
@@ -83,6 +86,19 @@ export const DesktopTeam: Story = {};
 export const DesktopSolo: Story = {
   args: {
     context: createPacksContext(PacksMode.DesktopSolo),
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // No team rail in this mode, so the catalog grid is the only place
+    // "posthog" can appear, and search + selection is the core behavior.
+    await userEvent.type(
+      await canvas.findByRole("textbox", { name: SEARCH_PACKS_LABEL }),
+      "posthog"
+    );
+    await userEvent.click(
+      await canvas.findByRole("button", { name: POSTHOG_CARD_NAME })
+    );
+    await expect(args.onSelectPack).toHaveBeenCalledWith("posthog");
   },
 };
 

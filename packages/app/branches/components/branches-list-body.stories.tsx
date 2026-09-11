@@ -5,7 +5,7 @@ import {
   BranchSortKey,
 } from "@repo/app/branches/lib/branch-sort-group";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * The outer wrapper around the branches table that picks the right loading,
@@ -106,7 +106,15 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Populated: Story = {};
+export const Populated: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Last active" })
+    );
+    await expect(args.onSort).toHaveBeenCalledWith("lastActivity", "asc");
+  },
+};
 
 export const Loading: Story = {
   args: { hasRows: false, isPending: true, items: [] },

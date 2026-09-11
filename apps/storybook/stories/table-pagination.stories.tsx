@@ -1,7 +1,7 @@
 import { TablePagination } from "@repo/design-system/components/ui/table-pagination";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 // Button-driven pagination built on the shadcn `Pagination` primitives:
 // Previous / numbered pages (with ellipses) / Next. Calls `onPageChange` with
@@ -47,6 +47,15 @@ export const ManyPages: Story = {
     const [page, setPage] = useState(6);
     return (
       <TablePagination onPageChange={setPage} page={page} totalPages={458} />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("7")).toHaveAttribute("aria-current", "page");
+    await userEvent.click(canvas.getByLabelText("Go to next page"));
+    await expect(await canvas.findByText("8")).toHaveAttribute(
+      "aria-current",
+      "page"
     );
   },
 };

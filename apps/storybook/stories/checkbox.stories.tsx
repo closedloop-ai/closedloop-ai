@@ -1,6 +1,8 @@
 import { Checkbox } from "@repo/design-system/components/ui/checkbox";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
+
+const ACCEPT_TERMS_LABEL = /accept terms and conditions/i;
 
 /**
  * A small square box you click to turn a choice on or off, used for an
@@ -63,7 +65,21 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the checkbox.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const checkbox = await canvas.findByRole("checkbox", {
+      name: ACCEPT_TERMS_LABEL,
+    });
+
+    await expect(checkbox).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(checkbox);
+
+    await expect(checkbox).toHaveAttribute("aria-checked", "true");
+    await expect(args.onCheckedChange).toHaveBeenCalledWith(true);
+  },
+};
 
 /**
  * Use the `disabled` prop to disable the checkbox.

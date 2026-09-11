@@ -1,7 +1,7 @@
 import { TablePaginationFooter } from "@repo/design-system/components/ui/table-pagination-footer";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 // The shared paginated-table footer (ISS-4681): a `border-t` strip with an
 // optional `role="status"` range readout and the shared `TablePagination`
@@ -93,6 +93,16 @@ export const MultiPage: Story = {
         readout={`Showing ${page * 25 + 1}-${page * 25 + 25} of 240 tasks`}
         totalPages={10}
       />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("status")).toHaveTextContent(
+      "Showing 1-25 of 240 tasks"
+    );
+    await userEvent.click(canvas.getByLabelText("Go to next page"));
+    await expect(canvas.getByRole("status")).toHaveTextContent(
+      "Showing 26-50 of 240 tasks"
     );
   },
 };

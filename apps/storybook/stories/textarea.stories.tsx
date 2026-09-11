@@ -1,6 +1,6 @@
 import { Textarea } from "@repo/design-system/components/ui/textarea";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A multi line box for typing longer freeform text, like a message or
@@ -55,7 +55,25 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the textarea.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // No label is wired in this story, and jsdom's accessible-name
+    // computation does not fall back to `placeholder`, so this queries the
+    // one genuinely available handle instead of a role name.
+    const textarea = await canvas.findByPlaceholderText(
+      "Type your message here."
+    );
+    await userEvent.type(
+      textarea,
+      "Running a bit behind, will follow up tomorrow."
+    );
+    await expect(textarea).toHaveValue(
+      "Running a bit behind, will follow up tomorrow."
+    );
+    await expect(args.onChange).toHaveBeenCalled();
+  },
+};
 
 /**
  * Use the `disabled` prop to disable the textarea.

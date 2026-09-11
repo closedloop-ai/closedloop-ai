@@ -9,7 +9,7 @@ import {
   SheetTrigger,
 } from "@repo/design-system/components/ui/sheet";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 /**
  * A side panel that slides in from a screen edge for filters or details,
@@ -106,4 +106,11 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the sheet.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Open" }));
+    await expect(await screen.findByRole("dialog")).toBeVisible();
+    await expect(args.onOpenAutoFocus).toHaveBeenCalled();
+  },
+};

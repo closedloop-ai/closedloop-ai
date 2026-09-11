@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { DATE_RANGES } from "../../../shared/lib/format-utils";
 import { SESSIONS_TOGGLEABLE_COLUMNS } from "../../hooks/use-sessions-view-state";
 import { DEFAULT_SESSION_FACET_FILTERS } from "../../lib/session-filter-adapter";
@@ -125,7 +125,13 @@ type Story = StoryObj<typeof SessionsToolbar>;
  * section — a surface that cannot band its rows omits the handlers rather than
  * rendering a control that does nothing.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("radio", { name: "Last 30 days" }));
+    await expect(args.onDateRangeChange).toHaveBeenCalledWith("30d");
+  },
+};
 
 /**
  * Group-by wired. Open "View" to see the segmented Group-by section above the

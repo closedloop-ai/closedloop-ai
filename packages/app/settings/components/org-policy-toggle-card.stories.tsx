@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import {
   ORG_POLICY_SAVE_OUTCOME_ALERTS,
   OrgPolicyFieldState,
@@ -74,7 +74,16 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /** The server reported `true`: the switch is on and live. */
-export const Enabled: Story = {};
+export const Enabled: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = canvas.getByRole("switch", { name: TOGGLE_LABEL });
+    await expect(toggle).toBeChecked();
+
+    await userEvent.click(toggle);
+    await expect(args.onToggle).toHaveBeenCalledWith(false);
+  },
+};
 
 /** The server reported `false` — a real off, not an unreadable one. */
 export const Disabled: Story = {

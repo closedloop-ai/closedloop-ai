@@ -1,7 +1,9 @@
 import { BackendMismatchModal } from "@repo/app/compute/components/backend-mismatch-modal";
 import { mockBackendMismatch } from "@repo/app/shared/lib/domain-mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent } from "storybook/test";
+
+const CONTINUE_ON_ORIGINAL_LABEL = /continue on local gpu runner/i;
 
 /**
  * A dialog for continuing a run on a different device than it last finished
@@ -39,4 +41,18 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args }) => {
+    // The Dialog renders through a portal, and the story starts with
+    // `open: true`, so the content is found on the document rather than
+    // within canvasElement.
+    const confirmButton = await screen.findByRole("button", {
+      name: CONTINUE_ON_ORIGINAL_LABEL,
+    });
+
+    await userEvent.click(confirmButton);
+
+    await expect(args.onConfirmOriginal).toHaveBeenCalled();
+    await expect(args.onOpenChange).toHaveBeenCalledWith(false);
+  },
+};

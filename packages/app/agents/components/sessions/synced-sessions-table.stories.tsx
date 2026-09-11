@@ -5,7 +5,7 @@ import { Button } from "@repo/design-system/components/ui/button";
 import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { ExternalLinkIcon, FilterXIcon } from "lucide-react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { SessionGroupBy } from "../../lib/session-grouping";
 import { SessionSortDir, SessionSortKey } from "../../lib/session-sort-group";
 import { AgentSessionsListContent } from "./agent-sessions-list";
@@ -85,7 +85,16 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Populated: Story = {};
+export const Populated: Story = {
+  args: { onSort: fn() },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Status" })
+    );
+    await expect(args.onSort).toHaveBeenCalledWith("status", "desc");
+  },
+};
 
 export const EmptyList: Story = {
   render: () => (

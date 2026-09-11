@@ -6,7 +6,7 @@ import {
 } from "@repo/design-system/components/ui/tabs";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A row of buttons that switch between panels of content, with the active
@@ -88,7 +88,21 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the tabs.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await userEvent.click(canvas.getByRole("tab", { name: "Password" }));
+
+    // The render wires `onValueChange` to local state rather than passing
+    // `args.onValueChange` through, so the visible outcome is the seam to
+    // check here rather than the mock.
+    await expect(
+      await canvas.findByText("Change your password here.")
+    ).toBeVisible();
+    await expect(canvas.getByText("Selected tab: password")).toBeVisible();
+  },
+};
 
 export const DisabledTrigger: Story = {
   render: (args) => (

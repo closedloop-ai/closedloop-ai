@@ -4,7 +4,7 @@ import {
 } from "@repo/design-system/components/ui/toggle-group";
 import type { Meta, StoryObj } from "@storybook/react";
 import { Bold, Italic, Underline } from "lucide-react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A row of buttons acting as one control, like a formatting toolbar, used
@@ -86,7 +86,17 @@ type Story = StoryObj<typeof ToggleGroup>;
 /**
  * The default form of the toggle group.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const bold = canvas.getByRole("button", { name: "Toggle bold" });
+
+    await userEvent.click(bold);
+
+    await expect(bold).toHaveAttribute("aria-pressed", "true");
+    await expect(args.onValueChange).toHaveBeenCalledWith(["bold"]);
+  },
+};
 
 /**
  * Every `variant` value rendered side by side, labelled, so one Chromatic

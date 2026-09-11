@@ -2,7 +2,7 @@ import { EmptyState } from "@repo/design-system/components/ui/empty-state";
 import type { Meta, StoryObj } from "@storybook/react";
 import { CheckSquareIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import type { DocumentRowData } from "../../documents/lib/artifact-row-adapter";
 import { makeArtifact } from "../../shared/test-fixtures/documents";
 import { MyTasksCardView } from "./my-tasks-card-view";
@@ -147,6 +147,13 @@ export const Populated: Story = {};
  */
 export const LoadFailed: Story = {
   args: { artifacts: [], isError: true, pageCount: 0, total: 0 },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Couldn't load your tasks")).toBeVisible();
+
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(args.onRetry).toHaveBeenCalled();
+  },
 };
 
 /** The board owns the loading state — and the footer states no range yet. */

@@ -2,7 +2,11 @@ import { UserSelectPopover } from "@repo/design-system/components/ui/user-select
 import { mockUsers } from "@repo/design-system/storybook/mock-data";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
+
+// Hoisted per biome's useTopLevelRegex: this only needs to compile once, not
+// on every play-function run.
+const JORDAN_LEE_OPTION_NAME = /Jordan Lee/i;
 
 /**
  * A button opening a small searchable popover for picking one person to
@@ -90,6 +94,19 @@ export const Default: Story = {
         value={value}
       />
     );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      canvas.getByRole("combobox", { name: "Assignee: Avery Carter" })
+    );
+    // The search list is a Radix popover portaled to the document body.
+    await userEvent.click(
+      await screen.findByRole("option", { name: JORDAN_LEE_OPTION_NAME })
+    );
+    await expect(
+      canvas.getByRole("combobox", { name: "Assignee: Jordan Lee" })
+    ).toBeInTheDocument();
   },
 };
 

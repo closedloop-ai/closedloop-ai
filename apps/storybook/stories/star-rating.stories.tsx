@@ -1,7 +1,7 @@
 import { StarRating } from "@repo/design-system/components/ui/star-rating";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 const InteractiveStarRating = ({
   value,
@@ -50,7 +50,18 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Individual stars have no accessible name, only a shared `role="radio"`,
+    // so there is genuinely no accessible handle to query by beyond position.
+    const stars = await canvas.findAllByRole("radio");
+
+    await userEvent.click(stars[0]);
+
+    await expect(args.onChange).toHaveBeenCalledWith(1);
+  },
+};
 
 export const Interactive: Story = {
   render: (args) => (

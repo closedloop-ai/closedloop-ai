@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { UserUsageTable } from "./user-usage-table";
 
 /**
@@ -48,7 +48,13 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Annie Case" }));
+    await expect(args.onToggleUser).toHaveBeenCalledWith("user-2");
+  },
+};
 
 export const Empty: Story = {
   args: {

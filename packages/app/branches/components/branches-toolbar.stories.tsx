@@ -14,7 +14,7 @@ import { BRANCH_SAMPLE_ROWS } from "@repo/app/branches/lib/branch-sample-data";
 import { DATE_RANGES } from "@repo/app/shared/lib/format-utils";
 import type { Meta, StoryObj } from "@storybook/react";
 import { useState } from "react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 const rows = BRANCH_SAMPLE_ROWS.map((row, index) => ({
   ...row,
@@ -125,6 +125,20 @@ type Story = StoryObj<typeof meta>;
 /** The complete PRD-601 facet and visibility controls over representative rows. */
 export const ApprovedFacets: Story = {
   render: (args) => <ToolbarHarness {...args} />,
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The Columns menu is a Radix popover portaled to the document body, so
+    // the row lookup below searches the whole screen rather than the canvas.
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "Columns" })
+    );
+    const ownerRow = (await screen.findByText("Owner")).closest("label");
+    if (!ownerRow) {
+      throw new Error("Owner column row not found in the Columns menu");
+    }
+    await userEvent.click(within(ownerRow).getByRole("switch"));
+    await expect(args.onToggleColumn).toHaveBeenCalledWith("owner");
+  },
 };
 
 /** A selected saved view whose live arrangement still matches its snapshot. */

@@ -1,6 +1,6 @@
 import { Input } from "@repo/design-system/components/ui/input";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 /**
  * A single line text box for typing a value like an email or password, with
@@ -60,7 +60,18 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the input field.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // No label is wired in this story, and jsdom's accessible-name
+    // computation does not fall back to `placeholder`, so this queries the
+    // one genuinely available handle instead of a role name.
+    const input = await canvas.findByPlaceholderText("Email");
+    await userEvent.type(input, "hello@example.com");
+    await expect(input).toHaveValue("hello@example.com");
+    await expect(args.onChange).toHaveBeenCalled();
+  },
+};
 
 /**
  * Use the `disabled` prop to make the input non-interactive and appears faded,

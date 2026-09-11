@@ -9,7 +9,7 @@ import {
   SelectValue,
 } from "@repo/design-system/components/ui/select";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 
 /**
  * A button that opens a dropdown list of options, showing only the current
@@ -148,4 +148,16 @@ type Story = StoryObj<typeof meta>;
 /**
  * The default form of the select.
  */
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("combobox"));
+    // The options render through a Portal, outside canvasElement, so this
+    // query goes through `screen` rather than `within`.
+    await userEvent.click(
+      await screen.findByRole("option", { name: "Banana" })
+    );
+    await expect(canvas.getByRole("combobox")).toHaveTextContent("Banana");
+    await expect(args.onValueChange).toHaveBeenCalledWith("banana");
+  },
+};

@@ -9,7 +9,7 @@ import {
 } from "@repo/api/src/types/branch-associated-pull-request";
 import { GitHubPRState } from "@repo/api/src/types/github-status";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { makeBranchDetail } from "../../__tests__/branch-fixtures";
 import type { BranchesDataSource } from "../../data-source/branches-data-source";
 import { BranchesDataSourceProvider } from "../../data-source/provider";
@@ -145,6 +145,8 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+const OTHER_PULL_REQUEST_OPTION_NAME = /Add Branch Detail page/i;
+
 /** Explicit historical-PR selection keeps every selector-dependent panel hidden while loading. */
 export const SwitchLoading: Story = {
   args: { branchId: LOADING_BRANCH_ID },
@@ -153,6 +155,24 @@ export const SwitchLoading: Story = {
 /** A successful response for the wrong PR falls back to Branch-owned cost only. */
 export const SelectionMismatch: Story = {
   args: { branchId: MISMATCH_BRANCH_ID },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The selector is disabled while the mismatch fetch is in flight, so wait
+    // for it to settle before driving it. It is the one control the workspace
+    // always renders, regardless of the selected-PR fetch outcome.
+    const trigger = canvas.getByRole("combobox", { name: "Pull request" });
+    await waitFor(() => expect(trigger).toBeEnabled());
+    await userEvent.click(trigger);
+    await userEvent.click(
+      await screen.findByRole("option", {
+        name: OTHER_PULL_REQUEST_OPTION_NAME,
+      })
+    );
+    await expect(args.onSelectionChange).toHaveBeenCalledWith({
+      repositoryFullName: selectedPullRequest.repositoryFullName,
+      pullRequestNumber: selectedPullRequest.number,
+    });
+  },
 };
 
 function pendingDetail(): Promise<BranchPageDetail> {

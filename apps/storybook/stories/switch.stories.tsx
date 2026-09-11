@@ -1,6 +1,8 @@
 import { Switch } from "@repo/design-system/components/ui/switch";
 import type { Meta, StoryObj } from "@storybook/react";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
+
+const AIRPLANE_MODE_LABEL = /airplane mode/i;
 
 /**
  * A sliding toggle that switches a setting between on and off immediately,
@@ -71,6 +73,19 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   args: {
     id: "default-switch",
+  },
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    const switchControl = await canvas.findByRole("switch", {
+      name: AIRPLANE_MODE_LABEL,
+    });
+
+    await expect(switchControl).toHaveAttribute("aria-checked", "false");
+
+    await userEvent.click(switchControl);
+
+    await expect(switchControl).toHaveAttribute("aria-checked", "true");
+    await expect(args.onCheckedChange).toHaveBeenCalledWith(true);
   },
 };
 
