@@ -15,7 +15,7 @@ Four levels: Foundations, Primitives, Composites, Surfaces. Every story is title
 `<Level>/<Group>/<Component>`.
 
 ```
-Foundations     6    the tokens themselves
+Foundations     5    the tokens themselves
 Primitives    116    one cohesive element
 Composites    197    built from primitives
 Surfaces       16    a page, or a full page region
