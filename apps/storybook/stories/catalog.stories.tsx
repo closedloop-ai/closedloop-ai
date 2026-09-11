@@ -225,6 +225,10 @@ function StatCard({
  *
  * Deliberately has no `autodocs` tag. An index page does not want a Docs tab
  * and a story as two separate sidebar entries; it wants to be one page.
+ *
+ * Its one story is named for the component rather than `Default`, for the
+ * reason spelled out in `introduction.stories.tsx`: Storybook hoists a lone
+ * story whose name matches its component into a single sidebar leaf.
  */
 const meta = {
   title: "Start Here/Catalog",
@@ -240,4 +244,4 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Catalog: Story = {};
