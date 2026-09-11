@@ -81,7 +81,7 @@ const ELEMENT_KINDS = [
 const LEVELS = ["Foundations", "Primitives", "Composites", "Surfaces"] as const;
 
 /** Levels whose titles are flat, so their second segment is a name not a group. */
-const FLAT_LEVELS = new Set<string>(["Foundations", "Surfaces", "Catalog"]);
+const FLAT_LEVELS = new Set<string>(["Foundations", "Surfaces", "Start Here"]);
 
 function flatten(order: StorySortOrder): string[] {
   return order.flatMap((entry) =>
@@ -173,7 +173,7 @@ describe("storySort covers the taxonomy", () => {
       (name) =>
         !(
           LEVELS.includes(name as (typeof LEVELS)[number]) ||
-          name === "Catalog" ||
+          name === "Start Here" ||
           segmentsInUse.has(name)
         )
     );

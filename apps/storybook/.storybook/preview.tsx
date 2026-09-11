@@ -68,8 +68,7 @@ const preview: Preview = {
         // domain group as their web counterparts, and anything that genuinely
         // differs on the desktop shell says so in its own name.
         order: [
-          "Catalog",
-          ["Inventory"],
+          "Start Here",
           "Foundations",
           ["Colors", "Typography", "Spacing", "Radius & Elevation", "Motion"],
           "Primitives",
