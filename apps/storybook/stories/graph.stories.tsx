@@ -1,22 +1,38 @@
 import { workflowData } from "@repo/app/agents/lib/session-mock-data";
 import { Graph } from "@repo/design-system/components/ui/primitives/graph";
 import type { Meta, StoryObj } from "@storybook/react";
+import { expect, within } from "storybook/test";
 
-const nodes = [
-  { id: "main", label: "Main Agent", value: 1500 },
-  { id: "planner", label: "Planner", value: 744 },
-  { id: "verifier", label: "Verifier", value: 539 },
-  { id: "review", label: "Review", value: 305 },
-  { id: "completed", label: "Completed", value: 6800 },
-  { id: "error", label: "Error", value: 5 },
-];
-
-const links = workflowData.cooccurrence.slice(0, 8).map((link) => ({
-  source: link.source === "general-purpose" ? "main" : link.source,
-  target: link.target === "general-purpose" ? "completed" : link.target,
+const links = workflowData.cooccurrence.map((link) => ({
+  source: link.source,
+  target: link.target,
   weight: link.weight,
   label: `${String(link.weight)}x`,
 }));
+
+/**
+ * Nodes are DERIVED from the links rather than listed by hand.
+ *
+ * `Graph` drops any link whose source or target is not in the node set, and a
+ * graph with no surviving links renders `emptyMessage` instead of a diagram.
+ * This story used to carry its own list of six ids, and the mock data it draws
+ * edges from names five different agents, so every link was discarded and the
+ * chart read "No data" with nothing in the console to say why. One id was off
+ * by two letters: the list had `review`, the data has `reviewer`.
+ *
+ * Deriving them means the two sets cannot disagree again. `value` drives the
+ * node radius, so it is the total weight of every handoff touching that agent:
+ * the busiest one is the biggest, which is what the chart is for.
+ */
+const nodes = [...new Set(links.flatMap((link) => [link.source, link.target]))]
+  .map((id) => ({
+    id,
+    label: id.charAt(0).toUpperCase() + id.slice(1),
+    value: links
+      .filter((link) => link.source === id || link.target === id)
+      .reduce((total, link) => total + link.weight, 0),
+  }))
+  .sort((left, right) => right.value - left.value);
 
 /**
  * A force directed diagram of connected nodes for open-ended relationship
@@ -74,4 +90,18 @@ const meta: Meta<typeof Graph> = {
 
 export default meta;
 type Story = StoryObj<typeof meta>;
-export const Default: Story = {};
+
+export const Default: Story = {
+  // Guards the failure this story shipped with: a Graph whose links all get
+  // dropped renders `emptyMessage` and throws nothing, so neither the sweep nor
+  // a glance at the console catches it. Assert a real node label is on screen.
+  play: async ({ args, canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.queryByText(String(args.emptyMessage))
+    ).not.toBeInTheDocument();
+    // The busiest node's label appears twice, once on the node and once in the
+    // legend, so this counts rather than expecting a single match.
+    await expect(canvas.getAllByText(nodes[0].label).length).toBeGreaterThan(0);
+  },
+};
