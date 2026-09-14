@@ -10,6 +10,9 @@ import type { Preview } from "@storybook/react";
 // desktop stories render with real CSS. See the file for why that scan cannot
 // live in globals.css itself, which four non-desktop surfaces also import.
 import "@repo/design-system/styles/storybook.css";
+// Repaints the Docs page chrome when the toolbar is on dark, so a component
+// stops being previewed on a white card in a dark theme. Inert in light mode.
+import "@repo/design-system/styles/storybook-docs-dark.css";
 import "../../../packages/app/styles.css";
 
 // Single in-memory navigation port for all stories: design-system and
