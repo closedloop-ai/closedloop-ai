@@ -10,28 +10,33 @@ import { FoundationsPage, TokenSection } from "./token-table";
  */
 const ANIMATION_TOKENS = [
   {
-    note: "Accordion and collapsible content opening. Animates height, from 0 to the content's own height.",
+    note: "Collapsible content opening. Animates height, from 0 to the content's own height. Press Expand to run this one.",
     preview: "collapse",
+    startOpen: false,
     token: "animate-accordion-down",
   },
   {
-    note: "The same content closing. In the product the element is then removed; here it stays collapsed so you can see where it lands.",
+    note: "The same content closing, the other half of the pair. Press Collapse to run this one.",
     preview: "collapse",
+    startOpen: true,
     token: "animate-accordion-up",
   },
   {
     note: "Progress with no known total. A sheen that crosses the track and loops until the work finishes.",
     preview: "track",
+    startOpen: false,
     token: "animate-progress-indeterminate",
   },
   {
     note: "A status pill's dot, marking the row that is currently live.",
     preview: "dot",
+    startOpen: false,
     token: "animate-status-pulse",
   },
   {
     note: "The ring around that pill, so the mark is findable in a long column.",
     preview: "dot",
+    startOpen: false,
     token: "animate-status-pulse-ring",
   },
 ] as const;
@@ -262,94 +267,120 @@ function TravelRow({
  *             at runtime, so on a bare element it resolves to nothing and the
  *             animation has no distance to cover. The preview supplies it.
  */
-function AnimationPreview({
-  kind,
-  previewRef,
+/**
+ * A hidden element carrying the utility, purely so the row can print the value
+ * the browser resolved for it.
+ *
+ * Separate from the preview because the two want different things. The
+ * accordion preview swaps between the opening and closing utility as you drive
+ * it, so it is the wrong place to ask "what does THIS row's token resolve to".
+ * The probe holds one class and never changes.
+ */
+function TokenProbe({
+  probeRef,
   token,
 }: Readonly<{
-  kind: "collapse" | "dot" | "track";
-  previewRef: React.RefObject<HTMLDivElement | null>;
+  probeRef: React.RefObject<HTMLSpanElement | null>;
   token: string;
 }>) {
+  return (
+    <span aria-hidden="true" className={`sr-only ${token}`} ref={probeRef} />
+  );
+}
+
+/**
+ * The accordion pair, driven the way the product drives it.
+ *
+ * `accordion-down` and `accordion-up` are two halves of one component: Radix
+ * runs the first on `data-state=open` and the second on `data-state=closed`.
+ * Showing them as two separate one-shots to replay meant the closing row was a
+ * collapsed panel with nothing in it, and a button that said "Replay" without
+ * saying what it would do. A trigger labelled for the state it moves to shows
+ * both halves and needs no explaining.
+ *
+ * Before the first press the height is set inline rather than animated, so the
+ * panel opens on the press instead of animating itself on mount.
+ */
+function AccordionPreview({
+  open,
+  touched,
+}: Readonly<{ open: boolean; touched: boolean }>) {
+  const running = open ? "animate-accordion-down" : "animate-accordion-up";
+
+  return (
+    <div
+      className="w-44 shrink-0 overflow-hidden rounded-md border bg-muted"
+      // The height Radix measures onto the content at runtime. Without it
+      // `var(--radix-accordion-content-height)` is invalid and the keyframe
+      // has nowhere to travel to.
+      style={
+        { "--radix-accordion-content-height": "3.5rem" } as React.CSSProperties
+      }
+    >
+      {/* `forwards` so the end state stays on screen. The tokens carry no fill
+          mode because the product unmounts the element instead, which a preview
+          cannot do and still show you the result. */}
+      <div
+        className={`overflow-hidden [animation-fill-mode:forwards] ${touched ? running : ""}`}
+        data-state={open ? "open" : "closed"}
+        style={touched ? undefined : { height: open ? "3.5rem" : 0 }}
+      >
+        <div className="h-14 p-2 text-muted-foreground text-xs">
+          Panel content
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AnimationPreview({
+  kind,
+  token,
+}: Readonly<{ kind: "dot" | "track"; token: string }>) {
   if (kind === "track") {
     return (
       <div className="h-2 w-44 shrink-0 overflow-hidden rounded-full bg-muted">
         {/* A third of the track, the same proportion `Progress` uses, so the
             sheen reads as a sheen rather than as a filled bar. */}
-        <div
-          className={`h-full w-1/3 rounded-full bg-primary ${token}`}
-          ref={previewRef}
-        />
+        <div className={`h-full w-1/3 rounded-full bg-primary ${token}`} />
       </div>
     );
   }
 
-  if (kind === "collapse") {
-    return (
-      <div
-        className="w-44 shrink-0 overflow-hidden rounded-md border bg-muted"
-        // The height Radix measures onto the content at runtime. Without it
-        // `var(--radix-accordion-content-height)` is invalid and the keyframe
-        // has nowhere to travel to.
-        style={
-          {
-            "--radix-accordion-content-height": "3.5rem",
-          } as React.CSSProperties
-        }
-      >
-        {/* `forwards` so the end state stays on screen. The token carries no
-            fill mode because the product unmounts the element instead, which a
-            preview cannot do and still show you the result. */}
-        <div
-          className={`overflow-hidden [animation-fill-mode:forwards] ${token}`}
-          ref={previewRef}
-        >
-          <div className="h-14 p-2 text-muted-foreground text-xs">
-            Panel content
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={`size-8 shrink-0 rounded-full bg-primary ${token}`}
-      ref={previewRef}
-    />
-  );
+  return <div className={`size-8 shrink-0 rounded-full bg-primary ${token}`} />;
 }
 
 /**
  * One named animation: the value the browser resolved, and a preview running
  * the real utility.
  *
- * The readout comes off the PREVIEW element rather than off `:root`. These
- * tokens are published through `@theme inline`, which inlines each value into
- * its utility instead of emitting a custom property, so asking the root for
- * `--animate-accordion-down` returns nothing even though the declaration is
- * sitting in globals.css. Reading the running element answers the question
- * someone actually has: what does a component get when it writes this class.
+ * The readout comes off an element carrying the utility rather than off
+ * `:root`. These tokens are published through `@theme inline`, which inlines
+ * each value into its utility instead of emitting a custom property, so asking
+ * the root for `--animate-accordion-down` returns nothing even though the
+ * declaration is sitting in globals.css. Reading the element answers the
+ * question someone actually has: what does a component get when it writes this
+ * class.
  */
 function AnimationRow({
   kind,
   note,
+  startOpen,
   token,
 }: Readonly<{
   kind: "collapse" | "dot" | "track";
   note: string;
+  startOpen: boolean;
   token: string;
 }>) {
-  const ref = useRef<HTMLDivElement>(null);
-  const animation = useComputedValue(ref, "animation");
-  // Remounting is the reliable way to restart a CSS animation: toggling the
-  // class off and on again inside one tick is coalesced and never replays.
-  const [run, setRun] = useState(0);
+  const probe = useRef<HTMLSpanElement>(null);
+  const animation = useComputedValue(probe, "animation");
 
-  // A looping animation is always on screen, so only a one-shot needs a way to
-  // be replayed. Read off the resolved value rather than hardcoded per token,
-  // so a token that gains or loses `infinite` changes this with it.
-  const loops = animation.includes("infinite");
+  // Each accordion row opens in the state that makes ITS OWN half the next
+  // thing you trigger: the opening row starts collapsed, the closing row starts
+  // expanded. Press again and you get the other half, which is how they ship.
+  const [open, setOpen] = useState(startOpen);
+  const [touched, setTouched] = useState(false);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 p-4">
@@ -360,16 +391,28 @@ function AnimationRow({
         </p>
         <p className="text-muted-foreground text-xs">{note}</p>
       </div>
+      <TokenProbe probeRef={probe} token={token} />
       <div className="flex shrink-0 items-center gap-3">
-        {loops ? null : <ReplayButton onClick={() => setRun((n) => n + 1)} />}
+        {kind === "collapse" ? (
+          <button
+            aria-expanded={open}
+            className="rounded-md border bg-card px-3 py-1.5 font-medium text-xs transition-colors duration-150 hover:bg-muted"
+            onClick={() => {
+              setTouched(true);
+              setOpen((wasOpen) => !wasOpen);
+            }}
+            type="button"
+          >
+            {open ? "Collapse" : "Expand"}
+          </button>
+        ) : null}
         {/* Runs the real utility. If the declaration changes in globals.css,
             this preview changes with it and the value beside it changes too. */}
-        <AnimationPreview
-          key={run}
-          kind={kind}
-          previewRef={ref}
-          token={token}
-        />
+        {kind === "collapse" ? (
+          <AccordionPreview open={open} touched={touched} />
+        ) : (
+          <AnimationPreview kind={kind} token={token} />
+        )}
       </div>
     </div>
   );
@@ -377,8 +420,14 @@ function AnimationRow({
 
 const AnimationTable = () => (
   <div className="divide-y rounded-lg border bg-card">
-    {ANIMATION_TOKENS.map(({ note, preview, token }) => (
-      <AnimationRow key={token} kind={preview} note={note} token={token} />
+    {ANIMATION_TOKENS.map(({ note, preview, startOpen, token }) => (
+      <AnimationRow
+        key={token}
+        kind={preview}
+        note={note}
+        startOpen={startOpen}
+        token={token}
+      />
     ))}
   </div>
 );
