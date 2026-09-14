@@ -41,6 +41,25 @@ type AppCoreStoryParameters = Pick<
   "queryData" | "apiRoutes" | "enabledFlags"
 >;
 
+/**
+ * Opts a story out of the theme pinning the decorator below applies, declared
+ * the same way `appCore` is:
+ *
+ *   export default {
+ *     parameters: { themeInteractive: true },
+ *   };
+ *
+ * Every other story is pinned to the toolbar's theme so the class and
+ * `color-scheme` cannot disagree. That pin makes `setTheme` a no-op, which is
+ * fine everywhere except the two stories whose subject IS switching the theme:
+ * Mode Toggle and Theme Submenu. They set this, and give up matching the
+ * toolbar in exchange for their control actually doing something.
+ *
+ * Reach for it only when a story demonstrates theme switching itself. It is not
+ * an escape hatch for a story that merely looks wrong in one theme.
+ */
+type ThemeStoryParameters = { themeInteractive?: boolean };
+
 const preview: Preview = {
   parameters: {
     options: {
@@ -147,6 +166,24 @@ const preview: Preview = {
     (Story, context) => {
       const appCore = (context.parameters.appCore ??
         {}) as AppCoreStoryParameters;
+      // The toolbar owns the theme here, so next-themes is pinned to whatever
+      // it selected rather than left to resolve `system` off the viewer's OS.
+      //
+      // Unpinned, the two disagree. `withThemeByClassName` above writes the
+      // `light` / `dark` CLASS from the toolbar, while next-themes writes the
+      // inline `color-scheme` on <html> from the OS, and `color-scheme` is what
+      // the browser paints native UI from. On a dark-mode machine viewing the
+      // light theme that rendered a black scrollbar track across every screen,
+      // which is not a state the product can reach: in the app next-themes
+      // writes both the class and `color-scheme`, so they cannot drift apart.
+      // Two other components read the same signal and mispainted the same way:
+      // `branch-file-diff-viewer` and `event-activity-heatmap` both pick their
+      // colours off `resolvedTheme`.
+      //
+      // A story whose SUBJECT is switching the theme opts out, because pinning
+      // makes its `setTheme` a no-op and the control stops demonstrating
+      // anything. See `themeInteractive` below.
+      const selectedTheme = context.globals.theme === "dark" ? "dark" : "light";
       return (
         <AppCoreStoryProviders
           apiRoutes={appCore.apiRoutes}
@@ -155,7 +192,13 @@ const preview: Preview = {
           queryData={appCore.queryData}
         >
           <div className="bg-background">
-            <ThemeProvider>
+            <ThemeProvider
+              forcedTheme={
+                (context.parameters as ThemeStoryParameters).themeInteractive
+                  ? undefined
+                  : selectedTheme
+              }
+            >
               <TooltipProvider>
                 <Story />
               </TooltipProvider>

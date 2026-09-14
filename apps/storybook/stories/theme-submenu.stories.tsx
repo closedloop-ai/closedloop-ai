@@ -28,6 +28,9 @@ const meta = {
   },
   parameters: {
     layout: "centered",
+    // Switching the theme is what this component IS, so it opts out of the
+    // toolbar pinning in `.storybook/preview.tsx`. See mode-toggle.stories.tsx.
+    themeInteractive: true,
   },
   render: (args) => (
     <DropdownMenu>
