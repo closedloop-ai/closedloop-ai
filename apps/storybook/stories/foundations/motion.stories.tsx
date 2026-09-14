@@ -194,6 +194,50 @@ function useReplay(): readonly [boolean, boolean, () => void] {
   return [on, resetting, replay] as const;
 }
 
+/**
+ * Plays a demo when it scrolls into view, and again whenever it comes back.
+ *
+ * These sections sit below the fold, so without this you had to find a button
+ * before the page would show you anything. Scrolling to a demo is already the
+ * gesture that says "show me this one".
+ *
+ * Does nothing when the viewer asked for reduced motion. This is the page that
+ * documents that preference, so it is the last place that should ignore it: the
+ * Replay button still works there, because pressing it is an explicit request
+ * rather than something the page decided to do at them.
+ *
+ * `IntersectionObserver` is guarded because the story sweep mounts this page in
+ * jsdom, which has no implementation of it.
+ */
+function useReplayOnView(replay: () => void, enabled: boolean) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!(node && enabled) || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            replay();
+          }
+        }
+      },
+      // Enough of the panel on screen that the rows are actually being looked
+      // at, rather than firing off the first pixel and finishing above the fold.
+      { threshold: 0.3 }
+    );
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [replay, enabled]);
+
+  return ref;
+}
+
 function ReplayButton({ onClick }: Readonly<{ onClick: () => void }>) {
   return (
     <button
@@ -434,17 +478,19 @@ const AnimationTable = () => (
 
 const DurationPanel = () => {
   const [on, resetting, replay] = useReplay();
+  const reduced = usePrefersReducedMotion();
+  const viewRef = useReplayOnView(replay, !reduced);
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-4">
         <p className="text-muted-foreground text-sm">
           All five start on the same tick, so the gap between them is the thing
-          you are comparing.
+          you are comparing. Runs when you scroll to it.
         </p>
         <ReplayButton onClick={replay} />
       </div>
-      <div className="divide-y rounded-lg border bg-card">
+      <div className="divide-y rounded-lg border bg-card" ref={viewRef}>
         {DURATIONS.map(({ utility, when }) => (
           <TravelRow
             className={`ease-out ${utility}`}
@@ -542,17 +588,20 @@ function EasingRow({
 
 const EasingPanel = () => {
   const [on, resetting, replay] = useReplay();
+  const reduced = usePrefersReducedMotion();
+  const viewRef = useReplayOnView(replay, !reduced);
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-4">
         <p className="text-muted-foreground text-sm">
           Every row runs for the same 500ms, so the only difference you are
-          watching is the shape of the curve beside it.
+          watching is the shape of the curve beside it. Runs when you scroll to
+          it.
         </p>
         <ReplayButton onClick={replay} />
       </div>
-      <div className="divide-y rounded-lg border bg-card">
+      <div className="divide-y rounded-lg border bg-card" ref={viewRef}>
         {EASINGS.map(({ utility, when }) => (
           <EasingRow
             key={utility}
