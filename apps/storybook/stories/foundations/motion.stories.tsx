@@ -10,23 +10,28 @@ import { FoundationsPage, TokenSection } from "./token-table";
  */
 const ANIMATION_TOKENS = [
   {
-    note: "Accordion and collapsible content opening.",
+    note: "Accordion and collapsible content opening. Animates height, from 0 to the content's own height.",
+    preview: "collapse",
     token: "animate-accordion-down",
   },
   {
-    note: "The same content closing.",
+    note: "The same content closing. In the product the element is then removed; here it stays collapsed so you can see where it lands.",
+    preview: "collapse",
     token: "animate-accordion-up",
   },
   {
-    note: "Progress with no known total. Loops until the work finishes.",
+    note: "Progress with no known total. A sheen that crosses the track and loops until the work finishes.",
+    preview: "track",
     token: "animate-progress-indeterminate",
   },
   {
     note: "A status pill's dot, marking the row that is currently live.",
+    preview: "dot",
     token: "animate-status-pulse",
   },
   {
     note: "The ring around that pill, so the mark is findable in a long column.",
+    preview: "dot",
     token: "animate-status-pulse-ring",
   },
 ] as const;
@@ -155,35 +160,33 @@ function useComputedValue(
  * below moves only when someone asks it to and they all move together: the
  * comparison between two durations is only legible if they start on the
  * same tick.
+ *
+ * Replay RESETS and then runs. An earlier version sent the squares home on a
+ * timer, which meant every click played the motion twice, forwards and then
+ * backwards, and the return leg was the one still moving when you looked. The
+ * reset now happens on the click and is instant: `resetting` switches the
+ * transition off for one frame, so the squares jump to the start rather than
+ * gliding there, and they stay at the finish afterwards until you ask again.
  */
-function useReplay(): readonly [boolean, () => void] {
+function useReplay(): readonly [boolean, boolean, () => void] {
   const [on, setOn] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timer.current) {
-        clearTimeout(timer.current);
-      }
-    },
-    []
-  );
+  const [resetting, setResetting] = useState(false);
 
   const replay = useCallback(() => {
-    if (timer.current) {
-      clearTimeout(timer.current);
-    }
-    // Snap back to the start, then move on the next frame. Setting both in one
-    // tick is a no-op: the browser never sees the intermediate value and
-    // nothing transitions.
+    setResetting(true);
     setOn(false);
+    // Two frames: one for the browser to paint the start position with the
+    // transition suppressed, the next to turn it back on and move. Doing both
+    // in a single tick is coalesced and nothing animates at all.
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => setOn(true));
+      requestAnimationFrame(() => {
+        setResetting(false);
+        setOn(true);
+      });
     });
-    timer.current = setTimeout(() => setOn(false), 2200);
   }, []);
 
-  return [on, replay] as const;
+  return [on, resetting, replay] as const;
 }
 
 function ReplayButton({ onClick }: Readonly<{ onClick: () => void }>) {
@@ -204,12 +207,14 @@ function TravelRow({
   label,
   on,
   readout,
+  resetting,
   when,
 }: Readonly<{
   className: string;
   label: string;
   on: boolean;
   readout: string;
+  resetting: boolean;
   when: string;
 }>) {
   const ref = useRef<HTMLDivElement>(null);
@@ -226,14 +231,15 @@ function TravelRow({
         </p>
       </div>
       <div className="space-y-2">
-        <div className="h-8 rounded-md bg-muted p-1">
+        <div className="h-8 w-72 max-w-full overflow-hidden rounded-md bg-muted p-1">
           <div
-            className={`size-6 rounded-sm bg-primary transition-transform ${className}`}
+            className={`size-6 rounded-sm bg-primary transition-transform ${resetting ? "!duration-0" : ""} ${className}`}
             ref={ref}
+            // 16rem is the track's inner width (18rem, less the 0.5rem of
+            // padding) minus the square's own 1.5rem, so "on" is the far edge
+            // rather than a number picked to look about right.
             style={{
-              transform: on
-                ? "translateX(var(--motion-travel, 16rem))"
-                : "translateX(0)",
+              transform: on ? "translateX(16rem)" : "translateX(0)",
             }}
           />
         </div>
@@ -244,7 +250,79 @@ function TravelRow({
 }
 
 /**
- * One named animation: the value the browser resolved, and a dot running it.
+ * The preview each named animation needs, because they do not animate the same
+ * property and a single dot cannot show all of them honestly.
+ *
+ *   dot       an opacity dip or a ring; the element itself is the whole story
+ *   track     `progress-indeterminate` translates from -100% to 300%, so it
+ *             needs a track to cross and to be clipped by. Uncontained it
+ *             travelled three times its own width straight out of the card.
+ *   collapse  the accordion pair animates HEIGHT, to and from
+ *             `--radix-accordion-content-height`. That variable is set by Radix
+ *             at runtime, so on a bare element it resolves to nothing and the
+ *             animation has no distance to cover. The preview supplies it.
+ */
+function AnimationPreview({
+  kind,
+  previewRef,
+  token,
+}: Readonly<{
+  kind: "collapse" | "dot" | "track";
+  previewRef: React.RefObject<HTMLDivElement | null>;
+  token: string;
+}>) {
+  if (kind === "track") {
+    return (
+      <div className="h-2 w-44 shrink-0 overflow-hidden rounded-full bg-muted">
+        {/* A third of the track, the same proportion `Progress` uses, so the
+            sheen reads as a sheen rather than as a filled bar. */}
+        <div
+          className={`h-full w-1/3 rounded-full bg-primary ${token}`}
+          ref={previewRef}
+        />
+      </div>
+    );
+  }
+
+  if (kind === "collapse") {
+    return (
+      <div
+        className="w-44 shrink-0 overflow-hidden rounded-md border bg-muted"
+        // The height Radix measures onto the content at runtime. Without it
+        // `var(--radix-accordion-content-height)` is invalid and the keyframe
+        // has nowhere to travel to.
+        style={
+          {
+            "--radix-accordion-content-height": "3.5rem",
+          } as React.CSSProperties
+        }
+      >
+        {/* `forwards` so the end state stays on screen. The token carries no
+            fill mode because the product unmounts the element instead, which a
+            preview cannot do and still show you the result. */}
+        <div
+          className={`overflow-hidden [animation-fill-mode:forwards] ${token}`}
+          ref={previewRef}
+        >
+          <div className="h-14 p-2 text-muted-foreground text-xs">
+            Panel content
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`size-8 shrink-0 rounded-full bg-primary ${token}`}
+      ref={previewRef}
+    />
+  );
+}
+
+/**
+ * One named animation: the value the browser resolved, and a preview running
+ * the real utility.
  *
  * The readout comes off the PREVIEW element rather than off `:root`. These
  * tokens are published through `@theme inline`, which inlines each value into
@@ -254,11 +332,24 @@ function TravelRow({
  * someone actually has: what does a component get when it writes this class.
  */
 function AnimationRow({
+  kind,
   note,
   token,
-}: Readonly<{ note: string; token: string }>) {
+}: Readonly<{
+  kind: "collapse" | "dot" | "track";
+  note: string;
+  token: string;
+}>) {
   const ref = useRef<HTMLDivElement>(null);
   const animation = useComputedValue(ref, "animation");
+  // Remounting is the reliable way to restart a CSS animation: toggling the
+  // class off and on again inside one tick is coalesced and never replays.
+  const [run, setRun] = useState(0);
+
+  // A looping animation is always on screen, so only a one-shot needs a way to
+  // be replayed. Read off the resolved value rather than hardcoded per token,
+  // so a token that gains or loses `infinite` changes this with it.
+  const loops = animation.includes("infinite");
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 p-4">
@@ -269,26 +360,31 @@ function AnimationRow({
         </p>
         <p className="text-muted-foreground text-xs">{note}</p>
       </div>
-      {/* Runs the real utility. If the declaration changes in globals.css, this
-          preview changes with it and the value beside it changes too. */}
-      <div
-        className={`size-8 shrink-0 rounded-full bg-primary ${token}`}
-        ref={ref}
-      />
+      <div className="flex shrink-0 items-center gap-3">
+        {loops ? null : <ReplayButton onClick={() => setRun((n) => n + 1)} />}
+        {/* Runs the real utility. If the declaration changes in globals.css,
+            this preview changes with it and the value beside it changes too. */}
+        <AnimationPreview
+          key={run}
+          kind={kind}
+          previewRef={ref}
+          token={token}
+        />
+      </div>
     </div>
   );
 }
 
 const AnimationTable = () => (
   <div className="divide-y rounded-lg border bg-card">
-    {ANIMATION_TOKENS.map(({ note, token }) => (
-      <AnimationRow key={token} note={note} token={token} />
+    {ANIMATION_TOKENS.map(({ note, preview, token }) => (
+      <AnimationRow key={token} kind={preview} note={note} token={token} />
     ))}
   </div>
 );
 
 const DurationPanel = () => {
-  const [on, replay] = useReplay();
+  const [on, resetting, replay] = useReplay();
 
   return (
     <div className="space-y-3">
@@ -307,6 +403,7 @@ const DurationPanel = () => {
             label={utility}
             on={on}
             readout="duration"
+            resetting={resetting}
             when={when}
           />
         ))}
@@ -352,10 +449,12 @@ function EasingCurve({ timing }: Readonly<{ timing: string }>) {
 
 function EasingRow({
   on,
+  resetting,
   utility,
   when,
 }: Readonly<{
   on: boolean;
+  resetting: boolean;
   utility: string;
   when: string;
 }>) {
@@ -374,14 +473,15 @@ function EasingRow({
         </div>
       </div>
       <div className="space-y-2">
-        <div className="h-8 rounded-md bg-muted p-1">
+        <div className="h-8 w-72 max-w-full overflow-hidden rounded-md bg-muted p-1">
           <div
-            className={`size-6 rounded-sm bg-primary transition-transform duration-500 ${utility}`}
+            className={`size-6 rounded-sm bg-primary transition-transform ${resetting ? "!duration-0" : "duration-500"} ${utility}`}
             ref={ref}
+            // 16rem is the track's inner width (18rem, less the 0.5rem of
+            // padding) minus the square's own 1.5rem, so "on" is the far edge
+            // rather than a number picked to look about right.
             style={{
-              transform: on
-                ? "translateX(var(--motion-travel, 16rem))"
-                : "translateX(0)",
+              transform: on ? "translateX(16rem)" : "translateX(0)",
             }}
           />
         </div>
@@ -392,7 +492,7 @@ function EasingRow({
 }
 
 const EasingPanel = () => {
-  const [on, replay] = useReplay();
+  const [on, resetting, replay] = useReplay();
 
   return (
     <div className="space-y-3">
@@ -405,7 +505,13 @@ const EasingPanel = () => {
       </div>
       <div className="divide-y rounded-lg border bg-card">
         {EASINGS.map(({ utility, when }) => (
-          <EasingRow key={utility} on={on} utility={utility} when={when} />
+          <EasingRow
+            key={utility}
+            on={on}
+            resetting={resetting}
+            utility={utility}
+            when={when}
+          />
         ))}
       </div>
     </div>
