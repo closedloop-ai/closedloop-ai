@@ -19,6 +19,13 @@ const meta = {
   args: {
     className: "",
   },
+  // Switching the theme is what this component IS, so it opts out of the
+  // toolbar pinning in `.storybook/preview.tsx`. Pinned, its menu items set a
+  // theme that nothing applies and the control demonstrates nothing. The
+  // trade is that this story follows its own selection rather than the toolbar.
+  parameters: {
+    themeInteractive: true,
+  },
 } satisfies Meta<typeof ModeToggle>;
 
 export default meta;
