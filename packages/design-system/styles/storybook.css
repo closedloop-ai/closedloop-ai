@@ -33,3 +33,20 @@
  */
 @import "./globals.css";
 @source "../../../apps/desktop/src/renderer/**/*.{ts,tsx}";
+
+/*
+ * Forces the five named animation utilities to be emitted in the Storybook
+ * build even when no component references one.
+ *
+ * `Foundations/Motion` documents all five and runs each as a live preview, but
+ * Tailwind v4 only emits what it finds in scanned source, and the page applies
+ * them through a computed class name that no scanner can see. Two of the five
+ * were never used by a component at all, so their utility did not exist in the
+ * preview: the page printed "not set" and previewed nothing, for tokens that
+ * are sitting in globals.css.
+ *
+ * Storybook-only on purpose. The product build should keep shaking out an
+ * animation nothing uses; it is only the page that documents the whole set
+ * that needs them all present.
+ */
+@source inline("animate-{accordion-down,accordion-up,progress-indeterminate,status-pulse,status-pulse-ring}");
