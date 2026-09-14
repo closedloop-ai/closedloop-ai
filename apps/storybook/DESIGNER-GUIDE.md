@@ -38,7 +38,7 @@ Get the code:
 ```
 git clone https://github.com/closedloop-ai/closedloop-ai.git
 cd closedloop-ai
-git checkout storybook/foundations-catalog-controls
+git checkout storybook/vite-builder
 pnpm install
 ```
 
@@ -48,7 +48,7 @@ Start it up:
 pnpm -C apps/storybook dev
 ```
 
-Then open the address it prints, usually `http://localhost:6007`.
+Then open the address it prints, usually `http://localhost:6006`.
 
 Every time you come back to it, run these two:
 
@@ -62,7 +62,7 @@ branch:
 
 ```
 git fetch origin
-git checkout storybook/foundations-catalog-controls
+git checkout storybook/vite-builder
 ```
 
 Stay on that branch while you work. If you are ever unsure which one you are
