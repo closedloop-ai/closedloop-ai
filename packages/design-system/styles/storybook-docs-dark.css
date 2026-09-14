@@ -1,0 +1,196 @@
+/*
+ * Makes the Docs page chrome follow the theme toolbar.
+ *
+ * Storybook themes a Docs page from its own theme object, which is fixed at
+ * build time and cannot read the toolbar. So with the toolbar on dark the
+ * component rendered dark while the page around it stayed white: a dark switch
+ * on a white card, which is hard to read and is not how the component looks
+ * anywhere in the product.
+ *
+ * Everything here is keyed on `html.dark`, which the preview already carries
+ * (`withThemeByClassName` in `.storybook/preview.tsx` writes it from the
+ * toolbar). Light mode is therefore untouched by this file: the whole
+ * stylesheet is inert unless the toolbar says dark.
+ *
+ * Colours come from the design tokens rather than from picked hex values, so
+ * the docs chrome moves whenever the dark palette moves.
+ *
+ * SPECIFICITY: Storybook injects its docs styles through emotion as single
+ * class selectors. `html.dark .thing` outranks those without `!important`.
+ * Where a rule below does carry `!important`, it is because the property is set
+ * inline on the element and nothing else wins.
+ *
+ * MAINTENANCE: these are Storybook's internal class names. They are stable
+ * across 10.x but are not a public API, so if a Storybook upgrade turns the
+ * docs page white again, re-dump the class list before rewriting by hand:
+ * every selector here was read off a live Docs page rather than guessed.
+ */
+
+/* The page itself, and the block each story is previewed in. */
+html.dark .sbdocs,
+html.dark .sbdocs-wrapper {
+  background-color: var(--background);
+}
+
+html.dark .sbdocs-preview,
+html.dark .sb-previewBlock {
+  background-color: var(--card);
+  border-color: var(--border);
+}
+
+/* The strip of zoom and reload controls along the top of a preview block; it
+   ships its own white fill, so the card behind it is otherwise hidden. */
+html.dark .sbdocs-preview > div:first-child {
+  background-color: transparent !important;
+  border-bottom-color: var(--border);
+}
+
+/* Loading states, which flash white before a story or a docs page resolves. */
+html.dark .sb-preparing-story,
+html.dark .sb-preparing-docs,
+html.dark .sb-wrapper {
+  background-color: var(--background);
+}
+
+/*
+ * Headings and body copy are set to a near-black by the docs theme. Most of
+ * these elements carry NO class of their own (the per-story `h3` and its
+ * description paragraph are bare tags), so they have to be reached as
+ * descendants of the docs content rather than by name.
+ *
+ * The `:not()` clauses keep this OFF the rendered story. Everything inside
+ * `.docs-story` is the component itself and already themed by the design
+ * system, and a blanket colour here would beat its own Tailwind classes and
+ * repaint it. Measured before the exclusion went in: muted text inside a
+ * preview came out at full foreground.
+ *
+ * Left alone deliberately: `a` keeps the docs link colour, and anything with a
+ * colour of its own inside the props table is handled further down.
+ */
+html.dark .sbdocs-title,
+html.dark .sbdocs-content,
+html.dark
+  .sbdocs-content
+  :is(p, h1, h2, h3, h4, h5, h6, li, span, div, strong, em, blockquote, dt, dd)
+  :not(.docs-story *):not(.sb-story *) {
+  color: var(--foreground);
+}
+
+html.dark
+  .sbdocs-content
+  > :is(p, h1, h2, h3, h4, h5, h6, li, span, div, strong, em, blockquote),
+html.dark
+  .sbdocs-content
+  .sb-anchor
+  > :is(p, h1, h2, h3, h4, h5, h6, li, span, div, strong, em, blockquote) {
+  color: var(--foreground);
+}
+
+html.dark .sbdocs-h2,
+html.dark .sbdocs-h3 {
+  border-bottom-color: var(--border);
+}
+
+/* The props table: header row, cells, and the zebra band that opens a
+   category such as STATE or EVENTS. */
+html.dark .docblock-argstable,
+html.dark .docblock-argstable-head,
+html.dark .docblock-argstable-body,
+html.dark .docblock-argstable th,
+html.dark .docblock-argstable td,
+html.dark .sb-argstableBlock,
+html.dark .sb-argstableBlock-head,
+html.dark .sb-argstableBlock-body {
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+/* Cells carry their own light fill. Clear them all, then give the category
+   bands (the STATE / EVENTS / FORM rows, which are the only cells that span
+   columns) a fill that still separates them. */
+html.dark .docblock-argstable td,
+html.dark .docblock-argstable th {
+  /* `!important` because emotion injects its <style> into <head> AFTER this
+     stylesheet loads, so a rule of equal specificity loses on source order.
+     Measured: without it these cells stay rgb(255,255,255). */
+  background-color: transparent !important;
+}
+
+html.dark .docblock-argstable td[colspan] {
+  background-color: var(--muted) !important;
+}
+
+/*
+ * The Control column's widgets. Storybook renders these with emotion and no
+ * stable class of their own, so they are reached through the table that
+ * contains them: the scope is one column of one table, not the page.
+ */
+html.dark .docblock-argstable textarea,
+html.dark .docblock-argstable input:not([type="checkbox"]):not([type="radio"]),
+html.dark .docblock-argstable select {
+  background-color: var(--input) !important;
+  color: var(--foreground) !important;
+  border-color: var(--border);
+}
+
+/* The "Set boolean" / "Set string" buttons that appear when a control has no
+   value yet. */
+html.dark .docblock-argstable button[id^="set-"] {
+  /* `--muted`, not `--secondary`: secondary is a brand tone in this palette and
+     rendered these neutral "no value yet" buttons green. */
+  background-color: var(--muted) !important;
+  color: var(--foreground) !important;
+  border-color: var(--border);
+}
+
+/* The False / True segmented toggle: the track, then the selected segment. */
+html.dark .docblock-argstable label:has(input[type="checkbox"]) {
+  background-color: var(--muted) !important;
+  border-color: var(--border);
+}
+
+html.dark .docblock-argstable label:has(input[type="checkbox"]) span {
+  background-color: var(--card) !important;
+  color: var(--foreground) !important;
+}
+
+/* The inline type chips in the props table carry a black wash that turns into
+   a smudge on a dark ground. */
+/* `code` in running prose as well as in the props table: the description
+   paragraph above a component often names a prop inline. */
+html.dark .sbdocs-content code,
+html.dark .sb-argstableBlock-code,
+html.dark .docblock-argstable code {
+  background-color: var(--muted) !important;
+  color: var(--muted-foreground) !important;
+}
+
+/* "Show code" / "Copy code" under a preview, and the zoom controls above it. */
+html.dark .sbdocs-preview-actions,
+html.dark .docblock-code-toggle {
+  color: var(--muted-foreground);
+  background-color: transparent;
+  border-color: var(--border);
+}
+
+html.dark .sb-previewBlock_icon {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* The empty and error panels, which ship their own light palette. */
+html.dark .sb-nopreview_main,
+html.dark .sb-heading,
+html.dark .sb-nopreview_heading,
+html.dark .sb-errordisplay,
+html.dark .sb-errordisplay_main {
+  background-color: var(--card);
+  color: var(--foreground);
+}
+
+/* Those panels set a white fill on their inner copy as well as on the box. */
+html.dark .sb-nopreview_main *,
+html.dark .sb-errordisplay_main *:not(pre):not(code) {
+  background-color: transparent;
+  color: inherit;
+}
