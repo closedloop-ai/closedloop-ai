@@ -375,8 +375,8 @@ describe("System Check repair", () => {
     // A missing plugin is both a deterministic failure and short of
     // `allPluginsInstalled`, so the version sweep never runs and nothing here
     // touches the network.
-    const missingPlugin = "judges";
-    await writeAllUserScopedPlugins(homeDir, { "judges@closedloop-ai": [] });
+    const missingPlugin = "platform";
+    await writeAllUserScopedPlugins(homeDir, { "platform@closedloop-ai": [] });
     const harness = makeHarness({
       claudeOverride: "/usr/bin/true",
       pluginListJson: () =>

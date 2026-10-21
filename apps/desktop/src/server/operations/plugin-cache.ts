@@ -56,9 +56,7 @@ export type PluginInstallStatus = {
 export const CLOSEDLOOP_REQUIRED_PLUGIN_IDS = [
   "code@closedloop-ai",
   "code-review@closedloop-ai",
-  "judges@closedloop-ai",
   "platform@closedloop-ai",
-  "self-learning@closedloop-ai",
 ] as const;
 
 export type PluginEnabledState = boolean | "unknown";

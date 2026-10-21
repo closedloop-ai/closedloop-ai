@@ -175,14 +175,7 @@ async function writeClosedloopPluginVerifierState(
   const listEntries: Record<string, string | boolean>[] = [];
 
   await mkdir(join(homeDir, ".claude", "plugins"), { recursive: true });
-  for (const plugin of [
-    "bootstrap",
-    "code",
-    "code-review",
-    "judges",
-    "platform",
-    "self-learning",
-  ]) {
+  for (const plugin of ["bootstrap", "code", "code-review", "platform"]) {
     const scope = plugin === "code" ? (options.codeScope ?? "user") : "user";
     const pluginPath = join(
       homeDir,
@@ -534,7 +527,7 @@ describe("DESKTOP_INSTALLER_SCRIPT", () => {
     const verifyIndex = pluginsBody.indexOf("verify_closedloop_plugins");
 
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
-      "REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review judges platform self-learning)"
+      "REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review platform)"
     );
     expect(DESKTOP_INSTALLER_SCRIPT).toContain(
       "Closedloop plugins must be installed at user scope"
@@ -753,7 +746,7 @@ cat > "$output" <<'PLUGIN_INSTALLER'
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p "$HOME/.claude/plugins"
-for plugin in bootstrap code code-review judges platform self-learning; do
+for plugin in bootstrap code code-review platform; do
   mkdir -p "$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
 done
 cat > "$HOME/.claude/plugins/installed_plugins.json" <<'JSON'
@@ -936,7 +929,7 @@ mkdir -p "$HOME/.claude/plugins"
 registry="$HOME/.claude/plugins/installed_plugins.json"
 printf '{"plugins":{' > "$registry"
 first=1
-for plugin in bootstrap code code-review judges platform self-learning; do
+for plugin in bootstrap code code-review platform; do
   plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
   mkdir -p "$plugin_path"
   if [ "$first" -eq 0 ]; then
@@ -1167,7 +1160,7 @@ mkdir -p "$HOME/.claude/plugins"
 registry="$HOME/.claude/plugins/installed_plugins.json"
 printf '{"plugins":{' > "$registry"
 first=1
-for plugin in bootstrap code code-review judges platform self-learning; do
+for plugin in bootstrap code code-review platform; do
   plugin_path="$HOME/.claude/plugins/cache/closedloop-ai/$plugin/1.0.0"
   mkdir -p "$plugin_path"
   if [ "$first" -eq 0 ]; then
