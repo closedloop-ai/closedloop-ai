@@ -51,13 +51,7 @@ const FIXTURE_DIR = path.join(
   "plugin-list"
 );
 
-const CLOSEDLOOP_PLUGIN_FOLDERS = [
-  "code",
-  "code-review",
-  "judges",
-  "platform",
-  "self-learning",
-] as const;
+const CLOSEDLOOP_PLUGIN_FOLDERS = ["code", "code-review", "platform"] as const;
 
 const tempDirs: string[] = [];
 
@@ -105,7 +99,7 @@ async function writeEnabledRegistry(): Promise<string> {
 }
 
 describe("ISS-5810 — reading the enabled state from real CLI output", () => {
-  test("real `claude plugin list --json` output proves all five plugins enabled", async () => {
+  test("real `claude plugin list --json` output proves all three plugins enabled", async () => {
     const registryPath = await writeEnabledRegistry();
     const listJson = await readFixture("claude-plugin-list.json");
 

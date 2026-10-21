@@ -39,21 +39,9 @@ export const CLOSEDLOOP_USER_PLUGINS = [
     required: true,
   },
   {
-    folder: "judges",
-    key: "judges@closedloop-ai",
-    label: "Judges Plugin",
-    required: true,
-  },
-  {
     folder: "code-review",
     key: "code-review@closedloop-ai",
     label: "Code Review Plugin",
-    required: true,
-  },
-  {
-    folder: "self-learning",
-    key: "self-learning@closedloop-ai",
-    label: "Self-Learning Plugin",
     required: true,
   },
 ] as const;

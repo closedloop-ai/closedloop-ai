@@ -88,20 +88,14 @@ function unverifiedPluginCheck(folder: string): CheckResult {
 }
 
 describe("ISS-5369 Part 1: the Claude CLI cascade", () => {
-  test("unresolvable Claude binary yields blocked plugin rows, not five failures", () => {
-    const folders = [
-      "code",
-      "code-review",
-      "judges",
-      "platform",
-      "self-learning",
-    ];
+  test("unresolvable Claude binary yields blocked plugin rows, not three failures", () => {
+    const folders = ["code", "code-review", "platform"];
     const result = applyClaudeCliBlockedChecks(
       folders.map(unverifiedPluginCheck),
       failingClaudeCli()
     );
 
-    assert.equal(result.length, 5);
+    assert.equal(result.length, 3);
     for (const check of result) {
       assert.equal(
         resolveCheckSeverity(check),
@@ -334,7 +328,7 @@ describe("ISS-5369: severity is version-skew tolerant in both directions", () =>
 });
 
 describe("ISS-5369 Part 1: the cascade through the real health-check route", () => {
-  test("a stale Claude binary override blocks the plugin rows instead of failing five of them", async () => {
+  test("a stale Claude binary override blocks the plugin rows instead of failing three of them", async () => {
     const homeDir = await makeTempHome();
     await writeAllUserScopedPlugins(homeDir);
     const dispatcher = new OperationDispatcher();
@@ -357,7 +351,7 @@ describe("ISS-5369 Part 1: the cascade through the real health-check route", () 
     );
 
     const pluginRows = checks.filter((check) => check.id.startsWith("plugin-"));
-    assert.equal(pluginRows.length, 5);
+    assert.equal(pluginRows.length, 3);
     for (const row of pluginRows) {
       assert.equal(
         resolveCheckSeverity(row as CheckResult),
@@ -371,14 +365,14 @@ describe("ISS-5369 Part 1: the cascade through the real health-check route", () 
       );
     }
 
-    // One actionable fault across the Claude CLI + plugin rows, not six.
+    // One actionable fault across the Claude CLI + plugin rows, not four.
     // (Other rows in this harness fail for unrelated environment reasons —
     // scope the count to the group the cascade actually spans.)
     const cascadeRows = checks.filter(
       (check) =>
         check.id === CLAUDE_CLI_CHECK_ID || check.id.startsWith("plugin-")
     );
-    assert.equal(cascadeRows.length, 6);
+    assert.equal(cascadeRows.length, 4);
     assert.deepEqual(
       cascadeRows
         .filter(
@@ -418,9 +412,9 @@ describe("ISS-5369 Part 1: the cascade through the real health-check route", () 
     assert.ok(code?.remediation?.includes("claude plugin enable"));
 
     // Its siblings, which the registry does NOT prove disabled, stay unknown.
-    const judges = findPluginCheck(getChecks(payload), "judges");
+    const platform = findPluginCheck(getChecks(payload), "platform");
     assert.equal(
-      resolveCheckSeverity(judges as CheckResult),
+      resolveCheckSeverity(platform as CheckResult),
       CheckSeverity.Unknown
     );
   });

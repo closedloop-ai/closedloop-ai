@@ -17,7 +17,7 @@ HANDOFF_DIR="${SHELL_VAR}{HOME}/Library/Application Support/Closedloop Desktop"
 HANDOFF_FILE="${SHELL_VAR}{HANDOFF_DIR}/pending-onboarding.json"
 NONINTERACTIVE="${SHELL_VAR}{CL_DESKTOP_NONINTERACTIVE:-0}"
 COMMAND_CHECK_TIMEOUT_SECONDS=15
-REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review judges platform self-learning)
+REQUIRED_CLOSEDLOOP_PLUGINS=(code code-review platform)
 PREREQUISITE_FAILURES=()
 FAILED_PREREQUISITE_KEYS=()
 # Required prerequisite checks run in soft-fail mode so the script can report
@@ -495,7 +495,7 @@ closedloop_plugin_enabled_state() {
 print_closedloop_plugin_repair() {
   cat >&2 <<'REPAIR'
 Repair Closedloop plugins at user scope:
-for p in bootstrap code code-review judges platform self-learning; do
+for p in bootstrap code code-review platform; do
   claude plugin uninstall "$p@closedloop-ai" --scope project
   claude plugin install "$p@closedloop-ai" --scope user
   claude plugin enable "$p@closedloop-ai" --scope user

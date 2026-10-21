@@ -149,9 +149,7 @@ platform@closedloop-ai
       [
         "code@closedloop-ai",
         "code-review@closedloop-ai",
-        "judges@closedloop-ai",
         "platform@closedloop-ai",
-        "self-learning@closedloop-ai",
       ]
     );
   });
