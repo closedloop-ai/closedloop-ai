@@ -19,16 +19,10 @@ export const CLOSEDLOOP_PLUGINS = [
     key: "platform@closedloop-ai",
     label: "Platform Plugin",
   },
-  { folder: "judges", key: "judges@closedloop-ai", label: "Judges Plugin" },
   {
     folder: "code-review",
     key: "code-review@closedloop-ai",
     label: "Code Review Plugin",
-  },
-  {
-    folder: "self-learning",
-    key: "self-learning@closedloop-ai",
-    label: "Self-Learning Plugin",
   },
 ] as const;
 

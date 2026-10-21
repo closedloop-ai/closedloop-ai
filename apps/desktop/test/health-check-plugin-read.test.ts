@@ -44,14 +44,8 @@ const FIXTURE_DIR = path.join(
   "plugin-list"
 );
 
-/** The five Closedloop plugin folders System Check reports on. */
-const ISS_5810_PLUGIN_FOLDERS = [
-  "code",
-  "code-review",
-  "judges",
-  "platform",
-  "self-learning",
-] as const;
+/** The three Closedloop plugin folders System Check reports on. */
+const ISS_5810_PLUGIN_FOLDERS = ["code", "code-review", "platform"] as const;
 
 /** The four `error` strings that mean "we could not confirm this is enabled". */
 const ISS_5810_PLUGIN_STATE_ERRORS: ReadonlySet<string> = new Set([
@@ -141,7 +135,7 @@ async function _readFixture(name: string): Promise<string> {
 }
 
 describe("ISS-5810 plugin rows via the health-check route", () => {
-  test("real `claude plugin list --json` output makes all five plugin rows PASS", {
+  test("real `claude plugin list --json` output makes all three plugin rows PASS", {
     timeout: 15_000,
   }, async () => {
     const homeDir = await mkdtemp(path.join(os.tmpdir(), "hc-ops-ac1-"));

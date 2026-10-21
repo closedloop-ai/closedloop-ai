@@ -49,12 +49,6 @@ export type CheckResultPayload = {
 export const CLOSEDLOOP_PLUGINS = [
   { folder: "code", key: "code@closedloop-ai", label: "Symphony Plugin" },
   {
-    folder: "self-learning",
-    key: "self-learning@closedloop-ai",
-    label: "Self-Learning Plugin",
-  },
-  { folder: "judges", key: "judges@closedloop-ai", label: "Judges Plugin" },
-  {
     folder: "code-review",
     key: "code-review@closedloop-ai",
     label: "Code Review Plugin",

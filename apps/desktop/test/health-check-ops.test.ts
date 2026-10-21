@@ -193,9 +193,7 @@ function makeSuccessStub() {
 const PLUGIN_KEYS = [
   "code@closedloop-ai",
   "platform@closedloop-ai",
-  "judges@closedloop-ai",
   "code-review@closedloop-ai",
-  "self-learning@closedloop-ai",
 ] as const;
 
 const PLUGIN_CHECKS: CheckResult[] = [
@@ -207,20 +205,8 @@ const PLUGIN_CHECKS: CheckResult[] = [
     passed: true,
   },
   {
-    id: "plugin-judges",
-    label: "Judges Plugin",
-    required: true,
-    passed: true,
-  },
-  {
     id: "plugin-code-review",
     label: "Code Review Plugin",
-    required: true,
-    passed: true,
-  },
-  {
-    id: "plugin-self-learning",
-    label: "Self-Learning Plugin",
     required: true,
     passed: true,
   },
