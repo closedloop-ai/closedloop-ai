@@ -28,12 +28,12 @@ supportedArchitectures:
 # dedupe override below all pin one version — replacing the `next: "$next"`
 # override, whose `$<name>` syntax pnpm 11.7 deprecated in favour of catalogs.
 catalog:
-  # Pinned to 16.2.6 (not upstream's 16.3.0): 16.2.7+ changed RSC static-export
-  # behavior such that fumadocs-ui@16.8 calls next-themes' useTheme() during
-  # prerender of the docs/blog pages ("useTheme() from the server"). The
-  # community edition serves those docs from web (upstream uses a separate docs
-  # app), so it holds Next at the last version that prerenders them cleanly.
-  next: 16.2.6
+  # 16.4.1 fixes GHSA-673q-mjm6-r5xr (`use cache` RCE), GHSA-2464-fhr4-w9xw /
+  # CVE-2026-96889 (librsvg via Image Optimization), GHSA-p3m5-59mp-jv5r
+  # (Server Actions DoS) and CVE-2026-94483 (image-optimization SSRF, 16.3.8).
+  next: 16.4.1
+  # GHSA-wq5f-xc86-pv6w (sharp's bundled librsvg): fixed in 0.35.5.
+  sharp: 0.35.5
 
 # Supply-chain hardening (Shai-Hulud / TanStack-style npm worm mitigations).
 # minimumReleaseAge: refuse to install package versions younger than 7 days
@@ -79,6 +79,9 @@ allowBuilds:
 overrides:
   # Force transitive `next` to the workspace version (the catalog entry above).
   next: "catalog:"
+  # Next ships sharp transitively; keep it on the patched catalog release so
+  # apps/web's direct dep and next's copy stay one version.
+  sharp: "catalog:"
   # Pin the entire @tiptap/* graph to a single consistent version set. The
   # direct deps use ~3.22.3,
   # but @tiptap/starter-kit pulls its individual extension packages (bold,
@@ -134,9 +137,10 @@ overrides:
   # of context libraries like next-themes — each with its own React context.
   # The provider then populates one context while useTheme() reads another,
   # silently breaking the theme toggle. Keep these aligned with the apps'
-  # pinned react/react-dom version.
-  react: "19.2.8"
-  react-dom: "19.2.8"
+  # pinned react/react-dom version. 19.2.9 is the 19.2-line release for
+  # GHSA-xqc2-xf4c-x3h3 and GHSA-h3gv-c5rc-p453.
+  react: "19.2.9"
+  react-dom: "19.2.9"
   # Pin one react-hook-form across the workspace (FEA-1510). Caret ranges
   # (apps/app ^7.71.1, apps/desktop ^7.76.1) otherwise resolve to two copies,
   # which splits design-system's FormField Control<> from its consumers
